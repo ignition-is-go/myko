@@ -1,13 +1,19 @@
 {
   "name": "create-next-example-app",
   "scripts": {
-    "dev": "next",
     "build": "next build",
-    "start": "next start"
+    "start-development": "NODE_ENV=development node server.js",
+    "start-testing": "NODE_ENV=testing node server.js",
+    "start-prod": "NODE_ENV=production node server.js"
   },
   "dependencies": {
+    "@zeit/next-css": "^0.2.0",
+    "@zeit/next-sass": "^0.2.0",
+    "dotenv": "^5.0.1",
+    "express": "^4.16.3",
     "next": "^6.0.3",
     "react": "^16.3.2",
-    "react-dom": "^16.3.2"
+    "react-dom": "^16.3.2",
+    "webpack": "^3.7.1"
   }
 }
