@@ -7,9 +7,12 @@
     "start-prod": "NODE_ENV=production node server.js"
   },
   "dependencies": {
+    "@fortawesome/fontawesome": "^1.1.8",
+    "@fortawesome/react-fontawesome": "^0.0.20",
     "@zeit/next-css": "^0.2.0",
     "@zeit/next-sass": "^0.2.0",
     "babel-eslint": "^8.2.3",
+    "classnames": "^2.2.5",
     "dotenv": "^5.0.1",
     "express": "^4.16.3",
     "next": "^6.0.3",
