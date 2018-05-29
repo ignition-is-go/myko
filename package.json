@@ -13,6 +13,7 @@
     "@zeit/next-css": "^0.2.0",
     "@zeit/next-sass": "^0.2.0",
     "babel-eslint": "^8.2.3",
+    "bootstrap": "^4.1.1",
     "classnames": "^2.2.5",
     "dotenv": "^5.0.1",
     "express": "^4.16.3",
