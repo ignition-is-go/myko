@@ -18,6 +18,7 @@
     "classnames": "^2.2.5",
     "dotenv": "^5.0.1",
     "express": "^4.16.3",
+    "lodash": "^4.17.10",
     "next": "^6.0.3",
     "node-sass": "^4.9.0",
     "react": "^16.3.2",
