@@ -2,9 +2,9 @@
   "name": "create-next-example-app",
   "scripts": {
     "build": "next build",
-    "start-development": "NODE_ENV=development node server.js",
-    "start-testing": "NODE_ENV=testing node server.js",
-    "start-prod": "NODE_ENV=production node server.js"
+    "start-development": "NODE_ENV=development node ./src/server.js",
+    "start-testing": "NODE_ENV=testing node ./src/server.js",
+    "start-prod": "NODE_ENV=production node ./src/server.js"
   },
   "dependencies": {
     "@fortawesome/fontawesome": "^1.1.8",
