@@ -1,5 +1,5 @@
 {
-  "name": "create-next-example-app",
+  "name": "rocketship-client",
   "scripts": {
     "build": "next build src",
     "start-development": "NODE_ENV=development node ./src/server.js",
@@ -32,6 +32,7 @@
     "react": "^16.3.2",
     "react-apollo": "^2.1.4",
     "react-contexify": "^3.0.1",
+    "react-custom-scrollbars": "^4.2.1",
     "react-dd-menu": "^2.0.2",
     "react-dom": "^16.3.2",
     "react-grid-layout": "^0.16.6",
