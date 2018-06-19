@@ -2,9 +2,9 @@
   "name": "rocketship-client",
   "scripts": {
     "build": "next build src",
-    "start-development": "NODE_ENV=development node ./src/server.js",
-    "start-testing": "NODE_ENV=testing node ./src/server.js",
-    "start-prod": "NODE_ENV=production node ./src/server.js"
+    "start-development": "cross-env NODE_ENV=development node ./src/server.js",
+    "start-testing": "cross-env NODE_ENV=testing node ./src/server.js",
+    "start-prod": "cross-env NODE_ENV=production node ./src/server.js"
   },
   "dependencies": {
     "@zeit/next-css": "^0.2.0",
@@ -26,6 +26,8 @@
     "next": "^6.0.3",
     "next-routes": "^1.4.2",
     "node-sass": "^4.9.0",
+    "prop-types": "^15.6.1",
+    "ramda": "^0.25.0",
     "react": "^16.3.2",
     "react-apollo": "^2.1.4",
     "react-contexify": "^3.0.1",
@@ -39,6 +41,7 @@
     "webpack": "^3.7.1"
   },
   "devDependencies": {
+    "cross-env": "^5.2.0",
     "eslint": "^4.17.0",
     "eslint-plugin-import": "^2.8.0",
     "eslint-plugin-jsx-a11y": "^6.0.3",
