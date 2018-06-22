@@ -38,6 +38,7 @@
     "react-dom": "^16.3.2",
     "react-grid-layout": "^0.16.6",
     "react-tabs": "^2.2.2",
+    "react-tippy": "^1.2.2",
     "react-tooltip": "^3.6.0",
     "uuid": "^3.2.1",
     "webpack": "^3.7.1"
