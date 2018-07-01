@@ -40,6 +40,7 @@
     "react-modal": "^3.4.5",
     "react-tabs": "^2.2.2",
     "react-tippy": "^1.2.2",
+    "react-toolbox": "^2.0.0-beta.13",
     "react-tooltip": "^3.6.0",
     "uuid": "^3.2.1",
     "webpack": "^3.7.1"
