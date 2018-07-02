@@ -4,7 +4,8 @@
     "build": "next build src",
     "start-development": "cross-env NODE_ENV=development node ./src/server.js",
     "start-testing": "cross-env NODE_ENV=testing node ./src/server.js",
-    "start-prod": "cross-env NODE_ENV=production node ./src/server.js"
+    "start-prod": "cross-env NODE_ENV=production node ./src/server.js",
+    "toolbox": "react-toolbox-themr"
   },
   "dependencies": {
     "@zeit/next-css": "^0.2.0",
@@ -50,6 +51,46 @@
     "eslint": "^4.17.0",
     "eslint-plugin-import": "^2.8.0",
     "eslint-plugin-jsx-a11y": "^6.0.3",
-    "eslint-plugin-react": "^7.6.1"
+    "eslint-plugin-react": "^7.6.1",
+    "react-toolbox-themr": "^1.0.2"
+  },
+  "reactToolbox": {
+    "include": [
+      "AUTOCOMPLETE",
+      "AVATAR",
+      "BUTTON",
+      "CARD",
+      "CHECKBOX",
+      "CHIP",
+      "DATE_PICKER",
+      "DIALOG",
+      "DRAWER",
+      "DROPDOWN",
+      "INPUT",
+      "LAYOUT",
+      "LINK",
+      "LIST",
+      "MENU",
+      "NAVIGATION",
+      "OVERLAY",
+      "PROGRESS_BAR",
+      "RADIO",
+      "RIPPLE",
+      "SLIDER",
+      "SNACKBAR",
+      "SWITCH",
+      "TABLE",
+      "TABS",
+      "TIME_PICKER",
+      "TOOLTIP"
+    ],
+    "customProperties": {
+      "animation-duration": "0.3s",
+      "color-accent": "red",
+      "color-accent-dark": "red",
+      "color-primary-contrast": "red",
+      "color-accent-contrast": "red"
+    },
+    "output": "src/static/themes/react-toolbox"
   }
 }

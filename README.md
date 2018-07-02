@@ -106,4 +106,5 @@ Read more about [Next's Routing](https://github.com/zeit/next.js#routing)
 * [Next.js](https://github.com/zeit/next.js/).
 * [Create Next App](https://github.com/segmentio/create-next-app).
 * [SASS](https://sass-lang.com/).
+* [react-toolbox-themr](https://github.com/react-toolbox/react-toolbox-themr).
 * [ESLint](https://eslint.org/).
