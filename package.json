@@ -16,6 +16,7 @@
     "apollo-boost": "^0.1.7",
     "apollo-link-context": "^1.0.8",
     "apollo-link-http": "^1.5.4",
+    "apollo-link-ws": "^1.0.8",
     "babel-eslint": "^8.2.3",
     "bootstrap": "^4.1.1",
     "classnames": "^2.2.5",
@@ -51,6 +52,7 @@
     "react-tippy": "^1.2.2",
     "react-toolbox": "^2.0.0-beta.13",
     "react-tooltip": "^3.6.0",
+    "subscriptions-transport-ws": "^0.9.14",
     "uuid": "^3.2.1",
     "webpack": "^3.7.1"
   },
