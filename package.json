@@ -48,6 +48,7 @@
     "react-grid-layout": "^0.16.6",
     "react-modal": "^3.4.5",
     "react-resizable": "^1.7.5",
+    "react-simple-dropdown": "^3.2.3",
     "react-tabs": "^2.2.2",
     "react-tippy": "^1.2.2",
     "react-toolbox": "^2.0.0-beta.13",
