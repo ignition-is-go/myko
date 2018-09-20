@@ -65,7 +65,6 @@
     "eslint-plugin-jsx-a11y": "^6.0.3",
     "eslint-plugin-react": "^7.6.1",
     "react-toolbox-themr": "^1.0.2",
-    "riek": "^1.1.0"
   },
   "license": "MIT",
   "reactToolbox": {
