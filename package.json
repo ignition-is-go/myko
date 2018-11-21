@@ -5,10 +5,7 @@
     "start-development": "cross-env NODE_ENV=development node ./src/server.js",
     "start-testing": "cross-env NODE_ENV=testing node ./src/server.js",
     "start-prod": "cross-env NODE_ENV=production node ./src/server.js",
-    "toolbox": "react-toolbox-themr",
-    "dock": "docker build -t registry.rship.io/rocketship-client:latest .",
-    "push-image": "docker push registry.rship.io/rocketship-client:latest",
-    "dock+push": "npm run dock && docker push registry.rship.io/rocketship-client:latest"
+    "toolbox": "react-toolbox-themr"
   },
   "dependencies": {
     "@material-ui/core": "^3.0.1",
