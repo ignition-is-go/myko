@@ -1,7 +1,7 @@
 {
 	"compileOnSave": false,
 	"compilerOptions": {
-		"baseUrl": "src",
+		"baseUrl": "./src",
 		"outDir": "./dist/out-tsc",
 		"sourceMap": true,
 		"declaration": false,
@@ -25,5 +25,8 @@
 			"dom",
 			"esnext.asynciterable"
 		]
-	}
+	},
+	"exclude": [
+		"src/generated/rship.ts"
+	]
 }
