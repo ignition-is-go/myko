@@ -8,7 +8,8 @@
 		"build": "ng build",
 		"test": "ng test",
 		"lint": "ng lint",
-		"e2e": "ng e2e"
+		"e2e": "ng e2e",
+		"gen:graph": "npx jok graphql-client -e http://localhost:4000 -o src/generated/rship.ts"
 	},
 	"private": true,
 	"dependencies": {
