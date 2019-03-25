@@ -44,3 +44,5 @@ Thumbs.db
 
 # Lock Files
 yarn.lock
+.vscode/settings.json
+.vscode/tasks.json
