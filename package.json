@@ -9,7 +9,8 @@
 		"test": "jest",
 		"lint": "ng lint",
 		"e2e": "ng e2e",
-		"gen:graph": "npx jok graphql-client -e http://localhost:4000 -o src/generated/rship.ts"
+		"gen:graph": "npx jok graphql-client -e http://localhost:4000 -o src/generated/rship.ts",
+		"gen:graph:remote": "npx jok graphql-client -e http://server.rship.io -o src/generated/rship.ts"
 	},
 	"private": true,
 	"dependencies": {
