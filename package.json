@@ -10,7 +10,7 @@
 		"lint": "ng lint",
 		"e2e": "ng e2e",
 		"gen:graph": "npx jok graphql-client -e http://localhost:4000 -o src/generated/rship.ts",
-		"gen:graph:remote": "npx jok graphql-client -e http://server.rship.io -o src/generated/rship.ts",
+		"gen:graph:remote": "npx jok graphql-client -e http://server.dev.rship.io -o src/generated/rship.ts",
 		"storybook": "start-storybook -p 6006",
 		"build-storybook": "build-storybook"
 	},
