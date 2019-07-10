@@ -9,4 +9,4 @@ This project was generated with [Angular CLI](https://github.com/angular/angular
 * properties-card
 * viewer-card
 * playback-card
-* outputcontextstatus-card
+* systems-card
