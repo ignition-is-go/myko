@@ -47,6 +47,7 @@
 		"jest-preset-angular": "^6.0.2",
 		"lodash.debounce": "^4.0.8",
 		"lodash.merge": "^4.6.1",
+		"ngx-json-viewer": "^2.4.0",
 		"ngx-perfect-scrollbar": "^8.0.0",
 		"object-hash": "^1.3.1",
 		"ramda": "^0.26.1",
