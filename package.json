@@ -34,7 +34,6 @@
 	"dependencies": {
 		"@angular/animations": "^8.0.0",
 		"@angular/cdk": "^8.1.2",
-		"@angular/cli": "8.0.0",
 		"@angular/common": "^8.0.0",
 		"@angular/compiler": "^8.0.0",
 		"@angular/core": "^8.0.0",
@@ -75,6 +74,7 @@
 		"@angular/compiler-cli": "^8.0.0",
 		"@angular/language-service": "^8.0.0",
 		"@fortawesome/fontawesome-free": "^5.10.1",
+		"@angular/cli": "8.0.0",
 		"@nrwl/angular": "8.4.3",
 		"@nrwl/cypress": "8.2.0",
 		"@nrwl/jest": "8.2.0",
