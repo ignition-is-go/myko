@@ -62,12 +62,16 @@
 		"lodash.merge": "^4.6.2",
 		"ngx-json-viewer": "^2.4.0",
 		"ngx-perfect-scrollbar": "^8.0.0",
-		"object-hash": "^1.3.1",
 		"ramda": "^0.26.1",
 		"rxjs": "~6.4.0",
 		"subscriptions-transport-ws": "^0.9.16",
 		"uuid": "^3.3.2",
-		"zone.js": "^0.9.1"
+		"zone.js": "^0.9.1",
+		"jest": "^24.1.0",
+		"jest-preset-angular": "^6.0.2",
+		"lodash.debounce": "^4.0.8",
+		"tinycolor2": "^1.4.1",
+		"tslib": "1.9.3"
 	},
 	"devDependencies": {
 		"@angular-devkit/build-angular": "^0.800.0",
@@ -75,6 +79,7 @@
 		"@angular/language-service": "^8.0.0",
 		"@fortawesome/fontawesome-free": "^5.10.1",
 		"@angular/cli": "8.0.0",
+		"@types/tinycolor2": "^1.4.1",
 		"@nrwl/angular": "8.4.3",
 		"@nrwl/cypress": "8.2.0",
 		"@nrwl/jest": "8.2.0",
