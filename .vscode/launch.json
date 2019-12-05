@@ -1,14 +1,37 @@
 {
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
 	"version": "0.2.0",
 	"configurations": [
 		{
 			"type": "chrome",
 			"request": "launch",
-			"name": "Launch Chrome against localhost",
-			"url": "http://localhost:4200",
+			"name": "Client Ng",
 			"webRoot": "${workspaceFolder}/apps/rship-client/",
-			"sourceMaps": true
-		}
+			"url": "http://localhost:4200",
+		},
+		{
+			"type": "chrome",
+			"request": "launch",
+			"name": "Storybook Debug",
+			"url": "http://localhost:6006",
+			"sourceMaps": true,
+			"webRoot": "${workspaceFolder}/apps/rship-client/",
+			"sourceMapPathOverrides": {
+				"webpack:///*": "${webRoot}/apps/rship-client/*",
+				"webpack:///./*": "${webRoot}/apps/rship-client/*",
+				"webpack:///src/*": "${webRoot}/apps/rship-client/*",
+				"webpack:///./~/*": "${webRoot}/apps/rship-client/node_modules/*"
+			}
+		},
+		{
+			"type": "chrome",
+			"request": "launch",
+			"name": "Electron UI",
+			"webRoot": "${workspaceFolder}/apps/satellite/",
+			"url": "http://localhost:4200",
+		},
 	]
 }
 // 	{
