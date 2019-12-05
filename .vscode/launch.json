@@ -26,10 +26,10 @@
 			}
 		},
 		{
-			"type": "chrome",
+			"type": "electron",
 			"request": "launch",
 			"name": "Electron UI",
-			"webRoot": "${workspaceFolder}/apps/satellite/",
+			"appDir": "${workspaceFolder}/dist/apps/satellite-electron/",
 			"url": "http://localhost:4200",
 		},
 	]
