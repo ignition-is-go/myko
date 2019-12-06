@@ -26,14 +26,15 @@
 			}
 		},
 		{
-			"type": "electron",
-			"request": "launch",
-			"name": "Electron UI",
-			"appDir": "${workspaceFolder}/dist/apps/satellite-electron/",
-			"url": "http://localhost:4200",
+			"name": "Electron: Renderer",
+			"type": "chrome",
+			"request": "attach",
+			"port": 9223,
+			"webRoot": "${workspaceFolder}/apps/satellite/",
+			"timeout": 30000
 		},
 		{
-			"name": "Debug Main Process - served",
+			"name": "Electron: Main",
 			"type": "node",
 			"request": "launch",
 			"cwd": "${workspaceFolder}",
@@ -42,6 +43,9 @@
 			"windows": {
 				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
 			},
+			"runtimeArgs": [
+				"--remote-debugging-port=9223",
+			],
 			"args": [
 				"--serve"
 			],
@@ -50,6 +54,15 @@
 			"sourceMaps": true,
 			"outFiles": [
 				"dist/apps/satellite/"
+			]
+		}
+	],
+	"compounds": [
+		{
+			"name": "Electron: All",
+			"configurations": [
+				"Electron: Main",
+				"Electron: Renderer"
 			]
 		}
 	]
