@@ -32,6 +32,26 @@
 			"appDir": "${workspaceFolder}/dist/apps/satellite-electron/",
 			"url": "http://localhost:4200",
 		},
+		{
+			"name": "Debug Main Process - served",
+			"type": "node",
+			"request": "launch",
+			"cwd": "${workspaceFolder}",
+			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+			},
+			"args": [
+				"--serve"
+			],
+			"outputCapture": "std",
+			"preLaunchTask": "build-satellite-main",
+			"sourceMaps": true,
+			"outFiles": [
+				"dist/apps/satellite/"
+			]
+		}
 	]
 }
 // 	{

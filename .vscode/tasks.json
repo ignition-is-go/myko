@@ -12,6 +12,29 @@
 			"type": "npm",
 			"script": "gen:graph:remote",
 			"problemMatcher": []
+		},
+		{
+			"label": "build-satellite-main",
+			"type": "npm",
+			"script": "satellite:electron:build",
+			"problemMatcher": [
+				"$tsc"
+			]
+		},
+		{
+			"type": "ng",
+			"command": "serve",
+			"label": "serve-satellite",
+			"project": "satellite"
+		},
+		{
+			"type": "shell",
+			"label": "build-satellite-served",
+			"dependsOn": [
+				"build-satellite-main",
+				"serve-satellite"
+			],
+			"command": "echo 'done'"
 		}
 	]
 }
