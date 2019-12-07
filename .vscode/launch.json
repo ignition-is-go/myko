@@ -34,6 +34,30 @@
 			"timeout": 30000
 		},
 		{
+			"name": "Electron: Main+Wiz",
+			"type": "node",
+			"request": "launch",
+			"cwd": "${workspaceFolder}",
+			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+			},
+			"runtimeArgs": [
+				"--remote-debugging-port=9223",
+			],
+			"args": [
+				"--serve",
+				"--force-wizard"
+			],
+			"outputCapture": "std",
+			"preLaunchTask": "build-satellite-main",
+			"sourceMaps": true,
+			"outFiles": [
+				"dist/apps/satellite/"
+			]
+		},
+		{
 			"name": "Electron: Main",
 			"type": "node",
 			"request": "launch",
@@ -47,7 +71,7 @@
 				"--remote-debugging-port=9223",
 			],
 			"args": [
-				"--serve"
+				"--serve",
 			],
 			"outputCapture": "std",
 			"preLaunchTask": "build-satellite-main",
@@ -58,6 +82,13 @@
 		}
 	],
 	"compounds": [
+		{
+			"name": "Electron: All+Wiz",
+			"configurations": [
+				"Electron: Main+Wiz",
+				"Electron: Renderer"
+			]
+		},
 		{
 			"name": "Electron: All",
 			"configurations": [
