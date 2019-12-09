@@ -33,7 +33,8 @@
 		"satellite:dev": "ng serve satellite & npm run satellite:electron:dev",
 		"satellite:electron:dev": "npm run satellite:electron:build && npm run satellite:electron:served",
 		"satellite:electron:build": "tsc -p apps/satellite/tsconfig.serve.json && sh tools/scripts/satellite-assets.sh",
-		"satellite:electron:served": "wait-on http-get://localhost:4200/ && electron dist/apps/satellite/src/main/main.js --serve"
+		"satellite:electron:served": "wait-on http-get://localhost:4200/ && electron dist/apps/satellite/src/main/main.js --serve",
+		"satellite:clear-db-mac": "rm -rf ~/Library/ApplicationSupport/Electron/satellite/db"
 	},
 	"private": true,
 	"dependencies": {
