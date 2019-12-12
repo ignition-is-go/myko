@@ -7,6 +7,7 @@
 
 # dependencies
 /node_modules
+apps/**/node_modules
 
 # IDEs and editors
 /.idea
@@ -39,3 +40,7 @@ testem.log
 Thumbs.db
 
 yarn.lock
+
+
+# electron build files
+/out
