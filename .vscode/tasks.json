@@ -14,7 +14,7 @@
 			"problemMatcher": []
 		},
 		{
-			"label": "build-satellite-ts",
+			"label": "compile-satellite-main",
 			"type": "npm",
 			"script": "satellite:electron:build",
 			"problemMatcher": [
@@ -35,13 +35,13 @@
 		},
 		{
 			"label": "build-satellite-dist",
-			"type": "npm",
-			"script": "satellite:electron:build",
+			"type": "shell",
 			"problemMatcher": [
 				"$tsc"
 			],
 			"dependsOn": [
-				"build-satellite-client"
+				"build-satellite-client",
+				"compile-satellite-main"
 			]
 		},
 		{
