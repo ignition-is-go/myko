@@ -14,7 +14,7 @@
 			"problemMatcher": []
 		},
 		{
-			"label": "build-satellite-main",
+			"label": "build-satellite-ts",
 			"type": "npm",
 			"script": "satellite:electron:build",
 			"problemMatcher": [
@@ -26,6 +26,23 @@
 			"command": "serve",
 			"label": "serve-satellite",
 			"project": "satellite"
+		},
+		{
+			"type": "ng",
+			"command": "build",
+			"label": "build-satellite-client",
+			"project": "satellite",
+		},
+		{
+			"label": "build-satellite-dist",
+			"type": "npm",
+			"script": "satellite:electron:build",
+			"problemMatcher": [
+				"$tsc"
+			],
+			"dependsOn": [
+				"build-satellite-client"
+			]
 		},
 		{
 			"type": "shell",

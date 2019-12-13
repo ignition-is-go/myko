@@ -49,7 +49,7 @@
 				"--force-wizard"
 			],
 			"outputCapture": "std",
-			"preLaunchTask": "build-satellite-main",
+			"preLaunchTask": "build-satellite-dist",
 			"sourceMaps": true,
 			"outFiles": [
 				"dist/apps/satellite/"
@@ -70,7 +70,28 @@
 				"--serve"
 			],
 			"outputCapture": "std",
-			"preLaunchTask": "build-satellite-main",
+			"preLaunchTask": "build-satellite-dist",
+			"sourceMaps": true,
+			"outFiles": [
+				"dist/apps/satellite/"
+			]
+		},
+		{
+			"name": "Electron: Main - Dist",
+			"type": "node",
+			"request": "launch",
+			"cwd": "${workspaceFolder}",
+			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+			},
+			"args": [
+				"--remote-debugging-port=9223",
+				"--force-wizard"
+			],
+			"outputCapture": "std",
+			"preLaunchTask": "build-satellite-dist",
 			"sourceMaps": true,
 			"outFiles": [
 				"dist/apps/satellite/"
@@ -89,6 +110,13 @@
 			"name": "Electron: All",
 			"configurations": [
 				"Electron: Main",
+				"Electron: Renderer"
+			]
+		},
+		{
+			"name": "Electron: All - Dist",
+			"configurations": [
+				"Electron: Main - Dist",
 				"Electron: Renderer"
 			]
 		}
