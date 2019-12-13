@@ -37,7 +37,7 @@
 		"satellite:electron:served": "wait-on http-get://localhost:4200/ && electron dist/apps/satellite/src/main/main.js --serve",
 		"satellite:electron:run": "npm run satellite:electron:build && ng build satellite && electron dist/apps/satellite/src/main/main.js --remote-debugging-port=9223",
 		"satellite:clear-db-mac": "rm -rf ~/Library/ApplicationSupport/Electron/satellite/db",
-		"satellite:run-electron-builder": "DEBUG=electron-builder electron-builder --config satellite.electron-builder.config.json --dir",
+		"satellite:run-electron-builder": "DEBUG=electron-builder electron-builder --config satellite.electron-builder.config.json --mac --win ",
 		"satellite:regenerate-icon": "sh tools/scripts/make-satellite-icons.sh Satellite_Logo/Satellite_Logo_DK-Normal"
 	},
 	"private": true,
@@ -126,6 +126,21 @@
 		"ts-node": "~7.0.0",
 		"tslint": "~5.11.0",
 		"typescript": "~3.5.3",
-		"wait-on": "^3.3.0"
+		"wait-on": "^3.3.0",
+		"apollo-cache-inmemory": "^1.6.2",
+		"apollo-client": "^2.6.3",
+		"apollo-link": "^1.2.13",
+		"apollo-link-http": "^1.5.16",
+		"electron-fetch": "^1.4.0",
+		"express": "^4.17.1",
+		"extract-zip": "^1.6.7",
+		"fs-extra": "^8.1.0",
+		"graphql": "^14.5.8",
+		"graphql-tag": "^2.10.1",
+		"nedb": "^1.8.0",
+		"node-machine-id": "^1.1.12",
+		"ramda": "^0.26.1",
+		"rxjs": "~6.4.0",
+		"xstate": "^4.7.2"
 	}
 }
