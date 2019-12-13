@@ -30,6 +30,7 @@
 		"workspace-schematic": "nx workspace-schematic",
 		"dep-graph": "nx dep-graph",
 		"help": "nx help",
+		"satellite:package": "ng build satellite && npm run satellite:electron:build && npm run satellite:run-electron-builder",
 		"satellite:dev": "ng serve satellite & npm run satellite:electron:dev",
 		"satellite:electron:dev": "npm run satellite:electron:build && npm run satellite:electron:served",
 		"satellite:electron:build": "tsc -p apps/satellite/tsconfig.serve.json && sh tools/scripts/satellite-assets.sh",
@@ -37,7 +38,7 @@
 		"satellite:electron:run": "npm run satellite:electron:build && ng build satellite && electron dist/apps/satellite/src/main/main.js --remote-debugging-port=9223",
 		"satellite:clear-db-mac": "rm -rf ~/Library/ApplicationSupport/Electron/satellite/db",
 		"satellite:run-electron-builder": "DEBUG=electron-builder electron-builder --config satellite.electron-builder.config.json --dir",
-		"satellite:build": "ng build satellite && npm run satellite:electron:build && npm run satellite:run-electron-builder"
+		"satellite:regenerate-icon": "sh tools/scripts/make-satellite-icons.sh Satellite_Logo/Satellite_Logo_DK-Normal"
 	},
 	"private": true,
 	"dependencies": {
