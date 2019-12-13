@@ -1,5 +1,15 @@
 # RshipClient
 
+## Satellite 
+Satellite is an electron + angular project that works with rocketship
+
+### Dev Notes
+
+Any main thread dependencies for satellite need to exist both in the dev dependencies of the top level `./package.json`, as well as the dependencies of the `apps/satellite/package.json` in order to both debug and package properly.
+
+
+
+
 This project was generated using [Nx](https://nx.dev).
 
 <p align="center"><img src="https://raw.githubusercontent.com/nrwl/nx/master/nx-logo.png" width="450"></p>
