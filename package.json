@@ -78,6 +78,7 @@
 		"ngx-json-viewer": "^2.4.0",
 		"ngx-perfect-scrollbar": "^8.0.0",
 		"ramda": "^0.26.1",
+		"roboto-fontface": "^0.10.0",
 		"rxjs": "~6.4.0",
 		"subscriptions-transport-ws": "^0.9.16",
 		"tinycolor2": "^1.4.1",
