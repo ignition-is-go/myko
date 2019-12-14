@@ -37,7 +37,7 @@
 		"satellite:electron:served": "wait-on http-get://localhost:4200/ && electron dist/apps/satellite/src/main/main.js --serve",
 		"satellite:electron:run": "npm run satellite:electron:build && ng build satellite && electron dist/apps/satellite/src/main/main.js --remote-debugging-port=9223",
 		"satellite:clear-db-mac": "rm -rf ~/Library/ApplicationSupport/Electron/satellite/db",
-		"satellite:run-electron-builder": "DEBUG=electron-builder electron-builder --config satellite.electron-builder.config.json --win --mac ",
+		"satellite:run-electron-builder": "electron-builder --config satellite.electron-builder.config.json --win --mac ",
 		"satellite:regenerate-icon": "sh tools/scripts/make-satellite-icons.sh"
 	},
 	"private": true,
