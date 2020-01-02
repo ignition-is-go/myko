@@ -1,13 +1,39 @@
 # RshipClient
+Rship-client is an angular project, which is the primary user interface to Rocketship
 
-## Satellite 
+
+
+# Satellite 
 Satellite is an electron + angular project that works with rocketship
 
-### Dev Notes
+## Dev Notes
 
 Any main thread dependencies for satellite need to exist both in the dev dependencies of the top level `./package.json`, as well as the dependencies of the `apps/satellite/package.json` in order to both debug and package properly.
 
+# Storybook
 
+In order to use storybook with components that consume GraphQL, you'll need to use the `apolloStorybookDecorator` to mock the GraphQL server.
+
+```typescript
+// ...other imports...
+import apolloStorybookDecorator from 'libs/apollo-storybook-angular'
+
+storiesOf('My Component', module)
+.addDecorator(
+		apolloStorybookDecorator({
+			typeDefs: schema,
+			mocks: {},
+			typeResolvers: {},
+		}),
+	)
+```
+
+More usage example is here
+
+You can import the server schema via: 
+```typescript
+import { schema } from 'generated/server.schema'
+``` 
 
 
 This project was generated using [Nx](https://nx.dev).

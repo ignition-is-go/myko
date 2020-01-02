@@ -7,12 +7,17 @@
 		{
 			"type": "node",
 			"request": "launch",
-			"name": "Nx Jest Test",
-			"program": "${workspaceFolder}/node_modules/jest/bin/jest",
+			"name": "Debug current file",
+			"program": "${workspaceFolder}/node_modules/.bin/ng",
 			"args": [
-				"--runInBand",
-				"--config=${workspaceFolder}/jest.config.js"
+				"test",
+				// Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+				"$(basename $(dirname $(${workspaceFolder}/node_modules/.bin/find-up --cwd=${fileDirname} jest.config.js)))",
+				"--run-in-band",
+				"--code-coverage=false",
+				"--test-file=${relativeFile}"
 			],
+			"smartStep": true,
 			"console": "integratedTerminal",
 			"internalConsoleOptions": "neverOpen"
 		},
@@ -20,20 +25,17 @@
 			"type": "node",
 			"name": "vscode-jest-tests",
 			"request": "launch",
-			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/ng",
-			// "program": "${workspaceFolder}/node_modules/.bin/ng",
-			"runtimeArgs": [
-				"test",
-				"satellite"
-			],
 			"args": [
-				"--runInBand"
+				"test",
+				"--passWithNoTests",
+				"--no-code-coverage",
+				"--runInBand",
+				"--testFile"
 			],
-			"cwd": "${workspaceFolder}",
+			"cwd": "${fileDirname}",
 			"console": "integratedTerminal",
 			"internalConsoleOptions": "neverOpen",
-			"disableOptimisticBPs": false,
-			"sourceMaps": true
+			"program": "${workspaceFolder}/node_modules/@angular/cli/bin/ng"
 		},
 		{
 			"type": "chrome",
