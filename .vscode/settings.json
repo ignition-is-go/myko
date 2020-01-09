@@ -1,9 +1,6 @@
 {
 	"html.format.wrapAttributes": "force-aligned",
-	"editor.detectIndentation": false,
-	"editor.tabSize": 3,
 	"editor.formatOnSave": true,
-	"editor.insertSpaces": false,
 	"files.exclude": {
 		"dist": true
 	},
