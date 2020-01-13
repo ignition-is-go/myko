@@ -36,6 +36,20 @@ import { schema } from 'generated/server.schema'
 ``` 
 
 
+
+# Local Cache
+GraphQL is used for local cache store. Default way for updating cache is refetch query, you can use generated refetchQuery from `graph.service.ts`
+
+## Docker container
+
+If for whatever reason you need to build and push the docker image of the client locally, run the following (replace dev with whatever channel you need to build for):
+```bash
+CONFIG=dev
+npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t registry.rship.io/rocketship-client:${CONFIG} .) && docker push registry.rship.io/rocketship-client:${CONFIG}
+```
+
+---
+
 This project was generated using [Nx](https://nx.dev).
 
 🔎 **Nx is a set of Angular CLI power-ups for modern development.**
@@ -67,8 +81,3 @@ Run `npm run affected:e2e` to execute the end-to-end tests affected by a change.
 ## Understand your workspace
 
 Run `npm run dep-graph` to see a diagram of the dependencies of your projects.
-
-
-
-# Local Cache
-GraphQL is used for local cache store. Default way for updating cache is refetch query, you can use generated refetchQuery from `graph.service.ts`
