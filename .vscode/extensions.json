@@ -2,6 +2,11 @@
 	"recommendations": [
 		"nrwl.angular-console",
 		"angular.ng-template",
-		"ms-vscode.vscode-typescript-tslint-plugin"
+		"ms-vscode.vscode-typescript-tslint-plugin",
+		"editorconfig.editorconfig",
+		"mrmlnc.vscode-scss",
+		"apollographql.vscode-apollo",
+		"msjsdiag.debugger-for-chrome",
+		"syler.sass-indented"
 	]
 }
