@@ -5,7 +5,7 @@
 	"scripts": {
 		"ng": "ng",
 		"nx": "nx",
-		"dev": "concurrently \"ng serve client\" && \"ng serve server\"",
+		"dev": "concurrently \"ng serve client\" \"ng serve server\"",
 		"build": "ng build",
 		"test": "ng test",
 		"lint": "nx lint && ng lint",
