@@ -45,3 +45,6 @@ yarn.lock
 
 # electron build files
 /out
+
+# local environment overrides
+**/environment.local.ts
