@@ -8,10 +8,7 @@
 			"type": "node",
 			"request": "attach",
 			"name": "Attach server",
-			"address": "localhost",
 			"port": 5858,
-			"localRoot": "${workspaceFolder}",
-			"remoteRoot": "Absolute path to the remote directory containing the program",
 			"skipFiles": [
 				"<node_internals>/**"
 			]
