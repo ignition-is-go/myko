@@ -11,7 +11,8 @@
 			"port": 5858,
 			"skipFiles": [
 				"<node_internals>/**"
-			]
+			],
+			"restart": true
 		},
 		{
 			"type": "node",
