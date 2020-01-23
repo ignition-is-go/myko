@@ -1,49 +1,50 @@
 {
-  "compileOnSave": false,
-  "compilerOptions": {
-    "rootDir": ".",
-    "sourceMap": true,
-    "declaration": false,
-    "moduleResolution": "node",
-    "emitDecoratorMetadata": true,
-    "experimentalDecorators": true,
-    "importHelpers": true,
-    "preserveConstEnums": true,
-    "target": "es5",
-    "module": "esnext",
-    "typeRoots": [
-      "node_modules/@types"
-    ],
-    "lib": [
-      "es2017",
-      "dom"
-    ],
-    "skipLibCheck": true,
-    "skipDefaultLibCheck": true,
-    "baseUrl": ".",
-    "paths": {
-      "@rship-client/cards": [
-        "libs/cards/src/index.ts"
-      ],
-      "@rship-client/dynamic-form": [
-        "libs/dynamic-form/src/index.ts"
-      ],
-      "@rship-client/angular-draggable-droppable": [
-        "libs/angular-draggable-droppable/src/index.ts"
-      ],
-      "@rship-client/shared": [
-        "libs/shared/src/index.ts"
-      ],
-      "@rship-client/rship-logging": [
-        "libs/rship-logging/src/index.ts"
-      ]
-    }
-  },
-  "exclude": [
-    "node_modules",
-    "tmp"
-  ],
-  "angularCompilerOptions": {
-    "disableTypeScriptVersionCheck": true
-  }
+	"compileOnSave": false,
+	"compilerOptions": {
+		"rootDir": ".",
+		"sourceMap": true,
+		"declaration": false,
+		"moduleResolution": "node",
+		"emitDecoratorMetadata": true,
+		"experimentalDecorators": true,
+		"importHelpers": true,
+		"preserveConstEnums": true,
+		"target": "es5",
+		"module": "esnext",
+		"typeRoots": [
+			"node_modules/@types",
+			"@rship-types/*"
+		],
+		"lib": [
+			"es2017",
+			"dom"
+		],
+		"skipLibCheck": true,
+		"skipDefaultLibCheck": true,
+		"baseUrl": ".",
+		"paths": {
+			"@rship-client/cards": [
+				"libs/cards/src/index.ts"
+			],
+			"@rship-client/dynamic-form": [
+				"libs/dynamic-form/src/index.ts"
+			],
+			"@rship-client/angular-draggable-droppable": [
+				"libs/angular-draggable-droppable/src/index.ts"
+			],
+			"@rship-client/shared": [
+				"libs/shared/src/index.ts"
+			],
+			"@rship-client/rship-logging": [
+				"libs/rship-logging/src/index.ts"
+			]
+		}
+	},
+	"exclude": [
+		"node_modules",
+		"tmp"
+	],
+	"angularCompilerOptions": {
+		"disableTypeScriptVersionCheck": true
+	}
 }
