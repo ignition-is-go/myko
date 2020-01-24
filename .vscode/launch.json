@@ -51,7 +51,7 @@
 			"type": "chrome",
 			"request": "launch",
 			"name": "Client Ng",
-			"webRoot": "${workspaceFolder}/apps/rship-client/",
+			"webRoot": "${workspaceFolder}/apps/client/",
 			"url": "http://localhost:4200",
 		},
 		{
@@ -60,12 +60,12 @@
 			"name": "Storybook Debug",
 			"url": "http://localhost:6006",
 			"sourceMaps": true,
-			"webRoot": "${workspaceFolder}/apps/rship-client/",
+			"webRoot": "${workspaceFolder}/apps/client/",
 			"sourceMapPathOverrides": {
-				"webpack:///*": "${webRoot}/apps/rship-client/*",
-				"webpack:///./*": "${webRoot}/apps/rship-client/*",
-				"webpack:///src/*": "${webRoot}/apps/rship-client/*",
-				"webpack:///./~/*": "${webRoot}/apps/rship-client/node_modules/*"
+				"webpack:///*": "${webRoot}/apps/client/*",
+				"webpack:///./*": "${webRoot}/apps/client/*",
+				"webpack:///src/*": "${webRoot}/apps/client/*",
+				"webpack:///./~/*": "${webRoot}/apps/client/node_modules/*"
 			}
 		},
 		{
