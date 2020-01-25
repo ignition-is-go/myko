@@ -9,4 +9,54 @@
 	"editor.codeActionsOnSave": {
 		"source.fixAll.tslint": true
 	},
+	"findrelated.applyRulesets": [
+		"angular",
+		"tests"
+	],
+	"findrelated.rulesets": [
+		{
+			"name": "angular",
+			"rules": [
+				{
+					"locators": [
+						"$1.html"
+					],
+					"pattern": "(.*)\\.(?:ts|js)$"
+				},
+				{
+					"locators": [
+						"$1.ts"
+					],
+					"pattern": "(.*)\\.html$"
+				},
+				{
+					"locators": [
+						"$1.scss"
+					],
+					"pattern": "(.*)\\.html$"
+				}
+			]
+		},
+		{
+			"name": "tests",
+			"rules": [
+				{
+					"pattern": "(.*)\\/(.*)\\.ts$",
+					"locators": [
+						"$1/__tests__/$2.test.ts"
+					]
+				},
+				{
+					"pattern": "(.*)\\/__tests__\\/(.*)\\.test\\.ts$",
+					"locators": [
+						"$1/$2.ts"
+					]
+				},
+			]
+		}
+	],
+
+	"search.exclude": {
+		"**/coverage": true
+	}
 }

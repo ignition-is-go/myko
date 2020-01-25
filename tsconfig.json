@@ -23,20 +23,23 @@
 		"skipDefaultLibCheck": true,
 		"baseUrl": ".",
 		"paths": {
-			"@rship-client/cards": [
+			"@rship/cards": [
 				"libs/cards/src/index.ts"
 			],
-			"@rship-client/dynamic-form": [
+			"@rship/dynamic-form": [
 				"libs/dynamic-form/src/index.ts"
 			],
-			"@rship-client/angular-draggable-droppable": [
+			"@rship/angular-draggable-droppable": [
 				"libs/angular-draggable-droppable/src/index.ts"
 			],
-			"@rship-client/shared": [
+			"@rship/shared": [
 				"libs/shared/src/index.ts"
 			],
-			"@rship-client/rship-logging": [
+			"@rship/rship-logging": [
 				"libs/rship-logging/src/index.ts"
+			],
+			"@rship/mocks": [
+				"apps/server/src/__mocks__/data/index.ts"
 			]
 		}
 	},
