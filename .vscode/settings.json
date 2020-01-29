@@ -34,6 +34,12 @@
 						"$1.scss"
 					],
 					"pattern": "(.*)\\.html$"
+				},
+				{
+					"locators": [
+						"$1.html"
+					],
+					"pattern": "(.*)\\.scss$"
 				}
 			]
 		},
@@ -55,7 +61,6 @@
 			]
 		}
 	],
-
 	"search.exclude": {
 		"**/coverage": true
 	}
