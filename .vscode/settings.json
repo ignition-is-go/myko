@@ -63,5 +63,6 @@
 	],
 	"search.exclude": {
 		"**/coverage": true
-	}
+	},
+	"typescript.preferences.importModuleSpecifier": "auto"
 }
