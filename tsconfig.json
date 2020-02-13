@@ -54,7 +54,7 @@
 				"libs/ui-components/src/components.ts"
 			],
 			"@rship-types": [
-				"@rship-types/*"
+				"@rship-types/index.ts"
 			]
 		}
 	},
