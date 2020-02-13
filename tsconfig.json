@@ -48,7 +48,13 @@
 				"apps/server/src/__mocks__/data/index.ts"
 			],
 			"@rship/ui-components": [
-				"libs/ui-components/src/index.ts"
+				"libs/ui-components/src/index.ts",
+			],
+			"@rship/ui-components/components": [
+				"libs/ui-components/src/components.ts"
+			],
+			"@rship-types": [
+				"@rship-types/*"
 			]
 		}
 	},
