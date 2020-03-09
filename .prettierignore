@@ -14,5 +14,10 @@ coverage/**/*
 *.svg
 *.txt
 
-**/.*!(/)
+**/.git*
+**/.DS_Store
+**/.prettier*
+**/.env*
+**/.nvm
+**/*.conf
 **/browserslist
