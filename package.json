@@ -223,7 +223,9 @@
   "husky": {
     "hooks": {
       "pre-commit": [
-        "lint-staged",
+        "lint-staged"
+      ],
+      "post-commit": [
         "node ./tools/scripts/version-stamp.js"
       ],
       "post-checkout": [
