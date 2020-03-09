@@ -1,169 +1,142 @@
 {
-	// Use IntelliSense to learn about possible attributes.
-	// Hover to view descriptions of existing attributes.
-	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-	"version": "0.2.0",
-	"configurations": [
-		{
-			"type": "node",
-			"request": "attach",
-			"name": "Attach server",
-			"port": 5858,
-			"skipFiles": [
-				"<node_internals>/**"
-			],
-			"restart": true
-		},
-		{
-			"type": "node",
-			"request": "launch",
-			"name": "Debug tests - current file",
-			"program": "${workspaceFolder}/node_modules/.bin/ng",
-			"args": [
-				"test",
-				// Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
-				"$(basename $(dirname $(${workspaceFolder}/node_modules/.bin/find-up --cwd=${fileDirname} jest.config.js)))",
-				"--run-in-band",
-				"--code-coverage=false",
-				"--test-file=${relativeFile}"
-			],
-			"smartStep": true,
-			"console": "integratedTerminal",
-			"internalConsoleOptions": "neverOpen"
-		},
-		{
-			"type": "node",
-			"name": "vscode-jest-tests",
-			"request": "launch",
-			"args": [
-				"test",
-				"--passWithNoTests",
-				"--no-code-coverage",
-				"--runInBand",
-				"--testFile"
-			],
-			"cwd": "${fileDirname}",
-			"console": "integratedTerminal",
-			"internalConsoleOptions": "neverOpen",
-			"program": "${workspaceFolder}/node_modules/@angular/cli/bin/ng"
-		},
-		{
-			"type": "chrome",
-			"request": "launch",
-			"name": "Client Ng",
-			"webRoot": "${workspaceFolder}/apps/client/",
-			"url": "http://localhost:4200",
-		},
-		{
-			"type": "chrome",
-			"request": "launch",
-			"name": "Storybook Debug",
-			"url": "http://localhost:6006",
-			"sourceMaps": true,
-			"webRoot": "${workspaceFolder}/apps/client/",
-			"sourceMapPathOverrides": {
-				"webpack:///*": "${webRoot}/apps/client/*",
-				"webpack:///./*": "${webRoot}/apps/client/*",
-				"webpack:///src/*": "${webRoot}/apps/client/*",
-				"webpack:///./~/*": "${webRoot}/apps/client/node_modules/*"
-			}
-		},
-		{
-			"name": "Electron: Renderer",
-			"type": "chrome",
-			"request": "attach",
-			"port": 9223,
-			"webRoot": "${workspaceFolder}/apps/satellite/",
-			"timeout": 30000
-		},
-		{
-			"name": "Electron: Main+Wiz",
-			"type": "node",
-			"request": "launch",
-			"cwd": "${workspaceFolder}",
-			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
-			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
-			},
-			"args": [
-				"--remote-debugging-port=9223",
-				"--serve",
-				"--force-wizard"
-			],
-			"outputCapture": "std",
-			"preLaunchTask": "compile-satellite-main",
-			"sourceMaps": true,
-			"outFiles": [
-				"dist/apps/satellite/"
-			]
-		},
-		{
-			"name": "Electron: Main",
-			"type": "node",
-			"request": "launch",
-			"cwd": "${workspaceFolder}",
-			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
-			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
-			},
-			"args": [
-				"--remote-debugging-port=9223",
-				"--serve"
-			],
-			"outputCapture": "std",
-			"preLaunchTask": "compile-satellite-main",
-			"sourceMaps": true,
-			"outFiles": [
-				"dist/apps/satellite/"
-			]
-		},
-		{
-			"name": "Electron: Main - Dist",
-			"type": "node",
-			"request": "launch",
-			"cwd": "${workspaceFolder}",
-			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
-			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
-			"windows": {
-				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
-			},
-			"args": [
-				"--remote-debugging-port=9223",
-				"--force-wizard"
-			],
-			"outputCapture": "std",
-			"preLaunchTask": "build-satellite-dist",
-			"sourceMaps": true,
-			"outFiles": [
-				"dist/apps/satellite/"
-			]
-		}
-	],
-	"compounds": [
-		{
-			"name": "Electron: All+Wiz",
-			"configurations": [
-				"Electron: Main+Wiz",
-				"Electron: Renderer"
-			]
-		},
-		{
-			"name": "Electron: All",
-			"configurations": [
-				"Electron: Main",
-				"Electron: Renderer"
-			]
-		},
-		{
-			"name": "Electron: All - Dist",
-			"configurations": [
-				"Electron: Main - Dist",
-				"Electron: Renderer"
-			]
-		}
-	]
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Attach server",
+      "port": 5858,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug tests - current file",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "$(basename $(dirname $(${workspaceFolder}/node_modules/.bin/find-up --cwd=${fileDirname} jest.config.js)))",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "node",
+      "name": "vscode-jest-tests",
+      "request": "launch",
+      "args": [
+        "test",
+        "--passWithNoTests",
+        "--no-code-coverage",
+        "--runInBand",
+        "--testFile"
+      ],
+      "cwd": "${fileDirname}",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "program": "${workspaceFolder}/node_modules/@angular/cli/bin/ng"
+    },
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Client Ng",
+      "webRoot": "${workspaceFolder}/apps/client/",
+      "url": "http://localhost:4200"
+    },
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Storybook Debug",
+      "url": "http://localhost:6006",
+      "sourceMaps": true,
+      "webRoot": "${workspaceFolder}/apps/client/",
+      "sourceMapPathOverrides": {
+        "webpack:///*": "${webRoot}/apps/client/*",
+        "webpack:///./*": "${webRoot}/apps/client/*",
+        "webpack:///src/*": "${webRoot}/apps/client/*",
+        "webpack:///./~/*": "${webRoot}/apps/client/node_modules/*"
+      }
+    },
+    {
+      "name": "Electron: Renderer",
+      "type": "chrome",
+      "request": "attach",
+      "port": 9223,
+      "webRoot": "${workspaceFolder}/apps/satellite/",
+      "timeout": 30000
+    },
+    {
+      "name": "Electron: Main+Wiz",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "args": ["--remote-debugging-port=9223", "--serve", "--force-wizard"],
+      "outputCapture": "std",
+      "preLaunchTask": "compile-satellite-main",
+      "sourceMaps": true,
+      "outFiles": ["dist/apps/satellite/"]
+    },
+    {
+      "name": "Electron: Main",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "args": ["--remote-debugging-port=9223", "--serve"],
+      "outputCapture": "std",
+      "preLaunchTask": "compile-satellite-main",
+      "sourceMaps": true,
+      "outFiles": ["dist/apps/satellite/"]
+    },
+    {
+      "name": "Electron: Main - Dist",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "args": ["--remote-debugging-port=9223", "--force-wizard"],
+      "outputCapture": "std",
+      "preLaunchTask": "build-satellite-dist",
+      "sourceMaps": true,
+      "outFiles": ["dist/apps/satellite/"]
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Electron: All+Wiz",
+      "configurations": ["Electron: Main+Wiz", "Electron: Renderer"]
+    },
+    {
+      "name": "Electron: All",
+      "configurations": ["Electron: Main", "Electron: Renderer"]
+    },
+    {
+      "name": "Electron: All - Dist",
+      "configurations": ["Electron: Main - Dist", "Electron: Renderer"]
+    }
+  ]
 }
 // 	{
 // 	"type": "node",

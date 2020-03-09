@@ -1,9 +1,9 @@
 # RshipClient
+
 Rship-client is an angular project, which is the primary user interface to Rocketship
 
+# Satellite
 
-
-# Satellite 
 Satellite is an electron + angular project that works with rocketship
 
 ## Dev Notes
@@ -18,31 +18,31 @@ In order to use storybook with components that consume GraphQL, you'll need to u
 // ...other imports...
 import apolloStorybookDecorator from 'libs/apollo-storybook-angular'
 
-storiesOf('My Component', module)
-.addDecorator(
-		apolloStorybookDecorator({
-			typeDefs: schema,
-			mocks: {},
-			typeResolvers: {},
-		}),
-	)
+storiesOf('My Component', module).addDecorator(
+  apolloStorybookDecorator({
+    typeDefs: schema,
+    mocks: {},
+    typeResolvers: {},
+  }),
+)
 ```
 
 More usage example is here
 
-You can import the server schema via: 
+You can import the server schema via:
+
 ```typescript
 import { schema } from 'generated/server.schema'
-``` 
-
-
+```
 
 # Local Cache
+
 GraphQL is used for local cache store. Default way for updating cache is refetch query, you can use generated refetchQuery from `graph.service.ts`
 
 ## Docker container
 
 If for whatever reason you need to build and push the docker image of the client locally, run the following (replace dev with whatever channel you need to build for):
+
 ```bash
 CONFIG=dev
 npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t registry.rship.io/rocketship-client:${CONFIG} .) && docker push registry.rship.io/rocketship-client:${CONFIG}

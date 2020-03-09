@@ -1,69 +1,42 @@
 {
-	"compileOnSave": false,
-	"compilerOptions": {
-		"rootDir": ".",
-		"sourceMap": true,
-		"declaration": false,
-		"moduleResolution": "node",
-		"emitDecoratorMetadata": true,
-		"experimentalDecorators": true,
-		"importHelpers": true,
-		"preserveConstEnums": true,
-		"resolveJsonModule": true,
-		"target": "es5",
-		"module": "esnext",
-		"typeRoots": [
-			"node_modules/@types",
-			"@rship-types/*"
-		],
-		"lib": [
-			"es2017",
-			"dom"
-		],
-		"skipLibCheck": true,
-		"skipDefaultLibCheck": true,
-		"baseUrl": ".",
-		"paths": {
-			"@rship/cards": [
-				"libs/cards/src/index.ts"
-			],
-			"@rship/dynamic-form": [
-				"libs/dynamic-form/src/index.ts"
-			],
-			"@rship/angular-draggable-droppable": [
-				"libs/angular-draggable-droppable/src/index.ts"
-			],
-			"@rship/shared": [
-				"libs/shared/src/index.ts"
-			],
-			"@rship/rship-logging": [
-				"libs/rship-logging/src/index.ts"
-			],
-			"@rship/rship-logging/types": [
-				"libs/rship-logging/src/types.ts"
-			],
-			"@rship/rabbit-integration": [
-				"libs/rabbit-integration/src/index.ts"
-			],
-			"@rship/mocks": [
-				"apps/server/src/__mocks__/data/index.ts"
-			],
-			"@rship/ui-components": [
-				"libs/ui-components/src/index.ts",
-			],
-			"@rship/ui-components/components": [
-				"libs/ui-components/src/components.ts"
-			],
-			"@rship-types": [
-				"@rship-types/index.ts"
-			]
-		}
-	},
-	"exclude": [
-		"node_modules",
-		"tmp"
-	],
-	"angularCompilerOptions": {
-		"disableTypeScriptVersionCheck": true
-	}
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "preserveConstEnums": true,
+    "resolveJsonModule": true,
+    "target": "es5",
+    "module": "esnext",
+    "typeRoots": ["node_modules/@types", "@rship-types/*"],
+    "lib": ["es2017", "dom"],
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@rship/cards": ["libs/cards/src/index.ts"],
+      "@rship/dynamic-form": ["libs/dynamic-form/src/index.ts"],
+      "@rship/angular-draggable-droppable": [
+        "libs/angular-draggable-droppable/src/index.ts"
+      ],
+      "@rship/shared": ["libs/shared/src/index.ts"],
+      "@rship/rship-logging": ["libs/rship-logging/src/index.ts"],
+      "@rship/rship-logging/types": ["libs/rship-logging/src/types.ts"],
+      "@rship/rabbit-integration": ["libs/rabbit-integration/src/index.ts"],
+      "@rship/mocks": ["apps/server/src/__mocks__/data/index.ts"],
+      "@rship/ui-components": ["libs/ui-components/src/index.ts"],
+      "@rship/ui-components/components": [
+        "libs/ui-components/src/components.ts"
+      ],
+      "@rship-types": ["@rship-types/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "tmp"],
+  "angularCompilerOptions": {
+    "disableTypeScriptVersionCheck": true
+  }
 }
