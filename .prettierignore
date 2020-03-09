@@ -1,1 +1,18 @@
 # Add files here to ignore them from prettier formatting
+dist/**/*
+out/**/*
+generated/**/*
+**/*.gen.*
+node_modules/**/*
+coverage/**/*
+*.snap
+
+*.sh
+*.png
+*.ico
+*.icns
+*.svg
+*.txt
+
+**/.*!(/)
+**/browserslist

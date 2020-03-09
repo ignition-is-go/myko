@@ -1,68 +1,56 @@
 {
-	"html.format.wrapAttributes": "force-aligned",
-	"editor.formatOnSave": true,
-	"files.exclude": {
-		"dist": true,
-		"node_modules": true
-	},
-	"typescript.tsdk": "node_modules/typescript/lib",
-	"editor.codeActionsOnSave": {
-		"source.fixAll.tslint": true
-	},
-	"findrelated.applyRulesets": [
-		"angular",
-		"tests"
-	],
-	"findrelated.rulesets": [
-		{
-			"name": "angular",
-			"rules": [
-				{
-					"locators": [
-						"$1.html"
-					],
-					"pattern": "(.*)\\.(?:ts|js)$"
-				},
-				{
-					"locators": [
-						"$1.ts"
-					],
-					"pattern": "(.*)\\.html$"
-				},
-				{
-					"locators": [
-						"$1.scss"
-					],
-					"pattern": "(.*)\\.html$"
-				},
-				{
-					"locators": [
-						"$1.html"
-					],
-					"pattern": "(.*)\\.scss$"
-				}
-			]
-		},
-		{
-			"name": "tests",
-			"rules": [
-				{
-					"pattern": "(.*)\\/(.*)\\.ts$",
-					"locators": [
-						"$1/__tests__/$2.test.ts"
-					]
-				},
-				{
-					"pattern": "(.*)\\/__tests__\\/(.*)\\.test\\.ts$",
-					"locators": [
-						"$1/$2.ts"
-					]
-				},
-			]
-		}
-	],
-	"search.exclude": {
-		"**/coverage": true
-	},
-	"typescript.preferences.importModuleSpecifier": "auto"
+  // "html.format.wrapAttributes": "force-aligned",
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "dist": true,
+    "node_modules": true
+  },
+  "typescript.tsdk": "node_modules/typescript/lib",
+  // "editor.codeActionsOnSave": {
+  // 	"source.fixAll.prettier": true
+  // },
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "html.format.enable": false,
+  "typescript.format.enable": false,
+  "findrelated.applyRulesets": ["angular", "tests"],
+  "findrelated.rulesets": [
+    {
+      "name": "angular",
+      "rules": [
+        {
+          "locators": ["$1.html"],
+          "pattern": "(.*)\\.(?:ts|js)$"
+        },
+        {
+          "locators": ["$1.ts"],
+          "pattern": "(.*)\\.html$"
+        },
+        {
+          "locators": ["$1.scss"],
+          "pattern": "(.*)\\.html$"
+        },
+        {
+          "locators": ["$1.html"],
+          "pattern": "(.*)\\.scss$"
+        }
+      ]
+    },
+    {
+      "name": "tests",
+      "rules": [
+        {
+          "pattern": "(.*)\\/(.*)\\.ts$",
+          "locators": ["$1/__tests__/$2.test.ts"]
+        },
+        {
+          "pattern": "(.*)\\/__tests__\\/(.*)\\.test\\.ts$",
+          "locators": ["$1/$2.ts"]
+        }
+      ]
+    }
+  ],
+  "search.exclude": {
+    "**/coverage": true
+  },
+  "typescript.preferences.importModuleSpecifier": "auto"
 }
