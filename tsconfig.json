@@ -9,6 +9,7 @@
 		"experimentalDecorators": true,
 		"importHelpers": true,
 		"preserveConstEnums": true,
+		"resolveJsonModule": true,
 		"target": "es5",
 		"module": "esnext",
 		"typeRoots": [
