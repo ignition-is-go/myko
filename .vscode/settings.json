@@ -52,5 +52,6 @@
   "search.exclude": {
     "**/coverage": true
   },
+  "editor.tabSize": 2,
   "typescript.preferences.importModuleSpecifier": "auto"
 }

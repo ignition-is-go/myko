@@ -14,10 +14,13 @@ coverage/**/*
 *.svg
 *.txt
 
-**/.git*
+**/.gitignore
+**/.gitkeep
+**/.git
 **/.DS_Store
 **/.prettier*
 **/.env*
 **/.nvm
 **/*.conf
 **/browserslist
+.vscode/
