@@ -1,18 +1,24 @@
-# RshipClient
+# Rocketship
 
-Rship-client is an angular project, which is the primary user interface to Rocketship
+## Client
 
-# Satellite
+This is an angular application which serves as the primary client interface for Rocketship
 
-Satellite is an electron + angular project that works with rocketship
+## Server
 
-## Dev Notes
+This is a NodeJS application which is the core backend process for Rocketship
+
+## Satellite
+
+Satellite is an electron + angular project that connects a separate computer with the Rocketship server
+
+### Dev Notes
 
 Any main thread dependencies for satellite need to exist both in the dev dependencies of the top level `./package.json`, as well as the dependencies of the `apps/satellite/package.json` in order to both debug and package properly.
 
 # Storybook
 
-In order to use storybook with components that consume GraphQL, you'll need to use the `apolloStorybookDecorator` to mock the GraphQL server.
+In order to use storybook with components that consume GraphQL, you can use the `apolloStorybookDecorator` to mock the GraphQL server.
 
 ```typescript
 // ...other imports...
@@ -47,6 +53,45 @@ If for whatever reason you need to build and push the docker image of the client
 CONFIG=dev
 npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t registry.rship.io/rocketship-client:${CONFIG} .) && docker push registry.rship.io/rocketship-client:${CONFIG}
 ```
+
+---
+
+# Developer Style Guide
+
+- Notes
+- Best Parctices
+
+## Dev Notes
+
+- TODO & NOTE comments should include author's initials
+
+```ts
+// TODO(ez): need to implement
+// NOTE(ez): informational message
+```
+
+## Mutations
+
+Each mutation should have an individual file
+
+### Naming
+
+- for mutation which makes `upsert` operation should start with `save`, for example: `saveCard`, `saveCustomer`
+- for mutation where we need to have different logic for create and update, we should name them as `createUser`, `updateUser`
+- we should try to have `save` mutations by default and `create/update` for special cases
+
+### Props
+
+- props for `save` mutations should look like this: `saveCard(id: ID, data: CardInput!)`, we should declare inputs for data, id isn't required
+
+### Types
+
+- internal types should be declared after mutation function
+
+## Best Practices
+
+- Try to use db in mutations, if there will be loader used, please make a comment why
+- Try to use loader in queries, when you are querying by id(s), if there will be necessary to use db and query by id, please make a note also
 
 ---
 
