@@ -4,6 +4,7 @@
   // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
   "version": "0.2.0",
   "configurations": [
+
     {
       "type": "node",
       "request": "attach",
@@ -51,7 +52,15 @@
       "name": "Client Ng",
       "webRoot": "${workspaceFolder}/apps/client/",
       "url": "http://localhost:4200"
-    },
+		},
+		{
+			"type": "firefox",
+			"request": "launch",
+			"reAttach": true,
+			"name": "Firefox Client",
+			"url": "http://localhost:4200",
+			"webRoot": "${workspaceFolder}/apps/client"
+		},
     {
       "type": "chrome",
       "request": "launch",
