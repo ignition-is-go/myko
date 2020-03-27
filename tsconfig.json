@@ -32,7 +32,8 @@
       "@rship/ui-components/components": [
         "libs/ui-components/src/components.ts"
       ],
-      "@rship-types": ["@rship-types/index.ts"]
+      "@rship-types": ["@rship-types/index.ts"],
+      "@rship/shared/testing": ["libs/shared/testing/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
