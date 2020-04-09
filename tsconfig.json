@@ -33,7 +33,7 @@
         "libs/ui-components/src/components.ts"
       ],
       "@rship-types": ["@rship-types/index.ts"],
-      "@rship/graph-client-nodejs": ["libs/graph-client-nodejs/src/index.ts"]
+      "@rship/graph-client": ["libs/graph-client/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
