@@ -89,6 +89,7 @@
     "dom-autoscroller": "^2.3.4",
     "express": "^4.17.1",
     "faker": "^4.1.0",
+    "fclone": "^1.0.11",
     "git-describe": "^4.0.4",
     "googleapis": "^46.0.0",
     "graphlib": "^2.1.8",
