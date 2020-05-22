@@ -153,7 +153,6 @@
     "@nrwl/node": "^8.11.2",
     "@nrwl/workspace": "^8.11.2",
     "@playlyfe/gql": "^2.6.0",
-    "@shelf/jest-mongodb": "^1.0.0",
     "@storybook/addon-actions": "^5.3.7",
     "@storybook/addon-knobs": "^5.3.7",
     "@storybook/addon-links": "^5.3.7",
