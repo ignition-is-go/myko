@@ -230,7 +230,9 @@
     "tslint-plugin-prettier": "^2.1.0",
     "typescript": "^3.7.5",
     "wait-on": "^3.3.0",
-    "xstate": "^4.7.6"
+    "xstate": "^4.7.6",
+    "cwd": "0.10.0",
+    "debug": "4.1.1"
   },
   "serverDependencies": [
     "@lucidcreative/disguise-telnet",
