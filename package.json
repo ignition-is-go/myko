@@ -137,6 +137,7 @@
     "unescape-js": "^1.1.4",
     "uuid": "^3.4.0",
     "winston": "^3.2.1",
+    "winston-graylog2": "^2.1.2",
     "xstate": "^4.7.6",
     "zone.js": "^0.9.1"
   },
@@ -273,6 +274,7 @@
     "uuid",
     "unescape-js",
     "winston",
+    "winston-graylog2",
     "xstate"
   ],
   "husky": {
