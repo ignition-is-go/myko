@@ -14,7 +14,6 @@
     "e2e:ci": "npx start-server-and-test server-test-mode http://localhost:4000/voyager client-e2e-ci",
     "gen:id": "node ./tools/scripts/generate-id.js",
     "gen:graph": "npx jok graphql-client -e http://localhost:4000 -o generated/rship.ts && npx jok graphql-client -e http://localhost:4000 -o generated/rship.testing.ts --defaultFragments && npm run graph:pull-from-localhost",
-    "gen:graph:trev": "npx jok graphql-client -e http://10.2.250.34:4000 -o generated/rship.ts",
     "gen:graph:remote": "npx jok graphql-client -e http://dev.rship.io/server -o generated/rship.ts && npx jok graphql-client -e http://dev.rship.io/server -o generated/rship.testing.ts --defaultFragments",
     "graph:pull-from-localhost": "npx get-graphql-schema http://localhost:4000 > generated/server.schema.graphql",
     "storybook": "start-storybook -p 6006",
