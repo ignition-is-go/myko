@@ -34,7 +34,8 @@
       ],
       "@rship-types": ["@rship-types/index.ts"],
       "@rship/graph-client": ["libs/graph-client/src/index.ts"],
-      "@rship/services": ["libs/services/src/index.ts"]
+      "@rship/services": ["libs/services/src/index.ts"],
+      "@rship/curator/core": ["libs/curator/core/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
