@@ -53,3 +53,4 @@ dump/
 data/
 !**/__mocks__/*
 apps/server/src/__tests__/utility/mongoReplPreset/globalConfig.json
+**/mongoReplPreset/globalConfig.json
