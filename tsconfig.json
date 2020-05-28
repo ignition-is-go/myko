@@ -40,7 +40,8 @@
       "@rship/curator/pusher-client-events": [
         "libs/curator/pusher-client-events/src/index.ts"
       ],
-      "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"]
+      "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"],
+      "@rship/curator-testing": ["libs/curator-testing/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
