@@ -36,7 +36,11 @@
       "@rship/graph-client": ["libs/graph-client/src/index.ts"],
       "@rship/services": ["libs/services/src/index.ts"],
       "@rship/curator/core": ["libs/curator/core/src/index.ts"],
-      "@rship/server-utils": ["libs/server-utils/src/index.ts"]
+      "@rship/server-utils": ["libs/server-utils/src/index.ts"],
+      "@rship/curator/pusher-client-events": [
+        "libs/curator/pusher-client-events/src/index.ts"
+      ],
+      "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
