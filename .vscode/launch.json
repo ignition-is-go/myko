@@ -8,8 +8,16 @@
     {
       "type": "node",
       "request": "attach",
-      "name": "Attach server",
+      "name": "Attach Rship server",
       "port": 5858,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+{
+      "type": "node",
+      "request": "attach",
+      "name": "Attach Curator server",
+      "port": 7777,
       "skipFiles": ["<node_internals>/**"],
       "restart": true
     },
