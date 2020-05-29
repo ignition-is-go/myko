@@ -49,8 +49,15 @@
     {
       "type": "chrome",
       "request": "launch",
-      "name": "Client Ng",
+      "name": "Rship Client",
       "webRoot": "${workspaceFolder}/apps/client/",
+      "url": "http://localhost:4200"
+		},
+{
+      "type": "chrome",
+      "request": "launch",
+      "name": "Curator Client",
+      "webRoot": "${workspaceFolder}/apps/curator/client/",
       "url": "http://localhost:4200"
 		},
 		{

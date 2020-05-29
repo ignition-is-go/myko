@@ -278,6 +278,34 @@
     "winston-graylog2",
     "xstate"
   ],
+  "curatorServerDependencies": [
+    "apollo-server-express",
+    "base-64",
+    "concurrently",
+    "crypto-js",
+    "express",
+    "faker",
+    "googleapis",
+    "graphlib",
+    "graphql",
+    "graphql-iso-date",
+    "graphql-middleware",
+    "graphql-voyager",
+    "jok-mango",
+    "jsonpointer",
+    "jsonwebtoken",
+    "luxon",
+    "mongodb",
+    "node-fetch",
+    "ramda",
+    "rxjs",
+    "socket.io",
+    "tsconfig-paths",
+    "tslib",
+    "uuid",
+    "winston",
+    "winston-graylog2"
+  ],
   "husky": {
     "hooks": {
       "pre-commit": [
