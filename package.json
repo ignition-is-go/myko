@@ -199,6 +199,7 @@
     "concurrently": "^4.1.2",
     "cwd": "0.10.0",
     "cypress": "3.4.1",
+    "cypress-wait-until": "^1.7.1",
     "debug": "4.1.1",
     "dotenv": "6.2.0",
     "dotenv-cli": "1.4.0",
