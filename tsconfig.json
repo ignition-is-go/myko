@@ -4,6 +4,7 @@
     "rootDir": ".",
     "sourceMap": true,
     "declaration": false,
+    "downlevelIteration": true,
     "moduleResolution": "node",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
@@ -25,9 +26,9 @@
       ],
       "@rship/shared": ["libs/shared/src/index.ts"],
       "@rship/rship-logging": ["libs/rship-logging/src/index.ts"],
+      "@rship/mocks": ["apps/server/src/__mocks__/data/index.ts"],
       "@rship/rship-logging/types": ["libs/rship-logging/src/types.ts"],
       "@rship/rabbit-integration": ["libs/rabbit-integration/src/index.ts"],
-      "@rship/mocks": ["apps/server/src/__mocks__/data/index.ts"],
       "@rship/ui-components": ["libs/ui-components/src/index.ts"],
       "@rship/ui-components/components": [
         "libs/ui-components/src/components.ts"
@@ -41,7 +42,9 @@
         "libs/curator/pusher-client-events/src/index.ts"
       ],
       "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"],
-      "@rship/curator-testing": ["libs/curator-testing/src/index.ts"]
+      "@rship/curator-testing": ["libs/curator-testing/src/index.ts"],
+      "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
+      "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],

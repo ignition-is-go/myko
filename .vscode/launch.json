@@ -5,6 +5,7 @@
   "version": "0.2.0",
   "configurations": [
 
+
     {
       "type": "node",
       "request": "attach",
@@ -68,6 +69,13 @@
       "webRoot": "${workspaceFolder}/apps/curator/client/",
       "url": "http://localhost:4200"
 		},
+{
+      "type": "chrome",
+      "request": "launch",
+      "name": "Observation-Deck Client",
+      "webRoot": "${workspaceFolder}/apps/observation-deck",
+      "url": "http://localhost:4322"
+		},
 		{
 			"type": "firefox",
 			"request": "launch",
@@ -76,91 +84,133 @@
 			"url": "http://localhost:4200",
 			"webRoot": "${workspaceFolder}/apps/client"
 		},
-    {
-      "type": "chrome",
-      "request": "launch",
-      "name": "Storybook Debug",
-      "url": "http://localhost:6006",
-      "sourceMaps": true,
-      "webRoot": "${workspaceFolder}/apps/client/",
-      "sourceMapPathOverrides": {
-        "webpack:///*": "${webRoot}/apps/client/*",
-        "webpack:///./*": "${webRoot}/apps/client/*",
-        "webpack:///src/*": "${webRoot}/apps/client/*",
-        "webpack:///./~/*": "${webRoot}/apps/client/node_modules/*"
-      }
-    },
-    {
-      "name": "Electron: Renderer",
-      "type": "chrome",
-      "request": "attach",
-      "port": 9223,
-      "webRoot": "${workspaceFolder}/apps/satellite/",
-      "timeout": 30000
-    },
-    {
-      "name": "Electron: Main+Wiz",
-      "type": "node",
-      "request": "launch",
-      "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
-      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
-      "windows": {
-        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
-      },
-      "args": ["--remote-debugging-port=9223", "--serve", "--force-wizard"],
-      "outputCapture": "std",
-      "preLaunchTask": "compile-satellite-main",
-      "sourceMaps": true,
-      "outFiles": ["dist/apps/satellite/"]
-    },
-    {
-      "name": "Electron: Main",
-      "type": "node",
-      "request": "launch",
-      "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
-      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
-      "windows": {
-        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
-      },
-      "args": ["--remote-debugging-port=9223", "--serve"],
-      "outputCapture": "std",
-      "preLaunchTask": "compile-satellite-main",
-      "sourceMaps": true,
-      "outFiles": ["dist/apps/satellite/"]
-    },
-    {
-      "name": "Electron: Main - Dist",
-      "type": "node",
-      "request": "launch",
-      "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
-      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
-      "windows": {
-        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
-      },
-      "args": ["--remote-debugging-port=9223", "--force-wizard"],
-      "outputCapture": "std",
-      "preLaunchTask": "build-satellite-dist",
-      "sourceMaps": true,
-      "outFiles": ["dist/apps/satellite/"]
-    }
-  ],
-  "compounds": [
-    {
-      "name": "Electron: All+Wiz",
-      "configurations": ["Electron: Main+Wiz", "Electron: Renderer"]
-    },
-    {
-      "name": "Electron: All",
-      "configurations": ["Electron: Main", "Electron: Renderer"]
-    },
-    {
-      "name": "Electron: All - Dist",
-      "configurations": ["Electron: Main - Dist", "Electron: Renderer"]
-    }
-  ]
+		{
+			"type": "chrome",
+			"request": "launch",
+			"name": "Storybook Debug",
+			"url": "http://localhost:6006",
+			"sourceMaps": true,
+			"webRoot": "${workspaceFolder}/apps/client/",
+			"sourceMapPathOverrides": {
+				"webpack:///*": "${webRoot}/apps/client/*",
+				"webpack:///./*": "${webRoot}/apps/client/*",
+				"webpack:///src/*": "${webRoot}/apps/client/*",
+				"webpack:///./~/*": "${webRoot}/apps/client/node_modules/*"
+			}
+		},
+		{
+			"type": "chrome",
+			"request": "launch",
+			"name": "Storybook Debug - Obs",
+			"url": "http://localhost:6006",
+			"sourceMaps": true,
+			"webRoot": "${workspaceFolder}",
+			"sourceMapPathOverrides": {
+				"webpack:///*": "${webRoot}/*",
+				"webpack:///./*": "${webRoot}/*",
+				"webpack:///src/*": "${webRoot}/*",
+				"webpack:///./~/*": "${webRoot}/node_modules/*",
+			},
+			"skipFiles": [
+				".ts$"
+			]
+		},
+		{
+			"name": "Electron: Renderer",
+			"type": "chrome",
+			"request": "attach",
+			"port": 9223,
+			"webRoot": "${workspaceFolder}/apps/satellite/",
+			"timeout": 30000
+		},
+		{
+			"name": "Electron: Main+Wiz",
+			"type": "node",
+			"request": "launch",
+			"cwd": "${workspaceFolder}",
+			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+			},
+			"args": [
+				"--remote-debugging-port=9223",
+				"--serve",
+				"--force-wizard"
+			],
+			"outputCapture": "std",
+			"preLaunchTask": "compile-satellite-main",
+			"sourceMaps": true,
+			"outFiles": [
+				"dist/apps/satellite/"
+			]
+		},
+		{
+			"name": "Electron: Main",
+			"type": "node",
+			"request": "launch",
+			"cwd": "${workspaceFolder}",
+			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+			},
+			"args": [
+				"--remote-debugging-port=9223",
+				"--serve"
+			],
+			"outputCapture": "std",
+			"preLaunchTask": "compile-satellite-main",
+			"sourceMaps": true,
+			"outFiles": [
+				"dist/apps/satellite/"
+			]
+		},
+		{
+			"name": "Electron: Main - Dist",
+			"type": "node",
+			"request": "launch",
+			"cwd": "${workspaceFolder}",
+			"program": "${workspaceFolder}/dist/apps/satellite/src/main/main.js",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"windows": {
+				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+			},
+			"args": [
+				"--remote-debugging-port=9223",
+				"--force-wizard"
+			],
+			"outputCapture": "std",
+			"preLaunchTask": "build-satellite-dist",
+			"sourceMaps": true,
+			"outFiles": [
+				"dist/apps/satellite/"
+			]
+		}
+	],
+	"compounds": [
+		{
+			"name": "Electron: All+Wiz",
+			"configurations": [
+				"Electron: Main+Wiz",
+				"Electron: Renderer"
+			]
+		},
+		{
+			"name": "Electron: All",
+			"configurations": [
+				"Electron: Main",
+				"Electron: Renderer"
+			]
+		},
+		{
+			"name": "Electron: All - Dist",
+			"configurations": [
+				"Electron: Main - Dist",
+				"Electron: Renderer"
+			]
+		}
+	]
 }
 // 	{
 // 	"type": "node",
