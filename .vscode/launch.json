@@ -26,11 +26,11 @@
       "type": "node",
       "request": "launch",
       "name": "Debug tests - current file",
-      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "program": "${workspaceFolder}/node_modules/.bin/nx",
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
-        "$(basename $(dirname $(${workspaceFolder}/node_modules/.bin/find-up --cwd=${fileDirname} jest.config.js)))",
+        "$(node ${workspaceFolder}/tools/scripts/determine-nx-app.js ${workspaceFolder} $(dirname $(${workspaceFolder}/node_modules/.bin/find-up --cwd=${fileDirname} jest.config.js)))",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"

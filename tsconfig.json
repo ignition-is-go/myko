@@ -11,7 +11,7 @@
     "importHelpers": true,
     "preserveConstEnums": true,
     "resolveJsonModule": true,
-    "target": "es5",
+    "target": "es6",
     "module": "esnext",
     "typeRoots": ["node_modules/@types", "@rship-types/*"],
     "lib": ["es2019", "dom"],
@@ -43,6 +43,24 @@
       ],
       "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"],
       "@rship/curator-testing": ["libs/curator-testing/src/index.ts"],
+      "@rship/sherlock/file-monitor": [
+        "libs/sherlock/file-monitor/src/index.ts"
+      ],
+      "@rship/sherlock/graph-nodejs": [
+        "libs/sherlock/graph-nodejs/src/index.ts"
+      ],
+      "@rship/sherlock/tag-parser": ["libs/sherlock/tag-parser/src/index.ts"],
+      "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
+      "@rship/sherlock/server-core-types": [
+        "libs/sherlock/server-core/src/types.ts"
+      ],
+      "@rship/sherlock/server-graphql": [
+        "libs/sherlock/server-graphql/src/index.ts"
+      ],
+      "@rship/sherlock/watson-core": ["libs/sherlock/watson-core/src/index.ts"],
+      "@rship/sherlock/shared": ["libs/sherlock/shared/src/index.ts"],
+      "@rship/sherlock/ui": ["libs/sherlock/ui/src/index.ts"],
+      "@rship/sherlock/constants": ["libs/sherlock/constants/src/index.ts"],
       "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
       "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"]
     }
