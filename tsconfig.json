@@ -38,9 +38,6 @@
       "@rship/services": ["libs/services/src/index.ts"],
       "@rship/curator/core": ["libs/curator/core/src/index.ts"],
       "@rship/server-utils": ["libs/server-utils/src/index.ts"],
-      "@rship/curator/pusher-client-events": [
-        "libs/curator/pusher-client-events/src/index.ts"
-      ],
       "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"],
       "@rship/curator-testing": ["libs/curator-testing/src/index.ts"],
       "@rship/sherlock/file-monitor": [
@@ -62,7 +59,8 @@
       "@rship/sherlock/ui": ["libs/sherlock/ui/src/index.ts"],
       "@rship/sherlock/constants": ["libs/sherlock/constants/src/index.ts"],
       "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
-      "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"]
+      "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"],
+      "@rship/libs/curator/shared": ["libs/libs/curator/shared/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
