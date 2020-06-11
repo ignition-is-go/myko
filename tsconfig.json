@@ -60,7 +60,7 @@
       "@rship/sherlock/constants": ["libs/sherlock/constants/src/index.ts"],
       "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
       "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"],
-      "@rship/libs/curator/shared": ["libs/libs/curator/shared/src/index.ts"]
+      "@rship/curator/shared": ["libs/curator/shared/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
