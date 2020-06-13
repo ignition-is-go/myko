@@ -66,6 +66,7 @@
     "@lucidcreative/disguise-telnet": "^1.0.4",
     "@material/theme": "^4.0.0",
     "@mdi/angular-material": "^4.9.95",
+    "@nrwl/nx-cloud": "^9.3.5",
     "@schematics/angular": "^9.1.7",
     "@types/nedb": "^1.8.9",
     "a-color-picker": "^1.2.1",
