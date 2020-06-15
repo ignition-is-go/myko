@@ -60,7 +60,16 @@
       "@rship/sherlock/constants": ["libs/sherlock/constants/src/index.ts"],
       "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
       "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"],
-      "@rship/curator/shared": ["libs/curator/shared/src/index.ts"]
+      "@rship/curator/shared": ["libs/curator/shared/src/index.ts"],
+      "@rship/sherlock/plugins/ventuz/core": [
+        "libs/sherlock/plugins/ventuz/core/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/ventuz/shared": [
+        "libs/sherlock/plugins/ventuz/shared/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/ventuz/ui": [
+        "libs/sherlock/plugins/ventuz/ui/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],
