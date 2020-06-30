@@ -4,13 +4,14 @@
     "rootDir": ".",
     "sourceMap": true,
     "declaration": false,
+    "downlevelIteration": true,
     "moduleResolution": "node",
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "importHelpers": true,
     "preserveConstEnums": true,
     "resolveJsonModule": true,
-    "target": "es5",
+    "target": "es6",
     "module": "esnext",
     "typeRoots": ["node_modules/@types", "@rship-types/*"],
     "lib": ["es2019", "dom"],
@@ -25,15 +26,50 @@
       ],
       "@rship/shared": ["libs/shared/src/index.ts"],
       "@rship/rship-logging": ["libs/rship-logging/src/index.ts"],
+      "@rship/mocks": ["apps/server/src/__mocks__/data/index.ts"],
       "@rship/rship-logging/types": ["libs/rship-logging/src/types.ts"],
       "@rship/rabbit-integration": ["libs/rabbit-integration/src/index.ts"],
-      "@rship/mocks": ["apps/server/src/__mocks__/data/index.ts"],
       "@rship/ui-components": ["libs/ui-components/src/index.ts"],
       "@rship/ui-components/components": [
         "libs/ui-components/src/components.ts"
       ],
       "@rship-types": ["@rship-types/index.ts"],
-      "@rship/graph-client": ["libs/graph-client/src/index.ts"]
+      "@rship/graph-client": ["libs/graph-client/src/*.ts"],
+      "@rship/services": ["libs/services/src/index.ts"],
+      "@rship/curator/core": ["libs/curator/core/src/index.ts"],
+      "@rship/server-utils": ["libs/server-utils/src/index.ts"],
+      "@rship/curator/pusher": ["libs/curator/pusher/src/index.ts"],
+      "@rship/curator-testing": ["libs/curator-testing/src/index.ts"],
+      "@rship/sherlock/file-monitor": [
+        "libs/sherlock/file-monitor/src/index.ts"
+      ],
+      "@rship/sherlock/graph-nodejs": [
+        "libs/sherlock/graph-nodejs/src/index.ts"
+      ],
+      "@rship/sherlock/tag-parser": ["libs/sherlock/tag-parser/src/index.ts"],
+      "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
+      "@rship/sherlock/server-core-types": [
+        "libs/sherlock/server-core/src/types.ts"
+      ],
+      "@rship/sherlock/server-graphql": [
+        "libs/sherlock/server-graphql/src/index.ts"
+      ],
+      "@rship/sherlock/watson-core": ["libs/sherlock/watson-core/src/index.ts"],
+      "@rship/sherlock/shared": ["libs/sherlock/shared/src/index.ts"],
+      "@rship/sherlock/ui": ["libs/sherlock/ui/src/index.ts"],
+      "@rship/sherlock/constants": ["libs/sherlock/constants/src/index.ts"],
+      "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
+      "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"],
+      "@rship/curator/shared": ["libs/curator/shared/src/index.ts"],
+      "@rship/sherlock/plugins/ventuz/core": [
+        "libs/sherlock/plugins/ventuz/core/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/ventuz/shared": [
+        "libs/sherlock/plugins/ventuz/shared/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/ventuz/ui": [
+        "libs/sherlock/plugins/ventuz/ui/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],

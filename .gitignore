@@ -52,3 +52,7 @@ generated/version.ts
 dump/
 data/
 !**/__mocks__/*
+**/mongoReplPreset/globalConfig.json
+
+#Sherlock DB Files
+db/**/*.sherlock

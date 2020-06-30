@@ -21,6 +21,8 @@ coverage/**/*
 **/.prettier*
 **/.env*
 **/.nvm
+**/dump
 **/*.conf
 **/browserslist
-.vscode/
+# .vscode/
+**/mongoReplPreset/globalConfig.json
