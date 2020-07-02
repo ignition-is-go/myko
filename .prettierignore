@@ -26,3 +26,7 @@ coverage/**/*
 **/browserslist
 # .vscode/
 **/mongoReplPreset/globalConfig.json
+# c# dependency json
+**/bin/*.deps.json
+# jsoneditor script
+jsoneditor.js

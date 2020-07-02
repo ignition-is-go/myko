@@ -34,7 +34,16 @@
         "libs/ui-components/src/components.ts"
       ],
       "@rship-types": ["@rship-types/index.ts"],
-      "@rship/graph-client": ["libs/graph-client/src/*.ts"],
+      "@rship/graph-client/rship": ["libs/graph-client/src/rship.graph.ts"],
+      "@rship/graph-client/rship-testing": [
+        "libs/graph-client/src/rship.testingGraph.ts"
+      ],
+      "@rship/graph-client/sherlock": [
+        "libs/graph-client/src/sherlock.graph.ts"
+      ],
+      "@rship/graph-client/sherlock-testing": [
+        "libs/graph-client/src/sherlock.testingGraph.ts"
+      ],
       "@rship/services": ["libs/services/src/index.ts"],
       "@rship/curator/core": ["libs/curator/core/src/index.ts"],
       "@rship/server-utils": ["libs/server-utils/src/index.ts"],
@@ -61,14 +70,17 @@
       "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
       "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"],
       "@rship/curator/shared": ["libs/curator/shared/src/index.ts"],
-      "@rship/sherlock/plugins/ventuz/core": [
+      "@rship/sherlock/ventuz/core": [
         "libs/sherlock/plugins/ventuz/core/src/index.ts"
       ],
-      "@rship/sherlock/plugins/ventuz/shared": [
+      "@rship/sherlock/ventuz/shared": [
         "libs/sherlock/plugins/ventuz/shared/src/index.ts"
       ],
-      "@rship/sherlock/plugins/ventuz/ui": [
+      "@rship/sherlock/ventuz/ui": [
         "libs/sherlock/plugins/ventuz/ui/src/index.ts"
+      ],
+      "@rship/sherlock/disk/core": [
+        "libs/sherlock/server-core/src/lib/disk-plugin-core/index.ts"
       ]
     }
   },
