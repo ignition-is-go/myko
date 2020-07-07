@@ -81,7 +81,6 @@
     },
 
     // Server
-
     {
       "type": "node",
       "request": "attach",
@@ -120,6 +119,25 @@
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
         "sherlock-server-core",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Sherlock forwarder - test single file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Sherlock Discovery Forwarder - Run Current Test File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "sherlock-discovery-forwarder",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
@@ -171,6 +189,19 @@
       "smartStep": true,
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen"
+    },
+
+    ////////////
+    // Intake
+    ///////////
+
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Attach Intake Server",
+      "port": 5959,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
     },
 
     {
