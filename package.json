@@ -386,6 +386,7 @@
     "graphql-middleware",
     "jok-mango",
     "cors",
+    "object-hash",
     "graphql-voyager",
     "luxon",
     "ramda",
@@ -399,7 +400,8 @@
     "git-branch",
     "chokidar",
     "md5-file",
-    "winston"
+    "winston",
+    "xml2json"
   ],
   "husky": {
     "hooks": {
