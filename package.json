@@ -376,11 +376,8 @@
   "sherlockServerDependencies": [
     "apollo-server-express",
     "express",
-    "http",
     "net",
     "mongodb",
-    "repl",
-    "amqplib",
     "rxjs",
     "uuid",
     "graphql-middleware",
