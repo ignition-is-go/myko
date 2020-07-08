@@ -56,3 +56,6 @@ data/
 
 #Sherlock DB Files
 db/**/*.sherlock
+
+#Test Results
+testResults.json

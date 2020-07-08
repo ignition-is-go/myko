@@ -82,9 +82,9 @@
       "@rship/sherlock/disk/core": [
         "libs/sherlock/server-core/src/lib/disk-plugin-core/index.ts"
       ],
-      "@rship/rship/metadata-core": ["libs/rship/metadata-core/src/index.ts"],
-      "@rship/rship/alerts-core": ["libs/rship/alerts-core/src/index.ts"],
-      "@rship/rship/alerts-ui": ["libs/rship/alerts-ui/src/index.ts"],
+      "@rship/metadata-core": ["libs/rship/metadata-core/src/index.ts"],
+      "@rship/alerts-core": ["libs/rship/alerts-core/src/index.ts"],
+      "@rship/alerts-ui": ["libs/rship/alerts-ui/src/index.ts"],
       "@rship/rship/models": ["libs/rship/models/src/index.ts"],
       "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"]
     }
