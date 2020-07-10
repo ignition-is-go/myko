@@ -23,7 +23,7 @@
       "type": "node",
       "request": "launch",
       "name": "Rship Client - Run Current File",
-      "program": "${workspaceFolder}/node_modules/.bin/nx",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
