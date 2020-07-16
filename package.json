@@ -299,6 +299,7 @@
     "winston-graylog2"
   ],
   "serverDependencies": [
+    "@angular-devkit/core",
     "@lucidcreative/disguise-telnet",
     "@material/theme",
     "@types/extract-zip",
