@@ -86,7 +86,8 @@
       "@rship/alerts-core": ["libs/rship/alerts-core/src/index.ts"],
       "@rship/alerts-ui": ["libs/rship/alerts-ui/src/index.ts"],
       "@rship/rship/models": ["libs/rship/models/src/index.ts"],
-      "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"]
+      "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"],
+      "@rship/rship/event-monitor": ["libs/rship/event-monitor/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],

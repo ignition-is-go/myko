@@ -57,5 +57,6 @@ data/
 #Sherlock DB Files
 db/**/*.sherlock
 
-#Test Results
+#Test Results and Coverage
 testResults.json
+libs/rship/metadata-core/coverage
