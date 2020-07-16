@@ -213,6 +213,28 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // METADATA
+
+    // Server - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Alerts Core - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-alerts-core",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}",
+        "--watch"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     ////////////
     // Intake
     ///////////
