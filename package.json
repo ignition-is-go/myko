@@ -385,6 +385,7 @@
     "uuid",
     "graphql-middleware",
     "jok-mango",
+    "jsonwebtoken",
     "cors",
     "object-hash",
     "graphql-voyager",
@@ -401,6 +402,7 @@
     "chokidar",
     "md5-file",
     "winston",
+    "winston-graylog2",
     "xml2json"
   ],
   "husky": {
