@@ -47,6 +47,18 @@
       "restart": true
     },
 
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server - Attach Dev",
+      "port": 9229,
+      "address": "172.24.1.1",
+      "remoteRoot": "/usr/src/app",
+      "localRoot": "${workspaceFolder}/apps/server/src",
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+
     // Server - Single File
     {
       "type": "node",
@@ -86,6 +98,18 @@
       "request": "attach",
       "name": "Sherlock Server - Attach",
       "port": 9876,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Sherlock Server - Attach Dev",
+      "port": 9230,
+      "address": "172.24.1.1",
+      "remoteRoot": "/usr/src/app",
+      "localRoot": "${workspaceFolder}/apps/server/src",
       "skipFiles": ["<node_internals>/**"],
       "restart": true
     },
