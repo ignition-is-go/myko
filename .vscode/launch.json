@@ -56,6 +56,8 @@
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/apps/server/src",
       "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/dist/apps/server"],
+      "sourceMaps": true,
       "restart": true
     },
 
@@ -111,6 +113,8 @@
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/apps/server/src",
       "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"],
+      "sourceMaps": true,
       "restart": true
     },
 
