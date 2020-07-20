@@ -87,7 +87,16 @@
       "@rship/alerts-ui": ["libs/rship/alerts-ui/src/index.ts"],
       "@rship/rship/models": ["libs/rship/models/src/index.ts"],
       "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"],
-      "@rship/rship/event-monitor": ["libs/rship/event-monitor/src/index.ts"]
+      "@rship/rship/event-monitor": ["libs/rship/event-monitor/src/index.ts"],
+      "@rship/sherlock/plugins/disk/core": [
+        "libs/sherlock/plugins/disk/core/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/disk/ui": [
+        "libs/sherlock/plugins/disk/ui/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/disk/shared": [
+        "libs/sherlock/plugins/disk/shared/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],
