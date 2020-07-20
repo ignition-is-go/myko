@@ -60,8 +60,8 @@
       "@rship/sherlock/server-core-types": [
         "libs/sherlock/server-core/src/types.ts"
       ],
-      "@rship/sherlock/server-graphql": [
-        "libs/sherlock/server-graphql/src/index.ts"
+      "@rship/sherlock/server-module-support": [
+        "libs/sherlock/server-module-support/src/index.ts"
       ],
       "@rship/sherlock/watson-core": ["libs/sherlock/watson-core/src/index.ts"],
       "@rship/sherlock/shared": ["libs/sherlock/shared/src/index.ts"],
