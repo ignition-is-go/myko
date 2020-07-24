@@ -71,13 +71,15 @@
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
         "server",
+        "--watch",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
       ],
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
+      "internalConsoleOptions": "neverOpen",
+      "outFiles": ["${workspaceFolder}/dist/apps/server"]
     },
 
     //////////

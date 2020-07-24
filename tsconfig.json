@@ -96,11 +96,15 @@
       ],
       "@rship/sherlock/plugins/disk/shared": [
         "libs/sherlock/plugins/disk/shared/src/index.ts"
-      ]
+      ],
+      "@rship/rship/timeline-core": ["libs/rship/timeline-core/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
   "angularCompilerOptions": {
-    "disableTypeScriptVersionCheck": true
+    "disableTypeScriptVersionCheck": true,
+    "enableIvy": false,
+    "strictTemplates": true,
+    "strictInjectionParameters": true
   }
 }
