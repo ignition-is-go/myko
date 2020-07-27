@@ -34,7 +34,16 @@
         "libs/ui-components/src/components.ts"
       ],
       "@rship-types": ["@rship-types/index.ts"],
-      "@rship/graph-client": ["libs/graph-client/src/index.ts"],
+      "@rship/graph-client/rship": ["libs/graph-client/src/rship.graph.ts"],
+      "@rship/graph-client/rship-testing": [
+        "libs/graph-client/src/rship.testingGraph.ts"
+      ],
+      "@rship/graph-client/sherlock": [
+        "libs/graph-client/src/sherlock.graph.ts"
+      ],
+      "@rship/graph-client/sherlock-testing": [
+        "libs/graph-client/src/sherlock.testingGraph.ts"
+      ],
       "@rship/services": ["libs/services/src/index.ts"],
       "@rship/curator/core": ["libs/curator/core/src/index.ts"],
       "@rship/server-utils": ["libs/server-utils/src/index.ts"],
@@ -61,19 +70,41 @@
       "@rship/obs-deck/argus": ["libs/obs-deck/argus/src/index.ts"],
       "@rship/obs-deck/types": ["libs/obs-deck/types/src/index.ts"],
       "@rship/curator/shared": ["libs/curator/shared/src/index.ts"],
-      "@rship/sherlock/plugins/ventuz/core": [
+      "@rship/sherlock/ventuz/core": [
         "libs/sherlock/plugins/ventuz/core/src/index.ts"
       ],
-      "@rship/sherlock/plugins/ventuz/shared": [
+      "@rship/sherlock/ventuz/shared": [
         "libs/sherlock/plugins/ventuz/shared/src/index.ts"
       ],
-      "@rship/sherlock/plugins/ventuz/ui": [
+      "@rship/sherlock/ventuz/ui": [
         "libs/sherlock/plugins/ventuz/ui/src/index.ts"
-      ]
+      ],
+      "@rship/sherlock/disk/core": [
+        "libs/sherlock/server-core/src/lib/disk-plugin-core/index.ts"
+      ],
+      "@rship/metadata-core": ["libs/rship/metadata-core/src/index.ts"],
+      "@rship/alerts-core": ["libs/rship/alerts-core/src/index.ts"],
+      "@rship/alerts-ui": ["libs/rship/alerts-ui/src/index.ts"],
+      "@rship/rship/models": ["libs/rship/models/src/index.ts"],
+      "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"],
+      "@rship/rship/event-monitor": ["libs/rship/event-monitor/src/index.ts"],
+      "@rship/sherlock/plugins/disk/core": [
+        "libs/sherlock/plugins/disk/core/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/disk/ui": [
+        "libs/sherlock/plugins/disk/ui/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/disk/shared": [
+        "libs/sherlock/plugins/disk/shared/src/index.ts"
+      ],
+      "@rship/rship/timeline-core": ["libs/rship/timeline-core/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
   "angularCompilerOptions": {
-    "disableTypeScriptVersionCheck": true
+    "disableTypeScriptVersionCheck": true,
+    "enableIvy": false,
+    "strictTemplates": true,
+    "strictInjectionParameters": true
   }
 }

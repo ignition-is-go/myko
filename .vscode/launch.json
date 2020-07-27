@@ -23,7 +23,7 @@
       "type": "node",
       "request": "launch",
       "name": "Rship Client - Run Current File",
-      "program": "${workspaceFolder}/node_modules/.bin/nx",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
@@ -47,16 +47,127 @@
       "restart": true
     },
 
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server - Attach Dev",
+      "port": 9229,
+      "address": "172.24.1.1",
+      "remoteRoot": "/usr/src/app",
+      "localRoot": "${workspaceFolder}/apps/server/src",
+      "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/dist/apps/server"],
+      "sourceMaps": true,
+      "restart": true
+    },
+
     // Server - Single File
     {
       "type": "node",
       "request": "launch",
       "name": "Rship Server - Run Current File",
-      "program": "${workspaceFolder}/node_modules/.bin/nx",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
         "server",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "outFiles": ["${workspaceFolder}/dist/apps/server"]
+    },
+
+    //////////
+    // SHERLOCK
+    //////////
+
+    // Client
+
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Sherlock Client - Launch",
+      "webRoot": "${workspaceFolder}/apps/sherlock/client/",
+      "url": "http://localhost:4200"
+    },
+
+    // Server
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Sherlock Server - Attach",
+      "port": 9876,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Sherlock Server - Attach Dev",
+      "port": 9230,
+      "address": "172.24.1.1",
+      "remoteRoot": "/usr/src/app",
+      "localRoot": "${workspaceFolder}/apps/server/src",
+      "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"],
+      "sourceMaps": true,
+      "restart": true
+    },
+
+    // Sherlock Server - test file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Sherlock Server - Run Current Test File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "sherlock-server",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Sherlock Server Core - test file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Sherlock Server Core - Run Current Test File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "sherlock-server-core",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Sherlock forwarder - test single file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Sherlock Discovery Forwarder - Run Current Test File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "sherlock-discovery-forwarder",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
@@ -92,7 +203,6 @@
     },
 
     // Server - Single File
-    // Server - Single File
     {
       "type": "node",
       "request": "launch",
@@ -111,6 +221,63 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // METADATA
+
+    // Server - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Metadata Core - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-metadata-core",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}",
+        "--watch"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // METADATA
+
+    // Server - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Alerts Core - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-alerts-core",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}",
+        "--watch"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    ////////////
+    // Intake
+    ///////////
+
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Attach Intake Server",
+      "port": 5959,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+
     {
       "type": "chrome",
       "request": "launch",
@@ -124,7 +291,13 @@
       "reAttach": true,
       "name": "Firefox Client",
       "url": "http://localhost:4200",
-      "webRoot": "${workspaceFolder}/apps/client"
+      "webRoot": "${workspaceFolder}/apps/client",
+      "pathMappings": [
+        {
+          "url": "webpack:///src",
+          "path": "${workspaceFolder}/apps/client/src"
+        }
+      ]
     },
     {
       "type": "chrome",
