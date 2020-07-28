@@ -103,7 +103,8 @@
       "name": "Sherlock Server - Attach",
       "port": 9876,
       "skipFiles": ["<node_internals>/**"],
-      "restart": true
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"]
     },
 
     {
