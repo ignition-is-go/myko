@@ -53,5 +53,14 @@
     "**/coverage": true
   },
   "editor.tabSize": 2,
-  "typescript.preferences.importModuleSpecifier": "auto"
+  "typescript.preferences.importModuleSpecifier": "auto",
+  "json.schemas": [
+    {
+      "fileMatch": ["/apps/intake/src/app/testData/*"],
+      "url": "/apps/intake/src/assets/schedule-exchange-schema_v1.json"
+    }
+  ],
+  "nxConsole.useNVM": true,
+  "nxConsole.enableTelemetry": false,
+  "telemetry.enableTelemetry": false
 }
