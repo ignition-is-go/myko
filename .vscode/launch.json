@@ -384,6 +384,14 @@
       "preLaunchTask": "build-satellite-dist",
       "sourceMaps": true,
       "outFiles": ["dist/apps/satellite/"]
+    },
+    {
+      "name": "Watson - Attach Main Process",
+      "type": "node",
+      "request": "attach",
+      "restart": true,
+      "port": 5858,
+      "skipFiles": ["<node_internals>/**"]
     }
   ],
   "compounds": [
