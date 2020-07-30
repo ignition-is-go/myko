@@ -80,7 +80,7 @@
         "libs/sherlock/plugins/ventuz/ui/src/index.ts"
       ],
       "@rship/sherlock/disk/core": [
-        "libs/sherlock/server-core/src/lib/disk-plugin-core/index.ts"
+        "libs/sherlock/plugins/disk/core/src/index.ts"
       ],
       "@rship/metadata-core": ["libs/rship/metadata-core/src/index.ts"],
       "@rship/alerts-core": ["libs/rship/alerts-core/src/index.ts"],
