@@ -97,7 +97,9 @@
       "@rship/sherlock/plugins/disk/shared": [
         "libs/sherlock/plugins/disk/shared/src/index.ts"
       ],
-      "@rship/rship/timeline-core": ["libs/rship/timeline-core/src/index.ts"]
+      "@rship/rship/timeline-core": ["libs/rship/timeline-core/src/index.ts"],
+      "@rship/engines/world": ["libs/engines/world/src/index.ts"],
+      "@rship/engines/system": ["libs/engines/system/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
