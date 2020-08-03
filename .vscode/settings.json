@@ -40,10 +40,14 @@
       "rules": [
         {
           "pattern": "(.*)\\/(.*)\\.ts$",
-          "locators": ["$1/__tests__/$2.test.ts"]
+          "locators": ["$1/__tests__/$2.test.ts", "$1/__tests__/$2.spec.ts"]
         },
         {
           "pattern": "(.*)\\/__tests__\\/(.*)\\.test\\.ts$",
+          "locators": ["$1/$2.ts"]
+        },
+        {
+          "pattern": "(.*)\\/__tests__\\/(.*)\\.spec\\.ts$",
           "locators": ["$1/$2.ts"]
         }
       ]
