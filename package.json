@@ -225,6 +225,7 @@
     "@types/supertest": "^2.0.8",
     "@types/tinycolor2": "^1.4.1",
     "@types/uuid": "^3.4.6",
+    "@types/webtorrent": "^0.107.2",
     "@typescript-eslint/eslint-plugin": "2.3.2",
     "@typescript-eslint/parser": "2.3.2",
     "apollo-link": "^1.2.13",
@@ -248,6 +249,7 @@
     "eslint": "6.8.0",
     "eslint-config-prettier": "6.0.0",
     "eslint-plugin-cypress": "^2.10.3",
+    "exitzero": "^1.0.1",
     "extract-zip": "^1.6.7",
     "fast-check": "^1.15.1",
     "file-loader": "^4.3.0",
@@ -281,8 +283,7 @@
     "tslint-plugin-prettier": "^2.1.0",
     "typescript": "^3.9.7",
     "wait-on": "^3.3.0",
-    "xstate": "^4.11.0",
-    "exitzero": "^1.0.1"
+    "xstate": "^4.11.0"
   },
   "intakeDependencies": [
     "ajv",
