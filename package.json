@@ -91,6 +91,7 @@
     "archiver": "^3.1.1",
     "array.prototype.flatmap": "^1.2.2",
     "base-64": "^0.1.0",
+    "bittorrent-tracker": "^9.15.0",
     "body-parser": "^1.19.0",
     "camelcase": "^6.0.0",
     "chart.js": "^2.9.3",
@@ -163,6 +164,7 @@
     "tslib": "^1.10.0",
     "unescape-js": "^1.1.4",
     "uuid": "^3.3.3",
+    "webtorrent": "^0.108.6",
     "winston": "^3.2.1",
     "winston-graylog2": "^2.1.2",
     "ws": "^7.3.1",
@@ -400,7 +402,8 @@
     "md5-file",
     "winston",
     "winston-graylog2",
-    "xml2json"
+    "xml2json",
+    "bittorrent-tracker"
   ],
   "husky": {
     "hooks": {
