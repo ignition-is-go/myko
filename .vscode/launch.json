@@ -202,6 +202,17 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // Watson
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Sherlock Watson - Attach",
+      "port": 9877,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/watson"]
+    },
+
     //////////
     // CURATOR
     //////////
