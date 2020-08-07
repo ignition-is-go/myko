@@ -303,6 +303,33 @@
       "restart": true
     },
 
+    /////////////
+    // Shared Lib
+    /////////////
+
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Shared Lib - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "shared",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "sourceMaps": true
+      // "outFiles": ["${workspaceFolder}/dist/apps/server"]
+    },
+
     {
       "type": "chrome",
       "request": "launch",

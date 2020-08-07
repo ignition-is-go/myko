@@ -99,7 +99,10 @@
       ],
       "@rship/rship/timeline-core": ["libs/rship/timeline-core/src/index.ts"],
       "@rship/engines/world": ["libs/engines/world/src/index.ts"],
-      "@rship/engines/system": ["libs/engines/system/src/index.ts"]
+      "@rship/engines/system": ["libs/engines/system/src/index.ts"],
+      "@rship/drafts/core": ["libs/drafts/core/src/index.ts"],
+      "@rship/drafts/shared": ["libs/drafts/shared/src/index.ts"],
+      "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
