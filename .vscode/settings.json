@@ -40,10 +40,14 @@
       "rules": [
         {
           "pattern": "(.*)\\/(.*)\\.ts$",
-          "locators": ["$1/__tests__/$2.test.ts"]
+          "locators": ["$1/__tests__/$2.test.ts", "$1/__tests__/$2.spec.ts"]
         },
         {
           "pattern": "(.*)\\/__tests__\\/(.*)\\.test\\.ts$",
+          "locators": ["$1/$2.ts"]
+        },
+        {
+          "pattern": "(.*)\\/__tests__\\/(.*)\\.spec\\.ts$",
           "locators": ["$1/$2.ts"]
         }
       ]
@@ -53,5 +57,14 @@
     "**/coverage": true
   },
   "editor.tabSize": 2,
-  "typescript.preferences.importModuleSpecifier": "auto"
+  "typescript.preferences.importModuleSpecifier": "auto",
+  "json.schemas": [
+    {
+      "fileMatch": ["/apps/intake/src/app/testData/*"],
+      "url": "/apps/intake/src/assets/schedule-exchange-schema_v1.json"
+    }
+  ],
+  "nxConsole.useNVM": true,
+  "nxConsole.enableTelemetry": false,
+  "telemetry.enableTelemetry": false
 }

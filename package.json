@@ -43,7 +43,7 @@
     "satellite:test": "ng test satellite --watch=true",
     "install-group-deps": "node ./tools/scripts/install-group-deps.js",
     "preinstall": "node ./tools/scripts/install-edge-js-deps.js",
-    "postinstall": "node ./tools/scripts/version-stamp.js && node ./decorate-angular-cli.js && ngcc --properties es2015 browser module main --first-only --create-ivy-entry-points",
+    "postinstall": "node ./tools/scripts/version-stamp.js && node ./decorate-angular-cli.js && ngcc --properties es2015 browser module main --first-only --create-ivy-entry-points && exitzero electron-builder install-app-deps",
     "intake:dev": "ng run intake:serve",
     "gen:intake:schedule-v1": "npx json2ts ./apps/intake/src/assets/schedule-exchange-schema_v1.json > ./apps/intake/src/types/schedule-v1.d.ts",
     "server-test-mode": "ng serve server -c e2e",
@@ -165,9 +165,9 @@
     "uuid": "^3.3.3",
     "winston": "^3.2.1",
     "winston-graylog2": "^2.1.2",
+    "ws": "^7.3.1",
     "xhr2": "^0.2.0",
     "xml2json": "^0.12.0",
-    "xstate": "^4.7.6",
     "zone.js": "~0.10.2"
   },
   "devDependencies": {
@@ -279,7 +279,8 @@
     "tslint-plugin-prettier": "^2.1.0",
     "typescript": "^3.9.7",
     "wait-on": "^3.3.0",
-    "xstate": "^4.7.6"
+    "xstate": "^4.11.0",
+    "exitzero": "^1.0.1"
   },
   "intakeDependencies": [
     "ajv",
@@ -307,6 +308,7 @@
     "apollo-client",
     "apollo-link",
     "apollo-link-http",
+    "apollo-link-ws",
     "apollo-server-express",
     "base-64",
     "crypto-js",
