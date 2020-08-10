@@ -311,6 +311,7 @@
     "apollo-client",
     "apollo-link",
     "apollo-link-http",
+    "apollo-link-ws",
     "apollo-server-express",
     "base-64",
     "crypto-js",
