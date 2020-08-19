@@ -34,6 +34,7 @@
         "libs/ui-components/src/components.ts"
       ],
       "@rship-types": ["@rship-types/index.ts"],
+      "@rship/graph-client": ["libs/graph-client/src/index.ts"],
       "@rship/graph-client/rship": ["libs/graph-client/src/rship.graph.ts"],
       "@rship/graph-client/rship-testing": [
         "libs/graph-client/src/rship.testingGraph.ts"
