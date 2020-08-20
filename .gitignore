@@ -60,3 +60,6 @@ db/**/*.sherlock
 #Test Results and Coverage
 testResults.json
 libs/rship/metadata-core/coverage
+
+#Watson Config
+apps/sherlock/watson-cli/src/watson.config.json
