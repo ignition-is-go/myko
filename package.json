@@ -70,6 +70,10 @@
     "@lucidcreative/disguise-telnet": "^1.0.4",
     "@material/theme": "^4.0.0",
     "@mdi/angular-material": "^5.3.45",
+    "@nestjs/common": "^7.0.0",
+    "@nestjs/core": "^7.0.0",
+    "@nestjs/graphql": "^7.6.0",
+    "@nestjs/platform-express": "^7.0.0",
     "@ngstack/code-editor": "^1.0.0",
     "@schematics/angular": "9.1.11",
     "a-color-picker": "^1.2.1",
@@ -152,6 +156,7 @@
     "ramda": "^0.26.1",
     "reactive-graph": "^0.2.2",
     "recursive-readdir": "^2.2.2",
+    "reflect-metadata": "^0.1.13",
     "remote-graphql-binding": "2.3.0",
     "roboto-fontface": "^0.10.0",
     "rxjs": "6.5.5",
@@ -286,7 +291,9 @@
     "typescript": "^3.9.7",
     "typescript-json-schema": "^0.42.0",
     "wait-on": "^3.3.0",
-    "xstate": "^4.11.0"
+    "xstate": "^4.11.0",
+    "@nestjs/schematics": "^7.0.0",
+    "@nestjs/testing": "^7.0.0"
   },
   "intakeDependencies": [
     "ajv",

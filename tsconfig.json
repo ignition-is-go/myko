@@ -103,7 +103,10 @@
       "@rship/engines/system": ["libs/engines/system/src/index.ts"],
       "@rship/drafts/core": ["libs/drafts/core/src/index.ts"],
       "@rship/drafts/shared": ["libs/drafts/shared/src/index.ts"],
-      "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"]
+      "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"],
+      "@rship/sherlock/server-core-nest": [
+        "libs/sherlock/server-core-nest/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],
