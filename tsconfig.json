@@ -106,6 +106,12 @@
       "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"],
       "@rship/sherlock/server-core-nest": [
         "libs/sherlock/server-core-nest/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/disk/core-nest": [
+        "libs/sherlock/plugins/disk/core-nest/src/index.ts"
+      ],
+      "@rship/sherlock/plugins/ventuz/core-nest": [
+        "libs/sherlock/plugins/ventuz/core-nest/src/index.ts"
       ]
     }
   },
