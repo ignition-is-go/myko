@@ -107,6 +107,9 @@
       "@rship/sherlock/server-core-nest": [
         "libs/sherlock/server-core-nest/src/index.ts"
       ],
+      "@rship/sherlock/server-core-nest-types": [
+        "libs/sherlock/server-core-nest/src/types.ts"
+      ],
       "@rship/sherlock/plugins/disk/core-nest": [
         "libs/sherlock/plugins/disk/core-nest/src/index.ts"
       ],
