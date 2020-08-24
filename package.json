@@ -121,7 +121,7 @@
     "graphql-iso-date": "^3.6.1",
     "graphql-middleware": "^3.0.5",
     "graphql-tag": "^2.10.1",
-    "graphql-type-json": "^0.3.1",
+    "graphql-type-json": "^0.3.2",
     "graphql-voyager": "^1.0.0-rc.28",
     "jok-mango": "^2.0.0",
     "json-schema-to-typescript": "^8.2.0",
