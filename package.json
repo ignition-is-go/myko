@@ -187,6 +187,8 @@
     "@angular/language-service": "9.1.12",
     "@babel/core": "^7.8.4",
     "@fortawesome/fontawesome-free": "^5.12.0",
+    "@nestjs/schematics": "^7.0.0",
+    "@nestjs/testing": "^7.4.2",
     "@nrwl/angular": "9.5.1",
     "@nrwl/cli": "9.5.1",
     "@nrwl/cypress": "9.5.1",
@@ -293,9 +295,7 @@
     "typescript": "^3.9.7",
     "typescript-json-schema": "^0.42.0",
     "wait-on": "^3.3.0",
-    "xstate": "^4.11.0",
-    "@nestjs/schematics": "^7.0.0",
-    "@nestjs/testing": "^7.0.0"
+    "xstate": "^4.11.0"
   },
   "intakeDependencies": [
     "ajv",

@@ -131,6 +131,17 @@
       "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"]
     },
 
+    // Server
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Sherlock Server Nest - Attach",
+      "port": 9876,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server-nest"]
+    },
+
     {
       "type": "node",
       "request": "attach",
@@ -155,6 +166,25 @@
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
         "sherlock-server",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Sherlock Server core nest - test file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Sherlock Server Core Nest - Run Current Test File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "sherlock-server-core-nest",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
