@@ -116,7 +116,8 @@
       "@rship/sherlock/plugins/ventuz/core-nest": [
         "libs/sherlock/plugins/ventuz/core-nest/src/index.ts"
       ],
-      "@rship/metadata-nest": ["libs/metadata-nest/src/index.ts"]
+      "@rship/metadata-nest": ["libs/metadata-nest/src/index.ts"],
+      "@rship/user-schema": ["libs/user-schema/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
