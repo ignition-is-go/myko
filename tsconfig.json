@@ -119,7 +119,8 @@
       "@rship/metadata-nest": ["libs/metadata-nest/src/index.ts"],
       "@rship/user/repo": ["libs/user/repo/src/index.ts"],
       "@rship/user/schema": ["libs/user/schema/src/index.ts"],
-      "@rship/user/shared": ["libs/user/shared/src/index.ts"]
+      "@rship/user/shared": ["libs/user/shared/src/index.ts"],
+      "@rship/authentication": ["libs/authentication/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],

@@ -484,6 +484,17 @@
       "restart": true,
       "port": 5858,
       "skipFiles": ["<node_internals>/**"]
+    },
+
+    // User Microservice
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "User Microservice Nest - Attach",
+      "port": 9878,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server-nest"]
     }
   ],
   "compounds": [
