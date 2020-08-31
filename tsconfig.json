@@ -121,7 +121,8 @@
       "@rship/user/shared": ["libs/user/shared/src/index.ts"],
       "@rship/authentication": ["libs/authentication/src/index.ts"],
       "@rship/metadata-cqrs": ["libs/metadata-cqrs/src/index.ts"],
-      "@rship/metadata": ["libs/metadata/src/index.ts"]
+      "@rship/metadata": ["libs/metadata/src/index.ts"],
+      "@rship/rship/server-core": ["libs/rship/server-core/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
