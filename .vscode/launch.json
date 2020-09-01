@@ -84,8 +84,31 @@
       "outFiles": ["${workspaceFolder}/dist/apps/server"]
     },
 
+    // Rship Models
+    // Rship Models - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship Models - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-models",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     // Rship Timeline
-    // Server - Single File
+    // Timeline - Single File
     {
       "type": "node",
       "request": "launch",
@@ -102,8 +125,7 @@
       ],
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen",
-      "outFiles": ["${workspaceFolder}/dist/apps/server"]
+      "internalConsoleOptions": "neverOpen"
     },
 
     //////////
