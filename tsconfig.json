@@ -109,8 +109,10 @@
       "@rship/authentication": ["libs/authentication/src/index.ts"],
       "@rship/rship/server-core": ["libs/rship/server-core/src/index.ts"],
       "@rship/engines/machine": ["libs/engines/machine/src/index.ts"],
-      "@rship/just-networks/core": ["libs/just-networks/core/src/index.ts"],
-      "@rship/just-networks/shared": ["libs/just-networks/shared/src/index.ts"],
+      "@rship/just-networking/core": ["libs/just-networking/core/src/index.ts"],
+      "@rship/just-networking/shared": [
+        "libs/just-networking/shared/src/index.ts"
+      ],
       "@rship/rship/permissions": ["libs/rship/permissions/src/index.ts"],
       "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
       "@rship/sherlock/plugins/disk/core": [
