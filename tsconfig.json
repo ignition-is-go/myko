@@ -123,7 +123,9 @@
       "@rship/metadata-cqrs": ["libs/metadata-cqrs/src/index.ts"],
       "@rship/metadata": ["libs/metadata/src/index.ts"],
       "@rship/rship/server-core": ["libs/rship/server-core/src/index.ts"],
-      "@rship/engines/machine": ["libs/engines/machine/src/index.ts"]
+      "@rship/engines/machine": ["libs/engines/machine/src/index.ts"],
+      "@rship/just-networks/core": ["libs/just-networks/core/src/index.ts"],
+      "@rship/just-networks/shared": ["libs/just-networks/shared/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
