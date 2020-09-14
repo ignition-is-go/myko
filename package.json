@@ -152,6 +152,7 @@
     "node-fetch": "^2.6.0",
     "node-ipc": "^9.1.1",
     "node-machine-id": "^1.1.12",
+    "node-ssh": "^11.0.0",
     "object-hash": "2.0.3",
     "obs-websocket-js": "^4.0.1",
     "on-finished": "^2.3.0",
