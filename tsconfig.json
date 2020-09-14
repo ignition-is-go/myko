@@ -125,6 +125,9 @@
       ],
       "@rship/just-networking/domain": [
         "libs/just-networking/domain/src/index.ts"
+      ],
+      "@rship/just-networking/device-access/core": [
+        "libs/just-networking/device-access/core/src/index.ts"
       ]
     }
   },
