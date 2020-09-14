@@ -122,6 +122,9 @@
       "@rship/metadata/shared": ["libs/metadata/shared/src/index.ts"],
       "@rship/sherlock/plugins/ventuz/core": [
         "libs/sherlock/plugins/ventuz/core/src/index.ts"
+      ],
+      "@rship/just-networking/domain": [
+        "libs/just-networking/domain/src/index.ts"
       ]
     }
   },
