@@ -57,7 +57,6 @@
         "libs/sherlock/graph-nodejs/src/index.ts"
       ],
       "@rship/sherlock/tag-parser": ["libs/sherlock/tag-parser/src/index.ts"],
-      "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
       "@rship/sherlock/server-core-types": [
         "libs/sherlock/server-core/src/types.ts"
       ],
@@ -89,9 +88,6 @@
       "@rship/rship/models": ["libs/rship/models/src/index.ts"],
       "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"],
       "@rship/rship/event-monitor": ["libs/rship/event-monitor/src/index.ts"],
-      "@rship/sherlock/plugins/disk/core": [
-        "libs/sherlock/plugins/disk/core/src/index.ts"
-      ],
       "@rship/sherlock/plugins/disk/ui": [
         "libs/sherlock/plugins/disk/ui/src/index.ts"
       ],
@@ -104,28 +100,27 @@
       "@rship/drafts/core": ["libs/drafts/core/src/index.ts"],
       "@rship/drafts/shared": ["libs/drafts/shared/src/index.ts"],
       "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"],
-      "@rship/sherlock/server-core-nest": [
-        "libs/sherlock/server-core-nest/src/index.ts"
-      ],
       "@rship/sherlock/server-core-nest-types": [
         "libs/sherlock/server-core-nest/src/types.ts"
-      ],
-      "@rship/sherlock/plugins/disk/core-nest": [
-        "libs/sherlock/plugins/disk/core-nest/src/index.ts"
-      ],
-      "@rship/sherlock/plugins/ventuz/core-nest": [
-        "libs/sherlock/plugins/ventuz/core-nest/src/index.ts"
       ],
       "@rship/user/repo": ["libs/user/repo/src/index.ts"],
       "@rship/user/schema": ["libs/user/schema/src/index.ts"],
       "@rship/user/shared": ["libs/user/shared/src/index.ts"],
       "@rship/authentication": ["libs/authentication/src/index.ts"],
-      "@rship/metadata-cqrs": ["libs/metadata-cqrs/src/index.ts"],
-      "@rship/metadata": ["libs/metadata/src/index.ts"],
       "@rship/rship/server-core": ["libs/rship/server-core/src/index.ts"],
       "@rship/engines/machine": ["libs/engines/machine/src/index.ts"],
       "@rship/just-networks/core": ["libs/just-networks/core/src/index.ts"],
-      "@rship/just-networks/shared": ["libs/just-networks/shared/src/index.ts"]
+      "@rship/just-networks/shared": ["libs/just-networks/shared/src/index.ts"],
+      "@rship/rship/permissions": ["libs/rship/permissions/src/index.ts"],
+      "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
+      "@rship/sherlock/plugins/disk/core": [
+        "libs/sherlock/plugins/disk/core/src/index.ts"
+      ],
+      "@rship/metadata/core": ["libs/metadata/core/src/index.ts"],
+      "@rship/metadata/shared": ["libs/metadata/shared/src/index.ts"],
+      "@rship/sherlock/plugins/ventuz/core": [
+        "libs/sherlock/plugins/ventuz/core/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],
