@@ -520,7 +520,16 @@
     },
 
     // JustNetworks
-    // Domain Test - Single File
+    // JN Server - Attach
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "JN Server - Attach",
+      "port": 5858,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+    // JN Domain Test - Single File
     {
       "type": "node",
       "request": "launch",
