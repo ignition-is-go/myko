@@ -131,7 +131,14 @@
       ],
       "@rship/just-networking/device-access/shared": [
         "libs/just-networking/device-access/shared/src/index.ts"
-      ]
+      ],
+      "@rship/just-networking/tags/feature": [
+        "libs/just-networking/tags/feature/src/index.ts"
+      ],
+      "@rship/just-networking/tags/shared": [
+        "libs/just-networking/tags/shared/src/index.ts"
+      ],
+      "@rship/just-networking/ui": ["libs/just-networking/ui/src/index.ts"]
     }
   },
   "exclude": ["node_modules", "tmp"],
