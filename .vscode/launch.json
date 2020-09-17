@@ -592,6 +592,18 @@
       "smartStep": true,
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen"
+    },
+    // JN Daemon App - Attach
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "JN Device Daemon - Attach",
+      "port": 5857,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": [
+        "${workspaceFolder}/dist/apps/just-networking/device-daemon/"
+      ]
     }
   ],
   "compounds": [
