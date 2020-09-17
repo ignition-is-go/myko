@@ -70,7 +70,7 @@
     "@json-editor/json-editor": "^2.3.0",
     "@lucidcreative/disguise-telnet": "^1.0.4",
     "@material/theme": "^4.0.0",
-    "@mdi/angular-material": "^5.3.45",
+    "@mdi/angular-material": "^5.6.55",
     "@nestjs/common": "^7.0.0",
     "@nestjs/config": "^0.5.0",
     "@nestjs/core": "^7.0.0",
