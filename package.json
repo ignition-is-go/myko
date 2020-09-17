@@ -197,7 +197,7 @@
     "@babel/core": "^7.8.4",
     "@fortawesome/fontawesome-free": "^5.12.0",
     "@nestjs/schematics": "^7.0.0",
-    "@nestjs/testing": "^7.4.2",
+    "@nestjs/testing": "^7.4.4",
     "@nrwl/angular": "9.5.1",
     "@nrwl/cli": "9.5.1",
     "@nrwl/cypress": "9.5.1",

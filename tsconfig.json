@@ -138,7 +138,10 @@
       "@rship/just-networking/tags/shared": [
         "libs/just-networking/tags/shared/src/index.ts"
       ],
-      "@rship/just-networking/ui": ["libs/just-networking/ui/src/index.ts"]
+      "@rship/just-networking/ui": ["libs/just-networking/ui/src/index.ts"],
+      "@rship/just-networking/test-cases": [
+        "libs/just-networking/domain/src/lib/test-cases/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],
