@@ -520,6 +520,15 @@
     },
 
     // JustNetworks
+
+    // Client
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "JN Client - Launch",
+      "webRoot": "${workspaceFolder}/apps/just-networking/client",
+      "url": "http://localhost:4200"
+    },
     // JN Server - Attach
     {
       "type": "node",
