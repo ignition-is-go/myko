@@ -613,6 +613,15 @@
       "outFiles": [
         "${workspaceFolder}/dist/apps/just-networking/device-daemon/"
       ]
+    },
+    // JN seed server App - Attach
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "JN Seed server - Attach",
+      "port": 5856,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
     }
   ],
   "compounds": [
