@@ -393,6 +393,26 @@
       // "outFiles": ["${workspaceFolder}/dist/apps/server"]
     },
 
+    // Server - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Server Utils - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "server-utils",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}",
+        "--watch"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     {
       "type": "chrome",
       "request": "launch",

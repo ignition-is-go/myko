@@ -11,7 +11,7 @@
   // },
   "editor.defaultFormatter": "esbenp.prettier-vscode",
   "html.format.enable": false,
-  "typescript.format.enable": false,
+  "typescript.format.enable": true,
   "findrelated.applyRulesets": ["angular", "tests"],
   "findrelated.rulesets": [
     {
