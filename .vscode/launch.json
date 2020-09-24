@@ -547,7 +547,14 @@
       "request": "launch",
       "name": "JN Client - Launch",
       "webRoot": "${workspaceFolder}/apps/just-networking/client/",
-      "url": "http://localhost:4200"
+      "url": "http://localhost:4200",
+      "sourceMapPathOverrides": {
+        "webpack:///./*": "${webRoot}/*",
+        "webpack:///src/*": "${webRoot}/*",
+        "webpack:///*": "*",
+        "webpack:///./~/*": "${webRoot}/node_modules/*",
+        "meteor://💻app/*": "${webRoot}/*"
+      }
     },
     // JN Server - Attach
     {
