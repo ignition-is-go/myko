@@ -559,11 +559,16 @@
     // JN Server - Attach
     {
       "type": "node",
+      "stopOnEntry": true,
       "request": "attach",
       "name": "JN Server - Attach",
       "port": 5858,
       "skipFiles": ["<node_internals>/**"],
-      "restart": true
+      "restart": true,
+      "outFiles": [
+        "${workspaceFolder}/apps/just-networking/server",
+        "${workspaceFolder}/libs/just-networking/core"
+      ]
     },
     // JN Domain Test - Single File
     {
