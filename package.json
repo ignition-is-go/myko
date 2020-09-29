@@ -445,6 +445,18 @@
     "xml2json",
     "bittorrent-tracker"
   ],
+  "jnServerDependencies": [
+    "@nestjs/common",
+    "@nestjs/core",
+    "@nestjs/graphql",
+    "@nestjs/platform-express",
+    "apollo-server-express",
+    "class-transformer",
+    "class-validator",
+    "node-ssh",
+    "reflect-metadata",
+    "rxjs"
+  ],
   "husky": {
     "hooks": {
       "pre-commit": [
