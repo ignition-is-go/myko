@@ -100,9 +100,6 @@
       "@rship/drafts/core": ["libs/drafts/core/src/index.ts"],
       "@rship/drafts/shared": ["libs/drafts/shared/src/index.ts"],
       "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"],
-      "@rship/sherlock/server-core-nest-types": [
-        "libs/sherlock/server-core-nest/src/types.ts"
-      ],
       "@rship/user/repo": ["libs/user/repo/src/index.ts"],
       "@rship/user/schema": ["libs/user/schema/src/index.ts"],
       "@rship/user/shared": ["libs/user/shared/src/index.ts"],
