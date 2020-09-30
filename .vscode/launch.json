@@ -13,8 +13,15 @@
       "type": "chrome",
       "request": "launch",
       "name": "Rship Client - Launch",
-      "webRoot": "${workspaceFolder}/apps/client/",
-      "url": "http://localhost:4200"
+      "webRoot": "${workspaceFolder}/apps/rship/client/",
+      "url": "http://localhost:4200",
+      "sourceMapPathOverrides": {
+        "webpack:///./*": "${webRoot}/*",
+        "webpack:///src/*": "${webRoot}/*",
+        "webpack:///*": "*",
+        "webpack:///./~/*": "${webRoot}/node_modules/*",
+        "meteor://💻app/*": "${webRoot}/*"
+      }
     },
 
     // Client - Single File
