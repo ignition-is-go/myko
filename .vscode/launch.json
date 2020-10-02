@@ -569,7 +569,7 @@
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen"
     },
-
+    // JN Core current file
     {
       "type": "node",
       "request": "launch",
