@@ -87,8 +87,7 @@
       "env": { "DEBUG": "" },
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen",
-      "outFiles": ["${workspaceFolder}/dist/apps/server"]
+      "internalConsoleOptions": "neverOpen"
     },
 
     // Rship Models
