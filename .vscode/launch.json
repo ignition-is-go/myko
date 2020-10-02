@@ -34,7 +34,7 @@
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
-        "client",
+        "rship-client",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
@@ -61,9 +61,9 @@
       "port": 9229,
       "address": "172.24.1.1",
       "remoteRoot": "/usr/src/app",
-      "localRoot": "${workspaceFolder}/apps/server/src",
+      "localRoot": "${workspaceFolder}/apps/rship/server/src",
       "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/apps/server"],
+      "outFiles": ["${workspaceFolder}/dist/apps/rship/server"],
       "sourceMaps": true,
       "restart": true
     },
@@ -77,7 +77,7 @@
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
-        "server",
+        "rship-server",
         "--watch",
         "--run-in-band",
         "--code-coverage=false",
