@@ -515,6 +515,26 @@
       "restart": true,
       "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server-nest"]
     },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "User Microservice Nest - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "user-schema",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
 
     // JustNetworks
 
