@@ -134,6 +134,27 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // Rship Plugin Transports
+    // Transports - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship PluginTransports - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-plugins-transports",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     //////////
     // SHERLOCK
     //////////

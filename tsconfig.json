@@ -140,7 +140,10 @@
         "libs/just-networking/domain/src/lib/test-cases/index.ts"
       ],
       "@rship/user/ui": ["libs/user/ui/src/index.ts"],
-      "@rship/realtime/schema": ["libs/realtime/schema/src/index.ts"]
+      "@rship/realtime/schema": ["libs/realtime/schema/src/index.ts"],
+      "@rship/rship/plugins/transports": [
+        "libs/rship/plugins/transports/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],
