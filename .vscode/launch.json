@@ -162,7 +162,7 @@
       "name": "Satellite CLI - Attach",
       "port": 5855,
       "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/apps/satellite/cli"],
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
       "restart": true
     },
 
