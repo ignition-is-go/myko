@@ -35,6 +35,7 @@
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
         "rship-client",
+        "--watch",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
@@ -547,6 +548,26 @@
       "restart": true,
       "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server-nest"]
     },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "User Microservice Nest - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "user-schema",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
 
     // JustNetworks
 
@@ -574,10 +595,7 @@
       "port": 5858,
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
-      "outFiles": [
-        "${workspaceFolder}/apps/just-networking/server",
-        "${workspaceFolder}/libs/just-networking/core"
-      ]
+      "outFiles": ["${workspaceFolder}/dist/apps/just-networking/server"]
     },
     // JN Domain Test - Single File
     {
@@ -619,7 +637,8 @@
       "env": { "DEBUG": "" },
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
+      "internalConsoleOptions": "neverOpen",
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     // JN Device Access Test - Single File
