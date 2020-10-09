@@ -143,6 +143,9 @@
       "@rship/realtime/schema": ["libs/realtime/schema/src/index.ts"],
       "@rship/rship/plugins/transports": [
         "libs/rship/plugins/transports/src/index.ts"
+      ],
+      "@rship/rship/plugins/unreal-engine/core": [
+        "libs/rship/plugins/unreal-engine/core/src/index.ts"
       ]
     }
   },
