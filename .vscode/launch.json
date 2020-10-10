@@ -51,7 +51,8 @@
       "name": "Rship Server - Attach",
       "port": 5858,
       "skipFiles": ["<node_internals>/**"],
-      "restart": true
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     {
