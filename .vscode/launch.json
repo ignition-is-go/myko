@@ -35,6 +35,7 @@
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
         "rship-client",
+        "--watch",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
@@ -563,10 +564,7 @@
       "port": 5858,
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
-      "outFiles": [
-        "${workspaceFolder}/apps/just-networking/server",
-        "${workspaceFolder}/libs/just-networking/core"
-      ]
+      "outFiles": ["${workspaceFolder}/dist/apps/just-networking/server"]
     },
     // JN Domain Test - Single File
     {
@@ -608,7 +606,8 @@
       "env": { "DEBUG": "" },
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
+      "internalConsoleOptions": "neverOpen",
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     // JN Device Access Test - Single File
