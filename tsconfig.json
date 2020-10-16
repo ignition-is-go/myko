@@ -146,6 +146,9 @@
       ],
       "@rship/rship/plugins/unreal-engine/core": [
         "libs/rship/plugins/unreal-engine/core/src/index.ts"
+      ],
+      "@rship/rship/plugins/utils/socket-gateway-debugger": [
+        "libs/rship/plugins/utils/socket-gateway-debugger/src/index.ts"
       ]
     }
   },
