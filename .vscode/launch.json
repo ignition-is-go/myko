@@ -136,6 +136,26 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // Rship System Engine
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship System Engine - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "engines-system",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     //////////
     // SHERLOCK
     //////////
