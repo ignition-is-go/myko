@@ -239,7 +239,7 @@
     "@types/ip": "^1.1.0",
     "@types/jest": "25.1.4",
     "@types/js-cookie": "^2.2.6",
-    "@types/json-schema": "^7.0.4",
+    "@types/json-schema": "^7.0.6",
     "@types/jsonpointer": "^4.0.0",
     "@types/jsonwebtoken": "7.2.7",
     "@types/koa-bodyparser": "^4.3.0",
