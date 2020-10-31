@@ -64,3 +64,6 @@ libs/rship/metadata-core/coverage
 #Watson Config
 apps/sherlock/watson-cli/src/watson.config.json
 report.20200917.151057.27164.0.001.json
+
+# release test log files
+release-test_*.log
