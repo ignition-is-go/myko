@@ -339,6 +339,10 @@
     "winston-graylog2"
   ],
   "serverDependencies": [
+    "@nestjs/common",
+    "@nestjs/core",
+    "@nestjs/graphql",
+    "@nestjs/platform-express",
     "@angular-devkit/core",
     "@lucidcreative/disguise-telnet",
     "@material/theme",
@@ -353,6 +357,8 @@
     "apollo-link-ws",
     "apollo-server-express",
     "base-64",
+    "class-transformer",
+    "class-validator",
     "crypto-js",
     "dataloader",
     "deep-object-diff",
@@ -377,6 +383,7 @@
     "paperspace-node",
     "ping",
     "ramda",
+    "reflect-metadata",
     "rxjs",
     "socket.io",
     "tinycolor2",
