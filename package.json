@@ -342,6 +342,7 @@
   "serverDependencies": [
     "@nestjs/common",
     "@nestjs/config",
+    "@nestjs/cqrs",
     "@nestjs/core",
     "@nestjs/graphql",
     "@nestjs/platform-express",
@@ -363,6 +364,7 @@
     "class-validator",
     "crypto-js",
     "dataloader",
+    "deep-diff",
     "deep-object-diff",
     "edge-js",
     "express",
