@@ -434,14 +434,20 @@
     "@nestjs/core",
     "@nestjs/common",
     "@nestjs/graphql",
+    "@nestjs/platform-express",
     "apollo-server-express",
+    "bittorrent-tracker",
+    "class-transformer",
+    "class-validator",
     "express",
     "mongodb",
     "graphql-type-json",
     "graphql-iso-date",
     "md5-file",
-    "xml2json",
-    "bittorrent-tracker"
+    "node-expat",
+    "reflect-metadata",
+    "rxjs",
+    "xml2json"
   ],
   "jnServerDependencies": [
     "@nestjs/common",
