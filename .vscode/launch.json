@@ -115,6 +115,29 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // Rship Engines
+    // Rship Engines - System
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship System Engine - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "engines-system",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     // Rship Timeline
     // Timeline - Single File
     {
