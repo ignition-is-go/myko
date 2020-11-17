@@ -63,9 +63,9 @@
       "port": 9229,
       "address": "172.24.1.1",
       "remoteRoot": "/usr/src/app",
-      "localRoot": "${workspaceFolder}/apps/rship/server/src",
+      "localRoot": "${workspaceFolder}/dist/apps/rship/server",
       "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/apps/rship/server"],
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
       "sourceMaps": true,
       "restart": true
     },
