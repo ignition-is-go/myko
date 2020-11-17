@@ -211,7 +211,7 @@
       "port": 9876,
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"]
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     {
@@ -223,7 +223,7 @@
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/apps/server/src",
       "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"],
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
       "sourceMaps": true,
       "restart": true
     },
