@@ -26,7 +26,7 @@
       ],
       "@rship/shared": ["libs/shared/src/index.ts"],
       "@rship/rship-logging": ["libs/rship-logging/src/index.ts"],
-      "@rship/mocks": ["apps/server/src/__mocks__/data/index.ts"],
+      "@rship/mocks": ["apps/rship-legacy/server/src/__mocks__/data/index.ts"],
       "@rship/rship-logging/types": ["libs/rship-logging/src/types.ts"],
       "@rship/rabbit-integration": ["libs/rabbit-integration/src/index.ts"],
       "@rship/ui-components": ["libs/ui-components/src/index.ts"],
@@ -34,6 +34,7 @@
         "libs/ui-components/src/components.ts"
       ],
       "@rship-types": ["@rship-types/index.ts"],
+      "@rship/graph-client": ["libs/graph-client/src/index.ts"],
       "@rship/graph-client/rship": ["libs/graph-client/src/rship.graph.ts"],
       "@rship/graph-client/rship-testing": [
         "libs/graph-client/src/rship.testingGraph.ts"
@@ -56,7 +57,6 @@
         "libs/sherlock/graph-nodejs/src/index.ts"
       ],
       "@rship/sherlock/tag-parser": ["libs/sherlock/tag-parser/src/index.ts"],
-      "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
       "@rship/sherlock/server-core-types": [
         "libs/sherlock/server-core/src/types.ts"
       ],
@@ -88,9 +88,6 @@
       "@rship/rship/models": ["libs/rship/models/src/index.ts"],
       "@rship/engines/sequence": ["libs/engines/sequence/src/index.ts"],
       "@rship/rship/event-monitor": ["libs/rship/event-monitor/src/index.ts"],
-      "@rship/sherlock/plugins/disk/core": [
-        "libs/sherlock/plugins/disk/core/src/index.ts"
-      ],
       "@rship/sherlock/plugins/disk/ui": [
         "libs/sherlock/plugins/disk/ui/src/index.ts"
       ],
@@ -102,7 +99,57 @@
       "@rship/engines/system": ["libs/engines/system/src/index.ts"],
       "@rship/drafts/core": ["libs/drafts/core/src/index.ts"],
       "@rship/drafts/shared": ["libs/drafts/shared/src/index.ts"],
-      "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"]
+      "@rship/drafts/ui": ["libs/drafts/ui/src/index.ts"],
+      "@rship/user/repo": ["libs/user/repo/src/index.ts"],
+      "@rship/user/schema": ["libs/user/schema/src/index.ts"],
+      "@rship/user/shared": ["libs/user/shared/src/index.ts"],
+      "@rship/authentication": ["libs/authentication/src/index.ts"],
+      "@rship/rship/server-core": ["libs/rship/server-core/src/index.ts"],
+      "@rship/engines/machine": ["libs/engines/machine/src/index.ts"],
+      "@rship/just-networking/core": ["libs/just-networking/core/src/index.ts"],
+      "@rship/just-networking/shared": [
+        "libs/just-networking/shared/src/index.ts"
+      ],
+      "@rship/rship/permissions": ["libs/rship/permissions/src/index.ts"],
+      "@rship/sherlock/server-core": ["libs/sherlock/server-core/src/index.ts"],
+      "@rship/sherlock/plugins/disk/core": [
+        "libs/sherlock/plugins/disk/core/src/index.ts"
+      ],
+      "@rship/metadata/core": ["libs/metadata/core/src/index.ts"],
+      "@rship/metadata/shared": ["libs/metadata/shared/src/index.ts"],
+      "@rship/sherlock/plugins/ventuz/core": [
+        "libs/sherlock/plugins/ventuz/core/src/index.ts"
+      ],
+      "@rship/just-networking/domain": [
+        "libs/just-networking/domain/src/index.ts"
+      ],
+      "@rship/just-networking/device-access/core": [
+        "libs/just-networking/device-access/core/src/index.ts"
+      ],
+      "@rship/just-networking/device-access/shared": [
+        "libs/just-networking/device-access/shared/src/index.ts"
+      ],
+      "@rship/just-networking/tags/feature": [
+        "libs/just-networking/tags/feature/src/index.ts"
+      ],
+      "@rship/just-networking/tags/shared": [
+        "libs/just-networking/tags/shared/src/index.ts"
+      ],
+      "@rship/just-networking/ui": ["libs/just-networking/ui/src/index.ts"],
+      "@rship/just-networking/test-cases": [
+        "libs/just-networking/domain/src/lib/test-cases/index.ts"
+      ],
+      "@rship/user/ui": ["libs/user/ui/src/index.ts"],
+      "@rship/realtime/schema": ["libs/realtime/schema/src/index.ts"],
+      "@rship/rship/plugins/transports": [
+        "libs/rship/plugins/transports/src/index.ts"
+      ],
+      "@rship/rship/plugins/unreal-engine/core": [
+        "libs/rship/plugins/unreal-engine/core/src/index.ts"
+      ],
+      "@rship/rship/plugins/utils/socket-gateway-debugger": [
+        "libs/rship/plugins/utils/socket-gateway-debugger/src/index.ts"
+      ]
     }
   },
   "exclude": ["node_modules", "tmp"],

@@ -11,7 +11,7 @@
   // },
   "editor.defaultFormatter": "esbenp.prettier-vscode",
   "html.format.enable": false,
-  "typescript.format.enable": false,
+  "typescript.format.enable": true,
   "findrelated.applyRulesets": ["angular", "tests"],
   "findrelated.rulesets": [
     {
@@ -62,6 +62,10 @@
     {
       "fileMatch": ["/apps/intake/src/app/testData/*"],
       "url": "/apps/intake/src/assets/schedule-exchange-schema_v1.json"
+    },
+    {
+      "fileMatch": ["apps/sherlock/watson-cli/src/assets/watson.config.json"],
+      "url": "/generated/watson-cli-config-schema.json"
     }
   ],
   "nxConsole.useNVM": true,

@@ -13,8 +13,15 @@
       "type": "chrome",
       "request": "launch",
       "name": "Rship Client - Launch",
-      "webRoot": "${workspaceFolder}/apps/client/",
-      "url": "http://localhost:4200"
+      "webRoot": "${workspaceFolder}/apps/rship/client/",
+      "url": "http://localhost:4200",
+      "sourceMapPathOverrides": {
+        "webpack:///./*": "${webRoot}/*",
+        "webpack:///src/*": "${webRoot}/*",
+        "webpack:///*": "*",
+        "webpack:///./~/*": "${webRoot}/node_modules/*",
+        "meteor://💻app/*": "${webRoot}/*"
+      }
     },
 
     // Client - Single File
@@ -27,7 +34,8 @@
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
-        "client",
+        "rship-client",
+        "--watch",
         "--run-in-band",
         "--code-coverage=false",
         "--test-file=${relativeFile}"
@@ -44,7 +52,8 @@
       "name": "Rship Server - Attach",
       "port": 5858,
       "skipFiles": ["<node_internals>/**"],
-      "restart": true
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     {
@@ -54,9 +63,9 @@
       "port": 9229,
       "address": "172.24.1.1",
       "remoteRoot": "/usr/src/app",
-      "localRoot": "${workspaceFolder}/apps/server/src",
+      "localRoot": "${workspaceFolder}/dist/apps/rship/server",
       "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/apps/server"],
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
       "sourceMaps": true,
       "restart": true
     },
@@ -70,7 +79,7 @@
       "args": [
         "test",
         // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
-        "server",
+        "rship-server-core",
         "--watch",
         "--run-in-band",
         "--code-coverage=false",
@@ -80,12 +89,57 @@
       "env": { "DEBUG": "" },
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen",
-      "outFiles": ["${workspaceFolder}/dist/apps/server"]
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Rship Models
+    // Rship Models - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship Models - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-models",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Rship Engines
+    // Rship Engines - System
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship System Engine - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "engines-system",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
     },
 
     // Rship Timeline
-    // Server - Single File
+    // Timeline - Single File
     {
       "type": "node",
       "request": "launch",
@@ -102,8 +156,60 @@
       ],
       "smartStep": true,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen",
-      "outFiles": ["${workspaceFolder}/dist/apps/server"]
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Rship Plugin Transports
+    // Transports - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship PluginTransports - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-plugins-transports",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Rship UE Plugin
+    // Unreal Plugin - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Rship Unreal - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "rship-plugins-unreal-engine-core",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
+    // Satellite CLI attach
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Satellite CLI - Attach",
+      "port": 5855,
+      "skipFiles": ["<node_internals>/**"],
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
+      "restart": true
     },
 
     //////////
@@ -128,7 +234,7 @@
       "port": 9876,
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"]
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     {
@@ -140,7 +246,7 @@
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/apps/server/src",
       "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server"],
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
       "sourceMaps": true,
       "restart": true
     },
@@ -176,7 +282,8 @@
         "sherlock-server-core",
         "--run-in-band",
         "--code-coverage=false",
-        "--test-file=${relativeFile}"
+        "--test-file=${relativeFile}",
+        "--watch"
       ],
       "smartStep": true,
       "console": "integratedTerminal",
@@ -200,6 +307,17 @@
       "smartStep": true,
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen"
+    },
+
+    // Watson
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Sherlock Watson - Attach",
+      "port": 9877,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/watson"]
     },
 
     //////////
@@ -301,6 +419,53 @@
       "port": 5959,
       "skipFiles": ["<node_internals>/**"],
       "restart": true
+    },
+
+    /////////////
+    // Shared Lib
+    /////////////
+
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Shared Lib - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "shared",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "sourceMaps": true
+      // "outFiles": ["${workspaceFolder}/dist/apps/server"]
+    },
+
+    // Server - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Server Utils - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "server-utils",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}",
+        "--watch"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
     },
 
     {
@@ -416,6 +581,164 @@
       "restart": true,
       "port": 5858,
       "skipFiles": ["<node_internals>/**"]
+    },
+
+    // User Microservice
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "User Microservice Nest - Attach",
+      "port": 9878,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server-nest"]
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "User Microservice Nest - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "user-schema",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    //
+    // JustNetworks
+
+    // JN Client
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "JN Client - Launch",
+      "webRoot": "${workspaceFolder}/apps/just-networking/client/",
+      "url": "http://localhost:4200",
+      "sourceMapPathOverrides": {
+        "webpack:///./*": "${webRoot}/*",
+        "webpack:///src/*": "${webRoot}/*",
+        "webpack:///*": "*",
+        "webpack:///./~/*": "${webRoot}/node_modules/*",
+        "meteor://💻app/*": "${webRoot}/*"
+      }
+    },
+    // JN Server - Attach
+    {
+      "type": "node",
+      "stopOnEntry": true,
+      "request": "attach",
+      "name": "JN Server - Attach",
+      "port": 5858,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/**"]
+    },
+    // JN Dev server attach
+    // you must be attached to the JN Dev ZT network for this to work
+    {
+      "type": "node",
+      "stopOnEntry": true,
+      "request": "attach",
+      "name": "JN DEV Server - Attach",
+      "port": 9221,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/**"]
+    },
+    // JN Domain Test - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "JN Domain - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "just-networking-domain",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    // JN Core current file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "JN Core - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "just-networking-core",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
+    },
+
+    // JN Device Access Test - Single File
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "JN Device Access - Run Current File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "just-networking-device-access-core",
+        "--watch",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}"
+      ],
+      // this can be set to jest-mongodb* to debug things about the mongo env
+      "env": { "DEBUG": "" },
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    // JN Daemon App - Attach
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "JN Device Daemon - Attach",
+      "port": 5857,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true,
+      "outFiles": [
+        "${workspaceFolder}/dist/apps/just-networking/device-daemon/"
+      ]
+    },
+    // JN seed server App - Attach
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "JN Seed server - Attach",
+      "port": 5856,
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
     }
   ],
   "compounds": [
