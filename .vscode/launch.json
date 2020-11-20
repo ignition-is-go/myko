@@ -290,6 +290,26 @@
       "internalConsoleOptions": "neverOpen"
     },
 
+    // Sherlock Ventuz Plugin - test file
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Sherlock Server Ventuz - Run Current Test File",
+      "program": "${workspaceFolder}/node_modules/.bin/ng",
+      "args": [
+        "test",
+        // Get the closest `jest.config.js` parent folder basename (it matches the project name in `angular.json`)
+        "sherlock-plugins-ventuz-core",
+        "--run-in-band",
+        "--code-coverage=false",
+        "--test-file=${relativeFile}",
+        "--watch"
+      ],
+      "smartStep": true,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+
     // Sherlock forwarder - test single file
     {
       "type": "node",
