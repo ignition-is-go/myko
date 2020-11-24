@@ -59,7 +59,7 @@ npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t r
 # Developer Style Guide
 
 - Notes
-- Best Parctices
+- Best Practices
 
 ## Dev Notes
 
@@ -72,7 +72,7 @@ npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t r
 
 ## Mutations
 
-Each mutation should have an individual file
+Each mutation should be defined in the resolver file of the entity it is acting upon.
 
 ### Naming
 
@@ -92,6 +92,7 @@ Each mutation should have an individual file
 
 - Try to use db in mutations, if there will be loader used, please make a comment why
 - Try to use loader in queries, when you are querying by id(s), if there will be necessary to use db and query by id, please make a note also
+- Delete mutations and service methods should return a boolean value.
 
 ---
 
