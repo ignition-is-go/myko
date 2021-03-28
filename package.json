@@ -122,7 +122,7 @@
     "deep-diff": "^1.0.2",
     "deep-object-diff": "^1.1.0",
     "dom-autoscroller": "^2.3.4",
-    "edge-js": "^14.3.1",
+    "edge-js": "^14.3.2",
     "express": "4.16.4",
     "faker": "^4.1.0",
     "fclone": "^1.0.11",
