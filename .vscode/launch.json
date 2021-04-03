@@ -436,9 +436,10 @@
       "type": "node",
       "request": "attach",
       "name": "Attach Intake Server",
-      "port": 5959,
+      "port": 5859,
       "skipFiles": ["<node_internals>/**"],
-      "restart": true
+      "restart": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
     /////////////
