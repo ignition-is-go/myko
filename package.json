@@ -457,7 +457,8 @@
     "node-expat",
     "reflect-metadata",
     "rxjs",
-    "xml2json"
+    "xml2json",
+    "graphql"
   ],
   "jnServerDependencies": [
     "@nestjs/common",
