@@ -67,3 +67,6 @@ report.20200917.151057.27164.0.001.json
 
 # release test log files
 release-test_*.log
+
+#github token
+token.txt
