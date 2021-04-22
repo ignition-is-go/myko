@@ -334,26 +334,6 @@
     "wait-on": "^3.3.0",
     "xstate": "^4.11.0"
   },
-  "intakeDependencies": [
-    "ajv",
-    "ajv-formats",
-    "@nestjs/core",
-    "@nestjs/common",
-    "@nestjs/cqrs",
-    "@nestjs/config",
-    "@nestjs/platform-express",
-    "@nestjs/microservices",
-    "nestjs-redis",
-    "redis",
-    "luxon",
-    "ramda",
-    "reflect-metadata",
-    "rxjs",
-    "tslib",
-    "uuid",
-    "winston",
-    "winston-graylog2"
-  ],
   "serverDependencies": [
     "@nestjs/common",
     "@nestjs/config",
