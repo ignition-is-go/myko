@@ -234,6 +234,7 @@
       "port": 9876,
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
+      "sourceMaps": true,
       "outFiles": ["${workspaceFolder}/dist/**/*"]
     },
 
