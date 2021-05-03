@@ -8,14 +8,6 @@ This is an angular application which serves as the primary client interface for 
 
 This is a NodeJS application which is the core backend process for Rocketship
 
-## Satellite
-
-Satellite is an electron + angular project that connects a separate computer with the Rocketship server
-
-### Dev Notes
-
-Any main thread dependencies for satellite need to exist both in the dev dependencies of the top level `./package.json`, as well as the dependencies of the `apps/satellite/package.json` in order to both debug and package properly.
-
 # Storybook
 
 In order to use storybook with components that consume GraphQL, you can use the `apolloStorybookDecorator` to mock the GraphQL server.
