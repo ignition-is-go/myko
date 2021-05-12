@@ -12,45 +12,15 @@ This is a NodeJS application which is the core backend process for Rocketship
 
 An asset management backend
 
-# Storybook
+## Intake
 
-In order to use storybook with components that consume GraphQL, you can use the `apolloStorybookDecorator` to mock the GraphQL server.
+A sidecar application that handles the creation of schedule data via a REST endpoint
 
-```typescript
-// ...other imports...
-import apolloStorybookDecorator from 'libs/apollo-storybook-angular'
+## Discovery
 
-storiesOf('My Component', module).addDecorator(
-  apolloStorybookDecorator({
-    typeDefs: schema,
-    mocks: {},
-    typeResolvers: {},
-  }),
-)
-```
+A sidecar application that handles forwarding discovery packets into the docker network from outside. 
 
-More usage example is here
 
-You can import the server schema via:
-
-```typescript
-import { schema } from 'generated/server.schema'
-```
-
-# Local Cache
-
-GraphQL is used for local cache store. Default way for updating cache is refetch query, you can use generated refetchQuery from `graph.service.ts`
-
-## Docker container
-
-If for whatever reason you need to build and push the docker image of the client locally, run the following (replace dev with whatever channel you need to build for):
-
-```bash
-CONFIG=dev
-npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t registry.rship.io/rocketship-client:${CONFIG} .) && docker push registry.rship.io/rocketship-client:${CONFIG}
-```
-
----
 
 # Developer Style Guide
 
@@ -62,14 +32,9 @@ npm run ng -- build rship-client --configuration ${CONFIG} && (docker build -t r
 - TODO & NOTE comments should include author's initials
 
 ```ts
-// TODO(ez): need to implement
-// NOTE(ez): informational message
+// TODO(ts): need to implement
+// NOTE(ts): informational message
 ```
-
-## Mutations
-
-Each mutation should be defined in the resolver file of the entity it is acting upon.
-
 ### Naming
 
 - for mutation which makes `upsert` operation should start with `save`, for example: `saveCard`, `saveCustomer`
@@ -90,15 +55,18 @@ Each mutation should be defined in the resolver file of the entity it is acting 
 - Try to use loader in queries, when you are querying by id(s), if there will be necessary to use db and query by id, please make a note also
 - Delete mutations and service methods should return a boolean value.
 
+
+### Graph Client - Local Cache
+
+GraphQL is used for local cache store. Default way for updating cache is refetch query, you can use generated refetchQuery from `graph.service.ts`
+
 ---
 
-This project was generated using [Nx](https://nx.dev).
-
-🔎 **Nx is a set of Angular CLI power-ups for modern development.**
+This workspace was generated using [Nx](https://nx.dev).
 
 ## Development server
 
-Run `ng serve my-app` for a dev server. Navigate to http://localhost:4200/. The app will automatically reload if you change any of the source files.
+Run `nx serve my-app` for a dev server. The app will automatically reload if you change any of the source files.
 
 ## Code scaffolding
 
@@ -106,20 +74,20 @@ Run `ng g component my-component --project=my-app` to generate a new component.
 
 ## Build
 
-Run `ng build my-app` to build the project. The build artifacts will be stored in the `dist/` directory. Use the `--prod` flag for a production build.
+Run `nx build my-app` to build the project. The build artifacts will be stored in the `dist/` directory. Use the `--prod` flag for a production build.
 
 ## Running unit tests
 
-Run `ng test my-app` to execute the unit tests via [Jest](https://jestjs.io).
+Run `nx test my-app` to execute the unit tests via [Jest](https://jestjs.io).
 
-Run `npm run affected:test` to execute the unit tests affected by a change.
+Run `nx affected:test` to execute the unit tests affected by a change.
 
 ## Running end-to-end tests
 
-Run `ng e2e my-app` to execute the end-to-end tests via [Cypress](https://www.cypress.io).
+Run `nx e2e my-app` to execute the end-to-end tests via [Cypress](https://www.cypress.io).
 
-Run `npm run affected:e2e` to execute the end-to-end tests affected by a change.
+Run `nx affected:e2e` to execute the end-to-end tests affected by a change.
 
 ## Understand your workspace
 
-Run `npm run dep-graph` to see a diagram of the dependencies of your projects.
+Run `nx dep-graph` to see a diagram of the dependencies of your projects.
