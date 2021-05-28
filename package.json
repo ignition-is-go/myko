@@ -201,6 +201,7 @@
     "ssh-keygen": "^0.5.0",
     "subscriptions-transport-ws": "^0.9.16",
     "tinycolor2": "^1.4.1",
+    "tinyduration": "^3.2.1",
     "tsconfig-paths": "3.8.0",
     "tslib": "^1.10.0",
     "unescape-js": "^1.1.4",
