@@ -18,14 +18,24 @@ A sidecar application that handles the creation of schedule data via a REST endp
 
 ## Discovery
 
-A sidecar application that handles forwarding discovery packets into the docker network from outside. 
-
-
+A sidecar application that handles forwarding discovery packets into the docker network from outside.
 
 # Developer Style Guide
 
 - Notes
 - Best Practices
+
+## Commits
+
+Commit messages drive our release notes and CI workflows.
+
+commits which add a feature should include
+`feat(scope): and a message describing the functionality`
+
+commits which fix a bug should include
+`fix(scope): and a message describing the fix`
+
+please refer to [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0-beta.4/) for the complete docs on how to commit to this repo.
 
 ## Dev Notes
 
@@ -35,6 +45,7 @@ A sidecar application that handles forwarding discovery packets into the docker 
 // TODO(ts): need to implement
 // NOTE(ts): informational message
 ```
+
 ### Naming
 
 - for mutation which makes `upsert` operation should start with `save`, for example: `saveCard`, `saveCustomer`
@@ -54,7 +65,6 @@ A sidecar application that handles forwarding discovery packets into the docker 
 - Try to use db in mutations, if there will be loader used, please make a comment why
 - Try to use loader in queries, when you are querying by id(s), if there will be necessary to use db and query by id, please make a note also
 - Delete mutations and service methods should return a boolean value.
-
 
 ### Graph Client - Local Cache
 
