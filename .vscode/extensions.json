@@ -2,10 +2,8 @@
   "recommendations": [
     "nrwl.angular-console",
     "angular.ng-template",
-    "ms-vscode.vscode-typescript-tslint-plugin",
     "apollographql.vscode-apollo",
     "msjsdiag.debugger-for-chrome",
-    "eamodio.find-related",
     "esbenp.prettier-vscode"
   ]
 }
