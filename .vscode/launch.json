@@ -53,7 +53,8 @@
       "port": 5858,
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/**/*"]
+      "outFiles": ["${workspaceFolder}/dist/**/*"],
+      "sourceMaps": true
     },
 
     {
