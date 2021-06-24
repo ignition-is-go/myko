@@ -44,6 +44,7 @@
     "postinstall": "node ./tools/scripts/version-stamp.js && node ./decorate-angular-cli.js && ngcc --properties es2015 browser module main --first-only --create-ivy-entry-points",
     "intake:dev": "ng run intake:serve",
     "gen:intake:schedule-v1": "npx json2ts ./apps/intake/src/assets/schedule-exchange-schema_v1.json > ./apps/intake/src/types/schedule-v1.d.ts",
+    "gen:intake:schedule-v2": "npx json2ts ./apps/intake/src/assets/schedule-exchange-schema_v2.json > ./apps/intake/src/types/schedule-v2.d.ts",
     "server-test-mode": "ng serve server -c e2e",
     "client-e2e-ci": "ng e2e client-e2e --headless",
     "all:ci": "npm run affected:build -- --base=origin/master && npm run affected:test -- --base=origin/master && npm run e2e:ci && npm run affected:lint -- --base=origin/master && prettier --check \"**/*\"",
