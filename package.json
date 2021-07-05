@@ -175,6 +175,7 @@
     "node-forge": "^0.10.0",
     "node-ipc": "^9.1.1",
     "node-machine-id": "^1.1.12",
+    "node-scp": "0.0.14",
     "node-ssh": "^11.0.0",
     "object-hash": "2.0.3",
     "obs-websocket-js": "^4.0.1",
