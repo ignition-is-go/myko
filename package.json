@@ -41,10 +41,10 @@
     "satellite:regenerate-icon": "sh tools/scripts/make-satellite-icons.sh",
     "satellite:test": "ng test satellite --watch=true",
     "install-group-deps": "node ./tools/scripts/install-group-deps.js",
-    "preinstall": "node ./tools/scripts/install-edge-js-deps.js",
     "postinstall": "node ./tools/scripts/version-stamp.js && node ./decorate-angular-cli.js && ngcc --properties es2015 browser module main --first-only --create-ivy-entry-points",
     "intake:dev": "ng run intake:serve",
     "gen:intake:schedule-v1": "npx json2ts ./apps/intake/src/assets/schedule-exchange-schema_v1.json > ./apps/intake/src/types/schedule-v1.d.ts",
+    "gen:intake:schedule-v2": "npx json2ts ./apps/intake/src/assets/schedule-exchange-schema_v2.json > ./apps/intake/src/types/schedule-v2.d.ts",
     "server-test-mode": "ng serve server -c e2e",
     "client-e2e-ci": "ng e2e client-e2e --headless",
     "all:ci": "npm run affected:build -- --base=origin/master && npm run affected:test -- --base=origin/master && npm run e2e:ci && npm run affected:lint -- --base=origin/master && prettier --check \"**/*\"",
@@ -129,7 +129,6 @@
     "deep-diff": "^1.0.2",
     "deep-object-diff": "^1.1.0",
     "dom-autoscroller": "^2.3.4",
-    "edge-js": "^14.3.2",
     "express": "4.16.4",
     "faker": "^4.1.0",
     "fclone": "^1.0.11",
@@ -208,6 +207,7 @@
     "uuid": "^3.3.3",
     "webtorrent": "^0.108.6",
     "winston": "^3.2.1",
+    "winston-daily-rotate-file": "^4.5.5",
     "winston-graylog2": "^2.1.2",
     "ws": "^7.3.1",
     "xhr2": "^0.2.0",
@@ -397,7 +397,6 @@
     "uuid",
     "unescape-js",
     "winston",
-    "winston-graylog2",
     "xstate"
   ],
   "curatorServerDependencies": [
@@ -425,8 +424,7 @@
     "tsconfig-paths",
     "tslib",
     "uuid",
-    "winston",
-    "winston-graylog2"
+    "winston"
   ],
   "sherlockServerDependencies": [
     "@nestjs/core",
