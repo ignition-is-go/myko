@@ -270,6 +270,7 @@
     "@types/node-fetch": "^2.1.6",
     "@types/node-forge": "^0.9.5",
     "@types/node-ipc": "^9.1.2",
+    "@types/object-hash": "^2.1.1",
     "@types/passport-jwt": "^3.0.3",
     "@types/passport-local": "^1.0.33",
     "@types/ping": "^0.2.0",
