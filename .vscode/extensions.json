@@ -4,6 +4,7 @@
     "angular.ng-template",
     "apollographql.vscode-apollo",
     "msjsdiag.debugger-for-chrome",
-    "esbenp.prettier-vscode"
+    "esbenp.prettier-vscode",
+    "firsttris.vscode-jest-runner"
   ]
 }

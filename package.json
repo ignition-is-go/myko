@@ -156,7 +156,7 @@
     "koa-router": "^8.0.8",
     "lodash.debounce": "^4.0.8",
     "lodash.merge": "^4.6.2",
-    "luxon": "^1.19.3",
+    "luxon": "^1.27.0",
     "material-design-icons": "^3.0.1",
     "md5-file": "^4.0.0",
     "mongodb": "^3.5.6",
@@ -398,7 +398,6 @@
     "uuid",
     "unescape-js",
     "winston",
-    "winston-graylog2",
     "xstate"
   ],
   "curatorServerDependencies": [
@@ -426,8 +425,7 @@
     "tsconfig-paths",
     "tslib",
     "uuid",
-    "winston",
-    "winston-graylog2"
+    "winston"
   ],
   "sherlockServerDependencies": [
     "@nestjs/core",
