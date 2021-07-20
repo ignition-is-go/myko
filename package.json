@@ -51,7 +51,8 @@
     "desktop-app:regenerate-icon": "sh tools/scripts/make-desktop-app-icons.sh fingerprint_thick",
     "release:dry-run": "npx -p @semantic-release/exec -p @semantic-release/git -p semantic-release semantic-release -d",
     "electron-builder-postinstall": "exitzero electron-builder install-app-deps",
-    "workspace-generator": "nx workspace-generator"
+    "workspace-generator": "nx workspace-generator",
+    "release:dev": "./tools/scripts/release.sh dev"
   },
   "private": true,
   "dependencies": {
