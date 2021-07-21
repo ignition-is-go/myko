@@ -51,7 +51,8 @@
     "desktop-app:regenerate-icon": "sh tools/scripts/make-desktop-app-icons.sh fingerprint_thick",
     "release:dry-run": "npx -p @semantic-release/exec -p @semantic-release/git -p semantic-release semantic-release -d",
     "electron-builder-postinstall": "exitzero electron-builder install-app-deps",
-    "workspace-generator": "nx workspace-generator"
+    "workspace-generator": "nx workspace-generator",
+    "release:dev": "./tools/scripts/release.sh dev"
   },
   "private": true,
   "dependencies": {
@@ -83,7 +84,7 @@
     "@nestjs/passport": "^7.1.0",
     "@nestjs/platform-express": "7.5.5",
     "@nestjs/platform-socket.io": "^7.4.4",
-    "@nestjs/schedule": "^0.4.0",
+    "@nestjs/schedule": "^0.4.3",
     "@nestjs/websockets": "^7.4.4",
     "@ngstack/code-editor": "^1.0.0",
     "@nrwl/linter": "11.6.1",
