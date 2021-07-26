@@ -51,7 +51,8 @@
     "desktop-app:regenerate-icon": "sh tools/scripts/make-desktop-app-icons.sh fingerprint_thick",
     "release:dry-run": "npx -p @semantic-release/exec -p @semantic-release/git -p semantic-release semantic-release -d",
     "electron-builder-postinstall": "exitzero electron-builder install-app-deps",
-    "workspace-generator": "nx workspace-generator"
+    "workspace-generator": "nx workspace-generator",
+    "release:dev": "./tools/scripts/release.sh dev"
   },
   "private": true,
   "dependencies": {
@@ -271,6 +272,7 @@
     "@types/node-fetch": "^2.1.6",
     "@types/node-forge": "^0.9.5",
     "@types/node-ipc": "^9.1.2",
+    "@types/object-hash": "^2.1.1",
     "@types/passport-jwt": "^3.0.3",
     "@types/passport-local": "^1.0.33",
     "@types/ping": "^0.2.0",
