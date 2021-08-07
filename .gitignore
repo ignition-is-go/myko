@@ -73,3 +73,6 @@ release-test_*.log
 
 #github token
 token.txt
+
+#intake config
+apps/intake/intake-config.json
