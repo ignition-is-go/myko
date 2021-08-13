@@ -21,7 +21,8 @@
         "webpack:///*": "*",
         "webpack:///./~/*": "${webRoot}/node_modules/*",
         "meteor://💻app/*": "${webRoot}/*"
-      }
+      },
+      "sourceMaps": true
     },
 
     // Client - Single File
