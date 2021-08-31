@@ -179,6 +179,7 @@
     "node-machine-id": "^1.1.12",
     "node-scp": "0.0.14",
     "node-ssh": "^11.1.1",
+    "node-tradfri-client": "^3.0.1",
     "object-hash": "2.0.3",
     "obs-websocket-js": "^4.0.1",
     "on-finished": "^2.3.0",
