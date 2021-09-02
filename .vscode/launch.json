@@ -8,13 +8,12 @@
     // RSHIP
     ////////
 
-    // Client
     {
-      "type": "chrome",
+      "name": "Launch Chrome",
       "request": "launch",
-      "name": "Rship Client - Launch",
-      "webRoot": "${workspaceFolder}/apps/rship/client/",
+      "type": "pwa-chrome",
       "url": "http://localhost:4200",
+      "webRoot": "${workspaceFolder}/apps/rship/client",
       "sourceMapPathOverrides": {
         "webpack:///./*": "${webRoot}/*",
         "webpack:///src/*": "${webRoot}/*",
