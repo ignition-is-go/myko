@@ -76,3 +76,6 @@ token.txt
 
 #intake config
 apps/intake/intake-config.json
+
+#heapSnapshots
+*.heapsnapshot
