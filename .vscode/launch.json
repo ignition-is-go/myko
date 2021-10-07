@@ -60,9 +60,9 @@
     {
       "type": "node",
       "request": "attach",
-      "name": "Rship Server - Attach Dev",
+      "name": "Rship Server - Attach London",
       "port": 9229,
-      "address": "172.24.1.1",
+      "address": "10.147.17.99",
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/dist/apps/rship/server",
       "skipFiles": ["<node_internals>/**"],
