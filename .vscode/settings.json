@@ -69,5 +69,6 @@
   ],
   "nxConsole.useNVM": true,
   "nxConsole.enableTelemetry": false,
-  "telemetry.enableTelemetry": false
+  "telemetry.enableTelemetry": false,
+  "github-actions.workflows.pinned.workflows": [".github/workflows/release.yml"]
 }
