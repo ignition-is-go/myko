@@ -53,7 +53,8 @@
     "release:dry-run": "npx -p @semantic-release/exec -p @semantic-release/git -p semantic-release semantic-release -d",
     "electron-builder-postinstall": "exitzero electron-builder install-app-deps",
     "workspace-generator": "nx workspace-generator",
-    "release:dev": "./tools/scripts/release.sh dev"
+    "release:dev": "./tools/scripts/release.sh dev",
+    "release:beta": "./tools/scripts/release.sh staging"
   },
   "private": true,
   "dependencies": {
