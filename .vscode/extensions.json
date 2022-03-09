@@ -4,6 +4,7 @@
     "angular.ng-template",
     "msjsdiag.debugger-for-chrome",
     "esbenp.prettier-vscode",
-    "firsttris.vscode-jest-runner"
+    "firsttris.vscode-jest-runner",
+    "edonet.vscode-command-runner"
   ]
 }
