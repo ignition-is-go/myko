@@ -77,6 +77,8 @@
   "command-runner.terminal.autoClear": false,
   "command-runner.terminal.autoFocus": false,
   "command-runner.commands": {
-    "poke": "touch ./apps/sherlock/server/src/environments/environment.local.ts && touch ./apps/rship/server/src/environments/environment.local.ts &&  && touch apps/intake/src/environments/environment.local.ts"
+    "poke sherlock": "touch ./apps/sherlock/server/src/environments/environment.local.ts",
+    "poke rship": "touch ./apps/rship/server/src/environments/environment.local.ts",
+    "poke intake": "touch ./apps/intake/src/environments/environment.local.ts"
   }
 }
