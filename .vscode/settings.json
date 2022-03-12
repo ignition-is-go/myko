@@ -80,5 +80,8 @@
     "poke sherlock": "touch ./apps/sherlock/server/src/environments/environment.local.ts",
     "poke rship": "touch ./apps/rship/server/src/environments/environment.local.ts",
     "poke intake": "touch ./apps/intake/src/environments/environment.local.ts"
+  },
+  "[dockerfile]": {
+    "editor.defaultFormatter": "ms-azuretools.vscode-docker"
   }
 }
