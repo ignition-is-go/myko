@@ -44,9 +44,13 @@
       "request": "attach",
       "name": "Rship Server - Attach",
       "port": 5858,
-      "skipFiles": ["<node_internals>/**"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
       "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/**/*"],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*"
+      ],
       "sourceMaps": true
     },
     {
@@ -57,8 +61,12 @@
       "address": "10.147.17.99",
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/dist/apps/rship/server",
-      "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/**/*"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*"
+      ],
       "sourceMaps": true,
       "restart": true
     },
@@ -178,8 +186,12 @@
       "request": "attach",
       "name": "Satellite CLI - Attach",
       "port": 5855,
-      "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/**/*"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*"
+      ],
       "restart": true
     },
     {
@@ -194,10 +206,14 @@
       "request": "attach",
       "name": "Sherlock Server - Attach",
       "port": 9876,
-      "skipFiles": ["<node_internals>/**"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
       "restart": true,
       "sourceMaps": true,
-      "outFiles": ["${workspaceFolder}/dist/**/*"]
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*"
+      ]
     },
     {
       "type": "node",
@@ -207,8 +223,12 @@
       "address": "172.24.1.1",
       "remoteRoot": "/usr/src/app",
       "localRoot": "${workspaceFolder}/apps/server/src",
-      "skipFiles": ["<node_internals>/**"],
-      "outFiles": ["${workspaceFolder}/dist/**/*"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*"
+      ],
       "sourceMaps": true,
       "restart": true
     },
@@ -283,40 +303,13 @@
       "request": "attach",
       "name": "Sherlock Watson - Attach",
       "port": 9877,
-      "skipFiles": ["<node_internals>/**"],
-      "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/watson"]
-    },
-    {
-      "type": "chrome",
-      "request": "launch",
-      "name": "Curator Client - Launch",
-      "webRoot": "${workspaceFolder}/apps/curator/client/",
-      "url": "http://localhost:4200"
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Curator Server - Attach",
-      "port": 7777,
-      "skipFiles": ["<node_internals>/**"],
-      "restart": true
-    },
-    {
-      "type": "node",
-      "request": "launch",
-      "name": "Curator Server - Run Current File",
-      "program": "${workspaceFolder}/node_modules/.bin/nx",
-      "args": [
-        "test",
-        "curator-server",
-        "--run-in-band",
-        "--code-coverage=false",
-        "--test-file=${relativeFile}"
+      "skipFiles": [
+        "<node_internals>/**"
       ],
-      "smartStep": true,
-      "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
+      "restart": true,
+      "outFiles": [
+        "${workspaceFolder}/dist/apps/sherlock/watson"
+      ]
     },
     {
       "type": "node",
@@ -357,9 +350,13 @@
       "request": "attach",
       "name": "Attach Intake Server",
       "port": 5859,
-      "skipFiles": ["<node_internals>/**"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
       "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/**/*"]
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*"
+      ]
     },
     {
       "type": "node",
@@ -447,7 +444,9 @@
         "webpack:///src/*": "${webRoot}/*",
         "webpack:///./~/*": "${webRoot}/node_modules/*"
       },
-      "skipFiles": [".ts$"]
+      "skipFiles": [
+        ".ts$"
+      ]
     },
     {
       "name": "Electron: Renderer",
@@ -467,11 +466,17 @@
       "windows": {
         "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
       },
-      "args": ["--remote-debugging-port=9223", "--serve", "--force-wizard"],
+      "args": [
+        "--remote-debugging-port=9223",
+        "--serve",
+        "--force-wizard"
+      ],
       "outputCapture": "std",
       "preLaunchTask": "compile-satellite-main",
       "sourceMaps": true,
-      "outFiles": ["dist/apps/satellite/"]
+      "outFiles": [
+        "dist/apps/satellite/"
+      ]
     },
     {
       "name": "Electron: Main",
@@ -483,11 +488,16 @@
       "windows": {
         "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
       },
-      "args": ["--remote-debugging-port=9223", "--serve"],
+      "args": [
+        "--remote-debugging-port=9223",
+        "--serve"
+      ],
       "outputCapture": "std",
       "preLaunchTask": "compile-satellite-main",
       "sourceMaps": true,
-      "outFiles": ["dist/apps/satellite/"]
+      "outFiles": [
+        "dist/apps/satellite/"
+      ]
     },
     {
       "name": "Electron: Main - Dist",
@@ -499,11 +509,16 @@
       "windows": {
         "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
       },
-      "args": ["--remote-debugging-port=9223", "--force-wizard"],
+      "args": [
+        "--remote-debugging-port=9223",
+        "--force-wizard"
+      ],
       "outputCapture": "std",
       "preLaunchTask": "build-satellite-dist",
       "sourceMaps": true,
-      "outFiles": ["dist/apps/satellite/"]
+      "outFiles": [
+        "dist/apps/satellite/"
+      ]
     },
     {
       "name": "Watson - Attach Main Process",
@@ -511,16 +526,22 @@
       "request": "attach",
       "restart": true,
       "port": 5858,
-      "skipFiles": ["<node_internals>/**"]
+      "skipFiles": [
+        "<node_internals>/**"
+      ]
     },
     {
       "type": "node",
       "request": "attach",
       "name": "User Microservice Nest - Attach",
       "port": 9878,
-      "skipFiles": ["<node_internals>/**"],
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
       "restart": true,
-      "outFiles": ["${workspaceFolder}/dist/apps/sherlock/server-nest"]
+      "outFiles": [
+        "${workspaceFolder}/dist/apps/sherlock/server-nest"
+      ]
     },
     {
       "type": "node",
@@ -546,15 +567,24 @@
   "compounds": [
     {
       "name": "Electron: All+Wiz",
-      "configurations": ["Electron: Main+Wiz", "Electron: Renderer"]
+      "configurations": [
+        "Electron: Main+Wiz",
+        "Electron: Renderer"
+      ]
     },
     {
       "name": "Electron: All",
-      "configurations": ["Electron: Main", "Electron: Renderer"]
+      "configurations": [
+        "Electron: Main",
+        "Electron: Renderer"
+      ]
     },
     {
       "name": "Electron: All - Dist",
-      "configurations": ["Electron: Main - Dist", "Electron: Renderer"]
+      "configurations": [
+        "Electron: Main - Dist",
+        "Electron: Renderer"
+      ]
     }
   ]
 }
@@ -572,7 +602,6 @@
 // 		"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
 // 	}
 // }
-
 // {
 //   "type": "node",
 //   "name": "vscode-jest-tests",
@@ -589,6 +618,5 @@
 //   "internalConsoleOptions": "neverOpen",
 //   "program": "${workspaceFolder}/node_modules/@angular/cli/bin/ng"
 // },
-
 // Magic Sauce Broken by VS Code Demons
 // "$(node ${workspaceFolder}/tools/scripts/determine-nx-app.js ${workspaceFolder} $(dirname $(${workspaceFolder}/node_modules/.bin/find-up --cwd=${fileDirname} jest.config.js)))",
