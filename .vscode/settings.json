@@ -86,5 +86,24 @@
   },
   "[shellscript]": {
     "editor.defaultFormatter": "foxundermoon.shell-format"
+  },
+  "redisXplorer.config": {
+    "profiles": [
+      {
+        "name": "INTAKE",
+        "host": "localhost",
+        "accessKey": "",
+        "filter": "*",
+        "port": "6379"
+      },
+      {
+        "name": "asdf",
+        "host": "10.32.23.85",
+        "accessKey": "",
+        "filter": "*",
+        "port": "6379"
+      }
+    ],
+    "scanLimit": 200
   }
 }
