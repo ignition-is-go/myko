@@ -31,7 +31,18 @@
       "skipFiles": ["<node_internals>/**"],
       "restart": true,
       "outFiles": ["${workspaceFolder}/dist/**/*"],
-      "sourceMaps": true
+      "sourceMaps": true,
+      "webRoot": "${workspaceFolder}/apps/rship/client",
+      "pathMappings": [
+        {
+          "url": "webpack:///libs",
+          "path": "${workspaceFolder}/libs"
+        },
+        {
+          "url": "webpack:///apps",
+          "path": "${workspaceFolder}/apps"
+        }
+      ]
     },
     {
       "type": "node",
