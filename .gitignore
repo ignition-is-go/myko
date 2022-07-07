@@ -85,3 +85,5 @@ libs/rship-logging/src/logs/*
 
 #intake dumps
 imports
+build/config.gypi
+.redisConsole.log
