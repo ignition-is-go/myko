@@ -87,3 +87,6 @@ libs/rship-logging/src/logs/*
 imports
 build/config.gypi
 .redisConsole.log
+
+# local utils
+mongo-sync.sh
