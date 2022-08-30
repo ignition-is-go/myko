@@ -89,4 +89,3 @@ build/config.gypi
 .redisConsole.log
 
 # local utils
-mongo-sync.sh
