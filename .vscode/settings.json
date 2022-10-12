@@ -107,5 +107,6 @@
       }
     ],
     "scanLimit": 200
-  }
+  },
+  "githubPullRequests.ignoredPullRequestBranches": ["main"]
 }
