@@ -45,7 +45,6 @@ Thumbs.db
 
 yarn.lock
 
-
 # electron build files
 /out
 
@@ -81,7 +80,7 @@ apps/intake/intake-config.json
 *.heapsnapshot
 
 #logs
-libs/rship-logging/src/logs/*
+libs/logging/src/logs/*
 
 #intake dumps
 imports
@@ -89,3 +88,5 @@ build/config.gypi
 .redisConsole.log
 
 # local utils
+
+.turbo
