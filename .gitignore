@@ -90,3 +90,4 @@ build/config.gypi
 # local utils
 
 .turbo
+.angular

@@ -3,8 +3,7 @@
   "editor.formatOnSave": true,
   "files.exclude": {
     "**/.git/objects/**": true,
-    "**/.git/subtree-cache/**": true,
-    "**/node_modules/**": true
+    "**/.git/subtree-cache/**": true
   },
   "typescript.tsdk": "node_modules/typescript/lib",
   // "editor.codeActionsOnSave": {
