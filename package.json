@@ -13,8 +13,6 @@
   ],
   "private": true,
   "devDependencies": {
-    "@angular/common": "^14.2.12",
-    "@angular/compiler-cli": "^14.2.12",
     "ts-node": "^10.9.1",
     "tslib": "^2.4.1",
     "turbo": "^1.6.3"
