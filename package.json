@@ -27,6 +27,5 @@
         "node ./tools/scripts/version-stamp.js"
       ]
     }
-  },
-  "dependencies": {}
+  }
 }
