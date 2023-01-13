@@ -36,6 +36,9 @@ yarn-error.log
 testem.log
 /typings
 /libs/rship-logging/src/logs/*
+
+apps/rship/gateway/libs/rship-logging/*
+apps/rship/server/libs/rship-logging/*
 **/dev-deploy
 **/dev-deploy**
 
