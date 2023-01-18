@@ -113,5 +113,8 @@
   },
   "[env]": {
     "editor.defaultFormatter": "IronGeek.vscode-env"
+  },
+  "[svelte]": {
+    "editor.defaultFormatter": "svelte.svelte-vscode"
   }
 }
