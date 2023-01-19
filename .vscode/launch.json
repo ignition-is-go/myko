@@ -23,6 +23,13 @@
       ]
     },
     {
+      "name": "Attach",
+      "port": 9229,
+      "request": "attach",
+      "skipFiles": ["<node_internals>/**"],
+      "type": "node"
+    },
+    {
       "type": "chrome",
       "request": "launch",
       "reAttach": true,
