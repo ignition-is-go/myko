@@ -39,6 +39,7 @@ testem.log
 
 apps/rship/gateway/libs/rship-logging/*
 apps/rship/server/libs/rship-logging/*
+apps/sherlock/server/libs/rship-logging/*
 **/dev-deploy
 **/dev-deploy**
 
