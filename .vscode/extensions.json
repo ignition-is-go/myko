@@ -1,8 +1,4 @@
 {
   "recommendations": [
-    "angular.ng-template",
-    "esbenp.prettier-vscode",
-    "firsttris.vscode-jest-runner",
-    "edonet.vscode-command-runner"
   ]
 }
