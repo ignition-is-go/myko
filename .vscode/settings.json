@@ -10,49 +10,9 @@
   // 	"source.fixAll.prettier": true
   // },
   "editor.defaultFormatter": "esbenp.prettier-vscode",
-  "html.format.enable": false,
+  "html.format.enable": true,
   "typescript.format.enable": true,
-  "findrelated.applyRulesets": ["angular", "tests"],
-  "findrelated.rulesets": [
-    {
-      "name": "angular",
-      "rules": [
-        {
-          "locators": ["$1.html"],
-          "pattern": "(.*)\\.(?:ts|js)$"
-        },
-        {
-          "locators": ["$1.ts"],
-          "pattern": "(.*)\\.html$"
-        },
-        {
-          "locators": ["$1.scss"],
-          "pattern": "(.*)\\.html$"
-        },
-        {
-          "locators": ["$1.html"],
-          "pattern": "(.*)\\.scss$"
-        }
-      ]
-    },
-    {
-      "name": "tests",
-      "rules": [
-        {
-          "pattern": "(.*)\\/(.*)\\.ts$",
-          "locators": ["$1/__tests__/$2.test.ts", "$1/__tests__/$2.spec.ts"]
-        },
-        {
-          "pattern": "(.*)\\/__tests__\\/(.*)\\.test\\.ts$",
-          "locators": ["$1/$2.ts"]
-        },
-        {
-          "pattern": "(.*)\\/__tests__\\/(.*)\\.spec\\.ts$",
-          "locators": ["$1/$2.ts"]
-        }
-      ]
-    }
-  ],
+
   "search.exclude": {
     "**/coverage": true
   },
@@ -116,5 +76,6 @@
   },
   "[svelte]": {
     "editor.defaultFormatter": "svelte.svelte-vscode"
-  }
+  },
+  "editor.formatOnPaste": true
 }
