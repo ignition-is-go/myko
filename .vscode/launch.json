@@ -6,11 +6,17 @@
   "configurations": [
     {
       "type": "firefox",
+      "request": "attach",
+      "name": "Attach",
+      "port": 4200
+    },
+    {
+      "type": "firefox",
       "request": "launch",
       "reAttach": true,
       "name": "Launch localhost",
-      "url": "http://localhost:4200",
-      "webRoot": "${workspaceFolder}/apps/rship/client",
+      "url": "https://localhost:4200",
+      "webRoot": "${workspaceFolder}/apps/rship/client-svelte",
       "pathMappings": [
         {
           "url": "webpack:///libs",
