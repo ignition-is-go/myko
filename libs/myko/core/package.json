@@ -1,0 +1,8 @@
+{
+  "name": "@myko/core",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.0"
+  }
+}
