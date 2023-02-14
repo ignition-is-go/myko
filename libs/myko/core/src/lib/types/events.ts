@@ -1,27 +1,29 @@
-import { MYKO_ITEM_TYPE } from '../decorators'
-import { IMykoItem } from './item'
+import { IMykoItem, MYKO_ITEM_TYPE } from './item'
 
-export enum ChangeType {
+export enum MykoEventType {
   SET = 'SET',
   DEL = 'DEL',
 }
 
-export type Change<T extends IMykoItem, C extends ChangeType> = {
+export const MYKO_EVENT_HANDLER = '__MYKO_EVENT_HANDLER__'
+export const MYKO_EVENT = '__MYKO_EVENT__'
+
+export type MykoEvent<T extends IMykoItem, C extends MykoEventType> = {
   item: T
   changeType: C
   itemType: string
 }
 
 export const makeSet = <T extends IMykoItem>(item: T) =>
-  makeChange(item, ChangeType.SET)
+  makeMykoEvent(item, MykoEventType.SET)
 
 export const makeDel = <T extends IMykoItem>(item: T) =>
-  makeChange(item, ChangeType.DEL)
+  makeMykoEvent(item, MykoEventType.DEL)
 
-const makeChange = <T extends IMykoItem, U extends ChangeType>(
+const makeMykoEvent = <T extends IMykoItem, U extends MykoEventType>(
   item: T,
   changeType: U,
-): Change<T, U> => {
+): MykoEvent<T, U> => {
   const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
   if (!itemType) {
@@ -32,4 +34,11 @@ const makeChange = <T extends IMykoItem, U extends ChangeType>(
     item,
     itemType,
   }
+}
+
+export interface IMykoEventHandler<
+  T extends IMykoItem,
+  C extends MykoEventType,
+> {
+  handle(event: MykoEvent<T, C>): Promise<void>
 }

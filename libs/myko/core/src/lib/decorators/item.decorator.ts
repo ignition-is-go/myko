@@ -1,6 +1,5 @@
 import 'reflect-metadata'
-
-export const MYKO_ITEM_TYPE = '__MYKO_ITEM_TYPE__'
+import { MYKO_ITEM_TYPE } from '../types'
 
 export const MykoItem =
   (itemType: string): ClassDecorator =>
