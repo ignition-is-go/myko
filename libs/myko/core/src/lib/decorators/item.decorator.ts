@@ -7,8 +7,11 @@ export const MykoItem =
     const original: any = target
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
+      Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, original)
       Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, typed)
       return typed
     }
+    Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
+
     return withType
   }

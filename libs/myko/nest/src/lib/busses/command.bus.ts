@@ -15,7 +15,7 @@ export class MykoCommandBus extends AMykoCommandBus {
     super()
   }
 
-  execute<T extends IMykoCommand, R = any>(command: T): Promise<R> {
+  execute<T extends IMykoCommand>(command: T): Promise<void> {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     const handler = this.handlers.get(commandId)
 
@@ -28,8 +28,7 @@ export class MykoCommandBus extends AMykoCommandBus {
       return
     }
 
-    handler.execute(command)
-    return
+    return handler.execute(command)
   }
 
   protected registerHandler(handler: MykoCommandHandlerType): void {

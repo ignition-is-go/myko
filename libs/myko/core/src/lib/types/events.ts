@@ -1,3 +1,4 @@
+import { filter } from 'rxjs'
 import { IMykoItem, MYKO_ITEM_TYPE } from './item'
 
 export enum MykoEventType {
@@ -8,7 +9,7 @@ export enum MykoEventType {
 export const MYKO_EVENT_HANDLER = '__MYKO_EVENT_HANDLER__'
 export const MYKO_EVENT = '__MYKO_EVENT__'
 
-export type MykoEvent<T extends IMykoItem, C extends MykoEventType> = {
+export type IMykoEvent<T extends IMykoItem, C extends MykoEventType> = {
   item: T
   changeType: C
   itemType: string
@@ -23,7 +24,7 @@ export const makeDel = <T extends IMykoItem>(item: T) =>
 const makeMykoEvent = <T extends IMykoItem, U extends MykoEventType>(
   item: T,
   changeType: U,
-): MykoEvent<T, U> => {
+): IMykoEvent<T, U> => {
   const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
   if (!itemType) {
@@ -36,9 +37,17 @@ const makeMykoEvent = <T extends IMykoItem, U extends MykoEventType>(
   }
 }
 
-export interface IMykoEventHandler<
-  T extends IMykoItem,
-  C extends MykoEventType,
-> {
-  handle(event: MykoEvent<T, C>): Promise<void>
-}
+export const ofItems = <T extends IMykoItem>(
+  ...filterTypes: (new (...args: any[]) => T)[]
+) =>
+  filter((event: IMykoEvent<T, MykoEventType>) =>
+    filterTypes.some(
+      (filterType) =>
+        Reflect.getMetadata(MYKO_ITEM_TYPE, filterType) === event.itemType,
+    ),
+  )
+
+export const ofType = <T extends IMykoItem>(...filterTypes: MykoEventType[]) =>
+  filter((event: IMykoEvent<T, MykoEventType>) =>
+    filterTypes.some((filterType) => filterType === event.changeType),
+  )
