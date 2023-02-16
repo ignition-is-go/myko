@@ -1,15 +1,13 @@
-import 'reflect-metadata'
-
 import {
-  IMykoCommand,
-  IMykoCommandHandler,
+  MCommand,
+  MCommandHandler,
   MYKO_COMMAND_ID_KEY,
   MYKO_HANDLER_COMMAND_ID_KEY,
 } from '../types'
 
 export const MykoCommand =
   (commandId: string) =>
-  <T extends IMykoCommand>(target: new (...args: any[]) => T) => {
+  <T extends MCommand>(target: new (...args: any[]) => T) => {
     const original: any = target
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
@@ -20,10 +18,10 @@ export const MykoCommand =
     return withType
   }
 
-export const MykoCommandHandler = <T extends IMykoCommand>(
+export const MykoCommandHandler = <T extends MCommand>(
   command: new (...args: any[]) => T,
 ) => {
-  return (target: new (...args: any[]) => IMykoCommandHandler<T>) => {
+  return (target: new (...args: any[]) => MCommandHandler<T>) => {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     Reflect.defineMetadata(MYKO_HANDLER_COMMAND_ID_KEY, commandId, target)
   }

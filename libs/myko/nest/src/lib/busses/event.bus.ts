@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common'
 import {
   AMykoEventBus,
-  IMykoCommand,
-  IMykoEvent,
-  IMykoItem,
-  IMykoSaga,
+  MCommand,
+  MEvent,
+  MItem,
+  MSaga,
   makeDel,
   makeSet,
-  MykoEventType,
+  MEventType,
   MykoSagaType,
   MYKO_SAGA_METADATA,
 } from '@myko/core'
@@ -20,26 +20,13 @@ export class MykoEventBus extends AMykoEventBus {
     super(commandBus)
   }
 
-  publish<T extends IMykoEvent<IMykoItem, MykoEventType>>(
-    event: T,
-  ): Promise<void> {
+  publish<T extends MEvent>(event: T): Promise<void> {
     this.subject$.next(event)
     return
   }
 
-  publishSet<T extends IMykoItem>(item: T) {
-    this.publish(makeSet(item))
-  }
-
-  publishDel<T extends IMykoItem>(item: T) {
-    this.publish(makeDel(item))
-  }
-
   public registerSagas(types: MykoSagaType[]) {
-    const sagas: IMykoSaga<
-      IMykoEvent<IMykoItem, MykoEventType>,
-      IMykoCommand
-    >[] = types
+    const sagas: MSaga[] = types
       .map((target) => {
         const metadata = Reflect.getMetadata(MYKO_SAGA_METADATA, target) || []
         const instance = this.moduleRef.get(target, { strict: false })

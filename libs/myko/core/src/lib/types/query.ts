@@ -1,16 +1,16 @@
-import { IMykoItem } from './item'
+import { MItem } from './item'
 
 export const MYKO_HANDLER_QUERY_ID_KEY = '__MYKI_HANDLER_QUERY_ID_KEY__'
 export const MYKO_QUERY_ID_KEY = '__MYKO_QUERY_ID_KEY__'
 
-export abstract class IMykoQuery<T extends IMykoItem | IMykoItem[]> {
+export type MQueryable = MItem | MItem[]
+
+export abstract class MQuery<T extends MQueryable = MQueryable> {
   $result: T
 }
 
-export type MykoQueryResult<Q> = Q extends IMykoQuery<infer R>
-  ? Promise<R>
-  : never
+export type MQueryResult<Q> = Q extends MQuery<infer R> ? Promise<R> : never
 
-export interface IMykoQueryHandler<H> {
-  execute(query: H): MykoQueryResult<H>
+export interface MQueryHandler<H> {
+  execute(query: H): MQueryResult<H>
 }

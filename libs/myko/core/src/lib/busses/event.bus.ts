@@ -1,33 +1,20 @@
 import 'reflect-metadata'
+import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
-  filter,
-  from,
-  mergeMap,
-  MonoTypeOperatorFunction,
-  Observable,
-  OperatorFunction,
-  Subscription,
-  tap,
-} from 'rxjs'
-import {
-  IMykoItem,
-  IMykoEvent,
-  MykoEventType,
-  IMykoSaga,
-  IMykoCommand,
-  Constructor,
-  MYKO_ITEM_TYPE,
+  MItem,
+  MEvent,
+  MSaga,
+  MCommand,
+  Type,
+  makeSet,
+  makeDel,
 } from '../types'
 import { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
-export type MykoSagaType = Constructor<
-  IMykoSaga<IMykoEvent<IMykoItem, MykoEventType>, IMykoCommand>
->
+export type MykoSagaType = Type<MSaga>
 
-export abstract class AMykoEventBus extends ObservableBus<
-  IMykoEvent<IMykoItem, MykoEventType>
-> {
+export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   constructor(private commandBus: AMykoCommandBus) {
     super()
     this.subscriptions = []
@@ -35,13 +22,17 @@ export abstract class AMykoEventBus extends ObservableBus<
 
   private readonly subscriptions: Subscription[]
 
-  abstract publish<T extends IMykoEvent<IMykoItem, MykoEventType>>(
-    Event: T,
-  ): Promise<void>
+  publishSet<T extends MItem>(item: T) {
+    this.publish(makeSet(item))
+  }
 
-  protected registerSaga(
-    saga: IMykoSaga<IMykoEvent<IMykoItem, MykoEventType>, IMykoCommand>,
-  ) {
+  publishDel<T extends MItem>(item: T) {
+    this.publish(makeDel(item))
+  }
+
+  abstract publish<T extends MEvent>(Event: T): Promise<void>
+
+  protected registerSaga(saga: MSaga) {
     if (!isFunction(saga)) {
       throw new Error(
         'Cannot Register Saga - Must retrun Observable of Commands',

@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common'
 import {
   AMykoQueryBus,
-  IMykoQuery,
+  MQuery,
   MykoQueryHandlerType,
-  MykoQueryResult,
+  MQueryResult,
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_QUERY_ID_KEY,
-  MykoQueryable,
+  MQueryable,
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
@@ -17,7 +17,7 @@ export class MykoQueryBus extends AMykoQueryBus {
     super()
   }
 
-  execute<T extends IMykoQuery<MykoQueryable>>(query: T): MykoQueryResult<T> {
+  execute<T extends MQuery<MQueryable>>(query: T): MQueryResult<T> {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
     const handler = this.handlers.get(queryId)
 
@@ -28,7 +28,7 @@ export class MykoQueryBus extends AMykoQueryBus {
       return
     }
 
-    return handler.execute(query) as MykoQueryResult<T>
+    return handler.execute(query) as MQueryResult<T>
   }
 
   protected registerHandler(handler: MykoQueryHandlerType): void {

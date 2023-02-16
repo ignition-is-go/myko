@@ -1,5 +1,5 @@
 export type ID = string
 
-export interface Constructor<T = any> extends Function {
+export interface Type<T = any> extends Function {
   new (...args: any[]): T
 }

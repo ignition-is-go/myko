@@ -1,34 +1,17 @@
 import 'reflect-metadata'
-import {
-  Constructor,
-  IMykoItem,
-  IMykoQuery,
-  IMykoQueryHandler,
-  MykoQueryResult,
-} from '../types'
+import { Type, MItem, MQuery, MQueryHandler, MQueryResult } from '../types'
 import { ObservableBus } from './observable.bus'
 
-export type MykoQueryable = IMykoItem | IMykoItem[]
-export type MykoQueryHandlerType = Constructor<
-  IMykoQueryHandler<IMykoQuery<MykoQueryable>>
->
+export type MykoQueryHandlerType = Type<MQueryHandler<MQuery>>
 
-export abstract class AMykoQueryBus extends ObservableBus<
-  IMykoQuery<MykoQueryable>
-> {
+export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
   constructor() {
     super()
   }
 
-  protected handlers = new Map<
-    string,
-    IMykoQueryHandler<IMykoQuery<MykoQueryable>>
-  >()
+  protected handlers = new Map<string, MQueryHandler<MQuery>>()
 
-  protected bind<T>(
-    handler: IMykoQueryHandler<IMykoQuery<MykoQueryable>>,
-    id: string,
-  ): void {
+  protected bind<T>(handler: MQueryHandler<MQuery>, id: string): void {
     this.handlers.set(id, handler)
   }
 
@@ -36,9 +19,7 @@ export abstract class AMykoQueryBus extends ObservableBus<
     handlers.forEach((h) => this.registerHandler(h))
   }
 
-  abstract execute<T extends IMykoQuery<MykoQueryable>>(
-    query: T,
-  ): MykoQueryResult<T>
+  abstract execute<T extends MQuery>(query: T): MQueryResult<T>
 
   protected abstract registerHandler(handler: MykoQueryHandlerType): void
 }

@@ -1,30 +1,37 @@
 import 'reflect-metadata'
-import { Constructor, IMykoCommand, IMykoCommandHandler } from '../types'
+import { Type, MCommand, MCommandHandler, MYKO_COMMAND_ID_KEY } from '../types'
 import { ObservableBus } from './observable.bus'
 
-export type MykoCommandHandlerType = Constructor<
-  IMykoCommandHandler<IMykoCommand>
->
+export type MCommandHandlerType = Type<MCommandHandler<MCommand>>
 
-export abstract class AMykoCommandBus extends ObservableBus<IMykoCommand> {
+export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
   constructor() {
     super()
   }
 
-  protected handlers = new Map<string, IMykoCommandHandler<IMykoCommand>>()
+  execute<T extends MCommand>(command: T): Promise<void> {
+    const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
+    const handler = this.handlers.get(commandId)
 
-  abstract execute<T extends IMykoCommand>(command: T): Promise<void>
+    const err = `Handler not Provided for ${command.constructor.name} [${commandId}]. Check your module's providers array, and that the command is decorated with @MykoCommand(id: string)`
 
-  bind<T extends IMykoCommand>(
-    handler: IMykoCommandHandler<T>,
-    id: string,
-  ): void {
+    if (!handler) {
+      console.error(err, command)
+      throw err
+    }
+
+    return handler.execute(command)
+  }
+
+  protected handlers = new Map<string, MCommandHandler<MCommand>>()
+
+  bind<T extends MCommand>(handler: MCommandHandler<T>, id: string): void {
     this.handlers.set(id, handler)
   }
 
-  register(handlers: MykoCommandHandlerType[]) {
+  register(handlers: MCommandHandlerType[]) {
     handlers.forEach((h) => this.registerHandler(h))
   }
 
-  protected abstract registerHandler(handler: MykoCommandHandlerType): void
+  protected abstract registerHandler(handler: MCommandHandlerType): void
 }

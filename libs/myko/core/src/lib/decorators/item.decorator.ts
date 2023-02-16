@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { MYKO_ITEM_TYPE } from '../types'
 
 export const MykoItem =

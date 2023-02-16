@@ -1,37 +1,18 @@
 import { Injectable } from '@nestjs/common'
 import {
   AMykoCommandBus,
-  IMykoCommand,
-  MykoCommandHandlerType,
-  MYKO_COMMAND_ID_KEY,
+  MCommandHandlerType,
   MYKO_HANDLER_COMMAND_ID_KEY,
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
-import { LoggerService } from '@rship/logging'
 
 @Injectable()
 export class MykoCommandBus extends AMykoCommandBus {
-  constructor(private moduleRef: ModuleRef, private logger: LoggerService) {
+  constructor(private moduleRef: ModuleRef) {
     super()
   }
 
-  execute<T extends IMykoCommand>(command: T): Promise<void> {
-    const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
-    const handler = this.handlers.get(commandId)
-
-    const err = `Handler not Provided for ${command.constructor.name} [${commandId}]. Check your module's providers array, and that the command is decorated with @MykoCommand(id: string)`
-
-    if (!handler) {
-      this.logger
-        .getLogger('CommandBus')
-        .dev.error({ message: err, data: command })
-      return
-    }
-
-    return handler.execute(command)
-  }
-
-  protected registerHandler(handler: MykoCommandHandlerType): void {
+  protected registerHandler(handler: MCommandHandlerType): void {
     const instance = this.moduleRef.get(handler, {
       strict: false,
     })

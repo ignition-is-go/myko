@@ -1,18 +1,18 @@
 import { Injectable, Type } from '@nestjs/common'
 import { ModulesContainer } from '@nestjs/core'
 import {
-  IMykoCommand,
-  IMykoCommandHandler,
-  IMykoQueryHandler,
+  MCommand,
+  MCommandHandler,
+  MQueryHandler,
   MYKO_HANDLER_COMMAND_ID_KEY,
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_SAGA_METADATA,
-  MykoQueryable,
-  IMykoQuery,
-  IMykoSaga,
-  IMykoEvent,
-  IMykoItem,
-  MykoEventType,
+  MQueryable,
+  MQuery,
+  MSaga,
+  MEvent,
+  MItem,
+  MEventType,
 } from '@myko/core'
 import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper'
 import { Module } from '@nestjs/core/injector/module'
@@ -22,18 +22,18 @@ export class ExplorerService {
 
   explore() {
     const modules = [...this.modulesContainer.values()]
-    const commands = this.flatMap<IMykoCommandHandler<IMykoCommand>>(
+    const commands = this.flatMap<MCommandHandler<MCommand>>(
       modules,
       (instance) => this.filterProvider(instance, MYKO_HANDLER_COMMAND_ID_KEY),
     )
-    const queries = this.flatMap<IMykoQueryHandler<IMykoQuery<MykoQueryable>>>(
+    const queries = this.flatMap<MQueryHandler<MQuery<MQueryable>>>(
       modules,
       (instance) => this.filterProvider(instance, MYKO_HANDLER_QUERY_ID_KEY),
     )
 
-    const sagas = this.flatMap<
-      IMykoSaga<IMykoEvent<IMykoItem, MykoEventType>, IMykoCommand>
-    >(modules, (instance) => this.filterProvider(instance, MYKO_SAGA_METADATA))
+    const sagas = this.flatMap<MSaga>(modules, (instance) =>
+      this.filterProvider(instance, MYKO_SAGA_METADATA),
+    )
     return { commands, queries, sagas }
   }
 

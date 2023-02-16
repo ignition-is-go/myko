@@ -4,10 +4,17 @@ import { ExplorerService } from './services'
 import { LoggerModule } from '@rship/logging'
 import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
+import { MykoGateway } from './ws/myko.gateway'
 
 @Module({
   imports: [LoggerModule.forModule({ moduleName: 'Myko' })],
-  providers: [ExplorerService, MykoCommandBus, MykoQueryBus, MykoEventBus],
+  providers: [
+    ExplorerService,
+    MykoCommandBus,
+    MykoQueryBus,
+    MykoEventBus,
+    MykoGateway,
+  ],
   exports: [MykoCommandBus, MykoQueryBus, MykoEventBus],
 })
 export class MykoModule implements OnModuleInit {

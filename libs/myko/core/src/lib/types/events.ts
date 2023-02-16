@@ -1,7 +1,7 @@
 import { filter } from 'rxjs'
-import { IMykoItem, MYKO_ITEM_TYPE } from './item'
+import { MItem, MYKO_ITEM_TYPE } from './item'
 
-export enum MykoEventType {
+export enum MEventType {
   SET = 'SET',
   DEL = 'DEL',
 }
@@ -9,23 +9,29 @@ export enum MykoEventType {
 export const MYKO_EVENT_HANDLER = '__MYKO_EVENT_HANDLER__'
 export const MYKO_EVENT = '__MYKO_EVENT__'
 
-export type IMykoEvent<T extends IMykoItem, C extends MykoEventType> = {
+export type MEvent<
+  T extends MItem = MItem,
+  C extends MEventType = MEventType,
+> = {
   item: T
   changeType: C
   itemType: string
 }
 
-export const makeSet = <T extends IMykoItem>(item: T) =>
-  makeMykoEvent(item, MykoEventType.SET)
+export const makeSet = <T extends MItem>(item: T) =>
+  makeMykoEvent(item, MEventType.SET)
 
-export const makeDel = <T extends IMykoItem>(item: T) =>
-  makeMykoEvent(item, MykoEventType.DEL)
+export const makeDel = <T extends MItem>(item: T) =>
+  makeMykoEvent(item, MEventType.DEL)
 
-const makeMykoEvent = <T extends IMykoItem, U extends MykoEventType>(
+const makeMykoEvent = <T extends MItem, U extends MEventType>(
   item: T,
   changeType: U,
-): IMykoEvent<T, U> => {
-  const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
+  overrideType?: string,
+): MEvent<T, U> => {
+  const metadataType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
+
+  const itemType = overrideType ?? metadataType
 
   if (!itemType) {
     throw new Error('Item not decorated with type')
@@ -37,17 +43,15 @@ const makeMykoEvent = <T extends IMykoItem, U extends MykoEventType>(
   }
 }
 
-export const ofItems = <T extends IMykoItem>(
+export const ofItems = <T extends MItem>(
   ...filterTypes: (new (...args: any[]) => T)[]
 ) =>
-  filter((event: IMykoEvent<T, MykoEventType>) =>
+  filter((event: MEvent<T, MEventType>) =>
     filterTypes.some(
       (filterType) =>
         Reflect.getMetadata(MYKO_ITEM_TYPE, filterType) === event.itemType,
     ),
   )
 
-export const ofType = <T extends IMykoItem>(...filterTypes: MykoEventType[]) =>
-  filter((event: IMykoEvent<T, MykoEventType>) =>
-    filterTypes.some((filterType) => filterType === event.changeType),
-  )
+export const ofType = <T extends MItem, C extends MEventType>(filterType: C) =>
+  filter((event: MEvent<T, C>) => filterType === event.changeType)
