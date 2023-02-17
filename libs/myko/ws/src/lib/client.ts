@@ -14,7 +14,7 @@ import {
   unwrapCommand,
   unwrapQuery,
   unwrapItem,
-  MQueryResult,
+  MLiveQueryResult,
 } from '@myko/core'
 import {
   wrapCommandWS,
@@ -75,13 +75,14 @@ export class WSMClient {
     )
   }
 
-  watchQuery<T extends MQuery>(query: T): Observable<MQueryResult<T>> {
+  watchQuery<T extends MQuery>(query: T): Observable<MLiveQueryResult<T>> {
     const wrappedQuery = wrapQueryWS(query)
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
       filter((r) => r.tx === query.tx),
       map(
-        (r) => r.data.map((rr) => unwrapItem(rr)) as unknown as MQueryResult<T>,
+        (r) =>
+          r.data.map((rr) => unwrapItem(rr)) as unknown as MLiveQueryResult<T>,
       ),
       shareReplay(1),
       finalize(() => {

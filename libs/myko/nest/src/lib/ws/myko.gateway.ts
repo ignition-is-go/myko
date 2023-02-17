@@ -19,24 +19,9 @@ import {
   WSMQueryResponse,
 } from '@myko/ws'
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
-import {
-  ID,
-  MQueryable,
-  unwrapCommand,
-  unwrapQuery,
-  wrapItem,
-} from '@myko/core'
+import { ID, unwrapCommand, unwrapQuery, wrapItem } from '@myko/core'
 
-import {
-  filter,
-  finalize,
-  map,
-  Observable,
-  startWith,
-  Subject,
-  switchMap,
-  takeUntil,
-} from 'rxjs'
+import { filter, map, Observable, Subject, takeUntil } from 'rxjs'
 
 @WebSocketGateway(MYKO_WS_PORT)
 export class MykoGateway {
@@ -76,7 +61,7 @@ export class MykoGateway {
   ): Observable<WSMQueryResponse> {
     const q = unwrapQuery(wrappedQuery)
 
-    return this.query.execute(q).pipe(
+    return this.query.watch(q).pipe(
       map((x) => x.map((r) => wrapItem(r))),
       map((r) => wrapQueryResponseWS(r, q.tx)),
       takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),

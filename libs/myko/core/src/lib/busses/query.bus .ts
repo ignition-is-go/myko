@@ -1,5 +1,13 @@
 import 'reflect-metadata'
-import { Type, MItem, MQuery, MQueryHandler, MQueryResult } from '../types'
+import { firstValueFrom } from 'rxjs'
+import {
+  Type,
+  MItem,
+  MQuery,
+  MQueryHandler,
+  MLiveQueryResult,
+  MQueryResult,
+} from '../types'
 import { ObservableBus } from './observable.bus'
 
 export type MykoQueryHandlerType = Type<MQueryHandler<MQuery>>
@@ -19,7 +27,11 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
     handlers.forEach((h) => this.registerHandler(h))
   }
 
-  abstract execute<T extends MQuery>(query: T): MQueryResult<T>
+  abstract watch<T extends MQuery>(query: T): MLiveQueryResult<T>
+
+  execute<T extends MQuery>(query: T): MQueryResult<T> {
+    return firstValueFrom(this.watch(query)) as MQueryResult<T>
+  }
 
   protected abstract registerHandler(handler: MykoQueryHandlerType): void
 }

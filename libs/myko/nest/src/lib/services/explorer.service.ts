@@ -7,12 +7,8 @@ import {
   MYKO_HANDLER_COMMAND_ID_KEY,
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_SAGA_METADATA,
-  MQueryable,
   MQuery,
   MSaga,
-  MEvent,
-  MItem,
-  MEventType,
 } from '@myko/core'
 import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper'
 import { Module } from '@nestjs/core/injector/module'
@@ -26,9 +22,8 @@ export class ExplorerService {
       modules,
       (instance) => this.filterProvider(instance, MYKO_HANDLER_COMMAND_ID_KEY),
     )
-    const queries = this.flatMap<MQueryHandler<MQuery<MQueryable>>>(
-      modules,
-      (instance) => this.filterProvider(instance, MYKO_HANDLER_QUERY_ID_KEY),
+    const queries = this.flatMap<MQueryHandler<MQuery>>(modules, (instance) =>
+      this.filterProvider(instance, MYKO_HANDLER_QUERY_ID_KEY),
     )
 
     const sagas = this.flatMap<MSaga>(modules, (instance) =>

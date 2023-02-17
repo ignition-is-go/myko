@@ -2,7 +2,6 @@ import {
   MWrappedCommand,
   MEvent,
   MWrappedQuery,
-  MQueryable,
   MWrappedItem,
   ID,
 } from '@myko/core'

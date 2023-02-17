@@ -7,18 +7,20 @@ export const MYKO_HANDLER_QUERY_ID_KEY = '__MYKI_HANDLER_QUERY_ID_KEY__'
 export const MYKO_QUERY_ID_KEY = '__MYKO_QUERY_ID_KEY__'
 export const MYKO_QUERY_ITEM_TYPE_KEY = '__MYKO_QUERY_ITEM_TYPE_KEY__'
 
-export type MQueryable = MItem[]
-
-export class MQuery<T extends MQueryable = MQueryable> {
-  $result: T
+export class MQuery<T extends MItem = MItem> {
+  $result: T[]
   readonly tx: string
   constructor() {
     this.tx = uuid()
   }
 }
 
-export type MQueryResult<Q> = Q extends MQuery<infer R> ? Observable<R> : never
+export type MQueryResult<Q> = Q extends MQuery<infer R> ? Promise<R[]> : never
+
+export type MLiveQueryResult<Q> = Q extends MQuery<infer R>
+  ? Observable<R[]>
+  : never
 
 export interface MQueryHandler<H> {
-  execute(query: H): MQueryResult<H>
+  execute(query: H): MLiveQueryResult<H>
 }

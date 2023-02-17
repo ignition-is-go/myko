@@ -1,11 +1,9 @@
 import {
   MQuery,
-  MQueryable,
   wrapQuery,
   MCommand,
   wrapCommand,
   MEvent,
-  MItem,
   MWrappedItem,
   ID,
 } from '@myko/core'
@@ -24,7 +22,7 @@ import {
   WSMQueryResponse,
 } from './types'
 
-export const wrapQueryWS = (query: MQuery<MQueryable>): WSMQuery => ({
+export const wrapQueryWS = (query: MQuery): WSMQuery => ({
   data: wrapQuery(query),
   event: MQUERY_EVENT,
 })
