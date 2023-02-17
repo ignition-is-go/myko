@@ -1,8 +1,17 @@
-import { MWrappedCommand, MEvent, MWrappedQuery } from '@myko/core'
+import {
+  MWrappedCommand,
+  MEvent,
+  MWrappedQuery,
+  MQueryable,
+  MWrappedItem,
+  ID,
+} from '@myko/core'
 
-export const MQUERY_EVENT = 'ws:m:command'
 export const MEVENT_EVENT = 'ws:m:event'
-export const MCOMMAND_EVENT = 'ws:m:query'
+export const MCOMMAND_EVENT = 'ws:m:command'
+export const MCOMMAND_RESPONSE_EVENT = 'ws:m:command-response'
+export const MQUERY_EVENT = 'ws:m:query'
+export const MQUERY_RESPONSE_EVENT = 'ws:m:query-response'
 
 export const MYKO_WS_PORT = 5155
 
@@ -21,4 +30,20 @@ export type WSMQuery = {
   data: MWrappedQuery
 }
 
-export type WSMMessage = WSMQuery | WSMCommand | WSMEvent
+export type WSMQueryResponse = {
+  tx: ID
+  event: typeof MQUERY_RESPONSE_EVENT
+  data: MWrappedItem[]
+}
+
+export type WSMCommandResponse = {
+  tx: ID
+  event: typeof MCOMMAND_RESPONSE_EVENT
+}
+
+export type WSMMessage =
+  | WSMQuery
+  | WSMCommand
+  | WSMEvent
+  | WSMQueryResponse
+  | WSMCommandResponse

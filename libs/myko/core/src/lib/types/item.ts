@@ -17,6 +17,6 @@ export abstract class MItem<T extends IMItem = IMItem> implements IMItem {
   }
   id: string
   name?: string
-  scopeId: string
+  scopeId: ID | null
   hash: string
 }

@@ -1,15 +1,31 @@
-import { Observable, Subject } from 'rxjs'
+import {
+  filter,
+  firstValueFrom,
+  map,
+  Observable,
+  shareReplay,
+  Subject,
+} from 'rxjs'
 import {
   MCommand,
   MQuery,
   MEvent,
   unwrapCommand,
   unwrapQuery,
+  unwrapItem,
+  MQueryResult,
 } from '@myko/core'
 import { wrapCommandWS, wrapEventWS, wrapQueryWS } from './wrappers'
-import { WSMMessage, MCOMMAND_EVENT, MQUERY_EVENT, MEVENT_EVENT } from './types'
-
-import * as WebSocket from 'isomorphic-ws'
+import {
+  WSMMessage,
+  MCOMMAND_EVENT,
+  MQUERY_EVENT,
+  MEVENT_EVENT,
+  MQUERY_RESPONSE_EVENT,
+  WSMQueryResponse,
+  WSMCommandResponse,
+  MCOMMAND_RESPONSE_EVENT,
+} from './types'
 
 export class WSMClient {
   private ws: WebSocket
@@ -29,39 +45,57 @@ export class WSMClient {
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
+  private queryResponses: Subject<WSMQueryResponse>
+  private commandResponses: Subject<WSMCommandResponse>
 
   constructor(
     private host: string,
     private port: number,
     private onReconnect: () => void,
+    private makeSocket: (host: string, port: number) => any,
   ) {
     this.commandSubject = new Subject()
     this.querySubject = new Subject()
     this.eventSubject = new Subject()
+    this.queryResponses = new Subject()
+    this.commandResponses = new Subject()
     this.connect()
   }
 
   sendCommand(command: MCommand) {
     this.ws.send(JSON.stringify(wrapCommandWS(command)))
+    return firstValueFrom(
+      this.commandResponses.pipe(filter((c) => c.tx === command.tx)),
+    )
   }
 
-  sendQuery(query: MQuery) {
+  watchQuery<T extends MQuery>(query: T): Observable<MQueryResult<T>> {
     this.ws.send(JSON.stringify(wrapQueryWS(query)))
+    return this.queryResponses.pipe(
+      filter((r) => r.tx === query.tx),
+      map(
+        (r) => r.data.map((rr) => unwrapItem(rr)) as unknown as MQueryResult<T>,
+      ),
+      shareReplay(1),
+    )
   }
 
   sendEvent(event: MEvent) {
     this.ws.send(JSON.stringify(wrapEventWS(event)))
   }
 
-  connect() {
-    this.ws = new WebSocket(`ws://${this.host}:${this.port}`)
+  private connect() {
+    this.ws = this.makeSocket(this.host, this.port)
+    if (!this.ws) {
+      return
+    }
     this.ws.onopen = () => {
       console.log('Connected')
       this
       this.onReconnect()
     }
 
-    this.ws.onmessage = (e: WebSocket.MessageEvent) => {
+    this.ws.onmessage = (e) => {
       const body = e.data
       const message: WSMMessage = JSON.parse(body.toString())
 
@@ -79,6 +113,12 @@ export class WSMClient {
         case MEVENT_EVENT:
           const evt = message.data
           this.eventSubject.next(evt)
+          break
+        case MQUERY_RESPONSE_EVENT:
+          this.queryResponses.next(message)
+          break
+        case MCOMMAND_RESPONSE_EVENT:
+          this.commandResponses.next(message)
           break
         default:
           console.warn('no idea what to do with this', message)

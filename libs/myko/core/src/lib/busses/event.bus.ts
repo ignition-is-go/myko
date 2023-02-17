@@ -30,6 +30,10 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
     this.publish(makeDel(item))
   }
 
+  publishAll(event: MEvent[]) {
+    event.forEach((e) => this.publish(e))
+  }
+
   abstract publish<T extends MEvent>(Event: T): Promise<void>
 
   protected registerSaga(saga: MSaga) {
