@@ -13,11 +13,14 @@ import {
   MCOMMAND_EVENT,
   MCOMMAND_RESPONSE_EVENT,
   MEVENT_EVENT,
+  MQUERY_CANCEL,
   MQUERY_EVENT,
   MQUERY_RESPONSE_EVENT,
   WSMCommand,
   WSMCommandResponse,
+  WSMEvent,
   WSMQuery,
+  WSMQueryCancel,
   WSMQueryResponse,
 } from './types'
 
@@ -31,7 +34,7 @@ export const wrapCommandWS = (command: MCommand): WSMCommand => ({
   event: MCOMMAND_EVENT,
 })
 
-export const wrapEventWS = (event: MEvent) => ({
+export const wrapEventWS = (event: MEvent): WSMEvent => ({
   data: event,
   event: MEVENT_EVENT,
 })
@@ -47,5 +50,10 @@ export const wrapQueryResponseWS = (
 
 export const wrapCommandResponseWS = (tx: ID): WSMCommandResponse => ({
   event: MCOMMAND_RESPONSE_EVENT,
-  tx,
+  data: tx,
+})
+
+export const wrapQueryCancel = (tx: ID): WSMQueryCancel => ({
+  event: MQUERY_CANCEL,
+  data: tx,
 })

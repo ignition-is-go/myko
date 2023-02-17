@@ -1,5 +1,6 @@
 import {
   filter,
+  finalize,
   firstValueFrom,
   map,
   Observable,
@@ -15,7 +16,12 @@ import {
   unwrapItem,
   MQueryResult,
 } from '@myko/core'
-import { wrapCommandWS, wrapEventWS, wrapQueryWS } from './wrappers'
+import {
+  wrapCommandWS,
+  wrapEventWS,
+  wrapQueryCancel,
+  wrapQueryWS,
+} from './wrappers'
 import {
   WSMMessage,
   MCOMMAND_EVENT,
@@ -63,25 +69,29 @@ export class WSMClient {
   }
 
   sendCommand(command: MCommand) {
-    this.ws.send(JSON.stringify(wrapCommandWS(command)))
+    this.send(wrapCommandWS(command))
     return firstValueFrom(
-      this.commandResponses.pipe(filter((c) => c.tx === command.tx)),
+      this.commandResponses.pipe(filter((c) => c.data === command.tx)),
     )
   }
 
   watchQuery<T extends MQuery>(query: T): Observable<MQueryResult<T>> {
-    this.ws.send(JSON.stringify(wrapQueryWS(query)))
+    const wrappedQuery = wrapQueryWS(query)
+    this.send(wrappedQuery)
     return this.queryResponses.pipe(
       filter((r) => r.tx === query.tx),
       map(
         (r) => r.data.map((rr) => unwrapItem(rr)) as unknown as MQueryResult<T>,
       ),
       shareReplay(1),
+      finalize(() => {
+        this.send(wrapQueryCancel(query.tx))
+      }),
     )
   }
 
   sendEvent(event: MEvent) {
-    this.ws.send(JSON.stringify(wrapEventWS(event)))
+    this.send(wrapEventWS(event))
   }
 
   private connect() {
@@ -138,5 +148,14 @@ export class WSMClient {
     this.ws.onerror = (err) => {
       console.error('An Error Occured')
     }
+  }
+
+  send(item: WSMMessage) {
+    if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
+      console.log('CANT SEND NO SOCKST')
+      return
+    }
+
+    this.ws.send(JSON.stringify(item))
   }
 }

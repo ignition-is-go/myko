@@ -6,6 +6,7 @@ import {
 import {
   MCOMMAND_EVENT,
   MEVENT_EVENT,
+  MQUERY_CANCEL,
   MQUERY_EVENT,
   MYKO_WS_PORT,
   wrapCommandResponseWS,
@@ -14,15 +15,33 @@ import {
   WSMCommandResponse,
   WSMEvent,
   WSMQuery,
+  WSMQueryCancel,
   WSMQueryResponse,
 } from '@myko/ws'
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
-import { MQueryable, unwrapCommand, unwrapQuery, wrapItem } from '@myko/core'
+import {
+  ID,
+  MQueryable,
+  unwrapCommand,
+  unwrapQuery,
+  wrapItem,
+} from '@myko/core'
 
-import { filter, map, Observable, startWith, Subject, switchMap } from 'rxjs'
+import {
+  filter,
+  finalize,
+  map,
+  Observable,
+  startWith,
+  Subject,
+  switchMap,
+  takeUntil,
+} from 'rxjs'
 
 @WebSocketGateway(MYKO_WS_PORT)
 export class MykoGateway {
+  private unsub = new Subject<ID>()
+
   constructor(
     private event: MykoEventBus,
     private command: MykoCommandBus,
@@ -46,6 +65,11 @@ export class MykoGateway {
     return wrapCommandResponseWS(cmd.tx)
   }
 
+  @SubscribeMessage(MQUERY_CANCEL)
+  onQueryCancel(@MessageBody() tx: WSMQueryCancel['data']) {
+    this.unsub.next(tx)
+  }
+
   @SubscribeMessage(MQUERY_EVENT)
   onQuery(
     @MessageBody() wrappedQuery: WSMQuery['data'],
@@ -65,6 +89,7 @@ export class MykoGateway {
       startWith(this.query.execute(q)),
       map((x) => x.map((r) => wrapItem(r))),
       map((r) => wrapQueryResponseWS(r, q.tx)),
+      takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),
     )
   }
 }

@@ -12,6 +12,7 @@ export const MCOMMAND_EVENT = 'ws:m:command'
 export const MCOMMAND_RESPONSE_EVENT = 'ws:m:command-response'
 export const MQUERY_EVENT = 'ws:m:query'
 export const MQUERY_RESPONSE_EVENT = 'ws:m:query-response'
+export const MQUERY_CANCEL = 'ws:m:query-cancel'
 
 export const MYKO_WS_PORT = 5155
 
@@ -36,8 +37,13 @@ export type WSMQueryResponse = {
   data: MWrappedItem[]
 }
 
+export type WSMQueryCancel = {
+  data: ID
+  event: typeof MQUERY_CANCEL
+}
+
 export type WSMCommandResponse = {
-  tx: ID
+  data: ID
   event: typeof MCOMMAND_RESPONSE_EVENT
 }
 
@@ -47,3 +53,4 @@ export type WSMMessage =
   | WSMEvent
   | WSMQueryResponse
   | WSMCommandResponse
+  | WSMQueryCancel
