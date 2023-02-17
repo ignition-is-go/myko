@@ -4,7 +4,6 @@
   "license": "MIT",
   "scripts": {
     "start": "turbo run start",
-    "start:rship": "turbo run start --filter=@rship/server --filter=@rship/gateway",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging"
   },
