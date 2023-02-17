@@ -76,17 +76,7 @@ export class MykoGateway {
   ): Observable<WSMQueryResponse> {
     const q = unwrapQuery(wrappedQuery)
 
-    return this.event.subject$.pipe(
-      filter((e) => e.itemType === wrappedQuery.queryItemType),
-      switchMap(
-        (_) =>
-          new Promise<MQueryable>((res) => {
-            setTimeout(() => {
-              res(this.query.execute(q))
-            }, 10)
-          }),
-      ),
-      startWith(this.query.execute(q)),
+    return this.query.execute(q).pipe(
       map((x) => x.map((r) => wrapItem(r))),
       map((r) => wrapQueryResponseWS(r, q.tx)),
       takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),

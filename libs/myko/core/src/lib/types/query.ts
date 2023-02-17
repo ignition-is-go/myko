@@ -1,6 +1,7 @@
 import { MItem } from './item'
 
 import { v4 as uuid } from 'uuid'
+import { Observable } from 'rxjs'
 
 export const MYKO_HANDLER_QUERY_ID_KEY = '__MYKI_HANDLER_QUERY_ID_KEY__'
 export const MYKO_QUERY_ID_KEY = '__MYKO_QUERY_ID_KEY__'
@@ -16,7 +17,7 @@ export class MQuery<T extends MQueryable = MQueryable> {
   }
 }
 
-export type MQueryResult<Q> = Q extends MQuery<infer R> ? R : never
+export type MQueryResult<Q> = Q extends MQuery<infer R> ? Observable<R> : never
 
 export interface MQueryHandler<H> {
   execute(query: H): MQueryResult<H>
