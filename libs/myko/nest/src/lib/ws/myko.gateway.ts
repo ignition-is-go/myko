@@ -21,7 +21,7 @@ import {
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
 import { ID, unwrapCommand, unwrapQuery, wrapItem } from '@myko/core'
 
-import { filter, map, Observable, Subject, takeUntil } from 'rxjs'
+import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
 
 @WebSocketGateway(MYKO_WS_PORT)
 export class MykoGateway {
@@ -62,8 +62,18 @@ export class MykoGateway {
     const q = unwrapQuery(wrappedQuery)
 
     return this.query.watch(q).pipe(
+      map((x) => x.filter((x) => !!x)),
       map((x) => x.map((r) => wrapItem(r))),
+      catchError((e) => {
+        console.log(wrappedQuery)
+        console.log(e)
+        throw e
+      }),
       map((r) => wrapQueryResponseWS(r, q.tx)),
+      catchError((e) => {
+        console.log(e)
+        throw e
+      }),
       takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),
     )
   }

@@ -34,6 +34,7 @@ import {
 } from './types'
 
 export class WSMClient {
+  private q = new Set<WSMMessage>()
   private ws: WebSocket
 
   get commands(): Observable<MCommand> {
@@ -57,7 +58,7 @@ export class WSMClient {
   constructor(
     private host: string,
     private port: number,
-    private onReconnect: () => void,
+    private argReconnect: () => void,
     private makeSocket: (host: string, port: number) => any,
   ) {
     this.commandSubject = new Subject()
@@ -75,20 +76,18 @@ export class WSMClient {
     )
   }
 
-  watchQuery<T extends MQuery>(query: T): Observable<MLiveQueryResult<T>> {
+  watchQuery<T extends MQuery>(query: T): MLiveQueryResult<T> {
     const wrappedQuery = wrapQueryWS(query)
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
       filter((r) => r.tx === query.tx),
-      map(
-        (r) =>
-          r.data.map((rr) => unwrapItem(rr)) as unknown as MLiveQueryResult<T>,
-      ),
+      map((r) => r.data.map((rr) => unwrapItem(rr))),
+
       shareReplay(1),
       finalize(() => {
         this.send(wrapQueryCancel(query.tx))
       }),
-    )
+    ) as MLiveQueryResult<T>
   }
 
   sendEvent(event: MEvent) {
@@ -151,9 +150,17 @@ export class WSMClient {
     }
   }
 
+  onReconnect() {
+    ;[...this.q.values()].forEach((v) => {
+      this.send(v)
+      this.q.delete(v)
+    })
+  }
+
   send(item: WSMMessage) {
     if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
       console.log('CANT SEND NO SOCKST')
+      this.q.add(item)
       return
     }
 

@@ -62,6 +62,9 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
       this.output.next(event)
     })
     const last = messages[messages.length - 1][0]
+    if (lastId === '0') {
+      console.log(this.entity, 'Repo Init Complete')
+    }
     this.listenForMessage(last)
   }
 }
