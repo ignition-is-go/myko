@@ -5,10 +5,11 @@
     "emitDecoratorMetadata": true,
     "target": "esnext",
     "module": "commonjs",
-    "outDir": "../../../dist/out-tsc",
+    "outDir": "dist",
     "declaration": true,
     "rootDir": "./src",
     "types": ["node"]
   },
+  "exclude": ["**/*.d.ts"],
   "include": ["**/*.ts"]
 }

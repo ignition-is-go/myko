@@ -9,6 +9,7 @@ import {
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
+import { of } from 'rxjs'
 
 @Injectable()
 export class MykoQueryBus extends AMykoQueryBus {
@@ -26,7 +27,7 @@ export class MykoQueryBus extends AMykoQueryBus {
       this.logger
         .getLogger('MykoQueryBus')
         .dev.error({ message: err, data: query })
-      return
+      throw new Error(err)
     }
 
     return handler.execute(query) as MLiveQueryResult<T>

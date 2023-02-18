@@ -1,14 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "target": "esnext",
-    "module": "commonjs",
-    "outDir": "../../../dist/out-tsc",
-    "declaration": true,
-    "rootDir": "./src",
-    "types": ["node"]
+    "outDir": "dist",
+    "types": [],
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts"],
+  "exclude": ["**/*.spec.ts", "**/*.d.ts"]
 }

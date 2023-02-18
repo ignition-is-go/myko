@@ -56,9 +56,9 @@ export class ExplorerService {
   extractMetadata(
     instance: Record<string, any>,
     metadataKey: string,
-  ): Type<any> {
+  ): Type<any> | undefined {
     if (!instance.constructor) {
-      return
+      return undefined
     }
     const metadata = Reflect.getMetadata(metadataKey, instance.constructor)
     return metadata ? (instance.constructor as Type<any>) : undefined

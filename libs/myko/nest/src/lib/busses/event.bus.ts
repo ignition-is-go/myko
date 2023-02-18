@@ -15,7 +15,7 @@ export class MykoEventBus extends AMykoEventBus {
     super(commandBus)
   }
 
-  publish<T extends MEvent>(event: T): Promise<void> {
+  async publish<T extends MEvent>(event: T): Promise<void> {
     this.subject$.next(event)
     return
   }

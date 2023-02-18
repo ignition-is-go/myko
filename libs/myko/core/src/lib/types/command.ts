@@ -1,4 +1,3 @@
-import { ID } from './base'
 import { v4 as uuid } from 'uuid'
 export class MCommand {
   readonly tx: string
