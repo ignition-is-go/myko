@@ -5,7 +5,8 @@
   "scripts": {
     "start": "turbo run start",
     "release:dev": "./tools/scripts/release.sh dev",
-    "release:beta": "./tools/scripts/release.sh staging"
+    "release:beta": "./tools/scripts/release.sh staging",
+    "build": "turbo run build"
   },
   "packageManager": "pnpm",
   "workspaces": [
