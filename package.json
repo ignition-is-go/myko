@@ -2,7 +2,6 @@
   "name": "rship",
   "version": "2.3.0",
   "license": "MIT",
-  "type": "module",
   "scripts": {
     "start": "turbo run start",
     "start:libs": "turbo run start --filter='./libs/*'",
@@ -19,6 +18,7 @@
   "private": true,
   "devDependencies": {
     "@types/node": "^18.14.0",
+    "esbuild": "^0.17.9",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
     "turbo": "^1.8.1",
