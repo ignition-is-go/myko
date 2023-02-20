@@ -1,6 +1,7 @@
 {
   "name": "@myko/core",
   "main": "./dist/index.js",
+  "type": "module",
   "scripts": {
     "start": "tsc -p ./tsconfig.lib.json -w --preserveWatchOutput",
     "build": "tsc -p ./tsconfig.lib.json"
