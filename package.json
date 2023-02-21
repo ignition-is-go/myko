@@ -3,9 +3,8 @@
   "version": "2.3.0",
   "license": "MIT",
   "scripts": {
-    "start": "turbo run start",
-    "start:libs": "turbo run start --filter='./libs/*'",
-    "start:server": "turbo run start --filter=@rship/server",
+    "start:server": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run build --filter=@rship/server && node apps/rship/server/dist/main.js\" -e ts",
+    "start:dirigera": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run build --filter=@rship/dirigera && node apps/rship/dirigera/dist/main.js\" -e ts",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "build": "turbo run build"
@@ -19,6 +18,7 @@
   "devDependencies": {
     "@types/node": "^18.14.0",
     "esbuild": "^0.17.9",
+    "nodemon": "^2.0.20",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
     "turbo": "^1.8.1",

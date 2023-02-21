@@ -1,7 +1,9 @@
 import { v4 as uuid } from 'uuid'
 export class MCommand {
   readonly tx: string
+  readonly hello: string
   constructor() {
+    this.hello = 'hi'
     this.tx = uuid()
   }
 }

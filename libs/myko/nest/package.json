@@ -4,7 +4,6 @@
   "description": "",
   "main": "./dist/index.js",
   "scripts": {
-    "start": "tsc -p ./tsconfig.lib.json -w --preserveWatchOutput",
     "build": "tsc -p ./tsconfig.lib.json"
   },
   "keywords": [],

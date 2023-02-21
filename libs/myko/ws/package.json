@@ -3,7 +3,6 @@
   "main": "./dist/cjs/src/index.js",
   "module": "./dist/esm/src/index.js",
   "scripts": {
-    "start": "tsc -p ./tsconfig.cjs.json -w & tsc -p ./tsconfig.browser.json -w",
     "build": "tsc -p ./tsconfig.cjs.json & tsc -p ./tsconfig.browser.json"
   },
   "keywords": [],
