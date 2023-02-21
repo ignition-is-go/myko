@@ -3,8 +3,11 @@
   "version": "2.3.0",
   "license": "MIT",
   "scripts": {
-    "start:server": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run build --filter=@rship/server && node --inspect apps/rship/server/dist/main.js\" -e ts",
-    "start:dirigera": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run build --filter=@rship/dirigera && node apps/rship/dirigera/dist/main.js\" -e ts",
+    "server:serve": "npm run build --filter=@rship/server && node --inspect apps/rship/server/dist/main.js",
+    "server:dev": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run server:serve\" -e ts",
+    "dirigera:serve": "npm run build --filter=@rship/dirigera && node apps/rship/dirigera/dist/main.js",
+    "dirigera:dev": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run dirigera:serve\" -e ts",
+    "client:dev": "nodemon --watch libs --exec \"turbo run dev\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "build": "turbo run build"
