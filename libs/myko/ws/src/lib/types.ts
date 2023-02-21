@@ -4,6 +4,8 @@ import {
   MWrappedQuery,
   MWrappedItem,
   ID,
+  MykoCommand,
+  MCommand,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'
@@ -17,7 +19,7 @@ export const MYKO_WS_PORT = 5155
 
 export type WSMEvent = {
   event: typeof MEVENT_EVENT
-  data: MEvent
+  data: MEvent & { clientId: ID }
 }
 
 export type WSMCommand = {
@@ -53,3 +55,10 @@ export type WSMMessage =
   | WSMQueryResponse
   | WSMCommandResponse
   | WSMQueryCancel
+
+@MykoCommand('client:send-command')
+export class ClientCommand extends MCommand {
+  constructor(readonly command: MCommand, readonly clientId: ID) {
+    super()
+  }
+}

@@ -6,16 +6,20 @@ import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
 import { MykoGateway } from './ws/myko.gateway'
 import { RedisPersisterFactory } from './redis/redis.persisterFactory'
+import { SocketRegistry } from '../types'
+import * as handlers from './myko.handlers'
 
 @Module({
   imports: [LoggerModule.forModule({ moduleName: 'Myko' })],
   providers: [
+    SocketRegistry,
     ExplorerService,
     MykoCommandBus,
     MykoQueryBus,
     MykoEventBus,
     MykoGateway,
     RedisPersisterFactory,
+    ...Object.values(handlers),
   ],
   exports: [MykoCommandBus, MykoQueryBus, MykoEventBus, RedisPersisterFactory],
 })

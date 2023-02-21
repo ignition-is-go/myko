@@ -29,7 +29,8 @@
       ]
     },
     {
-      "name": "Attach",
+      "name": "Attach Node",
+      "address": "localhost",
       "port": 9229,
       "request": "attach",
       "skipFiles": ["<node_internals>/**"],

@@ -1,4 +1,5 @@
 import {
+  ConnectedSocket,
   MessageBody,
   SubscribeMessage,
   WebSocketGateway,
@@ -22,6 +23,7 @@ import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
 import { ID, unwrapCommand, unwrapQuery, wrapItem } from '@myko/core'
 
 import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
+import { SocketRegistry } from '../../types'
 
 @WebSocketGateway(MYKO_WS_PORT)
 export class MykoGateway {
@@ -31,13 +33,16 @@ export class MykoGateway {
     private event: MykoEventBus,
     private command: MykoCommandBus,
     private query: MykoQueryBus,
+    private reg: SocketRegistry,
   ) {}
 
   @SubscribeMessage(MEVENT_EVENT)
   async onEvent(
     @MessageBody()
     event: WSMEvent['data'],
-  ) {
+    @ConnectedSocket() socket,
+  ): Promise<void> {
+    this.reg.set(event.clientId, socket)
     this.event.publish(event)
   }
 

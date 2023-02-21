@@ -3,7 +3,7 @@
   "version": "2.3.0",
   "license": "MIT",
   "scripts": {
-    "start:server": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run build --filter=@rship/server && node apps/rship/server/dist/main.js\" -e ts",
+    "start:server": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run build --filter=@rship/server && node --inspect apps/rship/server/dist/main.js\" -e ts",
     "start:dirigera": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run build --filter=@rship/dirigera && node apps/rship/dirigera/dist/main.js\" -e ts",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",

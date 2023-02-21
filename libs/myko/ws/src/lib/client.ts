@@ -15,6 +15,7 @@ import {
   unwrapQuery,
   unwrapItem,
   MLiveQueryResult,
+  ID,
 } from '@myko/core'
 import {
   wrapCommandWS,
@@ -58,6 +59,7 @@ export class WSMClient {
   constructor(
     private host: string,
     private port: number,
+    private clientId: string,
     private argReconnect: () => void,
     private makeSocket: (host: string, port: number) => any,
   ) {
@@ -91,7 +93,7 @@ export class WSMClient {
   }
 
   sendEvent(event: MEvent) {
-    this.send(wrapEventWS(event))
+    this.send(wrapEventWS(event, this.clientId))
   }
 
   private connect() {

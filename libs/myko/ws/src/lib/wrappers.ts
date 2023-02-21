@@ -23,17 +23,17 @@ import {
 } from './types'
 
 export const wrapQueryWS = (query: MQuery): WSMQuery => ({
-  data: wrapQuery(query),
+  data: { ...wrapQuery(query) },
   event: MQUERY_EVENT,
 })
 
 export const wrapCommandWS = (command: MCommand): WSMCommand => ({
-  data: wrapCommand(command),
+  data: { ...wrapCommand(command) },
   event: MCOMMAND_EVENT,
 })
 
-export const wrapEventWS = (event: MEvent): WSMEvent => ({
-  data: event,
+export const wrapEventWS = (event: MEvent, clientId): WSMEvent => ({
+  data: { ...event, clientId },
   event: MEVENT_EVENT,
 })
 
