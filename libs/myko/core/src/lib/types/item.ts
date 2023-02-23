@@ -7,7 +7,7 @@ type IMItem = {
   hash: string
 }
 
-export abstract class MItem<T extends IMItem = IMItem> {
+export class MItem<T extends IMItem = IMItem> {
   readonly id: ID
   readonly hash: string
   constructor(args: T) {

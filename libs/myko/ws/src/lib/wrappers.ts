@@ -27,7 +27,7 @@ export const wrapQueryWS = (query: MQuery): WSMQuery => ({
   event: MQUERY_EVENT,
 })
 
-export const wrapCommandWS = (command: MCommand): WSMCommand => ({
+export const wrapCommandWS = (command: MCommand<unknown>): WSMCommand => ({
   data: { ...wrapCommand(command) },
   event: MCOMMAND_EVENT,
 })

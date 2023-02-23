@@ -1,4 +1,5 @@
 import {
+  CommandResponse,
   MCommand,
   MCommandHandler,
   MYKO_COMMAND_ID_KEY,
@@ -7,7 +8,9 @@ import {
 
 export const MykoCommand =
   (commandId: string) =>
-  <T extends MCommand>(target: new (...args: any[]) => T) => {
+  <T extends MCommand<CommandResponse<T>>>(
+    target: new (...args: any[]) => T,
+  ) => {
     const original: any = target
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
@@ -18,7 +21,7 @@ export const MykoCommand =
     return withType
   }
 
-export const MykoCommandHandler = <T extends MCommand>(
+export const MykoCommandHandler = <T extends MCommand<CommandResponse<T>>>(
   command: new (...args: any[]) => T,
 ) => {
   return (target: new (...args: any[]) => MCommandHandler<T>) => {

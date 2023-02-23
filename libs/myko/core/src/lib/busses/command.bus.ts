@@ -1,15 +1,23 @@
 import 'reflect-metadata'
-import { Type, MCommand, MCommandHandler, MYKO_COMMAND_ID_KEY } from '../types'
+import {
+  Type,
+  MCommand,
+  MCommandHandler,
+  MYKO_COMMAND_ID_KEY,
+  CommandResponse,
+} from '../types'
 import { ObservableBus } from './observable.bus'
 
-export type MCommandHandlerType = Type<MCommandHandler<MCommand>>
+export type MCommandHandlerType = Type<MCommandHandler<MCommand<unknown>>>
 
 export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
   constructor() {
     super()
   }
 
-  execute<T extends MCommand>(command: T): Promise<void> {
+  async execute<T extends MCommand<CommandResponse<T>>>(
+    command: T,
+  ): Promise<CommandResponse<T>> {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     const handler = this.handlers.get(commandId)
 
@@ -20,12 +28,15 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
       throw err
     }
 
-    return handler.execute(command)
+    return handler.execute(command) as CommandResponse<T>
   }
 
-  protected handlers = new Map<string, MCommandHandler<MCommand>>()
+  protected handlers = new Map<string, MCommandHandler<MCommand<unknown>>>()
 
-  bind<T extends MCommand>(handler: MCommandHandler<T>, id: string): void {
+  bind<T extends MCommand<CommandResponse<T>>>(
+    handler: MCommandHandler<T>,
+    id: string,
+  ): void {
     this.handlers.set(id, handler)
   }
 

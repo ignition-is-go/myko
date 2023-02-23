@@ -71,7 +71,7 @@ export class WSMClient {
     this.connect()
   }
 
-  sendCommand(command: MCommand) {
+  sendCommand(command: MCommand<unknown>) {
     this.send(wrapCommandWS(command))
     return firstValueFrom(
       this.commandResponses.pipe(filter((c) => c.data === command.tx)),
