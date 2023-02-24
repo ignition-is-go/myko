@@ -16,6 +16,7 @@ import {
   unwrapItem,
   MLiveQueryResult,
   ID,
+  CommandResponse,
 } from '@myko/core'
 import {
   wrapCommandWS,
@@ -71,10 +72,15 @@ export class WSMClient {
     this.connect()
   }
 
-  sendCommand(command: MCommand<unknown>) {
+  sendCommand<T extends MCommand<unknown>>(
+    command: T,
+  ): Promise<CommandResponse<T>> {
     this.send(wrapCommandWS(command))
     return firstValueFrom(
-      this.commandResponses.pipe(filter((c) => c.data === command.tx)),
+      this.commandResponses.pipe(
+        filter((c) => c.tx === command.tx),
+        map((x) => x.data as CommandResponse<T>),
+      ),
     )
   }
 

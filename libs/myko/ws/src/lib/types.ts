@@ -44,7 +44,8 @@ export type WSMQueryCancel = {
 }
 
 export type WSMCommandResponse = {
-  data: ID
+  tx: ID
+  data: unknown
   event: typeof MCOMMAND_RESPONSE_EVENT
 }
 

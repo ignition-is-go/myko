@@ -46,9 +46,13 @@ export const wrapQueryResponseWS = (
   tx,
 })
 
-export const wrapCommandResponseWS = (tx: ID): WSMCommandResponse => ({
+export const wrapCommandResponseWS = (
+  tx: ID,
+  response: unknown,
+): WSMCommandResponse => ({
   event: MCOMMAND_RESPONSE_EVENT,
-  data: tx,
+  tx,
+  data: response,
 })
 
 export const wrapQueryCancel = (tx: ID): WSMQueryCancel => ({

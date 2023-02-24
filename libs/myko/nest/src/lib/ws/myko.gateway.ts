@@ -51,8 +51,8 @@ export class MykoGateway {
     @MessageBody() wrappedCommand: WSMCommand['data'],
   ): Promise<WSMCommandResponse> {
     const cmd = unwrapCommand(wrappedCommand)
-    await this.command.execute(cmd)
-    return wrapCommandResponseWS(cmd.tx)
+    const res = await this.command.execute(cmd)
+    return wrapCommandResponseWS(cmd.tx, res)
   }
 
   @SubscribeMessage(MQUERY_CANCEL)
