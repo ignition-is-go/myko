@@ -62,7 +62,7 @@ export class WSMClient {
     private port: number,
     private clientId: string,
     private argReconnect: () => void,
-    private makeSocket: (host: string, port: number) => any,
+    private makeSocket: (url: string) => any,
   ) {
     this.commandSubject = new Subject()
     this.querySubject = new Subject()
@@ -103,7 +103,7 @@ export class WSMClient {
   }
 
   private connect() {
-    this.ws = this.makeSocket(this.host, this.port)
+    this.ws = this.makeSocket(`ws://${this.host}:${this.port}`)
     if (!this.ws) {
       return
     }
