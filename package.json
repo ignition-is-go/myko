@@ -7,6 +7,8 @@
     "server:dev": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run server:serve\" -e ts",
     "dirigera:serve": "turbo run build --filter=@rship/dirigera && node apps/rship/dirigera/dist/main.js",
     "dirigera:dev": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run dirigera:serve\" -e ts",
+    "pixera:serve": "turbo run build --filter=@rship/pixera && node apps/rship/pixera/dist/main.js",
+    "pixera:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ --exec \"npm run pixera:serve\" -e ts",
     "client:dev": "nodemon --watch libs --exec \"turbo run dev\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
