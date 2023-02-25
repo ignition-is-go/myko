@@ -13,7 +13,7 @@
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "build": "turbo run build",
-    "prepare": "husky install"
+    "postinstall": "husky install"
   },
   "packageManager": "pnpm",
   "workspaces": [
@@ -24,6 +24,8 @@
   "devDependencies": {
     "@types/node": "^18.14.0",
     "esbuild": "^0.17.9",
+    "fs-extra": "^11.1.0",
+    "git-describe": "^4.1.1",
     "husky": "^8.0.3",
     "nodemon": "^2.0.20",
     "ts-node": "^10.9.1",
