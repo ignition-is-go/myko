@@ -23,6 +23,7 @@
   "devDependencies": {
     "@types/node": "^18.14.0",
     "esbuild": "^0.17.9",
+    "husky": "^8.0.3",
     "nodemon": "^2.0.20",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
