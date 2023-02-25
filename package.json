@@ -1,6 +1,6 @@
 {
   "name": "rship",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "license": "MIT",
   "scripts": {
     "server:serve": "turbo run build --filter=@rship/server && node --inspect apps/rship/server/dist/main.js",
