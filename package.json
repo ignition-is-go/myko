@@ -12,7 +12,8 @@
     "client:dev": "nodemon --watch libs --exec \"turbo run dev\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
-    "build": "turbo run build"
+    "build": "turbo run build",
+    "prepare": "husky install"
   },
   "packageManager": "pnpm",
   "workspaces": [
