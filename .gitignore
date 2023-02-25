@@ -37,6 +37,8 @@ testem.log
 /typings
 /libs/rship-logging/src/logs/*
 
+/libs/generated/version.ts
+
 apps/rship/gateway/libs/rship-logging/*
 apps/rship/server/libs/rship-logging/*
 apps/rship/pixera/libs/rship-logging/*

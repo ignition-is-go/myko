@@ -12,6 +12,7 @@
     "client:dev": "nodemon --watch libs --exec \"turbo run dev\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
+    "publish": "turbo run publish",
     "build": "turbo run build",
     "postinstall": "husky install"
   },
