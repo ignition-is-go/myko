@@ -44,7 +44,7 @@ apps/rship/server/libs/rship-logging/*
 apps/rship/pixera/libs/rship-logging/*
 apps/rship/dirigera/libs/rship-logging/*
 apps/sherlock/server/libs/rship-logging/*
-apps/rship/server/libs/rship-logging/*
+apps/rship/ventuz/libs/rship-logging/*
 **/dev-deploy
 **/dev-deploy**
 
