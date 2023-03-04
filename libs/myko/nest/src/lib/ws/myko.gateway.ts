@@ -1,8 +1,10 @@
 import {
   ConnectedSocket,
   MessageBody,
+  OnGatewayConnection,
   SubscribeMessage,
   WebSocketGateway,
+  WsException,
 } from '@nestjs/websockets'
 import {
   MCOMMAND_EVENT,
@@ -21,11 +23,25 @@ import {
 } from '@myko/ws'
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
 import { ID, unwrapCommand, unwrapQuery, wrapItem } from '@myko/core'
+import type { WebSocket } from 'ws'
 
 import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
 import { SocketRegistry } from '../../types'
+import {
+  Inject,
+  OnModuleInit,
+  Optional,
+  UseFilters,
+  UseGuards,
+} from '@nestjs/common'
+import { MykoAuthService } from '../services'
+import { LoggerService } from '@rship/logging'
+import { MykoGuard } from './myko.guard'
+import { WsExceptionFilter } from './myko.exception-filter'
 
 @WebSocketGateway(MYKO_WS_PORT)
+@UseGuards(MykoGuard)
+@UseFilters(new WsExceptionFilter())
 export class MykoGateway {
   private unsub = new Subject<ID>()
 
@@ -34,6 +50,8 @@ export class MykoGateway {
     private command: MykoCommandBus,
     private query: MykoQueryBus,
     private reg: SocketRegistry,
+    private logger: LoggerService,
+    @Optional() @Inject(MykoAuthService) private users: MykoAuthService,
   ) {}
 
   @SubscribeMessage(MEVENT_EVENT)

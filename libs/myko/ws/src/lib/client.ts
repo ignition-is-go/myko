@@ -4,8 +4,10 @@ import {
   firstValueFrom,
   map,
   Observable,
+  of,
   shareReplay,
   Subject,
+  tap,
 } from 'rxjs'
 import {
   MCommand,
@@ -33,6 +35,8 @@ import {
   WSMQueryResponse,
   WSMCommandResponse,
   MCOMMAND_RESPONSE_EVENT,
+  MCOMMAND_ERROR_EVENT,
+  WSMCommandError,
 } from './types'
 
 export class WSMClient {
@@ -51,11 +55,22 @@ export class WSMClient {
     return this.eventSubject.pipe()
   }
 
+  get errors() {
+    return this.errorsSubject.pipe()
+  }
+
+  get successes() {
+    return this.successSubject.pipe()
+  }
+
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
   private queryResponses: Subject<WSMQueryResponse>
-  private commandResponses: Subject<WSMCommandResponse>
+  private commandResponses: Subject<WSMCommandResponse | WSMCommandError>
+  private errorsSubject: Subject<WSMCommandError>
+  private successSubject: Subject<string>
+  private userToken: ID
 
   constructor(
     private host: string,
@@ -69,17 +84,33 @@ export class WSMClient {
     this.eventSubject = new Subject()
     this.queryResponses = new Subject()
     this.commandResponses = new Subject()
+    this.errorsSubject = new Subject()
+    this.successSubject = new Subject()
     this.connect()
   }
 
   sendCommand<T extends MCommand<unknown>>(
     command: T,
   ): Promise<CommandResponse<T>> {
-    this.send(wrapCommandWS(command))
+    if (this.userToken) {
+      command.userToken = this.userToken
+    }
+    const wrapped = wrapCommandWS(command)
+    this.send(wrapped)
     return firstValueFrom(
       this.commandResponses.pipe(
         filter((c) => c.tx === command.tx),
-        map((x) => x.data as CommandResponse<T>),
+        map((e) => {
+          if (e.event === MCOMMAND_ERROR_EVENT) {
+            throw e
+          }
+          return e.data as CommandResponse<T>
+        }),
+        tap((x) =>
+          this.successSubject.next(
+            wrapped.data.commandId.split(':').reverse().join(' '),
+          ),
+        ),
       ),
     )
   }
@@ -100,6 +131,10 @@ export class WSMClient {
 
   sendEvent(event: MEvent) {
     this.send(wrapEventWS(event, this.clientId))
+  }
+
+  setUser(token: ID) {
+    this.userToken = token
   }
 
   private connect() {
@@ -138,6 +173,11 @@ export class WSMClient {
         case MCOMMAND_RESPONSE_EVENT:
           this.commandResponses.next(message)
           break
+
+        case MCOMMAND_ERROR_EVENT:
+          this.commandResponses.next(message)
+          this.errorsSubject.next(message)
+          break
         default:
           console.warn('no idea what to do with this', message)
       }
@@ -154,20 +194,19 @@ export class WSMClient {
     }
 
     this.ws.onerror = (err) => {
-      console.error('An Error Occured')
+      console.error(JSON.stringify(err))
     }
   }
 
   onReconnect() {
     ;[...this.q.values()].forEach((v) => {
-      this.send(v)
       this.q.delete(v)
+      this.send(v)
     })
   }
 
-  send(item: WSMMessage) {
+  private send(item: WSMMessage) {
     if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
-      console.log('CANT SEND NO SOCKST')
       this.q.add(item)
       return
     }

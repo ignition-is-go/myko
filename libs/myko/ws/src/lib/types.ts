@@ -11,6 +11,7 @@ import {
 export const MEVENT_EVENT = 'ws:m:event'
 export const MCOMMAND_EVENT = 'ws:m:command'
 export const MCOMMAND_RESPONSE_EVENT = 'ws:m:command-response'
+export const MCOMMAND_ERROR_EVENT = 'ws:m:command-error'
 export const MQUERY_EVENT = 'ws:m:query'
 export const MQUERY_RESPONSE_EVENT = 'ws:m:query-response'
 export const MQUERY_CANCEL = 'ws:m:query-cancel'
@@ -49,12 +50,19 @@ export type WSMCommandResponse = {
   event: typeof MCOMMAND_RESPONSE_EVENT
 }
 
+export type WSMCommandError = {
+  tx: ID
+  error: string
+  event: typeof MCOMMAND_ERROR_EVENT
+}
+
 export type WSMMessage =
   | WSMQuery
   | WSMCommand
   | WSMEvent
   | WSMQueryResponse
   | WSMCommandResponse
+  | WSMCommandError
   | WSMQueryCancel
 
 @MykoCommand('client:send-command')

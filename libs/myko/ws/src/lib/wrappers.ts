@@ -32,7 +32,7 @@ export const wrapCommandWS = (command: MCommand<unknown>): WSMCommand => ({
   event: MCOMMAND_EVENT,
 })
 
-export const wrapEventWS = (event: MEvent, clientId): WSMEvent => ({
+export const wrapEventWS = (event: MEvent, clientId: string): WSMEvent => ({
   data: { ...event, clientId },
   event: MEVENT_EVENT,
 })

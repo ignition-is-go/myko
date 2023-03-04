@@ -1,5 +1,18 @@
 import { ID } from '@myko/core'
+import { WSMCommandError } from '@myko/ws'
 import { Injectable } from '@nestjs/common'
+import { WsException } from '@nestjs/websockets'
 
 @Injectable()
 export class SocketRegistry extends Map<ID, WebSocket> {}
+
+export class CommandNotAuthorized
+  extends WsException
+  implements WSMCommandError
+{
+  constructor(readonly tx: ID) {
+    super('Command Not Authorized')
+    this.event = 'ws:m:command-error'
+  }
+  event: 'ws:m:command-error'
+}
