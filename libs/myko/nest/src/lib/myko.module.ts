@@ -36,6 +36,5 @@ export class MykoModule implements OnModuleInit {
     this.commandBus.register(commands)
     this.queryBus.register(queries)
     this.eventBus.registerSagas(sagas)
-    this.eventBus.subject$.subscribe((e) => console.log(e))
   }
 }
