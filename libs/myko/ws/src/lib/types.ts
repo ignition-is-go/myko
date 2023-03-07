@@ -52,7 +52,7 @@ export type WSMCommandResponse = {
 
 export type WSMCommandError = {
   tx: ID
-  error: string
+  message: string
   event: typeof MCOMMAND_ERROR_EVENT
 }
 
