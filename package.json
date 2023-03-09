@@ -25,15 +25,15 @@
   ],
   "private": true,
   "devDependencies": {
-    "@types/node": "^18.14.0",
-    "esbuild": "^0.17.9",
+    "@types/node": "^18.14.6",
+    "esbuild": "^0.17.11",
     "fs-extra": "^11.1.0",
     "git-describe": "^4.1.1",
     "husky": "^8.0.3",
-    "nodemon": "^2.0.20",
+    "nodemon": "^2.0.21",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
-    "turbo": "^1.8.1",
+    "turbo": "^1.8.3",
     "typescript": "^4.9.5"
   },
   "husky": {
