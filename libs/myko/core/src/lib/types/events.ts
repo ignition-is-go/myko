@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon'
 import { filter } from 'rxjs'
 import { MItem, MYKO_ITEM_TYPE } from './item'
 
@@ -13,9 +14,10 @@ export type MEvent<
   T extends MItem = MItem,
   C extends MEventType = MEventType,
 > = {
-  item: T
-  changeType: C
-  itemType: string
+  readonly item: T
+  readonly changeType: C
+  readonly itemType: string
+  readonly createdAt: string
 }
 
 export const makeSet = <T extends MItem>(item: T) =>
@@ -40,6 +42,7 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
     changeType,
     item,
     itemType,
+    createdAt: DateTime.utc().toString(),
   }
 }
 
