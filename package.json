@@ -19,6 +19,7 @@
     "publish": "turbo run publish",
     "build": "turbo run build",
     "prepare": "husky install",
+    "postinstall": "npm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js"
   },
   "packageManager": "pnpm",
