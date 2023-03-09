@@ -7,11 +7,13 @@
     "build": "tsc -p ./tsconfig.cjs.json & tsc -p ./tsconfig.browser.json"
   },
   "dependencies": {
+    "luxon": "^3.3.0",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.0",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@types/luxon": "^3.2.0",
     "@types/uuid": "^9.0.0"
   }
 }

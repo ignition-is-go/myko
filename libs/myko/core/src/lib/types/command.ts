@@ -1,11 +1,16 @@
 import { filter } from 'rxjs'
+
 import { v4 as uuid } from 'uuid'
+import { DateTime } from 'luxon'
+
 export class MCommand<T = void> {
   $result: T
   readonly tx: string
   userToken: string | undefined
+  readonly createdAt: string
   constructor() {
     this.tx = uuid()
+    this.createdAt = DateTime.utc().toString()
   }
 }
 
