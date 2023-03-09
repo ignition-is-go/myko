@@ -29,7 +29,6 @@ export class MykoGuard implements CanActivate, OnModuleInit {
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const client = context.switchToWs().getClient()
     const data = context.switchToWs().getData()
 
     try {

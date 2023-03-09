@@ -194,7 +194,7 @@ export class WSMClient {
     }
 
     this.ws.onerror = (err) => {
-      console.error(JSON.stringify(err))
+      console.error('MykoWebSocketError', JSON.stringify(err))
     }
   }
 
