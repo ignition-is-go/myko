@@ -18,7 +18,8 @@
     "release:beta": "./tools/scripts/release.sh staging",
     "publish": "turbo run publish",
     "build": "turbo run build",
-    "postinstall": "husky install"
+    "prepare": "husky install",
+    "versionstamp": "node ./tools/scripts/version-stamp.js"
   },
   "packageManager": "pnpm",
   "workspaces": [
@@ -37,15 +38,5 @@
     "tslib": "^2.5.0",
     "turbo": "^1.8.3",
     "typescript": "^4.9.5"
-  },
-  "husky": {
-    "hooks": {
-      "post-commit": [
-        "node ./tools/scripts/version-stamp.js"
-      ],
-      "post-checkout": [
-        "node ./tools/scripts/version-stamp.js"
-      ]
-    }
   }
 }

@@ -101,3 +101,4 @@ build/config.gypi
 .turbo
 .angular
 .env
+libs/generated/version.ts
