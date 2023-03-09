@@ -11,6 +11,8 @@
     "pixera:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ --exec \"npm run pixera:serve\" -e ts",
     "ventuz:serve": "turbo run build --filter=@rship/ventuz-exec && node --inspect=9259 apps/rship/ventuz/dist/main.js",
     "ventuz:dev": "nodemon --watch libs --watch apps/rship/ventuz/src/ --exec \"npm run ventuz:serve\" -e ts",
+    "noise:serve": "turbo run build --filter=@rship/noise && node --inspect=9269 apps/rship/noise/dist/main.js",
+    "noise:dev": "nodemon --watch libs --watch apps/rship/noise/src/ --exec \"npm run noise:serve\" -e ts",
     "client:dev": "nodemon --watch libs --exec \"turbo run dev\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
