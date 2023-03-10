@@ -14,6 +14,8 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       return
     }
 
-    return socket.send(JSON.stringify(wrapCommandWS(command.command)))
+    return socket.send(
+      JSON.stringify(wrapCommandWS(command.command, 'rship-server')),
+    )
   }
 }

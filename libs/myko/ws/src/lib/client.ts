@@ -95,7 +95,7 @@ export class WSMClient {
     if (this.userToken) {
       command.userToken = this.userToken
     }
-    const wrapped = wrapCommandWS(command)
+    const wrapped = wrapCommandWS(command, this.clientId)
     this.send(wrapped)
     return firstValueFrom(
       this.commandResponses.pipe(
@@ -116,7 +116,7 @@ export class WSMClient {
   }
 
   watchQuery<T extends MQuery>(query: T): MLiveQueryResult<T> {
-    const wrappedQuery = wrapQueryWS(query)
+    const wrappedQuery = wrapQueryWS(query, this.clientId)
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
       filter((r) => r.tx === query.tx),
