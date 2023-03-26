@@ -7,6 +7,8 @@
     "server:dev": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run server:serve\" -e ts",
     "dirigera:serve": "turbo run build --filter=@rship/dirigera && node --inspect=9239 apps/rship/dirigera/dist/main.js",
     "dirigera:dev": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run dirigera:serve\" -e ts",
+    "disguise:serve": "turbo run build --filter=@rship/disguise && node --inspect=9239 apps/rship/disguise/dist/src/main.js",
+    "disguise:dev": "nodemon --watch libs --watch apps/rship/disguise/src/ --exec \"npm run disguise:serve\" -e ts",
     "pixera:serve": "turbo run build --filter=@rship/pixera && node --inspect=9249 apps/rship/pixera/dist/main.js",
     "pixera:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ --exec \"npm run pixera:serve\" -e ts",
     "ventuz:serve": "turbo run build --filter=@rship/ventuz-exec && node --inspect=9259 apps/rship/ventuz/dist/main.js",
