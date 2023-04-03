@@ -15,7 +15,8 @@
     "ventuz:dev": "nodemon --watch libs --watch apps/rship/ventuz/src/ --exec \"npm run ventuz:serve\" -e ts",
     "noise:serve": "turbo run build --filter=@rship/noise && node --inspect=9269 apps/rship/noise/dist/main.js",
     "noise:dev": "nodemon --watch libs --watch apps/rship/noise/src/ --exec \"npm run noise:serve\" -e ts",
-    "client:dev": "nodemon --watch libs --exec \"turbo run dev\"",
+    "client:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/client\"",
+    "viz:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/viz\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "publish": "turbo run publish",
@@ -31,15 +32,15 @@
   ],
   "private": true,
   "devDependencies": {
-    "@types/node": "^18.14.6",
-    "esbuild": "^0.17.11",
-    "fs-extra": "^11.1.0",
+    "@types/node": "^18.15.11",
+    "esbuild": "^0.17.15",
+    "fs-extra": "^11.1.1",
     "git-describe": "^4.1.1",
     "husky": "^8.0.3",
-    "nodemon": "^2.0.21",
+    "nodemon": "^2.0.22",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
-    "turbo": "^1.8.3",
+    "turbo": "^1.8.8",
     "typescript": "^4.9.5"
   }
 }
