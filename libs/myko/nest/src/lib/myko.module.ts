@@ -17,7 +17,6 @@ import * as handlers from './myko.handlers'
     MykoCommandBus,
     MykoQueryBus,
     MykoEventBus,
-    MykoGateway,
     RedisPersisterFactory,
     ...Object.values(handlers),
   ],
@@ -36,5 +35,12 @@ export class MykoModule implements OnModuleInit {
     this.commandBus.register(commands)
     this.queryBus.register(queries)
     this.eventBus.registerSagas(sagas)
+  }
+
+  static forGateway() {
+    return {
+      module: MykoModule,
+      providers: [MykoGateway],
+    }
   }
 }
