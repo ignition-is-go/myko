@@ -17,6 +17,7 @@
     "noise:dev": "nodemon --watch libs --watch apps/rship/noise/src/ --exec \"npm run noise:serve\" -e ts",
     "client:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/client\"",
     "viz:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/viz\"",
+    "previz:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/previz\"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "publish": "turbo run publish",
