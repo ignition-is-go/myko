@@ -5,6 +5,8 @@
   "scripts": {
     "server:serve": "turbo run build --filter=@rship/server && node --inspect=9229 apps/rship/server/dist/main.js",
     "server:dev": "nodemon --watch libs --watch apps/rship/server/src/ --exec \"npm run server:serve\" -e ts",
+    "autoscheduler:serve": "turbo run build --filter=@rship/autoscheduler && node --inspect=9229 apps/autoscheduler/dist/main.js",
+    "autoscheduler:dev": "nodemon --watch libs --watch apps/autoscheduler/src/ --exec \"npm run autoscheduler:serve\" -e ts",
     "dirigera:serve": "turbo run build --filter=@rship/dirigera && node --inspect=9239 apps/rship/dirigera/dist/main.js",
     "dirigera:dev": "nodemon --watch libs --watch apps/rship/dirigera/src/ --exec \"npm run dirigera:serve\" -e ts",
     "disguise:serve": "turbo run build --filter=@rship/disguise && node --inspect=9239 apps/rship/disguise/dist/src/main.js",
