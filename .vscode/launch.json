@@ -14,6 +14,15 @@
       "restart": true
     },
     {
+      "name": "Attach AutoScheduler",
+      "address": "localhost",
+      "port": 9279,
+      "request": "attach",
+      "skipFiles": ["<node_internals>/**"],
+      "type": "node",
+      "restart": true
+    },
+    {
       "name": "Attach Rship Dirigera Exec",
       "address": "localhost",
       "port": 9239,
