@@ -7,6 +7,7 @@ import {
   MEventType,
   MYKO_ITEM_TYPE,
   ID,
+  MItemConstructor,
 } from '@myko/core'
 import { Observable, Subject } from 'rxjs'
 import { Redis } from 'ioredis'
@@ -15,7 +16,7 @@ import { LoggerService } from '@rship/logging'
 @Injectable()
 export class RedisPersisterFactory {
   constructor(private redis: RedisService, private logger: LoggerService) {}
-  getPersister<T extends MItem>(ent: new (args: T) => T) {
+  getPersister<T extends MItem>(ent: MItemConstructor<T>) {
     const client = this.redis.getClient()
 
     const entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
