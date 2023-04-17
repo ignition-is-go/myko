@@ -89,3 +89,4 @@ build/config.gypi
 .redisConsole.log
 
 # local utils
+.env
