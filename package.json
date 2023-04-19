@@ -13,6 +13,8 @@
     "disguise:dev": "nodemon --watch libs --watch apps/rship/disguise/src/ --exec \"npm run disguise:serve\" -e ts",
     "pixera:serve": "turbo run build --filter=@rship/pixera && node --inspect=9249 apps/rship/pixera/dist/main.js",
     "pixera:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ --exec \"npm run pixera:serve\" -e ts",
+    "bms:serve": "turbo run build --filter=@rship/pixera && node --inspect=9249 apps/rship/pixera/dist/tools/bmsWorkflow.js",
+    "bms:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ --exec \"npm run bms:serve\" -e ts",
     "ventuz:serve": "turbo run build --filter=@rship/ventuz-exec && node --inspect=9259 apps/rship/ventuz/dist/main.js",
     "ventuz:dev": "nodemon --watch libs --watch apps/rship/ventuz/src/ --exec \"npm run ventuz:serve\" -e ts",
     "noise:serve": "turbo run build --filter=@rship/noise && node --inspect=9269 apps/rship/noise/dist/main.js",
