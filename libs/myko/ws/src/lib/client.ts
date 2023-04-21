@@ -4,7 +4,6 @@ import {
   firstValueFrom,
   map,
   Observable,
-  of,
   shareReplay,
   Subject,
   tap,
@@ -12,13 +11,13 @@ import {
 import {
   MCommand,
   MQuery,
-  MEvent,
   unwrapCommand,
   unwrapQuery,
   unwrapItem,
-  MLiveQueryResult,
-  ID,
-  CommandResponse,
+  type MEvent,
+  type MLiveQueryResult,
+  type ID,
+  type CommandResponse,
 } from '@myko/core'
 import {
   wrapCommandWS,
@@ -27,21 +26,21 @@ import {
   wrapQueryWS,
 } from './wrappers'
 import {
-  WSMMessage,
+  type WSMMessage,
   MCOMMAND_EVENT,
   MQUERY_EVENT,
   MEVENT_EVENT,
   MQUERY_RESPONSE_EVENT,
-  WSMQueryResponse,
-  WSMCommandResponse,
+  type WSMQueryResponse,
+  type WSMCommandResponse,
   MCOMMAND_RESPONSE_EVENT,
   MCOMMAND_ERROR_EVENT,
-  WSMCommandError,
+  type WSMCommandError,
 } from './types'
 
 export class WSMClient {
   private q = new Set<WSMMessage>()
-  private ws: WebSocket
+  private ws: WebSocket | null = null
 
   get commands(): Observable<MCommand> {
     return this.commandSubject.pipe()
@@ -70,7 +69,7 @@ export class WSMClient {
   private commandResponses: Subject<WSMCommandResponse | WSMCommandError>
   private errorsSubject: Subject<WSMCommandError>
   private successSubject: Subject<string>
-  private userToken: ID
+  private userToken: ID | null = null
 
   constructor(
     private host: string,
@@ -78,6 +77,7 @@ export class WSMClient {
     private clientId: string,
     private argReconnect: () => void,
     private makeSocket: (url: string) => any,
+    private secure: boolean = false,
   ) {
     this.commandSubject = new Subject()
     this.querySubject = new Subject()
@@ -138,7 +138,9 @@ export class WSMClient {
   }
 
   private connect() {
-    this.ws = this.makeSocket(`ws://${this.host}:${this.port}`)
+    this.ws = this.makeSocket(
+      `ws${this.secure ? 's' : ''}://${this.host}:${this.port}`,
+    )
     if (!this.ws) {
       return
     }
@@ -186,7 +188,7 @@ export class WSMClient {
     this.ws.onclose = (e) => {
       console.log(
         'Socket Closed: Reconnecting',
-        `ws://${this.host}:${this.port}`,
+        `ws${this.secure ? 's' : ''}://${this.host}:${this.port}`,
       )
       setTimeout(() => {
         this.connect()
