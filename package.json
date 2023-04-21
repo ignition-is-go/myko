@@ -11,15 +11,14 @@
     "bms:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ apps/rship/pixera/src/tools/bmsWorkflow.ts ",
     "ventuz:dev": "nodemon --watch libs --watch apps/rship/ventuz/src/ apps/rship/ventuz/src/main.ts ",
     "noise:dev": "nodemon --watch libs --watch apps/rship/noise/src/ apps/rship/noise/src/main.ts ",
-    "client:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/client\"",
-    "viz:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/viz\"",
-    "previz:dev": "nodemon --watch libs --exec \"turbo run dev --filter=@rship/previz\"",
+    "client:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/client dev \"",
+    "viz:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/viz dev \"",
+    "previz:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/previz dev \"",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
-    "publish": "turbo run publish",
-    "build": "turbo run build",
+    "publish": "pnpm run -r --no-bail publish",
     "prepare": "husky install",
-    "postinstall": "npm run versionstamp",
+    "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
     "gen": "node ./tools/scaffold/generate.js"
   },
@@ -40,7 +39,6 @@
     "nodemon": "^2.0.22",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
-    "turbo": "^1.9.3",
     "typescript": "^5.0.4"
   }
 }
