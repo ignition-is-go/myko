@@ -2,6 +2,7 @@
 
 # compiled output
 **/dist
+**/partial
 /tmp
 /out-tsc
 /out
