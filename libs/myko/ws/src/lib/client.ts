@@ -139,7 +139,7 @@ export class WSMClient {
 
   private connect() {
     this.ws = this.makeSocket(
-      `ws${this.secure ? 's' : ''}://${this.host}:${this.port}`,
+      `ws${this.secure ? 's' : ''}://${this.host}:${this.port}/myko`,
     )
     if (!this.ws) {
       return
@@ -188,7 +188,7 @@ export class WSMClient {
     this.ws.onclose = (e) => {
       console.log(
         'Socket Closed: Reconnecting',
-        `ws${this.secure ? 's' : ''}://${this.host}:${this.port}`,
+        `ws${this.secure ? 's' : ''}://${this.host}:${this.port}/myko`,
       )
       setTimeout(() => {
         this.connect()
