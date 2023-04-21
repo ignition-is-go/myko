@@ -2,10 +2,8 @@
   "name": "@myko/nest",
   "version": "1.0.0",
   "description": "",
-  "main": "./dist/index.js",
-  "scripts": {
-    "build": "tsc -p ./tsconfig.lib.json"
-  },
+  "main": "./src/index.ts",
+  "scripts": {},
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -22,7 +20,7 @@
     "@nestjs/platform-express": "^9.4.0",
     "@nestjs/websockets": "^9.4.0",
     "@rship/logging": "workspace:*",
-    "ioredis": "^5.3.1",
+    "ioredis": "^5.3.2",
     "passport": "^0.6.0",
     "passport-local": "^1.0.0",
     "reflect-metadata": "^0.1.13",

@@ -1,10 +1,7 @@
 {
   "name": "@myko/ws",
-  "main": "./dist/cjs/src/index.js",
-  "module": "./dist/esm/src/index.js",
-  "scripts": {
-    "build": "tsc -p ./tsconfig.cjs.json & tsc -p ./tsconfig.browser.json"
-  },
+  "main": "./src/index.ts",
+  "scripts": {},
   "keywords": [],
   "author": "",
   "license": "ISC",

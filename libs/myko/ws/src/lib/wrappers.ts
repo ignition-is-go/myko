@@ -5,7 +5,7 @@ import {
   wrapCommand,
   MEvent,
   MWrappedItem,
-  ID,
+  type ID,
 } from '@myko/core'
 import {
   MCOMMAND_EVENT,
