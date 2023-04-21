@@ -140,7 +140,7 @@ export class WSMClient {
   private connect() {
     const protocol = this.secure ? 'wss' : 'ws'
     const port = this.secure ? '' : `:${this.port}`
-    const path = `${protocol}://${this.host}:${port}/myko`
+    const path = `${protocol}://${this.host}${port}/myko`
     console.log(`Connecting to ${path}`)
     this.ws = this.makeSocket(path)
     if (!this.ws) {
