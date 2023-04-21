@@ -138,15 +138,16 @@ export class WSMClient {
   }
 
   private connect() {
-    this.ws = this.makeSocket(
-      `ws${this.secure ? 's' : ''}://${this.host}:${this.port}/myko`,
-    )
+    const protocol = this.secure ? 'wss' : 'ws'
+    const port = this.secure ? '' : `:${this.port}`
+    const path = `${protocol}://${this.host}:${port}/myko`
+    console.log(`Connecting to ${path}`)
+    this.ws = this.makeSocket(path)
     if (!this.ws) {
       return
     }
     this.ws.onopen = () => {
       console.log('Connected')
-      this
       this.onReconnect()
     }
 
@@ -186,10 +187,7 @@ export class WSMClient {
     }
 
     this.ws.onclose = (e) => {
-      console.log(
-        'Socket Closed: Reconnecting',
-        `ws${this.secure ? 's' : ''}://${this.host}:${this.port}/myko`,
-      )
+      console.log('Socket Closed: Reconnecting')
       setTimeout(() => {
         this.connect()
       }, 1000)
