@@ -3,17 +3,17 @@
   "version": "3.0.0",
   "license": "MIT",
   "scripts": {
-    "server:dev": "nodemon --watch libs --watch apps/rship/server/src/ apps/rship/server/src/main.ts ",
+    "server:dev": "pnpm run --filter=@rship/server dev",
     "autoscheduler:dev": "nodemon --watch libs --watch apps/autoscheduler/src/ watch apps/autoscheduler/src/main.ts ",
     "dirigera:dev": "nodemon --watch libs --watch apps/rship/dirigera/src/ apps/rship/dirigera/src/main.ts ",
     "disguise:dev": "nodemon --watch libs --watch apps/rship/disguise/src/ apps/rship/disguise/src/main.ts ",
-    "pixera:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ apps/rship/pixera/src/main.ts ",
+    "pixera:dev": "pnpm run --filter=@rship/pixera dev",
     "bms:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ apps/rship/pixera/src/tools/bmsWorkflow.ts ",
     "ventuz:dev": "nodemon --watch libs --watch apps/rship/ventuz/src/ apps/rship/ventuz/src/main.ts ",
     "noise:dev": "nodemon --watch libs --watch apps/rship/noise/src/ apps/rship/noise/src/main.ts ",
     "client:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/client dev \" -e ts",
     "viz:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/viz dev \" -e ts",
-    "previz:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/previz dev \" -e ts",
+    "previz:dev": "pnpm run --filter=@rship/previz dev",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "publish": "pnpm run -r --no-bail publish",
@@ -38,6 +38,7 @@
     "husky": "^8.0.3",
     "nodemon": "^2.0.22",
     "ts-node": "^10.9.1",
+    "ts-node-dev": "^2.0.0",
     "tslib": "^2.5.0",
     "typescript": "^5.0.4"
   }
