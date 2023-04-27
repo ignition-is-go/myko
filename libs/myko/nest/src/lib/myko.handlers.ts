@@ -1,6 +1,6 @@
 import { MCommandHandler, MykoCommandHandler } from '@myko/core'
 import { ClientCommand, wrapCommandWS } from '@myko/ws'
-import { SocketRegistry } from '../types'
+import { MykoCommandError, SocketRegistry } from '../types'
 
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
@@ -10,8 +10,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
     const socket = this.reg.get(command.clientId)
 
     if (!socket) {
-      console.log(command)
-      return
+      throw new MykoCommandError(command.tx, 'Exec Not Connected')
     }
 
     return socket.send(

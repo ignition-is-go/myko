@@ -75,8 +75,13 @@ export class WSMClient {
     private host: string,
     private port: number,
     private clientId: string,
-    private argReconnect: () => void,
     private makeSocket: (url: string) => any,
+    private hooks?: {
+      onStartConnect?: (url: string) => void
+      onConnect?: (url: string) => void
+      onDisconnect?: (c: CloseEvent) => void
+      onError?: (e?: string) => void
+    },
     private secure: boolean = false,
   ) {
     this.commandSubject = new Subject()
@@ -141,14 +146,20 @@ export class WSMClient {
     const protocol = this.secure ? 'wss' : 'ws'
     const port = this.secure ? '' : `:${this.port}`
     const path = `${protocol}://${this.host}${port}/myko`
-    console.log(`Connecting to ${path}`)
+    this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
+
     if (!this.ws) {
+      this.hooks?.onError && this.hooks?.onError('No Socket')
       return
     }
+
     this.ws.onopen = () => {
-      console.log('Connected')
-      this.onReconnect()
+      this.hooks?.onConnect && this.hooks?.onConnect(path)
+      ;[...this.q.values()].forEach((v) => {
+        this.q.delete(v)
+        this.send(v)
+      })
     }
 
     this.ws.onmessage = (e) => {
@@ -187,22 +198,15 @@ export class WSMClient {
     }
 
     this.ws.onclose = (e) => {
-      console.log('Socket Closed: Reconnecting')
+      this.hooks?.onDisconnect && this.hooks?.onDisconnect(e)
       setTimeout(() => {
         this.connect()
       }, 1000)
     }
 
     this.ws.onerror = (err) => {
-      console.error('MykoWebSocketError', JSON.stringify(err))
+      this.hooks?.onError && this.hooks?.onError()
     }
-  }
-
-  onReconnect() {
-    ;[...this.q.values()].forEach((v) => {
-      this.q.delete(v)
-      this.send(v)
-    })
   }
 
   private send(item: WSMMessage) {

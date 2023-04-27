@@ -47,7 +47,7 @@ export class MykoGateway {
     event: WSMEvent['data'],
     @ConnectedSocket() socket,
   ): Promise<void> {
-    this.reg.set(event.clientId, socket)
+    this.reg.register(event.clientId, socket)
     this.event.publish(event)
   }
 

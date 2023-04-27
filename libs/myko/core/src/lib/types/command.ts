@@ -27,7 +27,7 @@ export const ofCommand = <T extends MCommand>(
   filterCommand: new (...args: any[]) => T,
 ) =>
   filter(
-    (command: T) =>
+    (command: MCommand): command is T =>
       Reflect.getMetadata(MYKO_COMMAND_ID_KEY, filterCommand) ===
       Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command),
   )
