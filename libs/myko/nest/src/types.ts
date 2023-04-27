@@ -7,6 +7,10 @@ import * as WebSocket from 'ws'
 @Injectable()
 export class SocketRegistry extends Map<ID, WebSocket> {
   register(id: ID, socket: WebSocket) {
+    if (this.has(id) && this.get(id) !== socket) {
+      throw new Error('Socket Collision')
+    }
+
     if (this.has(id) && this.get(id) === socket) {
       return
     }
