@@ -20,7 +20,8 @@
     "prepare": "husky install",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
-    "gen": "node ./tools/scaffold/generate.js"
+    "gen": "node ./tools/scaffold/generate.js",
+    "clear": "rm -rf ~/.local/share/pnpm && rm -rf **/node_modules"
   },
   "packageManager": "pnpm",
   "workspaces": [
