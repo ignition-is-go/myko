@@ -52,12 +52,18 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
     const subscription = stream$
       .pipe(
         filter((e) => !!e),
-        mergeMap((command) => from(this.commandBus.execute(command))),
+        mergeMap((command) =>
+          from(
+            this.commandBus.execute(command).catch((e) => {
+              console.error(e)
+              return e
+            }),
+          ),
+        ),
       )
       .subscribe({
         error: (error) => {
           console.error(`Error in Command Handler executed by Saga`)
-          throw error
         },
       })
 
