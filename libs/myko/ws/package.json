@@ -9,7 +9,7 @@
     "@myko/core": "workspace:*",
     "@rship/logging": "workspace:*",
     "reflect-metadata": "^0.1.13",
-    "rxjs": "^7.8.0",
+    "rxjs": "^7.8.1",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
