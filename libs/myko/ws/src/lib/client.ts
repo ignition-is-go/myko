@@ -36,6 +36,7 @@ import {
   MCOMMAND_RESPONSE_EVENT,
   MCOMMAND_ERROR_EVENT,
   type WSMCommandError,
+  WSMQuery,
 } from './types'
 
 export class WSMClient {
@@ -70,6 +71,7 @@ export class WSMClient {
   private errorsSubject: Subject<WSMCommandError>
   private successSubject: Subject<string>
   private userToken: ID | null = null
+  private resendQueries: Map<ID, WSMQuery>
 
   constructor(
     private host: string,
@@ -91,6 +93,7 @@ export class WSMClient {
     this.commandResponses = new Subject()
     this.errorsSubject = new Subject()
     this.successSubject = new Subject()
+    this.resendQueries = new Map()
     this.connect()
   }
 
@@ -122,6 +125,7 @@ export class WSMClient {
 
   watchQuery<T extends MQuery>(query: T): MLiveQueryResult<T> {
     const wrappedQuery = wrapQueryWS(query, this.clientId)
+    this.resendQueries.set(query.tx, wrappedQuery)
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
       filter((r) => r.tx === query.tx),
@@ -129,6 +133,7 @@ export class WSMClient {
 
       shareReplay(1),
       finalize(() => {
+        this.resendQueries.delete(query.tx)
         this.send(wrapQueryCancel(query.tx))
       }),
     ) as MLiveQueryResult<T>
@@ -159,6 +164,10 @@ export class WSMClient {
       ;[...this.q.values()].forEach((v) => {
         this.q.delete(v)
         this.send(v)
+      })
+      ;[...this.resendQueries.values()].forEach((q) => {
+        this.resendQueries.delete(q.data.query.tx)
+        this.send(q)
       })
     }
 
