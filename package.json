@@ -16,6 +16,7 @@
     "previz:dev": "pnpm run --filter=@rship/previz dev",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
+    "build": "pnpm run -r --no-bail build",
     "publish": "pnpm run -r --no-bail publish",
     "prepare": "husky install",
     "postinstall": "pnpm run versionstamp",
