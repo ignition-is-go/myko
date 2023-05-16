@@ -15,6 +15,7 @@ import {
 import { ID, MEvent, MEventType, MItem, MYKO_ITEM_TYPE } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
+import { getIds, getFilters } from '../registry'
 
 export interface RepoOptions<T extends MItem> {
   // stream of events to provide realtime updates. need not be filtered for the entity type
@@ -52,6 +53,9 @@ export abstract class Repo<T extends MItem> {
     private readonly options?: RepoOptions<T>,
   ) {
     this.entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
+
+    getIds.set(this.entity, this.getIds.bind(this))
+    getFilters.set(this.entity, this.getFilter.bind(this))
 
     this.store = new Store()
 

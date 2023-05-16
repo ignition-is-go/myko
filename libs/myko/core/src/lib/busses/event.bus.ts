@@ -8,9 +8,12 @@ import {
   Type,
   makeSet,
   makeDel,
+  MEventType,
 } from '../types'
 import { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
+
+import { getFilters, getIds, relationRegistry } from '../registry'
 
 export type MykoSagaType = Type<MSaga>
 
@@ -18,6 +21,67 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   constructor(private commandBus: AMykoCommandBus) {
     super()
     this.subscriptions = []
+    this.establishRelations()
+  }
+
+  private establishRelations() {
+    console.log(relationRegistry)
+
+    relationRegistry.forEach((relation) => {
+      switch (relation.type) {
+        case 'belongs-to': {
+          const sub = this.subject$
+            .pipe(
+              filter(
+                (e) =>
+                  e.changeType === MEventType.DEL &&
+                  e.itemType === relation.foreignType,
+              ),
+            )
+            .subscribe((e) => {
+              const ff = getFilters.get(relation.localType)
+
+              if (!ff) {
+                throw new Error(`No Filter for ${relation.localType}`)
+              }
+
+              const affected = ff(
+                (item) => item[relation.localKey] === e.item.id,
+              )
+
+              affected.forEach((item) => {
+                this.publishDel(item)
+              })
+            })
+          this.subscriptions.push(sub)
+          break
+        }
+
+        case 'owns-many': {
+          const sub = this.subject$
+            .pipe(
+              filter(
+                (e) =>
+                  e.changeType === MEventType.DEL &&
+                  e.itemType === relation.localType,
+              ),
+            )
+            .subscribe((e) => {
+              const ids = getIds.get(relation.foreignType)
+
+              if (!ids) {
+                throw new Error(`No getIds for ${relation.foreignType}`)
+              }
+
+              const affected = ids(e.item[relation.localKey])
+
+              affected.forEach((item) => {
+                this.publishDel(item)
+              })
+            })
+        }
+      }
+    })
   }
 
   private readonly subscriptions: Subscription[]
