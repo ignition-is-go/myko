@@ -16,8 +16,8 @@
     "previz:dev": "pnpm run --filter=@rship/previz dev",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
-    "build": "pnpm run -r --no-bail build",
-    "publish": "pnpm run -r --no-bail publish",
+    "build": "turbo run build",
+    "publish": "turbo run publish",
     "prepare": "husky install",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
@@ -41,6 +41,7 @@
     "ts-node": "^10.9.1",
     "ts-node-dev": "^2.0.0",
     "tslib": "^2.5.0",
+    "turbo": "^1.9.6",
     "typescript": "^5.0.4"
   }
 }
