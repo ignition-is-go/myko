@@ -55,13 +55,7 @@ export const ownsMany = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
-    const itemType = Reflect.getOwnMetadata(MYKO_ITEM_TYPE, depType)
-
-    const propType = Reflect.getMetadata('design:type', target, propertyKey)
-
-    if (propType !== Array) {
-      console.warn('Cannot use ownsMany decorator on non-array property')
-    }
+    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
 
     Reflect.defineMetadata(
       makeOwnsKey(propertyKey.toString()),
@@ -75,14 +69,7 @@ export const belongsTo = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
-    const itemType = Reflect.getOwnMetadata(MYKO_ITEM_TYPE, depType)
-
-    const propType = Reflect.getMetadata('design:type', target, propertyKey)
-
-    if (propType === Array || propType === Object) {
-      console.log(propType)
-      throw new Error('Cannot use belongsTo decorator on non-string property')
-    }
+    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
 
     Reflect.defineMetadata(
       makeDepkey(propertyKey.toString()),
