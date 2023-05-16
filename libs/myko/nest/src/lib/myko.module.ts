@@ -1,7 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common'
 import { MykoCommandBus } from './busses/command.bus'
 import { ExplorerService } from './services'
-import { LoggerModule } from '@rship/logging'
+import { LoggerModule, LoggerService } from '@rship/logging'
 import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
 import { RedisPersisterFactory } from './redis/redis.persisterFactory'
@@ -33,6 +33,7 @@ export class MykoModule implements OnModuleInit {
     private readonly commandBus: MykoCommandBus,
     private readonly queryBus: MykoQueryBus,
     private readonly eventBus: MykoEventBus,
+    private logger: LoggerService,
   ) {}
 
   onModuleInit() {
@@ -40,5 +41,10 @@ export class MykoModule implements OnModuleInit {
     this.commandBus.register(commands)
     this.queryBus.register(queries)
     this.eventBus.registerSagas(sagas)
+    const log = this.logger.getLogger('MykoModule')
+
+    this.eventBus.subject$.subscribe((e) => {
+      log.dev.debug(e.changeType, e.itemType)
+    })
   }
 }
