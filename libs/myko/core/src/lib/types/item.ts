@@ -21,3 +21,10 @@ export class MItem<T extends IMItem = IMItem> {
     return args as unknown as MItem<T>
   }
 }
+
+export const recalculateHash = (item: MItem) => {
+  Reflect.deleteProperty(item, 'hash')
+  const clone = { ...item }
+  const hash = MD5(clone)
+  Reflect.set(item, 'hash', hash)
+}

@@ -9,6 +9,7 @@ import {
   makeSet,
   makeDel,
   MEventType,
+  recalculateHash,
 } from '../types'
 import { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
@@ -58,7 +59,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
         }
 
         case 'owns-many': {
-          const sub = this.subject$
+          const forwardDeletes = this.subject$
             .pipe(
               filter(
                 (e) =>
@@ -79,6 +80,36 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                 this.publishDel(item)
               })
             })
+          this.subscriptions.push(forwardDeletes)
+
+          const cleanupIds = this.subject$
+            .pipe(
+              filter(
+                (e) =>
+                  e.changeType === MEventType.DEL &&
+                  e.itemType === relation.foreignType,
+              ),
+            )
+            .subscribe((event) => {
+              const ff = getFilters.get(relation.localType)
+              const affected = ff((e) =>
+                e[relation.localKey].includes(event.item.id),
+              )
+
+              affected.forEach((item) => {
+                const newIds = item[relation.localKey].filter(
+                  (id) => id !== event.item.id,
+                )
+
+                item[relation.localKey] = newIds
+
+                recalculateHash(item)
+
+                this.publishSet(item)
+              })
+            })
+
+          this.subscriptions.push(cleanupIds)
         }
       }
     })
