@@ -16,6 +16,7 @@
     "previz:dev": "pnpm run --filter=@rship/previz dev",
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
+    "sdk:watch": "pnpm run --filter=@rship/sdk watch",
     "build": "turbo run build",
     "publish": "turbo run publish",
     "prepare": "husky install",
