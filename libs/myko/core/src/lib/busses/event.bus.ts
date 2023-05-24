@@ -10,6 +10,7 @@ import {
   makeDel,
   MEventType,
   recalculateHash,
+  ID,
 } from '../types'
 import { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
@@ -51,7 +52,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               )
 
               affected.forEach((item) => {
-                this.publishDel(item)
+                this.publishDel(item, e.tx)
               })
             })
           this.subscriptions.push(sub)
@@ -77,7 +78,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               const affected = ids(e.item[relation.localKey])
 
               affected.forEach((item) => {
-                this.publishDel(item)
+                this.publishDel(item, e.tx)
               })
             })
           this.subscriptions.push(forwardDeletes)
@@ -105,7 +106,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
                 recalculateHash(item)
 
-                this.publishSet(item)
+                this.publishSet(item, event.tx)
               })
             })
 
@@ -117,15 +118,18 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
   private readonly subscriptions: Subscription[]
 
-  publishSet<T extends MItem>(item: T) {
-    this.publish(makeSet(item))
+  publishSet<T extends MItem>(item: T, tx: ID) {
+    recalculateHash(item)
+    this.publish(makeSet(item, tx))
   }
 
-  publishDel<T extends MItem>(item: T) {
-    this.publish(makeDel(item))
+  publishDel<T extends MItem>(item: T, tx: ID) {
+    recalculateHash(item)
+    this.publish(makeDel(item, tx))
   }
 
   publishAll(event: MEvent[]) {
+    event.forEach((e) => recalculateHash(e.item))
     event.forEach((e) => this.publish(e))
   }
 

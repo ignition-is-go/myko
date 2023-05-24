@@ -2,6 +2,7 @@ import { filter } from 'rxjs'
 
 import { v4 as uuid } from 'uuid'
 import { DateTime } from 'luxon'
+import { ID } from './base'
 
 export class MCommand<T = void> {
   $result: T
@@ -11,6 +12,11 @@ export class MCommand<T = void> {
   constructor() {
     this.tx = uuid()
     this.createdAt = DateTime.utc().toString()
+  }
+
+  withTransaction(tx: ID) {
+    Reflect.set(this, 'tx', tx)
+    return this
   }
 }
 

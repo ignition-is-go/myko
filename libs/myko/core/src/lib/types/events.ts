@@ -1,6 +1,7 @@
 import { DateTime } from 'luxon'
 import { filter } from 'rxjs'
 import { MItem, MYKO_ITEM_TYPE } from './item'
+import { ID } from './base'
 
 export enum MEventType {
   SET = 'SET',
@@ -18,17 +19,19 @@ export type MEvent<
   readonly changeType: C
   readonly itemType: string
   readonly createdAt: string
+  readonly tx: string
 }
 
-export const makeSet = <T extends MItem>(item: T) =>
-  makeMykoEvent(item, MEventType.SET)
+export const makeSet = <T extends MItem>(item: T, tx: ID) =>
+  makeMykoEvent(item, MEventType.SET, tx)
 
-export const makeDel = <T extends MItem>(item: T) =>
-  makeMykoEvent(item, MEventType.DEL)
+export const makeDel = <T extends MItem>(item: T, tx: ID) =>
+  makeMykoEvent(item, MEventType.DEL, tx)
 
 const makeMykoEvent = <T extends MItem, U extends MEventType>(
   item: T,
   changeType: U,
+  tx: ID,
   overrideType?: string,
 ): MEvent<T, U> => {
   const metadataType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
@@ -43,6 +46,7 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
     item,
     itemType,
     createdAt: DateTime.utc().toString(),
+    tx,
   }
 }
 
