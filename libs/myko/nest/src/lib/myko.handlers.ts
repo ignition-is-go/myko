@@ -37,7 +37,12 @@ export class GetEventLogHandler implements MQueryHandler<GetEventLog> {
     return combineLatest(
       all.map((fn) => fn(time).pipe(startWith([] as EventContainer[]))),
     ).pipe(
-      map((x) => x.flat().sort((a, b) => a.id.localeCompare(b.id))),
+      map((x) =>
+        x
+          .flat()
+          .filter((x) => x.event.tx !== undefined)
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      ),
       debounceTime(50),
     )
   }
