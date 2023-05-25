@@ -27,8 +27,6 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   }
 
   private establishRelations() {
-    console.log(relationRegistry)
-
     relationRegistry.forEach((relation) => {
       switch (relation.type) {
         case 'belongs-to': {

@@ -1,5 +1,4 @@
 import type { ID, PartialBy } from './base'
-export const MYKO_ITEM_TYPE = '__MYKO_ITEM_TYPE__'
 
 import { MD5 } from 'object-hash'
 

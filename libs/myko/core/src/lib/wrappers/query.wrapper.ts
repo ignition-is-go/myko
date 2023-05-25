@@ -1,4 +1,5 @@
-import { MQuery, MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../types'
+import { MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../constants'
+import { MQuery } from '../types'
 
 export interface MWrappedQuery {
   query: MQuery

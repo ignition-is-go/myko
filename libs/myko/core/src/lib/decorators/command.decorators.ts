@@ -1,10 +1,5 @@
-import {
-  CommandResponse,
-  MCommand,
-  MCommandHandler,
-  MYKO_COMMAND_ID_KEY,
-  MYKO_HANDLER_COMMAND_ID_KEY,
-} from '../types'
+import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
+import { CommandResponse, MCommand, MCommandHandler } from '../types'
 
 export const MykoCommand =
   (commandId: string) =>

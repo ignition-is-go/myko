@@ -1,15 +1,15 @@
 import { DateTime } from 'luxon'
 import { filter } from 'rxjs'
-import { MItem, MYKO_ITEM_TYPE } from './item'
+import { MItem } from './item'
 import { ID } from './base'
+import { MykoItem, MykoQuery } from '../decorators'
+import { MQuery } from './query'
+import { MYKO_ITEM_TYPE } from '../constants'
 
 export enum MEventType {
   SET = 'SET',
   DEL = 'DEL',
 }
-
-export const MYKO_EVENT_HANDLER = '__MYKO_EVENT_HANDLER__'
-export const MYKO_EVENT = '__MYKO_EVENT__'
 
 export type MEvent<
   T extends MItem = MItem,
@@ -62,3 +62,14 @@ export const ofItems = <T extends MItem>(
 
 export const ofType = <T extends MItem, C extends MEventType>(filterType: C) =>
   filter((event: MEvent<T, C>) => filterType === event.changeType)
+
+@MykoItem('EventContainer')
+export class EventContainer extends MItem<EventContainer> {
+  readonly event: MEvent
+}
+@MykoQuery('event-log:get-events', EventContainer)
+export class GetEventLog extends MQuery<EventContainer> {
+  constructor(readonly time: string) {
+    super()
+  }
+}

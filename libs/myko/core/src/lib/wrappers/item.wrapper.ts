@@ -1,4 +1,5 @@
-import { MEvent, MItem, MYKO_ITEM_TYPE } from '../types'
+import { MYKO_ITEM_TYPE } from '../constants'
+import { MEvent, MItem } from '../types'
 
 export interface MWrappedItem {
   item: MItem

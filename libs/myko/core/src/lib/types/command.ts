@@ -3,6 +3,7 @@ import { filter } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 import { DateTime } from 'luxon'
 import { ID } from './base'
+import { MYKO_COMMAND_ID_KEY } from '../constants'
 
 export class MCommand<T = void> {
   $result: T
@@ -21,9 +22,6 @@ export class MCommand<T = void> {
 }
 
 export type CommandResponse<T> = T extends MCommand<infer R> ? R : never
-
-export const MYKO_HANDLER_COMMAND_ID_KEY = '__MYKO_HANDLER_COMMAND_KEY__'
-export const MYKO_COMMAND_ID_KEY = '__MYKO_COMMAND_ID_KEY__'
 
 export interface MCommandHandler<T extends MCommand<CommandResponse<T>>> {
   execute(command: T): Promise<CommandResponse<T>>

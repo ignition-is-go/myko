@@ -1,4 +1,4 @@
-import { MYKO_SAGA_METADATA } from '../types'
+import { MYKO_SAGA_METADATA } from '../constants'
 
 export const MykoSaga = (): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {

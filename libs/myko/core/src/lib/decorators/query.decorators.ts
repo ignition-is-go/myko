@@ -1,13 +1,10 @@
 import {
-  MItem,
-  MQuery,
-  MQueryHandler,
-  MYKO_HANDLER_QUERY_ID_KEY,
+  MYKO_ITEM_TYPE,
   MYKO_QUERY_ID_KEY,
   MYKO_QUERY_ITEM_TYPE_KEY,
-  MYKO_ITEM_TYPE,
-} from '../types'
-import {} from '../types'
+  MYKO_HANDLER_QUERY_ID_KEY,
+} from '../constants'
+import { MItem, MQuery, MQueryHandler } from '../types'
 
 export const MykoQuery =
   <U extends MItem>(queryId: string, item: new (...args: any[]) => U) =>

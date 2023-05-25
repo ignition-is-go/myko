@@ -1,11 +1,11 @@
-import { MItem } from '../types'
-import { MYKO_ITEM_TYPE } from '../types'
 import 'reflect-metadata'
-
+import { MItem } from '../types'
+import {
+  MYKO_ITEM_BELONGS_TO_KEY,
+  MYKO_ITEM_OWNS_MANY_KEY,
+  MYKO_ITEM_TYPE,
+} from '../constants'
 import { relationRegistry } from '../registry'
-
-const MYKO_ITEM_BELONGS_TO_KEY = '__MYKO_ITEM_BELONGS_TO_KEY__'
-const MYKO_ITEM_OWNS_MANY_KEY = '__MYKO_ITEM_OWNS_MANY_KEY__'
 
 export const MykoItem =
   (itemType: string): ClassDecorator =>

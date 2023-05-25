@@ -12,10 +12,11 @@ import {
   switchMap,
   tap,
 } from 'rxjs'
-import { ID, MEvent, MEventType, MItem, MYKO_ITEM_TYPE } from '../types'
+import { ID, MEvent, MEventType, MItem } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
 import { getIds, getFilters } from '../registry'
+import { MYKO_ITEM_TYPE } from '../constants'
 
 export interface RepoOptions<T extends MItem> {
   // stream of events to provide realtime updates. need not be filtered for the entity type
