@@ -8,15 +8,24 @@ import {
   MYKO_ITEM_TYPE,
   ID,
   MItemConstructor,
+  EventContainer,
+  getEvents,
 } from '@myko/core'
-import { Observable, Subject } from 'rxjs'
+import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 import { Redis } from 'ioredis'
 import { LoggerService } from '@rship/logging'
-
+import { DateTime } from 'luxon'
 @Injectable()
 export class RedisPersisterFactory {
   constructor(private redis: RedisService, private logger: LoggerService) {}
-  getPersister<T extends MItem>(ent: MItemConstructor<T>) {
+  getPersister<T extends MItem>(
+    ent: MItemConstructor<T>,
+    options: {
+      enableEventLog: boolean
+    } = {
+      enableEventLog: true,
+    },
+  ) {
     const client = this.redis.getClient()
 
     const entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
@@ -24,7 +33,7 @@ export class RedisPersisterFactory {
     if (!entity) {
       throw new Error('Cannot get Entity from Metadata')
     }
-    return new RedisStreamPersister<T>(client, entity, this.logger)
+    return new RedisStreamPersister<T>(client, entity, this.logger, options)
   }
 }
 
@@ -34,9 +43,35 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     private redis: Redis,
     private entity: string,
     private logger: LoggerService,
+    private readonly options: {
+      enableEventLog: boolean
+    } = {
+      enableEventLog: true,
+    },
   ) {
     this.output = new Subject<MEvent<T>>()
     this.init()
+
+    if (this.options.enableEventLog) {
+      getEvents.set(this.entity, this.getEvents.bind(this))
+    }
+  }
+
+  getEvents(isoDateTime: string): Observable<EventContainer[]> {
+    const milis = DateTime.fromISO(isoDateTime).toMillis()
+
+    const sub = new Subject<EventContainer>()
+
+    this.listenForMessage(
+      milis.toString(),
+      sub,
+      (e, rid) => new EventContainer({ event: e, id: rid }),
+    )
+
+    return sub.pipe(
+      scan((acc, curr) => [...acc, curr], []),
+      distinctUntilChanged((x, y) => x.length === y.length),
+    )
   }
 
   persist(event: MEvent<T>): void {
@@ -79,28 +114,39 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initialized`)
   }
 
-  listenForMessage = async (lastId = '0'): Promise<any> => {
+  listenForMessage = async (
+    lastId = '0',
+    subject?: Subject<any>,
+    makeObj?: (entityEvemt: MEvent, redisStreamId: string) => any,
+  ): Promise<any> => {
     const results = await this.redis.xread('STREAMS', this.entity, lastId)
 
     if (!results) {
-      this.listenForMessage(lastId)
+      this.listenForMessage(lastId, subject, makeObj)
       return
     }
 
     const [key, messages] = results[0]
 
     if (messages.length === 0) {
-      this.listenForMessage(lastId)
+      this.listenForMessage(lastId, subject, makeObj)
     }
 
     messages?.forEach((aa) => {
-      const [streamId, entityPair] = aa
-      const [id, entityString] = entityPair
+      const [streamEventId, entityPair] = aa
+      const [entityId, entityString] = entityPair
       const event = JSON.parse(entityString)
-      this.output.next(event)
+
+      const built = makeObj ? makeObj(event, streamEventId) : event
+
+      if (subject) {
+        subject.next(built)
+      } else {
+        this.output.next(built)
+      }
     })
     const last = messages[messages.length - 1][0]
-    this.listenForMessage(last)
+    this.listenForMessage(last, subject, makeObj)
   }
 }
 

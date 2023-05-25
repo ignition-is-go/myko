@@ -1,7 +1,15 @@
-import { MCommandHandler, MykoCommandHandler } from '@myko/core'
+import {
+  EventContainer,
+  GetEventLog,
+  MCommandHandler,
+  MQueryHandler,
+  MykoCommandHandler,
+  MykoQueryHandler,
+  getEvents,
+} from '@myko/core'
 import { ClientCommand, wrapCommandWS } from '@myko/ws'
 import { MykoCommandError, SocketRegistry } from '../types'
-
+import { Observable, combineLatest, debounceTime, map, startWith } from 'rxjs'
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   constructor(private reg: SocketRegistry) {}
@@ -15,6 +23,22 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
     return socket.send(
       JSON.stringify(wrapCommandWS(command.command, 'rship-server')),
+    )
+  }
+}
+
+@MykoQueryHandler(GetEventLog)
+export class GetEventLogHandler implements MQueryHandler<GetEventLog> {
+  execute(query: GetEventLog): Observable<EventContainer[]> {
+    const time = query.time
+
+    const all = [...getEvents.values()]
+
+    return combineLatest(
+      all.map((fn) => fn(time).pipe(startWith([] as EventContainer[]))),
+    ).pipe(
+      map((x) => x.flat().sort((a, b) => a.id.localeCompare(b.id))),
+      debounceTime(50),
     )
   }
 }
