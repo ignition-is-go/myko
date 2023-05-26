@@ -19,6 +19,16 @@ export type Relation =
       localKey: string
       localType: string
     }
+  | {
+      type: 'ensure-for'
+      dependencies: {
+        foreignType: string
+        foreignKey: 'id'
+        localKey: string
+      }[]
+      localType: string
+      makeDefault: (...args: any) => void
+    }
 
 export const getIds = new Map<string, (ids: ID[]) => MItem[]>()
 export const getFilters = new Map<
@@ -30,3 +40,5 @@ export const getEvents = new Map<
   string,
   (isoDateTime: string) => Observable<EventContainer[]>
 >()
+
+export const propertyDefaults = new Map<string, Map<string, any>>()

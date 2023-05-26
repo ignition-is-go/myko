@@ -1,5 +1,5 @@
 import 'reflect-metadata'
-import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
+import { filter, from, mergeMap, Observable, Subscription, tap } from 'rxjs'
 import {
   MItem,
   MEvent,
@@ -15,7 +15,14 @@ import {
 import { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
-import { getFilters, getIds, relationRegistry } from '../registry'
+import {
+  getFilters,
+  getIds,
+  relationRegistry,
+  propertyDefaults,
+} from '../registry'
+import { onInit } from '../hooks'
+import { v4 as uuid } from 'uuid'
 
 export type MykoSagaType = Type<MSaga>
 
@@ -109,6 +116,94 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             })
 
           this.subscriptions.push(cleanupIds)
+          break
+        }
+
+        case 'ensure-for': {
+          const { dependencies, localType } = relation
+
+          const foreignTypes = dependencies.map((d) => d.foreignType)
+
+          const ensure = (
+            tx: ID,
+            override?: { name: string; value: MItem },
+          ) => {
+            const foreigns = foreignTypes.map((foreignType) => {
+              if (override && override.name === foreignType) {
+                return {
+                  name: foreignType,
+                  values: [override.value],
+                }
+              }
+
+              const getForeign = getFilters.get(foreignType)
+              if (!getForeign) {
+                throw new Error(`No Foreign getFilters for ${foreignType}`)
+              }
+
+              return {
+                name: foreignType,
+                values: getForeign((f) => true),
+              }
+            })
+
+            const getLocal = getFilters.get(localType)
+            if (!getLocal) {
+              throw new Error(`No Local getFilters for ${localType}`)
+            }
+
+            const multiplex = getCombinations(foreigns)
+
+            multiplex.forEach((combination) => {
+              const exists = getLocal((item) =>
+                dependencies.every(
+                  (d) =>
+                    item[d.localKey] ===
+                    combination[d.foreignType][d.foreignKey],
+                ),
+              )
+
+              if (exists.length === 0) {
+                const props = dependencies.reduce((acc, d) => {
+                  acc[d.localKey] = combination[d.foreignType][d.foreignKey]
+                  return acc
+                }, {} as any)
+
+                propertyDefaults
+                  .get(localType)
+                  ?.forEach((value, propertyKey) => {
+                    props[propertyKey] = value
+                  })
+
+                const newItem = new relation.makeDefault({
+                  id: uuid(),
+                  ...props,
+                })
+                console.log(combination)
+                console.log(localType, newItem)
+                this.publishSet(newItem, tx)
+              }
+            })
+          }
+
+          const ensureDeps = this.subject$
+            .pipe(
+              filter(
+                (e) =>
+                  e.changeType === MEventType.SET &&
+                  dependencies.some((d) => d.foreignType === e.itemType),
+              ),
+            )
+            .subscribe((event) => {
+              ensure(event.tx, { name: event.itemType, value: event.item })
+            })
+
+          this.subscriptions.push(ensureDeps)
+
+          onInit([...foreignTypes, relation.localType], () => {
+            ensure('server-init')
+          })
+          break
         }
       }
     })
@@ -169,3 +264,25 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 }
 
 const isFunction = (a: any) => typeof a === 'function'
+
+const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
+  const result = []
+
+  function helper(current, index) {
+    if (index === arrays.length) {
+      result.push(current)
+    } else {
+      for (let i = 0; i < arrays[index].values.length; i++) {
+        const newItem = {
+          ...current,
+          [arrays[index].name]: arrays[index].values[i],
+        }
+        helper(newItem, index + 1)
+      }
+    }
+  }
+
+  helper({}, 0)
+
+  return result
+}

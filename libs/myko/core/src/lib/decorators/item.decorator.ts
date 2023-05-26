@@ -2,10 +2,12 @@ import 'reflect-metadata'
 import { MItem } from '../types'
 import {
   MYKO_ITEM_BELONGS_TO_KEY,
+  MYKO_ITEM_DEFAULT_VALUE_KEY,
+  MYKO_ITEM_ENSURE_KEY,
   MYKO_ITEM_OWNS_MANY_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import { relationRegistry } from '../registry'
+import { propertyDefaults, relationRegistry } from '../registry'
 
 export const MykoItem =
   (itemType: string): ClassDecorator =>
@@ -18,7 +20,9 @@ export const MykoItem =
     }
     Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
 
-    Reflect.getOwnMetadataKeys(original).forEach((key) => {
+    const metaKeys = Reflect.getMetadataKeys(original)
+
+    metaKeys.forEach((key) => {
       if (key.startsWith(MYKO_ITEM_BELONGS_TO_KEY)) {
         // belongs to
         const propertyKey = decodeDepkey(key)
@@ -46,7 +50,40 @@ export const MykoItem =
           localType: itemType,
         })
       }
+
+      if (key.startsWith(MYKO_ITEM_DEFAULT_VALUE_KEY)) {
+        const propertyKey = decodeDefaultValueKey(key)
+
+        if (!propertyDefaults.has(itemType)) {
+          propertyDefaults.set(itemType, new Map())
+        }
+
+        propertyDefaults
+          .get(itemType)
+          .set(propertyKey, Reflect.getMetadata(key, original))
+      }
     })
+
+    const ensureKeys = metaKeys.filter((key) =>
+      key.startsWith(MYKO_ITEM_ENSURE_KEY),
+    )
+
+    if (ensureKeys.length > 0) {
+      relationRegistry.add({
+        type: 'ensure-for',
+        dependencies: ensureKeys.map((key) => {
+          const propertyKey = decodeEnsureKey(key)
+          const depType = Reflect.getMetadata(key, original)
+          return {
+            foreignType: depType,
+            foreignKey: 'id',
+            localKey: propertyKey,
+          }
+        }),
+        makeDefault: withType,
+        localType: itemType,
+      })
+    }
 
     return withType
   }
@@ -79,6 +116,30 @@ export const belongsTo = (
   }
 }
 
+export const defaultValue = (value: any): PropertyDecorator => {
+  return (target: object, propertyKey: string | symbol) => {
+    Reflect.defineMetadata(
+      makeDefaultValueKey(propertyKey.toString()),
+      value,
+      target.constructor,
+    )
+  }
+}
+
+export const ensureFor = (
+  depType: new (...args: any[]) => MItem,
+): PropertyDecorator => {
+  return (target: object, propertyKey: string | symbol) => {
+    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
+
+    Reflect.defineMetadata(
+      makeEnsureKey(propertyKey.toString()),
+      itemType,
+      target.constructor,
+    )
+  }
+}
+
 const makeOwnsKey = (propertyKey: string) =>
   `${MYKO_ITEM_OWNS_MANY_KEY}:${propertyKey}`
 
@@ -92,5 +153,21 @@ const makeDepkey = (propertyKey: string) =>
 
 const decodeDepkey = (depKey: string): string => {
   const [_, propertyKey] = depKey.split(':')
+  return propertyKey
+}
+
+const makeEnsureKey = (propertyKey: string) =>
+  `${MYKO_ITEM_ENSURE_KEY}:${propertyKey}`
+
+const decodeEnsureKey = (EnsureKey: string): string => {
+  const [_, propertyKey] = EnsureKey.split(':')
+  return propertyKey
+}
+
+const makeDefaultValueKey = (propertyKey: string) =>
+  `${MYKO_ITEM_DEFAULT_VALUE_KEY}:${propertyKey}`
+
+const decodeDefaultValueKey = (DefaultValueKey: string): string => {
+  const [_, propertyKey] = DefaultValueKey.split(':')
   return propertyKey
 }

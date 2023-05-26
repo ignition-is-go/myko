@@ -10,6 +10,7 @@ import {
   MItemConstructor,
   EventContainer,
   getEvents,
+  fireInit,
 } from '@myko/core'
 import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 import { Redis } from 'ioredis'
@@ -50,7 +51,7 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     },
   ) {
     this.output = new Subject<MEvent<T>>()
-    this.init()
+    this.init().then(() => fireInit(this.entity))
 
     if (this.options.enableEventLog) {
       getEvents.set(this.entity, this.getEvents.bind(this))
