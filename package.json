@@ -9,6 +9,7 @@
     "disguise:dev": "nodemon --watch libs --watch apps/rship/disguise/src/ apps/rship/disguise/src/main.ts ",
     "pixera:dev": "pnpm run --filter=@rship/pixera dev",
     "bms:dev": "nodemon --watch libs --watch apps/rship/pixera/src/ apps/rship/pixera/src/tools/bmsWorkflow.ts ",
+    "bms:run": "ts-node apps/rship/pixera/src/tools/bmsWorkflow.ts ",
     "ventuz:dev": "nodemon --watch libs --watch apps/rship/ventuz/src/ apps/rship/ventuz/src/main.ts ",
     "noise:dev": "nodemon --watch libs --watch apps/rship/noise/src/ apps/rship/noise/src/main.ts ",
     "client:dev": "nodemon --watch libs --exec \"pnpm run --filter=@rship/client dev \" -e ts",
