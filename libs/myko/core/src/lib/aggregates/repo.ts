@@ -42,13 +42,6 @@ export abstract class Repo<T extends MItem> {
 
   private all$: Subject<Map<ID, T>> = new Subject<Map<ID, T>>()
 
-  private safeLog(...args: any[]) {
-    if (this.options?.enableLogs) {
-      // eslint-disable-next-line no-console
-      console.debug(...args)
-    }
-  }
-
   constructor(
     ent: new (...args: any[]) => T,
     private readonly options?: RepoOptions<T>,
@@ -83,14 +76,11 @@ export abstract class Repo<T extends MItem> {
     }
 
     this.subject.subscribe((event: MEvent<T>) => {
-      this.safeLog(this.entity, 'FIREHOSE', event)
       switch (event.changeType) {
         case MEventType.SET:
-          this.safeLog(this.entity, 'Store Set', unwrapItem(event))
           this.store.set(event.item.id, unwrapItem(event) as T)
           break
         case MEventType.DEL:
-          this.safeLog(this.entity, 'Store Delete', unwrapItem(event))
           this.store.delete(event.item.id)
           break
       }
@@ -98,30 +88,21 @@ export abstract class Repo<T extends MItem> {
   }
 
   watchFilter(filterFunc: (ent: T) => boolean): Observable<T[]> {
-    this.safeLog(this.entity, 'new Watch Filter/Query')
     return this.all$.pipe(
       startWith(this.store.getFilter(filterFunc)),
       switchMap((all) =>
         this.subject.pipe(
           scan((acc, event) => {
-            this.safeLog(this.entity, 'Filter/Query Event', event)
             if (event.changeType === MEventType.DEL) {
-              this.safeLog(this.entity, 'Filter/Query Delete')
               acc.delete(event.item.id)
             }
             if (event.changeType === MEventType.SET && filterFunc(event.item)) {
-              this.safeLog(this.entity, 'Filter/Query Set', unwrapItem(event))
               acc.set(event.item.id, unwrapItem(event) as T)
             }
             if (
               event.changeType === MEventType.SET &&
               !filterFunc(event.item)
             ) {
-              this.safeLog(
-                this.entity,
-                'Filter/Query Set Remove From Filter',
-                unwrapItem(event),
-              )
               acc.delete(event.item.id)
             }
             return acc
@@ -130,23 +111,13 @@ export abstract class Repo<T extends MItem> {
         ),
       ),
       map(toArray),
-      tap((x) =>
-        this.safeLog(
-          this.entity,
-          'Filter/Query Emit',
-          JSON.stringify(x, undefined, 2),
-        ),
-      ),
-      finalize(() => this.safeLog(this.entity, 'Filter/Query DONEZO')),
     )
   }
 
   watchId(id: ID): Observable<T | null> {
-    this.safeLog(this.entity, 'Making watchId', id)
     const obs = this.subject.pipe(
       filter((e) => e.item.id === id),
       map((event) => {
-        this.safeLog(this.entity, 'Id Event', event)
         switch (event.changeType) {
           case MEventType.SET:
             return unwrapItem(event)
@@ -155,9 +126,7 @@ export abstract class Repo<T extends MItem> {
         }
       }),
       startWith(this.store.get(id) ?? null),
-      tap((x) => this.safeLog(this.entity, 'Data', x)),
       mergeWith(this.all$.pipe(map((e) => e.get(id) ?? null))),
-      tap((x) => this.safeLog(this.entity, 'Publish Id', x)),
     )
 
     return obs as Observable<T | null>
@@ -167,20 +136,7 @@ export abstract class Repo<T extends MItem> {
     if (ids.length === 0) {
       return of([])
     }
-    this.safeLog(this.entity, 'Creating WatchIds', ids)
-    return combineLatest(
-      ids.map((id) =>
-        this.watchId(id).pipe(
-          tap((x) =>
-            this.safeLog(
-              id,
-              ids.findIndex((i) => i === id),
-              x,
-            ),
-          ),
-        ),
-      ),
-    ).pipe(tap((x) => this.safeLog(this.entity, 'watchIds', x)))
+    return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe()
   }
 
   getIds(ids: ID[]) {
@@ -190,7 +146,13 @@ export abstract class Repo<T extends MItem> {
   watch(query: Partial<T>): Observable<T[]> {
     const filterFunc = buildFilter(query)
 
-    const ret = this.watchFilter(filterFunc)
+    const ret = this.watchFilter(filterFunc).pipe(
+      tap((x) => {
+        if (x.length > 0) {
+          console.log(this.entity, x.length, 'of', this.store.size)
+        }
+      }),
+    )
 
     if (!ret) {
       throw new Error('Error making or getting stream')
