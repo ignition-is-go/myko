@@ -146,13 +146,7 @@ export abstract class Repo<T extends MItem> {
   watch(query: Partial<T>): Observable<T[]> {
     const filterFunc = buildFilter(query)
 
-    const ret = this.watchFilter(filterFunc).pipe(
-      tap((x) => {
-        if (x.length > 0) {
-          console.log(this.entity, x.length, 'of', this.store.size)
-        }
-      }),
-    )
+    const ret = this.watchFilter(filterFunc)
 
     if (!ret) {
       throw new Error('Error making or getting stream')
