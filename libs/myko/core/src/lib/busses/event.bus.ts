@@ -179,8 +179,6 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                   id: uuid(),
                   ...props,
                 })
-                console.log(combination)
-                console.log(localType, newItem)
                 this.publishSet(newItem, tx)
               }
             })
