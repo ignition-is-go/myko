@@ -1,5 +1,7 @@
 import {
+  ClientRepo,
   EventContainer,
+  GetClientsByIds,
   GetEventLog,
   MCommandHandler,
   MQueryHandler,
@@ -45,5 +47,13 @@ export class GetEventLogHandler implements MQueryHandler<GetEventLog> {
       ),
       debounceTime(50),
     )
+  }
+}
+
+@MykoQueryHandler(GetClientsByIds)
+export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
+  constructor(private repo: ClientRepo) {}
+  execute(query: GetClientsByIds): Observable<any> {
+    return this.repo.watchIds(query.ids)
   }
 }

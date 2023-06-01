@@ -7,6 +7,7 @@ import { MykoEventBus } from './busses/event.bus'
 import { RedisPersisterFactory } from './redis/redis.persisterFactory'
 import { SocketRegistry } from '../types'
 import * as handlers from './myko.handlers'
+import { Client, ClientRepo, ofItems } from '@myko/core'
 
 @Module({
   imports: [LoggerModule.forModule({ moduleName: 'Myko' })],
@@ -17,6 +18,17 @@ import * as handlers from './myko.handlers'
     MykoQueryBus,
     MykoEventBus,
     RedisPersisterFactory,
+    {
+      provide: ClientRepo,
+
+      useFactory: (events: MykoEventBus) => {
+        return new ClientRepo(Client, {
+          stream: events.subject$.pipe(ofItems(Client)),
+        })
+      },
+      inject: [MykoEventBus],
+    },
+
     ...Object.values(handlers),
   ],
   exports: [
