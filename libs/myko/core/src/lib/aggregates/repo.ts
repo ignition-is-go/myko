@@ -1,5 +1,6 @@
 import {
   combineLatest,
+  distinctUntilChanged,
   filter,
   finalize,
   map,
@@ -92,21 +93,35 @@ export abstract class Repo<T extends MItem> {
       startWith(this.store.getFilter(filterFunc)),
       switchMap((all) =>
         this.subject.pipe(
-          scan((acc, event) => {
-            if (event.changeType === MEventType.DEL) {
-              acc.delete(event.item.id)
-            }
-            if (event.changeType === MEventType.SET && filterFunc(event.item)) {
-              acc.set(event.item.id, unwrapItem(event) as T)
-            }
-            if (
-              event.changeType === MEventType.SET &&
-              !filterFunc(event.item)
-            ) {
-              acc.delete(event.item.id)
-            }
-            return acc
-          }, new Map(all)),
+          scan(
+            (acc, event) => {
+              acc.changed = false
+              if (event.changeType === MEventType.DEL) {
+                acc.lookup.delete(event.item.id)
+                acc.changed = true
+              }
+              if (
+                event.changeType === MEventType.SET &&
+                filterFunc(event.item)
+              ) {
+                acc.lookup.set(event.item.id, unwrapItem(event) as T)
+                acc.changed = true
+              }
+              if (
+                event.changeType === MEventType.SET &&
+                !filterFunc(event.item)
+              ) {
+                if (acc.lookup.has(event.item.id)) {
+                  acc.lookup.delete(event.item.id)
+                  acc.changed = true
+                }
+              }
+              return acc
+            },
+            { lookup: all, changed: false },
+          ),
+          filter((e) => e.changed),
+          map((e) => e.lookup),
           startWith(this.store.getFilter(filterFunc)),
         ),
       ),
