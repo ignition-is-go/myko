@@ -57,6 +57,15 @@
       "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
+    },
+    {
+      "name": "Attach TestBed",
+      "address": "localhost",
+      "port": 9339,
+      "request": "attach",
+      "skipFiles": ["<node_internals>/**"],
+      "type": "node",
+      "restart": true
     }
   ]
 }
