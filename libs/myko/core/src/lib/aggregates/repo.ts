@@ -16,7 +16,7 @@ import {
 import { ID, MEvent, MEventType, MItem } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
-import { getIds, getFilters } from '../registry'
+import { getIds, getFilters, watchIds } from '../registry'
 import { MYKO_ITEM_TYPE } from '../constants'
 
 export interface RepoOptions<T extends MItem> {
@@ -51,6 +51,7 @@ export abstract class Repo<T extends MItem> {
 
     getIds.set(this.entity, this.getIds.bind(this))
     getFilters.set(this.entity, this.getFilter.bind(this))
+    watchIds.set(this.entity, this.watchIds.bind(this))
 
     this.store = new Store()
 

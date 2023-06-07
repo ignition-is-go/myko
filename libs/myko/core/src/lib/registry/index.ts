@@ -35,6 +35,7 @@ export const getFilters = new Map<
   string,
   (filterFunc: (el: MItem) => boolean) => MItem[]
 >()
+export const watchIds = new Map<string, (ids: ID[]) => Observable<MItem[]>>()
 
 export const getEvents = new Map<
   string,
