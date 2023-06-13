@@ -3,7 +3,9 @@ import {
   EventContainer,
   GetClientsByIds,
   GetEventLog,
+  GetItemsByTypeAndIds,
   MCommandHandler,
+  MItem,
   MQueryHandler,
   MykoCommandHandler,
   MykoQueryHandler,
@@ -12,6 +14,7 @@ import {
 import { ClientCommand, wrapCommandWS } from '@myko/ws'
 import { MykoCommandError, SocketRegistry } from '../types'
 import { Observable, combineLatest, debounceTime, map, startWith } from 'rxjs'
+import { watchIds } from '@myko/core/src/lib/registry'
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   constructor(private reg: SocketRegistry) {}
@@ -55,5 +58,16 @@ export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
   constructor(private repo: ClientRepo) {}
   execute(query: GetClientsByIds): Observable<any> {
     return this.repo.watchIds(query.ids)
+  }
+}
+
+@MykoQueryHandler(GetItemsByTypeAndIds)
+export class GetItemByTypeAndIdHandler
+  implements MQueryHandler<GetItemsByTypeAndIds>
+{
+  constructor() {}
+  execute(query: GetItemsByTypeAndIds): Observable<MItem[]> {
+    const watchTypeByIds = watchIds.get(query.type)
+    return watchTypeByIds(query.ids)
   }
 }
