@@ -253,7 +253,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
       )
       .subscribe({
         error: (error) => {
-          console.error(`Error in Command Handler executed by Saga`)
+          console.error(`Error in Command Handler executed by Saga`, error)
         },
       })
 
