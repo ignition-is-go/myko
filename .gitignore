@@ -105,3 +105,15 @@ build/config.gypi
 .angular
 .env
 libs/generated/version.ts
+apps/rship/ableton/libs/rship-logging/src/logs/combined/2023-02-05-combined.log
+apps/rship/ableton/libs/rship-logging/src/logs/combined/2023-02-06-combined.log
+apps/rship/ableton/libs/rship-logging/src/logs/combined/2023-02-07-combined.log
+apps/rship/ableton/libs/rship-logging/src/logs/combined/2023-02-08-combined.log
+apps/rship/ableton/libs/rship-logging/src/logs/combined/2023-02-09-combined.log
+apps/rship/ableton/libs/rship-logging/src/logs/combined/2023-02-10-combined.log
+apps/rship/ableton/libs/rship-logging/src/logs/errors/2023-02-05-error.log
+apps/rship/ableton/libs/rship-logging/src/logs/errors/2023-02-06-error.log
+apps/rship/ableton/libs/rship-logging/src/logs/errors/2023-02-07-error.log
+apps/rship/ableton/libs/rship-logging/src/logs/errors/2023-02-08-error.log
+apps/rship/ableton/libs/rship-logging/src/logs/errors/2023-02-09-error.log
+apps/rship/ableton/libs/rship-logging/src/logs/errors/2023-02-10-error.log
