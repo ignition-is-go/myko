@@ -66,6 +66,15 @@
       "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
+    },
+    {
+      "name": "Attach Ableton",
+      "address": "localhost",
+      "port": 9449,
+      "request": "attach",
+      "skipFiles": ["<node_internals>/**"],
+      "type": "node",
+      "restart": true
     }
   ]
 }
