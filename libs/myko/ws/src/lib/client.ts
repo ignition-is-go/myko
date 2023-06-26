@@ -226,4 +226,12 @@ export class WSMClient {
 
     this.ws.send(JSON.stringify(item))
   }
+
+  disconnect() {
+    if (this.ws) {
+      this.hooks?.onDisconnect?.({} as CloseEvent)
+      this.ws.onclose = () => {}
+      this.ws.close()
+    }
+  }
 }
