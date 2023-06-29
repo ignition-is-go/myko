@@ -27,7 +27,8 @@
     "versionwrite": "node ./tools/scripts/version-write.js",
     "gen": "node ./tools/scaffold/generate.js",
     "clear": "rm -rf ~/.local/share/pnpm && rm -rf **/node_modules",
-    "ionic:build": "npm run build"
+    "ionic:build": "npm run build",
+    "sync": "git pull && pnpm i && git submodule update && cd libs/ableton/src/lib/ableton-js && npm run build"
   },
   "packageManager": "pnpm",
   "workspaces": [
