@@ -9,6 +9,7 @@
   "license": "ISC",
   "dependencies": {
     "@liaoliaots/nestjs-redis": "^9.0.5",
+    "@msgpack/msgpack": "3.0.0-beta2",
     "@myko/core": "workspace:*",
     "@myko/ws": "workspace:*",
     "@nestjs/common": "^9.4.3",

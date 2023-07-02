@@ -18,6 +18,8 @@ import {
   type MLiveQueryResult,
   type ID,
   type CommandResponse,
+  ProtocolMessages,
+  MykoProtocol,
 } from '@myko/core'
 import {
   wrapCommandWS,
@@ -38,6 +40,8 @@ import {
   type WSMCommandError,
   WSMQuery,
 } from './types'
+
+import { Encoder, Decoder } from '@msgpack/msgpack'
 
 export class WSMClient {
   private q = new Set<WSMMessage>()
@@ -73,6 +77,13 @@ export class WSMClient {
   private userToken: ID | null = null
   private resendQueries: Map<ID, WSMQuery>
 
+  private protocolReady = true
+  private protocol: MykoProtocol = MykoProtocol.JSON
+
+  private decoders = new Map<MykoProtocol, (data: any) => any>()
+  private encoders = new Map<MykoProtocol, (data: any) => any>()
+  private datapreppers = new Map<MykoProtocol, (data: any) => any>()
+
   constructor(
     private host: string,
     private port: number,
@@ -94,6 +105,18 @@ export class WSMClient {
     this.errorsSubject = new Subject()
     this.successSubject = new Subject()
     this.resendQueries = new Map()
+
+    const decoder = new Decoder()
+    const encoder = new Encoder()
+    this.decoders.set(MykoProtocol.JSON, (data) => JSON.parse(data))
+    this.decoders.set(MykoProtocol.MSGPACK, (data) => decoder.decode(data))
+
+    this.encoders.set(MykoProtocol.JSON, (data) => JSON.stringify(data))
+    this.encoders.set(MykoProtocol.MSGPACK, (data) => encoder.encode(data))
+
+    this.datapreppers.set(MykoProtocol.JSON, (data) => data.toString())
+    this.datapreppers.set(MykoProtocol.MSGPACK, (data) => data)
+
     this.connect()
   }
 
@@ -147,12 +170,18 @@ export class WSMClient {
     this.userToken = token
   }
 
+  private switchToMessagePack() {
+    this.protocolReady = false
+    this.forceSend({ event: ProtocolMessages.SwitchToMSGPACK })
+  }
+
   private connect() {
-    const protocol = this.secure ? 'wss' : 'ws'
+    const prefix = this.secure ? 'wss' : 'ws'
     const port = this.secure ? '' : `:${this.port}`
-    const path = `${protocol}://${this.host}${port}/myko`
+    const path = `${prefix}://${this.host}${port}/myko`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
+    this.ws.binaryType = 'arraybuffer'
 
     if (!this.ws) {
       this.hooks?.onError && this.hooks?.onError('No Socket')
@@ -160,6 +189,9 @@ export class WSMClient {
     }
 
     this.ws.onopen = () => {
+      if (this.protocol !== MykoProtocol.MSGPACK) {
+        this.switchToMessagePack()
+      }
       this.hooks?.onConnect && this.hooks?.onConnect(path)
       ;[...this.q.values()].forEach((v) => {
         this.q.delete(v)
@@ -172,8 +204,18 @@ export class WSMClient {
     }
 
     this.ws.onmessage = (e) => {
+      if (e.data === ProtocolMessages.SwitchToMSGPACK) {
+        console.log('SWAP')
+        this.protocol = MykoProtocol.MSGPACK
+        this.protocolReady = true
+        return
+      }
+
       const body = e.data
-      const message: WSMMessage = JSON.parse(body.toString())
+
+      const message: WSMMessage = this.decoders.get(this.protocol)(
+        this.datapreppers.get(this.protocol)(body),
+      )
 
       switch (message.event) {
         case MCOMMAND_EVENT:
@@ -207,6 +249,7 @@ export class WSMClient {
     }
 
     this.ws.onclose = (e) => {
+      this.protocol = MykoProtocol.JSON
       this.hooks?.onDisconnect && this.hooks?.onDisconnect(e)
       setTimeout(() => {
         this.connect()
@@ -218,13 +261,29 @@ export class WSMClient {
     }
   }
 
-  private send(item: WSMMessage) {
+  private forceSend(e: { event: string; data?: any }) {
     if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
+      return
+    }
+
+    const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(e)
+
+    this.ws.send(encoded)
+  }
+
+  private send(item: WSMMessage) {
+    if (
+      !this.ws ||
+      this.ws.readyState !== this.ws.OPEN ||
+      !this.protocolReady
+    ) {
       this.q.add(item)
       return
     }
 
-    this.ws.send(JSON.stringify(item))
+    const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
+
+    this.ws.send(encoded)
   }
 
   disconnect() {

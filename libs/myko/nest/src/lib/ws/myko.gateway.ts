@@ -20,13 +20,21 @@ import {
   WSMQueryResponse,
 } from '@myko/ws'
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
-import { ID, unwrapCommand, unwrapQuery, wrapItem } from '@myko/core'
+import {
+  ID,
+  MykoProtocol,
+  ProtocolMessages,
+  unwrapCommand,
+  unwrapQuery,
+  wrapItem,
+} from '@myko/core'
 
 import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
 import { SocketRegistry } from '../../types'
 import { UseFilters, UseGuards } from '@nestjs/common'
 import { MykoGuard } from './myko.guard'
 import { WsExceptionFilter } from './myko.exception-filter'
+import { clientProtocols } from '../registry/client.protocols'
 
 @WebSocketGateway(MYKO_WS_PORT, { path: '/myko' })
 @UseGuards(MykoGuard)
@@ -49,6 +57,12 @@ export class MykoGateway {
   ): Promise<void> {
     this.reg.register(event.clientId, socket)
     this.event.publish(event)
+  }
+
+  @SubscribeMessage(ProtocolMessages.SwitchToMSGPACK)
+  async onSwitchToMSGPACK(@ConnectedSocket() socket): Promise<void> {
+    socket.send(ProtocolMessages.SwitchToMSGPACK)
+    clientProtocols.set(socket, MykoProtocol.MSGPACK)
   }
 
   @SubscribeMessage(MCOMMAND_EVENT)
