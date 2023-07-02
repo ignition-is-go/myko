@@ -4,22 +4,14 @@ import { MessageMappingProperties } from '@nestjs/websockets'
 import { Observable, fromEvent, EMPTY } from 'rxjs'
 import { mergeMap, filter, map } from 'rxjs/operators'
 import { MykoProtocol } from '@myko/core'
-import { Decoder, Encoder } from '@msgpack/msgpack'
-import { clientProtocols } from './registry/client.protocols'
+import {
+  clientProtocols,
+  decoders,
+  encoders,
+} from './registry/client.protocols'
 
 export class MykoAdapter implements WebSocketAdapter {
-  private decoders = new Map<MykoProtocol, (data: any) => any>()
-  private encoders = new Map<MykoProtocol, (data: any) => any>()
-
-  constructor(private app: INestApplicationContext) {
-    const decoder = new Decoder()
-    const encoder = new Encoder()
-    this.decoders.set(MykoProtocol.JSON, (data) => JSON.parse(data))
-    this.decoders.set(MykoProtocol.MSGPACK, (data) => decoder.decode(data))
-
-    this.encoders.set(MykoProtocol.JSON, (data) => JSON.stringify(data))
-    this.encoders.set(MykoProtocol.MSGPACK, (data) => encoder.encode(data))
-  }
+  constructor(private app: INestApplicationContext) {}
 
   create(port: number, options: any = {}): any {
     return new WebSocket.Server({ port, ...options })
@@ -37,7 +29,7 @@ export class MykoAdapter implements WebSocketAdapter {
     fromEvent(client, 'message')
       .pipe(
         map((data: any) =>
-          this.decoders.get(clientProtocols.get(client) ?? MykoProtocol.JSON)(
+          decoders.get(clientProtocols.get(client) ?? MykoProtocol.JSON)(
             data.data,
           ),
         ),
@@ -45,7 +37,7 @@ export class MykoAdapter implements WebSocketAdapter {
         filter((result) => result),
       )
       .subscribe((response) => {
-        const encode = this.encoders.get(
+        const encode = encoders.get(
           clientProtocols.get(client) ?? MykoProtocol.JSON,
         )
         client.send(encode(response))

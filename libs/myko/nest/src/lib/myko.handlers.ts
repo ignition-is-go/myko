@@ -8,6 +8,7 @@ import {
   MItem,
   MQueryHandler,
   MykoCommandHandler,
+  MykoProtocol,
   MykoQueryHandler,
   getEvents,
 } from '@myko/core'
@@ -15,6 +16,7 @@ import { ClientCommand, wrapCommandWS } from '@myko/ws'
 import { MykoCommandError, SocketRegistry } from '../types'
 import { Observable, combineLatest, debounceTime, map, startWith } from 'rxjs'
 import { watchIds } from '@myko/core/src/lib/registry'
+import { clientProtocols, encoders } from './registry/client.protocols'
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   constructor(private reg: SocketRegistry) {}
@@ -27,7 +29,9 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
     }
 
     return socket.send(
-      JSON.stringify(wrapCommandWS(command.command, 'rship-server')),
+      encoders.get(clientProtocols.get(socket) ?? MykoProtocol.JSON)(
+        wrapCommandWS(command.command, 'rship-server'),
+      ),
     )
   }
 }
