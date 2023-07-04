@@ -192,11 +192,8 @@ export class WSMClient {
       if (this.protocol !== MykoProtocol.MSGPACK) {
         this.switchToMessagePack()
       }
+      this.processQueue()
       this.hooks?.onConnect && this.hooks?.onConnect(path)
-      ;[...this.q.values()].forEach((v) => {
-        this.q.delete(v)
-        this.send(v)
-      })
       ;[...this.resendQueries.values()].forEach((q) => {
         this.resendQueries.delete(q.data.query.tx)
         this.send(q)
@@ -208,6 +205,7 @@ export class WSMClient {
         console.log('SWAP')
         this.protocol = MykoProtocol.MSGPACK
         this.protocolReady = true
+        this.processQueue()
         return
       }
 
@@ -284,6 +282,13 @@ export class WSMClient {
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
 
     this.ws.send(encoded)
+  }
+
+  private processQueue() {
+    ;[...this.q.values()].forEach((v) => {
+      this.q.delete(v)
+      this.send(v)
+    })
   }
 
   disconnect() {
