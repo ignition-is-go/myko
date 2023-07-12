@@ -37,6 +37,23 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
     relationRegistry.forEach((relation) => {
       switch (relation.type) {
         case 'belongs-to': {
+          setTimeout(() => {
+            const all = getFilters.get(relation.localType)(() => true)
+            // remove orphans
+            all.forEach((item) => {
+              const getParents = getIds.get(relation.foreignType)
+              if (!getParents) {
+                console.warn('No getIds for', relation.foreignType, relation)
+                return
+              }
+              const parent = getParents([item[relation.localKey]])
+              if (parent.length < 1) {
+                console.log('deleting orphan')
+                this.publishDel(item, 'startup')
+              }
+            })
+          }, 2000)
+
           const sub = this.subject$
             .pipe(
               filter(
@@ -65,6 +82,44 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
         }
 
         case 'owns-many': {
+          setTimeout(() => {
+            const getChildrenFilter = getFilters.get(relation.foreignType)
+            const getParentsFilter = getFilters.get(relation.localType)
+
+            if (!getChildrenFilter || !getParentsFilter) {
+              console.warn(
+                'missing getFilters for',
+                relation.foreignType,
+                relation.localType,
+                relation,
+              )
+              return
+            }
+
+            const allParents = getParentsFilter(() => true)
+            const allChildrenIds = allParents.flatMap(
+              (parent) => parent[relation.localKey],
+            )
+
+            const orphans = getChildrenFilter(
+              (child) => !allChildrenIds.includes(child.id),
+            )
+
+            if (orphans.length > 0) {
+              console.log(
+                orphans.length,
+                'orphans found for',
+                relation.localType,
+                'owns many',
+                relation.foreignType,
+              )
+
+              this.publishAll(
+                orphans.map((orphan) => makeDel(orphan, 'startup')),
+              )
+            }
+          }, 2000)
+
           const forwardDeletes = this.subject$
             .pipe(
               filter(
