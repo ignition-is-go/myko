@@ -15,7 +15,11 @@ import {
 import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 import { Redis } from 'ioredis'
 import { LoggerService } from '@rship/logging'
+
 import { DateTime } from 'luxon'
+import { decode, encode } from '@msgpack/msgpack'
+import { start } from 'repl'
+
 @Injectable()
 export class RedisPersisterFactory {
   constructor(private redis: RedisService, private logger: LoggerService) {}
@@ -77,29 +81,45 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
 
   persist(event: MEvent<T>): void {
     this.redis
-      .xadd(this.entity, '*', event.item.id, JSON.stringify(event))
-      .then((id) => this.saveLatest(event, id))
+      .xaddBuffer(
+        this.entity,
+        '*',
+        Buffer.from(event.item.id),
+        Buffer.from(encode(event)),
+      )
+      .then((id) => this.saveLatest(event, id.toString()))
   }
 
   saveLatest(event: MEvent<T, MEventType>, streamId: ID) {
-    this.redis.set(
+    this.redis.setBuffer(
       `${this.entity}_latest_${event.item.id}`,
-      JSON.stringify({
-        event: event,
-        lastId: streamId,
-      } satisfies EntitySnapshot<T>),
+      Buffer.from(
+        encode({
+          event: event,
+          lastId: streamId,
+        }),
+      ),
+      'GET',
     )
   }
 
   async init() {
     const keys = await this.redis.keys(`${this.entity}_latest_*`)
+    this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initializing`)
 
     if (keys.length === 0) {
+      this.logger
+        .getLogger('Init')
+        .dev.info(`${this.entity} no previous keys, starting from start`)
+
       return this.listenForMessage()
     }
 
-    const itemJson = await this.redis.mget(keys)
-    const snaps: EntitySnapshot<T>[] = itemJson.map((x) => JSON.parse(x))
+    const itemJson = await this.redis.mgetBuffer(keys)
+
+    const snaps: EntitySnapshot<T>[] = itemJson.map((x) =>
+      decode(x),
+    ) as EntitySnapshot<T>[]
 
     const streamIds = snaps
       .map((x) => x.lastId)
@@ -110,9 +130,12 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     events.forEach((event) => {
       this.output.next(event)
     })
+    const startId = streamIds.shift()
 
-    await this.listenForMessage(streamIds.shift())
-    this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initialized`)
+    this.logger
+      .getLogger('Init')
+      .dev.info(`${this.entity} Repo Started from ${startId}`)
+    await this.listenForMessage(startId)
   }
 
   listenForMessage = async (
@@ -120,7 +143,7 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     subject?: Subject<any>,
     makeObj?: (entityEvemt: MEvent, redisStreamId: string) => any,
   ): Promise<any> => {
-    const results = await this.redis.xread('STREAMS', this.entity, lastId)
+    const results = await this.redis.xreadBuffer('STREAMS', this.entity, lastId)
 
     if (!results) {
       this.listenForMessage(lastId, subject, makeObj)
@@ -136,9 +159,9 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     messages?.forEach((aa) => {
       const [streamEventId, entityPair] = aa
       const [entityId, entityString] = entityPair
-      const event = JSON.parse(entityString)
+      const event = decode(entityString) as MEvent
 
-      const built = makeObj ? makeObj(event, streamEventId) : event
+      const built = makeObj ? makeObj(event, streamEventId.toString()) : event
 
       if (subject) {
         subject.next(built)
@@ -147,7 +170,7 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
       }
     })
     const last = messages[messages.length - 1][0]
-    this.listenForMessage(last, subject, makeObj)
+    this.listenForMessage(last.toString(), subject, makeObj)
   }
 }
 
