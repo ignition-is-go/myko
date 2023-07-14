@@ -8,6 +8,8 @@ import { RedisPersisterFactory } from './redis/redis.persisterFactory'
 import { SocketRegistry } from '../types'
 import * as handlers from './myko.handlers'
 import { Client, ClientRepo, ofItems } from '@myko/core'
+import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
+import { relationRegistry } from '@myko/core/src/lib/registry'
 
 @Module({
   imports: [LoggerModule.forModule({ moduleName: 'Myko' })],
@@ -55,8 +57,20 @@ export class MykoModule implements OnModuleInit {
     this.eventBus.registerSagas(sagas)
     const log = this.logger.getLogger('MykoModule')
 
-    this.eventBus.subject$.subscribe((e) => {
-      log.dev.debug(e.changeType, e.itemType)
-    })
+    if (process.env.LOG_LEVEL?.toLocaleLowerCase() === 'debug') {
+      this.eventBus.subject$
+        .pipe(
+          groupBy((e) => e.itemType),
+          mergeMap((obss) =>
+            obss.pipe(
+              bufferTime(1000),
+              filter((x) => x.length > 0),
+            ),
+          ),
+        )
+        .subscribe((e) => {
+          log.dev.debug(`${e[0].itemType}:${e[0].changeType} [${e.length}]`)
+        })
+    }
   }
 }
