@@ -37,9 +37,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
     relationRegistry.forEach((relation) => {
       switch (relation.type) {
         case 'belongs-to': {
-          setTimeout(() => {
+          // remove orphans
+          onInit([relation.localType, relation.foreignType], () => {
             const all = getFilters.get(relation.localType)(() => true)
-            // remove orphans
             all.forEach((item) => {
               const getParents = getIds.get(relation.foreignType)
               if (!getParents) {
@@ -48,11 +48,15 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               }
               const parent = getParents([item[relation.localKey]])
               if (parent.length < 1) {
-                console.log('deleting orphan')
+                console.log(
+                  'Orphan found! Deleting',
+                  relation.localType,
+                  item.id,
+                )
                 this.publishDel(item, 'startup')
               }
             })
-          }, 2000)
+          })
 
           const sub = this.subject$
             .pipe(
