@@ -16,9 +16,7 @@ import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 import { Redis } from 'ioredis'
 import { LoggerService } from '@rship/logging'
 
-import { DateTime } from 'luxon'
 import { decode, encode } from '@msgpack/msgpack'
-import { start } from 'repl'
 
 @Injectable()
 export class RedisPersisterFactory {
@@ -43,6 +41,8 @@ export class RedisPersisterFactory {
 }
 
 export class RedisStreamPersister<T extends MItem> implements Persister<T> {
+  streamHandles = new Map<ID, StreamListener<T>>()
+
   output: Subject<MEvent<T>>
   constructor(
     private redis: Redis,
@@ -63,118 +63,129 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
   }
 
   getEvents(isoDateTime: string): Observable<EventContainer[]> {
-    const milis = DateTime.fromISO(isoDateTime).toMillis()
-
     const sub = new Subject<EventContainer>()
-
-    this.listenForMessage(
-      milis.toString(),
-      sub,
-      (e, rid) => new EventContainer({ event: e, id: rid }),
-    )
 
     return sub.pipe(
       scan((acc, curr) => [...acc, curr], []),
       distinctUntilChanged((x, y) => x.length === y.length),
     )
   }
+  assertHandler(itemId: string) {
+    if (!this.streamHandles.has(itemId)) {
+      this.streamHandles.set(
+        itemId,
+        new StreamListener(`${this.entity}_${itemId}`, this.redis, (event) => {
+          this.output.next(event)
+        }),
+      )
+    }
+  }
 
   persist(event: MEvent<T>): void {
-    this.redis
-      .xaddBuffer(
-        this.entity,
-        '*',
-        Buffer.from(event.item.id),
-        Buffer.from(encode(event)),
-      )
-      .then((id) => this.saveLatest(event, id.toString()))
-  }
-
-  saveLatest(event: MEvent<T, MEventType>, streamId: ID) {
-    this.redis.setBuffer(
-      `${this.entity}_latest_${event.item.id}`,
-      Buffer.from(
-        encode({
-          event: event,
-          lastId: streamId,
-        }),
-      ),
-      'GET',
-    )
-  }
-
-  async init() {
-    const keys = await this.redis.keys(`${this.entity}_latest_*`)
-    this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initializing`)
-
-    if (keys.length === 0) {
-      this.logger
-        .getLogger('Init')
-        .dev.info(`${this.entity} no previous keys, starting from start`)
-
-      return this.listenForMessage()
-    }
-
-    const itemJson = await this.redis.mgetBuffer(keys)
-
-    const snaps: EntitySnapshot<T>[] = itemJson.map((x) =>
-      decode(x),
-    ) as EntitySnapshot<T>[]
-
-    const streamIds = snaps
-      .map((x) => x.lastId)
-      .sort()
-      .reverse()
-    const events = snaps.map((x) => x.event)
-
-    events.forEach((event) => {
-      this.output.next(event)
-    })
-    const startId = streamIds.shift()
-
-    this.logger
-      .getLogger('Init')
-      .dev.info(`${this.entity} Repo Started from ${startId}`)
-    await this.listenForMessage(startId)
-  }
-
-  listenForMessage = async (
-    lastId = '0',
-    subject?: Subject<any>,
-    makeObj?: (entityEvemt: MEvent, redisStreamId: string) => any,
-  ): Promise<any> => {
-    const results = await this.redis.xreadBuffer('STREAMS', this.entity, lastId)
-
-    if (!results) {
-      this.listenForMessage(lastId, subject, makeObj)
+    if (event.itemType !== this.entity) {
       return
     }
 
-    const [key, messages] = results[0]
+    this.assertHandler(event.item.id)
 
-    if (messages.length === 0) {
-      this.listenForMessage(lastId, subject, makeObj)
-    }
+    const handlers = this.streamHandles.get(event.item.id)
 
-    messages?.forEach((aa) => {
-      const [streamEventId, entityPair] = aa
-      const [entityId, entityString] = entityPair
-      const event = decode(entityString) as MEvent
+    handlers.persist(event)
+  }
 
-      const built = makeObj ? makeObj(event, streamEventId.toString()) : event
+  async init() {
+    const keys = await this.redis.keys(`${this.entity}_*`)
+    this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initializing`)
 
-      if (subject) {
-        subject.next(built)
-      } else {
-        this.output.next(built)
-      }
+    const itemIds = keys.map((key) => key.replace(`${this.entity}_`, ''))
+
+    itemIds.forEach((itemId) => {
+      this.assertHandler(itemId)
     })
-    const last = messages[messages.length - 1][0]
-    this.listenForMessage(last.toString(), subject, makeObj)
   }
 }
 
-type EntitySnapshot<T extends MItem> = {
-  event: MEvent<T, MEventType>
-  lastId: string
+class StreamListener<T extends MItem> {
+  constructor(
+    private streamKey: string,
+    private redis: Redis,
+    private onEvent: (event: MEvent<T>) => any,
+  ) {
+    this.listen()
+  }
+
+  lastId: string | undefined
+
+  async prime() {
+    const length = await this.redis.xlen(this.streamKey)
+
+    if (length === 0) {
+      this.lastId = '0'
+      return
+    }
+
+    const a = await this.redis.xrevrangeBuffer(
+      this.streamKey,
+      '+',
+      '-',
+      'COUNT',
+      1,
+    )
+    if (!a) {
+      return
+    }
+
+    if (a.length === 0) {
+      return
+    }
+
+    const last = a[0]
+    this.lastId = last[0].toString()
+
+    const lastEntity = decode(Buffer.from(last[1][1]))
+
+    this.onEvent(lastEntity as MEvent<T>)
+  }
+
+  async listen() {
+    if (!this.lastId) {
+      await this.prime()
+    }
+
+    this.redis
+      .xreadBuffer('STREAMS', this.streamKey, this.lastId)
+      .then((results) => {
+        if (!results) {
+          this.listen()
+          return
+        }
+
+        const [key, messages] = results[0]
+
+        if (messages.length === 0) {
+          this.listen()
+          return
+        }
+
+        messages?.forEach((aa) => {
+          const [streamEventId, entityPair] = aa
+          const [entityId, entityString] = entityPair
+          const event = decode(entityString) as MEvent<T>
+
+          this.onEvent(event)
+        })
+        const last = messages[messages.length - 1][0]
+        this.lastId = last.toString()
+        this.listen()
+      })
+  }
+
+  persist(event: MEvent<T>) {
+    this.redis.xaddBuffer(
+      this.streamKey,
+      '*',
+      Buffer.from(event.item.id),
+      Buffer.from(encode(event)),
+    )
+  }
 }
