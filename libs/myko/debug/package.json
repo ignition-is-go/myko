@@ -1,0 +1,8 @@
+{
+  "name": "@myko/debug",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {},
+  "devDependencies": {},
+  "version": "3.0.0-canary.118"
+}
