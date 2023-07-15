@@ -11,6 +11,7 @@ import {
 } from './registry/client.protocols'
 
 export class MykoAdapter implements WebSocketAdapter {
+  handlers = new Map<string, Function>()
   constructor(private app: INestApplicationContext) {}
 
   create(port: number, options: any = {}): any {
@@ -26,6 +27,10 @@ export class MykoAdapter implements WebSocketAdapter {
     handlers: MessageMappingProperties[],
     process: (data: any) => Observable<any>,
   ) {
+    handlers.forEach(({ message, callback }) => {
+      this.handlers.set(message, callback)
+    })
+
     fromEvent(client, 'message')
       .pipe(
         map((data: any) =>
@@ -49,13 +54,11 @@ export class MykoAdapter implements WebSocketAdapter {
     handlers: MessageMappingProperties[],
     process: (data: any) => Observable<any>,
   ): Observable<any> {
-    const messageHandler = handlers.find(
-      (handler) => handler.message === message.event,
-    )
-    if (!messageHandler) {
+    const callback = this.handlers.get(message.event)
+    if (!callback) {
       return EMPTY
     }
-    return process(messageHandler.callback(message.data))
+    return process(callback(message.data))
   }
 
   close(server) {
