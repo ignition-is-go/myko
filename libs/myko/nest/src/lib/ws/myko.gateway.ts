@@ -30,11 +30,11 @@ import {
 } from '@myko/core'
 
 import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
-import { SocketRegistry } from '../../types'
 import { UseFilters, UseGuards } from '@nestjs/common'
 import { MykoGuard } from './myko.guard'
 import { WsExceptionFilter } from './myko.exception-filter'
 import { clientProtocols } from '../registry/client.protocols'
+import { SocketRegistry } from '../registry/socket.registry'
 
 @WebSocketGateway(MYKO_WS_PORT, { path: '/myko' })
 @UseGuards(MykoGuard)

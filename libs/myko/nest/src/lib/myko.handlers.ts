@@ -13,10 +13,12 @@ import {
   getEvents,
 } from '@myko/core'
 import { ClientCommand, wrapCommandWS } from '@myko/ws'
-import { MykoCommandError, SocketRegistry } from '../types'
+import { MykoCommandError } from '../types'
 import { Observable, combineLatest, debounceTime, map, startWith } from 'rxjs'
 import { watchIds } from '@myko/core/src/lib/registry'
 import { clientProtocols, encoders } from './registry/client.protocols'
+import { SocketRegistry } from './registry/socket.registry'
+
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   constructor(private reg: SocketRegistry) {}

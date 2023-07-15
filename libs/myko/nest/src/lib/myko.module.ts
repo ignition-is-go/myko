@@ -5,11 +5,10 @@ import { LoggerModule, LoggerService } from '@rship/logging'
 import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
 import { RedisPersisterFactory } from './redis/redis.persisterFactory'
-import { SocketRegistry } from '../types'
 import * as handlers from './myko.handlers'
 import { Client, ClientRepo, ofItems } from '@myko/core'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
-import { relationRegistry } from '@myko/core/src/lib/registry'
+import { SocketRegistry } from './registry/socket.registry'
 
 @Module({
   imports: [LoggerModule.forModule({ moduleName: 'Myko' })],
