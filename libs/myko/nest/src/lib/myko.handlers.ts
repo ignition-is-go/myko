@@ -22,17 +22,18 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   constructor(private reg: SocketRegistry) {}
 
   async execute(command: ClientCommand): Promise<void> {
-    const socket = this.reg.get(command.clientId)
+    const sockets = this.reg.get(command.clientId)
 
-    if (!socket) {
+    if (!sockets || sockets.size === 0) {
       throw new MykoCommandError(command.tx, 'Exec Not Connected')
     }
-
-    return socket.send(
-      encoders.get(clientProtocols.get(socket) ?? MykoProtocol.JSON)(
-        wrapCommandWS(command.command, 'rship-server'),
-      ),
-    )
+    sockets.forEach((socket) => {
+      socket.send(
+        encoders.get(clientProtocols.get(socket) ?? MykoProtocol.JSON)(
+          wrapCommandWS(command.command, 'rship-server'),
+        ),
+      )
+    })
   }
 }
 
