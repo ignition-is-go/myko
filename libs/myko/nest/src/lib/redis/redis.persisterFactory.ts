@@ -4,7 +4,6 @@ import {
   MItem,
   Persister,
   MEvent,
-  MEventType,
   MYKO_ITEM_TYPE,
   ID,
   MItemConstructor,
@@ -18,16 +17,22 @@ import { LoggerService } from '@rship/logging'
 
 import { decode, encode } from '@msgpack/msgpack'
 
+export type RedisPersisterOptions = {
+  enableEventLog: boolean
+  autoGetAllNew: boolean
+}
+
+const optionDefaults: RedisPersisterOptions = {
+  enableEventLog: true,
+  autoGetAllNew: true,
+}
+
 @Injectable()
 export class RedisPersisterFactory {
   constructor(private redis: RedisService, private logger: LoggerService) {}
   getPersister<T extends MItem>(
     ent: MItemConstructor<T>,
-    options: {
-      enableEventLog: boolean
-    } = {
-      enableEventLog: true,
-    },
+    options?: RedisPersisterOptions,
   ) {
     const client = this.redis.getClient()
 
@@ -36,29 +41,48 @@ export class RedisPersisterFactory {
     if (!entity) {
       throw new Error('Cannot get Entity from Metadata')
     }
-    return new RedisStreamPersister<T>(client, entity, this.logger, options)
+    return new RedisStreamPersister<T>(client, entity, this.logger, {
+      ...optionDefaults,
+      ...options,
+    })
   }
 }
 
 export class RedisStreamPersister<T extends MItem> implements Persister<T> {
-  streamHandles = new Map<ID, StreamListener<T>>()
+  streamHandles = new Map<ID, StreamListener<MEvent<T>>>()
+
+  private newItemsKey: string
+
+  private newItemsListener: StreamListener<ID[]>
 
   output: Subject<MEvent<T>>
   constructor(
     private redis: Redis,
     private entity: string,
     private logger: LoggerService,
-    private readonly options: {
-      enableEventLog: boolean
-    } = {
-      enableEventLog: true,
-    },
+    private readonly options: RedisPersisterOptions,
   ) {
     this.output = new Subject<MEvent<T>>()
-    this.init().then(() => fireInit(this.entity))
 
     if (this.options.enableEventLog) {
       getEvents.set(this.entity, this.getEvents.bind(this))
+    }
+
+    this.init().then(() => fireInit(this.entity))
+
+    if (this.options.autoGetAllNew) {
+      this.newItemsKey = `${this.entity}_new`
+
+      this.newItemsListener = new StreamListener<ID[]>(
+        this.newItemsKey,
+        this.redis,
+        (ids) => {
+          ids.forEach((id) => {
+            this.assertHandler(id)
+          })
+        },
+        (ids) => this.newItemsKey,
+      )
     }
   }
 
@@ -74,10 +98,17 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     if (!this.streamHandles.has(itemId)) {
       this.streamHandles.set(
         itemId,
-        new StreamListener(`${this.entity}_${itemId}`, this.redis, (event) => {
-          this.output.next(event)
-        }),
+        new StreamListener<MEvent<T>>(
+          `${this.entity}_${itemId}`,
+          this.redis,
+          (event) => {
+            this.output.next(event)
+          },
+          (item) => item.item.id,
+        ),
       )
+
+      this.newItemsListener.persist([...this.streamHandles.keys()])
     }
   }
 
@@ -105,11 +136,12 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
   }
 }
 
-class StreamListener<T extends MItem> {
+class StreamListener<U> {
   constructor(
     private streamKey: string,
     private redis: Redis,
-    private onEvent: (event: MEvent<T>) => any,
+    private onEvent: (event: U) => any,
+    private makeId: (item: U) => string,
   ) {
     this.listen()
   }
@@ -144,7 +176,7 @@ class StreamListener<T extends MItem> {
 
     const lastEntity = decode(Buffer.from(last[1][1]))
 
-    this.onEvent(lastEntity as MEvent<T>)
+    this.onEvent(lastEntity as U)
   }
 
   async listen() {
@@ -170,7 +202,7 @@ class StreamListener<T extends MItem> {
         messages?.forEach((aa) => {
           const [streamEventId, entityPair] = aa
           const [entityId, entityString] = entityPair
-          const event = decode(entityString) as MEvent<T>
+          const event = decode(entityString) as U
 
           this.onEvent(event)
         })
@@ -180,11 +212,11 @@ class StreamListener<T extends MItem> {
       })
   }
 
-  persist(event: MEvent<T>) {
+  persist(event: U) {
     this.redis.xaddBuffer(
       this.streamKey,
       '*',
-      Buffer.from(event.item.id),
+      Buffer.from(this.makeId(event)),
       Buffer.from(encode(event)),
     )
   }
