@@ -13,6 +13,8 @@ import { MykoAuthService } from '../services'
 
 @Injectable()
 export class MykoGuard implements CanActivate, OnModuleInit {
+  authorizedClients = new Set<any>()
+
   constructor(
     private logger: LoggerService,
     @Optional() @Inject(MykoAuthService) private auth: MykoAuthService,
@@ -30,15 +32,23 @@ export class MykoGuard implements CanActivate, OnModuleInit {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const data = context.switchToWs().getData()
+    const client = context.switchToWs().getClient()
 
     try {
       const c = unwrapCommand(data)
 
+      if (this.authorizedClients.has(client)) {
+        return true
+      }
+
       const token = c.userToken
       const canActivate = await this.auth.canActivate(token)
+
       if (!canActivate) {
         throw new CommandNotAuthorized(c.tx)
       }
+
+      this.authorizedClients.add(client)
     } catch (e) {
       if (e instanceof CommandNotAuthorized) {
         throw e
