@@ -2,14 +2,19 @@ import {
   ClientRepo,
   EventContainer,
   GetClientsByIds,
+  GetConnectedServer,
   GetEventLog,
   GetItemsByTypeAndIds,
+  GetServers,
+  GetServersByQuery,
   MCommandHandler,
   MItem,
+  MLiveQueryResult,
   MQueryHandler,
   MykoCommandHandler,
   MykoProtocol,
   MykoQueryHandler,
+  ServerRepo,
   getEvents,
 } from '@myko/core'
 import { ClientCommand, wrapCommandWS } from '@myko/ws'
@@ -18,6 +23,8 @@ import { Observable, combineLatest, debounceTime, map, startWith } from 'rxjs'
 import { watchIds } from '@myko/core/src/lib/registry'
 import { clientProtocols, encoders } from './registry/client.protocols'
 import { SocketRegistry } from './registry/socket.registry'
+import { Injectable } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {

@@ -24,29 +24,36 @@ import {
   ID,
   MykoProtocol,
   ProtocolMessages,
+  Server,
   unwrapCommand,
   unwrapQuery,
   wrapItem,
 } from '@myko/core'
 
 import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
-import { UseFilters, UseGuards } from '@nestjs/common'
+import { Inject, UseFilters, UseGuards } from '@nestjs/common'
 import { MykoGuard } from './myko.guard'
 import { WsExceptionFilter } from './myko.exception-filter'
 import { clientProtocols } from '../registry/client.protocols'
 import { SocketRegistry } from '../registry/socket.registry'
+import { ConfigService } from '@nestjs/config'
+import { SERVER_TOKEN } from '../../types'
 
-@WebSocketGateway(MYKO_WS_PORT, { path: '/myko' })
+@WebSocketGateway(Number(process.env.MYKO_PORT), { path: '/myko' })
 @UseGuards(MykoGuard)
 @UseFilters(new WsExceptionFilter())
 export class MykoGateway {
   private unsub = new Subject<ID>()
+
+  private thisServerId: ID
 
   constructor(
     private event: MykoEventBus,
     private command: MykoCommandBus,
     private query: MykoQueryBus,
     private reg: SocketRegistry,
+    private config: ConfigService,
+    @Inject(SERVER_TOKEN) private server: Server,
   ) {}
 
   @SubscribeMessage(MEVENT_EVENT)
@@ -55,7 +62,7 @@ export class MykoGateway {
     event: WSMEvent['data'],
     @ConnectedSocket() socket,
   ): Promise<void> {
-    this.reg.register(event.clientId, socket)
+    this.reg.register(event.clientId, socket, this.server.id)
     this.event.publish(event)
   }
 

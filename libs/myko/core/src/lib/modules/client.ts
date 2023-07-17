@@ -1,11 +1,15 @@
 import { Repo } from '../aggregates'
-import { MykoItem, MykoQuery } from '../decorators'
+import { MykoItem, MykoQuery, belongsTo } from '../decorators'
 import { MItem } from '../types/item'
 import { MQuery } from '../types/query'
+import { Server } from './server'
 
 @MykoItem('Client')
 export class Client extends MItem<Client> {
   readonly connected: boolean
+
+  @belongsTo(Server)
+  readonly serverId: string
 }
 
 @MykoQuery('clients:getByIds', Client)

@@ -1,6 +1,6 @@
 import { ID, Client } from '@myko/core'
 import { Injectable } from '@nestjs/common'
-import { MykoEventBus } from '../busses'
+import { MykoEventBus, MykoQueryBus } from '../busses'
 import type { WebSocket } from 'ws'
 
 @Injectable()
@@ -9,7 +9,7 @@ export class SocketRegistry extends Map<ID, Set<WebSocket>> {
     super()
   }
 
-  register(id: ID, socket: WebSocket) {
+  register(id: ID, socket: WebSocket, serverId: ID) {
     if (!this.has(id)) {
       this.set(id, new Set())
     }
@@ -19,13 +19,13 @@ export class SocketRegistry extends Map<ID, Set<WebSocket>> {
     }
     socket.on('close', () => {
       this.events.publishSet(
-        new Client({ connected: false, id }),
+        new Client({ connected: false, id, serverId }),
         'client-disconnected',
       )
       this.get(id).delete(socket)
     })
     this.events.publishSet(
-      new Client({ id, connected: true }),
+      new Client({ id, connected: true, serverId }),
       'client-connected',
     )
     this.get(id).add(socket)

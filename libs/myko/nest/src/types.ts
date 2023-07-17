@@ -20,3 +20,5 @@ export class MykoCommandError extends WsException implements WSMCommandError {
   }
   event: 'ws:m:command-error'
 }
+
+export const SERVER_TOKEN = 'SERVER_TOKEN'

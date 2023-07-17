@@ -6,12 +6,13 @@ import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
 import { RedisPersisterFactory } from './redis/redis.persisterFactory'
 import * as handlers from './myko.handlers'
-import { Client, ClientRepo, ofItems } from '@myko/core'
+import { Client, ClientRepo, Server, ServerRepo, ofItems } from '@myko/core'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
 import { SocketRegistry } from './registry/socket.registry'
+import { ConfigModule } from '@nestjs/config'
 
 @Module({
-  imports: [LoggerModule.forModule({ moduleName: 'Myko' })],
+  imports: [LoggerModule.forModule({ moduleName: 'Myko' }), ConfigModule],
   providers: [
     SocketRegistry,
     ExplorerService,
@@ -22,12 +23,15 @@ import { SocketRegistry } from './registry/socket.registry'
     {
       provide: ClientRepo,
 
-      useFactory: (events: MykoEventBus) => {
+      useFactory: (events: MykoEventBus, persisters: RedisPersisterFactory) => {
+        const p = persisters.getPersister<Client>(Client)
+
+        events.subject$.pipe(ofItems(Client)).subscribe((e) => p.persist(e))
         return new ClientRepo(Client, {
-          stream: events.subject$.pipe(ofItems(Client)),
+          stream: p.output.pipe(),
         })
       },
-      inject: [MykoEventBus],
+      inject: [MykoEventBus, RedisPersisterFactory],
     },
 
     ...Object.values(handlers),
