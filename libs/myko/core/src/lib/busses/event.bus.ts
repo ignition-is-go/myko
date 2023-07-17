@@ -27,6 +27,12 @@ import { v4 as uuid } from 'uuid'
 export type MykoSagaType = Type<MSaga>
 
 export abstract class AMykoEventBus extends ObservableBus<MEvent> {
+  protected serverId: ID
+
+  setServerId(serverId: string) {
+    this.serverId = serverId
+  }
+
   constructor(private commandBus: AMykoCommandBus) {
     super()
     this.subscriptions = []
@@ -62,6 +68,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  e.sourceId === this.serverId &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.foreignType,
               ),
@@ -128,6 +135,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  e.sourceId === this.serverId &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.localType,
               ),
@@ -151,6 +159,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  e.sourceId === this.serverId &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.foreignType,
               ),
@@ -247,6 +256,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  e.sourceId === this.serverId &&
                   e.changeType === MEventType.SET &&
                   dependencies.some((d) => d.foreignType === e.itemType),
               ),
@@ -291,7 +301,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
         'Cannot Register Saga - Must retrun Observable of Commands',
       )
     }
-    const stream$ = saga(this.subject$.pipe())
+    const stream$ = saga(
+      this.subject$.pipe(filter((x) => x.sourceId === this.serverId)),
+    )
     if (!(stream$ instanceof Observable)) {
       throw new Error(
         'Cannot Register Saga - Must retrun Observable of Commands',

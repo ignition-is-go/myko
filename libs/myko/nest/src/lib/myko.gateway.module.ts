@@ -1,8 +1,8 @@
-import { DynamicModule, Inject, Module, OnModuleInit } from '@nestjs/common'
+import { Inject, Module, OnModuleInit } from '@nestjs/common'
 import { MykoModule } from './myko.module'
 import { MykoGateway } from './ws/myko.gateway'
 import { LoggerModule } from '@rship/logging'
-import { MykoEventBus, MykoQueryBus } from './busses'
+import { MykoEventBus } from './busses'
 import { Server, ServerRepo, ofItems } from '@myko/core'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { RedisPersisterFactory } from './redis'
@@ -66,12 +66,11 @@ import { SERVER_TOKEN } from '../types'
 export class MykoGatewayModule implements OnModuleInit {
   constructor(
     private events: MykoEventBus,
-    private query: MykoQueryBus,
-    private config: ConfigService,
     @Inject(SERVER_TOKEN) private server: Server,
   ) {}
 
   async onModuleInit() {
+    this.events.setServerId(this.server.id)
     this.events.publishSet(this.server, 'server:init')
   }
 }

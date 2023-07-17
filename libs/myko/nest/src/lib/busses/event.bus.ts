@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common'
+import { Inject, Injectable } from '@nestjs/common'
 import {
   AMykoEventBus,
   MEvent,
   MSaga,
   MykoSagaType,
   MYKO_SAGA_METADATA,
+  Server,
+  ID,
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { MykoCommandBus } from './command.bus'
@@ -16,6 +18,9 @@ export class MykoEventBus extends AMykoEventBus {
   }
 
   async publish<T extends MEvent>(event: T): Promise<void> {
+    if (!event.sourceId && !!this.serverId) {
+      Reflect.set(event, 'sourceId', this.serverId)
+    }
     this.subject$.next(event)
     return
   }

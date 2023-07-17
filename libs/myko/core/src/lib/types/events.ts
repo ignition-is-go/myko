@@ -20,6 +20,7 @@ export type MEvent<
   readonly itemType: string
   readonly createdAt: string
   readonly tx: string
+  readonly sourceId?: ID
 }
 
 export const makeSet = <T extends MItem>(item: T, tx: ID) =>
@@ -33,6 +34,7 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
   changeType: U,
   tx: ID,
   overrideType?: string,
+  sourceId?: ID,
 ): MEvent<T, U> => {
   const metadataType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
@@ -47,6 +49,7 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
     itemType,
     createdAt: DateTime.utc().toString(),
     tx,
+    sourceId,
   }
 }
 
