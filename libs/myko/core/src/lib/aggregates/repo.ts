@@ -150,7 +150,7 @@ export abstract class Repo<T extends MItem> {
     return obs as Observable<T | null>
   }
 
-  watchIds(ids: ID[]) {
+  watchIds(ids: ID[]): Observable<T[]> {
     if (ids.length === 0) {
       return of([])
     }
