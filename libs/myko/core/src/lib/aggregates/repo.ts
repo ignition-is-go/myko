@@ -154,7 +154,9 @@ export abstract class Repo<T extends MItem> {
     if (ids.length === 0) {
       return of([])
     }
-    return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe()
+    return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe(
+      map((x) => x.filter((y) => y !== null)),
+    )
   }
 
   getIds(ids: ID[]) {
