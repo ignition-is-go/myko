@@ -34,6 +34,8 @@ export interface RepoOptions<T extends MItem> {
 
   // indeces
   indeces?: (keyof T)[]
+
+  peerQuery?: (ids: ID[]) => Observable<T[]>
 }
 
 export abstract class Repo<T extends MItem> {

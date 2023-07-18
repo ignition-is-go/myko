@@ -12,13 +12,12 @@ import {
   MykoProtocol,
   GetClientsByIds,
   ClientRepo,
-  wrapCommand,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { Observable, map } from 'rxjs'
+import { Observable, combineLatest, map, startWith, switchMap, tap } from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
-import { ClientCommand, wrapCommandOnlyWS } from '@myko/ws'
+import { ClientCommand, PeerQuery, wrapCommandOnlyWS } from '@myko/ws'
 import { encoders, clientProtocols } from './registry/client.protocols'
 import { SocketRegistry } from './registry/socket.registry'
 import { peerRegistry } from './registry/peer.registry'
@@ -104,5 +103,20 @@ export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
   constructor(private repo: ClientRepo) {}
   execute(query: GetClientsByIds): Observable<any> {
     return this.repo.watchIds(query.ids)
+  }
+}
+
+@MykoQueryHandler(PeerQuery)
+export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
+  constructor() {}
+  execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
+    return peerRegistry.getAllPeers().pipe(
+      switchMap((peers) =>
+        combineLatest(
+          peers.map((peer) => peer.watchQuery(query.query).pipe(startWith([]))),
+        ),
+      ),
+      map((x) => x.flat()),
+    )
   }
 }

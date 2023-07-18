@@ -1,9 +1,16 @@
 import { ID, Server } from '@myko/core'
 import { WSMClient } from '@myko/ws'
+import { Observable, ReplaySubject, Subject, shareReplay, tap } from 'rxjs'
 import * as WebSocket from 'ws'
 
 export class PeerRegistry {
   private peers = new Map<ID, WSMClient>()
+
+  private sub = new ReplaySubject<WSMClient[]>(1)
+
+  private publish() {
+    this.sub.next([...this.peers.values()])
+  }
 
   assertPeer(
     server: Server,
@@ -26,10 +33,15 @@ export class PeerRegistry {
       {
         onDisconnect: () => {
           onDisconnect()
+          const sizeBefore = this.peers.size
           this.peers.delete(server.id)
+          if (sizeBefore !== this.peers.size) {
+            this.publish()
+          }
         },
         onConnect: () => {
           onConnect()
+          this.publish()
         },
       },
     )
@@ -41,6 +53,10 @@ export class PeerRegistry {
 
   getPeer(id: ID) {
     return this.peers.get(id)
+  }
+
+  getAllPeers(): Observable<WSMClient[]> {
+    return this.sub.pipe()
   }
 }
 

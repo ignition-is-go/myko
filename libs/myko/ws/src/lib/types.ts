@@ -7,6 +7,10 @@ import {
   MykoCommand,
   MCommand,
   wrapCommand,
+  MykoQuery,
+  wrapQuery,
+  MQuery,
+  MItem,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'
@@ -72,5 +76,12 @@ export class ClientCommand extends MCommand {
   constructor(command: MCommand, readonly clientId: ID) {
     super()
     this.command = wrapCommand(command)
+  }
+}
+
+@MykoQuery('peer:send-query', MItem)
+export class PeerQuery extends MQuery {
+  constructor(readonly query: MQuery) {
+    super()
   }
 }
