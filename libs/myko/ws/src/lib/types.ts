@@ -80,8 +80,15 @@ export class ClientCommand extends MCommand {
 }
 
 @MykoQuery('peer:send-query', MItem)
-export class PeerQuery extends MQuery {
-  constructor(readonly query: MQuery) {
+export class PeerQuery extends MQuery<MItem> {
+  constructor(readonly query: MQuery, readonly peerId: ID) {
+    super()
+  }
+}
+
+@MykoCommand('peer:send-command')
+export class PeerCommand extends MCommand {
+  constructor(readonly command: MCommand, readonly peerId: ID) {
     super()
   }
 }

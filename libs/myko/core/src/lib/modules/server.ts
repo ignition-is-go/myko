@@ -16,6 +16,20 @@ export class GetConnectedServer extends MQuery<Server> {
   }
 }
 
+@MykoQuery('servers:getPeerServers', Server)
+export class GetPeerServers extends MQuery<Server> {
+  constructor() {
+    super()
+  }
+}
+
+@MykoQuery('servers:getByClientIds', Server)
+export class GetServersByClientIds extends MQuery<Server> {
+  constructor(public clientIds: string[]) {
+    super()
+  }
+}
+
 @MykoQuery('servers:getByQuery', Server)
 export class GetServersByQuery extends MQuery<Server> {
   constructor(public query: Partial<Server>) {

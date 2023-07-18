@@ -12,15 +12,24 @@ import {
   MykoProtocol,
   GetClientsByIds,
   ClientRepo,
+  GetServersByClientIds,
+  GetPeerServers,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { Observable, combineLatest, map, startWith, switchMap, tap } from 'rxjs'
+import { Observable, map, of, switchMap } from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
-import { ClientCommand, PeerQuery, wrapCommandOnlyWS } from '@myko/ws'
+import {
+  ClientCommand,
+  PeerCommand,
+  PeerQuery,
+  wrapCommandOnlyWS,
+} from '@myko/ws'
 import { encoders, clientProtocols } from './registry/client.protocols'
 import { SocketRegistry } from './registry/socket.registry'
 import { peerRegistry } from './registry/peer.registry'
+import { uniq } from 'ramda'
+import { MykoQueryBus } from './busses'
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
@@ -46,6 +55,18 @@ export class GetConnectedServerHandler
   }
 }
 
+@MykoQueryHandler(GetPeerServers)
+export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
+  constructor(
+    private repo: ServerRepo,
+    @Inject(SERVER_TOKEN) private server: Server,
+  ) {}
+
+  execute(query: GetPeerServers): MLiveQueryResult<GetPeerServers> {
+    return this.repo.watchFilter((s) => s.id !== this.server.id)
+  }
+}
+
 @MykoQueryHandler(GetServersByQuery)
 export class GetServersByQueryHandler
   implements MQueryHandler<GetServersByQuery>
@@ -54,6 +75,23 @@ export class GetServersByQueryHandler
 
   execute(query: GetServersByQuery): MLiveQueryResult<GetServersByQuery> {
     return this.repo.watch(query.query)
+  }
+}
+
+@MykoQueryHandler(GetServersByClientIds)
+export class GetServersByClientIdsHandler
+  implements MQueryHandler<GetServersByClientIds>
+{
+  constructor(private servers: ServerRepo, private clients: ClientRepo) {}
+
+  execute(
+    query: GetServersByClientIds,
+  ): MLiveQueryResult<GetServersByClientIds> {
+    return this.clients.watchIds(query.clientIds).pipe(
+      map((clients) => clients.map((c) => c.serverId)),
+      map(uniq),
+      switchMap((serverIds) => this.servers.watchIds(serverIds)),
+    )
   }
 }
 
@@ -108,15 +146,26 @@ export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
 
 @MykoQueryHandler(PeerQuery)
 export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
-  constructor() {}
+  constructor(
+    @Inject(SERVER_TOKEN) private server: Server,
+    private query: MykoQueryBus,
+  ) {}
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
-    return peerRegistry.getAllPeers().pipe(
-      switchMap((peers) =>
-        combineLatest(
-          peers.map((peer) => peer.watchQuery(query.query).pipe(startWith([]))),
-        ),
-      ),
-      map((x) => x.flat()),
-    )
+    if (query.peerId === this.server.id) {
+      return this.query.watch(query.query)
+    }
+
+    if (!peerRegistry.getPeer(query.peerId)) {
+      return of([])
+    }
+    return peerRegistry.getPeer(query.peerId).watchQuery(query.query)
+  }
+}
+
+@MykoCommandHandler(PeerCommand)
+export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
+  constructor(@Inject(SERVER_TOKEN) private server: Server) {}
+  async execute(command: PeerCommand): Promise<void> {
+    peerRegistry.getPeer(command.peerId).sendCommand(command.command)
   }
 }
