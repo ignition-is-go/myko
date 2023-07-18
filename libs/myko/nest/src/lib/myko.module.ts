@@ -20,19 +20,6 @@ import { ConfigModule } from '@nestjs/config'
     MykoQueryBus,
     MykoEventBus,
     RedisPersisterFactory,
-    {
-      provide: ClientRepo,
-
-      useFactory: (events: MykoEventBus, persisters: RedisPersisterFactory) => {
-        const p = persisters.getPersister<Client>(Client)
-
-        events.subject$.pipe(ofItems(Client)).subscribe((e) => p.persist(e))
-        return new ClientRepo(Client, {
-          stream: p.output.pipe(),
-        })
-      },
-      inject: [MykoEventBus, RedisPersisterFactory],
-    },
 
     ...Object.values(handlers),
   ],

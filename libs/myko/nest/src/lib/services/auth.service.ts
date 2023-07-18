@@ -8,4 +8,8 @@ export class MykoAuthService {
   getUserId(token: string): Promise<ID> {
     throw new Error()
   }
+
+  getPeerToken(): Promise<string> {
+    throw new Error()
+  }
 }

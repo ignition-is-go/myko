@@ -6,6 +6,7 @@ import {
   MEvent,
   MWrappedItem,
   type ID,
+  MWrappedCommand,
 } from '@myko/core'
 import {
   MCOMMAND_EVENT,
@@ -32,6 +33,14 @@ export const wrapCommandWS = (
   clientId: ID,
 ): WSMCommand => ({
   data: { ...wrapCommand(command), clientId },
+  event: MCOMMAND_EVENT,
+})
+
+export const wrapCommandOnlyWS = (
+  command: MWrappedCommand,
+  clientId: ID,
+): WSMCommand => ({
+  data: { ...command, clientId },
   event: MCOMMAND_EVENT,
 })
 

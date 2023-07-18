@@ -10,7 +10,13 @@ export const encoders = new Map<MykoProtocol, (data: any) => any>()
 const decoder = new Decoder()
 const encoder = new Encoder()
 decoders.set(MykoProtocol.JSON, (data) => JSON.parse(data))
-decoders.set(MykoProtocol.MSGPACK, (data) => decoder.decode(data))
+decoders.set(MykoProtocol.MSGPACK, (data) => {
+  try {
+    return decoder.decode(data)
+  } catch (e) {
+    return JSON.parse(data)
+  }
+})
 
 encoders.set(MykoProtocol.JSON, (data) => JSON.stringify(data))
 encoders.set(MykoProtocol.MSGPACK, (data) => encoder.encode(data))

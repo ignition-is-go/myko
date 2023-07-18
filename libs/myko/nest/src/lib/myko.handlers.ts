@@ -2,49 +2,15 @@ import {
   ClientRepo,
   EventContainer,
   GetClientsByIds,
-  GetConnectedServer,
   GetEventLog,
   GetItemsByTypeAndIds,
-  GetServers,
-  GetServersByQuery,
-  MCommandHandler,
   MItem,
-  MLiveQueryResult,
   MQueryHandler,
-  MykoCommandHandler,
-  MykoProtocol,
   MykoQueryHandler,
-  ServerRepo,
   getEvents,
 } from '@myko/core'
-import { ClientCommand, wrapCommandWS } from '@myko/ws'
-import { MykoCommandError } from '../types'
 import { Observable, combineLatest, debounceTime, map, startWith } from 'rxjs'
 import { watchIds } from '@myko/core/src/lib/registry'
-import { clientProtocols, encoders } from './registry/client.protocols'
-import { SocketRegistry } from './registry/socket.registry'
-import { Injectable } from '@nestjs/common'
-import { ConfigService } from '@nestjs/config'
-
-@MykoCommandHandler(ClientCommand)
-export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
-  constructor(private reg: SocketRegistry) {}
-
-  async execute(command: ClientCommand): Promise<void> {
-    const sockets = this.reg.get(command.clientId)
-
-    if (!sockets || sockets.size === 0) {
-      throw new MykoCommandError(command.tx, 'Exec Not Connected')
-    }
-    sockets.forEach((socket) => {
-      socket.send(
-        encoders.get(clientProtocols.get(socket) ?? MykoProtocol.JSON)(
-          wrapCommandWS(command.command, 'rship-server'),
-        ),
-      )
-    })
-  }
-}
 
 @MykoQueryHandler(GetEventLog)
 export class GetEventLogHandler implements MQueryHandler<GetEventLog> {
@@ -64,14 +30,6 @@ export class GetEventLogHandler implements MQueryHandler<GetEventLog> {
       ),
       debounceTime(50),
     )
-  }
-}
-
-@MykoQueryHandler(GetClientsByIds)
-export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
-  constructor(private repo: ClientRepo) {}
-  execute(query: GetClientsByIds): Observable<any> {
-    return this.repo.watchIds(query.ids)
   }
 }
 

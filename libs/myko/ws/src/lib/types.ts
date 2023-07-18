@@ -6,6 +6,7 @@ import {
   ID,
   MykoCommand,
   MCommand,
+  wrapCommand,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'
@@ -67,7 +68,9 @@ export type WSMMessage =
 
 @MykoCommand('client:send-command')
 export class ClientCommand extends MCommand {
-  constructor(readonly command: MCommand, readonly clientId: ID) {
+  readonly command: MWrappedCommand
+  constructor(command: MCommand, readonly clientId: ID) {
     super()
+    this.command = wrapCommand(command)
   }
 }

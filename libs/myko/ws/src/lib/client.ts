@@ -202,7 +202,6 @@ export class WSMClient {
 
     this.ws.onmessage = (e) => {
       if (e.data === ProtocolMessages.SwitchToMSGPACK) {
-        console.log('SWAP')
         this.protocol = MykoProtocol.MSGPACK
         this.protocolReady = true
         this.processQueue()
