@@ -195,7 +195,6 @@ export class WSMClient {
       this.processQueue()
       this.hooks?.onConnect && this.hooks?.onConnect(path)
       ;[...this.resendQueries.values()].forEach((q) => {
-        this.resendQueries.delete(q.data.query.tx)
         this.send(q)
       })
     }
