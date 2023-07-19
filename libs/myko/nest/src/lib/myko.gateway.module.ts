@@ -3,7 +3,14 @@ import { MykoModule } from './myko.module'
 import { MykoGateway } from './ws/myko.gateway'
 import { LoggerModule, LoggerService } from '@rship/logging'
 import { MykoEventBus } from './busses'
-import { Client, ClientRepo, Server, ServerRepo, ofItems } from '@myko/core'
+import {
+  Client,
+  ClientRepo,
+  Server,
+  ServerRepo,
+  makeSet,
+  ofItems,
+} from '@myko/core'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { RedisPersisterFactory } from './redis'
 import * as handlers from './myko.gateway.handlers'
@@ -85,6 +92,7 @@ export class MykoGatewayModule implements OnModuleInit {
     private servers: ServerRepo,
     @Optional() @Inject(MykoAuthService) private auth: MykoAuthService,
     private logger: LoggerService,
+    private clients: ClientRepo,
   ) {}
 
   async onModuleInit() {
@@ -104,6 +112,19 @@ export class MykoGatewayModule implements OnModuleInit {
                 .dev.info(`Connected to ${server.id}`)
             },
             onDisconnect: () => {
+              const clients = this.clients.get({
+                serverId: server.id,
+              })
+
+              this.events.publishAll(
+                clients.map((client) =>
+                  makeSet(
+                    new Client({ ...client, connected: false }),
+                    'peer-offline',
+                  ),
+                ),
+              )
+
               this.logger
                 .getLogger('OnInit')
                 .dev.info(`Disconnected from ${server.id}`)

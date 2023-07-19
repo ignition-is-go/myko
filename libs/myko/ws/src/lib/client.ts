@@ -163,7 +163,7 @@ export class WSMClient {
   }
 
   sendEvent(event: MEvent) {
-    this.send(wrapEventWS(event, this.clientId))
+    this.send(wrapEventWS(event))
   }
 
   setUser(token: ID) {
@@ -178,7 +178,7 @@ export class WSMClient {
   private connect() {
     const prefix = this.secure ? 'wss' : 'ws'
     const port = this.secure ? '' : `:${this.port}`
-    const path = `${prefix}://${this.host}${port}/myko`
+    const path = `${prefix}://${this.host}${port}/myko?clientId=${this.clientId}`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
     this.ws.binaryType = 'arraybuffer'

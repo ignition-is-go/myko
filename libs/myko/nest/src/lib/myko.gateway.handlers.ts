@@ -123,16 +123,14 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
     const sockets = this.reg.get(command.clientId)
 
-    if (!sockets || sockets.size === 0) {
+    if (!sockets) {
       throw new MykoCommandError(command.tx, 'Exec Not Connected')
     }
-    sockets.forEach((socket) => {
-      socket.send(
-        encoders.get(clientProtocols.get(socket) ?? MykoProtocol.JSON)(
-          wrapCommandOnlyWS(command.command, this.server.id),
-        ),
-      )
-    })
+    sockets.send(
+      encoders.get(clientProtocols.get(sockets) ?? MykoProtocol.JSON)(
+        wrapCommandOnlyWS(command.command, this.server.id),
+      ),
+    )
   }
 }
 

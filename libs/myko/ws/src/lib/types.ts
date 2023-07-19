@@ -25,7 +25,7 @@ export const MYKO_WS_PORT = 5155
 
 export type WSMEvent = {
   event: typeof MEVENT_EVENT
-  data: MEvent & { clientId: ID }
+  data: MEvent
 }
 
 export type WSMCommand = {

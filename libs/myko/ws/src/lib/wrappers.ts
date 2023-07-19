@@ -44,8 +44,8 @@ export const wrapCommandOnlyWS = (
   event: MCOMMAND_EVENT,
 })
 
-export const wrapEventWS = (event: MEvent, clientId: string): WSMEvent => ({
-  data: { ...event, clientId },
+export const wrapEventWS = (event: MEvent): WSMEvent => ({
+  data: event,
   event: MEVENT_EVENT,
 })
 
