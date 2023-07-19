@@ -71,7 +71,7 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
     this.init().then(() => fireInit(this.entity))
 
     if (this.options.autoGetAllNew) {
-      this.newItemsKey = `${this.entity}_new`
+      this.newItemsKey = `${this.entity}:new`
 
       this.newItemsListener = new StreamListener<ID[]>(
         this.newItemsKey,
@@ -99,7 +99,7 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
       this.streamHandles.set(
         itemId,
         new StreamListener<MEvent<T>>(
-          `${this.entity}_${itemId}`,
+          `${this.entity}:${itemId}`,
           this.redis,
           (event) => {
             this.output.next(event)
@@ -125,10 +125,10 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
   }
 
   async init() {
-    const keys = await this.redis.keys(`${this.entity}_*`)
+    const keys = await this.redis.keys(`${this.entity}:*`)
     this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initializing`)
 
-    const itemIds = keys.map((key) => key.replace(`${this.entity}_`, ''))
+    const itemIds = keys.map((key) => key.replace(`${this.entity}:`, ''))
 
     itemIds.forEach((itemId) => {
       this.assertHandler(itemId)
