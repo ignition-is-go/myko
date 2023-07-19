@@ -1,4 +1,5 @@
 import {
+  bufferTime,
   combineLatest,
   distinctUntilChanged,
   filter,
@@ -151,6 +152,9 @@ export abstract class Repo<T extends MItem> {
   }
 
   watchIds(ids: ID[]): Observable<T[]> {
+    if (!ids) {
+      return of([])
+    }
     if (ids.length === 0) {
       return of([])
     }
