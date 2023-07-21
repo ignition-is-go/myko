@@ -68,11 +68,8 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
       getEvents.set(this.entity, this.getEvents.bind(this))
     }
 
-    this.init().then(() => fireInit(this.entity))
-
     if (this.options.autoGetAllNew) {
-      this.newItemsKey = `${this.entity}:new`
-
+      this.newItemsKey = `${this.entity}_new`
       this.newItemsListener = new StreamListener<ID[]>(
         this.newItemsKey,
         this.redis,
@@ -82,8 +79,10 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
           })
         },
         (ids) => this.newItemsKey,
+        () => {},
       )
     }
+    this.init().then(() => fireInit(this.entity))
   }
 
   getEvents(isoDateTime: string): Observable<EventContainer[]> {
@@ -94,22 +93,24 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
       distinctUntilChanged((x, y) => x.length === y.length),
     )
   }
-  assertHandler(itemId: string) {
-    if (!this.streamHandles.has(itemId)) {
-      this.streamHandles.set(
-        itemId,
-        new StreamListener<MEvent<T>>(
-          `${this.entity}:${itemId}`,
-          this.redis,
-          (event) => {
-            this.output.next(event)
-          },
-          (item) => item.item.id,
-        ),
-      )
-
-      this.newItemsListener.persist([...this.streamHandles.keys()])
-    }
+  assertHandler(itemId: string): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this.streamHandles.has(itemId)) {
+        this.streamHandles.set(
+          itemId,
+          new StreamListener<MEvent<T>>(
+            `${this.entity}:${itemId}`,
+            this.redis,
+            (event) => {
+              this.output.next(event)
+            },
+            (item) => item.item.id,
+            resolve,
+          ),
+        )
+        this.newItemsListener.persist([...this.streamHandles.keys()])
+      }
+    })
   }
 
   persist(event: MEvent<T>): void {
@@ -130,9 +131,9 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
 
     const itemIds = keys.map((key) => key.replace(`${this.entity}:`, ''))
 
-    itemIds.forEach((itemId) => {
-      this.assertHandler(itemId)
-    })
+    await Promise.all(itemIds.map((itemId) => this.assertHandler(itemId)))
+
+    fireInit(this.entity)
   }
 }
 
@@ -142,6 +143,7 @@ class StreamListener<U> {
     private redis: Redis,
     private onEvent: (event: U) => any,
     private makeId: (item: U) => string,
+    private onInit: () => void,
   ) {
     this.listen()
   }
@@ -153,6 +155,7 @@ class StreamListener<U> {
 
     if (length === 0) {
       this.lastId = '0'
+      this.onInit()
       return
     }
 
@@ -177,6 +180,7 @@ class StreamListener<U> {
     const lastEntity = decode(Buffer.from(last[1][1]))
 
     this.onEvent(lastEntity as U)
+    this.onInit()
   }
 
   async listen() {
