@@ -10,6 +10,7 @@ import {
   ServerRepo,
   makeSet,
   ofItems,
+  onInit,
 } from '@myko/core'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { RedisPersisterFactory } from './redis'
@@ -17,6 +18,7 @@ import * as handlers from './myko.gateway.handlers'
 import { SERVER_TOKEN } from '../types'
 import { peerRegistry } from './registry/peer.registry'
 import { MykoAuthService } from './services'
+import { v4 as uuid } from 'uuid'
 
 @Module({
   imports: [
@@ -71,13 +73,11 @@ import { MykoAuthService } from './services'
           throw new Error('VERSION is required')
         }
 
-        const id = `${address}:${port}:${version}`
-
         return new Server({
+          id: uuid(),
           address,
           port,
           version,
-          id,
         })
       },
       inject: [ConfigService],
@@ -101,36 +101,63 @@ export class MykoGatewayModule implements OnModuleInit {
 
     const token = await this.auth.getPeerToken()
 
-    this.servers.watch({}).subscribe((servers) => {
-      servers
-        .filter((x) => x.id !== this.server.id)
-        .forEach((server) => {
-          peerRegistry.assertPeer(server, this.server, token, {
-            onConnect: () => {
-              this.logger
-                .getLogger('OnInit')
-                .dev.info(`Connected to ${server.id}`)
-            },
-            onDisconnect: () => {
-              const clients = this.clients.get({
-                serverId: server.id,
-              })
+    this.servers
+      .watchFilter(
+        (s) =>
+          s.address !== this.server.address &&
+          s.port !== this.server.port &&
+          s.version === this.server.version,
+      )
+      .subscribe((servers) => {
+        servers
+          .filter((x) => x.id !== this.server.id)
+          .forEach((server) => {
+            peerRegistry.assertPeer(server, this.server, token, {
+              onConnect: () => {
+                this.logger
+                  .getLogger('OnInit')
+                  .dev.info(`Connected to ${server.id}`)
+              },
+              onDisconnect: () => {
+                const clients = this.clients.get({
+                  serverId: server.id,
+                })
 
-              this.events.publishAll(
-                clients.map((client) =>
-                  makeSet(
-                    new Client({ ...client, connected: false }),
-                    'peer-offline',
+                this.events.publishAll(
+                  clients.map((client) =>
+                    makeSet(
+                      new Client({ ...client, connected: false }),
+                      'peer-offline',
+                    ),
                   ),
-                ),
-              )
+                )
 
-              this.logger
-                .getLogger('OnInit')
-                .dev.info(`Disconnected from ${server.id}`)
-            },
+                this.logger
+                  .getLogger('OnInit')
+                  .dev.info(`Disconnected from ${server.id}`)
+              },
+            })
           })
-        })
+      })
+
+    onInit(['Server', 'Client'], () => {
+      const previousIncarnations = this.servers.getFilter(
+        (s) =>
+          s.address === this.server.address &&
+          s.port === this.server.port &&
+          s.id !== this.server.id,
+      )
+
+      const oldClients = this.clients.getFilter(
+        (c) =>
+          previousIncarnations.some((s) => s.id === c.serverId) && c.connected,
+      )
+
+      this.events.publishAll(
+        oldClients.map((client) =>
+          makeSet(new Client({ ...client, connected: false }), 'startup'),
+        ),
+      )
     })
   }
 }

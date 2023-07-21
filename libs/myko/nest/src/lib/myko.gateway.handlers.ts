@@ -14,6 +14,7 @@ import {
   ClientRepo,
   GetServersByClientIds,
   GetPeerServers,
+  GetClientsByQuery,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
@@ -139,6 +140,16 @@ export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
   constructor(private repo: ClientRepo) {}
   execute(query: GetClientsByIds): Observable<any> {
     return this.repo.watchIds(query.ids)
+  }
+}
+
+@MykoQueryHandler(GetClientsByQuery)
+export class GetClientsByQueryHandler
+  implements MQueryHandler<GetClientsByQuery>
+{
+  constructor(private repo: ClientRepo) {}
+  execute(query: GetClientsByQuery): Observable<any> {
+    return this.repo.watch(query.partial)
   }
 }
 

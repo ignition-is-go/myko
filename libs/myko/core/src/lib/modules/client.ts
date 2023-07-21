@@ -19,4 +19,11 @@ export class GetClientsByIds extends MQuery<Client> {
   }
 }
 
+@MykoQuery('clients:getByQuery', Client)
+export class GetClientsByQuery extends MQuery<Client> {
+  constructor(public partial: Partial<Client>) {
+    super()
+  }
+}
+
 export class ClientRepo extends Repo<Client> {}
