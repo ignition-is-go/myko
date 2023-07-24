@@ -117,7 +117,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       const peer = peerRegistry.getPeer(client.serverId)
 
       if (!peer) {
-        throw new MykoCommandError(command.tx, 'Exec Not Connected')
+        throw new MykoCommandError(command.tx, 'Peer Not Found')
       }
       return peer.sendCommand(command)
     }
