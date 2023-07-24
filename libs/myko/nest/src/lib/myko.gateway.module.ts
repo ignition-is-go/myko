@@ -10,7 +10,6 @@ import {
   ServerRepo,
   makeSet,
   ofItems,
-  onInit,
 } from '@myko/core'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { RedisPersisterFactory } from './redis'
@@ -112,6 +111,7 @@ export class MykoGatewayModule implements OnModuleInit {
         servers
           .filter((x) => x.id !== this.server.id)
           .forEach((server) => {
+            console.log('peer', server)
             peerRegistry.assertPeer(server, this.server, token, {
               onConnect: () => {
                 this.logger
@@ -139,25 +139,5 @@ export class MykoGatewayModule implements OnModuleInit {
             })
           })
       })
-
-    onInit(['Server', 'Client'], () => {
-      const previousIncarnations = this.servers.getFilter(
-        (s) =>
-          s.address === this.server.address &&
-          s.port === this.server.port &&
-          s.id !== this.server.id,
-      )
-
-      const oldClients = this.clients.getFilter(
-        (c) =>
-          previousIncarnations.some((s) => s.id === c.serverId) && c.connected,
-      )
-
-      this.events.publishAll(
-        oldClients.map((client) =>
-          makeSet(new Client({ ...client, connected: false }), 'startup'),
-        ),
-      )
-    })
   }
 }
