@@ -57,7 +57,7 @@ import { v4 as uuid } from 'uuid'
       provide: SERVER_TOKEN,
       useFactory: (config: ConfigService) => {
         const address = config.get('HOST_ADDRESS')
-        const port = Number(config.get('MYKO_PORT'))
+        const port = Number(config.get('MYKO_EXTERNAL_PORT'))
         const version = config.get('VERSION')
 
         if (!address) {
@@ -65,7 +65,7 @@ import { v4 as uuid } from 'uuid'
         }
 
         if (!port) {
-          throw new Error('MYKO_PORT is required')
+          throw new Error('MYKO_EXTERNAL_PORT is required')
         }
 
         if (!version) {
@@ -108,6 +108,7 @@ export class MykoGatewayModule implements OnModuleInit {
           s.version === this.server.version,
       )
       .subscribe((servers) => {
+        console.log('Servers', servers)
         servers
           .filter((x) => x.id !== this.server.id)
           .forEach((server) => {

@@ -43,7 +43,7 @@ import { SERVER_TOKEN } from '../../types'
 import { WebSocket } from 'ws'
 import { parse } from 'url'
 
-@WebSocketGateway(Number(process.env.MYKO_PORT), { path: '/myko' })
+@WebSocketGateway(Number(process.env.MYKO_PORT ?? 5155), { path: '/myko' })
 @UseGuards(MykoGuard)
 @UseFilters(new WsExceptionFilter())
 export class MykoGateway implements OnGatewayConnection {
