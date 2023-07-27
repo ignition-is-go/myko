@@ -175,6 +175,10 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
   constructor(@Inject(SERVER_TOKEN) private server: Server) {}
   async execute(command: PeerCommand): Promise<void> {
+    const peer = peerRegistry.getPeer(command.peerId)
+    if (!peer) {
+      throw new MykoCommandError(command.tx, 'Peer Not Found')
+    }
     peerRegistry.getPeer(command.peerId).sendCommand(command.command)
   }
 }
