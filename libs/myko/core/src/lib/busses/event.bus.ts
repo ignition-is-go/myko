@@ -44,25 +44,25 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
       switch (relation.type) {
         case 'belongs-to': {
           // remove orphans
-          onInit([relation.localType, relation.foreignType], () => {
-            const all = getFilters.get(relation.localType)(() => true)
-            all.forEach((item) => {
-              const getParents = getIds.get(relation.foreignType)
-              if (!getParents) {
-                console.warn('No getIds for', relation.foreignType, relation)
-                return
-              }
-              const parent = getParents([item[relation.localKey]])
-              if (parent.length < 1) {
-                console.log(
-                  'Orphan found! Deleting',
-                  relation.localType,
-                  item.id,
-                )
-                this.publishDel(item, 'startup')
-              }
-            })
-          })
+          // onInit([relation.localType, relation.foreignType], () => {
+          //   const all = getFilters.get(relation.localType)(() => true)
+          //   all.forEach((item) => {
+          //     const getParents = getIds.get(relation.foreignType)
+          //     if (!getParents) {
+          //       console.warn('No getIds for', relation.foreignType, relation)
+          //       return
+          //     }
+          //     const parent = getParents([item[relation.localKey]])
+          //     if (parent.length < 1) {
+          //       console.log(
+          //         'Orphan found! Deleting',
+          //         relation.localType,
+          //         item.id,
+          //       )
+          //       this.publishDel(item, 'startup')
+          //     }
+          //   })
+          // })
 
           const sub = this.subject$
             .pipe(
