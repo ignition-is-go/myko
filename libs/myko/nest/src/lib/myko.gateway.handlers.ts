@@ -64,7 +64,13 @@ export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   ) {}
 
   execute(query: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return this.repo.watchFilter((s) => s.id !== this.server.id)
+    return this.repo
+      .watchFilter((s) => s.id !== this.server.id)
+      .pipe(
+        map((x) =>
+          x.filter((peer) => peerRegistry.getPeer(peer.id) !== undefined),
+        ),
+      )
   }
 }
 
