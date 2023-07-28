@@ -122,7 +122,11 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
 
     const handlers = this.streamHandles.get(event.item.id)
 
-    handlers.persist(event)
+    try {
+      handlers.persist(event)
+    } catch (e) {
+      console.warn(e)
+    }
   }
 
   async init() {
