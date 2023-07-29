@@ -3,7 +3,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
-    "luxon": "^3.4.3",
+    "luxon": "^3.3.0",
+    "myko-rs": "workspace:^",
     "object-hash": "^3.0.0",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.1",

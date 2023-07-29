@@ -1,6 +1,7 @@
 import type { ID, PartialBy } from './base'
 
 import { MD5 } from 'object-hash'
+import { hello } from 'myko-rs'
 
 type IMItem = {
   id: ID
@@ -16,6 +17,7 @@ export class MItem<T extends IMItem = IMItem> {
   readonly hash: string
 
   constructor(args: PartialBy<T, 'hash'>) {
+    hello()
     args['hash'] = args.hash ?? MD5(args)
     return args as unknown as MItem<T>
   }
