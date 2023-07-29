@@ -107,3 +107,8 @@ build/config.gypi
 .angular
 .env
 libs/generated/version.ts
+
+
+# Added by cargo
+
+/target
