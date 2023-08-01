@@ -4,12 +4,12 @@ import { ExplorerService } from './services'
 import { LoggerModule, LoggerService } from '@rship/logging'
 import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
-import { RedisPersisterFactory } from './redis/redis.persisterFactory'
+import { RedisPersisterFactory } from './persisters/redis.persisterFactory'
 import * as handlers from './myko.handlers'
-import { Client, ClientRepo, Server, ServerRepo, ofItems } from '@myko/core'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
 import { SocketRegistry } from './registry/socket.registry'
 import { ConfigModule } from '@nestjs/config'
+import { KafkaPersisterFactory } from './persisters'
 
 @Module({
   imports: [LoggerModule.forModule({ moduleName: 'Myko' }), ConfigModule],
@@ -20,7 +20,7 @@ import { ConfigModule } from '@nestjs/config'
     MykoQueryBus,
     MykoEventBus,
     RedisPersisterFactory,
-
+    KafkaPersisterFactory,
     ...Object.values(handlers),
   ],
   exports: [
@@ -28,6 +28,7 @@ import { ConfigModule } from '@nestjs/config'
     MykoQueryBus,
     MykoEventBus,
     RedisPersisterFactory,
+    KafkaPersisterFactory,
     SocketRegistry,
   ],
 })

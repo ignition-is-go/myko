@@ -12,7 +12,7 @@ import {
   ofItems,
 } from '@myko/core'
 import { ConfigModule, ConfigService } from '@nestjs/config'
-import { RedisPersisterFactory } from './redis'
+import { RedisPersisterFactory } from './persisters'
 import * as handlers from './myko.gateway.handlers'
 import { SERVER_TOKEN } from '../types'
 import { peerRegistry } from './registry/peer.registry'
@@ -108,7 +108,6 @@ export class MykoGatewayModule implements OnModuleInit {
           s.version === this.server.version,
       )
       .subscribe((servers) => {
-        console.log('Servers', servers)
         servers
           .filter((x) => x.id !== this.server.id)
           .forEach((server) => {
