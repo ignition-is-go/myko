@@ -17,7 +17,6 @@ import {
   GetClientsByQuery,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
-import { ConfigService } from '@nestjs/config'
 import { Observable, map, of, switchMap } from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
 import {
@@ -45,14 +44,10 @@ export class GetServersHandler implements MQueryHandler<GetServers> {
 export class GetConnectedServerHandler
   implements MQueryHandler<GetConnectedServer>
 {
-  constructor(
-    private repo: ServerRepo,
-    private config: ConfigService,
-    @Inject(SERVER_TOKEN) private server: Server,
-  ) {}
+  constructor(@Inject(SERVER_TOKEN) private server: Server) {}
 
   execute(query: GetConnectedServer): MLiveQueryResult<GetConnectedServer> {
-    return this.repo.watchId(this.server.id).pipe(map((x) => [x]))
+    return of(this.server).pipe(map((x) => [x]))
   }
 }
 
