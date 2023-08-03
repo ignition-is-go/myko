@@ -48,13 +48,6 @@ export class SocketRegistry extends Map<ID, WebSocket> implements OnModuleInit {
         )
         .filter((x) => x.connected)
 
-      if (oldClients.length > 0) {
-        this.logger
-          .getLogger('SocketRegistry')
-          .dev.debug({ message: 'oldClients', data: oldClients })
-        console.debug(oldClients)
-      }
-
       this.events.publishAll(
         oldClients.map((c) =>
           makeSet(
@@ -63,13 +56,6 @@ export class SocketRegistry extends Map<ID, WebSocket> implements OnModuleInit {
           ),
         ),
       )
-
-      if (connectedClients.length > 0) {
-        this.logger
-          .getLogger('SocketRegistry')
-          .dev.debug({ message: 'connectedClients', data: connectedClients })
-        console.debug(connectedClients)
-      }
 
       this.events.publishAll(
         connectedClients.map((c) =>
@@ -98,7 +84,7 @@ export class SocketRegistry extends Map<ID, WebSocket> implements OnModuleInit {
       this.delete(id)
     })
     const c = new Client({ id, connected: true, serverId })
-    console.debug('Client connected', c)
+    this.logger.getLogger('SocketRegistry').dev.info(`Client Connected`)
     this.events.publishSet(c, 'client-connected')
     this.set(id, socket)
   }

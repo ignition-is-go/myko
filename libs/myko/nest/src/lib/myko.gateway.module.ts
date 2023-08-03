@@ -18,6 +18,8 @@ import { SERVER_TOKEN } from '../types'
 import { peerRegistry } from './registry/peer.registry'
 import { MykoAuthService } from './services'
 import { v4 as uuid } from 'uuid'
+import { map } from 'rxjs'
+import { uniqBy } from 'ramda'
 
 @Module({
   imports: [
@@ -100,18 +102,17 @@ export class MykoGatewayModule implements OnModuleInit {
 
     const token = await this.auth.getPeerToken()
 
+    const selfKey = `${this.server.address}:${this.server.port}`
     this.servers
-      .watchFilter(
-        (s) =>
-          s.address !== this.server.address &&
-          s.port !== this.server.port &&
-          s.version === this.server.version,
-      )
+      .watchFilter((s) => {
+        const sKey = `${s.address}:${s.port}`
+        return sKey !== selfKey && s.version === this.server.version
+      })
+      .pipe(map((x) => uniqBy((s) => `${s.address}:${s.port}`, x)))
       .subscribe((servers) => {
         servers
           .filter((x) => x.id !== this.server.id)
           .forEach((server) => {
-            console.log('peer', server)
             peerRegistry.assertPeer(server, this.server, token, {
               onConnect: () => {
                 this.logger
