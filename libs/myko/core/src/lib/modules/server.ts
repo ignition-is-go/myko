@@ -7,6 +7,7 @@ export class Server extends MItem<Server> {
   version: string
   address: string
   port: number
+  startedAt: string // ISO DateTime
 }
 
 @MykoQuery('servers:getConnectedServer', Server)

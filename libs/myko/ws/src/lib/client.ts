@@ -43,6 +43,10 @@ import {
 
 import { Encoder, Decoder } from '@msgpack/msgpack'
 
+type WSMClientOpts = {
+  secure: boolean
+  reconnect: boolean
+}
 export class WSMClient {
   private q = new Set<WSMMessage>()
   private ws: WebSocket | null = null
@@ -84,6 +88,8 @@ export class WSMClient {
   private encoders = new Map<MykoProtocol, (data: any) => any>()
   private datapreppers = new Map<MykoProtocol, (data: any) => any>()
 
+  private opts: WSMClientOpts
+
   constructor(
     private host: string,
     private port: number,
@@ -95,7 +101,7 @@ export class WSMClient {
       onDisconnect?: (c: CloseEvent) => void
       onError?: (e?: string) => void
     },
-    private secure: boolean = false,
+    opts?: Partial<WSMClientOpts>,
   ) {
     this.commandSubject = new Subject()
     this.querySubject = new Subject()
@@ -118,6 +124,12 @@ export class WSMClient {
     this.datapreppers.set(MykoProtocol.MSGPACK, (data) => data)
 
     this.connect()
+
+    this.opts = {
+      secure: false,
+      reconnect: true,
+      ...opts,
+    }
   }
 
   sendCommand<T extends MCommand<unknown>>(
@@ -176,8 +188,8 @@ export class WSMClient {
   }
 
   private connect() {
-    const prefix = this.secure ? 'wss' : 'ws'
-    const port = this.secure ? '' : `:${this.port}`
+    const prefix = this.opts?.secure ? 'wss' : 'ws'
+    const port = this.opts?.secure ? '' : `:${this.port}`
     const path = `${prefix}://${this.host}${port}/myko?clientId=${this.clientId}`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
@@ -247,6 +259,9 @@ export class WSMClient {
     this.ws.onclose = (e) => {
       this.protocol = MykoProtocol.JSON
       this.hooks?.onDisconnect && this.hooks?.onDisconnect(e)
+      if (this.opts?.reconnect === false) {
+        return
+      }
       setTimeout(() => {
         this.connect()
       }, 1000)

@@ -31,6 +31,7 @@ export class PeerRegistry {
           onConnect()
         },
       },
+      { reconnect: false, secure: false },
     )
 
     client.setUser(token)
@@ -40,6 +41,14 @@ export class PeerRegistry {
 
   getPeer(id: ID) {
     return this.peers.get(id)
+  }
+
+  size() {
+    return this.peers.size
+  }
+
+  all() {
+    return this.peers.entries()
   }
 }
 

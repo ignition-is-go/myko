@@ -30,6 +30,7 @@ import { SocketRegistry } from './registry/socket.registry'
 import { peerRegistry } from './registry/peer.registry'
 import { uniq } from 'ramda'
 import { MykoQueryBus } from './busses'
+import { LoggerService } from '@rship/logging'
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
@@ -159,6 +160,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
   constructor(
     @Inject(SERVER_TOKEN) private server: Server,
     private query: MykoQueryBus,
+    private logger: LoggerService,
   ) {}
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
     if (query.peerId === this.server.id) {
@@ -166,6 +168,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
     }
 
     if (!peerRegistry.getPeer(query.peerId)) {
+      this.logger.getLogger('PeerQueryHandler').dev.error('Peer Not Found')
       return of([])
     }
     return peerRegistry.getPeer(query.peerId).watchQuery(query.query)

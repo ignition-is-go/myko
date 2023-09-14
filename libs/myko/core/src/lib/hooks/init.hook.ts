@@ -1,6 +1,11 @@
 const hooks = new Map<string, Set<() => void>>()
 
+const isRegistered = new Set<string>()
 const isInit = new Set<string>()
+
+const initWatchers = new Set<
+  (entity: string, egistered: number, inited: number) => void
+>()
 
 export const onInit = (itemTypes: string[], cb: () => void) => {
   const key = itemTypes.sort().join(':')
@@ -12,10 +17,20 @@ export const onInit = (itemTypes: string[], cb: () => void) => {
   hooks.get(key).add(cb)
 }
 
+export const watchInit = (
+  cb: (entity: string, registered: number, inited: number) => void,
+) => {
+  initWatchers.add(cb)
+}
+
 export const fireInit = (itemType: string) => {
-  isInit.add(itemType)
+  if (isInit.has(itemType)) {
+    return
+  }
 
   isInit.add(itemType)
+
+  initWatchers.forEach((cb) => cb(itemType, isRegistered.size, isInit.size))
 
   hooks.forEach((cb, key) => {
     const types = key.split(':')
@@ -23,4 +38,8 @@ export const fireInit = (itemType: string) => {
       hooks.get(key).forEach((cb) => cb())
     }
   })
+}
+
+export const beforeInit = (itemType: string) => {
+  isRegistered.add(itemType)
 }

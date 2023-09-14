@@ -46,12 +46,11 @@ export class MykoModule implements OnModuleInit {
     this.commandBus.register(commands)
     this.queryBus.register(queries)
     this.eventBus.registerSagas(sagas)
-    const log = this.logger.getLogger('MykoModule')
 
     if (process.env.LOG_LEVEL?.toLocaleLowerCase() === 'debug') {
       this.eventBus.subject$
         .pipe(
-          groupBy((e) => e.itemType),
+          groupBy((e) => `${e.itemType}:${e.changeType}`),
           mergeMap((obss) =>
             obss.pipe(
               bufferTime(1000),
@@ -60,7 +59,9 @@ export class MykoModule implements OnModuleInit {
           ),
         )
         .subscribe((e) => {
-          log.dev.debug(`${e[0].itemType}:${e[0].changeType} [${e.length}]`)
+          this.logger
+            .getLogger(e[0].itemType)
+            .dev.debug(`${e[0].changeType} [${e.length}]`)
         })
     }
   }
