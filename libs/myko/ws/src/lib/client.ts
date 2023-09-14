@@ -190,6 +190,7 @@ export class WSMClient {
   private connect() {
     const prefix = this.opts?.secure ? 'wss' : 'ws'
     const port = this.opts?.secure ? '' : `:${this.port}`
+    console.log('WSMCLIENT opts', JSON.stringify(this.opts))
     const path = `${prefix}://${this.host}${port}/myko?clientId=${this.clientId}`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
