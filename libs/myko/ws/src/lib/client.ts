@@ -123,13 +123,13 @@ export class WSMClient {
     this.datapreppers.set(MykoProtocol.JSON, (data) => data.toString())
     this.datapreppers.set(MykoProtocol.MSGPACK, (data) => data)
 
-    this.connect()
-
     this.opts = {
       secure: false,
       reconnect: true,
       ...opts,
     }
+
+    this.connect()
   }
 
   sendCommand<T extends MCommand<unknown>>(
@@ -188,9 +188,8 @@ export class WSMClient {
   }
 
   private connect() {
-    const prefix = this.opts?.secure ? 'wss' : 'ws'
-    const port = this.opts?.secure ? '' : `:${this.port}`
-    console.log('WSMCLIENT opts', JSON.stringify(this.opts))
+    const prefix = this.opts.secure ? 'wss' : 'ws'
+    const port = this.opts.secure ? '' : `:${this.port}`
     const path = `${prefix}://${this.host}${port}/myko?clientId=${this.clientId}`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
