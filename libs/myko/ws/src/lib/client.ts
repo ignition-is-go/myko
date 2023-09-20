@@ -46,6 +46,7 @@ import { Encoder, Decoder } from '@msgpack/msgpack'
 type WSMClientOpts = {
   secure: boolean
   reconnect: boolean
+  disableMsgPack: boolean
 }
 export class WSMClient {
   private q = new Set<WSMMessage>()
@@ -126,6 +127,7 @@ export class WSMClient {
     this.opts = {
       secure: false,
       reconnect: true,
+      disableMsgPack: false,
       ...opts,
     }
 
@@ -201,7 +203,7 @@ export class WSMClient {
     }
 
     this.ws.onopen = () => {
-      if (this.protocol !== MykoProtocol.MSGPACK) {
+      if (this.protocol !== MykoProtocol.MSGPACK && !this.opts.disableMsgPack) {
         this.switchToMessagePack()
       }
       this.processQueue()
