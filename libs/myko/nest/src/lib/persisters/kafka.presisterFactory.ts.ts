@@ -19,6 +19,8 @@ import { KafkaConsumer, Producer, Message, AdminClient } from 'node-rdkafka'
 import { v4 as uuid } from 'uuid'
 import { MykoQueryBus } from '../busses'
 
+import { Redis } from 'ioredis'
+
 export type KafkaPersisterOptions = {
   enableEventLog: boolean
 }
@@ -90,6 +92,8 @@ export class KafkaPersisterFactory {
 abstract class KafkaPersister<T extends MItem> implements Persister<T> {
   prod: Producer
 
+  redis: Redis
+
   prodConnected = false
 
   protected sendQueue = []
@@ -100,6 +104,11 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     protected options: KafkaPersisterOptions,
     protected brokers: string[],
   ) {
+    const redisHost = process.env.REDIS_HOST || 'localhost'
+    const redisPort = Number.parseInt(process.env.REDIS_PORT) || 6379
+
+    this.redis = new Redis(redisPort, redisHost)
+
     this.output = new Subject<MEvent<T>>()
 
     this.prod = new Producer({
@@ -136,8 +145,18 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
   abstract makeProducerTopic(event: MEvent<T>): string
 
-  protected onMessage(message: Message) {
+  protected onMessage(message: Pick<Message, 'value' | 'offset'>) {
     const event = decode(message.value) as MEvent<T>
+
+    const id = event.item.id
+
+    const latestKey = `${this.entity}:latest:${id}`
+
+    const offsetKey = `${this.entity}:offset`
+
+    this.redis.set(latestKey, message.value)
+    this.redis.set(offsetKey, message.offset)
+
     this.onEvent(event)
   }
 
@@ -199,6 +218,16 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
   }
 
   async init() {
+    const keys = await this.redis.keys(`${this.entity}:latest:*`)
+
+    keys.forEach(async (key) => {
+      const data = await this.redis.getBuffer(key)
+
+      const event = decode(data) as MEvent<T>
+
+      this.onEvent(event)
+    })
+
     this.prod.connect()
     this.prod.on('ready', () => {
       this.prod.setPollInterval(100)
@@ -244,6 +273,8 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       uuid(),
       [this.entity],
       (msg) => this.onMessage(msg),
+      `${this.entity}:offset`,
+      `${this.entity}:partition`,
       () => {
         this.onInit()
       },
@@ -336,8 +367,13 @@ export class KafkaControlledPersister<T extends MItem>
     }
 
     const topic = makeSafeTopic(`${this.entity}_${id}`)
-    const cons = new KafkaTopicConsumer(this.brokers, uuid(), [topic], (msg) =>
-      this.onMessage(msg),
+    const cons = new KafkaTopicConsumer(
+      this.brokers,
+      uuid(),
+      [topic],
+      (msg) => this.onMessage(msg),
+      `${topic}:offset`,
+      `${topic}:partition`,
     )
 
     this.handles.add(id, releaseId)
@@ -370,6 +406,8 @@ const makeSafeTopic = (topic: string) => {
 class KafkaTopicConsumer {
   cons: KafkaConsumer
 
+  redis: Redis
+
   private readOffset: number = 0
 
   constructor(
@@ -377,8 +415,15 @@ class KafkaTopicConsumer {
     groupId: string,
     private topics: string[],
     onMessage: (buf: Message) => void,
+    offsetKey: string,
+    partitionKey: string,
     private onCaughtUp?: () => void,
   ) {
+    const redisHost = process.env.REDIS_HOST || 'localhost'
+    const redisPort = Number.parseInt(process.env.REDIS_PORT) || 6379
+
+    this.redis = new Redis(redisPort, redisHost)
+
     this.cons = new KafkaConsumer(
       {
         'metadata.broker.list': brokers.join(','),
@@ -389,14 +434,33 @@ class KafkaTopicConsumer {
       },
     )
 
+    this.cons.on('ready', async () => {
+      this.cons.subscribe(topics.map(makeSafeTopic))
+    })
+
     this.cons
-      .on('ready', () => {
-        this.cons.subscribe(topics.map(makeSafeTopic))
+      .on('subscribed', async () => {
+        const offsetString = (await this.redis.get(offsetKey)) ?? '0'
+        const offset = Number.parseInt(offsetString)
+
+        const partitionString = (await this.redis.get(partitionKey)) ?? '0'
+        const partition = Number.parseInt(partitionString)
+
+        this.cons.assign(
+          topics.map(makeSafeTopic).map((topic) => ({
+            offset: offset,
+            topic,
+            partition: partition,
+          })),
+        )
+
         this.cons.consume()
         this.checkCaughtUp()
       })
+
       .on('data', (data) => {
         this.readOffset = data.offset
+
         onMessage(data)
       })
     this.cons.connect()
@@ -408,7 +472,7 @@ class KafkaTopicConsumer {
     }
     this.cons.queryWatermarkOffsets(this.topics[0], 0, 1000, (err, offsets) => {
       if (err) {
-        console.warn(err)
+        console.warn(this.topics[0], err)
       } else {
         if (this.readOffset >= offsets.highOffset - 1) {
           this.onCaughtUp?.()
