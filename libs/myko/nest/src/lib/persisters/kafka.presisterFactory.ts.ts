@@ -9,6 +9,7 @@ import {
   fireInit,
   ControledPersister,
   beforeInit,
+  MEventType,
 } from '@myko/core'
 import { Subject } from 'rxjs'
 import { LoggerService } from '@rship/logging'
@@ -154,7 +155,14 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
     const offsetKey = `${this.entity}:offset`
 
-    this.redis.set(latestKey, message.value)
+    if (event.changeType === MEventType.SET) {
+      this.redis.set(latestKey, message.value)
+    }
+
+    if (event.changeType === MEventType.DEL) {
+      this.redis.del(latestKey)
+    }
+
     this.redis.set(offsetKey, message.offset)
 
     this.onEvent(event)
