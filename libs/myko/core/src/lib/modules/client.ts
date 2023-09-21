@@ -6,8 +6,6 @@ import { Server } from './server'
 
 @MykoItem('Client')
 export class Client extends MItem<Client> {
-  readonly connected: boolean
-
   @belongsTo(Server)
   readonly serverId: string
 }

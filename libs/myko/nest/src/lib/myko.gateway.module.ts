@@ -8,6 +8,7 @@ import {
   ClientRepo,
   Server,
   ServerRepo,
+  makeDel,
   makeSet,
   ofItems,
   onInit,
@@ -158,12 +159,7 @@ export class MykoGatewayModule implements OnModuleInit {
                   })
 
                   this.events.publishAll(
-                    clients.map((client) =>
-                      makeSet(
-                        new Client({ ...client, connected: false }),
-                        'peer-offline',
-                      ),
-                    ),
+                    clients.map((client) => makeDel(client, 'peer-offline')),
                   )
 
                   this.logger
