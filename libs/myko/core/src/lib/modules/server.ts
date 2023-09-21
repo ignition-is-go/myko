@@ -8,6 +8,7 @@ export class Server extends MItem<Server> {
   address: string
   port: number
   startedAt: string // ISO DateTime
+  groupId: string
 }
 
 @MykoQuery('servers:getConnectedServer', Server)

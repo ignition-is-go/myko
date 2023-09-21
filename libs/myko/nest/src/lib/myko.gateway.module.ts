@@ -64,6 +64,7 @@ import { DateTime } from 'luxon'
         const address = config.get('HOST_ADDRESS')
         const port = Number(config.get('MYKO_EXTERNAL_PORT'))
         const version = config.get('VERSION')
+        const groupId = config.get('MYKO_GROUP')
 
         if (!address) {
           throw new Error('HOST_ADDRESS is required')
@@ -77,10 +78,15 @@ import { DateTime } from 'luxon'
           throw new Error('VERSION is required')
         }
 
+        if (!groupId) {
+          throw new Error('MYKO_GROUP is required')
+        }
+
         return new Server({
           id: uuid(),
           address,
           port,
+          groupId: groupId,
           version,
           startedAt: DateTime.utc().toISO(),
         })
@@ -116,7 +122,11 @@ export class MykoGatewayModule implements OnModuleInit {
       this.servers
         .watchFilter((s) => {
           const sKey = `${s.address}:${s.port}`
-          return sKey !== selfKey && s.version === this.server.version
+          return (
+            sKey !== selfKey &&
+            s.version === this.server.version &&
+            this.server.groupId === s.groupId
+          )
         })
 
         .pipe(
