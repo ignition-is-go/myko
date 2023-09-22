@@ -7,9 +7,10 @@ import {
   makeSet,
   GetClientsByQuery,
   makeDel,
+  DeleteClientsByServerId,
 } from '@myko/core'
 import { Injectable, OnModuleInit } from '@nestjs/common'
-import { MykoEventBus, MykoQueryBus } from '../busses'
+import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
 import type { WebSocket } from 'ws'
 import { LoggerService } from '@rship/logging'
 
@@ -19,6 +20,7 @@ export class SocketRegistry extends Map<ID, WebSocket> implements OnModuleInit {
     private events: MykoEventBus,
     private query: MykoQueryBus,
     private logger: LoggerService,
+    private command: MykoCommandBus,
   ) {
     super()
   }
@@ -69,6 +71,7 @@ export class SocketRegistry extends Map<ID, WebSocket> implements OnModuleInit {
         'client-disconnected',
       )
       this.delete(id)
+      this.command.execute(new DeleteClientsByServerId(id))
     })
     const c = new Client({ id, serverId })
     this.logger.getLogger('SocketRegistry').dev.info(`Client Connected`)

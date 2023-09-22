@@ -15,6 +15,8 @@ import {
   GetServersByClientIds,
   GetPeerServers,
   GetClientsByQuery,
+  DeleteClientsByServerId,
+  makeDel,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { Observable, map, of, switchMap } from 'rxjs'
@@ -29,7 +31,7 @@ import { encoders, clientProtocols } from './registry/client.protocols'
 import { SocketRegistry } from './registry/socket.registry'
 import { peerRegistry } from './registry/peer.registry'
 import { uniq } from 'ramda'
-import { MykoQueryBus } from './busses'
+import { MykoEventBus, MykoQueryBus } from './busses'
 import { LoggerService } from '@rship/logging'
 
 @MykoQueryHandler(GetServers)
@@ -152,6 +154,17 @@ export class GetClientsByQueryHandler
   constructor(private repo: ClientRepo) {}
   execute(query: GetClientsByQuery): Observable<any> {
     return this.repo.watch(query.partial)
+  }
+}
+
+@MykoCommandHandler(DeleteClientsByServerId)
+export class DeleteClientsByServerIdHandler
+  implements MCommandHandler<DeleteClientsByServerId>
+{
+  constructor(private clients: ClientRepo, private events: MykoEventBus) {}
+  async execute(command: DeleteClientsByServerId): Promise<void> {
+    const clients = this.clients.get({ serverId: command.serverId })
+    this.events.publishAll(clients.map((c) => makeDel(c, command.tx)))
   }
 }
 
