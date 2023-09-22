@@ -1,4 +1,4 @@
-import { Module, OnModuleInit } from '@nestjs/common'
+import { Module, OnModuleInit, forwardRef } from '@nestjs/common'
 import { MykoCommandBus } from './busses/command.bus'
 import { ExplorerService } from './services'
 import { LoggerModule, LoggerService } from '@rship/logging'
@@ -10,9 +10,14 @@ import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
 import { SocketRegistry } from './registry/socket.registry'
 import { ConfigModule } from '@nestjs/config'
 import { KafkaPersisterFactory } from './persisters'
+import { MykoGatewayModule } from './myko.gateway.module'
 
 @Module({
-  imports: [LoggerModule.forModule({ moduleName: 'Myko' }), ConfigModule],
+  imports: [
+    LoggerModule.forModule({ moduleName: 'Myko' }),
+    ConfigModule,
+    forwardRef(() => MykoGatewayModule),
+  ],
   providers: [
     SocketRegistry,
     ExplorerService,

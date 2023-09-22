@@ -1,4 +1,10 @@
-import { Inject, Module, OnModuleInit, Optional } from '@nestjs/common'
+import {
+  Inject,
+  Module,
+  OnModuleInit,
+  Optional,
+  forwardRef,
+} from '@nestjs/common'
 import { MykoModule } from './myko.module'
 import { MykoGateway } from './ws/myko.gateway'
 import { LoggerModule, LoggerService } from '@rship/logging'
@@ -27,7 +33,7 @@ import { DateTime } from 'luxon'
 
 @Module({
   imports: [
-    MykoModule,
+    forwardRef(() => MykoModule),
     ConfigModule,
     LoggerModule.forModule({ moduleName: 'MykoGateway' }),
   ],
@@ -96,6 +102,7 @@ import { DateTime } from 'luxon'
     },
     ...Object.values(handlers),
   ],
+  exports: [SERVER_TOKEN, ServerRepo, ClientRepo],
 })
 export class MykoGatewayModule implements OnModuleInit {
   constructor(

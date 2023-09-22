@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Inject, Injectable } from '@nestjs/common'
 import {
   MItem,
   Persister,
@@ -10,6 +10,7 @@ import {
   ControledPersister,
   beforeInit,
   MEventType,
+  Server,
 } from '@myko/core'
 import { Subject } from 'rxjs'
 import { LoggerService } from '@rship/logging'
@@ -21,6 +22,7 @@ import { v4 as uuid } from 'uuid'
 import { MykoQueryBus } from '../busses'
 
 import { Redis } from 'ioredis'
+import { SERVER_TOKEN } from '../../types'
 
 export type KafkaPersisterOptions = {
   enableEventLog: boolean
@@ -36,6 +38,7 @@ export class KafkaPersisterFactory {
     private logger: LoggerService,
     private config: ConfigService,
     private query: MykoQueryBus,
+    @Inject(SERVER_TOKEN) private server: Server,
   ) {}
 
   private getBrokers(): string[] {
@@ -63,6 +66,7 @@ export class KafkaPersisterFactory {
         enableEventLog: false,
       },
       this.getBrokers(),
+      this.server,
     )
   }
 
@@ -86,6 +90,7 @@ export class KafkaPersisterFactory {
       this.logger,
       opts,
       this.getBrokers(),
+      this.server,
     )
   }
 }
@@ -104,6 +109,7 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     protected logger: LoggerService,
     protected options: KafkaPersisterOptions,
     protected brokers: string[],
+    protected server: Server,
   ) {
     const redisHost = process.env.REDIS_HOST || 'localhost'
     const redisPort = Number.parseInt(process.env.REDIS_PORT) || 6379
@@ -132,6 +138,8 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     if (event.itemType !== this.entity) {
       return
     }
+
+    this.onEvent(event)
 
     if (!this.prodConnected) {
       this.logger
@@ -164,6 +172,10 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     }
 
     this.redis.set(offsetKey, message.offset)
+
+    if (event.sourceId === this.server.id) {
+      return
+    }
 
     this.onEvent(event)
   }
@@ -262,8 +274,9 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     logger: LoggerService,
     options: KafkaPersisterOptions,
     brokers: string[],
+    server: Server,
   ) {
-    super(entity, logger, options, brokers)
+    super(entity, logger, options, brokers, server)
     beforeInit(entity)
 
     const admin = AdminClient.create({
@@ -360,8 +373,9 @@ export class KafkaControlledPersister<T extends MItem>
     logger: LoggerService,
     options: KafkaPersisterOptions,
     brokers: string[],
+    server: Server,
   ) {
-    super(entity, logger, options, brokers)
+    super(entity, logger, options, brokers, server)
   }
 
   listenId(id: string, fromBeginning = false) {
