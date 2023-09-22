@@ -49,10 +49,12 @@ export class SocketRegistry extends Map<ID, WebSocket> implements OnModuleInit {
         oldClients.map((c) => makeDel(c, 'socket-registry-update')),
       )
       ;[...this.entries()].forEach(([id, socket]) => {
-        this.events.publishSet(
-          new Client({ id, serverId: server.id }),
-          'socket-registry-update',
-        )
+        if (allClients.find((c) => c.id === id) === undefined) {
+          this.events.publishSet(
+            new Client({ id, serverId: server.id }),
+            'socket-registry-update',
+          )
+        }
       })
     }, 1000)
   }
