@@ -17,12 +17,16 @@ import { LoggerService } from '@rship/logging'
 
 import { decode, encode } from '@msgpack/msgpack'
 import { ConfigService } from '@nestjs/config'
-import { KafkaConsumer, Producer, Message, AdminClient } from 'node-rdkafka'
+import { Producer, Message, AdminClient } from 'node-rdkafka'
 import { v4 as uuid } from 'uuid'
 import { MykoQueryBus } from '../busses'
 
 import { Redis } from 'ioredis'
 import { SERVER_TOKEN } from '../../types'
+import { makeSafeTopic } from './util/helpers'
+import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
+import { KafkaTopicProducer } from './util/kafka.topicProducer'
+import { MultiMap } from './util/multimap'
 
 export type KafkaPersisterOptions = {
   enableEventLog: boolean
@@ -96,13 +100,7 @@ export class KafkaPersisterFactory {
 }
 
 abstract class KafkaPersister<T extends MItem> implements Persister<T> {
-  prod: Producer
-
   redis: Redis
-
-  prodConnected = false
-
-  protected sendQueue = []
 
   constructor(
     protected entity: string,
@@ -118,41 +116,10 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
     this.output = new Subject<MEvent<T>>()
 
-    this.prod = new Producer({
-      'metadata.broker.list': brokers.join(','),
-      stats_cb: (stats) => {
-        console.log(stats)
-      },
-      'statistics.interval.ms': 1000,
-      'linger.ms': 10,
-      'compression.type': 'zstd',
-      dr_cb: true,
-    })
-
     this.init()
   }
 
   public output: Subject<MEvent<T>>
-
-  persist(event: MEvent<T>): void {
-    if (event.itemType !== this.entity) {
-      return
-    }
-
-    this.onEvent(event)
-
-    if (!this.prodConnected) {
-      this.logger
-        .getLogger(this.entity)
-        .dev.debug('Queueing Persist due to not connected')
-      this.sendQueue.push(event)
-      return
-    }
-
-    this.send(event)
-  }
-
-  abstract makeProducerTopic(event: MEvent<T>): string
 
   protected onMessage(message: Pick<Message, 'value' | 'offset'>) {
     const event = decode(message.value) as MEvent<T>
@@ -184,59 +151,6 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     this.output.next(event)
   }
 
-  private send(event: MEvent<T>) {
-    const t = this.makeProducerTopic(event)
-    if (!t) {
-      throw new Error('No Topic')
-    }
-    const streamKey = t.replace(/[^a-zA-Z0-9\.\-_]/g, '_')
-
-    try {
-      this.prod.produce(
-        streamKey,
-        null,
-        Buffer.from(encode(event)),
-        event.item.id,
-        Date.now(),
-      )
-    } catch (e) {
-      if (e instanceof Error && e.message === 'Local: Queue full') {
-      }
-    }
-  }
-
-  prodHighWaterMarkTimeout: Map<string, NodeJS.Timeout> = new Map()
-
-  private startHighwatermarkCheck(streamKey: string) {
-    if (this.prodHighWaterMarkTimeout.has(streamKey)) {
-      return
-    }
-    const timeout = setInterval(() => {
-      this.checkProdHighWaterMark(streamKey)
-    }, 1000)
-    this.prodHighWaterMarkTimeout.set(streamKey, timeout)
-  }
-
-  private checkProdHighWaterMark(streamKey: string) {
-    this.prod.queryWatermarkOffsets(streamKey, 0, 1000 * 10, (err, offsets) => {
-      if (err) {
-        console.error(err)
-        return
-      }
-
-      console.log(offsets)
-    })
-
-    this.prod.on('delivery-report', (err, report) => {
-      if (err) {
-        console.error(err)
-        return
-      }
-
-      console.log(report)
-    })
-  }
-
   async init() {
     const keys = await this.redis.keys(`${this.entity}:latest:*`)
 
@@ -247,19 +161,9 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
       this.onEvent(event)
     })
-
-    this.prod.connect()
-    this.prod.on('ready', () => {
-      this.prod.setPollInterval(100)
-      this.prod.poll()
-      this.prodConnected = true
-      if (this.sendQueue.length > 0) {
-        this.logger.getLogger(this.entity).dev.debug('Sending Queue')
-        this.sendQueue.forEach((e) => this.send(e))
-        this.sendQueue = []
-      }
-    })
   }
+
+  abstract persist(event: MEvent<T>): void
 
   protected onInit() {
     fireInit(this.entity)
@@ -268,6 +172,7 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
 export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   cons: KafkaTopicConsumer
+  prod: KafkaTopicProducer
 
   constructor(
     entity: string,
@@ -301,56 +206,18 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       },
     )
 
+    this.prod = new KafkaTopicProducer(this.entity, brokers, (msg) =>
+      this.logger
+        .getLogger(`${this.entity}.KafkaTopicProducer`)
+        .dev.log('info', msg),
+    )
+
     this.init()
   }
 
-  makeProducerTopic(event: MEvent<T>): string {
-    return event.itemType
-  }
-}
-
-class MultiMap<K, V> {
-  private reverseMap: Map<V, K> = new Map()
-  private map: Map<K, Set<V>> = new Map()
-
-  add(key: K, value: V) {
-    if (!this.map.has(key)) {
-      this.map.set(key, new Set())
-    }
-
-    this.reverseMap.set(value, key)
-    this.map.get(key).add(value)
-  }
-
-  removeValue(value: V): K | null {
-    if (!this.reverseMap.has(value)) {
-      return
-    }
-
-    const key = this.reverseMap.get(value)
-    return this.remove(key, value)
-  }
-
-  remove(key: K, value: V): K | null {
-    if (!this.map.has(key)) {
-      return null
-    }
-
-    this.map.get(key).delete(value)
-
-    if (this.map.get(key).size === 0) {
-      this.map.delete(key)
-      return key
-    }
-    return null
-  }
-
-  get(key: K): Set<V> {
-    return this.map.get(key)
-  }
-
-  has(key: K): boolean {
-    return this.map.has(key)
+  persist(event: MEvent<T>): void {
+    this.prod.publish(Buffer.from(encode(event)), event.item.id)
+    this.onEvent(event)
   }
 }
 
@@ -363,6 +230,7 @@ export class KafkaControlledPersister<T extends MItem>
   prodConnected = false
 
   consumers: Map<ID, KafkaTopicConsumer> = new Map()
+  producers: Map<ID, KafkaTopicProducer> = new Map()
   // maps from entityId to a set of releaseIds
   handles: MultiMap<ID, ID> = new MultiMap()
 
@@ -376,6 +244,33 @@ export class KafkaControlledPersister<T extends MItem>
     server: Server,
   ) {
     super(entity, logger, options, brokers, server)
+  }
+
+  persist(event: MEvent<T>): void {
+    const buf = encode(event)
+
+    const topic = this.makeProducerTopic(event)
+
+    if (!this.producers.has(topic)) {
+      this.producers.set(
+        topic,
+        new KafkaTopicProducer(topic, this.brokers, (msg) =>
+          this.logger
+            .getLogger(`${this.entity}.KafkaTopicProducer`)
+            .dev.log('info', msg),
+        ),
+      )
+    }
+
+    const producer = this.producers.get(topic)
+
+    if (!producer) {
+      throw new Error('Producer not found')
+    }
+
+    producer.publish(Buffer.from(encode(event)), event.item.id)
+
+    this.onEvent(event)
   }
 
   listenId(id: string, fromBeginning = false) {
@@ -417,96 +312,5 @@ export class KafkaControlledPersister<T extends MItem>
 
   makeProducerTopic(event: MEvent<T>): string {
     return makeSafeTopic(`${this.entity}_${event.item.id}`)
-  }
-}
-
-const makeSafeTopic = (topic: string) => {
-  const safe = topic.replace(/[^a-zA-Z0-9\.\-_]/g, '_')
-  return safe
-}
-
-class KafkaTopicConsumer {
-  cons: KafkaConsumer
-
-  redis: Redis
-
-  private readOffset: number = 0
-
-  constructor(
-    brokers: string[],
-    groupId: string,
-    private topics: string[],
-    onMessage: (buf: Message) => void,
-    offsetKey: string,
-    partitionKey: string,
-    private onCaughtUp?: () => void,
-  ) {
-    const redisHost = process.env.REDIS_HOST || 'localhost'
-    const redisPort = Number.parseInt(process.env.REDIS_PORT) || 6379
-
-    this.redis = new Redis(redisPort, redisHost)
-
-    this.cons = new KafkaConsumer(
-      {
-        'metadata.broker.list': brokers.join(','),
-        'group.id': groupId,
-      },
-      {
-        'auto.offset.reset': 'smallest',
-      },
-    )
-
-    this.cons.on('ready', async () => {
-      this.cons.subscribe(topics.map(makeSafeTopic))
-    })
-
-    this.cons
-      .on('subscribed', async () => {
-        const offsetString = (await this.redis.get(offsetKey)) ?? '0'
-        const offset = Number.parseInt(offsetString)
-
-        const partitionString = (await this.redis.get(partitionKey)) ?? '0'
-        const partition = Number.parseInt(partitionString)
-
-        this.cons.assign(
-          topics.map(makeSafeTopic).map((topic) => ({
-            offset: offset,
-            topic,
-            partition: partition,
-          })),
-        )
-
-        this.cons.consume()
-        this.checkCaughtUp()
-      })
-
-      .on('data', (data) => {
-        this.readOffset = data.offset
-
-        onMessage(data)
-      })
-    this.cons.connect()
-  }
-
-  checkCaughtUp() {
-    if (this.cons.isConnected() === false) {
-      return
-    }
-    this.cons.queryWatermarkOffsets(this.topics[0], 0, 1000, (err, offsets) => {
-      if (err) {
-        console.warn(this.topics[0], err)
-      } else {
-        if (this.readOffset >= offsets.highOffset - 1) {
-          this.onCaughtUp?.()
-        }
-      }
-
-      setTimeout(() => this.checkCaughtUp(), 1000)
-    })
-  }
-
-  disconnect() {
-    this.cons.unsubscribe()
-    this.cons.disconnect()
   }
 }
