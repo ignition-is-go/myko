@@ -17,10 +17,12 @@ export class KafkaTopicProducer {
       'metadata.broker.list': brokers.join(','),
     })
 
+    const safeTopic = makeSafeTopic(topic)
+
     admin.createTopic({
       num_partitions: 1,
       replication_factor: 3,
-      topic: topic,
+      topic: safeTopic,
     })
 
     this.prod = new Producer({
@@ -31,6 +33,7 @@ export class KafkaTopicProducer {
       'statistics.interval.ms': 1000,
       'linger.ms': 10,
       'compression.type': 'zstd',
+      'allow.auto.create.topics': true,
       dr_cb: true,
     })
 

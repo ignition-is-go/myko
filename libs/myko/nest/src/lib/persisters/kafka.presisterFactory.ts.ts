@@ -23,7 +23,6 @@ import { MykoQueryBus } from '../busses'
 
 import { Redis } from 'ioredis'
 import { SERVER_TOKEN } from '../../types'
-import { makeSafeTopic } from './util/helpers'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
 import { MultiMap } from './util/multimap'
@@ -283,7 +282,7 @@ export class KafkaControlledPersister<T extends MItem>
       return
     }
 
-    const topic = makeSafeTopic(`${this.entity}_${id}`)
+    const topic = `${this.entity}_${id}`
     const cons = new KafkaTopicConsumer(
       this.brokers,
       uuid(),
@@ -311,6 +310,6 @@ export class KafkaControlledPersister<T extends MItem>
   }
 
   makeProducerTopic(event: MEvent<T>): string {
-    return makeSafeTopic(`${this.entity}_${event.item.id}`)
+    return `${this.entity}_${event.item.id}`
   }
 }
