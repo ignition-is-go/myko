@@ -19,7 +19,7 @@ import {
   makeDel,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
-import { Observable, map, of, switchMap } from 'rxjs'
+import { Observable, firstValueFrom, map, of, switchMap } from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
 import {
   ClientCommand,
@@ -29,7 +29,7 @@ import {
 } from '@myko/ws'
 import { encoders, clientProtocols } from './registry/client.protocols'
 import { SocketRegistry } from './registry/socket.registry'
-import { peerRegistry } from './registry/peer.registry'
+import { PeerRegistry } from './registry/peer.registry'
 import { uniq } from 'ramda'
 import { MykoEventBus, MykoQueryBus } from './busses'
 import { LoggerService } from '@rship/logging'
@@ -62,13 +62,7 @@ export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   ) {}
 
   execute(query: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return this.repo
-      .watchFilter((s) => s.id !== this.server.id)
-      .pipe(
-        map((x) =>
-          x.filter((peer) => peerRegistry.getPeer(peer.id) !== undefined),
-        ),
-      )
+    return this.repo.watchFilter((s) => s.id !== this.server.id)
   }
 }
 
@@ -111,6 +105,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
     private reg: SocketRegistry,
     private clients: ClientRepo,
     @Inject(SERVER_TOKEN) private server: Server,
+    private peers: PeerRegistry,
   ) {}
 
   async execute(command: ClientCommand): Promise<void> {
@@ -118,7 +113,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
     if (client.serverId !== this.server.id) {
       // forward to server
-      const peer = peerRegistry.getPeer(client.serverId)
+      const peer = await firstValueFrom(this.peers.getPeer(client.serverId))
 
       if (!peer) {
         throw new MykoCommandError(command.tx, 'Peer Not Found')
@@ -174,28 +169,46 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
     @Inject(SERVER_TOKEN) private server: Server,
     private query: MykoQueryBus,
     private logger: LoggerService,
+    private peers: PeerRegistry,
   ) {}
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
-    if (query.peerId === this.server.id) {
-      return this.query.watch(query.query)
-    }
+    try {
+      if (query.peerId === this.server.id) {
+        return this.query.watch(query.query)
+      }
 
-    if (!peerRegistry.getPeer(query.peerId)) {
-      this.logger.getLogger('PeerQueryHandler').dev.error('Peer Not Found')
+      if (!this.peers.getPeer(query.peerId)) {
+        this.logger.getLogger('PeerQueryHandler').dev.error('Peer Not Found')
+        return of([])
+      }
+
+      return this.peers.getPeer(query.peerId).pipe(
+        switchMap((peer) => {
+          if (!peer) {
+            return of([])
+          }
+          return peer.watchQuery(query.query)
+        }),
+      )
+    } catch (e) {
+      console.warn('Cant Execute Peer Query', query)
       return of([])
     }
-    return peerRegistry.getPeer(query.peerId).watchQuery(query.query)
   }
 }
 
 @MykoCommandHandler(PeerCommand)
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
-  constructor(@Inject(SERVER_TOKEN) private server: Server) {}
+  constructor(
+    @Inject(SERVER_TOKEN) private server: Server,
+    private peers: PeerRegistry,
+  ) {}
   async execute(command: PeerCommand): Promise<void> {
-    const peer = peerRegistry.getPeer(command.peerId)
+    const peer = await firstValueFrom(this.peers.getPeer(command.peerId))
     if (!peer) {
       throw new MykoCommandError(command.tx, 'Peer Not Found')
     }
-    peerRegistry.getPeer(command.peerId).sendCommand(command.command)
+
+    peer.sendCommand(command.command)
   }
 }

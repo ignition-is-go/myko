@@ -9,7 +9,7 @@ export class MykoAuthService {
     throw new Error()
   }
 
-  getPeerToken(): Promise<string> {
+  getPeerToken(): string {
     throw new Error()
   }
 }

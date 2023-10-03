@@ -1,6 +1,7 @@
 import {
   Inject,
   Module,
+  OnModuleDestroy,
   OnModuleInit,
   Optional,
   forwardRef,
@@ -14,21 +15,15 @@ import {
   ClientRepo,
   Server,
   ServerRepo,
-  makeDel,
-  makeSet,
   ofItems,
-  onInit,
   watchInit,
 } from '@myko/core'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { KafkaPersisterFactory } from './persisters'
 import * as handlers from './myko.gateway.handlers'
 import { SERVER_TOKEN } from '../types'
-import { peerRegistry } from './registry/peer.registry'
 import { MykoAuthService } from './services'
 import { v4 as uuid } from 'uuid'
-import { map } from 'rxjs'
-import { groupBy } from 'ramda'
 import { DateTime } from 'luxon'
 
 @Module({
@@ -121,61 +116,5 @@ export class MykoGatewayModule implements OnModuleInit {
 
     this.events.setServerId(this.server.id)
     this.events.publishSet(this.server, 'server:init')
-
-    const token = await this.auth.getPeerToken()
-
-    const selfKey = `${this.server.address}:${this.server.port}`
-
-    onInit(['Server'], () => {
-      this.servers
-        .watchFilter((s) => {
-          const sKey = `${s.address}:${s.port}`
-          return (
-            sKey !== selfKey &&
-            s.version === this.server.version &&
-            this.server.groupId === s.groupId
-          )
-        })
-
-        .pipe(
-          map((servers) => {
-            const groups = groupBy((s) => `${s.address}:${s.port}`, servers)
-
-            return Object.values(groups).map((servers) => {
-              const server = servers.reduce((a, b) => {
-                return a.startedAt > b.startedAt ? a : b
-              })
-
-              return server
-            })
-          }),
-        )
-        .subscribe((servers) => {
-          servers
-            .filter((x) => x.id !== this.server.id)
-            .forEach((server) => {
-              peerRegistry.assertPeer(server, this.server, token, {
-                onConnect: () => {
-                  this.logger
-                    .getLogger('OnInit')
-                    .dev.info(`Connected to ${server.id}`)
-                },
-                onDisconnect: () => {
-                  const clients = this.clients.get({
-                    serverId: server.id,
-                  })
-
-                  this.events.publishAll(
-                    clients.map((client) => makeDel(client, 'peer-offline')),
-                  )
-
-                  this.logger
-                    .getLogger('OnInit')
-                    .dev.info(`Disconnected from ${server.id}`)
-                },
-              })
-            })
-        })
-    })
   }
 }

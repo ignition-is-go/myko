@@ -11,6 +11,7 @@ import { SocketRegistry } from './registry/socket.registry'
 import { ConfigModule } from '@nestjs/config'
 import { KafkaPersisterFactory } from './persisters'
 import { MykoGatewayModule } from './myko.gateway.module'
+import { PeerRegistry } from './registry/peer.registry'
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { MykoGatewayModule } from './myko.gateway.module'
   ],
   providers: [
     SocketRegistry,
+    PeerRegistry,
     ExplorerService,
     MykoCommandBus,
     MykoQueryBus,
@@ -35,6 +37,7 @@ import { MykoGatewayModule } from './myko.gateway.module'
     RedisPersisterFactory,
     KafkaPersisterFactory,
     SocketRegistry,
+    PeerRegistry,
   ],
 })
 export class MykoModule implements OnModuleInit {
