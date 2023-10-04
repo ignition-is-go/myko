@@ -93,6 +93,8 @@ export class PeerRegistry {
           { reconnect: false, secure: false },
         )
 
+        client.setUser(this.auth.getPeerToken())
+
         this.peers.set(id, client)
 
         return client
