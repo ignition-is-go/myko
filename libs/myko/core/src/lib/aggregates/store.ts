@@ -3,6 +3,16 @@ import { ID, MItem } from '../types'
 export class Store<T extends MItem> extends Map<ID, T> {
   indeces = new Map<keyof T, Map<any, Set<ID>>>()
 
+  constructor(private opts: { enableLogs: boolean }) {
+    super()
+  }
+
+  safeLog(...args: any[]) {
+    if (this.opts.enableLogs) {
+      console.log(...args)
+    }
+  }
+
   set(key: string, value: T): this {
     super.set(key, value)
     this.addToIndeces(value)

@@ -30,12 +30,12 @@ export type WSMEvent = {
 
 export type WSMCommand = {
   event: typeof MCOMMAND_EVENT
-  data: MWrappedCommand & { clientId: ID }
+  data: MWrappedCommand
 }
 
 export type WSMQuery = {
   event: typeof MQUERY_EVENT
-  data: MWrappedQuery & { clientId: ID }
+  data: MWrappedQuery
 }
 
 export type WSMQueryResponse = {

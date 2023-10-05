@@ -45,8 +45,6 @@ export abstract class Repo<T extends MItem> {
   private subject: Subject<MEvent<T>>
   private entity: string
 
-  private all$: Subject<Map<ID, T>> = new Subject<Map<ID, T>>()
-
   constructor(
     ent: new (...args: any[]) => T,
     private readonly options?: RepoOptions<T>,
@@ -57,7 +55,7 @@ export abstract class Repo<T extends MItem> {
     getFilters.set(this.entity, this.getFilter.bind(this))
     watchIds.set(this.entity, this.watchIds.bind(this))
 
-    this.store = new Store()
+    this.store = new Store({ enableLogs: options?.enableLogs })
 
     this.subject = new Subject()
 
@@ -93,9 +91,14 @@ export abstract class Repo<T extends MItem> {
     })
   }
 
+  safeLog(...args: any[]) {
+    if (this.options?.enableLogs) {
+      console.log(...args)
+    }
+  }
+
   watchFilter(filterFunc: (ent: T) => boolean): Observable<T[]> {
-    return this.all$.pipe(
-      startWith(this.store.getFilter(filterFunc)),
+    return of(this.store.getFilter(filterFunc)).pipe(
       switchMap((all) =>
         this.subject.pipe(
           scan(
@@ -145,8 +148,7 @@ export abstract class Repo<T extends MItem> {
             return null
         }
       }),
-      startWith(this.store.get(id) ?? null),
-      mergeWith(this.all$.pipe(map((e) => e.get(id) ?? null))),
+      startWith(this.getId(id)),
     )
 
     return obs as Observable<T | null>
@@ -223,7 +225,7 @@ export abstract class ControledRepo<T extends MItem> implements Controlled {
     getIds.set(this.entity, this.getIds.bind(this))
     watchIds.set(this.entity, this.watchIds.bind(this))
 
-    this.store = new Store()
+    this.store = new Store({ enableLogs: options?.enableLogs })
 
     this.subject = new Subject()
 

@@ -20,6 +20,8 @@ import {
   type CommandResponse,
   ProtocolMessages,
   MykoProtocol,
+  wrapCommand,
+  SetClientId,
 } from '@myko/core'
 import {
   wrapCommandWS,
@@ -72,6 +74,8 @@ export class WSMClient {
     return this.successSubject.pipe()
   }
 
+  clientId: ID | null = null
+
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
@@ -94,9 +98,9 @@ export class WSMClient {
   constructor(
     private host: string,
     private port: number,
-    private clientId: string,
     private makeSocket: (url: string) => any,
     private hooks?: {
+      onClientId?: (clientId: ID) => void
       onStartConnect?: (url: string) => void
       onConnect?: (url: string) => void
       onDisconnect?: (c: CloseEvent) => void
@@ -140,7 +144,7 @@ export class WSMClient {
     if (this.userToken) {
       command.userToken = this.userToken
     }
-    const wrapped = wrapCommandWS(command, this.clientId)
+    const wrapped = wrapCommandWS(command)
     this.send(wrapped)
     return firstValueFrom(
       this.commandResponses.pipe(
@@ -229,7 +233,18 @@ export class WSMClient {
 
       switch (message.event) {
         case MCOMMAND_EVENT:
-          const cmd = unwrapCommand(message.data)
+          const cmd = unwrapCommand(message.data) as unknown as SetClientId
+
+          if (
+            message.data.commandId ===
+            wrapCommand(new SetClientId('fake')).commandId
+          ) {
+            console.log('got client id', cmd.clientId)
+            this.clientId = cmd.clientId
+            this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
+            break
+          }
+
           this.commandSubject.next(cmd)
           break
 

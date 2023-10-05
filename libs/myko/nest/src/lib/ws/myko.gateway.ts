@@ -41,7 +41,6 @@ import { SocketRegistry } from '../registry/socket.registry'
 import { ConfigService } from '@nestjs/config'
 import { SERVER_TOKEN } from '../../types'
 import { WebSocket } from 'ws'
-import { parse } from 'url'
 
 @WebSocketGateway(Number(process.env.MYKO_PORT ?? 5155), { path: '/myko' })
 @UseGuards(MykoGuard)
@@ -59,14 +58,8 @@ export class MykoGateway implements OnGatewayConnection {
   ) {}
 
   handleConnection(client: WebSocket, ...args: any[]) {
-    const params = parse(args[0].url, true).query
-    const clientId = params.clientId as ID
-    if (!clientId) {
-      client.close()
-      return
-    }
     try {
-      this.reg.register(clientId, client, this.server.id)
+      this.reg.register(client)
     } catch (e) {
       client.close(1002, e.message)
     }

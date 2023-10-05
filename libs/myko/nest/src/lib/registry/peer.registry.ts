@@ -36,7 +36,6 @@ export class PeerRegistry {
     const client = new WSMClient(
       server.address,
       server.port,
-      me.id,
       (url) => new WebSocket(url),
       {
         onDisconnect: () => {
@@ -54,13 +53,13 @@ export class PeerRegistry {
     this.peers.set(server.id, client)
   }
 
-  getPeer(id: ID): Observable<WSMClient | null> {
+  getPeer(serverId: ID): Observable<WSMClient | null> {
     const log = this.logger.getLogger('getPeer').dev
 
-    return this.servers.watchId(id).pipe(
+    return this.servers.watchId(serverId).pipe(
       map((server: Server | undefined) => {
-        if (this.peers.has(id)) {
-          return this.peers.get(id)
+        if (this.peers.has(serverId)) {
+          return this.peers.get(serverId)
         }
 
         if (!server) {
@@ -74,7 +73,6 @@ export class PeerRegistry {
         const client = new WSMClient(
           server.address,
           server.port,
-          this.me.id,
           (url) => new WebSocket(url),
           {
             onDisconnect: () => {
@@ -82,7 +80,7 @@ export class PeerRegistry {
                 `Peer Disconnected: ${server.address}:${server.port} ${server.id}`,
               )
               this.events.publishDel(server, 'peer-disconnected')
-              this.peers.delete(id)
+              this.peers.delete(serverId)
             },
             onConnect: () => {
               log.debug(
@@ -95,7 +93,7 @@ export class PeerRegistry {
 
         client.setUser(this.auth.getPeerToken())
 
-        this.peers.set(id, client)
+        this.peers.set(serverId, client)
 
         return client
       }),

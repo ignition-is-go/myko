@@ -128,7 +128,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
     }
     sockets.send(
       encoders.get(clientProtocols.get(sockets) ?? MykoProtocol.JSON)(
-        wrapCommandOnlyWS(command.command, this.server.id),
+        wrapCommandOnlyWS(command.command),
       ),
     )
   }

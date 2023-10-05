@@ -32,4 +32,11 @@ export class DeleteClientsByServerId extends MCommand {
   }
 }
 
+@MykoCommand('client:setId')
+export class SetClientId extends MCommand {
+  constructor(readonly clientId: string) {
+    super()
+  }
+}
+
 export class ClientRepo extends Repo<Client> {}
