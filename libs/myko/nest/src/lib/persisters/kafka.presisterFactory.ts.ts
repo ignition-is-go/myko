@@ -17,7 +17,14 @@ import { LoggerService } from '@rship/logging'
 
 import { decode, encode } from '@msgpack/msgpack'
 import { ConfigService } from '@nestjs/config'
-import { Producer, Message, AdminClient } from 'node-rdkafka'
+import {
+  Producer,
+  Message,
+  AdminClient,
+  GlobalConfig,
+  ProducerGlobalConfig,
+  ConsumerGlobalConfig,
+} from 'node-rdkafka'
 import { v4 as uuid } from 'uuid'
 import { MykoQueryBus } from '../busses'
 
@@ -37,12 +44,28 @@ const optionDefaults: Partial<KafkaPersisterOptions> = {
 
 @Injectable()
 export class KafkaPersisterFactory {
+  private conf: GlobalConfig
+  private prodConf: ProducerGlobalConfig
+  private consConf: ConsumerGlobalConfig
+
   constructor(
     private logger: LoggerService,
     private config: ConfigService,
     private query: MykoQueryBus,
     @Inject(SERVER_TOKEN) private server: Server,
-  ) {}
+  ) {
+    this.conf = {
+      'metadata.broker.list': this.getBrokers().join(','),
+    }
+
+    this.prodConf = {
+      'allow.auto.create.topics': true,
+    }
+
+    this.consConf = {
+      'group.id': server.id,
+    }
+  }
 
   private getBrokers(): string[] {
     const brokersString = this.config.get('KAFKA_BROKERS')
@@ -68,7 +91,9 @@ export class KafkaPersisterFactory {
       {
         enableEventLog: false,
       },
-      this.getBrokers(),
+      this.conf,
+      this.prodConf,
+      this.consConf,
       this.server,
     )
   }
@@ -92,7 +117,9 @@ export class KafkaPersisterFactory {
       entity,
       this.logger,
       opts,
-      this.getBrokers(),
+      this.conf,
+      this.prodConf,
+      this.consConf,
       this.server,
     )
   }
@@ -105,7 +132,6 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     protected entity: string,
     protected logger: LoggerService,
     protected options: KafkaPersisterOptions,
-    protected brokers: string[],
     protected server: Server,
   ) {
     const redisHost = process.env.REDIS_HOST || 'localhost'
@@ -177,15 +203,15 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     entity: string,
     logger: LoggerService,
     options: KafkaPersisterOptions,
-    brokers: string[],
+    private config: GlobalConfig,
+    private prodConfig: ProducerGlobalConfig,
+    private consConfig: ConsumerGlobalConfig,
     server: Server,
   ) {
-    super(entity, logger, options, brokers, server)
+    super(entity, logger, options, server)
     beforeInit(entity)
 
-    const admin = AdminClient.create({
-      'metadata.broker.list': brokers.join(','),
-    })
+    const admin = AdminClient.create(this.config)
 
     admin.createTopic({
       topic: this.entity,
@@ -194,8 +220,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     })
 
     this.cons = new KafkaTopicConsumer(
-      brokers,
-      uuid(),
+      { ...this.config, ...this.consConfig },
       [this.entity],
       (msg) => this.onMessage(msg),
       `${this.entity}:offset`,
@@ -205,10 +230,13 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       },
     )
 
-    this.prod = new KafkaTopicProducer(this.entity, brokers, (msg) =>
-      this.logger
-        .getLogger(`${this.entity}.KafkaTopicProducer`)
-        .dev.log('info', msg),
+    this.prod = new KafkaTopicProducer(
+      this.entity,
+      { ...this.config, ...this.prodConfig },
+      (msg) =>
+        this.logger
+          .getLogger(`${this.entity}.KafkaTopicProducer`)
+          .dev.log('info', msg),
     )
 
     this.init()
@@ -239,24 +267,30 @@ export class KafkaControlledPersister<T extends MItem>
     entity: string,
     logger: LoggerService,
     options: KafkaPersisterOptions,
-    brokers: string[],
+    private config: GlobalConfig,
+    private prodConf: ProducerGlobalConfig,
+    private consConf: ConsumerGlobalConfig,
     server: Server,
   ) {
-    super(entity, logger, options, brokers, server)
+    super(entity, logger, options, server)
   }
 
   persist(event: MEvent<T>): void {
-    const buf = encode(event)
-
     const topic = this.makeProducerTopic(event)
 
     if (!this.producers.has(topic)) {
       this.producers.set(
         topic,
-        new KafkaTopicProducer(topic, this.brokers, (msg) =>
-          this.logger
-            .getLogger(`${this.entity}.KafkaTopicProducer`)
-            .dev.log('info', msg),
+        new KafkaTopicProducer(
+          topic,
+          {
+            ...this.config,
+            ...this.prodConf,
+          },
+          (msg) =>
+            this.logger
+              .getLogger(`${this.entity}.KafkaTopicProducer`)
+              .dev.log('info', msg),
         ),
       )
     }
@@ -284,8 +318,7 @@ export class KafkaControlledPersister<T extends MItem>
 
     const topic = `${this.entity}_${id}`
     const cons = new KafkaTopicConsumer(
-      this.brokers,
-      uuid(),
+      { ...this.config, ...this.consConf },
       [topic],
       (msg) => this.onMessage(msg),
       `${topic}:offset`,

@@ -1,4 +1,4 @@
-import { KafkaConsumer, Message } from 'node-rdkafka'
+import { ConsumerGlobalConfig, KafkaConsumer, Message } from 'node-rdkafka'
 import { Redis } from 'ioredis'
 import { makeSafeTopic } from './helpers'
 
@@ -10,8 +10,7 @@ export class KafkaTopicConsumer {
   private readOffset: number = 0
 
   constructor(
-    brokers: string[],
-    groupId: string,
+    config: ConsumerGlobalConfig,
     private topics: string[],
     onMessage: (buf: Message) => void,
     offsetKey: string,
@@ -23,15 +22,7 @@ export class KafkaTopicConsumer {
 
     this.redis = new Redis(redisPort, redisHost)
 
-    this.cons = new KafkaConsumer(
-      {
-        'metadata.broker.list': brokers.join(','),
-        'group.id': groupId,
-      },
-      {
-        'auto.offset.reset': 'smallest',
-      },
-    )
+    this.cons = new KafkaConsumer(config, {})
 
     this.cons.on('ready', async () => {
       this.cons.subscribe(topics.map(makeSafeTopic))

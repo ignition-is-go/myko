@@ -1,4 +1,4 @@
-import { Producer, AdminClient } from 'node-rdkafka'
+import { Producer, AdminClient, ProducerGlobalConfig } from 'node-rdkafka'
 import { makeSafeTopic } from './helpers'
 
 export class KafkaTopicProducer {
@@ -10,12 +10,10 @@ export class KafkaTopicProducer {
 
   constructor(
     private topic: string,
-    protected brokers: string[],
+    config: ProducerGlobalConfig,
     private log: (msg: string) => void,
   ) {
-    const admin = AdminClient.create({
-      'metadata.broker.list': brokers.join(','),
-    })
+    const admin = AdminClient.create(config)
 
     const safeTopic = makeSafeTopic(topic)
 
@@ -25,17 +23,7 @@ export class KafkaTopicProducer {
       topic: safeTopic,
     })
 
-    this.prod = new Producer({
-      'metadata.broker.list': brokers.join(','),
-      stats_cb: (stats) => {
-        console.log(stats)
-      },
-      'statistics.interval.ms': 1000,
-      'linger.ms': 10,
-      'compression.type': 'zstd',
-      'allow.auto.create.topics': true,
-      dr_cb: true,
-    })
+    this.prod = new Producer(config)
 
     this.prod.connect()
     this.prod.on('ready', () => {
@@ -73,34 +61,4 @@ export class KafkaTopicProducer {
       }
     }
   }
-
-  // private startHighwatermarkCheck(streamKey: string) {
-  //   if (this.prodHighWaterMarkTimeout.has(streamKey)) {
-  //     return
-  //   }
-  //   const timeout = setInterval(() => {
-  //     this.checkProdHighWaterMark(streamKey)
-  //   }, 1000)
-  //   this.prodHighWaterMarkTimeout.set(streamKey, timeout)
-  // }
-
-  // private checkProdHighWaterMark(streamKey: string) {
-  //   this.prod.queryWatermarkOffsets(streamKey, 0, 1000 * 10, (err, offsets) => {
-  //     if (err) {
-  //       console.error(err)
-  //       return
-  //     }
-
-  //     console.log(offsets)
-  //   })
-
-  //   this.prod.on('delivery-report', (err, report) => {
-  //     if (err) {
-  //       console.error(err)
-  //       return
-  //     }
-
-  //     console.log(report)
-  //   })
-  // }
 }
