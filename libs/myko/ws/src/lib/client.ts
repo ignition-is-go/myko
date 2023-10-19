@@ -196,7 +196,7 @@ export class WSMClient {
   private connect() {
     const prefix = this.opts.secure ? 'wss' : 'ws'
     const port = this.opts.secure ? '' : `:${this.port}`
-    const path = `${prefix}://${this.host}${port}/myko?clientId=${this.clientId}`
+    const path = `${prefix}://${this.host}${port}/myko`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
     this.ws = this.makeSocket(path)
     this.ws.binaryType = 'arraybuffer'
