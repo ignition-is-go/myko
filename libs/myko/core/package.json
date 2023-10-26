@@ -10,9 +10,9 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "@types/luxon": "^3.3.2",
-    "@types/object-hash": "^3.0.4",
-    "@types/uuid": "^9.0.4"
+    "@types/luxon": "^3.3.3",
+    "@types/object-hash": "^3.0.5",
+    "@types/uuid": "^9.0.6"
   },
   "version": "3.0.0-canary.118"
 }
