@@ -239,7 +239,7 @@ export class WSMClient {
             message.data.commandId ===
             wrapCommand(new SetClientId('fake')).commandId
           ) {
-            console.log('got client id', cmd.clientId)
+            // console.log('got client id', cmd.clientId)
             this.clientId = cmd.clientId
             this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
             break
