@@ -7,6 +7,8 @@ import {
   MWrappedItem,
   type ID,
   MWrappedCommand,
+  MReport,
+  wrapReport,
 } from '@myko/core'
 import {
   MCOMMAND_EVENT,
@@ -15,15 +17,21 @@ import {
   MQUERY_CANCEL,
   MQUERY_EVENT,
   MQUERY_RESPONSE_EVENT,
+  MREPORT_CANCEL,
+  MREPORT_EVENT,
+  MREPORT_RESPONSE_EVENT,
   WSMCommand,
   WSMCommandResponse,
   WSMEvent,
   WSMQuery,
   WSMQueryCancel,
   WSMQueryResponse,
+  WSMReport,
+  WSMReportCancel,
+  WSMReportResponse,
 } from './types'
 
-export const wrapQueryWS = (query: MQuery, clientId: ID): WSMQuery => ({
+export const wrapQueryWS = (query: MQuery): WSMQuery => ({
   data: wrapQuery(query),
   event: MQUERY_EVENT,
 })
@@ -63,5 +71,24 @@ export const wrapCommandResponseWS = (
 
 export const wrapQueryCancel = (tx: ID): WSMQueryCancel => ({
   event: MQUERY_CANCEL,
-  data: tx,
+  tx: tx,
+})
+
+export const wrapReportWS = (report: MReport<any>): WSMReport => ({
+  data: wrapReport(report),
+  event: MREPORT_EVENT,
+})
+
+export const wrapReportResponseWS = (
+  tx: ID,
+  response: unknown,
+): WSMReportResponse => ({
+  event: MREPORT_RESPONSE_EVENT,
+  tx,
+  data: response,
+})
+
+export const wrapReportCancel = (tx: ID): WSMReportCancel => ({
+  event: MREPORT_CANCEL,
+  tx: tx,
 })

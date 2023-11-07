@@ -17,17 +17,23 @@ import {
   type MEvent,
   type MLiveQueryResult,
   type ID,
-  type CommandResponse,
+  type MCommandResponse,
   ProtocolMessages,
   MykoProtocol,
   wrapCommand,
   SetClientId,
+  MReport,
+  unwrapReport,
+  MLiveReportResult,
+  MReportResult,
 } from '@myko/core'
 import {
   wrapCommandWS,
   wrapEventWS,
   wrapQueryCancel,
   wrapQueryWS,
+  wrapReportCancel,
+  wrapReportWS,
 } from './wrappers'
 import {
   type WSMMessage,
@@ -41,6 +47,10 @@ import {
   MCOMMAND_ERROR_EVENT,
   type WSMCommandError,
   WSMQuery,
+  WSMReportResponse,
+  MREPORT_EVENT,
+  MREPORT_RESPONSE_EVENT,
+  WSMReport,
 } from './types'
 
 import { Encoder, Decoder } from '@msgpack/msgpack'
@@ -66,6 +76,10 @@ export class WSMClient {
     return this.eventSubject.pipe()
   }
 
+  get reports(): Observable<MReport<unknown>> {
+    return this.reportSubject.pipe()
+  }
+
   get errors() {
     return this.errorsSubject.pipe()
   }
@@ -79,12 +93,15 @@ export class WSMClient {
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
+  private reportSubject: Subject<MReport<unknown>>
   private queryResponses: Subject<WSMQueryResponse>
   private commandResponses: Subject<WSMCommandResponse | WSMCommandError>
+  private reportResponses: Subject<WSMReportResponse>
   private errorsSubject: Subject<WSMCommandError>
   private successSubject: Subject<string>
   private userToken: ID | null = null
   private resendQueries: Map<ID, WSMQuery>
+  private resendReports: Map<ID, WSMReport>
 
   private protocolReady = true
   private protocol: MykoProtocol = MykoProtocol.JSON
@@ -111,11 +128,15 @@ export class WSMClient {
     this.commandSubject = new Subject()
     this.querySubject = new Subject()
     this.eventSubject = new Subject()
+    this.reportSubject = new Subject()
     this.queryResponses = new Subject()
     this.commandResponses = new Subject()
+    this.reportResponses = new Subject()
     this.errorsSubject = new Subject()
     this.successSubject = new Subject()
+
     this.resendQueries = new Map()
+    this.resendReports = new Map()
 
     const decoder = new Decoder()
     const encoder = new Encoder()
@@ -140,7 +161,7 @@ export class WSMClient {
 
   sendCommand<T extends MCommand<unknown>>(
     command: T,
-  ): Promise<CommandResponse<T>> {
+  ): Promise<MCommandResponse<T>> {
     if (this.userToken) {
       command.userToken = this.userToken
     }
@@ -153,7 +174,7 @@ export class WSMClient {
           if (e.event === MCOMMAND_ERROR_EVENT) {
             throw e
           }
-          return e.data as CommandResponse<T>
+          return e.data as MCommandResponse<T>
         }),
         tap((x) =>
           this.successSubject.next(
@@ -165,7 +186,7 @@ export class WSMClient {
   }
 
   watchQuery<T extends MQuery>(query: T): MLiveQueryResult<T> {
-    const wrappedQuery = wrapQueryWS(query, this.clientId)
+    const wrappedQuery = wrapQueryWS(query)
     this.resendQueries.set(query.tx, wrappedQuery)
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
@@ -178,6 +199,22 @@ export class WSMClient {
         this.send(wrapQueryCancel(query.tx))
       }),
     ) as MLiveQueryResult<T>
+  }
+
+  watchReport<T extends MReport<any>>(report: T): Observable<T> {
+    const wrappedReport = wrapReportWS(report)
+    this.send(wrappedReport)
+    return this.reportResponses.pipe(
+      filter((r) => r.tx === report.tx),
+      map((e) => {
+        // check for report errors here?
+        return e.data as MReportResult<T>
+      }),
+      shareReplay(1),
+      finalize(() => {
+        this.send(wrapReportCancel(report.tx))
+      }),
+    ) as MLiveReportResult<T>
   }
 
   sendEvent(event: MEvent) {
@@ -267,6 +304,15 @@ export class WSMClient {
         case MCOMMAND_ERROR_EVENT:
           this.commandResponses.next(message)
           this.errorsSubject.next(message)
+          break
+
+        case MREPORT_EVENT:
+          const report = unwrapReport(message.data)
+          this.reportSubject.next(report)
+          break
+
+        case MREPORT_RESPONSE_EVENT:
+          this.reportResponses.next(message)
           break
         default:
           console.warn('no idea what to do with this', message)

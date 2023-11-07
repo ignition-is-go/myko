@@ -1,5 +1,5 @@
 import 'reflect-metadata'
-import { Type, MCommand, MCommandHandler, CommandResponse } from '../types'
+import { Type, MCommand, MCommandHandler, MCommandResponse } from '../types'
 import { ObservableBus } from './observable.bus'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 
@@ -10,9 +10,9 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     super()
   }
 
-  async execute<T extends MCommand<CommandResponse<T>>>(
+  async execute<T extends MCommand<MCommandResponse<T>>>(
     command: T,
-  ): Promise<CommandResponse<T>> {
+  ): Promise<MCommandResponse<T>> {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     const handler = this.handlers.get(commandId)
 
@@ -23,12 +23,12 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
       throw err
     }
 
-    return (await handler.execute(command)) as CommandResponse<T>
+    return (await handler.execute(command)) as MCommandResponse<T>
   }
 
   protected handlers = new Map<string, MCommandHandler<MCommand<unknown>>>()
 
-  bind<T extends MCommand<CommandResponse<T>>>(
+  bind<T extends MCommand<MCommandResponse<T>>>(
     handler: MCommandHandler<T>,
     id: string,
   ): void {

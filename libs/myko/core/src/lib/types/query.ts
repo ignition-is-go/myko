@@ -2,7 +2,6 @@ import { MItem } from './item'
 
 import { v4 as uuid } from 'uuid'
 import { Observable } from 'rxjs'
-import { ID } from './base'
 
 export class MQuery<T extends MItem = MItem> {
   $result: T[]

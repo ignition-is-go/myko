@@ -1,5 +1,5 @@
 import { MYKO_COMMAND_ID_KEY } from '../constants'
-import { CommandResponse, MCommand } from '../types'
+import { MCommandResponse, MCommand } from '../types'
 import { CommandUnwrapError } from '../types/errors'
 
 export interface MWrappedCommand {
@@ -22,9 +22,9 @@ export const wrapCommand = <T extends MCommand<unknown>>(
   }
 }
 
-export const unwrapCommand = <T extends MCommand<CommandResponse<T>>>(
+export const unwrapCommand = <T extends MCommand<MCommandResponse<T>>>(
   wrappedCommand: MWrappedCommand,
-): MCommand<CommandResponse<T>> => {
+): MCommand<MCommandResponse<T>> => {
   const { command, commandId } = wrappedCommand
   Reflect.defineMetadata(MYKO_COMMAND_ID_KEY, commandId, command)
   return command as T

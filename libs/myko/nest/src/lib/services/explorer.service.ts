@@ -9,6 +9,9 @@ import {
   MYKO_SAGA_METADATA,
   MQuery,
   MSaga,
+  MReportHandler,
+  MReport,
+  MYKO_HANDLER_REPORT_ID_KEY,
 } from '@myko/core'
 import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper'
 import { Module } from '@nestjs/core/injector/module'
@@ -26,10 +29,15 @@ export class ExplorerService {
       this.filterProvider(instance, MYKO_HANDLER_QUERY_ID_KEY),
     )
 
+    const reports = this.flatMap<MReportHandler<MReport<any>>>(
+      modules,
+      (instance) => this.filterProvider(instance, MYKO_HANDLER_REPORT_ID_KEY),
+    )
+
     const sagas = this.flatMap<MSaga>(modules, (instance) =>
       this.filterProvider(instance, MYKO_SAGA_METADATA),
     )
-    return { commands, queries, sagas }
+    return { commands, queries, sagas, reports }
   }
 
   flatMap<T>(

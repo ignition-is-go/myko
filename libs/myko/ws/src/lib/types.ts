@@ -11,6 +11,7 @@ import {
   wrapQuery,
   MQuery,
   MItem,
+  MWrappedReport,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'
@@ -20,19 +21,19 @@ export const MCOMMAND_ERROR_EVENT = 'ws:m:command-error'
 export const MQUERY_EVENT = 'ws:m:query'
 export const MQUERY_RESPONSE_EVENT = 'ws:m:query-response'
 export const MQUERY_CANCEL = 'ws:m:query-cancel'
+export const MREPORT_EVENT = 'ws:m:report'
+export const MREPORT_RESPONSE_EVENT = 'ws:m:report-response'
+export const MREPORT_CANCEL = 'ws:m:report-cancel'
 
 export const MYKO_WS_PORT = 5155
 
+// EVENTS
 export type WSMEvent = {
   event: typeof MEVENT_EVENT
   data: MEvent
 }
 
-export type WSMCommand = {
-  event: typeof MCOMMAND_EVENT
-  data: MWrappedCommand
-}
-
+// QUERY
 export type WSMQuery = {
   event: typeof MQUERY_EVENT
   data: MWrappedQuery
@@ -45,8 +46,31 @@ export type WSMQueryResponse = {
 }
 
 export type WSMQueryCancel = {
-  data: ID
+  tx: ID
   event: typeof MQUERY_CANCEL
+}
+
+// REPORT
+export type WSMReport = {
+  event: typeof MREPORT_EVENT
+  data: MWrappedReport
+}
+
+export type WSMReportResponse = {
+  tx: ID
+  event: typeof MREPORT_RESPONSE_EVENT
+  data: unknown
+}
+
+export type WSMReportCancel = {
+  tx: ID
+  event: typeof MREPORT_CANCEL
+}
+
+// COMMAND
+export type WSMCommand = {
+  event: typeof MCOMMAND_EVENT
+  data: MWrappedCommand
 }
 
 export type WSMCommandResponse = {
@@ -69,11 +93,17 @@ export type WSMMessage =
   | WSMCommandResponse
   | WSMCommandError
   | WSMQueryCancel
+  | WSMReport
+  | WSMReportResponse
+  | WSMReportCancel
 
 @MykoCommand('client:send-command')
 export class ClientCommand extends MCommand {
   readonly command: MWrappedCommand
-  constructor(command: MCommand, readonly clientId: ID) {
+  constructor(
+    command: MCommand,
+    readonly clientId: ID,
+  ) {
     super()
     this.command = wrapCommand(command)
   }
@@ -81,14 +111,20 @@ export class ClientCommand extends MCommand {
 
 @MykoQuery('peer:send-query', MItem)
 export class PeerQuery extends MQuery<MItem> {
-  constructor(readonly query: MQuery, readonly peerId: ID) {
+  constructor(
+    readonly query: MQuery,
+    readonly peerId: ID,
+  ) {
     super()
   }
 }
 
 @MykoCommand('peer:send-command')
 export class PeerCommand extends MCommand {
-  constructor(readonly command: MCommand, readonly peerId: ID) {
+  constructor(
+    readonly command: MCommand,
+    readonly peerId: ID,
+  ) {
     super()
   }
 }

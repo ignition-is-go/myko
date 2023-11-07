@@ -21,10 +21,10 @@ export class MCommand<T = void> {
   }
 }
 
-export type CommandResponse<T> = T extends MCommand<infer R> ? R : never
+export type MCommandResponse<T> = T extends MCommand<infer R> ? R : never
 
-export interface MCommandHandler<T extends MCommand<CommandResponse<T>>> {
-  execute(command: T): Promise<CommandResponse<T>>
+export interface MCommandHandler<T extends MCommand<MCommandResponse<T>>> {
+  execute(command: T): Promise<MCommandResponse<T>>
 }
 
 export const ofCommand = <T extends MCommand>(

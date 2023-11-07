@@ -12,6 +12,7 @@ import { ConfigModule } from '@nestjs/config'
 import { KafkaPersisterFactory } from './persisters'
 import { MykoGatewayModule } from './myko.gateway.module'
 import { PeerRegistry } from './registry/peer.registry'
+import { MykoReportBus } from './busses/report.bus'
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PeerRegistry } from './registry/peer.registry'
     MykoCommandBus,
     MykoQueryBus,
     MykoEventBus,
+    MykoReportBus,
     RedisPersisterFactory,
     KafkaPersisterFactory,
     ...Object.values(handlers),
@@ -34,6 +36,7 @@ import { PeerRegistry } from './registry/peer.registry'
     MykoCommandBus,
     MykoQueryBus,
     MykoEventBus,
+    MykoReportBus,
     RedisPersisterFactory,
     KafkaPersisterFactory,
     SocketRegistry,
@@ -46,13 +49,15 @@ export class MykoModule implements OnModuleInit {
     private readonly commandBus: MykoCommandBus,
     private readonly queryBus: MykoQueryBus,
     private readonly eventBus: MykoEventBus,
+    private readonly reportBus: MykoReportBus,
     private logger: LoggerService,
   ) {}
 
   onModuleInit() {
-    const { commands, queries, sagas } = this.explorer.explore()
+    const { commands, queries, sagas, reports } = this.explorer.explore()
     this.commandBus.register(commands)
     this.queryBus.register(queries)
+    this.reportBus.register(reports)
     this.eventBus.registerSagas(sagas)
 
     if (process.env.LOG_LEVEL?.toLocaleLowerCase() === 'debug') {

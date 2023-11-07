@@ -2,7 +2,6 @@ import {
   ConnectedSocket,
   MessageBody,
   OnGatewayConnection,
-  OnGatewayDisconnect,
   SubscribeMessage,
   WebSocketGateway,
 } from '@nestjs/websockets'
@@ -11,17 +10,27 @@ import {
   MEVENT_EVENT,
   MQUERY_CANCEL,
   MQUERY_EVENT,
-  MYKO_WS_PORT,
+  MREPORT_CANCEL,
+  MREPORT_EVENT,
   wrapCommandResponseWS,
   wrapQueryResponseWS,
+  wrapReportResponseWS,
   WSMCommand,
   WSMCommandResponse,
   WSMEvent,
   WSMQuery,
   WSMQueryCancel,
   WSMQueryResponse,
+  WSMReport,
+  WSMReportCancel,
+  WSMReportResponse,
 } from '@myko/ws'
-import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
+import {
+  MykoCommandBus,
+  MykoEventBus,
+  MykoQueryBus,
+  MykoReportBus,
+} from '../busses'
 import {
   ID,
   MykoProtocol,
@@ -29,6 +38,7 @@ import {
   Server,
   unwrapCommand,
   unwrapQuery,
+  unwrapReport,
   wrapItem,
 } from '@myko/core'
 
@@ -52,6 +62,7 @@ export class MykoGateway implements OnGatewayConnection {
     private event: MykoEventBus,
     private command: MykoCommandBus,
     private query: MykoQueryBus,
+    private report: MykoReportBus,
     private reg: SocketRegistry,
     private config: ConfigService,
     @Inject(SERVER_TOKEN) private server: Server,
@@ -89,7 +100,7 @@ export class MykoGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage(MQUERY_CANCEL)
-  onQueryCancel(@MessageBody() tx: WSMQueryCancel['data']) {
+  onQueryCancel(@MessageBody() tx: WSMQueryCancel['tx']) {
     this.unsub.next(tx)
   }
 
@@ -113,6 +124,27 @@ export class MykoGateway implements OnGatewayConnection {
         throw e
       }),
       takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),
+    )
+  }
+
+  @SubscribeMessage(MREPORT_CANCEL)
+  onReportCancel(@MessageBody() tx: WSMReportCancel['tx']) {
+    this.unsub.next(tx)
+  }
+
+  @SubscribeMessage(MREPORT_EVENT)
+  onReport(
+    @MessageBody() wrappedReport: WSMReport['data'],
+  ): Observable<WSMReportResponse> {
+    const report = unwrapReport(wrappedReport)
+
+    return this.report.watch(report).pipe(
+      map((r) => wrapReportResponseWS(report.tx, r)),
+      catchError((e) => {
+        console.log(e)
+        throw e
+      }),
+      takeUntil(this.unsub.pipe(filter((u) => u === report.tx))),
     )
   }
 }
