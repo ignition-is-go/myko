@@ -201,7 +201,7 @@ export class WSMClient {
     ) as MLiveQueryResult<T>
   }
 
-  watchReport<T extends MReport<any>>(report: T): Observable<T> {
+  watchReport<T extends MReport<any>>(report: T): MLiveReportResult<T> {
     const wrappedReport = wrapReportWS(report)
     this.send(wrappedReport)
     return this.reportResponses.pipe(
