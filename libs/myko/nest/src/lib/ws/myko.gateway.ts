@@ -35,7 +35,6 @@ import {
   ID,
   MykoProtocol,
   ProtocolMessages,
-  Server,
   unwrapCommand,
   unwrapQuery,
   unwrapReport,
@@ -43,13 +42,11 @@ import {
 } from '@myko/core'
 
 import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
-import { Inject, UseFilters, UseGuards } from '@nestjs/common'
+import { UseFilters, UseGuards } from '@nestjs/common'
 import { MykoGuard } from './myko.guard'
 import { WsExceptionFilter } from './myko.exception-filter'
 import { clientProtocols } from '../registry/client.protocols'
 import { SocketRegistry } from '../registry/socket.registry'
-import { ConfigService } from '@nestjs/config'
-import { SERVER_TOKEN } from '../../types'
 import { WebSocket } from 'ws'
 
 @WebSocketGateway(Number(process.env.MYKO_PORT ?? 5155), { path: '/myko' })
@@ -64,11 +61,9 @@ export class MykoGateway implements OnGatewayConnection {
     private query: MykoQueryBus,
     private report: MykoReportBus,
     private reg: SocketRegistry,
-    private config: ConfigService,
-    @Inject(SERVER_TOKEN) private server: Server,
   ) {}
 
-  handleConnection(client: WebSocket, ...args: any[]) {
+  handleConnection(client: WebSocket) {
     try {
       this.reg.register(client)
     } catch (e) {

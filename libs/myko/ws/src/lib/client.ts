@@ -203,7 +203,9 @@ export class WSMClient {
 
   watchReport<T extends MReport<any>>(report: T): MLiveReportResult<T> {
     const wrappedReport = wrapReportWS(report)
+    this.resendReports.set(report.tx, wrappedReport)
     this.send(wrappedReport)
+
     return this.reportResponses.pipe(
       filter((r) => r.tx === report.tx),
       map((e) => {
@@ -212,6 +214,7 @@ export class WSMClient {
       }),
       shareReplay(1),
       finalize(() => {
+        this.resendReports.delete(report.tx)
         this.send(wrapReportCancel(report.tx))
       }),
     ) as MLiveReportResult<T>
@@ -251,6 +254,9 @@ export class WSMClient {
       this.hooks?.onConnect && this.hooks?.onConnect(path)
       ;[...this.resendQueries.values()].forEach((q) => {
         this.send(q)
+      })
+      ;[...this.resendReports.values()].forEach((r) => {
+        this.send(r)
       })
     }
 
