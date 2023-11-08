@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid'
 import { Observable } from 'rxjs'
 
 export class MQuery<T extends MItem = MItem> {
-  $result: T[]
+  $queryResult: T[]
   readonly tx: string
   constructor() {
     this.tx = uuid()

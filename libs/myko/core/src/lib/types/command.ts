@@ -6,7 +6,7 @@ import { ID } from './base'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 
 export class MCommand<T = void> {
-  $result: T
+  $commandResult: T
   readonly tx: string
   userToken: string | undefined
   readonly createdAt: string

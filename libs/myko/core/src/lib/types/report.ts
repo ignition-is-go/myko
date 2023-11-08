@@ -2,7 +2,7 @@ import { Observable } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
 export class MReport<T> {
-  $result: T
+  $reportResult: T
   readonly tx: string
   constructor() {
     this.tx = uuid()
