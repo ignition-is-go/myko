@@ -81,7 +81,10 @@ export class GetServersByQueryHandler
 export class GetServersByClientIdsHandler
   implements MQueryHandler<GetServersByClientIds>
 {
-  constructor(private servers: ServerRepo, private clients: ClientRepo) {}
+  constructor(
+    private servers: ServerRepo,
+    private clients: ClientRepo,
+  ) {}
 
   execute(
     query: GetServersByClientIds,
@@ -110,6 +113,10 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
   async execute(command: ClientCommand): Promise<void> {
     const client = this.clients.getId(command.clientId)
+
+    if (!client) {
+      throw new MykoCommandError(command.tx, 'Client Not Found')
+    }
 
     if (client.serverId !== this.server.id) {
       // forward to server
@@ -156,7 +163,10 @@ export class GetClientsByQueryHandler
 export class DeleteClientsByServerIdHandler
   implements MCommandHandler<DeleteClientsByServerId>
 {
-  constructor(private clients: ClientRepo, private events: MykoEventBus) {}
+  constructor(
+    private clients: ClientRepo,
+    private events: MykoEventBus,
+  ) {}
   async execute(command: DeleteClientsByServerId): Promise<void> {
     const clients = this.clients.get({ serverId: command.serverId })
     this.events.publishAll(clients.map((c) => makeDel(c, command.tx)))
