@@ -15,6 +15,7 @@ import {
   ClientRepo,
   Server,
   ServerRepo,
+  makeDel,
   ofItems,
   watchInit,
 } from '@myko/core'
@@ -116,5 +117,16 @@ export class MykoGatewayModule implements OnModuleInit {
 
     this.events.setServerId(this.server.id)
     this.events.publishSet(this.server, 'server:init')
+
+    this.servers
+      .watchFilter(
+        (that) =>
+          that.address === this.server.address &&
+          that.port === this.server.port &&
+          that.startedAt < this.server.startedAt,
+      )
+      .subscribe((s) => {
+        this.events.publishAll(s.map((y) => makeDel(y, 'server:delete')))
+      })
   }
 }

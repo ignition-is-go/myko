@@ -5,7 +5,6 @@ import { LoggerModule, LoggerService } from '@rship/logging'
 import { MykoQueryBus } from './busses'
 import { MykoEventBus } from './busses/event.bus'
 import { RedisPersisterFactory } from './persisters/redis.persisterFactory'
-import * as handlers from './myko.handlers'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
 import { SocketRegistry } from './registry/socket.registry'
 import { ConfigModule } from '@nestjs/config'
@@ -30,7 +29,6 @@ import { MykoReportBus } from './busses/report.bus'
     MykoReportBus,
     RedisPersisterFactory,
     KafkaPersisterFactory,
-    ...Object.values(handlers),
   ],
   exports: [
     MykoCommandBus,

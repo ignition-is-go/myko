@@ -17,9 +17,26 @@ import {
   GetClientsByQuery,
   DeleteClientsByServerId,
   makeDel,
+  EventContainer,
+  GetEventLog,
+  GetItemsByTypeAndIds,
+  MItem,
+  getEvents,
+  MykoReportHandler,
+  GroupLeader,
+  MReportHandler,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
-import { Observable, firstValueFrom, map, of, switchMap } from 'rxjs'
+import {
+  Observable,
+  combineLatest,
+  debounceTime,
+  firstValueFrom,
+  map,
+  of,
+  startWith,
+  switchMap,
+} from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
 import {
   ClientCommand,
@@ -33,6 +50,7 @@ import { PeerRegistry } from './registry/peer.registry'
 import { uniq } from 'ramda'
 import { MykoEventBus, MykoQueryBus } from './busses'
 import { LoggerService } from '@rship/logging'
+import { watchIds } from '@myko/core/src/lib/registry'
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
@@ -62,7 +80,9 @@ export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   ) {}
 
   execute(query: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return this.repo.watchFilter((s) => s.id !== this.server.id)
+    return this.repo.watchFilter(
+      (s) => s.id !== this.server.id && s.groupId === this.server.groupId,
+    )
   }
 }
 
@@ -220,5 +240,52 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
     }
 
     peer.sendCommand(command.command)
+  }
+}
+
+@MykoQueryHandler(GetEventLog)
+export class GetEventLogHandler implements MQueryHandler<GetEventLog> {
+  execute(query: GetEventLog): Observable<EventContainer[]> {
+    const time = query.time
+
+    const all = [...getEvents.values()]
+
+    return combineLatest(
+      all.map((fn) => fn(time).pipe(startWith([] as EventContainer[]))),
+    ).pipe(
+      map((x) =>
+        x
+          .flat()
+          .filter((x) => x.event.tx !== undefined)
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      ),
+      debounceTime(50),
+    )
+  }
+}
+
+@MykoQueryHandler(GetItemsByTypeAndIds)
+export class GetItemByTypeAndIdHandler
+  implements MQueryHandler<GetItemsByTypeAndIds>
+{
+  constructor() {}
+  execute(query: GetItemsByTypeAndIds): Observable<MItem[]> {
+    const watchTypeByIds = watchIds.get(query.type)
+    return watchTypeByIds(query.ids)
+  }
+}
+
+@MykoReportHandler(GroupLeader)
+export class GroupLeaderHandler implements MReportHandler<GroupLeader> {
+  constructor(
+    private servers: ServerRepo,
+    @Inject(SERVER_TOKEN) private server: Server,
+  ) {}
+  execute(report: GroupLeader): Observable<Server> {
+    return this.servers.watch({ groupId: this.server.groupId }).pipe(
+      map((x) => {
+        return x.sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0]
+      }),
+    )
   }
 }

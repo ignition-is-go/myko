@@ -1,6 +1,6 @@
 import { Repo } from '../aggregates'
-import { MykoItem, MykoQuery } from '../decorators'
-import { MItem, MQuery } from '../types'
+import { MykoItem, MykoQuery, MykoReport } from '../decorators'
+import { MItem, MQuery, MReport } from '../types'
 
 @MykoItem('Server')
 export class Server extends MItem<Server> {
@@ -41,5 +41,12 @@ export class GetServersByQuery extends MQuery<Server> {
 
 @MykoQuery('servers:get', Server)
 export class GetServers extends MQuery<Server> {}
+
+@MykoReport('servers:groupLeader')
+export class GroupLeader extends MReport<Server> {
+  constructor() {
+    super()
+  }
+}
 
 export class ServerRepo extends Repo<Server> {}
