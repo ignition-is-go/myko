@@ -1,5 +1,10 @@
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
-import { MReport, MReportHandler, MReportResult } from '../types/report'
+import {
+  MLiveReportResult,
+  MReport,
+  MReportHandler,
+  MReportResult,
+} from '../types/report'
 
 export const MykoReport =
   <R>(reportId: string) =>
@@ -14,7 +19,7 @@ export const MykoReport =
     return withType
   }
 
-export const MykoReportHandler = <T extends MReport<MReportResult<T>>>(
+export const MykoReportHandler = <T extends MReport<T['$reportResult']>>(
   command: new (...args: any[]) => T,
 ) => {
   return (target: new (...args: any[]) => MReportHandler<T>) => {

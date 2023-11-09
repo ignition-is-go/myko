@@ -9,7 +9,7 @@ export class MReport<T> {
   }
 }
 
-export type MReportResult<T> = T extends MReport<infer R> ? R : never
+export type MReportResult<T> = T extends MReport<infer R> ? Promise<R> : never
 
 export type MLiveReportResult<T> = T extends MReport<infer R>
   ? Observable<R>

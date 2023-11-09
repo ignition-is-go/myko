@@ -27,10 +27,10 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     handlers.forEach((h) => this.registerHandler(h))
   }
 
-  abstract watch<T extends MReport<unknown>>(query: T): MLiveReportResult<T>
+  abstract watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T>
 
-  execute<U, T extends MReport<U>>(query: T): MReportResult<T> {
-    return firstValueFrom(this.watch(query)) as MReportResult<T>
+  execute<U, T extends MReport<U>>(report: T): MReportResult<T> {
+    return firstValueFrom(this.watch(report)) as MReportResult<T>
   }
 
   protected abstract registerHandler(handler: MykoReportHandlerType): void

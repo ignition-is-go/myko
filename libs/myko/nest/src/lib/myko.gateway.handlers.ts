@@ -25,13 +25,19 @@ import {
   MykoReportHandler,
   GroupLeader,
   MReportHandler,
+  PeerAlive,
+  PeerLastSeen,
+  IsLeader,
+  ConnectedToLeader,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import {
   Observable,
   combineLatest,
   debounceTime,
+  filter,
   firstValueFrom,
+  interval,
   map,
   of,
   startWith,
@@ -48,15 +54,16 @@ import { encoders, clientProtocols } from './registry/client.protocols'
 import { SocketRegistry } from './registry/socket.registry'
 import { PeerRegistry } from './registry/peer.registry'
 import { uniq } from 'ramda'
-import { MykoEventBus, MykoQueryBus } from './busses'
+import { MykoEventBus, MykoQueryBus, MykoReportBus } from './busses'
 import { LoggerService } from '@rship/logging'
 import { watchIds } from '@myko/core/src/lib/registry'
+import { DateTime } from 'luxon'
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
   constructor(private repo: ServerRepo) {}
 
-  execute(query: GetServers): MLiveQueryResult<GetServers> {
+  execute(_: GetServers): MLiveQueryResult<GetServers> {
     return this.repo.watch({})
   }
 }
@@ -67,7 +74,7 @@ export class GetConnectedServerHandler
 {
   constructor(@Inject(SERVER_TOKEN) private server: Server) {}
 
-  execute(query: GetConnectedServer): MLiveQueryResult<GetConnectedServer> {
+  execute(_: GetConnectedServer): MLiveQueryResult<GetConnectedServer> {
     return of(this.server).pipe(map((x) => [x]))
   }
 }
@@ -79,7 +86,7 @@ export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
     @Inject(SERVER_TOKEN) private server: Server,
   ) {}
 
-  execute(query: GetPeerServers): MLiveQueryResult<GetPeerServers> {
+  execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
     return this.repo.watchFilter(
       (s) => s.id !== this.server.id && s.groupId === this.server.groupId,
     )
@@ -229,10 +236,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
 
 @MykoCommandHandler(PeerCommand)
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
-  constructor(
-    @Inject(SERVER_TOKEN) private server: Server,
-    private peers: PeerRegistry,
-  ) {}
+  constructor(private peers: PeerRegistry) {}
   async execute(command: PeerCommand): Promise<void> {
     const peer = await firstValueFrom(this.peers.getPeer(command.peerId))
     if (!peer) {
@@ -281,11 +285,75 @@ export class GroupLeaderHandler implements MReportHandler<GroupLeader> {
     private servers: ServerRepo,
     @Inject(SERVER_TOKEN) private server: Server,
   ) {}
-  execute(report: GroupLeader): Observable<Server> {
+  execute(_: GroupLeader): Observable<Server> {
     return this.servers.watch({ groupId: this.server.groupId }).pipe(
       map((x) => {
         return x.sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0]
       }),
     )
+  }
+}
+
+@MykoReportHandler(IsLeader)
+export class IsLeaderHandler implements MReportHandler<IsLeader> {
+  constructor(
+    private servers: ServerRepo,
+    private report: MykoReportBus,
+  ) {}
+  execute(report: IsLeader): Observable<boolean> {
+    return this.servers
+      .watchId(report.serverId)
+      .pipe(
+        switchMap((server) =>
+          this.report
+            .watch(new GroupLeader(server.groupId))
+            .pipe(map((leader) => leader.id === server.id)),
+        ),
+      )
+  }
+}
+
+@MykoReportHandler(PeerAlive)
+export class PeerAliveHandler implements MReportHandler<PeerAlive> {
+  constructor(private query: MykoQueryBus) {}
+  execute(report: PeerAlive) {
+    return interval(500).pipe(
+      switchMap((_) => {
+        const now = performance.now()
+        return this.query
+          .watch(new PeerQuery(new GetConnectedServer(), report.peerId))
+          .pipe(map((x) => (x.length > 0 ? performance.now() - now : false)))
+      }),
+    )
+  }
+}
+
+@MykoReportHandler(PeerLastSeen)
+export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
+  constructor(private query: MykoQueryBus) {}
+  execute(report: PeerLastSeen) {
+    return interval(1000).pipe(
+      switchMap((_) => {
+        return this.query
+          .watch(new PeerQuery(new GetConnectedServer(), report.peerId))
+          .pipe(
+            filter((x) => x.length > 0),
+            map((_) => DateTime.utc().toISO()),
+          )
+      }),
+    )
+  }
+}
+
+@MykoReportHandler(ConnectedToLeader)
+export class ConnectedToLeaderHandler
+  implements MReportHandler<ConnectedToLeader>
+{
+  constructor(
+    private report: MykoReportBus,
+    @Inject(SERVER_TOKEN) private server: Server,
+  ) {}
+  execute(_: ConnectedToLeader) {
+    return this.report.watch(new IsLeader(this.server.id))
   }
 }
