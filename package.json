@@ -18,7 +18,7 @@
     "release:dev": "./tools/scripts/release.sh dev",
     "release:beta": "./tools/scripts/release.sh staging",
     "sdk:watch": "pnpm run --filter=@rship/sdk watch",
-    "build": "turbo run build",
+    "build": "turbo run build --filter=@rship/*",
     "publish": "./tools/scripts/export-version.sh && turbo run publish",
     "forge-publish": "turbo run forge-publish",
     "prepare": "husky install",
