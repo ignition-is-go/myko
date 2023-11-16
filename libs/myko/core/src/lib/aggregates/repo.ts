@@ -199,106 +199,116 @@ export abstract class Repo<T extends MItem> {
   }
 
   get(query: Partial<T>): T[] {
+    const timeLabel = `${this.entity}.get ${JSON.stringify(query)}`
+    console.debug(timeLabel, '>> started')
+    console.time(timeLabel)
     const filterFunc = buildFilter(query)
-    return toArray(this.store.getFilter(filterFunc))
+    const arr = toArray(this.store.getFilter(filterFunc))
+    console.timeEnd(timeLabel)
+    return arr
   }
 
   getFilter(filterFunc: (ent: T) => boolean): T[] {
-    return toArray(this.store.getFilter(filterFunc))
+    const timeLabel = `${this.entity}.getFilter`
+    console.debug(timeLabel, '>> started')
+    console.time(timeLabel)
+    const arr = toArray(this.store.getFilter(filterFunc))
+    console.timeEnd(timeLabel)
+    return arr
   }
 }
 
-export abstract class ControledRepo<T extends MItem> implements Controlled {
-  private readonly store: Store<T>
-  private subject: Subject<MEvent<T>>
-  private entity: string
+// export abstract class ControledRepo<T extends MItem> implements Controlled {
+//   private readonly store: Store<T>
+//   private subject: Subject<MEvent<T>>
+//   private entity: string
 
-  private all$: Subject<Map<ID, T>> = new Subject<Map<ID, T>>()
-  constructor(
-    ent: new (...args: any[]) => T,
-    readonly listenId: (id: ID) => ID,
-    readonly release: (id: ID) => void,
-    private readonly options?: RepoOptions<T>,
-  ) {
-    this.entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
+//   private all$: Subject<Map<ID, T>> = new Subject<Map<ID, T>>()
+//   constructor(
+//     ent: new (...args: any[]) => T,
+//     readonly listenId: (id: ID) => ID,
+//     readonly release: (id: ID) => void,
+//     private readonly options?: RepoOptions<T>,
+//   ) {
+//     this.entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
 
-    getIds.set(this.entity, this.getIds.bind(this))
-    watchIds.set(this.entity, this.watchIds.bind(this))
+//     getIds.set(this.entity, this.getIds.bind(this))
+//     watchIds.set(this.entity, this.watchIds.bind(this))
 
-    this.store = new Store({ enableLogs: options?.enableLogs })
+//     this.store = new Store({ enableLogs: options?.enableLogs })
 
-    this.subject = new Subject()
+//     this.subject = new Subject()
 
-    if (this.options?.stream) {
-      this.options.stream
-        .pipe(
-          filter((event) => event.itemType === this.entity),
-          tap((event: MEvent<MItem>) => {
-            if (!options?.onEvent) {
-              return
-            }
-            options.onEvent(event as MEvent<T>)
-          }),
-        )
-        .subscribe((event) => {
-          this.subject.next(event as MEvent<T>)
-        })
-    }
+//     if (this.options?.stream) {
+//       this.options.stream
+//         .pipe(
+//           filter((event) => event.itemType === this.entity),
+//           tap((event: MEvent<MItem>) => {
+//             if (!options?.onEvent) {
+//               return
+//             }
+//             options.onEvent(event as MEvent<T>)
+//           }),
+//         )
+//         .subscribe((event) => {
+//           this.subject.next(event as MEvent<T>)
+//         })
+//     }
 
-    if (this.options?.indeces) {
-      this.store.createIndeces(this.options.indeces)
-    }
+//     if (this.options?.indeces) {
+//       this.store.createIndeces(this.options.indeces)
+//     }
 
-    this.subject.subscribe((event: MEvent<T>) => {
-      switch (event.changeType) {
-        case MEventType.SET:
-          this.store.set(event.item.id, unwrapItem(event) as T)
-          break
-        case MEventType.DEL:
-          this.store.delete(event.item.id)
-          break
-      }
-    })
-  }
+//     this.subject.subscribe((event: MEvent<T>) => {
+//       switch (event.changeType) {
+//         case MEventType.SET:
+//           this.store.set(event.item.id, unwrapItem(event) as T)
+//           break
+//         case MEventType.DEL:
+//           this.store.delete(event.item.id)
+//           break
+//       }
+//     })
+//   }
 
-  watchId(id: ID): Observable<T | null> {
-    const obs = this.subject.pipe(
-      filter((e) => e.item.id === id),
-      map((event) => {
-        switch (event.changeType) {
-          case MEventType.SET:
-            return unwrapItem(event)
-          case MEventType.DEL:
-            return null
-        }
-      }),
-      startWith(this.store.get(id) ?? null),
-      mergeWith(this.all$.pipe(map((e) => e.get(id) ?? null))),
-    )
+//   watchId(id: ID): Observable<T | null> {
+//     const obs = this.subject.pipe(
+//       filter((e) => e.item.id === id),
+//       map((event) => {
+//         switch (event.changeType) {
+//           case MEventType.SET:
+//             return unwrapItem(event)
+//           case MEventType.DEL:
+//             return null
+//         }
+//       }),
+//       startWith(this.store.get(id) ?? null),
+//       mergeWith(this.all$.pipe(map((e) => e.get(id) ?? null))),
+//     )
 
-    return obs as Observable<T | null>
-  }
+//     return obs as Observable<T | null>
+//   }
 
-  watchIds(ids: ID[]): Observable<T[]> {
-    if (!ids) {
-      return of([])
-    }
-    if (ids.length === 0) {
-      return of([])
-    }
-    return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe(
-      map((x) => x.filter((y) => y !== null)),
-    )
-  }
+//   watchIds(ids: ID[]): Observable<T[]> {
+//     if (!ids) {
+//       return of([])
+//     }
+//     if (ids.length === 0) {
+//       return of([])
+//     }
+//     return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe(
+//       map((x) => x.filter((y) => y !== null)),
+//     )
+//   }
 
-  getIds(ids: ID[]) {
-    return ids.map((id) => this.getId(id)).filter((x) => x !== null) as T[]
-  }
+//   getIds(ids: ID[]) {
+//     return ids.map((id) => this.getId(id)).filter((x) => x !== null) as T[]
+//   }
 
-  getId(id: ID): T | null {
-    return this.store.get(id) ?? null
-  }
-}
+//   getId(id: ID): T | null {
+//     return this.store.get(id) ?? null
+//   }
+// }
 
 const toArray = <T>(m: Map<string, T>): T[] => [...m.values()]
 
