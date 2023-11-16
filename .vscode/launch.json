@@ -5,15 +5,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python: Current File",
-      "type": "python",
-      "request": "launch",
-      "program": "${file}",
-      "console": "integratedTerminal",
-      "justMyCode": true
-    },
-    {
-      "name": "Attach Rship Server",
+      "name": "Rship Server: Attach Local 9229",
       "address": "localhost",
       "port": 9229,
       "request": "attach",
@@ -22,7 +14,7 @@
       "restart": true
     },
     {
-      "name": "Attach Rship Server Dev2",
+      "name": "Rship Server: Attach Local 9230",
       "address": "localhost",
       "port": 9230,
       "request": "attach",
@@ -31,13 +23,38 @@
       "restart": true
     },
     {
-      "name": "Attach Rship Server Dev3",
+      "name": "Rship Server: Attach Local 9231",
       "address": "localhost",
       "port": 9231,
       "request": "attach",
       "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server: Attach b0:9229",
+      "address": "10.0.1.150",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}/apps/rship/server/dist",
+      "remoteRoot": "/usr/src/app"
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server: Attach b0:9230",
+      "remoteRoot": "/usr/src/app",
+      "address": "10.0.1.150",
+      "port": 9230
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server: Attach b0:9231",
+      "remoteRoot": "/usr/src/app",
+      "address": "10.0.1.150",
+      "port": 9231
     },
     {
       "name": "Attach AutoScheduler",
@@ -103,11 +120,19 @@
       "restart": true
     },
     {
-      "name": "Attach by Process ID",
+      "name": "Node: Attach by Process ID",
       "processId": "${command:PickProcess}",
       "request": "attach",
       "skipFiles": ["<node_internals>/**"],
       "type": "node"
+    },
+    {
+      "name": "Python: Current File",
+      "type": "python",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "justMyCode": true
     }
   ]
 }
