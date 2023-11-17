@@ -1,4 +1,5 @@
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
+import { addCommandDoc } from '../registry'
 import { MCommandResponse, MCommand, MCommandHandler } from '../types'
 
 export const MykoCommand =
@@ -7,6 +8,26 @@ export const MykoCommand =
     target: new (...args: any[]) => T,
   ) => {
     const original: any = target
+
+    const commandName = Object.getOwnPropertyDescriptors(original).name.value
+
+    const paramtypes = Reflect.getMetadata('design:paramtypes', original).map(
+      (x) => x.name,
+    )
+
+    addCommandDoc(
+      {
+        commandId,
+        commandName,
+        ctor: original,
+      },
+      paramtypes,
+    )
+
+    if (!commandId) {
+      throw new Error('commandId is undefined')
+    }
+
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_COMMAND_ID_KEY, commandId, typed)

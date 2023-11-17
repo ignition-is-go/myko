@@ -4,6 +4,7 @@ import {
   MYKO_QUERY_ITEM_TYPE_KEY,
   MYKO_HANDLER_QUERY_ID_KEY,
 } from '../constants'
+import { addQueryDoc } from '../registry'
 import { MItem, MQuery, MQueryHandler } from '../types'
 
 export const MykoQuery =
@@ -11,6 +12,28 @@ export const MykoQuery =
   <T extends MQuery>(target: new (...args: any[]) => T) => {
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
     const original: any = target
+
+    const queryName = Object.getOwnPropertyDescriptors(original).name.value
+
+    const metaKeys = Reflect.getMetadataKeys(original)
+
+    const paramtypes =
+      Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
+      []
+
+    addQueryDoc(
+      {
+        queryId,
+        queryName,
+        ctor: original,
+      },
+      paramtypes,
+    )
+
+    if (!queryId) {
+      throw new Error('commandId is undefined')
+    }
+
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_QUERY_ID_KEY, queryId, typed)

@@ -19,12 +19,6 @@ export const docEntity =
     })
   }
 
-export const dd = (): ClassDecorator => {
-  return (target: Function) => {
-    console.log('target', target)
-  }
-}
-
 export const doc = (
   docString?: string,
   typeOverride?: string,

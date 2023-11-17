@@ -101,11 +101,11 @@ export type WSMMessage =
 export class ClientCommand extends MCommand {
   readonly command: MWrappedCommand
   constructor(
-    command: MCommand,
+    command: MWrappedCommand,
     readonly clientId: ID,
   ) {
     super()
-    this.command = wrapCommand(command)
+    this.command = command
   }
 }
 
