@@ -9,11 +9,11 @@ export const MykoCommand =
   ) => {
     const original: any = target
 
-    const commandName = Object.getOwnPropertyDescriptors(original).name.value
+    const commandName = Object.getOwnPropertyDescriptors(original)?.name.value
 
-    const paramtypes = Reflect.getMetadata('design:paramtypes', original).map(
-      (x) => x.name,
-    )
+    const paramtypes =
+      Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
+      []
 
     addCommandDoc(
       {
