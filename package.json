@@ -1,6 +1,6 @@
 {
   "name": "rship",
-  "version": "3.0.0-canary.261",
+  "version": "3.0.0-canary.262",
   "license": "MIT",
   "scripts": {
     "server:dev": "pnpm run --filter=@rship/server dev",
