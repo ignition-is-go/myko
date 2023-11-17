@@ -20,6 +20,7 @@ import {
   getIds,
   relationRegistry,
   propertyDefaults,
+  inheritsRegistry,
 } from '../registry'
 import { onInit } from '../hooks'
 import { v4 as uuid } from 'uuid'
@@ -74,7 +75,11 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe((e) => {
-              const ff = getFilters.get(relation.localType)
+              const parentClass = inheritsRegistry.get(relation.localType)
+
+              const ff =
+                getFilters.get(relation.localType) ??
+                (parentClass && getFilters.get(parentClass))
 
               if (!ff) {
                 throw new Error(`No Filter for ${relation.localType}`)
@@ -94,8 +99,16 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
         case 'owns-many': {
           setTimeout(() => {
-            const getChildrenFilter = getFilters.get(relation.foreignType)
-            const getParentsFilter = getFilters.get(relation.localType)
+            const foreignParent = inheritsRegistry.get(relation.foreignType)
+            const localParent = inheritsRegistry.get(relation.localType)
+
+            const getChildrenFilter =
+              getFilters.get(relation.foreignType) ??
+              (foreignParent && getFilters.get(foreignParent))
+
+            const getParentsFilter =
+              getFilters.get(relation.localType) ??
+              (localParent && getFilters.get(localParent))
 
             if (!getChildrenFilter || !getParentsFilter) {
               console.warn(
@@ -141,7 +154,11 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe((e) => {
-              const ids = getIds.get(relation.foreignType)
+              const parentClass = inheritsRegistry.get(relation.foreignType)
+
+              const ids =
+                getIds.get(relation.foreignType) ??
+                (parentClass && getIds.get(parentClass))
 
               if (!ids) {
                 throw new Error(`No getIds for ${relation.foreignType}`)
@@ -204,7 +221,12 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                 }
               }
 
-              const getForeign = getFilters.get(foreignType)
+              const parentClass = inheritsRegistry.get(foreignType)
+
+              const getForeign =
+                getFilters.get(foreignType) ??
+                (parentClass && getFilters.get(parentClass))
+
               if (!getForeign) {
                 throw new Error(`No Foreign getFilters for ${foreignType}`)
               }
@@ -215,7 +237,11 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               }
             })
 
-            const getLocal = getFilters.get(localType)
+            const parentClass = inheritsRegistry.get(localType)
+
+            const getLocal =
+              getFilters.get(localType) ??
+              (parentClass && getFilters.get(parentClass))
             if (!getLocal) {
               throw new Error(`No Local getFilters for ${localType}`)
             }

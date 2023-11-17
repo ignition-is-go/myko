@@ -199,21 +199,13 @@ export abstract class Repo<T extends MItem> {
   }
 
   get(query: Partial<T>): T[] {
-    const timeLabel = `${this.entity}.get ${JSON.stringify(query)}`
-    console.debug(timeLabel, '>> started')
-    console.time(timeLabel)
     const filterFunc = buildFilter(query)
     const arr = toArray(this.store.getFilter(filterFunc))
-    console.timeEnd(timeLabel)
     return arr
   }
 
   getFilter(filterFunc: (ent: T) => boolean): T[] {
-    const timeLabel = `${this.entity}.getFilter`
-    console.debug(timeLabel, '>> started')
-    console.time(timeLabel)
     const arr = toArray(this.store.getFilter(filterFunc))
-    console.timeEnd(timeLabel)
     return arr
   }
 }

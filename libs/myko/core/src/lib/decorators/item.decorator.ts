@@ -7,18 +7,55 @@ import {
   MYKO_ITEM_OWNS_MANY_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import { propertyDefaults, relationRegistry } from '../registry'
+import {
+  addItemDoc,
+  addPropDoc,
+  propertyDefaults,
+  relationRegistry,
+} from '../registry'
 
 export const MykoItem =
-  (itemType: string): ClassDecorator =>
+  (opts?: {
+    doc?: string
+    itemTypeOverride?: string
+    deprecated?: boolean
+    preventDoc?: boolean
+  }): ClassDecorator =>
   (target) => {
     const original: any = target
+    const autoItemType = Object.getOwnPropertyDescriptors(original).name.value
+
+    const parentName = Object.getPrototypeOf(
+      Object.getPrototypeOf(original),
+    ).name
+
+    const itemType = opts?.itemTypeOverride ?? autoItemType
+
+    if (!itemType) {
+      throw new Error('itemType is undefined')
+    }
+
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, typed)
       return typed
     }
+
+    Reflect.setPrototypeOf(withType, original)
+
     Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
+
+    const docString = opts?.doc
+    const deprecated = opts?.deprecated
+    const preventDocs = opts?.preventDoc
+
+    addItemDoc({
+      docString,
+      entityType: itemType,
+      deprecated,
+      extends: parentName,
+      preventDocs,
+    })
 
     const metaKeys = Reflect.getMetadataKeys(original)
 
@@ -93,6 +130,7 @@ export const ownsMany = (
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
+    doc(`Owns many ${itemType}`)(target, propertyKey)
 
     Reflect.defineMetadata(
       makeOwnsKey(propertyKey.toString()),
@@ -106,11 +144,13 @@ export const belongsTo = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
-    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
+    const foreignItemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
+
+    doc(`Belongs to ${foreignItemType}`)(target, propertyKey)
 
     Reflect.defineMetadata(
       makeDepkey(propertyKey.toString()),
-      itemType,
+      foreignItemType,
       target.constructor,
     )
   }
@@ -118,6 +158,8 @@ export const belongsTo = (
 
 export const defaultValue = (value: any): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
+    doc(`Defaults to ${value}`)(target, propertyKey)
+
     Reflect.defineMetadata(
       makeDefaultValueKey(propertyKey.toString()),
       value,
@@ -130,13 +172,41 @@ export const ensureFor = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
-    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
+    const foreignItemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
+    doc(`Ensured for ${foreignItemType}`)(target, propertyKey)
 
     Reflect.defineMetadata(
       makeEnsureKey(propertyKey.toString()),
-      itemType,
+      foreignItemType,
       target.constructor,
     )
+  }
+}
+
+export const doc = (
+  docString?: string,
+  typeOverride?: string,
+  deprecated?: boolean,
+): PropertyDecorator => {
+  return (target: object, propertyKey: string | symbol) => {
+    const propType =
+      typeOverride ??
+      Reflect.getMetadata(
+        'design:type',
+        target,
+        propertyKey,
+      )?.name.toLowerCase()
+
+    const autoItemType = Object.getOwnPropertyDescriptors(target.constructor)
+      .name.value
+
+    addPropDoc({
+      docString: docString,
+      entityType: autoItemType,
+      propName: propertyKey.toString(),
+      propType: propType,
+      deprecated,
+    })
   }
 }
 

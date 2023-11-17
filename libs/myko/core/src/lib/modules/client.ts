@@ -5,7 +5,9 @@ import { MItem } from '../types/item'
 import { MQuery } from '../types/query'
 import { Server } from './server'
 
-@MykoItem('Client')
+@MykoItem({
+  doc: 'A Myko Client connected to a Server',
+})
 export class Client extends MItem<Client> {
   @belongsTo(Server)
   readonly serverId: string

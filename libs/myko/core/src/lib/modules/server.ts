@@ -1,13 +1,20 @@
 import { Repo } from '../aggregates'
-import { MykoItem, MykoQuery, MykoReport } from '../decorators'
+import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
 import { ID, MItem, MQuery, MReport } from '../types'
 
-@MykoItem('Server')
+@MykoItem({
+  doc: 'A Myko Server ',
+})
 export class Server extends MItem<Server> {
+  @doc()
   version: string
+  @doc('xxx.xxx.xxx.xxx, where it can be reached publically')
   address: string
+  @doc('The port the server is listening on')
   port: number
+  @doc('ISO DateTime string')
   startedAt: string // ISO DateTime
+  @doc("The server's group id")
   groupId: string
 }
 
