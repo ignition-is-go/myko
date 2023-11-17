@@ -7,12 +7,8 @@ import {
   MYKO_ITEM_OWNS_MANY_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import {
-  addItemDoc,
-  addPropDoc,
-  propertyDefaults,
-  relationRegistry,
-} from '../registry'
+import { propertyDefaults, relationRegistry } from '../registry'
+import { doc, docEntity } from './doc.decorators'
 
 export const MykoItem =
   (opts?: {
@@ -24,10 +20,6 @@ export const MykoItem =
   (target) => {
     const original: any = target
     const autoItemType = Object.getOwnPropertyDescriptors(original).name.value
-
-    const parentName = Object.getPrototypeOf(
-      Object.getPrototypeOf(original),
-    ).name
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 
@@ -45,17 +37,7 @@ export const MykoItem =
 
     Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
 
-    const docString = opts?.doc
-    const deprecated = opts?.deprecated
-    const preventDocs = opts?.preventDoc
-
-    addItemDoc({
-      docString,
-      entityType: itemType,
-      deprecated,
-      extends: parentName,
-      preventDocs,
-    })
+    docEntity(opts?.doc, itemType, opts?.deprecated, opts?.preventDoc)(target)
 
     const metaKeys = Reflect.getMetadataKeys(original)
 
@@ -180,33 +162,6 @@ export const ensureFor = (
       foreignItemType,
       target.constructor,
     )
-  }
-}
-
-export const doc = (
-  docString?: string,
-  typeOverride?: string,
-  deprecated?: boolean,
-): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
-    const propType =
-      typeOverride ??
-      Reflect.getMetadata(
-        'design:type',
-        target,
-        propertyKey,
-      )?.name.toLowerCase()
-
-    const autoItemType = Object.getOwnPropertyDescriptors(target.constructor)
-      .name.value
-
-    addPropDoc({
-      docString: docString,
-      entityType: autoItemType,
-      propName: propertyKey.toString(),
-      propType: propType,
-      deprecated,
-    })
   }
 }
 
