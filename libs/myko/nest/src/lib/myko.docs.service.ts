@@ -32,11 +32,22 @@ export class MykoDocsService {
 
     const commandDocs = this.makeCommandDocs()
 
-    return `# Entities\n\n${entityDocs.join(
-      '\n\n',
-    )}\n\n# Commands\n\n${commandDocs.join(
-      '\n\n',
-    )}\n\n# Queries\n\n${this.makeQueryDocs().join('\n\n')}`
+    const queryDocs = this.makeQueryDocs()
+
+    return [
+      '### Table of Contents',
+      list(
+        link('Entities', '#entities'),
+        link('Queries', '#queries'),
+        link('Commands', '#commands'),
+      ),
+      '# Entities',
+      ...entityDocs,
+      '# Queries',
+      ...queryDocs,
+      '# Commands',
+      ...commandDocs,
+    ].join('\n\n')
   }
 
   private makeCommandDocs() {
@@ -57,7 +68,13 @@ export class MykoDocsService {
 
       return [
         h2(command.commandName),
-        command.props.length > 0 ? code(object(props)) : 'No Props',
+        command.props.length > 0
+          ? code(
+              object(
+                [`commandId: '${command.commandId}'`, object(props)].join('\n'),
+              ),
+            )
+          : 'No Props',
       ].join('\n')
     })
   }
@@ -71,16 +88,27 @@ export class MykoDocsService {
       return [h2(query.queryName)].join('\n')
     })
 
-    return queries.map((command) => {
-      const props = command.props
+    return queries.map((query) => {
+      const props = query.props
         .map((prop) => {
           return `${prop.propName}: ${prop.propType}`
         })
         .join('\n')
 
       return [
-        h2(command.queryName),
-        command.props.length > 0 ? code(object(props)) : 'No Props',
+        h2(query.queryName),
+        query.queryReturnType &&
+          `Returns: ${link(
+            query.queryReturnType + '[]',
+            `#${query.queryReturnType?.toLocaleLowerCase()}`,
+          )}`,
+        query.props.length > 0
+          ? code(
+              object(
+                [`queryId: '${query.queryId}' `, object(props)].join('\n'),
+              ),
+            )
+          : 'No Props',
       ].join('\n')
     })
   }
@@ -133,6 +161,19 @@ export class MykoDocsService {
           ? ['WARNING: deprecated']
           : []
 
+        const queries = docRegistry.filter(
+          (r) => r.type === 'query' && r.queryReturnType === entityType,
+        ) as QueryDocInfo[]
+
+        const queryStrings = list(
+          ...queries.map((x) =>
+            link(x.queryName, `#${x.queryName.toLocaleLowerCase()}`),
+          ),
+        )
+
+        const queryString =
+          queries.length > 0 ? [h3('Queries'), queryStrings, ''] : []
+
         const parents = itemEntries
           .map((i) => i.extends)
           .filter((x) => !!x)
@@ -148,7 +189,7 @@ export class MykoDocsService {
           )
 
         const childrenString =
-          children.length > 0 ? ['Extended By: ', ...children, ''] : []
+          children.length > 0 ? [h3('Extended By'), ...children, ''] : []
 
         return [
           h2(entityType),
@@ -156,6 +197,7 @@ export class MykoDocsService {
           ...childrenString,
           ...notes.map(endl).map(note),
           docString,
+          ...queryString,
           code(object(props.join('\n\n'))),
         ].join('\n')
       })
@@ -165,6 +207,8 @@ export class MykoDocsService {
 const code = (str: string) => `\`\`\`ts\n${str}\n\`\`\` `
 
 const h2 = (str: string) => `## ${str}\n`
+
+const h3 = (str: string) => `### ${str}\n`
 
 const indent = (str: string) =>
   str
@@ -181,3 +225,7 @@ const object = (str: string) => `{\n${indent(str.trimEnd())}\n}`
 const note = (str: string) => `> ${str}`
 
 const link = (str: string, url: string) => `[${str}](${url})`
+
+const listItem = (str: string) => `* ${str}`
+
+const list = (...strings: string[]) => `${strings.map(listItem).join('\n')}`

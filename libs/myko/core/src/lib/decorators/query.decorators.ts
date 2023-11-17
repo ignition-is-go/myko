@@ -15,8 +15,6 @@ export const MykoQuery =
 
     const queryName = Object.getOwnPropertyDescriptors(original).name.value
 
-    const metaKeys = Reflect.getMetadataKeys(original)
-
     const paramtypes =
       Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
       []
@@ -25,6 +23,7 @@ export const MykoQuery =
       {
         queryId,
         queryName,
+        queryReturnType: itemType,
         ctor: original,
       },
       paramtypes,

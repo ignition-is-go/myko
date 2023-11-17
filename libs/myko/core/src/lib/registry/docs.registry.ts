@@ -34,6 +34,7 @@ export type CommandDocInfo = {
 export type QueryDocInfo = {
   queryName: string
   queryId: string
+  queryReturnType: string
   props: BasicPropInfo[]
   type: 'query'
   ctor: new (...args: any[]) => any
