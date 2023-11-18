@@ -21,6 +21,30 @@ export class MykoEventBus extends AMykoEventBus {
     private backplane: MykoBackplaneClient,
   ) {
     super(commandBus)
+    try {
+      this.connect()
+    } catch {}
+  }
+
+  private async connect() {
+    try {
+      this.client = new WebSocket('ws://127.0.0.1:5156')
+    } catch (e) {
+      console.log(e)
+      setTimeout(() => {
+        this.connect()
+      }, 1000)
+    }
+
+    this.client.on('open', () => {
+      console.log('connected')
+    })
+
+    this.client.on('close', () => {
+      setTimeout(() => {
+        this.connect()
+      }, 1000)
+    })
   }
 
   async publish<T extends MEvent>(event: T): Promise<void> {
