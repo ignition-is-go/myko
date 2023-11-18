@@ -1,12 +1,8 @@
 import type { ID, PartialBy } from './base'
-
 import { MD5 } from 'object-hash'
-import { hello } from 'myko-rs'
+import { type MItem as WASMItem } from 'myko-rs'
 
-type IMItem = {
-  id: ID
-  hash: string
-}
+type IMItem = Omit<WASMItem, 'free'>
 
 export type MItemConstructor<T extends IMItem> = new (
   args: PartialBy<T, 'hash'>,
@@ -17,8 +13,7 @@ export class MItem<T extends IMItem = IMItem> {
   readonly hash: string
 
   constructor(args: PartialBy<T, 'hash'>) {
-    hello()
-    args['hash'] = args.hash ?? MD5(args)
+    Reflect.set(this, 'hash', MD5(args))
     return args as unknown as MItem<T>
   }
 }

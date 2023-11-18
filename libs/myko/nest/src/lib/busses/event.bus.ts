@@ -10,11 +10,41 @@ import {
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { MykoCommandBus } from './command.bus'
+import { WebSocket } from 'ws'
 
 @Injectable()
 export class MykoEventBus extends AMykoEventBus {
-  constructor(private moduleRef: ModuleRef, commandBus: MykoCommandBus) {
+  private client: WebSocket
+
+  constructor(
+    private moduleRef: ModuleRef,
+    commandBus: MykoCommandBus,
+  ) {
     super(commandBus)
+    try {
+      this.connect()
+    } catch {}
+  }
+
+  private async connect() {
+    try {
+      this.client = new WebSocket('ws://127.0.0.1:5156')
+    } catch (e) {
+      console.log(e)
+      setTimeout(() => {
+        this.connect()
+      }, 1000)
+    }
+
+    this.client.on('open', () => {
+      console.log('connected')
+    })
+
+    this.client.on('close', () => {
+      setTimeout(() => {
+        this.connect()
+      }, 1000)
+    })
   }
 
   async publish<T extends MEvent>(event: T): Promise<void> {
@@ -22,6 +52,10 @@ export class MykoEventBus extends AMykoEventBus {
       Reflect.set(event, 'sourceId', this.serverId)
     }
     this.subject$.next(event)
+    if (this.client.readyState !== WebSocket.OPEN) {
+      return
+    }
+    this.client.send(JSON.stringify(event))
     return
   }
 

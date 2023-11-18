@@ -24,6 +24,7 @@ import {
 } from '../registry'
 import { onInit } from '../hooks'
 import { v4 as uuid } from 'uuid'
+import { WebSocket } from 'ws'
 
 export type MykoSagaType = Type<MSaga>
 

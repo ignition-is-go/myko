@@ -5,22 +5,21 @@ import { ID } from './base'
 import { MykoItem, MykoQuery, doc } from '../decorators'
 import { MQuery } from './query'
 import { MYKO_ITEM_TYPE } from '../constants'
+import type { MEvent as WASMEvent } from 'myko-rs'
 
 export enum MEventType {
   SET = 'SET',
   DEL = 'DEL',
 }
 
+type IMEvent = Omit<WASMEvent, 'free' | 'item' | 'changeType'>
+
 export type MEvent<
   T extends MItem = MItem,
   C extends MEventType = MEventType,
-> = {
+> = IMEvent & {
   readonly item: T
   readonly changeType: C
-  readonly itemType: string
-  readonly createdAt: string
-  readonly tx: string
-  readonly sourceId?: ID
 }
 
 export const makeSet = <T extends MItem>(item: T, tx: ID) =>

@@ -43,6 +43,7 @@ dependencies = [
  "rdkafka",
  "redis",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -414,11 +415,12 @@ name = "myko-rs"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "redis",
  "serde",
  "serde_json",
- "utils-rs",
  "uuid",
  "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -682,6 +684,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bca2a08484b285dcb282d0f67b26cadc0df8b19f8c12502c13d966bf9482f001"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17ba92964781421b6cef36bf0d7da26d201e96d84e1b10e7ae6ed416e516906d"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1037,6 +1050,16 @@ name = "wasm-bindgen-shared"
 version = "0.2.88"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d046c5d029ba91a1ed14da14dca44b68bf2f124cfbaf741c54151fdb3e0750b"
+
+[[package]]
+name = "web-sys"
+version = "0.3.65"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5db499c5f66323272151db0e666cd34f78617522fb0c1604d31a27c50c206a85"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "windows-sys"
