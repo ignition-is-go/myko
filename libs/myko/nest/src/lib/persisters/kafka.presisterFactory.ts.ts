@@ -64,6 +64,7 @@ export class KafkaPersisterFactory {
 
     this.consConf = {
       'group.id': server.id,
+      'allow.auto.create.topics': true,
     }
   }
 
