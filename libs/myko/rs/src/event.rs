@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
+use crate::utils::remove_whitespace;
+
 #[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum MEventType {
@@ -64,8 +66,4 @@ impl MEvent {
     pub fn source_id(&self) -> Option<String> {
         self.source_id.clone()
     }
-}
-
-fn remove_whitespace(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
 }

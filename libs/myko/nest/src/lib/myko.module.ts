@@ -16,6 +16,7 @@ import { MykoReportBus } from './busses/report.bus'
 import { mkdir, writeFile } from 'fs/promises'
 import { docRegistry } from '@myko/core/src/lib/registry'
 import { MykoDocsService } from './myko.docs.service'
+import { MykoBackplaneClient } from './myko.backplane.client'
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { MykoDocsService } from './myko.docs.service'
     RedisPersisterFactory,
     KafkaPersisterFactory,
     MykoDocsService,
+    MykoBackplaneClient,
   ],
   exports: [
     MykoCommandBus,
@@ -44,6 +46,7 @@ import { MykoDocsService } from './myko.docs.service'
     KafkaPersisterFactory,
     SocketRegistry,
     PeerRegistry,
+    MykoBackplaneClient,
   ],
 })
 export class MykoModule implements OnModuleInit {
