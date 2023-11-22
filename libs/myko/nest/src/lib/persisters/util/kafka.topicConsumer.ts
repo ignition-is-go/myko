@@ -11,7 +11,7 @@ export class KafkaTopicConsumer {
 
   constructor(
     config: ConsumerGlobalConfig,
-    private topics: string[],
+    private topic: string,
     onMessage: (buf: Message) => void,
     offsetKey: string,
     partitionKey: string,
@@ -25,24 +25,24 @@ export class KafkaTopicConsumer {
     this.cons = new KafkaConsumer(config, {})
 
     this.cons.on('ready', async () => {
-      this.cons.subscribe(topics.map(makeSafeTopic))
+      this.cons.subscribe([makeSafeTopic(topic)])
     })
 
     this.cons
       .on('subscribed', async () => {
-        const offsetString = (await this.redis.get(offsetKey)) ?? '0'
+        const offsetString = (await this.redis.get(offsetKey)) ?? '-1'
         const offset = Number.parseInt(offsetString)
 
         const partitionString = (await this.redis.get(partitionKey)) ?? '0'
         const partition = Number.parseInt(partitionString)
 
-        this.cons.assign(
-          topics.map(makeSafeTopic).map((topic) => ({
+        this.cons.assign([
+          {
             offset: offset,
             topic,
             partition: partition,
-          })),
-        )
+          },
+        ])
 
         this.cons.consume()
         this.checkCaughtUp()
@@ -53,6 +53,22 @@ export class KafkaTopicConsumer {
 
         onMessage(data)
       })
+
+      .on('event.error', (err) => {
+        console.warn('Error from consumer', err)
+      })
+
+      .on('rebalance', (err, assignment) => {
+        console.log(`Reballancing: ${topic} (ignored)`, err, assignment)
+      })
+
+      .on('rebalance.error', (err) => {
+        console.warn(`Reballancing Error: ${topic}`, err)
+      })
+      .on('event.log', (log) => {
+        console.log(`EventLog ${topic}`, log)
+      })
+
     this.cons.connect()
   }
 
@@ -60,9 +76,9 @@ export class KafkaTopicConsumer {
     if (this.cons.isConnected() === false) {
       return
     }
-    this.cons.queryWatermarkOffsets(this.topics[0], 0, 1000, (err, offsets) => {
+    this.cons.queryWatermarkOffsets(this.topic, 0, 1000, (err, offsets) => {
       if (err) {
-        console.warn(this.topics[0], err)
+        console.warn(this.topic, err)
       } else {
         if (this.readOffset >= offsets.highOffset - 1) {
           this.onCaughtUp?.()

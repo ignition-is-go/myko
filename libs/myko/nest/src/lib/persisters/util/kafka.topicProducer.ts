@@ -39,6 +39,10 @@ export class KafkaTopicProducer {
         this.sendQueue.clear()
       }
     })
+
+    this.prod.on('event.error', (err) => {
+      console.warn('Error from producer', err)
+    })
   }
 
   public publish(msg: Buffer, key: string) {
