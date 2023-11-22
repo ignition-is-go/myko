@@ -213,16 +213,20 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     beforeInit(entity)
 
     const admin = AdminClient.create(this.config)
-
     admin.createTopic({
       topic: this.entity,
       replication_factor: 3,
       num_partitions: 1,
+      config: {
+        'max.message.bytes': '-1',
+        'retention.ms': '-1',
+        'retention.bytes': '-1',
+      },
     })
 
     this.cons = new KafkaTopicConsumer(
       { ...this.config, ...this.consConfig },
-      [this.entity],
+      this.entity,
       (msg) => this.onMessage(msg),
       `${this.entity}:offset`,
       `${this.entity}:partition`,
@@ -320,7 +324,7 @@ export class KafkaControlledPersister<T extends MItem>
     const topic = `${this.entity}_${id}`
     const cons = new KafkaTopicConsumer(
       { ...this.config, ...this.consConf },
-      [topic],
+      topic,
       (msg) => this.onMessage(msg),
       `${topic}:offset`,
       `${topic}:partition`,
