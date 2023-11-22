@@ -37,6 +37,7 @@ import {
   debounceTime,
   filter,
   firstValueFrom,
+  from,
   interval,
   map,
   of,
@@ -305,9 +306,11 @@ export class IsLeaderHandler implements MReportHandler<IsLeader> {
       .watchId(report.serverId)
       .pipe(
         switchMap((server) =>
-          this.report
-            .watch(new GroupLeader(server.groupId))
-            .pipe(map((leader) => leader.id === server.id)),
+          server
+            ? this.report
+                .watch(new GroupLeader(server.groupId))
+                .pipe(map((leader) => leader.id === server.id))
+            : from([]),
         ),
       )
   }
