@@ -1,10 +1,9 @@
 import { MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../constants'
 import { MQuery } from '../types'
 
-import type { MQuery as WASMQuery } from 'myko-rs'
-
-type IMQuery = Omit<WASMQuery, 'free' | 'query'>
-export interface MWrappedQuery extends IMQuery {
+export interface MWrappedQuery {
+  queryItemType: string
+  queryId: string
   query: MQuery
 }
 

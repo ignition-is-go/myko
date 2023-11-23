@@ -1,73 +1,32 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
 use crate::utils::remove_whitespace;
 
-#[wasm_bindgen]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MQuery {
-    #[serde(rename = "queryId")]
-    query_id: String,
-    #[serde(rename = "queryItemType")]
-    query_item_type: String,
-
-    query: Value,
-}
-
-impl MQuery {
-    pub fn from_str(s: &str) -> Result<MQuery, serde_json::Error> {
-        serde_json::from_str(&remove_whitespace(s))
-    }
-    pub fn query_json(&self) -> Value {
-        self.query.clone()
-    }
-}
-
-#[wasm_bindgen]
-impl MQuery {
-    #[wasm_bindgen(getter, js_name = "queryId")]
-    pub fn query_id(&self) -> String {
-        self.query_id.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "queryItemType")]
-    pub fn query_item_type(&self) -> String {
-        self.query_item_type.clone()
-    }
-}
-
-#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WatchId {
-    tx: String,
-    item_id: String,
-}
-
-#[wasm_bindgen]
-impl WatchId {
-    #[wasm_bindgen(constructor)]
-    pub fn new(tx: String, item_id: String) -> WatchId {
-        WatchId { tx, item_id }
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn tx(&self) -> String {
-        self.tx.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "itemId")]
-    pub fn item_id(&self) -> String {
-        self.item_id.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "queryJson")]
-    pub fn query_json(&self) -> String {
-        serde_json::to_string(&self).unwrap()
-    }
+    #[serde(rename = "tx")]
+    pub tx: String,
+    #[serde(rename = "itemId")]
+    pub item_id: String,
+    #[serde(rename = "itemType")]
+    pub item_type: String,
 }
 
 impl WatchId {
+    pub fn new(tx: String, item_id: String, item_type: String) -> WatchId {
+        WatchId {
+            tx,
+            item_id,
+            item_type,
+        }
+    }
+
+    pub fn item_type(&self) -> String {
+        self.item_type.clone()
+    }
+
     pub fn from_json(s: Value) -> Result<WatchId, serde_json::Error> {
         serde_json::from_value(s)
     }
@@ -78,8 +37,57 @@ pub enum AllQueries {
     WatchId(WatchId),
 }
 
+#[wasm_bindgen]
+pub fn make_watch_id(tx: String, item_id: String, item_type: String) -> String {
+    AllQueries::WatchId(WatchId::new(tx, item_id, item_type))
+        .to_string()
+        .unwrap()
+}
+
 impl AllQueries {
     pub fn from_json(s: Value) -> Result<AllQueries, serde_json::Error> {
         serde_json::from_value(s)
+    }
+
+    pub fn to_string(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    pub fn from_str(s: &str) -> Result<AllQueries, serde_json::Error> {
+        let s = remove_whitespace(s);
+        serde_json::from_str(s.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[wasm_bindgen]
+pub struct QueryResponse {
+    #[serde(rename = "tx")]
+    tx: String,
+
+    #[serde(rename = "result")]
+    result: Value,
+}
+
+impl QueryResponse {
+    pub fn new(tx: String, item: Value) -> QueryResponse {
+        QueryResponse { tx, result: item }
+    }
+
+    pub fn to_string(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+}
+
+#[wasm_bindgen]
+impl QueryResponse {
+    #[wasm_bindgen(getter, js_name = "tx")]
+    pub fn get_tx(&self) -> String {
+        self.tx.clone()
+    }
+
+    #[wasm_bindgen(getter, js_name = "result")]
+    pub fn get_item(&self) -> String {
+        self.result.to_string()
     }
 }

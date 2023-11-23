@@ -11,11 +11,6 @@ pub struct MItem {
 
 #[wasm_bindgen]
 impl MItem {
-    #[wasm_bindgen(constructor)]
-    pub fn new(id: String, hash: String) -> Self {
-        Self { id, hash }
-    }
-
     #[wasm_bindgen(getter, js_name = "id")]
     pub fn get_id(&self) -> String {
         self.id.to_string()
