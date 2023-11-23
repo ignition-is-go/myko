@@ -33,6 +33,13 @@ impl WatchId {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JMESPathQuery {
+    query: String,
+
+    item_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AllQueries {
     WatchId(WatchId),
 }
@@ -66,12 +73,12 @@ pub struct QueryResponse {
     tx: String,
 
     #[serde(rename = "result")]
-    result: Value,
+    result: Vec<Value>,
 }
 
 impl QueryResponse {
-    pub fn new(tx: String, item: Value) -> QueryResponse {
-        QueryResponse { tx, result: item }
+    pub fn new(tx: String, result: Vec<Value>) -> QueryResponse {
+        QueryResponse { tx, result }
     }
 
     pub fn to_string(&self) -> Result<String, serde_json::Error> {
@@ -88,6 +95,6 @@ impl QueryResponse {
 
     #[wasm_bindgen(getter, js_name = "result")]
     pub fn get_item(&self) -> String {
-        self.result.to_string()
+        json!(self.result.clone()).to_string()
     }
 }

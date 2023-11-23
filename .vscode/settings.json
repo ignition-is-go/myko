@@ -12,7 +12,6 @@
   "editor.defaultFormatter": "esbenp.prettier-vscode",
   "html.format.enable": true,
   "typescript.format.enable": true,
-
   "search.exclude": {
     "**/coverage": true
   },
@@ -20,11 +19,15 @@
   "typescript.preferences.importModuleSpecifier": "auto",
   "json.schemas": [
     {
-      "fileMatch": ["/apps/intake/src/app/testData/*"],
+      "fileMatch": [
+        "/apps/intake/src/app/testData/*"
+      ],
       "url": "/apps/intake/src/assets/schedule-exchange-schema_v1.json"
     },
     {
-      "fileMatch": ["apps/sherlock/watson-cli/src/assets/watson.config.json"],
+      "fileMatch": [
+        "apps/sherlock/watson-cli/src/assets/watson.config.json"
+      ],
       "url": "/generated/watson-cli-config-schema.json"
     }
   ],
@@ -67,7 +70,9 @@
     ],
     "scanLimit": 200
   },
-  "githubPullRequests.ignoredPullRequestBranches": ["main"],
+  "githubPullRequests.ignoredPullRequestBranches": [
+    "main"
+  ],
   "[ignore]": {
     "editor.defaultFormatter": "foxundermoon.shell-format"
   },
@@ -86,6 +91,11 @@
   },
   "python.formatting.provider": "none",
   "[rust]": {
-    "editor.defaultFormatter": "rust-lang.rust-analyzer"
-  }
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.inlayHints.enabled": "offUnlessPressed"
+  },
+  "rust-analyzer.inlayHints.closureStyle": "rust_analyzer",
+  "rust-analyzer.inlayHints.chainingHints.enable": true,
+  "rust-analyzer.inlayHints.bindingModeHints.enable": false,
+  "rust-analyzer.inlayHints.closingBraceHints.enable": true
 }
