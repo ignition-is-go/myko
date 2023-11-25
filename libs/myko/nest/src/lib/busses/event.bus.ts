@@ -15,6 +15,7 @@ import { MykoBackplaneClient } from '../myko.backplane.client'
 
 @Injectable()
 export class MykoEventBus extends AMykoEventBus {
+  private client: WebSocket
   constructor(
     private moduleRef: ModuleRef,
     commandBus: MykoCommandBus,
@@ -44,6 +45,10 @@ export class MykoEventBus extends AMykoEventBus {
       setTimeout(() => {
         this.connect()
       }, 1000)
+    })
+
+    this.client.on('error', (e) => {
+      console.log(e)
     })
   }
 
