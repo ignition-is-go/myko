@@ -343,7 +343,6 @@ export class WSMClient {
   }
 
   private forceSend(e: { event: string; data?: any }) {
-    console.log('Force Sending', e)
     if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
       return
     }
@@ -364,7 +363,6 @@ export class WSMClient {
     }
 
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
-    console.log('Sending', item)
 
     this.ws.send(encoded)
   }
