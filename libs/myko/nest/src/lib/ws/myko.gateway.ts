@@ -33,6 +33,7 @@ import {
 } from '../busses'
 import {
   ID,
+  isAllInit,
   MykoProtocol,
   ProtocolMessages,
   unwrapCommand,

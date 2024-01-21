@@ -107,3 +107,7 @@ build/config.gypi
 .angular
 .env
 libs/generated/version.ts
+
+# rust
+
+target/
