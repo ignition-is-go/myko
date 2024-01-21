@@ -1,4 +1,4 @@
-import { CommandUnwrapError, unwrapCommand } from '@myko/core'
+import { CommandUnwrapError, isAllInit, unwrapCommand } from '@myko/core'
 import {
   CanActivate,
   ExecutionContext,
@@ -31,6 +31,13 @@ export class MykoGuard implements CanActivate, OnModuleInit {
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    if (!isAllInit().done) {
+      this.logger
+        .getLogger('MykoGuard')
+        .dev.warn('Connection Refused: Server not initialized')
+      return false
+    }
+
     const data = context.switchToWs().getData()
     const client = context.switchToWs().getClient()
 
