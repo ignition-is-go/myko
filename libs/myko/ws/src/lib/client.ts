@@ -252,12 +252,6 @@ export class WSMClient {
       }
       this.processQueue()
       this.hooks?.onConnect && this.hooks?.onConnect(path)
-      ;[...this.resendQueries.values()].forEach((q) => {
-        this.send(q)
-      })
-      ;[...this.resendReports.values()].forEach((r) => {
-        this.send(r)
-      })
     }
 
     this.ws.onmessage = (e) => {
@@ -284,7 +278,14 @@ export class WSMClient {
           ) {
             // console.log('got client id', cmd.clientId)
             this.clientId = cmd.clientId
+            console.log('Got Client ID', this.clientId)
             this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
+            ;[...this.resendQueries.values()].forEach((q) => {
+              this.send(q)
+            })
+            ;[...this.resendReports.values()].forEach((r) => {
+              this.send(r)
+            })
             break
           }
 
@@ -342,6 +343,7 @@ export class WSMClient {
   }
 
   private forceSend(e: { event: string; data?: any }) {
+    console.log('Force Sending', e)
     if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
       return
     }
@@ -362,6 +364,7 @@ export class WSMClient {
     }
 
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
+    console.log('Sending', item)
 
     this.ws.send(encoded)
   }

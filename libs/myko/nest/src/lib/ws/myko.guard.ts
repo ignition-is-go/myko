@@ -10,6 +10,7 @@ import {
 import { LoggerService } from '@rship/logging'
 import { CommandNotAuthorized } from '../../types'
 import { MykoAuthService } from '../services'
+import { OnGatewayConnection } from '@nestjs/websockets'
 
 @Injectable()
 export class MykoGuard implements CanActivate, OnModuleInit {
@@ -35,6 +36,8 @@ export class MykoGuard implements CanActivate, OnModuleInit {
       this.logger
         .getLogger('MykoGuard')
         .dev.warn('Connection Refused: Server not initialized')
+      const client = context.switchToWs().getClient()
+      client.close(1002, 'Server not initialized')
       return false
     }
 
