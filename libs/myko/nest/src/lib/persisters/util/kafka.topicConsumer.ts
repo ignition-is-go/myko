@@ -38,16 +38,6 @@ export class KafkaTopicConsumer {
         const partitionString = (await this.redis.get(partitionKey)) ?? '0'
         const partition = Number.parseInt(partitionString)
 
-        const offsets = this.cons.queryWatermarkOffsets(
-          topic,
-          partition,
-          1000,
-          (err, offsets) => {
-            console.log(topic, 'Offsets', offsets)
-            console.log(`Subscribed to ${topic} at ${offset}`)
-          },
-        )
-
         this.cons.assign([
           {
             offset: offset,
