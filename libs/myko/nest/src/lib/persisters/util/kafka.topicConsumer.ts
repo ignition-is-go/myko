@@ -30,11 +30,23 @@ export class KafkaTopicConsumer {
 
     this.cons
       .on('subscribed', async () => {
-        const offsetString = (await this.redis.get(offsetKey)) ?? '0'
+        const redisOffset = await this.redis.get(offsetKey)
+
+        const offsetString = redisOffset ?? '0'
         const offset = Number.parseInt(offsetString)
 
         const partitionString = (await this.redis.get(partitionKey)) ?? '0'
         const partition = Number.parseInt(partitionString)
+
+        const offsets = this.cons.queryWatermarkOffsets(
+          topic,
+          partition,
+          1000,
+          (err, offsets) => {
+            console.log(topic, 'Offsets', offsets)
+            console.log(`Subscribed to ${topic} at ${offset}`)
+          },
+        )
 
         this.cons.assign([
           {
