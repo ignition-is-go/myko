@@ -54,6 +54,7 @@ export const fireInit = (itemType: string) => {
       hooks.get(key).forEach((cb) => cb())
     }
   })
+  console.log(leftToInit())
 }
 
 export const beforeInit = (itemType: string) => {

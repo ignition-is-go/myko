@@ -16,6 +16,7 @@ import { MykoReportBus } from './busses/report.bus'
 import { mkdir, writeFile } from 'fs/promises'
 import { docRegistry } from '@myko/core/src/lib/registry'
 import { MykoDocsService } from './myko.docs.service'
+import { unwrapQuery, wrapCommand, wrapQuery } from '@myko/core'
 
 @Module({
   imports: [

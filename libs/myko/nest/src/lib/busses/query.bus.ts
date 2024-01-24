@@ -6,6 +6,7 @@ import {
   MLiveQueryResult,
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_QUERY_ID_KEY,
+  wrapQuery,
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
@@ -29,7 +30,7 @@ export class MykoQueryBus extends AMykoQueryBus {
         .dev.error({ message: err, data: query })
       throw new Error(err)
     }
-
+    console.log(queryId)
     return handler.execute(query) as MLiveQueryResult<T>
   }
 

@@ -32,7 +32,7 @@ export class MykoEventBus extends AMykoEventBus {
         const instance = this.moduleRef.get(target, { strict: false })
         if (!instance) {
           throw new Error(
-            'Cannot Register Saga - Must retrun Observablde of Commands',
+            'Cannot Register Saga - Must return Observable of Commands',
           )
         }
         return metadata.map((key: string) => instance[key].bind(instance))
