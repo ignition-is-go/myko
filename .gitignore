@@ -108,7 +108,6 @@ build/config.gypi
 .env
 libs/generated/version.ts
 
+# rust
 
-# Added by cargo
-
-/target
+target/

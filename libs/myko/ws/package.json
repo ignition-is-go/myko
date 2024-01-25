@@ -9,12 +9,12 @@
     "@msgpack/msgpack": "3.0.0-beta2",
     "@myko/core": "workspace:*",
     "@rship/logging": "workspace:*",
-    "reflect-metadata": "^0.1.13",
+    "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.1",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "@types/ws": "^8.5.8"
+    "@types/ws": "^8.5.10"
   },
   "version": "3.0.0-canary.118"
 }

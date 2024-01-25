@@ -30,7 +30,9 @@ export class KafkaTopicConsumer {
 
     this.cons
       .on('subscribed', async () => {
-        const offsetString = (await this.redis.get(offsetKey)) ?? '0'
+        const redisOffset = await this.redis.get(offsetKey)
+
+        const offsetString = redisOffset ?? '0'
         const offset = Number.parseInt(offsetString)
 
         const partitionString = (await this.redis.get(partitionKey)) ?? '0'

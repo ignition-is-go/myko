@@ -17,6 +17,22 @@ export const onInit = (itemTypes: string[], cb: () => void) => {
   hooks.get(key).add(cb)
 }
 
+export const isAllInit = () => {
+  return {
+    done: isInit.size === isRegistered.size,
+    registered: isRegistered.size,
+    inited: isInit.size,
+  }
+}
+
+export const leftToInit = () => {
+  let registered = new Set(isRegistered)
+  for (let i of isInit) {
+    registered.delete(i)
+  }
+  return [...registered]
+}
+
 export const watchInit = (
   cb: (entity: string, registered: number, inited: number) => void,
 ) => {

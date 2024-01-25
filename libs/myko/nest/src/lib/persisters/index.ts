@@ -1,2 +1,2 @@
 export * from './redis.persisterFactory'
-export * from './kafka.presisterFactory.ts'
+export * from './kafka.presisterFactory'

@@ -1,4 +1,4 @@
-import { CommandUnwrapError, unwrapCommand } from '@myko/core'
+import { CommandUnwrapError, isAllInit, unwrapCommand } from '@myko/core'
 import {
   CanActivate,
   ExecutionContext,
@@ -10,6 +10,7 @@ import {
 import { LoggerService } from '@rship/logging'
 import { CommandNotAuthorized } from '../../types'
 import { MykoAuthService } from '../services'
+import { OnGatewayConnection } from '@nestjs/websockets'
 
 @Injectable()
 export class MykoGuard implements CanActivate, OnModuleInit {
@@ -31,6 +32,15 @@ export class MykoGuard implements CanActivate, OnModuleInit {
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    if (!isAllInit().done) {
+      this.logger
+        .getLogger('MykoGuard')
+        .dev.warn('Connection Refused: Server not initialized')
+      const client = context.switchToWs().getClient()
+      client.close(1002, 'Server not initialized')
+      return false
+    }
+
     const data = context.switchToWs().getData()
     const client = context.switchToWs().getClient()
 

@@ -252,12 +252,6 @@ export class WSMClient {
       }
       this.processQueue()
       this.hooks?.onConnect && this.hooks?.onConnect(path)
-      ;[...this.resendQueries.values()].forEach((q) => {
-        this.send(q)
-      })
-      ;[...this.resendReports.values()].forEach((r) => {
-        this.send(r)
-      })
     }
 
     this.ws.onmessage = (e) => {
@@ -284,7 +278,14 @@ export class WSMClient {
           ) {
             // console.log('got client id', cmd.clientId)
             this.clientId = cmd.clientId
+            console.log('Got Client ID', this.clientId)
             this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
+            ;[...this.resendQueries.values()].forEach((q) => {
+              this.send(q)
+            })
+            ;[...this.resendReports.values()].forEach((r) => {
+              this.send(r)
+            })
             break
           }
 

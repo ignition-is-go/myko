@@ -3,8 +3,8 @@ import {
   Client,
   DeleteClientsByServerId,
   Server,
-  wrapCommand,
   SetClientId,
+  isAllInit,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
@@ -26,6 +26,10 @@ export class SocketRegistry extends Map<ID, WebSocket> {
   }
 
   register(socket: WebSocket) {
+    if (!isAllInit().done) {
+      throw new Error('Server not initialized')
+    }
+
     const id = uuid()
 
     const serverId = this.me.id
