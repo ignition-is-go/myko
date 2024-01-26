@@ -12,9 +12,6 @@ import { KafkaPersisterFactory } from './persisters'
 import { MykoGatewayModule } from './myko.gateway.module'
 import { PeerRegistry } from './registry/peer.registry'
 import { MykoReportBus } from './busses/report.bus'
-
-import { mkdir, writeFile } from 'fs/promises'
-import { docRegistry } from '@myko/core/src/lib/registry'
 import { MykoDocsService } from './myko.docs.service'
 import { MykoBackplaneClient } from './myko.backplane.client'
 

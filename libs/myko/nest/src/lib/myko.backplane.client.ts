@@ -20,7 +20,9 @@ export class MykoBackplaneClient implements OnModuleInit {
 
   private async connect() {
     try {
-      this.client = new WebSocket('ws://127.0.0.1:5156')
+      console.log('CONNECTING')
+      this.client = new WebSocket('ws://127.0.0.1:5157', { timeout: 1000 })
+      console.log('CONNECTED')
     } catch (e) {
       console.log(e)
       setTimeout(() => {

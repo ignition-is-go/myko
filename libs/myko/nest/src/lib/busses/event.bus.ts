@@ -1,55 +1,24 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import {
   AMykoEventBus,
   MEvent,
   MSaga,
   MykoSagaType,
   MYKO_SAGA_METADATA,
-  Server,
-  ID,
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { MykoCommandBus } from './command.bus'
-import { WebSocket } from 'ws'
 import { MykoBackplaneClient } from '../myko.backplane.client'
 
 @Injectable()
 export class MykoEventBus extends AMykoEventBus {
-  private client: WebSocket
   constructor(
     private moduleRef: ModuleRef,
     commandBus: MykoCommandBus,
-    private backplane: MykoBackplaneClient,
+    @Optional()
+    private backplane?: MykoBackplaneClient,
   ) {
     super(commandBus)
-    try {
-      this.connect()
-    } catch {}
-  }
-
-  private async connect() {
-    try {
-      this.client = new WebSocket('ws://127.0.0.1:5156')
-    } catch (e) {
-      console.log(e)
-      setTimeout(() => {
-        this.connect()
-      }, 1000)
-    }
-
-    this.client.on('open', () => {
-      console.log('connected')
-    })
-
-    this.client.on('close', () => {
-      setTimeout(() => {
-        this.connect()
-      }, 1000)
-    })
-
-    this.client.on('error', (e) => {
-      console.log(e)
-    })
   }
 
   async publish<T extends MEvent>(event: T): Promise<void> {
@@ -57,7 +26,7 @@ export class MykoEventBus extends AMykoEventBus {
       Reflect.set(event, 'sourceId', this.serverId)
     }
     this.subject$.next(event)
-    this.backplane.publishEvent(event)
+    if (this.backplane) this.backplane.publishEvent(event)
     return
   }
 
