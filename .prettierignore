@@ -26,3 +26,8 @@ coverage/**/*
 **/browserslist
 # .vscode/
 **/mongoReplPreset/globalConfig.json
+# c# dependency json
+**/bin/*.deps.json
+# jsoneditor script
+jsoneditor.js
+libs\ableton\src\lib\max4node\max_device\main.js

@@ -8,6 +8,7 @@ import {
 import {
   MCOMMAND_EVENT,
   MEVENT_EVENT,
+  MPING_EVENT,
   MQUERY_CANCEL,
   MQUERY_EVENT,
   MREPORT_CANCEL,
@@ -24,6 +25,7 @@ import {
   WSMReport,
   WSMReportCancel,
   WSMReportResponse,
+  WSPingEvent,
 } from '@myko/ws'
 import {
   MykoCommandBus,
@@ -62,7 +64,7 @@ export class MykoGateway implements OnGatewayConnection {
     private query: MykoQueryBus,
     private report: MykoReportBus,
     private reg: SocketRegistry,
-  ) {}
+  ) { }
 
   handleConnection(client: WebSocket) {
     try {
@@ -142,5 +144,15 @@ export class MykoGateway implements OnGatewayConnection {
       }),
       takeUntil(this.unsub.pipe(filter((u) => u === report.tx))),
     )
+  }
+
+  @SubscribeMessage(MPING_EVENT)
+  onPing(
+    @MessageBody() wrappedPing: WSPingEvent['data'],
+  ) {
+    return {
+      data: wrappedPing,
+      event: MPING_EVENT
+    } satisfies WSPingEvent
   }
 }
