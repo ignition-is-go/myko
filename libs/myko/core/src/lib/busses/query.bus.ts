@@ -9,6 +9,7 @@ import {
   MQueryResult,
 } from '../types'
 import { ObservableBus } from './observable.bus'
+import { wrapQuery } from '../wrappers'
 
 export type MykoQueryHandlerType = Type<MQueryHandler<MQuery>>
 
@@ -30,6 +31,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
   abstract watch<T extends MQuery>(query: T): MLiveQueryResult<T>
 
   execute<T extends MQuery>(query: T): MQueryResult<T> {
+    console.log(wrapQuery(query).queryId)
     return firstValueFrom(this.watch(query)) as MQueryResult<T>
   }
 

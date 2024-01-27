@@ -51,9 +51,12 @@ import {
   MREPORT_EVENT,
   MREPORT_RESPONSE_EVENT,
   WSMReport,
+  MPING_EVENT,
+  WSPingEvent,
 } from './types'
 
 import { Encoder, Decoder } from '@msgpack/msgpack'
+import { v4 } from 'uuid'
 
 type WSMClientOpts = {
   secure: boolean
@@ -99,9 +102,13 @@ export class WSMClient {
   private reportResponses: Subject<WSMReportResponse>
   private errorsSubject: Subject<WSMCommandError>
   private successSubject: Subject<string>
+
+  private pingSubject: Subject<WSPingEvent>
+
   private userToken: ID | null = null
   private resendQueries: Map<ID, WSMQuery>
   private resendReports: Map<ID, WSMReport>
+
 
   private protocolReady = true
   private protocol: MykoProtocol = MykoProtocol.JSON
@@ -134,6 +141,7 @@ export class WSMClient {
     this.reportResponses = new Subject()
     this.errorsSubject = new Subject()
     this.successSubject = new Subject()
+    this.pingSubject = new Subject()
 
     this.resendQueries = new Map()
     this.resendReports = new Map()
@@ -157,6 +165,30 @@ export class WSMClient {
     }
 
     this.connect()
+  }
+
+  async ping() {
+    const id = v4()
+    const timestamp = Date.now()
+
+    this.send({
+      event: MPING_EVENT,
+      data: {
+        timestamp,
+        id,
+      }
+    })
+
+    if (this.ws.readyState !== this.ws.OPEN) {
+      throw new Error('Not Connected')
+    }
+
+    return firstValueFrom(
+      this.pingSubject.pipe(
+        filter((p) => p.data.id === id),
+        map((p) => Date.now() - p.data.timestamp),
+      ),
+    )
   }
 
   sendCommand<T extends MCommand<unknown>>(
@@ -280,12 +312,12 @@ export class WSMClient {
             this.clientId = cmd.clientId
             console.log('Got Client ID', this.clientId)
             this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
-            ;[...this.resendQueries.values()].forEach((q) => {
-              this.send(q)
-            })
-            ;[...this.resendReports.values()].forEach((r) => {
-              this.send(r)
-            })
+              ;[...this.resendQueries.values()].forEach((q) => {
+                this.send(q)
+              })
+              ;[...this.resendReports.values()].forEach((r) => {
+                this.send(r)
+              })
             break
           }
 
@@ -320,6 +352,10 @@ export class WSMClient {
 
         case MREPORT_RESPONSE_EVENT:
           this.reportResponses.next(message)
+          break
+
+        case MPING_EVENT:
+          this.pingSubject.next(message)
           break
         default:
           console.warn('no idea what to do with this', message)
@@ -377,7 +413,7 @@ export class WSMClient {
   disconnect() {
     if (this.ws) {
       this.hooks?.onDisconnect?.({} as CloseEvent)
-      this.ws.onclose = () => {}
+      this.ws.onclose = () => { }
       this.ws.close()
     }
   }

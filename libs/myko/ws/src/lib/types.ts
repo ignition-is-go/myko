@@ -24,8 +24,17 @@ export const MQUERY_CANCEL = 'ws:m:query-cancel'
 export const MREPORT_EVENT = 'ws:m:report'
 export const MREPORT_RESPONSE_EVENT = 'ws:m:report-response'
 export const MREPORT_CANCEL = 'ws:m:report-cancel'
+export const MPING_EVENT = 'ws:m:ping'
 
 export const MYKO_WS_PORT = 5155
+
+export type WSPingEvent = {
+  event: typeof MPING_EVENT
+  data: {
+    id: string
+    timestamp: number
+  }
+}
 
 // EVENTS
 export type WSMEvent = {
@@ -96,6 +105,7 @@ export type WSMMessage =
   | WSMReport
   | WSMReportResponse
   | WSMReportCancel
+  | WSPingEvent
 
 @MykoCommand('client:send-command')
 export class ClientCommand extends MCommand {

@@ -95,12 +95,4 @@
   "rust-analyzer.inlayHints.chainingHints.enable": true,
   "rust-analyzer.inlayHints.bindingModeHints.enable": false,
   "rust-analyzer.inlayHints.closingBraceHints.enable": true,
-  "vitest.enable": true,
-  "vitest.exclude": [
-    "libs/ableton/src/lib/ableton-js/**",
-    "**/node_modules/**",
-    "**/dist/**",
-    "**/cypress/**",
-    "**/.{idea,git,cache,output,temp}/**"
-  ]
 }
