@@ -111,3 +111,7 @@ libs/generated/version.ts
 # rust
 
 target/
+
+# pnpm-store
+
+.pnpm-store
