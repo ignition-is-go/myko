@@ -40,7 +40,7 @@
   "devDependencies": {
     "@capacitor/cli": "^5.6.0",
     "@capacitor/core": "^5.6.0",
-    "@types/node": "^20.11.5",
+    "@types/node": "^20.11.12",
     "@vercel/ncc": "^0.38.1",
     "fs-extra": "^11.2.0",
     "generate-template-files": "^3.2.1",
