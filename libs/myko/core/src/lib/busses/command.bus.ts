@@ -22,7 +22,7 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
       console.error(err, command)
       throw err
     }
-    console.log(commandId)
+    // console.log(commandId)
     return (await handler.execute(command)) as MCommandResponse<T>
   }
 

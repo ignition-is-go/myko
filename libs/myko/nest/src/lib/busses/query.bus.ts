@@ -30,7 +30,7 @@ export class MykoQueryBus extends AMykoQueryBus {
         .dev.error({ message: err, data: query })
       throw new Error(err)
     }
-    console.log(queryId)
+    // console.log(queryId)
     return handler.execute(query) as MLiveQueryResult<T>
   }
 

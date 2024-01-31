@@ -1,6 +1,6 @@
 {
   "name": "rship",
-  "version": "3.0.0-canary.278",
+  "version": "3.0.0-canary.280",
   "license": "MIT",
   "scripts": {
     "server:dev": "pnpm run --filter=@rship/server dev",
@@ -31,7 +31,7 @@
     "gen": "node ./tools/scaffold/generate.js",
     "clear": "rm -rf ~/.local/share/pnpm && rm -rf **/node_modules",
     "ionic:build": "npm run build",
-    "sync": "git submodule update --init --recursive --remote  && cd libs/ableton/src/lib/ableton-js && npm run build"
+    "sync": "git submodule update --init --recursive --remote"
   },
   "packageManager": "pnpm",
   "workspaces": [
@@ -42,7 +42,7 @@
   "devDependencies": {
     "@capacitor/cli": "^5.6.0",
     "@capacitor/core": "^5.6.0",
-    "@types/node": "^20.11.5",
+    "@types/node": "^20.11.12",
     "@vercel/ncc": "^0.38.1",
     "fs-extra": "^11.2.0",
     "generate-template-files": "^3.2.1",
