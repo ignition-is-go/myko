@@ -8,7 +8,6 @@ members = [
   "apps/rship/linkd",
   "apps/myko/backplane",
   "libs/myko/rs",
-  "libs/utils-rs",
   "libs/link",
   "libs/utils",
 ]
