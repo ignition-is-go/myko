@@ -31,7 +31,6 @@
     "ionic:build": "npm run build",
     "sync": "git submodule update --init --recursive --remote"
   },
-  "packageManager": "pnpm",
   "workspaces": [
     "apps/**",
     "libs/**"
