@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
-use crate::utils::remove_whitespace;
+use crate::{
+    item::{Eventable, MItem},
+    utils::remove_whitespace,
+};
 
 #[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -37,6 +40,21 @@ impl MEvent {
 
     pub fn item_json(&self) -> Value {
         self.item.clone()
+    }
+
+    pub fn from_item<T, PT: Clone>(
+        item: impl Eventable<T, PT>,
+        change_type: MEventType,
+        tx: String,
+    ) -> MEvent {
+        MEvent {
+            item: serde_json::to_value(item).unwrap(),
+            change_type,
+            item_type: "MItem".to_string(),
+            created_at: "2021-01-01T00:00:00Z".to_string(),
+            tx,
+            source_id: None,
+        }
     }
 }
 
