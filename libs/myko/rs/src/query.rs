@@ -5,12 +5,10 @@ use wasm_bindgen::prelude::*;
 use crate::utils::remove_whitespace;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchId {
-    #[serde(rename = "tx")]
     pub tx: String,
-    #[serde(rename = "itemId")]
     pub item_id: String,
-    #[serde(rename = "itemType")]
     pub item_type: String,
 }
 
@@ -67,6 +65,7 @@ impl AllQueries {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[wasm_bindgen]
 pub struct QueryResponse {
     #[serde(rename = "tx")]

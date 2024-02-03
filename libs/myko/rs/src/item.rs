@@ -11,27 +11,20 @@ pub struct MItem {
 
 #[wasm_bindgen]
 impl MItem {
-    #[wasm_bindgen(getter, js_name = "id")]
-    pub fn get_id(&self) -> String {
-        self.id.to_string()
-    }
-
-    #[wasm_bindgen(getter, js_name = "hash")]
-    pub fn get_hash(&self) -> String {
-        self.hash.clone()
-    }
-}
-
-impl MItem {
+    #[wasm_bindgen(getter)]
     pub fn id(&self) -> String {
         self.id.to_string()
     }
 
+    #[wasm_bindgen(getter)]
     pub fn hash(&self) -> String {
         self.hash.clone()
     }
+}
 
-    pub fn from_json(json: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(json)
-    }
+pub trait Eventable<T> {
+    type T;
+    fn id(&self) -> String;
+    fn hash(&self) -> String;
+    fn from_json(json: Value) -> Result<T, serde_json::Error>;
 }

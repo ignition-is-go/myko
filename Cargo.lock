@@ -405,7 +405,7 @@ dependencies = [
  "futures-util",
  "myko-rs",
  "rdkafka",
- "redis",
+ "redis 0.21.7",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -1146,6 +1146,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "discard"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1530,6 +1536,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-signals"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b175f2f6600dd81d92d20cf10872b03ea9df6b2513ca7f672341260dacb1ab2"
+dependencies = [
+ "discard",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "gensym",
+ "log 0.4.20",
+ "pin-project",
+ "serde",
+]
+
+[[package]]
 name = "futures-sink"
 version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1697,6 +1719,18 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check 0.9.4",
+]
+
+[[package]]
+name = "gensym"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913dce4c5f06c2ea40fc178c06f777ac89fc6b1383e90c254fafb1abe4ba3c82"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
+ "uuid",
 ]
 
 [[package]]
@@ -2719,8 +2753,10 @@ checksum = "e5ce46fe64a9d73be07dcbe690a38ce1b293be448fd8ce1e6c1b8062c9f72c6a"
 name = "myko-rs"
 version = "0.1.0"
 dependencies = [
+ "futures-signals",
  "js-sys",
- "redis",
+ "partially",
+ "redis 0.24.0",
  "serde",
  "serde_json",
  "uuid",
@@ -3060,6 +3096,12 @@ dependencies = [
  "smallvec 1.13.1",
  "windows-targets 0.48.5",
 ]
+
+[[package]]
+name = "partially"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c662358b50ce030ff0bf5c174541e37b2e29564732c34504e8ffb952389e3c1"
 
 [[package]]
 name = "paste"
@@ -3731,6 +3773,21 @@ dependencies = [
  "percent-encoding 2.3.1",
  "ryu",
  "sha1 0.6.1",
+ "url 2.5.0",
+]
+
+[[package]]
+name = "redis"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c580d9cbbe1d1b479e8d67cf9daf6a62c957e6846048408b80b43ac3f6af84cd"
+dependencies = [
+ "combine",
+ "itoa 1.0.10",
+ "percent-encoding 2.3.1",
+ "ryu",
+ "sha1_smol",
+ "socket2 0.4.10",
  "url 2.5.0",
 ]
 
