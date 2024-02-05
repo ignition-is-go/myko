@@ -22,6 +22,7 @@ futures-util = "0.3.30"
 tokio = {version = "1.35.1", features = ["full"]}
 tungstenite = "0.21.0"
 tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
+macros = { version = "0.1.0", path = "../macros" }
 
 [dependencies.web-sys]
 version = "0.3.22"

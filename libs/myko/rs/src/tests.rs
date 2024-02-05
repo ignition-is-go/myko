@@ -4,6 +4,7 @@ mod tests {
 
     use std::cell::Cell;
 
+    use macros::Eventable;
     use serde::{Deserialize, Serialize};
 
     use crate::{
@@ -13,23 +14,11 @@ mod tests {
     };
     use partially::Partial;
 
-    #[derive(Clone, Serialize, Partial, Deserialize, PartialEq, Eq, Debug)]
+    #[derive(Clone, Serialize, Partial, Deserialize, PartialEq, Eq, Debug, Eventable)]
     #[partially(derive(Clone, Serialize, Deserialize))]
     struct Demo {
         id: String,
         hash: String,
-    }
-
-    impl Eventable<Demo, PartialDemo> for Demo {
-        type T = PartialDemo;
-
-        fn id(&self) -> String {
-            self.id.clone()
-        }
-
-        fn hash(&self) -> String {
-            self.hash.clone()
-        }
     }
 
     #[test]
