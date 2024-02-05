@@ -2,10 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
-use crate::{
-    item::{Eventable, MItem},
-    utils::remove_whitespace,
-};
+use crate::{item::Eventable, utils::remove_whitespace};
 
 #[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

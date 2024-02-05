@@ -9,5 +9,4 @@ members = [
   "apps/myko/backplane",
   "libs/myko/rs",
   "libs/link",
-  "libs/utils",
 ]

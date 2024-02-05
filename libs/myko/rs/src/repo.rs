@@ -5,12 +5,8 @@ use serde::de::DeserializeOwned;
 use crate::{
     event::{MEvent, MEventType},
     item::{matches, Eventable},
+    subscription::{Publisher, Sub},
 };
-
-trait Publisher<T: Eventable<T, PT>, PT: Clone> {
-    fn publish(&self) -> ();
-    fn handle(&mut self, item: &T, event_type: MEventType) -> ();
-}
 
 impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Sub<T, PT> {
     fn handle(&mut self, item: &T, event_type: MEventType) -> () {
@@ -31,12 +27,6 @@ impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Sub<T, PT>
     fn publish(&self) -> () {
         (self.func)(self.state.values().cloned().collect());
     }
-}
-
-struct Sub<T: Eventable<T, PT>, PT: Clone> {
-    state: HashMap<String, T>,
-    func: Box<dyn Fn(Vec<T>) -> ()>,
-    query: Box<PT>,
 }
 
 pub struct Repo<T: Eventable<T, PT>, PT: Clone> {

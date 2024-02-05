@@ -1,8 +1,5 @@
-use std::any::Any;
-
 use partially::Partial;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -32,16 +29,14 @@ pub trait Eventable<T, PT: Clone>:
 
     fn id(&self) -> String;
     fn hash(&self) -> String;
-    // fn matches(&self, query: &PartialT) -> bool;
 }
 
 pub fn matches<T: Eventable<T, PT> + PartialEq, PT: Clone>(item: &T, query: &PT) -> bool {
-    let before = item.clone();
-    let q = query.clone();
-
     let mut after = item.clone();
+
+    let q = query.clone();
 
     after.apply_some(q);
 
-    after == before
+    after == *item
 }

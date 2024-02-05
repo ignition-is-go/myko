@@ -2,7 +2,7 @@
 
 mod tests {
 
-    use std::{borrow::BorrowMut, cell::Cell};
+    use std::cell::Cell;
 
     use serde::{Deserialize, Serialize};
 
