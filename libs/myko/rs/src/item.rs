@@ -30,13 +30,3 @@ pub trait Eventable<T, PT: Clone>:
     fn id(&self) -> String;
     fn hash(&self) -> String;
 }
-
-pub fn matches<T: Eventable<T, PT> + PartialEq, PT: Clone>(item: &T, query: &PT) -> bool {
-    let mut after = item.clone();
-
-    let q = query.clone();
-
-    after.apply_some(q);
-
-    after == *item
-}

@@ -1,36 +1,14 @@
-use std::collections::HashMap;
-
-use serde::de::DeserializeOwned;
-
 use crate::{
     event::{MEvent, MEventType},
-    item::{matches, Eventable},
-    subscription::{Publisher, Sub},
+    item::Eventable,
+    subscription::{Publisher, Subscription},
+    utils::filter_query,
 };
-
-impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Sub<T, PT> {
-    fn handle(&mut self, item: &T, event_type: MEventType) -> () {
-        if matches(item, &self.query) {
-            match event_type {
-                MEventType::SET => {
-                    self.state.insert(item.id(), item.clone());
-                    self.publish();
-                }
-                MEventType::DEL => {
-                    self.state.remove(&item.id().clone());
-                    self.publish();
-                }
-            }
-        }
-    }
-
-    fn publish(&self) -> () {
-        (self.func)(self.state.values().cloned().collect());
-    }
-}
+use serde::de::DeserializeOwned;
+use std::collections::HashMap;
 
 pub struct Repo<T: Eventable<T, PT>, PT: Clone> {
-    subs: Vec<Box<Sub<T, PT>>>,
+    subs: Vec<Box<Subscription<T, PT>>>,
     state: HashMap<String, T>,
 }
 
@@ -74,7 +52,7 @@ impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Repo<T, PT> 
 
         func(initial.values().cloned().collect());
 
-        let sub = Sub {
+        let sub = Subscription {
             state: self.state.clone(),
             func,
             query: Box::new(query),
@@ -82,15 +60,4 @@ impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Repo<T, PT> 
 
         self.subs.push(Box::new(sub));
     }
-}
-
-fn filter_query<T: Eventable<T, PT> + PartialEq, PT: Clone>(
-    state: &HashMap<String, T>,
-    query: &PT,
-) -> HashMap<String, T> {
-    state
-        .iter()
-        .filter(|(_, v)| matches(*v, query))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
 }

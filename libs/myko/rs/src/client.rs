@@ -1,13 +1,10 @@
-use std::sync::Arc;
-
+use crate::event::MEvent;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use futures_util::{SinkExt, StreamExt};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-
-use crate::event::MEvent;
 
 #[derive(Debug)]
 struct Context {

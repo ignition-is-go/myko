@@ -2,17 +2,11 @@
 
 mod tests {
 
-    use std::cell::Cell;
-
+    use crate::{event, item::Eventable, repo::Repo, utils::matches};
     use macros::Eventable;
-    use serde::{Deserialize, Serialize};
-
-    use crate::{
-        event,
-        item::{matches, Eventable},
-        repo::Repo,
-    };
     use partially::Partial;
+    use serde::{Deserialize, Serialize};
+    use std::cell::Cell;
 
     #[derive(Clone, Serialize, Partial, Deserialize, PartialEq, Eq, Debug, Eventable)]
     #[partially(derive(Clone, Serialize, Deserialize))]
