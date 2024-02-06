@@ -5,30 +5,36 @@ use crate::{
     utils::filter_query,
 };
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
 
-pub struct Repo<T: Eventable<T, PT>, PT: Clone> {
-    subs: Vec<Box<Subscription<T, PT>>>,
+pub struct RepoStruct<T: Eventable<T, PT>, PT: Clone> {
+    subs: Vec<Arc<Mutex<Subscription<T, PT>>>>,
     state: HashMap<String, T>,
 }
 
-impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Repo<T, PT> {
+pub trait Repo<T, PT> {
+    fn watch(&mut self, func: Arc<dyn Fn(Vec<T>) -> ()>, query: PT);
+}
+
+impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> RepoStruct<T, PT> {
     pub fn new() -> Self {
-        Repo {
+        RepoStruct {
+            subs: vec![],
             state: HashMap::new(),
-            subs: Vec::new(),
+        }
+    }
+}
+
+impl<T: Eventable<T, PT> + PartialEq, PT: Clone> RepoStruct<T, PT> {
+    pub async fn listen(&mut self, mut rx: tokio::sync::broadcast::Receiver<MEvent>) {
+        loop {
+            let event = rx.recv().await.unwrap();
+            self.process(event).await.unwrap();
         }
     }
 
-    pub fn remove(&mut self, id: String) -> Option<T> {
-        self.state.remove(&id)
-    }
-
-    pub fn set(&mut self, item: &T) {
-        self.state.insert(item.id(), item.clone());
-    }
-
-    pub fn process(&mut self, event: MEvent) -> Result<(), serde_json::Error> {
+    pub async fn process(&mut self, event: MEvent) -> Result<(), serde_json::Error> {
         let ent = serde_json::from_value::<T>(event.item_json())?;
 
         match event.change_type() {
@@ -40,24 +46,37 @@ impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Repo<T, PT> 
             }
         };
 
-        self.subs
-            .iter_mut()
-            .for_each(|sub| sub.handle(&ent, event.change_type()));
+        let event_type = event.change_type();
+        for sub in self.subs.iter_mut() {
+            sub.lock().await.handle(&ent, event_type);
+        }
 
         Ok(())
     }
 
-    pub fn watch(&mut self, func: Box<dyn Fn(Vec<T>) -> ()>, query: PT) {
+    fn remove(&mut self, id: String) -> Option<T> {
+        self.state.remove(&id)
+    }
+
+    fn set(&mut self, item: &T) {
+        self.state.insert(item.id(), item.clone());
+    }
+}
+
+impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Repo<T, PT>
+    for RepoStruct<T, PT>
+{
+    fn watch(&mut self, func: Arc<dyn Fn(Vec<T>) -> ()>, query: PT) {
         let initial = filter_query(&self.state, &query);
 
         func(initial.values().cloned().collect());
 
         let sub = Subscription {
             state: self.state.clone(),
-            func,
+            func: func.clone(),
             query: Box::new(query),
         };
 
-        self.subs.push(Box::new(sub));
+        self.subs.push(Arc::new(Mutex::new(sub)));
     }
 }

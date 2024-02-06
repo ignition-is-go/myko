@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{event::MEventType, item::Eventable, utils::matches};
 
 pub struct Subscription<T: Eventable<T, PT>, PT: Clone> {
     pub state: HashMap<String, T>,
-    pub func: Box<dyn Fn(Vec<T>) -> ()>,
+    pub func: Arc<dyn Fn(Vec<T>) -> ()>,
     pub query: Box<PT>,
 }
 
@@ -30,6 +30,6 @@ impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Subscripti
     }
 
     fn publish(&self) -> () {
-        (self.func)(self.state.values().cloned().collect());
+        (self.func)(self.state.values().cloned().collect::<Vec<T>>());
     }
 }

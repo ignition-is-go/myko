@@ -1,7 +1,8 @@
-use crate::utils::remove_whitespace;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
+
+use crate::utils::remove_whitespace;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

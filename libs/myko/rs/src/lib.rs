@@ -1,8 +1,11 @@
 pub mod client;
 pub mod event;
 pub mod item;
+pub mod kafka;
+pub mod module;
 pub mod query;
 pub mod repo;
+pub mod server;
 pub mod subscription;
 pub mod tests;
 pub mod utils;
