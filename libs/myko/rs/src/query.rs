@@ -31,6 +31,13 @@ impl WatchId {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Watch {
+    pub tx: String,
+    pub query: Value,
+    pub item_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JMESPathQuery {
     query: String,
 
@@ -40,6 +47,7 @@ pub struct JMESPathQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AllQueries {
     WatchId(WatchId),
+    Watch(Watch),
 }
 
 #[wasm_bindgen]

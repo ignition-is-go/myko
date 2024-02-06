@@ -189,6 +189,30 @@ mod tests {
 
                         return Some(rx);
                     }
+                    AllQueries::Watch(query) => {
+                        if query.item_type != "Auto" {
+                            return None;
+                        }
+                        let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
+                        let func = Arc::new(move |items: Vec<Demo>| {
+                            let values = items
+                                .iter()
+                                .map(|x| serde_json::to_value(x))
+                                .filter_map(Result::ok)
+                                .collect::<Vec<Value>>();
+                            let response = QueryResponse::new(query.tx.clone(), values);
+                            match tx.send(response) {
+                                Ok(_) => (),
+                                Err(e) => println!("Failed to send response: {}", e),
+                            }
+                        });
+
+                        let query = serde_json::from_value::<PartialDemo>(query.query).unwrap();
+
+                        self.repo.lock().await.watch(func, query);
+
+                        return Some(rx);
+                    }
                 }
             }
 

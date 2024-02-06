@@ -2844,6 +2844,7 @@ dependencies = [
  "js-sys",
  "macros",
  "partially",
+ "quote",
  "rdkafka 0.36.2",
  "redis 0.24.0",
  "rxrust",

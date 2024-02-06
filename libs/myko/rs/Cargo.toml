@@ -22,6 +22,7 @@ tungstenite = "0.21.0"
 tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
 macros = { version = "0.1.0", path = "../macros" }
 rdkafka = "0.36.2"
+quote = "1.0.35"
 
 [dependencies.web-sys]
 version = "0.3.22"

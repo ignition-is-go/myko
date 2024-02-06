@@ -223,5 +223,26 @@ async fn handle_query(
                 }
             });
         }
+        AllQueries::Watch(query) => {
+            let mut rx = all_events.subscribe();
+
+            tokio::spawn(async move {
+                while let Ok(event) = rx.recv().await {
+                    if event.item_type() != query.item_type {
+                        continue;
+                    }
+
+                    let event_json = event.item_json();
+
+                    let response = QueryResponse::new(query.tx.clone(), vec![event_json.clone()]);
+
+                    let reply = Message::Text(response.to_string().unwrap());
+
+                    if let Err(_) = to_ws.send(reply).await {
+                        break;
+                    }
+                }
+            });
+        }
     }
 }

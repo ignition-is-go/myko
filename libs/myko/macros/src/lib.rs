@@ -70,6 +70,30 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                         self.repo.lock().await.watch(func, query);
 
                         return Some(rx);
+                    },
+                      AllQueries::Watch(query) => {
+                        if query.item_type != #name_str {
+                            return None;
+                        }
+                        let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
+                        let func = Arc::new(move |items: Vec<#name>| {
+                            let values = items
+                                .iter()
+                                .map(|x| serde_json::to_value(x))
+                                .filter_map(Result::ok)
+                                .collect::<Vec<Value>>();
+                            let response = QueryResponse::new(query.tx.clone(), values);
+                            match tx.send(response) {
+                                Ok(_) => (),
+                                Err(e) => println!("Failed to send response: {}", e),
+                            }
+                        });
+
+                        let query = serde_json::from_value::<#partial_name>(query.query).unwrap();
+
+                        self.repo.lock().await.watch(func, query);
+
+                        return Some(rx);
                     }
                 }
             }
@@ -82,14 +106,4 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
     };
 
     gen.into()
-}
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-
-    #[test]
-
-    fn it_builds() {}
 }
