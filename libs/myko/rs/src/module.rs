@@ -1,18 +1,23 @@
-use futures_util::Future;
+use myko_wasm::{
+    event::MEvent,
+    query::{Query, QueryResponse},
+};
 use tokio::sync::broadcast::Receiver;
 
-use crate::{
-    event::MEvent,
-    query::{AllQueries, QueryResponse},
-};
+use async_trait::async_trait;
 
+#[async_trait]
 pub trait Module {
-    fn new() -> Self;
+    fn new() -> Self
+    where
+        Self: Sized;
 
-    fn handle_query(
+    async fn handle_query(
         &mut self,
-        query: AllQueries,
-    ) -> impl Future<Output = Option<std::sync::mpsc::Receiver<QueryResponse>>>;
+        query: Query,
+    ) -> Option<std::sync::mpsc::Receiver<QueryResponse>>
+    where
+        Self: Sized;
 
-    fn start(&self, events: Receiver<MEvent>) -> impl Future<Output = ()>;
+    async fn start(&self, events: Receiver<MEvent>) -> ();
 }

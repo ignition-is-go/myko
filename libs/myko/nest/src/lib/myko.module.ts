@@ -1,19 +1,19 @@
-import { Module, OnModuleInit, forwardRef } from '@nestjs/common';
-import { MykoCommandBus } from './busses/command.bus';
-import { ExplorerService } from './services';
-import { LoggerModule, LoggerService } from '@rship/logging';
-import { MykoQueryBus } from './busses';
-import { MykoEventBus } from './busses/event.bus';
-import { RedisPersisterFactory } from './persisters/redis.persisterFactory';
-import { bufferTime, filter, groupBy, mergeMap } from 'rxjs';
-import { SocketRegistry } from './registry/socket.registry';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-import { KafkaPersisterFactory } from './persisters';
-import { MykoGatewayModule } from './myko.gateway.module';
-import { PeerRegistry } from './registry/peer.registry';
-import { MykoReportBus } from './busses/report.bus';
-import { MykoDocsService } from './myko.docs.service';
-import { MykoBackplaneClient } from './myko.backplane.client';
+import { Module, OnModuleInit, forwardRef } from '@nestjs/common'
+import { MykoCommandBus } from './busses/command.bus'
+import { ExplorerService } from './services'
+import { LoggerModule, LoggerService } from '@rship/logging'
+import { MykoQueryBus } from './busses'
+import { MykoEventBus } from './busses/event.bus'
+import { RedisPersisterFactory } from './persisters/redis.persisterFactory'
+import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
+import { SocketRegistry } from './registry/socket.registry'
+import { ConfigModule, ConfigService } from '@nestjs/config'
+import { KafkaPersisterFactory } from './persisters'
+import { MykoGatewayModule } from './myko.gateway.module'
+import { PeerRegistry } from './registry/peer.registry'
+import { MykoReportBus } from './busses/report.bus'
+import { MykoDocsService } from './myko.docs.service'
+import { MykoBackplaneClient } from './myko.backplane.client'
 
 @Module({
   imports: [
@@ -59,17 +59,17 @@ export class MykoModule implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    const doc = this.config.get('MYKO_DOC');
+    const doc = this.config.get('MYKO_DOC')
 
     if (doc) {
-      this.docs.writeDocs('.');
+      this.docs.writeDocs('.')
     }
 
-    const { commands, queries, sagas, reports } = this.explorer.explore();
-    this.commandBus.register(commands);
-    this.queryBus.register(queries);
-    this.reportBus.register(reports);
-    this.eventBus.registerSagas(sagas);
+    const { commands, queries, sagas, reports } = this.explorer.explore()
+    this.commandBus.register(commands)
+    this.queryBus.register(queries)
+    this.reportBus.register(reports)
+    this.eventBus.registerSagas(sagas)
 
     if (process.env.LOG_LEVEL?.toLocaleLowerCase() === 'debug') {
       this.eventBus.subject$
@@ -85,8 +85,8 @@ export class MykoModule implements OnModuleInit {
         .subscribe((e) => {
           this.logger
             .getLogger(e[0].itemType)
-            .dev.debug(`${e[0].changeType} [${e.length}]`);
-        });
+            .dev.debug(`${e[0].changeType} [${e.length}]`)
+        })
     }
   }
 }

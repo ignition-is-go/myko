@@ -5,7 +5,7 @@ import { ID } from './base'
 import { MykoItem, MykoQuery, doc } from '../decorators'
 import { MQuery } from './query'
 import { MYKO_ITEM_TYPE } from '../constants'
-import type { MEvent as WASMEvent } from 'myko-rs'
+import type { MEvent as WASMEvent } from 'myko-wasm'
 
 export enum MEventType {
   SET = 'SET',

@@ -1,12 +1,14 @@
 use crate::{
-    event::{MEvent, MEventType},
-    item::Eventable,
     subscription::{Publisher, Subscription},
     utils::filter_query,
 };
+use myko_wasm::{
+    event::{MEvent, MEventType},
+    item::Eventable,
+};
 use serde::de::DeserializeOwned;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc::Receiver, Mutex};
 
 pub struct RepoStruct<T: Eventable<T, PT>, PT: Clone> {
     subs: Vec<Arc<Mutex<Subscription<T, PT>>>>,
@@ -14,7 +16,9 @@ pub struct RepoStruct<T: Eventable<T, PT>, PT: Clone> {
 }
 
 pub trait Repo<T, PT> {
-    fn watch(&mut self, func: Arc<dyn Fn(Vec<T>) -> ()>, query: PT);
+    fn watch(&mut self, query: PT) -> Receiver<Vec<T>>
+    where
+        Self: Sized;
 }
 
 impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> RepoStruct<T, PT> {
@@ -66,17 +70,21 @@ impl<T: Eventable<T, PT> + PartialEq, PT: Clone> RepoStruct<T, PT> {
 impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Repo<T, PT>
     for RepoStruct<T, PT>
 {
-    fn watch(&mut self, func: Arc<dyn Fn(Vec<T>) -> ()>, query: PT) {
+    fn watch(&mut self, query: PT) -> Receiver<Vec<T>> {
         let initial = filter_query(&self.state, &query);
 
-        func(initial.values().cloned().collect());
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<T>>(1);
+
+        tx.try_send(initial.values().cloned().collect()).unwrap();
 
         let sub = Subscription {
             state: self.state.clone(),
-            func: func.clone(),
+            tx,
             query: Box::new(query),
         };
 
         self.subs.push(Arc::new(Mutex::new(sub)));
+
+        rx
     }
 }

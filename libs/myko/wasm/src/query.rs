@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
-use crate::utils::remove_whitespace;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WatchId {
@@ -45,20 +43,22 @@ pub struct JMESPathQuery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum AllQueries {
+#[serde(tag = "queryId", content = "query")]
+pub enum Query {
+    #[serde(rename = "watchId")]
     WatchId(WatchId),
     Watch(Watch),
 }
 
 #[wasm_bindgen]
 pub fn make_watch_id(tx: String, item_id: String, item_type: String) -> String {
-    AllQueries::WatchId(WatchId::new(tx, item_id, item_type))
+    Query::WatchId(WatchId::new(tx, item_id, item_type))
         .to_string()
         .unwrap()
 }
 
-impl AllQueries {
-    pub fn from_json(s: Value) -> Result<AllQueries, serde_json::Error> {
+impl Query {
+    pub fn from_json(s: Value) -> Result<Query, serde_json::Error> {
         serde_json::from_value(s)
     }
 
@@ -66,7 +66,7 @@ impl AllQueries {
         serde_json::to_string(self)
     }
 
-    pub fn from_str(s: &str) -> Result<AllQueries, serde_json::Error> {
+    pub fn from_str(s: &str) -> Result<Query, serde_json::Error> {
         let s = remove_whitespace(s);
         serde_json::from_str(s.as_str())
     }
@@ -104,4 +104,8 @@ impl QueryResponse {
     pub fn get_item(&self) -> String {
         json!(self.result.clone()).to_string()
     }
+}
+
+pub fn remove_whitespace(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
 }

@@ -1,6 +1,6 @@
 import type { ID, PartialBy } from './base'
 import { MD5 } from 'object-hash'
-import { type MItem as WASMItem } from 'myko-rs'
+import { type MItem as WASMItem } from 'myko-wasm'
 
 type IMItem = Omit<WASMItem, 'free'>
 

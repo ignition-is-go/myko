@@ -1,15 +1,17 @@
+use std::sync::Arc;
+
 use futures_util::{stream::StreamExt, SinkExt};
+use myko_wasm::{
+    event::MEvent,
+    query::{Query, QueryResponse},
+};
 use tokio::{
     net::TcpListener,
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, Mutex},
 };
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
-use crate::{
-    event::MEvent,
-    module::Module,
-    query::{AllQueries, QueryResponse},
-};
+use crate::module::Module;
 
 #[derive(PartialEq)]
 enum StartupState {
@@ -21,24 +23,28 @@ enum StartupState {
 pub struct Server {
     startup_state: StartupState,
     config: ServerConfig,
+    modules: Arc<Mutex<Vec<Box<dyn Module + Send>>>>,
 }
 
 pub struct ServerConfig {
-    kafka_brokers: String,
+    // kafka_brokers: String,
 }
 
 impl Server {
-    pub async fn new(config: ServerConfig) -> Server {
+    pub fn new(config: ServerConfig) -> Server {
         Server {
             startup_state: StartupState::Off,
             config,
+            modules: Arc::new(Mutex::new(vec![])),
         }
     }
 
-    pub fn add_modules(mut self, modules: Vec<impl Module>) -> Server {
+    pub fn add_modules(mut self, modules: Vec<Box<dyn Module + Send>>) -> Server {
         if self.startup_state != StartupState::Off {
             panic!("Cannot add modules after startup");
         }
+
+        self.modules = Arc::new(Mutex::new(modules));
 
         self.startup_state = StartupState::HasModules;
 
@@ -71,7 +77,8 @@ impl Server {
                 Ok(listener) => {
                     println!("WebSocket server listening on {}", address);
                     while let Ok((stream, _)) = listener.accept().await {
-                        tokio::spawn(handle_connection(stream, all_events_tx.clone()));
+                        let r = self.modules.clone();
+                        tokio::spawn(handle_connection(stream, all_events_tx.clone(), r));
                     }
                     self.startup_state = StartupState::Bound;
                     break; // Exit loop if successfully bound
@@ -122,6 +129,7 @@ impl Server {
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     all_events: broadcast::Sender<MEvent>,
+    modules: Arc<Mutex<Vec<Box<dyn Module + Send>>>>,
     // entites: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
 ) {
     println!("New WebSocket connection");
@@ -156,15 +164,19 @@ async fn handle_connection(
 
                     match MEvent::from_str(text) {
                         Ok(event) => {
-                            todo!("Process Event to all modules, and continue");
+                            println!("Received event: {:?}", event);
+
+                            continue;
+                            // todo!("Process Event to all modules, and continue");
                         }
                         Err(_e) => {}
                     };
 
-                    match AllQueries::from_str(text) {
+                    match Query::from_str(text) {
                         Ok(query) => {
                             println!("Received query: {:?}", query);
-                            todo!("Handle Query, and continue");
+                            continue;
+                            // todo!("Handle Query, and continue");
                             // (self.handle_query(query, to_ws_tx.clone(), &all_events)).await;
                         }
                         Err(_e) => {
@@ -181,8 +193,8 @@ async fn handle_connection(
     }
 }
 
-async fn handle_query(
-    query: AllQueries,
+fn handle_query(
+    query: Query,
     to_ws: mpsc::Sender<Message>,
     all_events: &broadcast::Sender<MEvent>,
     // entites: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
@@ -190,7 +202,7 @@ async fn handle_query(
     println!("handle_query, {:?}", query);
 
     match query {
-        AllQueries::WatchId(query) => {
+        Query::WatchId(query) => {
             let mut rx = all_events.subscribe();
 
             // let entity_map = entites.lock().await;
@@ -223,7 +235,7 @@ async fn handle_query(
                 }
             });
         }
-        AllQueries::Watch(query) => {
+        Query::Watch(query) => {
             let mut rx = all_events.subscribe();
 
             tokio::spawn(async move {

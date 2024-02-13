@@ -2,30 +2,32 @@
 
 mod tests {
 
+    use macros::Eventable;
+    use myko_wasm::event::{MEvent, MEventType};
+    use myko_wasm::item::Eventable;
+    use myko_wasm::query::{Query, QueryResponse};
+
     use crate::{
-        event::{self, MEvent},
-        item::Eventable,
         module::Module,
-        query::{AllQueries, QueryResponse},
-        repo::{self, Repo, RepoStruct},
+        repo::{Repo, RepoStruct},
         utils::matches,
     };
-    use macros::Eventable;
+
     use partially::Partial;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    #[derive(Clone, Serialize, Partial, Deserialize, PartialEq, Eq, Debug, Eventable)]
-    #[partially(derive(Clone, Serialize, Deserialize))]
+    #[derive(Clone, Serialize, Partial, Deserialize, PartialEq, Debug)]
+    #[partially(derive(Clone, Serialize, Deserialize, Default))]
     struct Demo {
         id: String,
         hash: String,
     }
 
-    #[derive(Clone, Serialize, Partial, Deserialize, PartialEq, Eq, Debug, Eventable)]
-    #[partially(derive(Clone, Serialize, Deserialize))]
+    #[derive(Clone, Partial, Serialize, Deserialize, PartialEq, Debug, Eventable)]
+    #[partially(derive(Clone, Serialize, Deserialize, Default))]
     struct Auto {
         id: String,
         hash: String,
@@ -66,12 +68,12 @@ mod tests {
 
         let query = PartialAuto {
             id: Some("1".to_string()),
-            hash: None,
+            ..Default::default()
         };
 
         let query2 = PartialAuto {
             id: Some("2".to_string()),
-            hash: None,
+            ..Default::default()
         };
 
         assert!(matches(&item, &query));
@@ -97,41 +99,47 @@ mod tests {
         let num1s = Arc::new(std::sync::Mutex::new(0));
         let num2s = Arc::new(std::sync::Mutex::new(0));
 
-        repo.watch(
-            Arc::new(move |items: Vec<Auto>| {
-                let mut val = num1s.lock().unwrap();
-                assert!(items.len() == *val);
-                *val = *val + 1;
-            }),
-            PartialAuto {
-                id: Some("1".to_string()),
-                hash: None,
-            },
-        );
+        let mut rx1 = repo.watch(PartialAuto {
+            id: Some("1".to_string()),
+            hash: None,
+            ..Default::default()
+        });
 
-        repo.watch(
-            Arc::new(move |items| {
-                let mut val = num2s.lock().unwrap();
-                assert!(items.len() == *val);
-                *val = *val + 1;
-            }),
-            PartialAuto {
-                id: Some("2".to_string()),
-                hash: None,
-            },
-        );
+        let mut rx2 = repo.watch(PartialAuto {
+            id: Some("2".to_string()),
+            hash: None,
+            ..Default::default()
+        });
 
-        repo.process(event::MEvent::from_item(
+        tokio::spawn(async move {
+            while let Some(items) = rx1.recv().await {
+                // increment the number of 1s
+                *num1s.lock().unwrap() += 1;
+                // check that the list is num1s long
+                assert_eq!(items.len(), *num1s.lock().unwrap());
+            }
+        });
+
+        tokio::spawn(async move {
+            while let Some(items) = rx2.recv().await {
+                // increment the number of 2s
+                *num2s.lock().unwrap() += 1;
+                // check that the list is num2s long
+                assert_eq!(items.len(), *num2s.lock().unwrap());
+            }
+        });
+
+        repo.process(MEvent::from_item(
             item2.clone(),
-            event::MEventType::SET,
+            MEventType::SET,
             "2".to_string(),
         ))
         .await
         .unwrap();
 
-        repo.process(event::MEvent::from_item(
+        repo.process(MEvent::from_item(
             item.clone(),
-            event::MEventType::SET,
+            MEventType::SET,
             "2".to_string(),
         ))
         .await
@@ -146,70 +154,92 @@ mod tests {
 
         module.start(rx).await;
 
-        struct DemoModule {
-            repo: Arc<Mutex<repo::RepoStruct<Demo, PartialDemo>>>,
+        impl Eventable<Demo, PartialDemo> for Demo {
+            type T = PartialDemo;
+
+            fn id(&self) -> String {
+                self.id.clone()
+            }
+
+            fn hash(&self) -> String {
+                self.hash.clone()
+            }
         }
 
+        struct DemoModule {
+            repo: Arc<Mutex<RepoStruct<Demo, PartialDemo>>>,
+        }
+
+        #[async_trait::async_trait]
         impl Module for DemoModule {
             fn new() -> Self {
                 DemoModule {
-                    repo: Arc::new(Mutex::new(repo::RepoStruct::new())),
+                    repo: Arc::new(Mutex::new(RepoStruct::new())),
                 }
             }
 
             async fn handle_query(
                 &mut self,
-                query: crate::query::AllQueries,
+                query: myko_wasm::query::Query,
             ) -> Option<std::sync::mpsc::Receiver<QueryResponse>> {
                 match query {
-                    AllQueries::WatchId(query) => {
+                    Query::WatchId(query) => {
                         if query.item_type != "Auto" {
                             return None;
                         }
                         let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
-                        let func = Arc::new(move |items: Vec<Demo>| {
-                            let values = items
-                                .iter()
-                                .map(|x| serde_json::to_value(x))
-                                .filter_map(Result::ok)
-                                .collect::<Vec<Value>>();
-                            let response = QueryResponse::new(query.tx.clone(), values);
-                            match tx.send(response) {
-                                Ok(_) => (),
-                                Err(e) => println!("Failed to send response: {}", e),
-                            }
-                        });
 
-                        let query = PartialDemo {
+                        let query_filter = PartialDemo {
                             id: Some(query.item_id),
-                            hash: None,
+                            ..Default::default()
                         };
 
-                        self.repo.lock().await.watch(func, query);
+                        let mut qrx = self.repo.lock().await.watch(query_filter);
+
+                        tokio::spawn(async move {
+                            while let Some(items) = qrx.recv().await {
+                                let values = items
+                                    .iter()
+                                    .map(|x| serde_json::to_value(x))
+                                    .filter_map(Result::ok)
+                                    .collect::<Vec<Value>>();
+
+                                let response = QueryResponse::new(query.tx.clone(), values);
+                                match tx.send(response) {
+                                    Ok(_) => (),
+                                    Err(e) => println!("Failed to send response: {}", e),
+                                }
+                            }
+                        });
 
                         return Some(rx);
                     }
-                    AllQueries::Watch(query) => {
+                    Query::Watch(query) => {
                         if query.item_type != "Auto" {
                             return None;
                         }
                         let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
-                        let func = Arc::new(move |items: Vec<Demo>| {
-                            let values = items
-                                .iter()
-                                .map(|x| serde_json::to_value(x))
-                                .filter_map(Result::ok)
-                                .collect::<Vec<Value>>();
-                            let response = QueryResponse::new(query.tx.clone(), values);
-                            match tx.send(response) {
-                                Ok(_) => (),
-                                Err(e) => println!("Failed to send response: {}", e),
+
+                        let filter_query =
+                            serde_json::from_value::<PartialDemo>(query.query).unwrap();
+
+                        let mut qrx = self.repo.lock().await.watch(filter_query);
+
+                        tokio::spawn(async move {
+                            while let Some(items) = qrx.recv().await {
+                                let values = items
+                                    .iter()
+                                    .map(|x| serde_json::to_value(x))
+                                    .filter_map(Result::ok)
+                                    .collect::<Vec<Value>>();
+
+                                let response = QueryResponse::new(query.tx.clone(), values);
+                                match tx.send(response) {
+                                    Ok(_) => (),
+                                    Err(e) => println!("Failed to send response: {}", e),
+                                }
                             }
                         });
-
-                        let query = serde_json::from_value::<PartialDemo>(query.query).unwrap();
-
-                        self.repo.lock().await.watch(func, query);
 
                         return Some(rx);
                     }

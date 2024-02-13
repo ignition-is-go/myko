@@ -1,5 +1,5 @@
-use crate::event::MEvent;
 use futures_util::stream::StreamExt;
+use myko_wasm::event::MEvent;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::config::{ClientConfig, FromClientConfig};
 use rdkafka::consumer::{Consumer, StreamConsumer};

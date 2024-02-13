@@ -1,6 +1,6 @@
 import { MEvent, MYKO_ITEM_TYPE } from '@myko/core'
 import { Injectable, OnModuleInit } from '@nestjs/common'
-import { QueryResponse, make_watch_id } from 'myko-rs'
+import { QueryResponse, make_watch_id } from 'myko-wasm'
 import { MItem } from '@myko/core'
 import { WebSocket } from 'ws'
 import { v4 as uuid } from 'uuid'
@@ -11,7 +11,8 @@ export class MykoBackplaneClient implements OnModuleInit {
 
   constructor() {}
 
-  private connectCallbacks = new Set<() => void>()
+  private connectCallbacks = new Set<() => () => void>()
+  private disconnectCallbacks = new Set<() => void>()
   private queryCallbacks = new Map<string, (items: MItem[]) => void>()
 
   onModuleInit() {
@@ -21,13 +22,11 @@ export class MykoBackplaneClient implements OnModuleInit {
   private async connect() {
     try {
       console.log('CONNECTING')
-      this.client = new WebSocket('ws://127.0.0.1:5157', { timeout: 1000 })
+      this.client = new WebSocket('ws://127.0.0.1:5156', { timeout: 1000 })
       console.log('CONNECTED')
     } catch (e) {
       console.log(e)
-      setTimeout(() => {
-        this.connect()
-      }, 1000)
+      this.client = undefined
       return
     }
 
@@ -36,10 +35,12 @@ export class MykoBackplaneClient implements OnModuleInit {
     })
 
     this.client.on('open', () => {
-      this.connectCallbacks.forEach((cb) => cb())
+      this.connectCallbacks.forEach((cb) => this.disconnectCallbacks.add(cb()))
     })
 
     this.client.on('close', () => {
+      console.log('DISCONNECTED')
+      this.disconnectCallbacks.forEach((cb) => cb())
       setTimeout(() => {
         this.connect()
       }, 1000)
@@ -100,7 +101,7 @@ export class MykoBackplaneClient implements OnModuleInit {
     this.queryCallbacks.set(tx, (items) => onUpdate(items.shift() as T))
   }
 
-  public onConnect(cb: () => void) {
+  public onConnect(cb: () => () => void) {
     this.connectCallbacks.add(cb)
   }
 }

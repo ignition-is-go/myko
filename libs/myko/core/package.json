@@ -4,7 +4,7 @@
   "types": "./src/index.ts",
   "dependencies": {
     "luxon": "^3.4.4",
-    "myko-rs": "workspace:^",
+    "myko-wasm": "workspace:^",
     "object-hash": "^3.0.0",
     "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.1",

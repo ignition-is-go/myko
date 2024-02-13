@@ -7,23 +7,20 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-wasm-bindgen = "0.2.88"
-js-sys = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-uuid = { version = "1.0", features = ["serde", "v4", "js"] }  # The version might change, please use the latest version
-redis = "0.24.0"
+uuid = { version = "1.0", features = ["serde", "v4", "js"] } 
 partially = {version = "0.2.1", features = ["derive"]}
 futures-signals = "0.3.33"
-rxrust = "0.15.0"
 futures-util = "0.3.30"
 tokio = {version = "1.35.1", features = ["full"]}
 tungstenite = "0.21.0"
 tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
-macros = { version = "0.1.0", path = "../macros" }
+async-trait = "0.1.77"
 rdkafka = "0.36.2"
-quote = "1.0.35"
-
+macros = {path = "../macros"}
+openssl = { version = "0.10.35", features = ["vendored"] }
+myko-wasm = {path="../wasm"}
 [dependencies.web-sys]
 version = "0.3.22"
 features = [

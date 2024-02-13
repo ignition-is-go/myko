@@ -5,6 +5,24 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
 
+#[proc_macro_derive(Empty)]
+pub fn empty_impl(input: TokenStream) -> TokenStream {
+    let ast = parse_macro_input!(input as DeriveInput);
+    let name = &ast.ident;
+
+    let gen = quote! {
+
+        impl Empty for #name {
+            fn empty(&self) -> bool {
+                false
+            }
+        }
+
+    };
+
+    gen.into()
+}
+
 #[proc_macro_derive(Eventable)]
 pub fn eventable_impl(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
@@ -29,76 +47,86 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
         }
 
         struct #module_name {
-            repo: Arc<Mutex<repo::RepoStruct<#name, #partial_name>>>,
+            repo: Arc<Mutex<RepoStruct<#name, #partial_name>>>,
         }
 
+        #[async_trait::async_trait]
         impl Module for #module_name {
             fn new() -> Self {
                 #module_name {
-                    repo: Arc::new(Mutex::new(repo::RepoStruct::new())),
+                    repo: Arc::new(Mutex::new(RepoStruct::new())),
                 }
             }
 
             async fn handle_query(
                 &mut self,
-                query: crate::query::AllQueries,
+                query: myko_wasm::query::Query,
             ) -> Option<std::sync::mpsc::Receiver<QueryResponse>> {
                 match query {
-                    AllQueries::WatchId(query) => {
+                        Query::WatchId(query) => {
                         if query.item_type != #name_str {
                             return None;
                         }
                         let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
-                        let func = Arc::new(move |items: Vec<#name>| {
-                            let values = items
-                                .iter()
-                                .map(|x| serde_json::to_value(x))
-                                .filter_map(Result::ok)
-                                .collect::<Vec<Value>>();
-                            let response = QueryResponse::new(query.tx.clone(), values);
-                            match tx.send(response) {
-                                Ok(_) => (),
-                                Err(e) => println!("Failed to send response: {}", e),
-                            }
-                        });
 
-                        let query = #partial_name {
+                        let query_filter = #partial_name {
                             id: Some(query.item_id),
-                            hash: None,
+                            ..Default::default()
                         };
 
-                        self.repo.lock().await.watch(func, query);
+                        let mut qrx = self.repo.lock().await.watch(query_filter);
+
+                        tokio::spawn(async move {
+                            while let Some(items) = qrx.recv().await {
+                                let values = items
+                                    .iter()
+                                    .map(|x| serde_json::to_value(x))
+                                    .filter_map(Result::ok)
+                                    .collect::<Vec<Value>>();
+
+                                let response = QueryResponse::new(query.tx.clone(), values);
+                                match tx.send(response) {
+                                    Ok(_) => (),
+                                    Err(e) => println!("Failed to send response: {}", e),
+                                }
+                            }
+                        });
 
                         return Some(rx);
-                    },
-                      AllQueries::Watch(query) => {
+                    }
+                    Query::Watch(query) => {
                         if query.item_type != #name_str {
                             return None;
                         }
                         let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
-                        let func = Arc::new(move |items: Vec<#name>| {
-                            let values = items
-                                .iter()
-                                .map(|x| serde_json::to_value(x))
-                                .filter_map(Result::ok)
-                                .collect::<Vec<Value>>();
-                            let response = QueryResponse::new(query.tx.clone(), values);
-                            match tx.send(response) {
-                                Ok(_) => (),
-                                Err(e) => println!("Failed to send response: {}", e),
+
+                        let filter_query =
+                            serde_json::from_value::<#partial_name>(query.query).unwrap();
+
+                        let mut qrx = self.repo.lock().await.watch(filter_query);
+
+                        tokio::spawn(async move {
+                            while let Some(items) = qrx.recv().await {
+                                let values = items
+                                    .iter()
+                                    .map(|x| serde_json::to_value(x))
+                                    .filter_map(Result::ok)
+                                    .collect::<Vec<Value>>();
+
+                                let response = QueryResponse::new(query.tx.clone(), values);
+                                match tx.send(response) {
+                                    Ok(_) => (),
+                                    Err(e) => println!("Failed to send response: {}", e),
+                                }
                             }
                         });
-
-                        let query = serde_json::from_value::<#partial_name>(query.query).unwrap();
-
-                        self.repo.lock().await.watch(func, query);
 
                         return Some(rx);
                     }
                 }
             }
 
-            async fn start(&self, events: tokio::sync::broadcast::Receiver<MEvent>) {
+            async fn start(&self, events: tokio::sync::broadcast::Receiver<myko_wasm::event::MEvent>) {
                 self.repo.lock().await.listen(events).await;
             }
         }

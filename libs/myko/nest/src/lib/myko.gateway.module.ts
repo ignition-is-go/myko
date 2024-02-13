@@ -15,6 +15,7 @@ import {
   ClientRepo,
   Server,
   ServerRepo,
+  Stream,
   makeDel,
   ofItems,
   watchInit,
@@ -38,25 +39,21 @@ import { DateTime } from 'luxon'
     {
       provide: ClientRepo,
 
-      useFactory: (events: MykoEventBus, persisters: KafkaPersisterFactory) => {
-        const p = persisters.getPersister<Client>(Client)
+      useFactory: (events: MykoEventBus) => {
+        // const p = persisters.getPersister<Client>(Client)
 
-        events.subject$.pipe(ofItems(Client)).subscribe((e) => p.persist(e))
+        // events.subject$.pipe(ofItems(Client)).subscribe((e) => p.persist(e))
         return new ClientRepo(Client, {
-          stream: p.output.pipe(),
+          stream: events.subject$.pipe() as Stream<Client>,
         })
       },
       inject: [MykoEventBus, KafkaPersisterFactory],
     },
     {
       provide: ServerRepo,
-      useFactory: (events: MykoEventBus, persisters: KafkaPersisterFactory) => {
-        const p = persisters.getPersister<Server>(Server)
-
-        events.subject$.pipe(ofItems(Server)).subscribe((e) => p.persist(e))
-
+      useFactory: (events: MykoEventBus) => {
         return new ServerRepo(Server, {
-          stream: p.output.pipe(),
+          stream: events.subject$.pipe() as Stream<Server>,
         })
       },
       inject: [MykoEventBus, KafkaPersisterFactory],

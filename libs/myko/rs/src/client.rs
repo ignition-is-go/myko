@@ -1,5 +1,5 @@
-use crate::event::MEvent;
 use futures_util::{SinkExt, StreamExt};
+use myko_wasm::event::MEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
