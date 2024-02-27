@@ -117,4 +117,4 @@ target/
 .pnpm-store
 
 # Xcode user state
-xcuserdata/
+rship-swift.xcworkspace/xcuserdata/max.xcuserdatad/UserInterfaceState.xcuserstate
