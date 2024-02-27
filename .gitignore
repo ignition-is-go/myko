@@ -115,3 +115,6 @@ target/
 # pnpm-store
 
 .pnpm-store
+
+# Xcode user state
+xcuserdata/
