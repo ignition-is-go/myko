@@ -178,6 +178,17 @@ mod tests {
                 }
             }
 
+            async fn process_event(&mut self, event: MEvent) {
+                if event.item_type() != "Demo" {
+                    return;
+                }
+                println!("Processing event in {}", "Demo");
+                match self.repo.lock().await.process(event).await {
+                    Ok(_) => (),
+                    Err(e) => println!("Failed to process event: {}", e),
+                }
+            }
+
             async fn handle_query(
                 &mut self,
                 query: myko_wasm::query::Query,

@@ -152,7 +152,7 @@ async fn handle_connection(
     while let Some(message) = ws_read.next().await {
         match message {
             Ok(message) => {
-                println!("Received message from WebSocket: {:?}", message);
+                // println!("Received message from WebSocket: {:?}", message);
                 if message.is_text() {
                     let text = match message.to_text() {
                         Ok(t) => t,
@@ -164,7 +164,13 @@ async fn handle_connection(
 
                     match MEvent::from_str(text) {
                         Ok(event) => {
-                            println!("Received event: {:?}", event);
+                            // println!("Received event: {:?}", event);
+
+                            let mut modules = modules.lock().await;
+
+                            for module in modules.iter_mut() {
+                                module.process_event(event.clone()).await;
+                            }
 
                             continue;
                             // todo!("Process Event to all modules, and continue");
@@ -175,6 +181,13 @@ async fn handle_connection(
                     match Query::from_str(text) {
                         Ok(query) => {
                             println!("Received query: {:?}", query);
+
+                            let mut modules = modules.lock().await;
+
+                            for module in modules.iter_mut() {
+                                module.handle_query(query.clone()).await;
+                            }
+
                             continue;
                             // todo!("Handle Query, and continue");
                             // (self.handle_query(query, to_ws_tx.clone(), &all_events)).await;

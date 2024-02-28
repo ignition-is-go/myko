@@ -15,9 +15,9 @@ pub trait Module {
     async fn handle_query(
         &mut self,
         query: Query,
-    ) -> Option<std::sync::mpsc::Receiver<QueryResponse>>
-    where
-        Self: Sized;
+    ) -> Option<std::sync::mpsc::Receiver<QueryResponse>>;
+
+    async fn process_event(&mut self, event: MEvent);
 
     async fn start(&self, events: Receiver<MEvent>) -> ();
 }

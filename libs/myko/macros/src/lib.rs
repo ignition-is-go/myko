@@ -58,6 +58,18 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                 }
             }
 
+
+            async fn process_event(&mut self, event:  myko_wasm::event::MEvent)  {
+                if event.item_type() != #name_str {
+                    return;
+                }
+                println!("Processing event in {}", #name_str);
+                match self.repo.lock().await.process(event).await {
+                    Ok(_) => (),
+                    Err(e) => println!("Failed to process event: {}", e),
+                }
+            }
+
             async fn handle_query(
                 &mut self,
                 query: myko_wasm::query::Query,
