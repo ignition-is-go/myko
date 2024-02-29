@@ -1,6 +1,6 @@
 import { MEvent, MYKO_ITEM_TYPE } from '@myko/core'
 import { Injectable, OnModuleInit } from '@nestjs/common'
-import { QueryResponse, make_watch_id } from 'myko-wasm'
+import { QueryResponse, make_watch_id, make_watch } from 'myko-wasm'
 import { MItem } from '@myko/core'
 import { WebSocket } from 'ws'
 import { v4 as uuid } from 'uuid'
@@ -58,9 +58,7 @@ export class MykoBackplaneClient implements OnModuleInit {
         }
         const item = msg.result as unknown as MItem[]
         cb(item.slice())
-        item.forEach((item) => {
-          console.timeEnd(item.hash)
-        })
+        item.forEach((item) => {})
       } catch (e) {
         console.error(e, data.toLocaleString())
       }
@@ -68,7 +66,6 @@ export class MykoBackplaneClient implements OnModuleInit {
   }
 
   async publishEvent(event: MEvent) {
-    console.time(event.item.hash)
     this.send(event)
   }
 
@@ -95,10 +92,20 @@ export class MykoBackplaneClient implements OnModuleInit {
     onUpdate: (items: T) => void,
   ) {
     const tx = uuid()
-    console.time(tx)
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
     this.send_string(make_watch_id(tx, id, itemType))
     this.queryCallbacks.set(tx, (items) => onUpdate(items.shift() as T))
+  }
+
+  public watch<T extends MItem>(
+    partial: Partial<T>,
+    type: new (args: any) => T,
+    onUpdate: (items: T[]) => void,
+  ) {
+    const tx = uuid()
+    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
+    this.send_string(make_watch(tx, JSON.stringify(partial), itemType))
+    this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
   }
 
   public onConnect(cb: () => () => void) {

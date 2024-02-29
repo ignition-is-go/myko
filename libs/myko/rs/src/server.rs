@@ -57,7 +57,6 @@ impl Server {
         }
 
         // let (to_kafka_tx, mut to_kafka_rx) = mpsc::channel::<MEvent>(100);
-        let (all_events_tx, _) = broadcast::channel::<MEvent>(100);
 
         let mut port = 5156;
         let max_port = 5255;
@@ -71,6 +70,16 @@ impl Server {
         //     }
         // });
 
+        // let all_events = all_events_tx.clone();
+        // let modules = self.modules.clone();
+        // tokio::spawn(async move {
+        //     let mut modules = modules.lock().await;
+
+        //     for module in modules.iter_mut() {
+        //         module.start(all_events.subscribe()).await;
+        //     }
+        // });
+
         loop {
             let address = format!("0.0.0.0:{}", port);
             match TcpListener::bind(&address).await {
@@ -78,7 +87,7 @@ impl Server {
                     println!("WebSocket server listening on {}", address);
                     while let Ok((stream, _)) = listener.accept().await {
                         let r = self.modules.clone();
-                        tokio::spawn(handle_connection(stream, all_events_tx.clone(), r));
+                        tokio::spawn(handle_connection(stream, r));
                     }
                     self.startup_state = StartupState::Bound;
                     break; // Exit loop if successfully bound
@@ -128,7 +137,7 @@ impl Server {
 
 async fn handle_connection(
     stream: tokio::net::TcpStream,
-    all_events: broadcast::Sender<MEvent>,
+    // all_events: broadcast::Sender<MEvent>,
     modules: Arc<Mutex<Vec<Box<dyn Module + Send>>>>,
     // entites: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
 ) {
@@ -185,7 +194,32 @@ async fn handle_connection(
                             let mut modules = modules.lock().await;
 
                             for module in modules.iter_mut() {
-                                module.handle_query(query.clone()).await;
+                                match module.handle_query(query.clone()).await {
+                                    Some(mut rx) => {
+                                        let tx_clone = to_ws_tx.clone();
+
+                                        tokio::spawn(async move {
+                                            while let Some(response) = rx.recv().await {
+                                                let response_str = match response.to_string() {
+                                                    Ok(s) => s,
+                                                    Err(e) => {
+                                                        println!("Failed to convert response to string: {}", e);
+                                                        continue;
+                                                    }
+                                                };
+
+                                                if let Err(_) = tx_clone
+                                                    .clone()
+                                                    .send(Message::from(response_str))
+                                                    .await
+                                                {
+                                                    break;
+                                                }
+                                            }
+                                        });
+                                    }
+                                    None => {}
+                                };
                             }
 
                             continue;

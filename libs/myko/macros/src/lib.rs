@@ -73,13 +73,13 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
             async fn handle_query(
                 &mut self,
                 query: myko_wasm::query::Query,
-            ) -> Option<std::sync::mpsc::Receiver<QueryResponse>> {
+            ) -> Option<tokio::sync::mpsc::Receiver<QueryResponse>> {
                 match query {
                         Query::WatchId(query) => {
                         if query.item_type != #name_str {
                             return None;
                         }
-                        let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
+                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
                         let query_filter = #partial_name {
                             id: Some(query.item_id),
@@ -97,7 +97,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                                     .collect::<Vec<Value>>();
 
                                 let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response) {
+                                match tx.send(response).await {
                                     Ok(_) => (),
                                     Err(e) => println!("Failed to send response: {}", e),
                                 }
@@ -110,12 +110,20 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                         if query.item_type != #name_str {
                             return None;
                         }
-                        let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
+                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
                         let filter_query =
-                            serde_json::from_value::<#partial_name>(query.query).unwrap();
+                            serde_json::from_str::<#partial_name>(query.query.as_str());
 
-                        let mut qrx = self.repo.lock().await.watch(filter_query);
+                        let safe_filter_query = match filter_query {
+                            Ok(fq) => fq,
+                            Err(e) => {
+                                println!("Failed to parse query: {}", e);
+                                return None;
+                            }
+                        };
+
+                        let mut qrx = self.repo.lock().await.watch(safe_filter_query);
 
                         tokio::spawn(async move {
                             while let Some(items) = qrx.recv().await {
@@ -126,7 +134,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                                     .collect::<Vec<Value>>();
 
                                 let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response) {
+                                match tx.send(response).await {
                                     Ok(_) => (),
                                     Err(e) => println!("Failed to send response: {}", e),
                                 }
@@ -138,9 +146,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                 }
             }
 
-            async fn start(&self, events: tokio::sync::broadcast::Receiver<myko_wasm::event::MEvent>) {
-                self.repo.lock().await.listen(events).await;
-            }
+
         }
 
     };

@@ -148,11 +148,7 @@ mod tests {
 
     #[tokio::test]
     async fn it_makes_a_module() {
-        let module: AutoModule = AutoModule::new();
-
-        let (tx, rx) = tokio::sync::broadcast::channel::<MEvent>(1);
-
-        module.start(rx).await;
+        let _module: AutoModule = AutoModule::new();
 
         impl Eventable<Demo, PartialDemo> for Demo {
             type T = PartialDemo;
@@ -192,13 +188,13 @@ mod tests {
             async fn handle_query(
                 &mut self,
                 query: myko_wasm::query::Query,
-            ) -> Option<std::sync::mpsc::Receiver<QueryResponse>> {
+            ) -> Option<tokio::sync::mpsc::Receiver<QueryResponse>> {
                 match query {
                     Query::WatchId(query) => {
                         if query.item_type != "Auto" {
                             return None;
                         }
-                        let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
+                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
                         let query_filter = PartialDemo {
                             id: Some(query.item_id),
@@ -216,7 +212,7 @@ mod tests {
                                     .collect::<Vec<Value>>();
 
                                 let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response) {
+                                match tx.send(response).await {
                                     Ok(_) => (),
                                     Err(e) => println!("Failed to send response: {}", e),
                                 }
@@ -229,12 +225,21 @@ mod tests {
                         if query.item_type != "Auto" {
                             return None;
                         }
-                        let (tx, rx) = std::sync::mpsc::channel::<QueryResponse>();
+                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
-                        let filter_query =
-                            serde_json::from_value::<PartialDemo>(query.query).unwrap();
+                        let filter_query = serde_json::from_str::<PartialDemo>(
+                            query.query.as_str().expect("cannot make into str"),
+                        );
 
-                        let mut qrx = self.repo.lock().await.watch(filter_query);
+                        let safe_filter_query = match filter_query {
+                            Ok(fq) => fq,
+                            Err(e) => {
+                                println!("Failed to parse query: {}", e);
+                                return None;
+                            }
+                        };
+
+                        let mut qrx = self.repo.lock().await.watch(safe_filter_query);
 
                         tokio::spawn(async move {
                             while let Some(items) = qrx.recv().await {
@@ -245,7 +250,7 @@ mod tests {
                                     .collect::<Vec<Value>>();
 
                                 let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response) {
+                                match tx.send(response).await {
                                     Ok(_) => (),
                                     Err(e) => println!("Failed to send response: {}", e),
                                 }
@@ -255,10 +260,6 @@ mod tests {
                         return Some(rx);
                     }
                 }
-            }
-
-            async fn start(&self, events: tokio::sync::broadcast::Receiver<MEvent>) {
-                self.repo.lock().await.listen(events).await;
             }
         }
     }

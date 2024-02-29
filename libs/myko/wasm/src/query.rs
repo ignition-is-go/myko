@@ -1,3 +1,5 @@
+use std::any::Any;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -31,7 +33,7 @@ impl WatchId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watch {
     pub tx: String,
-    pub query: Value,
+    pub query: String,
     pub item_type: String,
 }
 
@@ -47,6 +49,7 @@ pub struct JMESPathQuery {
 pub enum Query {
     #[serde(rename = "watchId")]
     WatchId(WatchId),
+    #[serde(rename = "watch")]
     Watch(Watch),
 }
 
@@ -55,6 +58,20 @@ pub fn make_watch_id(tx: String, item_id: String, item_type: String) -> String {
     Query::WatchId(WatchId::new(tx, item_id, item_type))
         .to_string()
         .unwrap()
+}
+
+#[wasm_bindgen]
+pub fn make_watch(tx: String, query: String, item_type: String) -> String {
+    let q = serde_json::from_str(query.as_str()).unwrap();
+
+    println!("Query: {:?}", q);
+    Query::Watch(Watch {
+        tx,
+        query: q,
+        item_type,
+    })
+    .to_string()
+    .unwrap()
 }
 
 impl Query {
