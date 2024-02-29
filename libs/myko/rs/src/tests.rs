@@ -227,9 +227,8 @@ mod tests {
                         }
                         let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
-                        let filter_query = serde_json::from_str::<PartialDemo>(
-                            query.query.as_str().expect("cannot make into str"),
-                        );
+                        let filter_query =
+                            serde_json::from_str::<PartialDemo>(query.query.as_str());
 
                         let safe_filter_query = match filter_query {
                             Ok(fq) => fq,

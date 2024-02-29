@@ -46,7 +46,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
             }
         }
 
-        struct #module_name {
+        pub struct #module_name {
             repo: Arc<Mutex<RepoStruct<#name, #partial_name>>>,
         }
 
