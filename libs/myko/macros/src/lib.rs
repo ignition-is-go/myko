@@ -48,6 +48,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
         pub struct #module_name {
             repo: Arc<Mutex<RepoStruct<#name, #partial_name>>>,
+            kafka: Option<KafkaClient>,
         }
 
         #[async_trait::async_trait]
@@ -55,18 +56,40 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
             fn new() -> Self {
                 #module_name {
                     repo: Arc::new(Mutex::new(RepoStruct::new())),
+                    kafka: None,
                 }
             }
 
+          async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: tokio::sync::mpsc::Sender<myko_wasm::event::MEvent>) {
+                let k = KafkaClient::new(brokers.join(",").as_str(), #name_str).await;
 
-            async fn process_event(&mut self, event:  myko_wasm::event::MEvent)  {
+                k.consume_events(from_kafka_tx).await;
+
+                self.kafka = Some(k);
+            }
+
+            fn entity_name(&self) -> String {
+                #name_str.to_string()
+            }
+
+            async fn process_event(&mut self, event:  myko_wasm::event::MEvent, persist: bool)  {
                 if event.item_type() != #name_str {
                     return;
                 }
                 println!("Processing event in {}", #name_str);
-                match self.repo.lock().await.process(event).await {
+
+                if persist {
+                    match self.kafka {
+                        Some(ref k) => {
+                            k.append_event(&event).await;
+                        }
+                        None => (),
+                    }
+                }
+
+                match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),
-                    Err(e) => println!("Failed to process event: {}", e),
+                    Err(e) => println!("Failed to process event: {}, {:?}", e, event),
                 }
             }
 

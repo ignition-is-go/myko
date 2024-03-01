@@ -1,4 +1,7 @@
+use std::{io::Cursor, u8};
+
 use crate::{item::Eventable, utils::remove_whitespace};
+use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
@@ -25,6 +28,7 @@ pub struct MEvent {
     created_at: String,
 
     tx: String,
+
     #[serde(rename = "sourceId")]
     source_id: Option<String>,
 }
@@ -32,6 +36,18 @@ pub struct MEvent {
 impl MEvent {
     pub fn from_str(s: &str) -> Result<MEvent, serde_json::Error> {
         serde_json::from_str(&remove_whitespace(s))
+    }
+
+    pub fn from_mp(s: &[u8]) -> Result<MEvent, ()> {
+        let cur = Cursor::new(s);
+        let mut de = Deserializer::new(cur);
+        let event: MEvent = match Deserialize::deserialize(&mut de) {
+            Ok(event) => event,
+            Err(e) => {
+                return Err(());
+            }
+        };
+        Ok(event)
     }
 
     pub fn item_json(&self) -> Value {

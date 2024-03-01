@@ -7,6 +7,7 @@ use myko_wasm::{
     item::Eventable,
 };
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc::Receiver, Mutex};
 
@@ -32,7 +33,26 @@ impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> RepoStruct<T
 
 impl<T: Eventable<T, PT> + PartialEq, PT: Clone> RepoStruct<T, PT> {
     pub async fn process(&mut self, event: MEvent) -> Result<(), serde_json::Error> {
-        let ent = serde_json::from_value::<T>(event.item_json())?;
+        let mut item = event.item_json();
+
+        let res = item.as_object_mut();
+
+        if res.is_none() {
+            return Err(serde::de::Error::custom("Invalid JSON"));
+        }
+
+        let mut json = res.unwrap().to_owned();
+
+        let hash = json.get("hash");
+
+        if hash.is_none() {
+            let computed_hash = md5::compute(event.item_json().to_string());
+            let hash_string = format!("{:x}", computed_hash);
+
+            json.insert("hash".to_string(), Value::String(hash_string));
+        }
+
+        let ent = serde_json::from_value::<T>(Value::Object(json))?;
 
         match event.change_type() {
             MEventType::SET => {

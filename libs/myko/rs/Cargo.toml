@@ -21,6 +21,9 @@ rdkafka = "0.36.2"
 macros = {path = "../macros"}
 openssl = { version = "0.10.35", features = ["vendored"] }
 myko-wasm = {path="../wasm"}
+rmp = "0.8.12"
+rmp-serde = "1.1.2"
+md5 = "0.7.0"
 [dependencies.web-sys]
 version = "0.3.22"
 features = [

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{any::Any, borrow::Borrow, collections::HashMap, sync::Arc};
 
 use futures_util::{stream::StreamExt, SinkExt};
 use myko_wasm::{
@@ -7,11 +7,15 @@ use myko_wasm::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{broadcast, mpsc, Mutex},
+    sync::{
+        broadcast,
+        mpsc::{self, Receiver},
+        Mutex,
+    },
 };
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
-use crate::module::Module;
+use crate::module::{self, Module};
 
 #[derive(PartialEq)]
 enum StartupState {
@@ -23,11 +27,11 @@ enum StartupState {
 pub struct Server {
     startup_state: StartupState,
     config: ServerConfig,
-    modules: Arc<Mutex<Vec<Box<dyn Module + Send>>>>,
+    modules_map: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
 }
 
 pub struct ServerConfig {
-    // kafka_brokers: String,
+    pub kafka_brokers: &'static [&'static str],
 }
 
 impl Server {
@@ -35,50 +39,43 @@ impl Server {
         Server {
             startup_state: StartupState::Off,
             config,
-            modules: Arc::new(Mutex::new(vec![])),
+            modules_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn add_modules(mut self, modules: Vec<Box<dyn Module + Send>>) -> Server {
+    pub async fn add_modules(mut self, mut modules: Vec<Box<dyn Module + Send>>) -> Server {
         if self.startup_state != StartupState::Off {
             panic!("Cannot add modules after startup");
         }
 
-        self.modules = Arc::new(Mutex::new(modules));
+        let (from_kafka_tx, from_kafka_rx) = mpsc::channel::<MEvent>(100);
+
+        for module in modules.iter_mut() {
+            module
+                .start_kafka(self.config.kafka_brokers, from_kafka_tx.clone())
+                .await;
+        }
+
+        self.modules_map = Arc::new(Mutex::new(
+            modules.into_iter().map(|m| (m.entity_name(), m)).collect(),
+        ));
 
         self.startup_state = StartupState::HasModules;
+
+        listen_kafka(from_kafka_rx, self.modules_map.clone());
 
         self
     }
 
     pub async fn start(mut self) {
-        if self.startup_state != StartupState::HasModules {
+        if self.startup_state != StartupState::HasModules
+            || self.modules_map.lock().await.is_empty()
+        {
             panic!("Cannot start without modules");
         }
 
-        // let (to_kafka_tx, mut to_kafka_rx) = mpsc::channel::<MEvent>(100);
-
         let mut port = 5156;
         let max_port = 5255;
-
-        // let kafka = KafkaClient::new(&self.config.kafka_brokers).await;
-
-        // tokio::spawn(async move {
-        //     kafka.consume_events(from_kafka_tx).await;
-        //     while let Some(message) = to_kafka_rx.recv().await {
-        //         kafka.append_event(&message).await;
-        //     }
-        // });
-
-        // let all_events = all_events_tx.clone();
-        // let modules = self.modules.clone();
-        // tokio::spawn(async move {
-        //     let mut modules = modules.lock().await;
-
-        //     for module in modules.iter_mut() {
-        //         module.start(all_events.subscribe()).await;
-        //     }
-        // });
 
         loop {
             let address = format!("0.0.0.0:{}", port);
@@ -86,7 +83,7 @@ impl Server {
                 Ok(listener) => {
                     println!("WebSocket server listening on {}", address);
                     while let Ok((stream, _)) = listener.accept().await {
-                        let r = self.modules.clone();
+                        let r = self.modules_map.clone();
                         tokio::spawn(handle_connection(stream, r));
                     }
                     self.startup_state = StartupState::Bound;
@@ -103,6 +100,28 @@ impl Server {
             }
         }
     }
+}
+
+fn listen_kafka(
+    mut from_kafka_rx: Receiver<MEvent>,
+    modules: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = from_kafka_rx.recv().await {
+            let mut modules = modules.lock().await;
+
+            let module = modules.get_mut(&event.item_type());
+
+            match module {
+                Some(module) => {
+                    module.process_event(event.clone(), false).await;
+                }
+                None => {
+                    println!("No module found for event type: {}", event.item_type());
+                }
+            }
+        }
+    });
 }
 
 // pub async fn main() {
@@ -137,9 +156,7 @@ impl Server {
 
 async fn handle_connection(
     stream: tokio::net::TcpStream,
-    // all_events: broadcast::Sender<MEvent>,
-    modules: Arc<Mutex<Vec<Box<dyn Module + Send>>>>,
-    // entites: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
+    modules: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
 ) {
     println!("New WebSocket connection");
     let ws_stream = accept_async(stream)
@@ -173,12 +190,20 @@ async fn handle_connection(
 
                     match MEvent::from_str(text) {
                         Ok(event) => {
-                            // println!("Received event: {:?}", event);
-
                             let mut modules = modules.lock().await;
 
-                            for module in modules.iter_mut() {
-                                module.process_event(event.clone()).await;
+                            let module = modules.get_mut(&event.item_type());
+
+                            match module {
+                                Some(module) => {
+                                    module.process_event(event.clone(), true).await;
+                                }
+                                None => {
+                                    println!(
+                                        "No module found for event type: {}",
+                                        event.item_type()
+                                    );
+                                }
                             }
 
                             continue;
@@ -193,38 +218,51 @@ async fn handle_connection(
 
                             let mut modules = modules.lock().await;
 
-                            for module in modules.iter_mut() {
-                                match module.handle_query(query.clone()).await {
-                                    Some(mut rx) => {
-                                        let tx_clone = to_ws_tx.clone();
+                            let itemType = match query.clone() {
+                                Query::Watch(q) => q.item_type.clone(),
+                                Query::WatchId(q) => q.item_type.clone(),
+                            };
 
-                                        tokio::spawn(async move {
-                                            while let Some(response) = rx.recv().await {
-                                                let response_str = match response.to_string() {
-                                                    Ok(s) => s,
-                                                    Err(e) => {
-                                                        println!("Failed to convert response to string: {}", e);
-                                                        continue;
-                                                    }
-                                                };
+                            let module = modules.get_mut(&itemType);
 
-                                                if let Err(_) = tx_clone
-                                                    .clone()
-                                                    .send(Message::from(response_str))
-                                                    .await
-                                                {
-                                                    break;
-                                                }
-                                            }
-                                        });
-                                    }
-                                    None => {}
-                                };
+                            if module.is_none() {
+                                println!("No module found for item type: {}", itemType);
+                                continue;
                             }
 
+                            let module = module.unwrap();
+
+                            match module.handle_query(query.clone()).await {
+                                Some(mut rx) => {
+                                    let tx_clone = to_ws_tx.clone();
+
+                                    tokio::spawn(async move {
+                                        while let Some(response) = rx.recv().await {
+                                            let response_str = match response.to_string() {
+                                                Ok(s) => s,
+                                                Err(e) => {
+                                                    println!(
+                                                        "Failed to convert response to string: {}",
+                                                        e
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+
+                                            if let Err(_) = tx_clone
+                                                .clone()
+                                                .send(Message::from(response_str))
+                                                .await
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                }
+                                None => {}
+                            };
+
                             continue;
-                            // todo!("Handle Query, and continue");
-                            // (self.handle_query(query, to_ws_tx.clone(), &all_events)).await;
                         }
                         Err(_e) => {
                             println!("Failed to parse query: {}", _e);
@@ -236,72 +274,6 @@ async fn handle_connection(
                 println!("Failed to receive message from WebSocket: {}", e);
                 break;
             }
-        }
-    }
-}
-
-fn handle_query(
-    query: Query,
-    to_ws: mpsc::Sender<Message>,
-    all_events: &broadcast::Sender<MEvent>,
-    // entites: Arc<Mutex<HashMap<String, HashMap<String, Value>>>>,
-) {
-    println!("handle_query, {:?}", query);
-
-    match query {
-        Query::WatchId(query) => {
-            let mut rx = all_events.subscribe();
-
-            // let entity_map = entites.lock().await;
-
-            // if let Some(existing) = entity_map.get(&query.item_type) {
-            //     if let Some(existing) = existing.get(&query.item_id) {
-            //         let response = QueryResponse::new(query.tx.clone(), vec![existing.clone()]);
-
-            //         let reply = Message::Text(response.to_string().unwrap());
-
-            //         to_ws.send(reply).await.unwrap();
-            //     }
-            // }
-
-            tokio::spawn(async move {
-                while let Ok(event) = rx.recv().await {
-                    if event.item_type() != query.item_type {
-                        continue;
-                    }
-
-                    let event_json = event.item_json();
-
-                    let response = QueryResponse::new(query.tx.clone(), vec![event_json.clone()]);
-
-                    let reply = Message::Text(response.to_string().unwrap());
-
-                    if let Err(_) = to_ws.send(reply).await {
-                        break;
-                    }
-                }
-            });
-        }
-        Query::Watch(query) => {
-            let mut rx = all_events.subscribe();
-
-            tokio::spawn(async move {
-                while let Ok(event) = rx.recv().await {
-                    if event.item_type() != query.item_type {
-                        continue;
-                    }
-
-                    let event_json = event.item_json();
-
-                    let response = QueryResponse::new(query.tx.clone(), vec![event_json.clone()]);
-
-                    let reply = Message::Text(response.to_string().unwrap());
-
-                    if let Err(_) = to_ws.send(reply).await {
-                        break;
-                    }
-                }
-            });
         }
     }
 }

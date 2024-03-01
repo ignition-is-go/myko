@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use myko_wasm::{event::MEventType, item::Eventable};
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::utils::matches;
 
@@ -11,7 +12,7 @@ pub struct Subscription<T: Eventable<T, PT>, PT: Clone> {
 }
 
 pub trait Publisher<T: Eventable<T, PT>, PT: Clone> {
-    fn publish(&self) -> ();
+    fn publish(&self) -> Result<(), TrySendError<Vec<T>>>;
     fn handle(&mut self, item: &T, event_type: MEventType) -> ();
 }
 
@@ -31,9 +32,8 @@ impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Subscripti
         }
     }
 
-    fn publish(&self) -> () {
+    fn publish(&self) -> Result<(), TrySendError<Vec<T>>> {
         self.tx
             .try_send(self.state.values().cloned().collect::<Vec<T>>())
-            .unwrap();
     }
 }

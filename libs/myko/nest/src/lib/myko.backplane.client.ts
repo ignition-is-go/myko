@@ -108,6 +108,16 @@ export class MykoBackplaneClient implements OnModuleInit {
     this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
   }
 
+  public watchAll<T extends MItem>(
+    type: new (args: any) => T,
+    onUpdate: (items: T[]) => void,
+  ) {
+    const tx = uuid()
+    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
+    this.send_string(make_watch(tx, '{}', itemType))
+    this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
+  }
+
   public onConnect(cb: () => () => void) {
     this.connectCallbacks.add(cb)
   }

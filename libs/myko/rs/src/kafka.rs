@@ -83,9 +83,28 @@ async fn consume_events(
         match message {
             Ok(m) => {
                 if let Some(payload) = m.payload() {
-                    let payload_str = std::str::from_utf8(payload).unwrap();
+                    // try from string
+                    let payload_str = std::str::from_utf8(payload);
 
-                    let event = match MEvent::from_str(payload_str) {
+                    match payload_str {
+                        Ok(payload_str) => {
+                            let event = match MEvent::from_str(payload_str) {
+                                Ok(event) => event,
+                                Err(_e) => {
+                                    continue;
+                                }
+                            };
+
+                            from_kafka_tx.send(event).await.unwrap();
+
+                            // Process the message here
+                        }
+                        Err(e) => eprintln!("Kafka error: {}", e),
+                    }
+
+                    // try from msgpack
+
+                    let event = match MEvent::from_mp(payload) {
                         Ok(event) => event,
                         Err(_e) => {
                             continue;
@@ -93,8 +112,6 @@ async fn consume_events(
                     };
 
                     from_kafka_tx.send(event).await.unwrap();
-
-                    // Process the message here
                 }
 
                 // Committing offsets to Kafka

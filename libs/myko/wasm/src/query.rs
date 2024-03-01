@@ -2,8 +2,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 
+use crate::utils::set_panic_hook;
+
+#[wasm_bindgen]
+extern "C" {
+    // Use `js_namespace` here to bind `console.log(..)` instead of just
+    // `log(..)`
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+
+    // The `console.log` is quite polymorphic, so we can bind it with multiple
+    // signatures. Note that we need to use `js_name` to ensure we always call
+    // `log` in JS.
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_u32(a: u32);
+
+    // Multiple arguments too!
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_many(a: &str, b: &str);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct WatchId {
     pub tx: String,
     pub item_id: String,
@@ -36,13 +55,6 @@ pub struct Watch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JMESPathQuery {
-    query: String,
-
-    item_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "queryId", content = "query")]
 pub enum Query {
     #[serde(rename = "watchId")]
@@ -53,6 +65,7 @@ pub enum Query {
 
 #[wasm_bindgen]
 pub fn make_watch_id(tx: String, item_id: String, item_type: String) -> String {
+    set_panic_hook();
     Query::WatchId(WatchId::new(tx, item_id, item_type))
         .to_string()
         .unwrap()
@@ -60,9 +73,10 @@ pub fn make_watch_id(tx: String, item_id: String, item_type: String) -> String {
 
 #[wasm_bindgen]
 pub fn make_watch(tx: String, query: String, item_type: String) -> String {
-    let q = serde_json::from_str(query.as_str()).unwrap();
+    set_panic_hook();
 
-    println!("Query: {:?}", q);
+    let q = serde_json::from_str(format!("{:?}", query).as_str()).unwrap();
+
     Query::Watch(Watch {
         tx,
         query: q,

@@ -6,7 +6,9 @@ mod tests {
     use myko_wasm::event::{MEvent, MEventType};
     use myko_wasm::item::Eventable;
     use myko_wasm::query::{Query, QueryResponse};
+    use tokio::sync::mpsc::Sender;
 
+    use crate::kafka::KafkaClient;
     use crate::{
         module::Module,
         repo::{Repo, RepoStruct},
@@ -164,6 +166,7 @@ mod tests {
 
         struct DemoModule {
             repo: Arc<Mutex<RepoStruct<Demo, PartialDemo>>>,
+            kafka: Option<KafkaClient>,
         }
 
         #[async_trait::async_trait]
@@ -171,17 +174,41 @@ mod tests {
             fn new() -> Self {
                 DemoModule {
                     repo: Arc::new(Mutex::new(RepoStruct::new())),
+                    kafka: None,
                 }
             }
 
-            async fn process_event(&mut self, event: MEvent) {
+            async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: Sender<MEvent>) {
+                let k = KafkaClient::new(brokers.join(",").as_str(), "Demo").await;
+
+                k.consume_events(from_kafka_tx).await;
+
+                self.kafka = Some(k);
+            }
+
+            fn entity_name(&self) -> String {
+                "Demo".to_string()
+            }
+
+            async fn process_event(&mut self, event: MEvent, persist: bool) {
                 if event.item_type() != "Demo" {
                     return;
                 }
+
                 println!("Processing event in {}", "Demo");
-                match self.repo.lock().await.process(event).await {
+
+                if persist {
+                    match self.kafka {
+                        Some(ref k) => {
+                            k.append_event(&event).await;
+                        }
+                        None => (),
+                    }
+                }
+
+                match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),
-                    Err(e) => println!("Failed to process event: {}", e),
+                    Err(e) => println!("Failed to process event: {}, {:?}", e, event),
                 }
             }
 
