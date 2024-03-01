@@ -64,7 +64,7 @@ export class MykoGateway implements OnGatewayConnection {
     private query: MykoQueryBus,
     private report: MykoReportBus,
     private reg: SocketRegistry,
-  ) { }
+  ) {}
 
   handleConnection(client: WebSocket) {
     try {
@@ -77,9 +77,9 @@ export class MykoGateway implements OnGatewayConnection {
   @SubscribeMessage(MEVENT_EVENT)
   async onEvent(
     @MessageBody()
-    event: WSMEvent['data'],
+    event: WSMEvent,
   ) {
-    this.event.publish(event)
+    this.event.publish(event.data)
   }
 
   @SubscribeMessage(ProtocolMessages.SwitchToMSGPACK)
@@ -90,23 +90,21 @@ export class MykoGateway implements OnGatewayConnection {
 
   @SubscribeMessage(MCOMMAND_EVENT)
   async onCommand(
-    @MessageBody() wrappedCommand: WSMCommand['data'],
+    @MessageBody() wrappedCommand: WSMCommand,
   ): Promise<WSMCommandResponse> {
-    const cmd = unwrapCommand(wrappedCommand)
+    const cmd = unwrapCommand(wrappedCommand.data)
     const res = await this.command.execute(cmd)
     return wrapCommandResponseWS(cmd.tx, res)
   }
 
   @SubscribeMessage(MQUERY_CANCEL)
-  onQueryCancel(@MessageBody() tx: WSMQueryCancel['tx']) {
-    this.unsub.next(tx)
+  onQueryCancel(@MessageBody() cancel: WSMQueryCancel) {
+    this.unsub.next(cancel.tx)
   }
 
   @SubscribeMessage(MQUERY_EVENT)
-  onQuery(
-    @MessageBody() wrappedQuery: WSMQuery['data'],
-  ): Observable<WSMQueryResponse> {
-    const q = unwrapQuery(wrappedQuery)
+  onQuery(@MessageBody() wrappedQuery: WSMQuery): Observable<WSMQueryResponse> {
+    const q = unwrapQuery(wrappedQuery.data)
 
     return this.query.watch(q).pipe(
       map((x) => x.filter((x) => !!x)),
@@ -126,15 +124,15 @@ export class MykoGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage(MREPORT_CANCEL)
-  onReportCancel(@MessageBody() tx: WSMReportCancel['tx']) {
-    this.unsub.next(tx)
+  onReportCancel(@MessageBody() cancel: WSMReportCancel) {
+    this.unsub.next(cancel.tx)
   }
 
   @SubscribeMessage(MREPORT_EVENT)
   onReport(
-    @MessageBody() wrappedReport: WSMReport['data'],
+    @MessageBody() wrappedReport: WSMReport,
   ): Observable<WSMReportResponse> {
-    const report = unwrapReport(wrappedReport)
+    const report = unwrapReport(wrappedReport.data)
 
     return this.report.watch(report).pipe(
       map((r) => wrapReportResponseWS(report.tx, r)),
@@ -147,12 +145,10 @@ export class MykoGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage(MPING_EVENT)
-  onPing(
-    @MessageBody() wrappedPing: WSPingEvent['data'],
-  ) {
+  onPing(@MessageBody() wrappedPing: WSPingEvent) {
     return {
-      data: wrappedPing,
-      event: MPING_EVENT
+      data: wrappedPing.data,
+      event: MPING_EVENT,
     } satisfies WSPingEvent
   }
 }

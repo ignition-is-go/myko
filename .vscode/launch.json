@@ -63,6 +63,31 @@
       "port": 9231
     },
     {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server: Attach engines:9229",
+      "address": "engine1",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}/apps/rship/server/dist",
+      "remoteRoot": "/usr/src/app"
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server: Attach engines:9230",
+      "remoteRoot": "/usr/src/app",
+      "address": "engine1",
+      "port": 9230
+    },
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Rship Server: Attach engines:9231",
+      "remoteRoot": "/usr/src/app",
+      "address": "engine1",
+      "port": 9231
+    },
+    {
       "name": "Attach AutoScheduler",
       "address": "localhost",
       "port": 9279,

@@ -58,7 +58,7 @@ export class MykoAdapter implements WebSocketAdapter {
     if (!callback) {
       return EMPTY
     }
-    return process(callback(message.data))
+    return process(callback(message))
   }
 
   close(server) {
