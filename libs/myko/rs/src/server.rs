@@ -74,17 +74,25 @@ impl Server {
             panic!("Cannot start without modules");
         }
 
+        let (broadcast_tx, _) = tokio::sync::broadcast::channel::<Message>(100);
+
         let mut port = 5156;
         let max_port = 5255;
 
         loop {
             let address = format!("0.0.0.0:{}", port);
+
             match TcpListener::bind(&address).await {
                 Ok(listener) => {
                     println!("WebSocket server listening on {}", address);
                     while let Ok((stream, _)) = listener.accept().await {
                         let r = self.modules_map.clone();
-                        tokio::spawn(handle_connection(stream, r));
+                        tokio::spawn(handle_connection(
+                            stream,
+                            r,
+                            broadcast_tx.clone(),
+                            broadcast_tx.subscribe(),
+                        ));
                     }
                     self.startup_state = StartupState::Bound;
                     break; // Exit loop if successfully bound
@@ -157,6 +165,8 @@ fn listen_kafka(
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     modules: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
+    broadcast_tx: broadcast::Sender<Message>,
+    mut broadcast_rx: broadcast::Receiver<Message>,
 ) {
     println!("New WebSocket connection");
     let ws_stream = accept_async(stream)
@@ -169,6 +179,17 @@ async fn handle_connection(
     tokio::spawn(async move {
         while let Some(message) = to_ws_rx.recv().await {
             if let Err(_) = ws_write.send(message).await {
+                println!("Failed to send message to WebSocket");
+                break;
+            }
+        }
+    });
+
+    let broadcast_ws_tx = to_ws_tx.clone();
+
+    tokio::spawn(async move {
+        while let Ok(message) = broadcast_rx.recv().await {
+            if let Err(_) = broadcast_ws_tx.send(message).await {
                 println!("Failed to send message to WebSocket");
                 break;
             }
@@ -268,6 +289,9 @@ async fn handle_connection(
                             println!("Failed to parse query: {}", _e);
                         }
                     };
+
+                    println!("Received other message, broadcasting to all connections");
+                    broadcast_tx.send(message).unwrap();
                 }
             }
             Err(e) => {
