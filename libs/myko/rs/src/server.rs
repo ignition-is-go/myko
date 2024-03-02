@@ -1,10 +1,7 @@
-use std::{any::Any, borrow::Borrow, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use futures_util::{stream::StreamExt, SinkExt};
-use myko_wasm::{
-    event::MEvent,
-    query::{Query, QueryResponse},
-};
+use myko_wasm::{event::MEvent, query::Query};
 use tokio::{
     net::TcpListener,
     sync::{
@@ -15,7 +12,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
-use crate::module::{self, Module};
+use crate::module::Module;
 
 #[derive(PartialEq)]
 enum StartupState {
@@ -131,36 +128,6 @@ fn listen_kafka(
         }
     });
 }
-
-// pub async fn main() {
-//     let kafka = KafkaClient::new("b0:9094", "check").await;
-//     let (from_kafka_tx, mut from_kafka_rx) = mpsc::channel::<MEvent>(100);
-
-//     let kakfa_event_sender = all_events_tx.clone();
-//     let mut all_event_receiver = all_events_tx.subscribe();
-
-//     tokio::spawn(async move {
-//         while let Ok(event) = all_event_receiver.recv().await {
-//             let _item_type = event.item_type();
-//             let _item_json = event.item_json();
-
-//             // find the repo with the matching item_type
-
-//             // call repo.process_event(event)
-//         }
-//     });
-
-//     tokio::spawn(async move {
-//         while let Some(msg) = from_kafka_rx.recv().await {
-//             match kakfa_event_sender.send(msg.clone()) {
-//                 Ok(_) => {}
-//                 Err(e) => {
-//                     println!("Failed to send event on broadcast channel: {:?}", e);
-//                 }
-//             };
-//         }
-//     });
-// }
 
 async fn handle_connection(
     stream: tokio::net::TcpStream,
