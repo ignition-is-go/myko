@@ -33,6 +33,7 @@ import { SERVER_TOKEN } from '../../types'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
 import { MultiMap } from './util/multimap'
+import { newTopic } from './util/kafka.newTopic'
 
 export type KafkaPersisterOptions = {
   enableEventLog: boolean
@@ -213,16 +214,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     beforeInit(entity)
 
     const admin = AdminClient.create(this.config)
-    admin.createTopic({
-      topic: this.entity,
-      replication_factor: 3,
-      num_partitions: 1,
-      config: {
-        'max.message.bytes': '-1',
-        'retention.ms': '-1',
-        'retention.bytes': '-1',
-      },
-    })
+    admin.createTopic(newTopic(this.entity))
 
     this.cons = new KafkaTopicConsumer(
       { ...this.config, ...this.consConfig },

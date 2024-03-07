@@ -1,5 +1,6 @@
 import { Producer, AdminClient, ProducerGlobalConfig } from 'node-rdkafka'
 import { makeSafeTopic } from './helpers'
+import { newTopic } from './kafka.newTopic'
 
 export class KafkaTopicProducer {
   prod: Producer
@@ -17,11 +18,7 @@ export class KafkaTopicProducer {
 
     const safeTopic = makeSafeTopic(topic)
 
-    admin.createTopic({
-      num_partitions: 1,
-      replication_factor: 3,
-      topic: safeTopic,
-    })
+    admin.createTopic(newTopic(safeTopic))
 
     this.prod = new Producer(config)
 
