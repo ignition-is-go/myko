@@ -119,6 +119,8 @@ export class WSMClient {
 
   private opts: WSMClientOpts
 
+  private shouldReconnect = true
+
   constructor(
     private host: string,
     private port: number,
@@ -171,6 +173,10 @@ export class WSMClient {
     const id = v4()
     const timestamp = Date.now()
 
+    if (this.ws.readyState !== this.ws.OPEN) {
+      throw new Error('Not Connected')
+    }
+
     this.send({
       event: MPING_EVENT,
       data: {
@@ -179,9 +185,6 @@ export class WSMClient {
       }
     })
 
-    if (this.ws.readyState !== this.ws.OPEN) {
-      throw new Error('Not Connected')
-    }
 
     return firstValueFrom(
       this.pingSubject.pipe(
@@ -365,12 +368,15 @@ export class WSMClient {
     this.ws.onclose = (e) => {
       this.protocol = MykoProtocol.JSON
       this.hooks?.onDisconnect && this.hooks?.onDisconnect(e)
-      if (this.opts?.reconnect === false) {
-        return
-      }
-      setTimeout(() => {
-        this.connect()
-      }, 1000)
+
+
+
+        setTimeout(() => {
+          if(this.shouldReconnect && this.opts?.reconnect) {
+
+            this.connect()
+          }
+        }, 1000)
     }
 
     this.ws.onerror = (err) => {
@@ -411,10 +417,11 @@ export class WSMClient {
   }
 
   disconnect() {
-    if (this.ws) {
+    this.shouldReconnect = false
       this.hooks?.onDisconnect?.({} as CloseEvent)
-      this.ws.onclose = () => { }
-      this.ws.close()
-    }
+      if(this.ws){
+        this.ws.onclose = () => {}
+      }
+      this.ws?.close()
   }
 }
