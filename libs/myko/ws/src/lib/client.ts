@@ -1,5 +1,7 @@
 import {
+  bufferCount,
   bufferTime,
+  catchError,
   combineLatest,
   filter,
   finalize,
@@ -64,7 +66,8 @@ import { v4 } from 'uuid'
 
 type ClientStats = {
   ping: number
-  messagesPerSecond: number
+  mpsDown: number
+  mpsUp: number
 }
 
 type WSMClientOpts = {
@@ -125,7 +128,8 @@ export class WSMClient {
   private encoders = new Map<MykoProtocol, (data: any) => any>()
   private datapreppers = new Map<MykoProtocol, (data: any) => any>()
 
-  private messageCounter = new Subject<void>()
+  private downMsgCounter = new Subject<void>()
+  private upMsgCounter = new Subject<void>()
 
   private opts: WSMClientOpts
 
@@ -278,16 +282,26 @@ export class WSMClient {
   }
 
   stats(): Observable<ClientStats> {
-    const p = interval(1000).pipe(switchMap((_) => this.ping()))
-    const mps = this.messageCounter.pipe(
-      bufferTime(1000),
-      map((b) => b.length),
+    const p = interval(1000).pipe(
+      switchMap((_) => this.ping()),
+      catchError(() => [0]),
+    )
+    const mpsDown = this.downMsgCounter.pipe(
+      bufferTime(100),
+      bufferCount(10),
+      map((b) => b.flat().length),
     )
 
-    const stats = combineLatest([p, mps]).pipe(
+    const mpsUp = this.upMsgCounter.pipe(
+      bufferTime(100),
+      bufferCount(10),
+      map((b) => b.flat().length),
+    )
+
+    const stats = combineLatest([p, mpsDown, mpsUp]).pipe(
       map(
-        ([ping, messagesPerSecond]) =>
-          ({ ping, messagesPerSecond }) satisfies ClientStats,
+        ([ping, mpsDown, mpsUp]) =>
+          ({ ping, mpsDown, mpsUp }) satisfies ClientStats,
       ),
     )
 
@@ -316,7 +330,7 @@ export class WSMClient {
     }
 
     this.ws.onmessage = (e) => {
-      this.messageCounter.next()
+      this.downMsgCounter.next()
 
       if (e.data === ProtocolMessages.SwitchToMSGPACK) {
         this.protocol = MykoProtocol.MSGPACK
@@ -430,7 +444,7 @@ export class WSMClient {
     }
 
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
-
+    this.upMsgCounter.next()
     this.ws.send(encoded)
   }
 
