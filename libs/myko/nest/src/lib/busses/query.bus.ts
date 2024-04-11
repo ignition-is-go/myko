@@ -7,16 +7,22 @@ import {
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_QUERY_ID_KEY,
   wrapQuery,
+  ID,
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
-import { of } from 'rxjs'
+import { firstValueFrom, of, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoQueryBus extends AMykoQueryBus {
-  constructor(private moduleRef: ModuleRef, private logger: LoggerService) {
+  constructor(
+    private moduleRef: ModuleRef,
+    private logger: LoggerService,
+  ) {
     super()
   }
+
+  cache = new Map<string, MLiveQueryResult<MQuery>>()
 
   watch<T extends MQuery>(query: T): MLiveQueryResult<T> {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
@@ -30,8 +36,33 @@ export class MykoQueryBus extends AMykoQueryBus {
         .dev.error({ message: err, data: query })
       throw new Error(err)
     }
+
+    let clone: MQuery = {
+      ...query,
+      tx: undefined,
+    }
+
+    const txKey = `${queryId}:${query.tx}`
+    const hash = JSON.stringify(clone)
+
+    const cacheKey = `${queryId}:${hash}`
+
+    if (this.cache.has(cacheKey)) {
+      console.log('returning cached query for', cacheKey)
+      return this.cache.get(cacheKey) as MLiveQueryResult<T>
+    }
+
+    const obs = handler.execute(query) as MLiveQueryResult<T>
+
+    this.cache.set(cacheKey, obs.pipe(shareReplay(1)))
+
+    console.time(txKey)
+    firstValueFrom(obs).then((res) => {
+      console.timeEnd(txKey)
+    })
+
+    return obs
     // console.log(queryId)
-    return handler.execute(query) as MLiveQueryResult<T>
   }
 
   protected registerHandler(handler: MykoQueryHandlerType): void {

@@ -9,6 +9,7 @@ import {
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
+import { firstValueFrom, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoReportBus extends AMykoReportBus {
@@ -18,6 +19,8 @@ export class MykoReportBus extends AMykoReportBus {
   ) {
     super()
   }
+
+  cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
 
   watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
@@ -32,7 +35,31 @@ export class MykoReportBus extends AMykoReportBus {
       throw new Error(err)
     }
 
-    return handler.execute(report) as MLiveReportResult<T>
+    const clone: MReport<unknown> = {
+      ...report,
+      tx: undefined,
+    }
+
+    const hash = JSON.stringify(clone)
+
+    const txKey = `${reportId}:${report.tx}`
+    const cacheKey = `${reportId}:${hash}`
+
+    if (this.cache.has(cacheKey)) {
+      console.log('returning cached report for', cacheKey)
+      return this.cache.get(cacheKey) as MLiveReportResult<T>
+    }
+
+    const obs = handler.execute(report) as MLiveReportResult<T>
+
+    console.time(txKey)
+    firstValueFrom(obs).then((res) => {
+      console.timeEnd(txKey)
+    })
+
+    this.cache.set(cacheKey, obs.pipe(shareReplay(1)))
+
+    return obs
   }
 
   protected registerHandler(handler: MykoReportHandlerType): void {
