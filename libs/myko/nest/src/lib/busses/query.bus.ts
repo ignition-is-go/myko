@@ -11,7 +11,7 @@ import {
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
-import { firstValueFrom, of, shareReplay } from 'rxjs'
+import { firstValueFrom, map, of, shareReplay, tap } from 'rxjs'
 
 @Injectable()
 export class MykoQueryBus extends AMykoQueryBus {
@@ -42,27 +42,23 @@ export class MykoQueryBus extends AMykoQueryBus {
       tx: undefined,
     }
 
-    const txKey = `${queryId}:${query.tx}`
     const hash = JSON.stringify(clone)
 
     const cacheKey = `${queryId}:${hash}`
 
     if (this.cache.has(cacheKey)) {
-      console.log('returning cached query for', cacheKey)
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 
-    const obs = handler.execute(query) as MLiveQueryResult<T>
+    const obs = handler.execute(query).pipe(
+      shareReplay(1),
+      // clone the array so subsequent mutations dont ruin it for everyone else
+      map((x) => x.slice()),
+    ) as MLiveQueryResult<T>
 
-    this.cache.set(cacheKey, obs.pipe(shareReplay(1)))
-
-    console.time(txKey)
-    firstValueFrom(obs).then((res) => {
-      console.timeEnd(txKey)
-    })
+    this.cache.set(cacheKey, obs)
 
     return obs
-    // console.log(queryId)
   }
 
   protected registerHandler(handler: MykoQueryHandlerType): void {
