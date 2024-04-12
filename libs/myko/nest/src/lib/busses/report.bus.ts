@@ -9,7 +9,7 @@ import {
 } from '@myko/core'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
-import { firstValueFrom, shareReplay } from 'rxjs'
+import { firstValueFrom, map, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoReportBus extends AMykoReportBus {
@@ -46,18 +46,20 @@ export class MykoReportBus extends AMykoReportBus {
     const cacheKey = `${reportId}:${hash}`
 
     if (this.cache.has(cacheKey)) {
-      console.log('returning cached report for', cacheKey)
-      return this.cache.get(cacheKey) as MLiveReportResult<T>
+      return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
     }
 
-    const obs = handler.execute(report) as MLiveReportResult<T>
+    const obs = handler.execute(report).pipe(
+      shareReplay(1),
+      map((x) => {
+        // clone the object
+        if (x instanceof Array) return x.slice()
+        if (x instanceof Object) return { ...x }
+        return x
+      }),
+    ) as MLiveReportResult<T>
 
-    console.time(txKey)
-    firstValueFrom(obs).then((res) => {
-      console.timeEnd(txKey)
-    })
-
-    this.cache.set(cacheKey, obs.pipe(shareReplay(1)))
+    this.cache.set(cacheKey, obs)
 
     return obs
   }
