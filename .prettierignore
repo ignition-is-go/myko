@@ -30,3 +30,6 @@ libs/unreal/rship-unreal/*
 libs/touchdesigner/rship-touchdesigner/*
 libs/coco/rship-coco/*
 libs/ableton/src/lib/max4node/*
+
+# husky scripts
+.husky/*
