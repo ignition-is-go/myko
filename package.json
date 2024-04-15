@@ -21,8 +21,7 @@
     "build": "turbo run build",
     "publish": "./tools/scripts/export-version.sh && turbo run publish",
     "forge-publish": "turbo run forge-publish",
-    "prepare": "husky install",
-    "postinstall": "pnpm run versionstamp",
+    "postinstall": "husky install && pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
     "versionwrite": "node ./tools/scripts/version-write.js",
     "transform": "node ./tools/scripts/transform.js",
@@ -34,7 +33,12 @@
   },
   "husky": {
     "hooks": {
-      "pre-commit": "format"
+      "applypatch-msg": "echo \"[Husky] applypatch-msg\"",
+      "pre-applypatch": "echo \"[Husky] pre-applypatch\"",
+      "post-applypatch": "echo \"[Husky] post-applypatch\"",
+      "pre-commit": "echo \"[Husky] pre-commit\"",
+      "post-checkout": "versionstamp",
+      "post-commit": "versionstamp"
     }
   },
   "workspaces": [
