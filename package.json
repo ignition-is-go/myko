@@ -1,6 +1,5 @@
 {
   "name": "rship",
-  "version": "3.0.0-canary.306",
   "license": "MIT",
   "scripts": {
     "server:dev": "pnpm run --filter=@rship/server dev",
@@ -23,7 +22,6 @@
     "forge-publish": "turbo run forge-publish",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
-    "versionwrite": "node ./tools/scripts/version-write.js",
     "transform": "node ./tools/scripts/transform.js",
     "gen": "node ./tools/scaffold/generate.js",
     "clear": "rm -rf ~/.local/share/pnpm && rm -rf **/node_modules",
