@@ -13,6 +13,7 @@ coverage/**/*
 *.icns
 *.svg
 *.txt
+*.js
 
 **/.gitignore
 **/.gitkeep
@@ -31,3 +32,12 @@ coverage/**/*
 # jsoneditor script
 jsoneditor.js
 libs\ableton\src\lib\max4node\max_device\main.js
+**/.svelte-kit
+
+# submodules
+**/.gitmodules
+
+libs/unreal/rship-unreal/*
+libs/touchdesigner/rship-touchdesigner/*
+libs/coco/rship-coco/*
+libs/ableton/src/lib/max4node/*
