@@ -29,7 +29,13 @@
     "gen": "node ./tools/scaffold/generate.js",
     "clear": "rm -rf ~/.local/share/pnpm && rm -rf **/node_modules",
     "ionic:build": "npm run build",
-    "sync": "git submodule update --init --recursive --remote"
+    "sync": "git submodule update --init --recursive --remote",
+    "format": "prettier --write ."
+  },
+  "husky": {
+    "hooks": {
+      "pre-commit": "format"
+    }
   },
   "workspaces": [
     "apps/**",
