@@ -21,7 +21,7 @@
     "build": "turbo run build",
     "publish": "./tools/scripts/export-version.sh && turbo run publish",
     "forge-publish": "turbo run forge-publish",
-    "postinstall": "husky install && pnpm run versionstamp",
+    "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
     "versionwrite": "node ./tools/scripts/version-write.js",
     "transform": "node ./tools/scripts/transform.js",
@@ -29,17 +29,11 @@
     "clear": "rm -rf ~/.local/share/pnpm && rm -rf **/node_modules",
     "ionic:build": "npm run build",
     "sync": "git submodule update --init --recursive --remote",
-    "format": "prettier --write ."
+    "format": "lint-staged",
+    "prepare": "husky"
   },
-  "husky": {
-    "hooks": {
-      "applypatch-msg": "echo \"[Husky] applypatch-msg\"",
-      "pre-applypatch": "echo \"[Husky] pre-applypatch\"",
-      "post-applypatch": "echo \"[Husky] post-applypatch\"",
-      "pre-commit": "echo \"[Husky] pre-commit\"",
-      "post-checkout": "versionstamp",
-      "post-commit": "versionstamp"
-    }
+  "lint-staged": {
+    "*": "prettier --write"
   },
   "workspaces": [
     "apps/**",
@@ -55,7 +49,8 @@
     "generate-template-files": "^3.2.1",
     "git-describe": "^4.1.1",
     "glob": "^10.3.12",
-    "husky": "^8.0.3",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.2",
     "nodemon": "^3.1.0",
     "pkg": "^5.8.1",
     "prettier-plugin-organize-imports": "^3.2.4",
