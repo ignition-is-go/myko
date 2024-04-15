@@ -1,12 +1,3 @@
-# Add files here to ignore them from prettier formatting
-dist/**/*
-out/**/*
-generated/**/*
-**/*.gen.*
-node_modules/**/*
-coverage/**/*
-*.snap
-
 *.sh
 *.png
 *.ico
@@ -25,13 +16,11 @@ coverage/**/*
 **/dump
 **/*.conf
 **/browserslist
-# .vscode/
-**/mongoReplPreset/globalConfig.json
-# c# dependency json
-**/bin/*.deps.json
+
 # jsoneditor script
 jsoneditor.js
-libs\ableton\src\lib\max4node\max_device\main.js
+
+# svelte output
 **/.svelte-kit
 
 # submodules
