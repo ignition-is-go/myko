@@ -22,11 +22,11 @@ impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Subscripti
             match event_type {
                 MEventType::SET => {
                     self.state.insert(item.id(), item.clone());
-                    self.publish();
+                    self.publish().expect("publish failed");
                 }
                 MEventType::DEL => {
                     self.state.remove(&item.id().clone());
-                    self.publish();
+                    self.publish().expect("publish failed");
                 }
             }
         }

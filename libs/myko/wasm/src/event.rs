@@ -43,7 +43,7 @@ impl MEvent {
         let mut de = Deserializer::new(cur);
         let event: MEvent = match Deserialize::deserialize(&mut de) {
             Ok(event) => event,
-            Err(e) => {
+            Err(_e) => {
                 return Err(());
             }
         };

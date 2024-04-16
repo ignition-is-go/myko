@@ -206,15 +206,15 @@ async fn handle_connection(
 
                             let mut modules = modules.lock().await;
 
-                            let itemType = match query.clone() {
+                            let item_type = match query.clone() {
                                 Query::Watch(q) => q.item_type.clone(),
                                 Query::WatchId(q) => q.item_type.clone(),
                             };
 
-                            let module = modules.get_mut(&itemType);
+                            let module = modules.get_mut(&item_type);
 
                             if module.is_none() {
-                                println!("No module found for item type: {}", itemType);
+                                println!("No module found for item type: {}", item_type);
                                 continue;
                             }
 

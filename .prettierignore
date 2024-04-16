@@ -6,6 +6,8 @@
 *.txt
 *.js
 *.jpg
+*.rs
+*.toml
 
 **/.gitignore
 **/.gitkeep
