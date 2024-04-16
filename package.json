@@ -22,6 +22,7 @@
     "publish": "./tools/scripts/export-version.sh && turbo run publish",
     "forge-publish": "turbo run forge-publish",
     "rust": "./tools/scripts/rust.sh",
+    "preinstall": "pnpm run rust && pnpm run sync",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
     "transform": "node ./tools/scripts/transform.js",
