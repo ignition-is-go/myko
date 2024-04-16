@@ -1,19 +1,18 @@
 import { Module, OnModuleInit, forwardRef } from '@nestjs/common'
-import { MykoCommandBus } from './busses/command.bus'
-import { ExplorerService } from './services'
-import { LoggerModule, LoggerService } from '@rship/logging'
-import { MykoQueryBus } from './busses'
-import { MykoEventBus } from './busses/event.bus'
-import { RedisPersisterFactory } from './persisters/redis.persisterFactory'
-import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
-import { SocketRegistry } from './registry/socket.registry'
 import { ConfigModule, ConfigService } from '@nestjs/config'
-import { KafkaPersisterFactory } from './persisters'
-import { MykoGatewayModule } from './myko.gateway.module'
-import { PeerRegistry } from './registry/peer.registry'
+import { LoggerModule, LoggerService } from '@rship/logging'
+import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
+import { MykoQueryBus } from './busses'
+import { MykoCommandBus } from './busses/command.bus'
+import { MykoEventBus } from './busses/event.bus'
 import { MykoReportBus } from './busses/report.bus'
 import { MykoDocsService } from './myko.docs.service'
-import { MykoBackplaneClient } from './myko.backplane.client'
+import { MykoGatewayModule } from './myko.gateway.module'
+import { KafkaPersisterFactory } from './persisters'
+import { RedisPersisterFactory } from './persisters/redis.persisterFactory'
+import { PeerRegistry } from './registry/peer.registry'
+import { SocketRegistry } from './registry/socket.registry'
+import { ExplorerService } from './services'
 
 @Module({
   imports: [
@@ -32,7 +31,6 @@ import { MykoBackplaneClient } from './myko.backplane.client'
     RedisPersisterFactory,
     KafkaPersisterFactory,
     MykoDocsService,
-    MykoBackplaneClient,
   ],
   exports: [
     MykoCommandBus,
@@ -43,7 +41,6 @@ import { MykoBackplaneClient } from './myko.backplane.client'
     KafkaPersisterFactory,
     SocketRegistry,
     PeerRegistry,
-    MykoBackplaneClient,
   ],
 })
 export class MykoModule implements OnModuleInit {
