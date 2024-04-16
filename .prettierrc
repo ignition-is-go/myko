@@ -9,6 +9,7 @@
 	"quoteProps": "as-needed",
 	"trailingComma": "all",
 	"plugins": [
-		"prettier-plugin-organize-imports"
+		"prettier-plugin-organize-imports",
+		"prettier-plugin-svelte"
 	]
 }

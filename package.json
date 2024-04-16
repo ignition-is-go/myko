@@ -52,6 +52,7 @@
     "nodemon": "^3.1.0",
     "pkg": "^5.8.1",
     "prettier-plugin-organize-imports": "^3.2.4",
+    "prettier-plugin-svelte": "^3.2.2",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "tslib": "^2.6.2",
