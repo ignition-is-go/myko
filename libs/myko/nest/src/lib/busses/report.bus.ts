@@ -1,14 +1,15 @@
-import { Injectable } from '@nestjs/common'
 import {
   AMykoReportBus,
-  MReport,
-  MykoReportHandlerType,
   MLiveReportResult,
-  MYKO_REPORT_ID_KEY,
+  MReport,
   MYKO_HANDLER_REPORT_ID_KEY,
+  MYKO_REPORT_ID_KEY,
+  MykoReportHandlerType,
 } from '@myko/core'
+import { Injectable } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
+import { map, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoReportBus extends AMykoReportBus {
@@ -18,6 +19,8 @@ export class MykoReportBus extends AMykoReportBus {
   ) {
     super()
   }
+
+  cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
 
   watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
@@ -32,7 +35,33 @@ export class MykoReportBus extends AMykoReportBus {
       throw new Error(err)
     }
 
-    return handler.execute(report) as MLiveReportResult<T>
+    const clone: MReport<unknown> = {
+      ...report,
+      tx: undefined,
+    }
+
+    const hash = JSON.stringify(clone)
+
+    const txKey = `${reportId}:${report.tx}`
+    const cacheKey = `${reportId}:${hash}`
+
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
+    }
+
+    const obs = handler.execute(report).pipe(
+      shareReplay(1),
+      map((x) => {
+        // clone the object
+        if (x instanceof Array) return x.slice()
+        if (x instanceof Object) return { ...x }
+        return x
+      }),
+    ) as MLiveReportResult<T>
+
+    this.cache.set(cacheKey, obs)
+
+    return obs
   }
 
   protected registerHandler(handler: MykoReportHandlerType): void {

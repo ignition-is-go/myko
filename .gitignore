@@ -115,3 +115,7 @@ target/
 # pnpm-store
 
 .pnpm-store
+
+# Xcode user state
+rship-swift.xcworkspace/xcuserdata/max.xcuserdatad/UserInterfaceState.xcuserstate
+apps/rship/visionOS/src/visionOS/Packages/RealityKitContent/Package.realitycomposerpro/WorkspaceData/max.rcuserdata

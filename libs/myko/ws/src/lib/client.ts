@@ -1,32 +1,57 @@
 import {
+  MCommand,
+  MLiveReportResult,
+  MQuery,
+  MReport,
+  MReportResult,
+  MykoProtocol,
+  ProtocolMessages,
+  SetClientId,
+  unwrapCommand,
+  unwrapItem,
+  unwrapQuery,
+  unwrapReport,
+  wrapCommand,
+  type ID,
+  type MCommandResponse,
+  type MEvent,
+  type MLiveQueryResult,
+} from '@myko/core'
+import {
+  bufferCount,
+  bufferTime,
+  catchError,
+  combineLatest,
   filter,
   finalize,
   firstValueFrom,
+  interval,
   map,
   Observable,
   shareReplay,
   Subject,
+  switchMap,
   tap,
 } from 'rxjs'
 import {
-  MCommand,
-  MQuery,
-  unwrapCommand,
-  unwrapQuery,
-  unwrapItem,
-  type MEvent,
-  type MLiveQueryResult,
-  type ID,
-  type MCommandResponse,
-  ProtocolMessages,
-  MykoProtocol,
-  wrapCommand,
-  SetClientId,
-  MReport,
-  unwrapReport,
-  MLiveReportResult,
-  MReportResult,
-} from '@myko/core'
+  MCOMMAND_ERROR_EVENT,
+  MCOMMAND_EVENT,
+  MCOMMAND_RESPONSE_EVENT,
+  MEVENT_EVENT,
+  MPING_EVENT,
+  MQUERY_EVENT,
+  MQUERY_RESPONSE_EVENT,
+  MREPORT_EVENT,
+  MREPORT_RESPONSE_EVENT,
+  WSMQuery,
+  WSMReport,
+  WSMReportResponse,
+  WSPingEvent,
+  type WSMCommandError,
+  type WSMCommandResponse,
+  type WSMMessage,
+  type WSMQueryResponse,
+} from './types'
 import {
   wrapCommandWS,
   wrapEventWS,
@@ -35,28 +60,15 @@ import {
   wrapReportCancel,
   wrapReportWS,
 } from './wrappers'
-import {
-  type WSMMessage,
-  MCOMMAND_EVENT,
-  MQUERY_EVENT,
-  MEVENT_EVENT,
-  MQUERY_RESPONSE_EVENT,
-  type WSMQueryResponse,
-  type WSMCommandResponse,
-  MCOMMAND_RESPONSE_EVENT,
-  MCOMMAND_ERROR_EVENT,
-  type WSMCommandError,
-  WSMQuery,
-  WSMReportResponse,
-  MREPORT_EVENT,
-  MREPORT_RESPONSE_EVENT,
-  WSMReport,
-  MPING_EVENT,
-  WSPingEvent,
-} from './types'
 
-import { Encoder, Decoder } from '@msgpack/msgpack'
+import { Decoder, Encoder } from '@msgpack/msgpack'
 import { v4 } from 'uuid'
+
+type ClientStats = {
+  ping: number
+  mpsDown: number
+  mpsUp: number
+}
 
 type WSMClientOpts = {
   secure: boolean
@@ -109,7 +121,6 @@ export class WSMClient {
   private resendQueries: Map<ID, WSMQuery>
   private resendReports: Map<ID, WSMReport>
 
-
   private protocolReady = true
   private protocol: MykoProtocol = MykoProtocol.JSON
 
@@ -117,7 +128,12 @@ export class WSMClient {
   private encoders = new Map<MykoProtocol, (data: any) => any>()
   private datapreppers = new Map<MykoProtocol, (data: any) => any>()
 
+  private downMsgCounter = new Subject<void>()
+  private upMsgCounter = new Subject<void>()
+
   private opts: WSMClientOpts
+
+  private shouldReconnect = true
 
   constructor(
     private host: string,
@@ -171,17 +187,17 @@ export class WSMClient {
     const id = v4()
     const timestamp = Date.now()
 
+    if (this.ws.readyState !== this.ws.OPEN) {
+      throw new Error('Not Connected')
+    }
+
     this.send({
       event: MPING_EVENT,
       data: {
         timestamp,
         id,
-      }
+      },
     })
-
-    if (this.ws.readyState !== this.ws.OPEN) {
-      throw new Error('Not Connected')
-    }
 
     return firstValueFrom(
       this.pingSubject.pipe(
@@ -265,6 +281,33 @@ export class WSMClient {
     this.forceSend({ event: ProtocolMessages.SwitchToMSGPACK })
   }
 
+  stats(): Observable<ClientStats> {
+    const p = interval(1000).pipe(
+      switchMap((_) => this.ping()),
+      catchError(() => [0]),
+    )
+    const mpsDown = this.downMsgCounter.pipe(
+      bufferTime(100),
+      bufferCount(10),
+      map((b) => b.flat().length),
+    )
+
+    const mpsUp = this.upMsgCounter.pipe(
+      bufferTime(100),
+      bufferCount(10),
+      map((b) => b.flat().length),
+    )
+
+    const stats = combineLatest([p, mpsDown, mpsUp]).pipe(
+      map(
+        ([ping, mpsDown, mpsUp]) =>
+          ({ ping, mpsDown, mpsUp }) satisfies ClientStats,
+      ),
+    )
+
+    return stats
+  }
+
   private connect() {
     const prefix = this.opts.secure ? 'wss' : 'ws'
     const port = this.opts.secure ? '' : `:${this.port}`
@@ -287,6 +330,8 @@ export class WSMClient {
     }
 
     this.ws.onmessage = (e) => {
+      this.downMsgCounter.next()
+
       if (e.data === ProtocolMessages.SwitchToMSGPACK) {
         this.protocol = MykoProtocol.MSGPACK
         this.protocolReady = true
@@ -312,12 +357,12 @@ export class WSMClient {
             this.clientId = cmd.clientId
             console.log('Got Client ID', this.clientId)
             this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
-              ;[...this.resendQueries.values()].forEach((q) => {
-                this.send(q)
-              })
-              ;[...this.resendReports.values()].forEach((r) => {
-                this.send(r)
-              })
+            ;[...this.resendQueries.values()].forEach((q) => {
+              this.send(q)
+            })
+            ;[...this.resendReports.values()].forEach((r) => {
+              this.send(r)
+            })
             break
           }
 
@@ -365,11 +410,11 @@ export class WSMClient {
     this.ws.onclose = (e) => {
       this.protocol = MykoProtocol.JSON
       this.hooks?.onDisconnect && this.hooks?.onDisconnect(e)
-      if (this.opts?.reconnect === false) {
-        return
-      }
+
       setTimeout(() => {
-        this.connect()
+        if (this.shouldReconnect && this.opts?.reconnect) {
+          this.connect()
+        }
       }, 1000)
     }
 
@@ -399,7 +444,7 @@ export class WSMClient {
     }
 
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
-
+    this.upMsgCounter.next()
     this.ws.send(encoded)
   }
 
@@ -411,10 +456,11 @@ export class WSMClient {
   }
 
   disconnect() {
+    this.shouldReconnect = false
+    this.hooks?.onDisconnect?.({} as CloseEvent)
     if (this.ws) {
-      this.hooks?.onDisconnect?.({} as CloseEvent)
-      this.ws.onclose = () => { }
-      this.ws.close()
+      this.ws.onclose = () => {}
     }
+    this.ws?.close()
   }
 }

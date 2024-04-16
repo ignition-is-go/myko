@@ -7,5 +7,9 @@
 	"arrowParens": "always",
 	"bracketSpacing": true,
 	"quoteProps": "as-needed",
-	"trailingComma": "all"
+	"trailingComma": "all",
+	"plugins": [
+		"prettier-plugin-organize-imports",
+		"prettier-plugin-svelte"
+	]
 }

@@ -1,22 +1,26 @@
-import { Injectable } from '@nestjs/common'
 import {
   AMykoQueryBus,
-  MQuery,
-  MykoQueryHandlerType,
   MLiveQueryResult,
+  MQuery,
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_QUERY_ID_KEY,
-  wrapQuery,
+  MykoQueryHandlerType,
 } from '@myko/core'
+import { Injectable } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
 import { LoggerService } from '@rship/logging'
-import { of } from 'rxjs'
+import { map, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoQueryBus extends AMykoQueryBus {
-  constructor(private moduleRef: ModuleRef, private logger: LoggerService) {
+  constructor(
+    private moduleRef: ModuleRef,
+    private logger: LoggerService,
+  ) {
     super()
   }
+
+  cache = new Map<string, MLiveQueryResult<MQuery>>()
 
   watch<T extends MQuery>(query: T): MLiveQueryResult<T> {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
@@ -30,8 +34,29 @@ export class MykoQueryBus extends AMykoQueryBus {
         .dev.error({ message: err, data: query })
       throw new Error(err)
     }
-    // console.log(queryId)
-    return handler.execute(query) as MLiveQueryResult<T>
+
+    let clone: MQuery = {
+      ...query,
+      tx: undefined,
+    }
+
+    const hash = JSON.stringify(clone)
+
+    const cacheKey = `${queryId}:${hash}`
+
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey) as MLiveQueryResult<T>
+    }
+
+    const obs = handler.execute(query).pipe(
+      shareReplay(1),
+      // clone the array so subsequent mutations dont ruin it for everyone else
+      map((x) => x.slice()),
+    ) as MLiveQueryResult<T>
+
+    this.cache.set(cacheKey, obs)
+
+    return obs
   }
 
   protected registerHandler(handler: MykoQueryHandlerType): void {
