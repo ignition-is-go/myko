@@ -1,6 +1,6 @@
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
 import { addCommandDoc } from '../registry'
-import { MCommandResponse, MCommand, MCommandHandler } from '../types'
+import { MCommand, MCommandHandler, MCommandResponse } from '../types'
 
 export const MykoCommand =
   (commandId: string) =>

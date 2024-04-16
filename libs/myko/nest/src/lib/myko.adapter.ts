@@ -1,9 +1,9 @@
-import * as WebSocket from 'ws'
-import { WebSocketAdapter, INestApplicationContext } from '@nestjs/common'
-import { MessageMappingProperties } from '@nestjs/websockets'
-import { Observable, fromEvent, EMPTY } from 'rxjs'
-import { mergeMap, filter, map } from 'rxjs/operators'
 import { MykoProtocol } from '@myko/core'
+import { INestApplicationContext, WebSocketAdapter } from '@nestjs/common'
+import { MessageMappingProperties } from '@nestjs/websockets'
+import { EMPTY, Observable, fromEvent } from 'rxjs'
+import { filter, map, mergeMap } from 'rxjs/operators'
+import * as WebSocket from 'ws'
 import {
   clientProtocols,
   decoders,

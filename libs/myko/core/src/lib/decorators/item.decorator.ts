@@ -1,5 +1,4 @@
 import 'reflect-metadata'
-import { MItem } from '../types'
 import {
   MYKO_ITEM_BELONGS_TO_KEY,
   MYKO_ITEM_DEFAULT_VALUE_KEY,
@@ -8,6 +7,7 @@ import {
   MYKO_ITEM_TYPE,
 } from '../constants'
 import { propertyDefaults, relationRegistry } from '../registry'
+import { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
 export const MykoItem =

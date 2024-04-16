@@ -1,18 +1,11 @@
-import {
-  ID,
-  Client,
-  DeleteClientsByServerId,
-  Server,
-  SetClientId,
-  isAllInit,
-} from '@myko/core'
+import { Client, ID, Server, SetClientId, isAllInit } from '@myko/core'
+import { wrapCommandWS } from '@myko/ws'
 import { Inject, Injectable } from '@nestjs/common'
-import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
-import type { WebSocket } from 'ws'
 import { LoggerService } from '@rship/logging'
-import { SERVER_TOKEN } from '../../types'
 import { v4 as uuid } from 'uuid'
-import { wrapCommandOnlyWS, wrapCommandWS } from '@myko/ws'
+import type { WebSocket } from 'ws'
+import { SERVER_TOKEN } from '../../types'
+import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
 @Injectable()
 export class SocketRegistry extends Map<ID, WebSocket> {
   constructor(

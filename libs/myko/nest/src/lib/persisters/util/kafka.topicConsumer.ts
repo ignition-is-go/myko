@@ -1,5 +1,5 @@
-import { ConsumerGlobalConfig, KafkaConsumer, Message } from 'node-rdkafka'
 import { Redis } from 'ioredis'
+import { ConsumerGlobalConfig, KafkaConsumer, Message } from 'node-rdkafka'
 import { makeSafeTopic } from './helpers'
 
 export class KafkaTopicConsumer {

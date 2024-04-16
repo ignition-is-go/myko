@@ -1,9 +1,8 @@
-import { MEvent, MYKO_ITEM_TYPE } from '@myko/core'
+import { MEvent, MItem, MYKO_ITEM_TYPE } from '@myko/core'
 import { Injectable, OnModuleInit } from '@nestjs/common'
-import { QueryResponse, make_watch_id, make_watch } from 'myko-wasm'
-import { MItem } from '@myko/core'
-import { WebSocket } from 'ws'
+import { QueryResponse, make_watch, make_watch_id } from 'myko-wasm'
 import { v4 as uuid } from 'uuid'
+import { WebSocket } from 'ws'
 
 @Injectable()
 export class MykoBackplaneClient implements OnModuleInit {

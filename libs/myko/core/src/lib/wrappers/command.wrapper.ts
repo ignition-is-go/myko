@@ -1,5 +1,5 @@
 import { MYKO_COMMAND_ID_KEY } from '../constants'
-import { MCommandResponse, MCommand } from '../types'
+import { MCommand, MCommandResponse } from '../types'
 import { CommandUnwrapError } from '../types/errors'
 
 export interface MWrappedCommand {

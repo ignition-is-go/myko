@@ -1,4 +1,4 @@
-import { Producer, AdminClient, ProducerGlobalConfig } from 'node-rdkafka'
+import { AdminClient, Producer, ProducerGlobalConfig } from 'node-rdkafka'
 import { makeSafeTopic } from './helpers'
 import { newTopic } from './kafka.newTopic'
 

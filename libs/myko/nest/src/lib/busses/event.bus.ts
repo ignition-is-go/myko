@@ -1,14 +1,14 @@
-import { Inject, Injectable, Optional } from '@nestjs/common'
 import {
   AMykoEventBus,
   MEvent,
   MSaga,
-  MykoSagaType,
   MYKO_SAGA_METADATA,
+  MykoSagaType,
 } from '@myko/core'
+import { Injectable, Optional } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
-import { MykoCommandBus } from './command.bus'
 import { MykoBackplaneClient } from '../myko.backplane.client'
+import { MykoCommandBus } from './command.bus'
 
 @Injectable()
 export class MykoEventBus extends AMykoEventBus {

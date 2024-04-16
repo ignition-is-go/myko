@@ -1,32 +1,30 @@
 import {
-  Inject,
-  Module,
-  OnModuleDestroy,
-  OnModuleInit,
-  Optional,
-  forwardRef,
-} from '@nestjs/common'
-import { MykoModule } from './myko.module'
-import { MykoGateway } from './ws/myko.gateway'
-import { LoggerModule, LoggerService } from '@rship/logging'
-import { MykoEventBus } from './busses'
-import {
   Client,
   ClientRepo,
   Server,
   ServerRepo,
   Stream,
   makeDel,
-  ofItems,
   watchInit,
 } from '@myko/core'
+import {
+  Inject,
+  Module,
+  OnModuleInit,
+  Optional,
+  forwardRef,
+} from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
-import { KafkaPersisterFactory } from './persisters'
-import * as handlers from './myko.gateway.handlers'
-import { SERVER_TOKEN } from '../types'
-import { MykoAuthService } from './services'
-import { v4 as uuid } from 'uuid'
+import { LoggerModule, LoggerService } from '@rship/logging'
 import { DateTime } from 'luxon'
+import { v4 as uuid } from 'uuid'
+import { SERVER_TOKEN } from '../types'
+import { MykoEventBus } from './busses'
+import * as handlers from './myko.gateway.handlers'
+import { MykoModule } from './myko.module'
+import { KafkaPersisterFactory } from './persisters'
+import { MykoAuthService } from './services'
+import { MykoGateway } from './ws/myko.gateway'
 
 @Module({
   imports: [

@@ -1,36 +1,46 @@
 import {
-  MykoQueryHandler,
-  GetServers,
-  MQueryHandler,
-  ServerRepo,
-  MLiveQueryResult,
-  GetConnectedServer,
-  GetServersByQuery,
-  Server,
-  MykoCommandHandler,
-  MCommandHandler,
-  MykoProtocol,
-  GetClientsByIds,
   ClientRepo,
-  GetServersByClientIds,
-  GetPeerServers,
-  GetClientsByQuery,
+  ConnectedToLeader,
   DeleteClientsByServerId,
-  makeDel,
   EventContainer,
+  GetClientsByIds,
+  GetClientsByQuery,
+  GetConnectedServer,
   GetEventLog,
   GetItemsByTypeAndIds,
-  MItem,
-  getEvents,
-  MykoReportHandler,
+  GetPeerServers,
+  GetServers,
+  GetServersByClientIds,
+  GetServersByQuery,
   GroupLeader,
+  IsLeader,
+  MCommandHandler,
+  MItem,
+  MLiveQueryResult,
+  MQueryHandler,
   MReportHandler,
+  MykoCommandHandler,
+  MykoProtocol,
+  MykoQueryHandler,
+  MykoReportHandler,
   PeerAlive,
   PeerLastSeen,
-  IsLeader,
-  ConnectedToLeader,
+  Server,
+  ServerRepo,
+  getEvents,
+  makeDel,
 } from '@myko/core'
+import { watchIds } from '@myko/core/src/lib/registry'
+import {
+  ClientCommand,
+  PeerCommand,
+  PeerQuery,
+  wrapCommandOnlyWS,
+} from '@myko/ws'
 import { Inject, Injectable } from '@nestjs/common'
+import { LoggerService } from '@rship/logging'
+import { DateTime } from 'luxon'
+import { uniq } from 'ramda'
 import {
   Observable,
   combineLatest,
@@ -45,20 +55,10 @@ import {
   switchMap,
 } from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
-import {
-  ClientCommand,
-  PeerCommand,
-  PeerQuery,
-  wrapCommandOnlyWS,
-} from '@myko/ws'
-import { encoders, clientProtocols } from './registry/client.protocols'
-import { SocketRegistry } from './registry/socket.registry'
-import { PeerRegistry } from './registry/peer.registry'
-import { uniq } from 'ramda'
 import { MykoEventBus, MykoQueryBus, MykoReportBus } from './busses'
-import { LoggerService } from '@rship/logging'
-import { watchIds } from '@myko/core/src/lib/registry'
-import { DateTime } from 'luxon'
+import { clientProtocols, encoders } from './registry/client.protocols'
+import { PeerRegistry } from './registry/peer.registry'
+import { SocketRegistry } from './registry/socket.registry'
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {

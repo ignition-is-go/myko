@@ -1,7 +1,7 @@
 import { MItem } from './item'
 
-import { v4 as uuid } from 'uuid'
 import { Observable } from 'rxjs'
+import { v4 as uuid } from 'uuid'
 
 export class MQuery<T extends MItem = MItem> {
   $queryResult: T[]
@@ -13,9 +13,8 @@ export class MQuery<T extends MItem = MItem> {
 
 export type MQueryResult<Q> = Q extends MQuery<infer R> ? Promise<R[]> : never
 
-export type MLiveQueryResult<Q> = Q extends MQuery<infer R>
-  ? Observable<R[]>
-  : never
+export type MLiveQueryResult<Q> =
+  Q extends MQuery<infer R> ? Observable<R[]> : never
 
 export interface MQueryHandler<H> {
   execute(query: H): MLiveQueryResult<H>

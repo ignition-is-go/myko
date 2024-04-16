@@ -1,10 +1,12 @@
 import {
-  ConnectedSocket,
-  MessageBody,
-  OnGatewayConnection,
-  SubscribeMessage,
-  WebSocketGateway,
-} from '@nestjs/websockets'
+  ID,
+  MykoProtocol,
+  ProtocolMessages,
+  unwrapCommand,
+  unwrapQuery,
+  unwrapReport,
+  wrapItem,
+} from '@myko/core'
 import {
   MCOMMAND_EVENT,
   MEVENT_EVENT,
@@ -13,9 +15,6 @@ import {
   MQUERY_EVENT,
   MREPORT_CANCEL,
   MREPORT_EVENT,
-  wrapCommandResponseWS,
-  wrapQueryResponseWS,
-  wrapReportResponseWS,
   WSMCommand,
   WSMCommandResponse,
   WSMEvent,
@@ -26,31 +25,31 @@ import {
   WSMReportCancel,
   WSMReportResponse,
   WSPingEvent,
+  wrapCommandResponseWS,
+  wrapQueryResponseWS,
+  wrapReportResponseWS,
 } from '@myko/ws'
+import {
+  ConnectedSocket,
+  MessageBody,
+  OnGatewayConnection,
+  SubscribeMessage,
+  WebSocketGateway,
+} from '@nestjs/websockets'
 import {
   MykoCommandBus,
   MykoEventBus,
   MykoQueryBus,
   MykoReportBus,
 } from '../busses'
-import {
-  ID,
-  isAllInit,
-  MykoProtocol,
-  ProtocolMessages,
-  unwrapCommand,
-  unwrapQuery,
-  unwrapReport,
-  wrapItem,
-} from '@myko/core'
 
-import { catchError, filter, map, Observable, Subject, takeUntil } from 'rxjs'
 import { UseFilters, UseGuards } from '@nestjs/common'
-import { MykoGuard } from './myko.guard'
-import { WsExceptionFilter } from './myko.exception-filter'
+import { Observable, Subject, catchError, filter, map, takeUntil } from 'rxjs'
+import { WebSocket } from 'ws'
 import { clientProtocols } from '../registry/client.protocols'
 import { SocketRegistry } from '../registry/socket.registry'
-import { WebSocket } from 'ws'
+import { WsExceptionFilter } from './myko.exception-filter'
+import { MykoGuard } from './myko.guard'
 
 @WebSocketGateway(Number(process.env.MYKO_PORT ?? 5155), { path: '/myko' })
 @UseGuards(MykoGuard)

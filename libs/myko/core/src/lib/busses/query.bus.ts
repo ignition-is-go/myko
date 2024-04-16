@@ -1,15 +1,13 @@
 import 'reflect-metadata'
 import { firstValueFrom } from 'rxjs'
 import {
-  Type,
-  MItem,
+  MLiveQueryResult,
   MQuery,
   MQueryHandler,
-  MLiveQueryResult,
   MQueryResult,
+  Type,
 } from '../types'
 import { ObservableBus } from './observable.bus'
-import { wrapQuery } from '../wrappers'
 
 export type MykoQueryHandlerType = Type<MQueryHandler<MQuery>>
 

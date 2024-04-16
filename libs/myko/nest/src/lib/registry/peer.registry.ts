@@ -1,12 +1,12 @@
 import { ID, Server, ServerRepo } from '@myko/core'
 import { WSMClient } from '@myko/ws'
 import { Inject, Injectable } from '@nestjs/common'
+import { LoggerService } from '@rship/logging'
+import { Observable, map } from 'rxjs'
 import * as WebSocket from 'ws'
 import { SERVER_TOKEN } from '../../types'
-import { MykoAuthService } from '../services'
-import { Observable, map, of, switchMap } from 'rxjs'
 import { MykoEventBus } from '../busses'
-import { LoggerService } from '@rship/logging'
+import { MykoAuthService } from '../services'
 
 @Injectable()
 export class PeerRegistry {

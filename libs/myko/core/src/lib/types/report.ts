@@ -11,9 +11,8 @@ export class MReport<T> {
 
 export type MReportResult<T> = T extends MReport<infer R> ? Promise<R> : never
 
-export type MLiveReportResult<T> = T extends MReport<infer R>
-  ? Observable<R>
-  : never
+export type MLiveReportResult<T> =
+  T extends MReport<infer R> ? Observable<R> : never
 
 export interface MReportHandler<H> {
   execute(report: H): MLiveReportResult<H>

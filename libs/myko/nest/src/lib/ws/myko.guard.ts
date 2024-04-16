@@ -10,7 +10,6 @@ import {
 import { LoggerService } from '@rship/logging'
 import { CommandNotAuthorized } from '../../types'
 import { MykoAuthService } from '../services'
-import { OnGatewayConnection } from '@nestjs/websockets'
 
 @Injectable()
 export class MykoGuard implements CanActivate, OnModuleInit {

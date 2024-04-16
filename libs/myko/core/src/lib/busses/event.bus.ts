@@ -1,30 +1,28 @@
 import 'reflect-metadata'
-import { filter, from, mergeMap, Observable, Subscription, tap } from 'rxjs'
+import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
-  MItem,
-  MEvent,
-  MSaga,
-  MCommand,
-  Type,
-  makeSet,
-  makeDel,
-  MEventType,
-  recalculateHash,
   ID,
+  makeDel,
+  makeSet,
+  MEvent,
+  MEventType,
+  MItem,
+  MSaga,
+  recalculateHash,
+  Type,
 } from '../types'
 import { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
+import { v4 as uuid } from 'uuid'
+import { onInit } from '../hooks'
 import {
   getFilters,
   getIds,
-  relationRegistry,
-  propertyDefaults,
   inheritsRegistry,
+  propertyDefaults,
+  relationRegistry,
 } from '../registry'
-import { onInit } from '../hooks'
-import { v4 as uuid } from 'uuid'
-import { WebSocket } from 'ws'
 
 export type MykoSagaType = Type<MSaga>
 

@@ -1,6 +1,6 @@
+import { Decoder, Encoder } from '@msgpack/msgpack'
 import { MykoProtocol } from '@myko/core'
 import * as WebSocket from 'ws'
-import { Decoder, Encoder } from '@msgpack/msgpack'
 
 export const clientProtocols = new Map<WebSocket, MykoProtocol>()
 

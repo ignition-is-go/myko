@@ -1,39 +1,39 @@
-import { Inject, Injectable } from '@nestjs/common'
 import {
-  MItem,
-  Persister,
-  MEvent,
-  MYKO_ITEM_TYPE,
-  ID,
-  MItemConstructor,
-  fireInit,
   ControledPersister,
-  beforeInit,
+  ID,
+  MEvent,
   MEventType,
+  MItem,
+  MItemConstructor,
+  MYKO_ITEM_TYPE,
+  Persister,
   Server,
+  beforeInit,
+  fireInit,
 } from '@myko/core'
-import { Subject } from 'rxjs'
+import { Inject, Injectable } from '@nestjs/common'
 import { LoggerService } from '@rship/logging'
+import { Subject } from 'rxjs'
 
 import { decode, encode } from '@msgpack/msgpack'
 import { ConfigService } from '@nestjs/config'
 import {
-  Producer,
-  Message,
   AdminClient,
-  GlobalConfig,
-  ProducerGlobalConfig,
   ConsumerGlobalConfig,
+  GlobalConfig,
+  Message,
+  Producer,
+  ProducerGlobalConfig,
 } from 'node-rdkafka'
 import { v4 as uuid } from 'uuid'
 import { MykoQueryBus } from '../busses'
 
 import { Redis } from 'ioredis'
 import { SERVER_TOKEN } from '../../types'
+import { newTopic } from './util/kafka.newTopic'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
 import { MultiMap } from './util/multimap'
-import { newTopic } from './util/kafka.newTopic'
 
 export type KafkaPersisterOptions = {
   enableEventLog: boolean

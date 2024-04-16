@@ -1,5 +1,5 @@
 import { MYKO_REPORT_ID_KEY, MYKO_REPORT_ITEM_TYPE_KEY } from '../constants'
-import { ID, MQuery, MReport } from '../types'
+import { ID, MReport } from '../types'
 
 export interface MWrappedReport {
   report: MReport<any>

@@ -9,9 +9,7 @@
       "address": "localhost",
       "port": 9229,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -20,9 +18,7 @@
       "address": "localhost",
       "port": 9230,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -31,9 +27,7 @@
       "address": "localhost",
       "port": 9231,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -92,9 +86,7 @@
       "address": "localhost",
       "port": 9279,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -103,9 +95,7 @@
       "address": "localhost",
       "port": 9239,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -114,9 +104,7 @@
       "address": "localhost",
       "port": 9249,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -125,9 +113,7 @@
       "address": "localhost",
       "port": 9259,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -136,9 +122,7 @@
       "address": "localhost",
       "port": 9269,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -147,9 +131,7 @@
       "address": "localhost",
       "port": 9339,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -158,9 +140,7 @@
       "address": "localhost",
       "port": 9449,
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node",
       "restart": true
     },
@@ -168,9 +148,7 @@
       "name": "Node: Attach by Process ID",
       "processId": "${command:PickProcess}",
       "request": "attach",
-      "skipFiles": [
-        "<node_internals>/**"
-      ],
+      "skipFiles": ["<node_internals>/**"],
       "type": "node"
     },
     {
@@ -186,15 +164,9 @@
       "request": "launch",
       "name": "Debug Current Test File",
       "autoAttachChildProcesses": true,
-      "skipFiles": [
-        "<node_internals>/**",
-        "**/node_modules/**"
-      ],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
       "program": "${workspaceRoot}/node_modules/vitest/vitest.mjs",
-      "args": [
-        "run",
-        "${relativeFile}"
-      ],
+      "args": ["run", "${relativeFile}"],
       "smartStep": true,
       "console": "integratedTerminal"
     }

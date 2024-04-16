@@ -1,5 +1,3 @@
-import { MEvent } from '../types'
-
 export abstract class APublisher<MType> {
   constructor() {}
 

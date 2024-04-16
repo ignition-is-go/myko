@@ -1,8 +1,8 @@
 import { ArgumentsHost, Catch, ExceptionFilter } from '@nestjs/common'
 import { WsException } from '@nestjs/websockets'
 
-import { clientProtocols, encoders } from '../registry/client.protocols'
 import { MykoProtocol } from '@myko/core'
+import { clientProtocols, encoders } from '../registry/client.protocols'
 
 @Catch(WsException)
 export class WsExceptionFilter implements ExceptionFilter {

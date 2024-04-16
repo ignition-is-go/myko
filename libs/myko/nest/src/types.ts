@@ -14,7 +14,10 @@ export class CommandNotAuthorized
 }
 
 export class MykoCommandError extends WsException implements WSMCommandError {
-  constructor(readonly tx: ID, error: string) {
+  constructor(
+    readonly tx: ID,
+    error: string,
+  ) {
     super(error)
     this.event = 'ws:m:command-error'
   }

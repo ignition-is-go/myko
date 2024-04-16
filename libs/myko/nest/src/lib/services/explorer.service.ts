@@ -1,18 +1,18 @@
-import { Injectable, Type } from '@nestjs/common'
-import { ModulesContainer } from '@nestjs/core'
 import {
   MCommand,
   MCommandHandler,
+  MQuery,
   MQueryHandler,
+  MReport,
+  MReportHandler,
+  MSaga,
   MYKO_HANDLER_COMMAND_ID_KEY,
   MYKO_HANDLER_QUERY_ID_KEY,
-  MYKO_SAGA_METADATA,
-  MQuery,
-  MSaga,
-  MReportHandler,
-  MReport,
   MYKO_HANDLER_REPORT_ID_KEY,
+  MYKO_SAGA_METADATA,
 } from '@myko/core'
+import { Injectable, Type } from '@nestjs/common'
+import { ModulesContainer } from '@nestjs/core'
 import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper'
 import { Module } from '@nestjs/core/injector/module'
 @Injectable()

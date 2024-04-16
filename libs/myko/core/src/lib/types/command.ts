@@ -1,9 +1,9 @@
 import { filter } from 'rxjs'
 
-import { v4 as uuid } from 'uuid'
 import { DateTime } from 'luxon'
-import { ID } from './base'
+import { v4 as uuid } from 'uuid'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
+import { ID } from './base'
 
 export class MCommand<T = void> {
   $commandResult: T

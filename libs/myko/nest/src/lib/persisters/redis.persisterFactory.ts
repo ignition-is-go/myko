@@ -1,19 +1,19 @@
-import { Injectable } from '@nestjs/common'
 import { RedisService } from '@liaoliaots/nestjs-redis'
 import {
-  MItem,
-  Persister,
-  MEvent,
-  MYKO_ITEM_TYPE,
-  ID,
-  MItemConstructor,
   EventContainer,
-  getEvents,
+  ID,
+  MEvent,
+  MItem,
+  MItemConstructor,
+  MYKO_ITEM_TYPE,
+  Persister,
   fireInit,
+  getEvents,
 } from '@myko/core'
-import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
-import { Redis } from 'ioredis'
+import { Injectable } from '@nestjs/common'
 import { LoggerService } from '@rship/logging'
+import { Redis } from 'ioredis'
+import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 
 import { decode, encode } from '@msgpack/msgpack'
 
@@ -29,7 +29,10 @@ const optionDefaults: RedisPersisterOptions = {
 
 @Injectable()
 export class RedisPersisterFactory {
-  constructor(private redis: RedisService, private logger: LoggerService) {}
+  constructor(
+    private redis: RedisService,
+    private logger: LoggerService,
+  ) {}
   getPersister<T extends MItem>(
     ent: MItemConstructor<T>,
     options?: RedisPersisterOptions,

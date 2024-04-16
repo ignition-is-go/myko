@@ -1,4 +1,4 @@
-import { Observable, Subject } from 'rxjs'
+import { Subject } from 'rxjs'
 
 export class ObservableBus<T> {
   protected _subject$ = new Subject<T>()

@@ -1,8 +1,8 @@
 import {
+  MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_ITEM_TYPE,
   MYKO_QUERY_ID_KEY,
   MYKO_QUERY_ITEM_TYPE_KEY,
-  MYKO_HANDLER_QUERY_ID_KEY,
 } from '../constants'
 import { addQueryDoc } from '../registry'
 import { MItem, MQuery, MQueryHandler } from '../types'

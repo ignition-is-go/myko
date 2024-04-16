@@ -1,11 +1,7 @@
 import {
-  bufferTime,
   combineLatest,
-  distinctUntilChanged,
   filter,
-  finalize,
   map,
-  mergeWith,
   Observable,
   of,
   scan,
@@ -14,12 +10,11 @@ import {
   switchMap,
   tap,
 } from 'rxjs'
+import { MYKO_ITEM_TYPE } from '../constants'
+import { getFilters, getIds, watchIds } from '../registry'
 import { ID, MEvent, MEventType, MItem } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
-import { getIds, getFilters, watchIds } from '../registry'
-import { MYKO_ITEM_TYPE } from '../constants'
-import { Controlled, Persister } from '../persisters'
 
 export interface RepoOptions<T extends MItem> {
   // stream of events to provide realtime updates. need not be filtered for the entity type

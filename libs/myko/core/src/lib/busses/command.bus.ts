@@ -1,7 +1,7 @@
 import 'reflect-metadata'
-import { Type, MCommand, MCommandHandler, MCommandResponse } from '../types'
-import { ObservableBus } from './observable.bus'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
+import { MCommand, MCommandHandler, MCommandResponse, Type } from '../types'
+import { ObservableBus } from './observable.bus'
 
 export type MCommandHandlerType = Type<MCommandHandler<MCommand<unknown>>>
 

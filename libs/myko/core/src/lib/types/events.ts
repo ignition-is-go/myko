@@ -1,11 +1,11 @@
 import { DateTime } from 'luxon'
-import { filter } from 'rxjs'
-import { MItem } from './item'
-import { ID } from './base'
-import { MykoItem, MykoQuery, doc } from '../decorators'
-import { MQuery } from './query'
-import { MYKO_ITEM_TYPE } from '../constants'
 import type { MEvent as WASMEvent } from 'myko-wasm'
+import { filter } from 'rxjs'
+import { MYKO_ITEM_TYPE } from '../constants'
+import { MykoItem, MykoQuery, doc } from '../decorators'
+import { ID } from './base'
+import { MItem } from './item'
+import { MQuery } from './query'
 
 export enum MEventType {
   SET = 'SET',
