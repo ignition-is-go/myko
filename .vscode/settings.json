@@ -88,5 +88,8 @@
   "rust-analyzer.inlayHints.closureStyle": "rust_analyzer",
   "rust-analyzer.inlayHints.chainingHints.enable": true,
   "rust-analyzer.inlayHints.bindingModeHints.enable": false,
-  "rust-analyzer.inlayHints.closingBraceHints.enable": true
+  "rust-analyzer.inlayHints.closingBraceHints.enable": true,
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  }
 }
