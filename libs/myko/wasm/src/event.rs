@@ -55,7 +55,7 @@ impl MEvent {
     }
 
     pub fn from_item<T, PT: Clone>(
-        item: impl Eventable<T, PT>,
+        item: &impl Eventable<T, PT>,
         change_type: MEventType,
         tx: String,
     ) -> MEvent {

@@ -131,21 +131,13 @@ mod tests {
             }
         });
 
-        repo.process(MEvent::from_item(
-            item2.clone(),
-            MEventType::SET,
-            "2".to_string(),
-        ))
-        .await
-        .unwrap();
+        repo.process(MEvent::from_item(&item2, MEventType::SET, "2".to_string()))
+            .await
+            .unwrap();
 
-        repo.process(MEvent::from_item(
-            item.clone(),
-            MEventType::SET,
-            "2".to_string(),
-        ))
-        .await
-        .unwrap();
+        repo.process(MEvent::from_item(&item, MEventType::SET, "2".to_string()))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

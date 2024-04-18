@@ -26,6 +26,8 @@ pub struct MykoClient {
     recv_task: Option<tokio::task::JoinHandle<()>>,
     event_tx: Option<tokio::sync::mpsc::Sender<Message>>,
     context: Option<Arc<Mutex<Context>>>,
+    downstream_out: Option<tokio::sync::broadcast::Sender<Value>>,
+    // downstream_pub: Option<tokio::sync::mpsc::Sender<Value>>,
 }
 
 impl MykoClient {
@@ -38,6 +40,8 @@ impl MykoClient {
             recv_task: None,
             event_tx: None,
             context: None,
+            downstream_out: None,
+            // downstream_pub: None,
         }
     }
 
@@ -47,7 +51,14 @@ impl MykoClient {
                 self.context.replace(Arc::new(Mutex::new(Context::new())));
             }
             Some(_) => {}
-        }
+        };
+        match self.downstream_out {
+            None => {
+                let (tx, rx) = tokio::sync::broadcast::channel(1);
+                self.downstream_out = Some(tx);
+            }
+            Some(_) => {}
+        };
     }
 
     pub async fn send_event(&mut self, event: MEvent) {
@@ -84,6 +95,13 @@ impl MykoClient {
 
     pub async fn get_connection_status(&self) -> bool {
         self.send_tx.is_some() && self.recv_rx.is_some()
+    }
+
+    pub fn get_messages(&self) -> tokio::sync::broadcast::Receiver<Value> {
+        self.downstream_out
+            .clone()
+            .expect("downtream not available")
+            .subscribe()
     }
 
     async fn disconnect(&mut self) {
@@ -157,15 +175,24 @@ impl MykoClient {
 
         let ctx = self.context.clone().expect("Context Not Initialized");
 
+        let downstream_out = match &self.downstream_out {
+            Some(tx) => tx.clone(),
+            None => {
+                panic!("Downstream Pub Not Initialized");
+            }
+        };
+
         let recv_task = tokio::spawn(async move {
             loop {
+                let loop_clone = downstream_out.clone();
+
                 let msg = read
                     .next()
                     .await
                     .expect("Could Not Read Message")
                     .expect("Could Not Read Message");
 
-                process_message(ctx.clone(), msg.clone()).await;
+                process_message(ctx.clone(), msg.clone(), loop_clone).await;
                 recv_tx.send(msg).await.unwrap();
             }
         });
@@ -176,12 +203,17 @@ impl MykoClient {
     }
 }
 
-async fn process_message(context: Arc<Mutex<Context>>, message: Message) {
+async fn process_message(
+    context: Arc<Mutex<Context>>,
+    message: Message,
+    downstream_out: tokio::sync::broadcast::Sender<Value>,
+) {
     match message {
         Message::Text(content) => {
             let d = serde_json::from_str::<TextMessage>(content.as_str());
 
             let data = d.expect("did not parse data").data;
+            let _ = downstream_out.send(data.clone());
 
             let command = serde_json::from_value::<Command>(data.to_owned());
 

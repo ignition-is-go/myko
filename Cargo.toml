@@ -8,5 +8,9 @@ members = [
   "apps/rship/linkd",
   "apps/myko/backplane",
   "libs/myko/rs",
-  "libs/link", "libs/myko/macros", "apps/core", "libs/entities", 
+  "libs/link",
+  "libs/myko/macros",
+  "apps/core",
+  "libs/entities",
+  "libs/sdk/rs",
 ]
