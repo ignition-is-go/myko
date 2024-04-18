@@ -10,6 +10,8 @@
 *.toml
 Cargo.lock
 
+*.proto
+
 **/.gitignore
 **/.gitkeep
 **/.git
