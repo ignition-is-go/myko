@@ -166,7 +166,6 @@ async fn handle_connection(
     while let Some(message) = ws_read.next().await {
         match message {
             Ok(message) => {
-                // println!("Received message from WebSocket: {:?}", message);
                 if message.is_text() {
                     let text = match message.to_text() {
                         Ok(t) => t,

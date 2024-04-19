@@ -156,9 +156,7 @@ impl MykoClient {
         let val = serde_json::to_value(msg).expect("Could not serialize message");
 
         match self.send_tx.send(Outgoing(val)) {
-            Ok(num) => {
-                println!("Sent message: {:?}", num);
-            }
+            Ok(_num) => {}
             Err(e) => {
                 println!("Could not send event: {:?}", e);
             }
@@ -219,22 +217,16 @@ async fn connect(
             }
 
             let msg = match send.try_recv() {
-                Ok(msg) => {
-                    println!("Received Message for Sending on WS: {:?}", msg.0);
-                    msg
-                }
+                Ok(msg) => msg,
                 Err(_) => {
                     continue;
                 }
             };
-            println!("Sending Message to WS");
 
             let msg_str = serde_json::to_string(&msg.0).expect("Could not serialize message");
 
             match write.send(Message::Text(msg_str)).await {
-                Ok(_) => {
-                    println!("Sent Message to WS");
-                }
+                Ok(_) => {}
                 Err(e) => {
                     println!("Could not write message to ws: {:?}", e);
                 }

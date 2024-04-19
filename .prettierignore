@@ -48,3 +48,7 @@ libs/ableton/src/lib/max4node/*
 
 # husky scripts
 .husky/*
+
+# generated
+
+apps/rship/link-ui/bindings.ts
