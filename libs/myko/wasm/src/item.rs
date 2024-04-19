@@ -29,4 +29,5 @@ pub trait Eventable<T, PT: Clone>:
 
     fn id(&self) -> String;
     fn hash(&self) -> String;
+    fn entity_name(&self) -> String;
 }

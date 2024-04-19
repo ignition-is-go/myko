@@ -154,6 +154,10 @@ mod tests {
             fn hash(&self) -> String {
                 self.hash.clone()
             }
+
+            fn entity_name(&self) -> String {
+                "Demo".to_string()
+            }
         }
 
         struct DemoModule {

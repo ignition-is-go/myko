@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use myko_wasm::event::MEvent;
+use myko_wasm::event::{MEvent, MykoMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -24,11 +24,59 @@ pub struct MykoClient {
     recv_rx: Option<tokio::sync::mpsc::Receiver<Message>>,
     send_task: Option<tokio::task::JoinHandle<()>>,
     recv_task: Option<tokio::task::JoinHandle<()>>,
-    event_tx: Option<tokio::sync::mpsc::Sender<Message>>,
     context: Option<Arc<Mutex<Context>>>,
     downstream_out: Option<tokio::sync::broadcast::Sender<Value>>,
-    // downstream_pub: Option<tokio::sync::mpsc::Sender<Value>>,
 }
+
+// #[derive(Clone)]
+// pub struct ConnectionInfo {
+//     pub address: String,
+//     pub client_id: String,
+// }
+
+// #[derive(Clone)]
+// pub enum ConnectionStatus {
+//     Connected(ConnectionInfo),
+//     Disconnected,
+// }
+
+// pub struct MykoClientProxy {
+//     send: tokio::sync::mpsc::Sender<MykoMessage>,
+//     recv: tokio::sync::broadcast::Receiver<Value>,
+//     address_change: tokio::sync::mpsc::Sender<&'static str>,
+//     connection_status: tokio::sync::broadcast::Receiver<ConnectionStatus>,
+// }
+
+// impl Clone for MykoClientProxy {
+//     fn clone(&self) -> Self {
+//         Self {
+//             send: self.send.clone(),
+//             recv: self.recv.resubscribe(),
+//             address_change: self.address_change.clone(),
+//             connection_status: self.connection_status.resubscribe(),
+//         }
+//     }
+// }
+
+// impl MykoClientProxy {
+//     pub async fn send_event(&self, event: MEvent) {
+//         self.send
+//             .send(MykoMessage::Event(event))
+//             .await
+//             .expect("Could not send event");
+//     }
+
+//     pub fn get_messages(&self) -> tokio::sync::broadcast::Receiver<Value> {
+//         self.recv.resubscribe()
+//     }
+
+//     pub async fn set_address(&self, addr: &'static str) {
+//         self.address_change
+//             .send(addr)
+//             .await
+//             .expect("Could not send address change");
+//     }
+// }
 
 impl MykoClient {
     pub const fn new() -> MykoClient {
@@ -38,10 +86,8 @@ impl MykoClient {
             recv_rx: None,
             send_task: None,
             recv_task: None,
-            event_tx: None,
             context: None,
             downstream_out: None,
-            // downstream_pub: None,
         }
     }
 
@@ -62,13 +108,17 @@ impl MykoClient {
     }
 
     pub async fn send_event(&mut self, event: MEvent) {
-        match &self.event_tx {
+        match &self.send_tx {
             Some(tx) => {
-                tx.send(Message::Text(serde_json::to_string(&event).unwrap()))
+                let msg = MykoMessage::Event(event);
+                let msg_str = serde_json::to_string(&msg).unwrap();
+                tx.send(Message::Text(msg_str.clone()))
                     .await
                     .expect("Could not send event");
             }
-            None => {}
+            None => {
+                println!("Event Tx Not Initialized");
+            }
         }
     }
 
@@ -136,6 +186,16 @@ impl MykoClient {
         println!("Disconnected");
     }
 
+    pub async fn get_client_id(&self) -> Option<String> {
+        match &self.context {
+            Some(ctx) => {
+                let ctx = ctx.lock().await;
+                ctx.client_id.clone()
+            }
+            None => None,
+        }
+    }
+
     async fn connect(&mut self) -> bool {
         self.init();
         let addr = self.address.clone().unwrap();
@@ -169,6 +229,7 @@ impl MykoClient {
                         break;
                     }
                 };
+                println!("Sending Message: {:?}", msg);
                 write.send(msg).await.expect("Could not send message");
             }
         });
@@ -231,7 +292,7 @@ async fn process_command(
         Ok(command) => match command {
             Command::SetId(set_id) => {
                 let mut ctx = context.lock().await;
-                ctx.client_id = Some(set_id.client_id.to_string().trim().to_string());
+                ctx.client_id = Some(set_id.client_id);
             }
         },
         Err(e) => {
@@ -245,13 +306,13 @@ struct TextMessage {
     data: Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct SetId {
-    client_id: Value,
+    client_id: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "commandId", content = "command")]
 enum Command {
     #[serde(rename = "client:setId")]

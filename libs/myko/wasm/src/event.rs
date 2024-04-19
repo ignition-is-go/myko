@@ -1,6 +1,8 @@
-use std::{io::Cursor, u8};
+use core::time;
+use std::{io::Cursor, time::Instant, u8};
 
 use crate::{item::Eventable, utils::remove_whitespace};
+use chrono::{DateTime, Utc};
 use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -62,8 +64,8 @@ impl MEvent {
         MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type,
-            item_type: "MItem".to_string(),
-            created_at: "2021-01-01T00:00:00Z".to_string(),
+            item_type: item.entity_name().to_string(),
+            created_at: Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
             tx,
             source_id: None,
         }
@@ -96,4 +98,11 @@ impl MEvent {
     pub fn source_id(&self) -> Option<String> {
         self.source_id.clone()
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "event", content = "data")]
+pub enum MykoMessage {
+    #[serde(rename = "ws:m:event")]
+    Event(MEvent),
 }
