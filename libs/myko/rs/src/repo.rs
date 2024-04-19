@@ -31,6 +31,15 @@ impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> RepoStruct<T
     }
 }
 
+impl<T: Eventable<T, PT> + PartialEq + DeserializeOwned, PT: Clone> Default for RepoStruct<T, PT> {
+    fn default() -> Self {
+        RepoStruct {
+            subs: vec![],
+            state: HashMap::new(),
+        }
+    }
+}
+
 impl<T: Eventable<T, PT> + PartialEq, PT: Clone> RepoStruct<T, PT> {
     pub async fn process(&mut self, event: MEvent) -> Result<(), serde_json::Error> {
         let mut item = event.item_json();

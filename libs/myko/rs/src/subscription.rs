@@ -13,11 +13,11 @@ pub struct Subscription<T: Eventable<T, PT>, PT: Clone> {
 
 pub trait Publisher<T: Eventable<T, PT>, PT: Clone> {
     fn publish(&self) -> Result<(), TrySendError<Vec<T>>>;
-    fn handle(&mut self, item: &T, event_type: MEventType) -> ();
+    fn handle(&mut self, item: &T, event_type: MEventType);
 }
 
 impl<T: Eventable<T, PT> + PartialEq, PT: Clone> Publisher<T, PT> for Subscription<T, PT> {
-    fn handle(&mut self, item: &T, event_type: MEventType) -> () {
+    fn handle(&mut self, item: &T, event_type: MEventType) {
         if matches(item, &self.query) {
             match event_type {
                 MEventType::SET => {

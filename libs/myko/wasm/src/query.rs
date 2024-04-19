@@ -95,7 +95,7 @@ impl Query {
         serde_json::to_string(self)
     }
 
-    pub fn from_str(s: &str) -> Result<Query, serde_json::Error> {
+    pub fn from_str_trim(s: &str) -> Result<Query, serde_json::Error> {
         let s = remove_whitespace(s);
         serde_json::from_str(s.as_str())
     }

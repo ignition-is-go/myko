@@ -88,7 +88,7 @@ async fn consume_events(
 
                     match payload_str {
                         Ok(payload_str) => {
-                            let event = match MEvent::from_str(payload_str) {
+                            let event = match MEvent::from_str_trim(payload_str) {
                                 Ok(event) => event,
                                 Err(_e) => {
                                     continue;

@@ -35,20 +35,14 @@ pub struct MEvent {
 }
 
 impl MEvent {
-    pub fn from_str(s: &str) -> Result<MEvent, serde_json::Error> {
+    pub fn from_str_trim(s: &str) -> Result<MEvent, serde_json::Error> {
         serde_json::from_str(&remove_whitespace(s))
     }
 
-    pub fn from_mp(s: &[u8]) -> Result<MEvent, ()> {
+    pub fn from_mp(s: &[u8]) -> Result<MEvent, rmp_serde::decode::Error> {
         let cur = Cursor::new(s);
         let mut de = Deserializer::new(cur);
-        let event: MEvent = match Deserialize::deserialize(&mut de) {
-            Ok(event) => event,
-            Err(_e) => {
-                return Err(());
-            }
-        };
-        Ok(event)
+        Deserialize::deserialize(&mut de)
     }
 
     pub fn item_json(&self) -> Value {

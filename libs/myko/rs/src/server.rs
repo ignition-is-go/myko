@@ -145,7 +145,7 @@ async fn handle_connection(
 
     tokio::spawn(async move {
         while let Some(message) = to_ws_rx.recv().await {
-            if let Err(_) = ws_write.send(message).await {
+            if (ws_write.send(message).await).is_err() {
                 println!("Failed to send message to WebSocket");
                 break;
             }
@@ -156,7 +156,7 @@ async fn handle_connection(
 
     tokio::spawn(async move {
         while let Ok(message) = broadcast_rx.recv().await {
-            if let Err(_) = broadcast_ws_tx.send(message).await {
+            if (broadcast_ws_tx.send(message).await).is_err() {
                 println!("Failed to send message to WebSocket");
                 break;
             }
@@ -176,7 +176,7 @@ async fn handle_connection(
                         }
                     };
 
-                    match MEvent::from_str(text) {
+                    match MEvent::from_str_trim(text) {
                         Ok(event) => {
                             let mut modules = modules.lock().await;
 
@@ -200,7 +200,7 @@ async fn handle_connection(
                         Err(_e) => {}
                     };
 
-                    match Query::from_str(text) {
+                    match Query::from_str_trim(text) {
                         Ok(query) => {
                             println!("Received query: {:?}", query);
 
@@ -220,34 +220,32 @@ async fn handle_connection(
 
                             let module = module.unwrap();
 
-                            match module.handle_query(query.clone()).await {
-                                Some(mut rx) => {
-                                    let tx_clone = to_ws_tx.clone();
+                            if let Some(mut rx) = module.handle_query(query.clone()).await {
+                                let tx_clone = to_ws_tx.clone();
 
-                                    tokio::spawn(async move {
-                                        while let Some(response) = rx.recv().await {
-                                            let response_str = match response.to_string() {
-                                                Ok(s) => s,
-                                                Err(e) => {
-                                                    println!(
-                                                        "Failed to convert response to string: {}",
-                                                        e
-                                                    );
-                                                    continue;
-                                                }
-                                            };
-
-                                            if let Err(_) = tx_clone
-                                                .clone()
-                                                .send(Message::from(response_str))
-                                                .await
-                                            {
-                                                break;
+                                tokio::spawn(async move {
+                                    while let Some(response) = rx.recv().await {
+                                        let response_str = match response.to_string() {
+                                            Ok(s) => s,
+                                            Err(e) => {
+                                                println!(
+                                                    "Failed to convert response to string: {}",
+                                                    e
+                                                );
+                                                continue;
                                             }
+                                        };
+
+                                        if (tx_clone
+                                            .clone()
+                                            .send(Message::from(response_str))
+                                            .await)
+                                            .is_err()
+                                        {
+                                            break;
                                         }
-                                    });
-                                }
-                                None => {}
+                                    }
+                                });
                             };
 
                             continue;
