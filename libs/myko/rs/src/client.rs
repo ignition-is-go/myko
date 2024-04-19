@@ -54,8 +54,10 @@ impl MykoClient {
         let recv_tx = self_recv_tx.clone();
 
         tokio::spawn(async move {
-            let mut send_task: Option<tokio::task::JoinHandle<()>> = None;
-            let mut recv_task: Option<tokio::task::JoinHandle<()>> = None;
+            // let mut send_task: Option<tokio::task::JoinHandle<()>> = None;
+            // let mut recv_task: Option<tokio::task::JoinHandle<()>> = None;
+
+            let (teardown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
             while let Some(addr) = address_change_rx.recv().await {
                 let connection_state = {
@@ -65,18 +67,20 @@ impl MykoClient {
 
                 match connection_state {
                     ConnectionStatus::Disconnected => {
-                        println!("SEND_TX_SUB");
-                        if let Ok((send_handle, recv_handle)) = connect(
+                        if connect(
                             addr.to_string(),
                             send_tx.subscribe(),
                             recv_tx.clone(),
                             self_connection.clone(),
+                            teardown_tx.clone(),
                         )
                         .await
+                        .is_err()
                         {
-                            send_task = Some(send_handle);
-                            recv_task = Some(recv_handle);
+                            let mut con = self_connection.lock().await;
+                            *con = ConnectionStatus::Disconnected;
                         }
+
                         let mut con = self_connection.lock().await;
                         *con = ConnectionStatus::Connected(addr);
                     }
@@ -84,52 +88,54 @@ impl MykoClient {
                         if address == addr {
                             return;
                         }
-                        if let Some(task) = &send_task {
-                            task.abort();
-                        }
-                        if let Some(task) = &recv_task {
-                            task.abort();
-                        }
-                        println!("SEND_TX_SUB");
 
-                        if let Ok((send_handle, recv_handle)) = connect(
+                        teardown_tx
+                            .send(())
+                            .expect("coult not send teardown signal");
+
+                        let mut con = self_connection.lock().await;
+                        *con = ConnectionStatus::Disconnected;
+
+                        if connect(
                             addr.to_string(),
                             send_tx.subscribe(),
                             recv_tx.clone(),
                             self_connection.clone(),
+                            teardown_tx.clone(),
                         )
                         .await
+                        .is_err()
                         {
-                            send_task = Some(send_handle);
-                            recv_task = Some(recv_handle);
+                            let mut con = self_connection.lock().await;
+                            *con = ConnectionStatus::Disconnected;
                         }
                     }
                     ConnectionStatus::Client(info) => {
                         if info.address == addr {
                             return;
                         }
+
+                        teardown_tx
+                            .send(())
+                            .expect("coult not send teardown signal");
+
                         let mut con = self_connection.lock().await;
                         *con = ConnectionStatus::Disconnected;
 
                         drop(con);
-                        if let Some(task) = &send_task {
-                            task.abort();
-                        }
-                        if let Some(task) = &recv_task {
-                            task.abort();
-                        }
-                        println!("SEND_TX_SUB");
 
-                        if let Ok((send_handle, recv_handle)) = connect(
+                        if connect(
                             addr.to_string(),
                             send_tx.subscribe(),
                             recv_tx.clone(),
                             self_connection.clone(),
+                            teardown_tx.clone(),
                         )
                         .await
+                        .is_err()
                         {
-                            send_task = Some(send_handle);
-                            recv_task = Some(recv_handle);
+                            let mut con = self_connection.lock().await;
+                            *con = ConnectionStatus::Disconnected;
                         }
                     }
                 }
@@ -191,7 +197,8 @@ async fn connect(
     mut send: Receiver<Outgoing>,
     recv: Sender<Incoming>,
     conn: Arc<Mutex<ConnectionStatus>>,
-) -> Result<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>), String> {
+    disconnect: Sender<()>,
+) -> Result<(), String> {
     let ws_stream = match connect_async(&addr).await {
         Ok((ws_stream, _)) => ws_stream,
         Err(_) => {
@@ -203,8 +210,14 @@ async fn connect(
 
     println!("Connected: {:?}", &addr);
 
-    let send_task = tokio::spawn(async move {
+    let mut write_teardown = disconnect.subscribe();
+
+    tokio::spawn(async move {
         loop {
+            if write_teardown.try_recv().is_ok() {
+                break;
+            }
+
             let msg = match send.try_recv() {
                 Ok(msg) => {
                     println!("Received Message for Sending on WS: {:?}", msg.0);
@@ -229,8 +242,19 @@ async fn connect(
         }
     });
 
-    let recv_task = tokio::spawn(async move {
+    let mut read_teardown = disconnect.subscribe();
+
+    tokio::spawn(async move {
         while let Some(Ok(msg)) = read.next().await {
+            if let Message::Close(_) = msg {
+                println!("Connection Closed");
+                break;
+            }
+
+            if read_teardown.try_recv().is_ok() {
+                break;
+            }
+
             process_message(conn.clone(), msg.clone(), recv.clone()).await;
 
             let msg = serde_json::from_str::<Value>(msg.to_string().as_str())
@@ -245,7 +269,7 @@ async fn connect(
         }
     });
 
-    Ok((send_task, recv_task))
+    Ok(())
 }
 async fn process_message(
     connection: Arc<Mutex<ConnectionStatus>>,
