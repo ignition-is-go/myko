@@ -3,296 +3,297 @@ use myko_wasm::event::{MEvent, MykoMessage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{
+    broadcast::{Receiver, Sender},
+    Mutex,
+};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-#[derive(Debug)]
-struct Context {
-    client_id: Option<String>,
+#[derive(Clone)]
+pub struct ConnectionInfo {
+    pub address: String,
+    pub client_id: String,
 }
 
-impl Context {
-    pub fn new() -> Self {
-        Self { client_id: None }
+#[derive(Clone)]
+pub enum ConnectionStatus {
+    Client(ConnectionInfo),
+    Connected(String),
+    Disconnected,
+}
+
+#[derive(Clone)]
+pub struct MykoClient {
+    send_tx: tokio::sync::broadcast::Sender<Outgoing>,
+    recv_tx: tokio::sync::broadcast::Sender<Incoming>,
+    address_change: tokio::sync::mpsc::Sender<String>,
+    connection_status: Arc<Mutex<ConnectionStatus>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Outgoing(pub Value);
+
+#[derive(Clone, Debug)]
+pub struct Incoming(pub Value);
+
+impl Default for MykoClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
-
-#[derive(Debug)]
-pub struct MykoClient {
-    address: Option<String>,
-    send_tx: Option<tokio::sync::mpsc::Sender<Message>>,
-    recv_rx: Option<tokio::sync::mpsc::Receiver<Message>>,
-    send_task: Option<tokio::task::JoinHandle<()>>,
-    recv_task: Option<tokio::task::JoinHandle<()>>,
-    context: Option<Arc<Mutex<Context>>>,
-    downstream_out: Option<tokio::sync::broadcast::Sender<Value>>,
-}
-
-// #[derive(Clone)]
-// pub struct ConnectionInfo {
-//     pub address: String,
-//     pub client_id: String,
-// }
-
-// #[derive(Clone)]
-// pub enum ConnectionStatus {
-//     Connected(ConnectionInfo),
-//     Disconnected,
-// }
-
-// pub struct MykoClientProxy {
-//     send: tokio::sync::mpsc::Sender<MykoMessage>,
-//     recv: tokio::sync::broadcast::Receiver<Value>,
-//     address_change: tokio::sync::mpsc::Sender<&'static str>,
-//     connection_status: tokio::sync::broadcast::Receiver<ConnectionStatus>,
-// }
-
-// impl Clone for MykoClientProxy {
-//     fn clone(&self) -> Self {
-//         Self {
-//             send: self.send.clone(),
-//             recv: self.recv.resubscribe(),
-//             address_change: self.address_change.clone(),
-//             connection_status: self.connection_status.resubscribe(),
-//         }
-//     }
-// }
-
-// impl MykoClientProxy {
-//     pub async fn send_event(&self, event: MEvent) {
-//         self.send
-//             .send(MykoMessage::Event(event))
-//             .await
-//             .expect("Could not send event");
-//     }
-
-//     pub fn get_messages(&self) -> tokio::sync::broadcast::Receiver<Value> {
-//         self.recv.resubscribe()
-//     }
-
-//     pub async fn set_address(&self, addr: &'static str) {
-//         self.address_change
-//             .send(addr)
-//             .await
-//             .expect("Could not send address change");
-//     }
-// }
 
 impl MykoClient {
-    pub const fn new() -> MykoClient {
+    pub fn new() -> MykoClient {
+        let (self_send_tx, _) = tokio::sync::broadcast::channel::<Outgoing>(100);
+        let (self_recv_tx, _) = tokio::sync::broadcast::channel::<Incoming>(100);
+        let (address_change, mut address_change_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let connection = Arc::new(Mutex::new(ConnectionStatus::Disconnected));
+
+        let self_connection = connection.clone();
+        let send_tx = self_send_tx.clone();
+        let recv_tx = self_recv_tx.clone();
+
+        tokio::spawn(async move {
+            let mut send_task: Option<tokio::task::JoinHandle<()>> = None;
+            let mut recv_task: Option<tokio::task::JoinHandle<()>> = None;
+
+            while let Some(addr) = address_change_rx.recv().await {
+                let connection_state = {
+                    let connection = self_connection.lock().await;
+                    connection.clone()
+                };
+
+                match connection_state {
+                    ConnectionStatus::Disconnected => {
+                        println!("SEND_TX_SUB");
+                        if let Ok((send_handle, recv_handle)) = connect(
+                            addr.to_string(),
+                            send_tx.subscribe(),
+                            recv_tx.clone(),
+                            self_connection.clone(),
+                        )
+                        .await
+                        {
+                            send_task = Some(send_handle);
+                            recv_task = Some(recv_handle);
+                        }
+                        let mut con = self_connection.lock().await;
+                        *con = ConnectionStatus::Connected(addr);
+                    }
+                    ConnectionStatus::Connected(address) => {
+                        if address == addr {
+                            return;
+                        }
+                        if let Some(task) = &send_task {
+                            task.abort();
+                        }
+                        if let Some(task) = &recv_task {
+                            task.abort();
+                        }
+                        println!("SEND_TX_SUB");
+
+                        if let Ok((send_handle, recv_handle)) = connect(
+                            addr.to_string(),
+                            send_tx.subscribe(),
+                            recv_tx.clone(),
+                            self_connection.clone(),
+                        )
+                        .await
+                        {
+                            send_task = Some(send_handle);
+                            recv_task = Some(recv_handle);
+                        }
+                    }
+                    ConnectionStatus::Client(info) => {
+                        if info.address == addr {
+                            return;
+                        }
+                        let mut con = self_connection.lock().await;
+                        *con = ConnectionStatus::Disconnected;
+
+                        drop(con);
+                        if let Some(task) = &send_task {
+                            task.abort();
+                        }
+                        if let Some(task) = &recv_task {
+                            task.abort();
+                        }
+                        println!("SEND_TX_SUB");
+
+                        if let Ok((send_handle, recv_handle)) = connect(
+                            addr.to_string(),
+                            send_tx.subscribe(),
+                            recv_tx.clone(),
+                            self_connection.clone(),
+                        )
+                        .await
+                        {
+                            send_task = Some(send_handle);
+                            recv_task = Some(recv_handle);
+                        }
+                    }
+                }
+            }
+        });
+
         MykoClient {
-            address: None,
-            send_tx: None,
-            recv_rx: None,
-            send_task: None,
-            recv_task: None,
-            context: None,
-            downstream_out: None,
+            send_tx: self_send_tx,
+            recv_tx: self_recv_tx,
+            address_change,
+            connection_status: connection,
         }
     }
 
-    fn init(&mut self) {
-        match self.context {
-            None => {
-                self.context.replace(Arc::new(Mutex::new(Context::new())));
-            }
-            Some(_) => {}
-        };
-        match self.downstream_out {
-            None => {
-                let (tx, rx) = tokio::sync::broadcast::channel(1);
-                self.downstream_out = Some(tx);
-            }
-            Some(_) => {}
-        };
-    }
+    pub async fn send_event(&self, event: MEvent) {
+        let msg = MykoMessage::Event(event);
 
-    pub async fn send_event(&mut self, event: MEvent) {
-        match &self.send_tx {
-            Some(tx) => {
-                let msg = MykoMessage::Event(event);
-                let msg_str = serde_json::to_string(&msg).unwrap();
-                tx.send(Message::Text(msg_str.clone()))
-                    .await
-                    .expect("Could not send event");
+        let val = serde_json::to_value(msg).expect("Could not serialize message");
+
+        match self.send_tx.send(Outgoing(val)) {
+            Ok(num) => {
+                println!("Sent message: {:?}", num);
             }
-            None => {
-                println!("Event Tx Not Initialized");
+            Err(e) => {
+                println!("Could not send event: {:?}", e);
             }
         }
     }
 
-    pub async fn set_address(&mut self, addr: &str) -> bool {
-        self.init();
-
-        println!("Previous Address: {:?}", self.address);
-        println!("Setting Address: {:?}", addr);
-
-        let prev_addr = self.address.clone();
-
-        if addr != prev_addr.unwrap_or_default() {
-            self.disconnect().await;
-            self.address = Some(addr.to_string());
-            return self.connect().await;
-        }
-
-        return self.get_connection_status().await;
+    pub fn get_messages(&self) -> tokio::sync::broadcast::Receiver<Incoming> {
+        self.recv_tx.subscribe()
     }
 
-    pub async fn get_address(&self) -> Option<String> {
-        self.address.clone()
-    }
-
-    pub async fn get_connection_status(&self) -> bool {
-        self.send_tx.is_some() && self.recv_rx.is_some()
-    }
-
-    pub fn get_messages(&self) -> tokio::sync::broadcast::Receiver<Value> {
-        self.downstream_out
-            .clone()
-            .expect("downtream not available")
-            .subscribe()
-    }
-
-    async fn disconnect(&mut self) {
-        if self.send_tx.is_none() || self.recv_rx.is_none() {
-            return;
-        }
-
-        println!("Disconnecting");
-        match &self.send_task {
-            Some(task) => {
-                task.abort();
-                println!("Aborting Send");
-            }
-            None => {
-                println!("No Send Task to Aport");
+    pub async fn set_address(&self, addr: String) {
+        match self.address_change.send(addr).await {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Could not send address change: {:?}", e);
             }
         }
+    }
 
-        match &self.recv_task {
-            Some(task) => {
-                task.abort();
-                println!("Aborting Recv");
-            }
-            None => {
-                println!("No Recv Task to Aport");
-            }
-        }
-
-        self.send_tx = None;
-        self.recv_rx = None;
-        self.address = None;
-        println!("Disconnected");
+    pub async fn get_connection_status(&self) -> ConnectionStatus {
+        let status = self.connection_status.lock().await;
+        status.clone()
     }
 
     pub async fn get_client_id(&self) -> Option<String> {
-        match &self.context {
-            Some(ctx) => {
-                let ctx = ctx.lock().await;
-                ctx.client_id.clone()
-            }
-            None => None,
+        let status = self.connection_status.lock().await;
+        match &*status {
+            ConnectionStatus::Client(info) => Some(info.client_id.clone()),
+            _ => None,
         }
-    }
-
-    async fn connect(&mut self) -> bool {
-        self.init();
-        let addr = self.address.clone().unwrap();
-
-        println!("Connecting to: {:?}", &addr);
-
-        let ws_stream = match connect_async(&addr).await {
-            Ok((ws_stream, _)) => ws_stream,
-            Err(e) => {
-                println!("Could not connect: {:?}", e);
-                return false;
-            }
-        };
-
-        let (mut write, mut read) = ws_stream.split();
-
-        println!("Connected: {:?}", &addr);
-
-        let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(1);
-        let (recv_tx, recv_rx) = tokio::sync::mpsc::channel::<Message>(1);
-
-        self.send_tx = Some(send_tx);
-        self.recv_rx = Some(recv_rx);
-
-        let send_task = tokio::spawn(async move {
-            loop {
-                let msg = match send_rx.recv().await {
-                    Some(msg) => msg,
-                    None => {
-                        println!("Could not receive message");
-                        break;
-                    }
-                };
-                println!("Sending Message: {:?}", msg);
-                write.send(msg).await.expect("Could not send message");
-            }
-        });
-
-        let ctx = self.context.clone().expect("Context Not Initialized");
-
-        let downstream_out = match &self.downstream_out {
-            Some(tx) => tx.clone(),
-            None => {
-                panic!("Downstream Pub Not Initialized");
-            }
-        };
-
-        let recv_task = tokio::spawn(async move {
-            loop {
-                let loop_clone = downstream_out.clone();
-
-                let msg = read
-                    .next()
-                    .await
-                    .expect("Could Not Read Message")
-                    .expect("Could Not Read Message");
-
-                process_message(ctx.clone(), msg.clone(), loop_clone).await;
-                recv_tx.send(msg).await.unwrap();
-            }
-        });
-
-        self.send_task = Some(send_task);
-        self.recv_task = Some(recv_task);
-        return true;
     }
 }
 
-async fn process_message(
-    context: Arc<Mutex<Context>>,
-    message: Message,
-    downstream_out: tokio::sync::broadcast::Sender<Value>,
-) {
-    match message {
-        Message::Text(content) => {
-            let d = serde_json::from_str::<TextMessage>(content.as_str());
-
-            let data = d.expect("did not parse data").data;
-            let _ = downstream_out.send(data.clone());
-
-            let command = serde_json::from_value::<Command>(data.to_owned());
-
-            process_command(command, &context).await;
+async fn connect(
+    addr: String,
+    mut send: Receiver<Outgoing>,
+    recv: Sender<Incoming>,
+    conn: Arc<Mutex<ConnectionStatus>>,
+) -> Result<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>), String> {
+    let ws_stream = match connect_async(&addr).await {
+        Ok((ws_stream, _)) => ws_stream,
+        Err(_) => {
+            return Err("Could not connect".to_string());
         }
-        _ => {}
+    };
+
+    let (mut write, mut read) = ws_stream.split();
+
+    println!("Connected: {:?}", &addr);
+
+    let send_task = tokio::spawn(async move {
+        loop {
+            let msg = match send.try_recv() {
+                Ok(msg) => {
+                    println!("Received Message for Sending on WS: {:?}", msg.0);
+                    msg
+                }
+                Err(_) => {
+                    continue;
+                }
+            };
+            println!("Sending Message to WS");
+
+            let msg_str = serde_json::to_string(&msg.0).expect("Could not serialize message");
+
+            match write.send(Message::Text(msg_str)).await {
+                Ok(_) => {
+                    println!("Sent Message to WS");
+                }
+                Err(e) => {
+                    println!("Could not write message to ws: {:?}", e);
+                }
+            }
+        }
+    });
+
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = read.next().await {
+            process_message(conn.clone(), msg.clone(), recv.clone()).await;
+
+            let msg = serde_json::from_str::<Value>(msg.to_string().as_str())
+                .expect("Could not parse message");
+
+            match recv.send(Incoming(msg)) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("No Downstream Listeners: {:?}", e);
+                }
+            }
+        }
+    });
+
+    Ok((send_task, recv_task))
+}
+async fn process_message(
+    connection: Arc<Mutex<ConnectionStatus>>,
+    message: Message,
+    downstream_out: tokio::sync::broadcast::Sender<Incoming>,
+) {
+    if let Message::Text(content) = message {
+        let d = serde_json::from_str::<TextMessage>(content.as_str());
+
+        let data = d.expect("did not parse data").data;
+        let _ = downstream_out.send(Incoming(data.clone()));
+
+        let command = serde_json::from_value::<Command>(data.to_owned());
+
+        process_command(command, connection).await;
     }
 }
 
 async fn process_command(
     command: Result<Command, serde_json::Error>,
-    context: &Arc<Mutex<Context>>,
+    connection: Arc<Mutex<ConnectionStatus>>,
 ) {
     match command {
         Ok(command) => match command {
             Command::SetId(set_id) => {
-                let mut ctx = context.lock().await;
-                ctx.client_id = Some(set_id.client_id);
+                let con_state = connection.lock().await.clone();
+
+                let mut connection = connection.lock().await;
+
+                match con_state {
+                    ConnectionStatus::Disconnected => {
+                        unreachable!("Received SetId Command, but not connected");
+                    }
+                    ConnectionStatus::Connected(addr) => {
+                        println!("Received Client Id: {:?}", set_id.client_id);
+                        *connection = ConnectionStatus::Client(ConnectionInfo {
+                            address: addr,
+                            client_id: set_id.client_id,
+                        });
+                    }
+                    ConnectionStatus::Client(info) => {
+                        println!("Received New Client Id: {:?}", set_id.client_id);
+                        *connection = ConnectionStatus::Client(ConnectionInfo {
+                            address: info.address,
+                            client_id: set_id.client_id,
+                        });
+                    }
+                }
             }
         },
         Err(e) => {

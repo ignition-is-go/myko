@@ -1,8 +1,7 @@
-use core::time;
-use std::{io::Cursor, time::Instant, u8};
+use std::{io::Cursor, u8};
 
 use crate::{item::Eventable, utils::remove_whitespace};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -100,7 +99,7 @@ impl MEvent {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "event", content = "data")]
 pub enum MykoMessage {
     #[serde(rename = "ws:m:event")]
