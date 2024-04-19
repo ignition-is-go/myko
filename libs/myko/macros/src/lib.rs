@@ -44,6 +44,10 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
             fn hash(&self) -> String {
                 self.hash.clone()
             }
+
+            fn entity_name(&self) -> String {
+                #name_str.to_string()
+            }
         }
 
         pub struct #module_name {
