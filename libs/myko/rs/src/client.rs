@@ -247,15 +247,17 @@ async fn connect(
                 break;
             }
 
-            process_message(conn.clone(), msg.clone(), recv.clone()).await;
+            process_message(conn.clone(), msg.clone()).await;
 
             let msg = serde_json::from_str::<Value>(msg.to_string().as_str())
                 .expect("Could not parse message");
 
             match recv.send(Incoming(msg)) {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("No Downstream Listeners: {:?}", e);
+                Ok(num) => {
+                    println!("Sent Message Downstream to {} Listeners", num);
+                }
+                Err(_e) => {
+                    println!("No Downstream Listeners");
                 }
             }
         }
@@ -263,16 +265,11 @@ async fn connect(
 
     Ok(())
 }
-async fn process_message(
-    connection: Arc<Mutex<ConnectionStatus>>,
-    message: Message,
-    downstream_out: tokio::sync::broadcast::Sender<Incoming>,
-) {
+async fn process_message(connection: Arc<Mutex<ConnectionStatus>>, message: Message) {
     if let Message::Text(content) = message {
         let d = serde_json::from_str::<TextMessage>(content.as_str());
 
         let data = d.expect("did not parse data").data;
-        let _ = downstream_out.send(Incoming(data.clone()));
 
         let command = serde_json::from_value::<Command>(data.to_owned());
 
@@ -284,8 +281,8 @@ async fn process_command(
     command: Result<Command, serde_json::Error>,
     connection: Arc<Mutex<ConnectionStatus>>,
 ) {
-    match command {
-        Ok(command) => match command {
+    if let Ok(command) = command {
+        match command {
             Command::SetId(set_id) => {
                 let con_state = connection.lock().await.clone();
 
@@ -311,9 +308,6 @@ async fn process_command(
                     }
                 }
             }
-        },
-        Err(e) => {
-            println!("Could not parse command: {:?}", e);
         }
     }
 }
