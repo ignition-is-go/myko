@@ -6,3 +6,4 @@ pub mod server;
 pub mod subscription;
 pub mod tests;
 pub mod utils;
+pub mod websocket;

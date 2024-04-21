@@ -1,11 +1,11 @@
 #[cfg(test)]
+mod myko_tests {
 
-mod tests {
-
-    use macros::Eventable;
     use myko_wasm::event::{MEvent, MEventType};
     use myko_wasm::item::Eventable;
     use myko_wasm::query::{Query, QueryResponse};
+    use partially::Partial;
+    use serde::{Deserialize, Serialize};
     use tokio::sync::mpsc::Sender;
 
     use crate::kafka::KafkaClient;
@@ -15,8 +15,6 @@ mod tests {
         utils::matches,
     };
 
-    use partially::Partial;
-    use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -28,7 +26,7 @@ mod tests {
         hash: String,
     }
 
-    #[derive(Clone, Partial, Serialize, Deserialize, PartialEq, Debug, Eventable)]
+    #[derive(Clone, Partial, Serialize, Deserialize, PartialEq, Debug, macros::Eventable)]
     #[partially(derive(Clone, Serialize, Deserialize, Default))]
     struct Auto {
         id: String,
@@ -104,13 +102,11 @@ mod tests {
         let mut rx1 = repo.watch(PartialAuto {
             id: Some("1".to_string()),
             hash: None,
-            ..Default::default()
         });
 
         let mut rx2 = repo.watch(PartialAuto {
             id: Some("2".to_string()),
             hash: None,
-            ..Default::default()
         });
 
         tokio::spawn(async move {
@@ -186,20 +182,15 @@ mod tests {
                 "Demo".to_string()
             }
 
-            async fn process_event(&mut self, event: MEvent, persist: bool) {
+            async fn process_event(&mut self, event: MEvent, _persist: bool) {
                 if event.item_type() != "Demo" {
                     return;
                 }
 
-                println!("Processing event in {}", "Demo");
+                println!("Processing event in Demo");
 
-                if persist {
-                    match self.kafka {
-                        Some(ref k) => {
-                            k.append_event(&event).await;
-                        }
-                        None => (),
-                    }
+                if let Some(k) = &self.kafka {
+                    k.append_event(&event).await;
                 }
 
                 match self.repo.lock().await.process(event.clone()).await {
@@ -230,7 +221,7 @@ mod tests {
                             while let Some(items) = qrx.recv().await {
                                 let values = items
                                     .iter()
-                                    .map(|x| serde_json::to_value(x))
+                                    .map(serde_json::to_value)
                                     .filter_map(Result::ok)
                                     .collect::<Vec<Value>>();
 
@@ -267,7 +258,7 @@ mod tests {
                             while let Some(items) = qrx.recv().await {
                                 let values = items
                                     .iter()
-                                    .map(|x| serde_json::to_value(x))
+                                    .map(serde_json::to_value)
                                     .filter_map(Result::ok)
                                     .collect::<Vec<Value>>();
 

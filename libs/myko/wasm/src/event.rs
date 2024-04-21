@@ -92,10 +92,3 @@ impl MEvent {
         self.source_id.clone()
     }
 }
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "event", content = "data")]
-pub enum MykoMessage {
-    #[serde(rename = "ws:m:event")]
-    Event(MEvent),
-}
