@@ -1,4 +1,5 @@
 use myko_wasm::event::MEvent;
+use rdkafka::client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -26,6 +27,7 @@ pub enum ConnectionStatus {
 pub struct MykoClient {
     connection_status: Arc<Mutex<ConnectionStatus>>,
     socket: Arc<AutoReconnectSocket>,
+    client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
 }
 
 impl Default for MykoClient {
@@ -44,30 +46,49 @@ impl MykoClient {
         let mut status = socket.status_tx.subscribe();
 
         let connection_ref = connection.clone();
+        let client_pub = tokio::sync::broadcast::channel(1).0;
+        let client_pub_ref = client_pub.clone();
 
         tokio::spawn(async move {
             while let Ok(msg) = incoming.recv().await {
-                process_message(connection_ref.clone(), msg).await;
+                process_message(connection_ref.clone(), client_pub_ref.clone(), msg).await;
             }
         });
 
         let connection_ref = connection.clone();
+
+        let client_pub_ref = client_pub.clone();
 
         tokio::spawn(async move {
             while let Ok(conn) = status.recv().await {
                 match conn {
                     SocketConnectionStatus::Connecting(addr, _) => {
                         let mut connection = connection_ref.lock().await;
-                        *connection = ConnectionStatus::Connected(addr);
+                        *connection = ConnectionStatus::Connected(addr.clone());
+                        if client_pub_ref
+                            .send(ConnectionStatus::Connected(addr))
+                            .is_err()
+                        {
+                            println!("Nothing listening to connection status");
+                        }
                     }
                     SocketConnectionStatus::Connected(addr, _) => {
                         let mut connection = connection_ref.lock().await;
-                        *connection = ConnectionStatus::Connected(addr);
+                        *connection = ConnectionStatus::Connected(addr.clone());
+                        if client_pub_ref
+                            .send(ConnectionStatus::Connected(addr))
+                            .is_err()
+                        {
+                            println!("Nothing listening to connection status");
+                        }
                     }
 
                     SocketConnectionStatus::Disconnected => {
                         let mut connection = connection_ref.lock().await;
                         *connection = ConnectionStatus::Disconnected;
+                        if client_pub_ref.send(ConnectionStatus::Disconnected).is_err() {
+                            println!("Nothing listening to connection status");
+                        }
                     }
                 }
             }
@@ -76,6 +97,7 @@ impl MykoClient {
         MykoClient {
             connection_status: connection,
             socket,
+            client_pub,
         }
     }
 
@@ -117,6 +139,10 @@ impl MykoClient {
         status.clone()
     }
 
+    pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
+        BroadcastStream::new(self.client_pub.clone().subscribe()).filter_map(|x| x.ok())
+    }
+
     pub async fn get_client_id(&self) -> Option<String> {
         let status = self.connection_status.lock().await;
         match &*status {
@@ -126,7 +152,11 @@ impl MykoClient {
     }
 }
 
-async fn process_message(connection: Arc<Mutex<ConnectionStatus>>, message: Message) {
+async fn process_message(
+    connection: Arc<Mutex<ConnectionStatus>>,
+    client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
+    message: Message,
+) {
     if let Message::Text(content) = message {
         let d = serde_json::from_str::<TextMessage>(content.as_str());
 
@@ -134,13 +164,14 @@ async fn process_message(connection: Arc<Mutex<ConnectionStatus>>, message: Mess
 
         let command = serde_json::from_value::<Command>(data.to_owned());
 
-        process_command(command, connection).await;
+        process_command(command, connection, client_pub).await;
     }
 }
 
 async fn process_command(
     command: Result<Command, serde_json::Error>,
     connection: Arc<Mutex<ConnectionStatus>>,
+    client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
 ) {
     if let Ok(command) = command {
         match command {
