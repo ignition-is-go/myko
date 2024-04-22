@@ -65,6 +65,7 @@ impl MykoClient {
                     SocketConnectionStatus::Connecting(addr, _) => {
                         let mut connection = connection_ref.lock().await;
                         *connection = ConnectionStatus::Connected(addr.clone());
+                        drop(connection);
                         if client_pub_ref
                             .send(ConnectionStatus::Connected(addr))
                             .is_err()
@@ -75,6 +76,8 @@ impl MykoClient {
                     SocketConnectionStatus::Connected(addr, _) => {
                         let mut connection = connection_ref.lock().await;
                         *connection = ConnectionStatus::Connected(addr.clone());
+                        drop(connection);
+
                         if client_pub_ref
                             .send(ConnectionStatus::Connected(addr))
                             .is_err()
@@ -86,6 +89,8 @@ impl MykoClient {
                     SocketConnectionStatus::Disconnected => {
                         let mut connection = connection_ref.lock().await;
                         *connection = ConnectionStatus::Disconnected;
+                        drop(connection);
+
                         if client_pub_ref.send(ConnectionStatus::Disconnected).is_err() {
                             println!("Nothing listening to connection status");
                         }
@@ -178,25 +183,32 @@ async fn process_command(
             Command::SetId(set_id) => {
                 let con_state = connection.lock().await.clone();
 
-                let mut connection = connection.lock().await;
-
                 match con_state {
                     ConnectionStatus::Disconnected => {
                         unreachable!("Received SetId Command, but not connected");
                     }
                     ConnectionStatus::Connected(addr) => {
                         println!("Received Client Id: {:?}", set_id.client_id);
+                        let mut connection = connection.lock().await;
+
                         *connection = ConnectionStatus::Client(ConnectionInfo {
                             address: addr,
                             client_id: set_id.client_id,
                         });
+                        if client_pub.send(connection.clone()).is_err() {
+                            println!("Nothing listening to connection status");
+                        }
                     }
                     ConnectionStatus::Client(info) => {
                         println!("Received New Client Id: {:?}", set_id.client_id);
+                        let mut connection = connection.lock().await;
                         *connection = ConnectionStatus::Client(ConnectionInfo {
                             address: info.address,
                             client_id: set_id.client_id,
                         });
+                        if client_pub.send(connection.clone()).is_err() {
+                            println!("Nothing listening to connection status");
+                        }
                     }
                 }
             }
