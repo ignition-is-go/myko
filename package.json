@@ -32,6 +32,7 @@
     "ionic:build": "npm run build",
     "sync": "git submodule update --init --recursive --remote",
     "format": "lint-staged",
+    "format:all": "prettier --write .",
     "prepare": "husky"
   },
   "lint-staged": {
