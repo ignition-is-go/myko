@@ -13,6 +13,7 @@ import {
   MPING_EVENT,
   MQUERY_CANCEL,
   MQUERY_EVENT,
+  MQUERY_RESPONSE_EVENT,
   MREPORT_CANCEL,
   MREPORT_EVENT,
   WSMCommand,
@@ -26,7 +27,6 @@ import {
   WSMReportResponse,
   WSPingEvent,
   wrapCommandResponseWS,
-  wrapQueryResponseWS,
   wrapReportResponseWS,
 } from '@myko/ws'
 import {
@@ -105,15 +105,38 @@ export class MykoGateway implements OnGatewayConnection {
   onQuery(@MessageBody() wrappedQuery: WSMQuery): Observable<WSMQueryResponse> {
     const q = unwrapQuery(wrappedQuery.data)
 
+    const tx = q.tx
+
+    const asSent = new Map<ID, string>()
+
     return this.query.watch(q).pipe(
-      map((x) => x.filter((x) => !!x)),
-      map((x) => x.map((r) => wrapItem(r))),
       catchError((e) => {
         console.log(wrappedQuery)
         console.log(e)
         throw e
       }),
-      map((r) => wrapQueryResponseWS(r, q.tx)),
+      map((x) => x.filter((x) => !!x)),
+      map((curr) => {
+        const currMap = new Map(curr.map((x) => [x.id, x]))
+
+        const upserts = curr.filter(
+          (x) => !asSent.has(x.id) || asSent.get(x.id) !== x.hash,
+        )
+        const deletes = Array.from(asSent.keys()).filter((x) => !currMap.has(x))
+
+        upserts.forEach((x) => asSent.set(x.id, x.hash))
+
+        deletes.forEach((x) => asSent.delete(x))
+
+        return {
+          data: {
+            deletes: [...deletes],
+            upserts: upserts.map((x) => wrapItem(x)),
+          },
+          event: MQUERY_RESPONSE_EVENT,
+          tx,
+        } satisfies WSMQueryResponse
+      }),
       catchError((e) => {
         console.log(e)
         throw e

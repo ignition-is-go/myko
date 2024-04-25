@@ -46,10 +46,15 @@ export type WSMQuery = {
   data: MWrappedQuery
 }
 
+export type WSMQueryResponseData = {
+  upserts: MWrappedItem[]
+  deletes: ID[]
+}
+
 export type WSMQueryResponse = {
   tx: ID
   event: typeof MQUERY_RESPONSE_EVENT
-  data: MWrappedItem[]
+  data: WSMQueryResponseData
 }
 
 export type WSMQueryCancel = {

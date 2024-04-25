@@ -4,7 +4,6 @@ import {
   MQuery,
   MReport,
   MWrappedCommand,
-  MWrappedItem,
   wrapCommand,
   wrapQuery,
   wrapReport,
@@ -16,7 +15,6 @@ import {
   MEVENT_EVENT,
   MQUERY_CANCEL,
   MQUERY_EVENT,
-  MQUERY_RESPONSE_EVENT,
   MREPORT_CANCEL,
   MREPORT_EVENT,
   MREPORT_RESPONSE_EVENT,
@@ -25,7 +23,6 @@ import {
   WSMEvent,
   WSMQuery,
   WSMQueryCancel,
-  WSMQueryResponse,
   WSMReport,
   WSMReportCancel,
   WSMReportResponse,
@@ -51,14 +48,14 @@ export const wrapEventWS = (event: MEvent): WSMEvent => ({
   event: MEVENT_EVENT,
 })
 
-export const wrapQueryResponseWS = (
-  items: MWrappedItem[],
-  tx: ID,
-): WSMQueryResponse => ({
-  data: items,
-  event: MQUERY_RESPONSE_EVENT,
-  tx,
-})
+// export const wrapQueryResponseWS = (
+//   items: MWrappedItem[],
+//   tx: ID,
+// ): WSMQueryResponse => ({
+//   data: items,
+//   event: MQUERY_RESPONSE_EVENT,
+//   tx,
+// })
 
 export const wrapCommandResponseWS = (
   tx: ID,

@@ -7,7 +7,6 @@ import {
   scan,
   startWith,
   Subject,
-  switchMap,
   tap,
 } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
@@ -93,41 +92,32 @@ export abstract class Repo<T extends MItem> {
   }
 
   watchFilter(filterFunc: (ent: T) => boolean): Observable<T[]> {
-    return of(this.store.getFilter(filterFunc)).pipe(
-      switchMap((all) =>
-        this.subject.pipe(
-          scan(
-            (acc, event) => {
-              acc.changed = false
-              if (event.changeType === MEventType.DEL) {
-                acc.lookup.delete(event.item.id)
-                acc.changed = true
-              }
-              if (
-                event.changeType === MEventType.SET &&
-                filterFunc(event.item)
-              ) {
-                acc.lookup.set(event.item.id, unwrapItem(event) as T)
-                acc.changed = true
-              }
-              if (
-                event.changeType === MEventType.SET &&
-                !filterFunc(event.item)
-              ) {
-                if (acc.lookup.has(event.item.id)) {
-                  acc.lookup.delete(event.item.id)
-                  acc.changed = true
-                }
-              }
-              return acc
-            },
-            { lookup: all, changed: false },
-          ),
-          filter((e) => e.changed),
-          map((e) => e.lookup),
-          startWith(this.store.getFilter(filterFunc)),
-        ),
+    const init = this.store.getFilter(filterFunc)
+    return this.subject.pipe(
+      scan(
+        (acc, event) => {
+          acc.changed = false
+          if (event.changeType === MEventType.DEL) {
+            acc.lookup.delete(event.item.id)
+            acc.changed = true
+          }
+          if (event.changeType === MEventType.SET && filterFunc(event.item)) {
+            acc.lookup.set(event.item.id, unwrapItem(event) as T)
+            acc.changed = true
+          }
+          if (event.changeType === MEventType.SET && !filterFunc(event.item)) {
+            if (acc.lookup.has(event.item.id)) {
+              acc.lookup.delete(event.item.id)
+              acc.changed = true
+            }
+          }
+          return acc
+        },
+        { lookup: init, changed: true },
       ),
+      filter((e) => e.changed),
+      map((e) => e.lookup),
+      startWith(init),
       map(toArray),
     )
   }

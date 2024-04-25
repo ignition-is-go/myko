@@ -1,6 +1,6 @@
+import { Observable } from 'rxjs'
 import { MItem } from './item'
 
-import { Observable } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
 export class MQuery<T extends MItem = MItem> {

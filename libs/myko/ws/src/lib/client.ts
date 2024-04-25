@@ -9,6 +9,7 @@ import {
   interval,
   map,
   Observable,
+  scan,
   shareReplay,
   Subject,
   switchMap,
@@ -53,6 +54,7 @@ import {
   MQuery,
   MReport,
   MReportResult,
+  MWrappedItem,
   MykoProtocol,
   ProtocolMessages,
   SetClientId,
@@ -239,7 +241,24 @@ export class WSMClient {
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
       filter((r) => r.tx === query.tx),
-      map((r) => r.data.map((rr) => unwrapItem(rr))),
+
+      scan((acc, update) => {
+        if (update.data.deletes.length > 0) {
+          update.data.deletes.forEach((d) => {
+            acc.delete(d)
+          })
+        }
+
+        if (update.data.upserts.length > 0) {
+          update.data.upserts.forEach((u) => {
+            acc.set(u.item.id, u)
+          })
+        }
+
+        return acc
+      }, new Map<ID, MWrappedItem>()),
+
+      map((r) => [...r.values()].map((rr) => unwrapItem(rr))),
 
       shareReplay(1),
       finalize(() => {
@@ -402,6 +421,7 @@ export class WSMClient {
         case MPING_EVENT:
           this.pingSubject.next(message)
           break
+
         default:
           console.warn('no idea what to do with this', message)
       }
