@@ -120,7 +120,11 @@ export class MykoGateway implements OnGatewayConnection {
         const currMap = new Map(curr.map((x) => [x.id, x]))
 
         const upserts = curr.filter(
-          (x) => !asSent.has(x.id) || asSent.get(x.id) !== x.hash,
+          (x) =>
+            x.hash == null ||
+            x.hash === undefined ||
+            !asSent.has(x.id) ||
+            asSent.get(x.id) !== x.hash,
         )
         const deletes = Array.from(asSent.keys()).filter((x) => !currMap.has(x))
 
