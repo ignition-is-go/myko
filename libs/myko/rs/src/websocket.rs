@@ -123,7 +123,7 @@ impl AutoReconnectSocket {
                 let s = SocketConnectionStatus::Connected(addr.clone(), reconnect_token.clone());
 
                 if status_sender.send(s.clone()).is_err() {
-                    println!("Could not send status update");
+                    println!("Could not send status update:128");
                 }
                 *status.lock().await = s;
 

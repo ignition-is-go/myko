@@ -21,8 +21,9 @@
     "build": "turbo run build",
     "publish": "./tools/scripts/export-version.sh && turbo run publish",
     "forge-publish": "turbo run forge-publish",
+    "tauri-publish": "turbo run tauri-publish",
     "rust": "./tools/scripts/rust.sh",
-    "preinstall": "pnpm run rust && pnpm run sync",
+    "preinstall": "pnpm run sync",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
     "transform": "node ./tools/scripts/transform.js",
@@ -44,9 +45,9 @@
   ],
   "private": true,
   "devDependencies": {
-    "@capacitor/cli": "^5.7.4",
-    "@capacitor/core": "^5.7.4",
-    "@types/node": "^20.12.7",
+    "@capacitor/cli": "^5.7.5",
+    "@capacitor/core": "^5.7.5",
+    "@types/node": "^20.12.8",
     "@vercel/ncc": "^0.38.1",
     "fs-extra": "^11.2.0",
     "generate-template-files": "^3.2.1",
@@ -57,11 +58,11 @@
     "nodemon": "^3.1.0",
     "pkg": "^5.8.1",
     "prettier-plugin-organize-imports": "^3.2.4",
-    "prettier-plugin-svelte": "^3.2.2",
+    "prettier-plugin-svelte": "^3.2.3",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "tslib": "^2.6.2",
-    "turbo": "^1.13.2",
+    "turbo": "^1.13.3",
     "typescript": "^5.4.5"
   }
 }

@@ -119,3 +119,4 @@ target/
 # Xcode user state
 rship-swift.xcworkspace/xcuserdata/max.xcuserdatad/UserInterfaceState.xcuserstate
 apps/rship/visionOS/src/visionOS/Packages/RealityKitContent/Package.realitycomposerpro/WorkspaceData/max.rcuserdata
+apps/rship/link-ui/src-tauri/gen/

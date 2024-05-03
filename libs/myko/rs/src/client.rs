@@ -9,13 +9,15 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
 use crate::websocket::{AutoReconnectSocket, SocketConnectionStatus};
 
-#[derive(Clone)]
+use url::Url;
+
+#[derive(Clone, Debug)]
 pub struct ConnectionInfo {
     pub address: String,
     pub client_id: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ConnectionStatus {
     Client(ConnectionInfo),
     Connected(String),
@@ -59,40 +61,45 @@ impl MykoClient {
         let client_pub_ref = client_pub.clone();
 
         tokio::spawn(async move {
-            while let Ok(conn) = status.recv().await {
-                match conn {
-                    SocketConnectionStatus::Connecting(addr, _) => {
-                        let mut connection = connection_ref.lock().await;
-                        *connection = ConnectionStatus::Connected(addr.clone());
-                        drop(connection);
-                        if client_pub_ref
-                            .send(ConnectionStatus::Connected(addr))
-                            .is_err()
-                        {
-                            println!("Nothing listening to connection status");
+            loop {
+                match status.recv().await {
+                    Ok(conn) => match conn {
+                        SocketConnectionStatus::Connecting(addr, _) => {
+                            let mut connection = connection_ref.lock().await;
+                            *connection = ConnectionStatus::Connected(addr.clone());
+                            drop(connection);
+                            if client_pub_ref
+                                .send(ConnectionStatus::Connected(addr))
+                                .is_err()
+                            {
+                                println!("Nothing listening to connection status");
+                            }
                         }
-                    }
-                    SocketConnectionStatus::Connected(addr, _) => {
-                        let mut connection = connection_ref.lock().await;
-                        *connection = ConnectionStatus::Connected(addr.clone());
-                        drop(connection);
+                        SocketConnectionStatus::Connected(addr, _) => {
+                            let mut connection = connection_ref.lock().await;
+                            *connection = ConnectionStatus::Connected(addr.clone());
+                            drop(connection);
 
-                        if client_pub_ref
-                            .send(ConnectionStatus::Connected(addr))
-                            .is_err()
-                        {
-                            println!("Nothing listening to connection status");
+                            if client_pub_ref
+                                .send(ConnectionStatus::Connected(addr))
+                                .is_err()
+                            {
+                                println!("Nothing listening to connection status");
+                            }
                         }
-                    }
 
-                    SocketConnectionStatus::Disconnected => {
-                        let mut connection = connection_ref.lock().await;
-                        *connection = ConnectionStatus::Disconnected;
-                        drop(connection);
+                        SocketConnectionStatus::Disconnected => {
+                            let mut connection = connection_ref.lock().await;
+                            *connection = ConnectionStatus::Disconnected;
+                            drop(connection);
 
-                        if client_pub_ref.send(ConnectionStatus::Disconnected).is_err() {
-                            println!("Nothing listening to connection status");
+                            if client_pub_ref.send(ConnectionStatus::Disconnected).is_err() {
+                                println!("Nothing listening to connection status");
+                            }
                         }
+                    },
+                    Err(e) => {
+                        println!("Error in connection status stream: {:?}", e);
                     }
                 }
             }
@@ -135,7 +142,39 @@ impl MykoClient {
     }
 
     pub async fn set_address(&self, addr: String) {
-        self.socket.set_addr(addr).await;
+        let parsed = Url::parse(addr.as_str());
+
+        let mut parsed = match parsed {
+            Ok(c) => c,
+            Err(e) => {
+                println!("Could not parse url: {:?}", e);
+
+                let add_ws = format!("ws://{}", addr);
+
+                match Url::parse(add_ws.as_str()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        println!("Could not parse url: {:?}", e);
+                        self.socket.set_addr("".to_string()).await;
+                        return;
+                    }
+                }
+            }
+        };
+
+        if parsed.scheme() != "ws" {
+            parsed.set_scheme("ws").unwrap();
+        }
+
+        if parsed.path() != "/myko" {
+            parsed.set_path("/myko");
+        }
+
+        if parsed.port().is_none() {
+            parsed.set_port(Some(5155)).unwrap();
+        }
+
+        self.socket.set_addr(parsed.to_string()).await;
     }
 
     pub async fn get_connection_status(&self) -> ConnectionStatus {
