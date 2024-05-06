@@ -51,4 +51,4 @@ libs/ableton/src/lib/max4node/*
 
 # generated
 
-apps/rship/link-ui/bindings.ts
+apps/rship/link-ui/src/bindings.ts
