@@ -24,7 +24,7 @@
     "ioredis": "^5.3.2",
     "luxon": "^3.4.4",
     "myko-wasm": "workspace:^",
-    "node-rdkafka": "^2.18.0",
+    "node-rdkafka": "^3.0.0",
     "passport": "^0.6.0",
     "passport-local": "^1.0.0",
     "ramda": "^0.29.1",
