@@ -13,7 +13,6 @@ import {
   shareReplay,
   Subject,
   switchMap,
-  tap,
 } from 'rxjs'
 import {
   MCOMMAND_ERROR_EVENT,
@@ -222,15 +221,14 @@ export class WSMClient {
         filter((c) => c.tx === command.tx),
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
+            this.errorsSubject.next(e)
             throw e
           }
-          return e.data as MCommandResponse<T>
-        }),
-        tap((x) =>
           this.successSubject.next(
             wrapped.data.commandId.split(':').reverse().join(' '),
-          ),
-        ),
+          )
+          return e.data as MCommandResponse<T>
+        }),
       ),
     )
   }
@@ -401,12 +399,8 @@ export class WSMClient {
           this.queryResponses.next(message)
           break
         case MCOMMAND_RESPONSE_EVENT:
-          this.commandResponses.next(message)
-          break
-
         case MCOMMAND_ERROR_EVENT:
           this.commandResponses.next(message)
-          this.errorsSubject.next(message)
           break
 
         case MREPORT_EVENT:
