@@ -28,7 +28,7 @@
     "versionstamp": "node ./tools/scripts/version-stamp.js",
     "transform": "node ./tools/scripts/transform.js",
     "gen": "node ./tools/scaffold/generate.js",
-    "clear": "rm -rf $(pnpm store path) && rm -rf node_modules rm -rf **/node_modules && cargo clean",
+    "clean": "./tools/scripts/clean.sh",
     "setup": "pnpm run install && pnpm run sync",
     "ionic:build": "npm run build",
     "sync": "git submodule update --init --recursive --remote",
@@ -64,5 +64,15 @@
     "tslib": "^2.6.2",
     "turbo": "^1.13.3",
     "typescript": "^5.4.5"
-  }
+  },
+  "trustedDependencies": [
+    "@nestjs/core",
+    "@sveltejs/kit",
+    "core-js",
+    "electron",
+    "electron-winstaller",
+    "esbuild",
+    "node-rdkafka",
+    "svelte-preprocess"
+  ]
 }
