@@ -15,7 +15,7 @@ import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { LoggerService } from '@rship/logging'
 import { Redis } from 'ioredis'
-import { unpack as decode, pack as encode } from 'msgpackr'
+import { unpack as decode } from 'msgpackr'
 import {
   AdminClient,
   ConsumerGlobalConfig,
@@ -146,8 +146,16 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
   public output: Subject<MEvent<T>>
 
+  private decodeMsg(buffer) {
+    try {
+      return decode(buffer) as MEvent<T>
+    } catch (e) {
+      return JSON.parse(buffer.toString()) as MEvent<T>
+    }
+  }
+
   protected onMessage(message: Pick<Message, 'value' | 'offset'>) {
-    const event = decode(message.value) as MEvent<T>
+    const event = this.decodeMsg(message.value)
 
     const id = event.item.id
 
@@ -182,7 +190,7 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     keys.forEach(async (key) => {
       const data = await this.redis.getBuffer(key)
 
-      const event = decode(data) as MEvent<T>
+      const event = this.decodeMsg(data) as MEvent<T>
 
       this.onEvent(event)
     })
@@ -238,7 +246,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   }
 
   persist(event: MEvent<T>): void {
-    this.prod.publish(Buffer.from(encode(event)), event.item.id)
+    this.prod.publish(Buffer.from(JSON.stringify(event)), event.item.id)
     this.onEvent(event)
   }
 }
@@ -296,7 +304,7 @@ export class KafkaControlledPersister<T extends MItem>
       throw new Error('Producer not found')
     }
 
-    producer.publish(Buffer.from(encode(event)), event.item.id)
+    producer.publish(Buffer.from(JSON.stringify(event)), event.item.id)
 
     this.onEvent(event)
   }
