@@ -42,7 +42,6 @@ import {
   wrapReportWS,
 } from './wrappers'
 
-import { Decoder, Encoder } from '@msgpack/msgpack'
 import {
   ID,
   MCommand,
@@ -63,6 +62,7 @@ import {
   unwrapReport,
   wrapCommand,
 } from '@myko/core'
+import { pack, unpack } from 'msgpackr'
 import { v4 } from 'uuid'
 
 type ClientStats = {
@@ -163,13 +163,11 @@ export class WSMClient {
     this.resendQueries = new Map()
     this.resendReports = new Map()
 
-    const decoder = new Decoder()
-    const encoder = new Encoder()
     this.decoders.set(MykoProtocol.JSON, (data) => JSON.parse(data))
-    this.decoders.set(MykoProtocol.MSGPACK, (data) => decoder.decode(data))
+    this.decoders.set(MykoProtocol.MSGPACK, (data) => unpack(data))
 
     this.encoders.set(MykoProtocol.JSON, (data) => JSON.stringify(data))
-    this.encoders.set(MykoProtocol.MSGPACK, (data) => encoder.encode(data))
+    this.encoders.set(MykoProtocol.MSGPACK, (data) => pack(data))
 
     this.datapreppers.set(MykoProtocol.JSON, (data) => data.toString())
     this.datapreppers.set(MykoProtocol.MSGPACK, (data) => data)
@@ -340,7 +338,7 @@ export class WSMClient {
 
     this.ws.onopen = () => {
       if (this.protocol !== MykoProtocol.MSGPACK && !this.opts.disableMsgPack) {
-        this.switchToMessagePack()
+        // this.switchToMessagePack()
       }
       this.processQueue()
       this.hooks?.onConnect && this.hooks?.onConnect(path)

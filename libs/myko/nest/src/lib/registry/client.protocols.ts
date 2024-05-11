@@ -1,5 +1,5 @@
-import { Decoder, Encoder } from '@msgpack/msgpack'
 import { MykoProtocol } from '@myko/core'
+import { pack, unpack } from 'msgpackr'
 import * as WebSocket from 'ws'
 
 export const clientProtocols = new Map<WebSocket, MykoProtocol>()
@@ -7,16 +7,14 @@ export const clientProtocols = new Map<WebSocket, MykoProtocol>()
 export const decoders = new Map<MykoProtocol, (data: any) => any>()
 export const encoders = new Map<MykoProtocol, (data: any) => any>()
 
-const decoder = new Decoder()
-const encoder = new Encoder()
 decoders.set(MykoProtocol.JSON, (data) => JSON.parse(data))
 decoders.set(MykoProtocol.MSGPACK, (data) => {
   try {
-    return decoder.decode(data)
+    return unpack(data)
   } catch (e) {
     return JSON.parse(data)
   }
 })
 
 encoders.set(MykoProtocol.JSON, (data) => JSON.stringify(data))
-encoders.set(MykoProtocol.MSGPACK, (data) => encoder.encode(data))
+encoders.set(MykoProtocol.MSGPACK, (data) => pack(data))

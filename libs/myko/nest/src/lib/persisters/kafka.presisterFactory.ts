@@ -12,11 +12,10 @@ import {
   fireInit,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
-import { Subject } from 'rxjs'
-
-import { decode, encode } from '@msgpack/msgpack'
 import { ConfigService } from '@nestjs/config'
+import { LoggerService } from '@rship/logging'
+import { Redis } from 'ioredis'
+import { unpack as decode, pack as encode } from 'msgpackr'
 import {
   AdminClient,
   ConsumerGlobalConfig,
@@ -25,11 +24,10 @@ import {
   Producer,
   ProducerGlobalConfig,
 } from 'node-rdkafka'
+import { Subject } from 'rxjs'
 import { v4 as uuid } from 'uuid'
-import { MykoQueryBus } from '../busses'
-
-import { Redis } from 'ioredis'
 import { SERVER_TOKEN } from '../../types'
+import { MykoQueryBus } from '../busses'
 import { newTopic } from './util/kafka.newTopic'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'

@@ -15,7 +15,7 @@ import { LoggerService } from '@rship/logging'
 import { Redis } from 'ioredis'
 import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 
-import { decode, encode } from '@msgpack/msgpack'
+import { unpack as decode, pack as encode } from 'msgpackr'
 
 export type RedisPersisterOptions = {
   enableEventLog: boolean
