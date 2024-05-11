@@ -11,7 +11,7 @@ import {
 } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { getFilters, getIds, watchIds } from '../registry'
-import { ID, MEvent, MEventType, MItem } from '../types'
+import { addMissingHash, ID, MEvent, MEventType, MItem } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
 
@@ -76,7 +76,11 @@ export abstract class Repo<T extends MItem> {
     this.subject.subscribe((event: MEvent<T>) => {
       switch (event.changeType) {
         case MEventType.SET:
-          this.store.set(event.item.id, unwrapItem(event) as T)
+          const item = unwrapItem(event) as T
+
+          const hashedItem = addMissingHash(item) as T
+
+          this.store.set(event.item.id, hashedItem)
           break
         case MEventType.DEL:
           this.store.delete(event.item.id)

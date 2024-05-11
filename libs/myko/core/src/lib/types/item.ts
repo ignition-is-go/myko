@@ -13,14 +13,25 @@ export class MItem<T extends IMItem = IMItem> {
   readonly hash: string
 
   constructor(args: PartialBy<T, 'hash'>) {
-    Reflect.set(this, 'hash', MD5(args))
-    return args as unknown as MItem<T>
+    const hashed = addMissingHash(args)
+    return hashed as MItem<T>
   }
 }
 
-export const recalculateHash = (item: MItem) => {
+export const recalculateHash = <T extends IMItem = IMItem>(
+  item: PartialBy<T, 'hash'>,
+): T => {
   Reflect.deleteProperty(item, 'hash')
-  const clone = { ...item }
-  const hash = MD5(clone)
+  const hash = MD5(item)
   Reflect.set(item, 'hash', hash)
+  return item as T
+}
+
+export const addMissingHash = <T extends IMItem = IMItem>(
+  item: PartialBy<T, 'hash'>,
+): T => {
+  if (!item.hash) {
+    return recalculateHash(item)
+  }
+  return item as T
 }
