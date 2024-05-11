@@ -8,6 +8,8 @@ import { SERVER_TOKEN } from '../../types'
 import { MykoCommandBus, MykoEventBus, MykoQueryBus } from '../busses'
 @Injectable()
 export class SocketRegistry extends Map<ID, WebSocket> {
+  reverse: Map<WebSocket, ID> = new Map()
+
   constructor(
     private events: MykoEventBus,
     private query: MykoQueryBus,
@@ -33,6 +35,7 @@ export class SocketRegistry extends Map<ID, WebSocket> {
         'client-disconnected',
       )
       this.delete(id)
+      this.reverse.delete(socket)
     })
     const c = new Client({ id, serverId })
     this.logger.getLogger('SocketRegistry').dev.info(`Client Connected`)
@@ -41,5 +44,17 @@ export class SocketRegistry extends Map<ID, WebSocket> {
     const ws = wrapCommandWS(new SetClientId(id))
     socket.send(JSON.stringify(ws))
     this.set(id, socket)
+    this.reverse.set(socket, id)
+  }
+
+  getClientIdFromSocket(socket: WebSocket): ID {
+    const id = this.reverse.get(socket)
+    if (!id) {
+      this.logger
+        .getLogger('SocketRegistry')
+        .dev.error(`No client found for socket`)
+    }
+
+    return id
   }
 }

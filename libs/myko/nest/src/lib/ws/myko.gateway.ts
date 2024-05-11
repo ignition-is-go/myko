@@ -1,7 +1,11 @@
 import {
+  Client,
   ID,
+  MEventType,
   MykoProtocol,
   ProtocolMessages,
+  ofItems,
+  ofType,
   unwrapCommand,
   unwrapQuery,
   unwrapReport,
@@ -56,6 +60,7 @@ import { MykoGuard } from './myko.guard'
 @UseFilters(new WsExceptionFilter())
 export class MykoGateway implements OnGatewayConnection {
   private unsub = new Subject<ID>()
+  private clientDisconnects = new Subject<ID>()
 
   constructor(
     private event: MykoEventBus,
@@ -63,7 +68,13 @@ export class MykoGateway implements OnGatewayConnection {
     private query: MykoQueryBus,
     private report: MykoReportBus,
     private reg: SocketRegistry,
-  ) {}
+  ) {
+    this.event.subject$
+      .pipe(ofItems(Client), ofType(MEventType.DEL))
+      .subscribe((x) => {
+        this.clientDisconnects.next(x.item.id)
+      })
+  }
 
   handleConnection(client: WebSocket) {
     try {
@@ -102,7 +113,16 @@ export class MykoGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage(MQUERY_EVENT)
-  onQuery(@MessageBody() wrappedQuery: WSMQuery): Observable<WSMQueryResponse> {
+  onQuery(
+    @MessageBody() wrappedQuery: WSMQuery,
+    @ConnectedSocket() socket: WebSocket,
+  ): Observable<WSMQueryResponse> {
+    const clientId = this.reg.getClientIdFromSocket(socket)
+
+    if (!clientId) {
+      throw new Error('No client found for socket')
+    }
+
     const q = unwrapQuery(wrappedQuery.data)
 
     const tx = q.tx
@@ -145,6 +165,7 @@ export class MykoGateway implements OnGatewayConnection {
         console.log(e)
         throw e
       }),
+      takeUntil(this.clientDisconnects.pipe(filter((x) => x === clientId))),
       takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),
     )
   }
@@ -157,8 +178,15 @@ export class MykoGateway implements OnGatewayConnection {
   @SubscribeMessage(MREPORT_EVENT)
   onReport(
     @MessageBody() wrappedReport: WSMReport,
+    @ConnectedSocket() socket: WebSocket,
   ): Observable<WSMReportResponse> {
     const report = unwrapReport(wrappedReport.data)
+
+    const clientId = this.reg.getClientIdFromSocket(socket)
+
+    if (!clientId) {
+      throw new Error('No client found for socket')
+    }
 
     return this.report.watch(report).pipe(
       map((r) => wrapReportResponseWS(report.tx, r)),
@@ -166,6 +194,7 @@ export class MykoGateway implements OnGatewayConnection {
         console.log(e)
         throw e
       }),
+      takeUntil(this.clientDisconnects.pipe(filter((x) => x === clientId))),
       takeUntil(this.unsub.pipe(filter((u) => u === report.tx))),
     )
   }
