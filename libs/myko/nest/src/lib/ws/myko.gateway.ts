@@ -4,6 +4,7 @@ import {
   MEventType,
   MykoProtocol,
   ProtocolMessages,
+  addMissingHash,
   ofItems,
   ofType,
   unwrapCommand,
@@ -48,7 +49,15 @@ import {
 } from '../busses'
 
 import { UseFilters, UseGuards } from '@nestjs/common'
-import { Observable, Subject, catchError, filter, map, takeUntil } from 'rxjs'
+import {
+  EMPTY,
+  Observable,
+  Subject,
+  catchError,
+  filter,
+  map,
+  takeUntil,
+} from 'rxjs'
 import { WebSocket } from 'ws'
 import { clientProtocols } from '../registry/client.protocols'
 import { SocketRegistry } from '../registry/socket.registry'
@@ -89,6 +98,8 @@ export class MykoGateway implements OnGatewayConnection {
     @MessageBody()
     event: WSMEvent,
   ) {
+    const hashed = addMissingHash(event.data.item)
+    Reflect.set(event.data, 'item', hashed)
     this.event.publish(event.data)
   }
 
@@ -120,7 +131,8 @@ export class MykoGateway implements OnGatewayConnection {
     const clientId = this.reg.getClientIdFromSocket(socket)
 
     if (!clientId) {
-      throw new Error('No client found for socket')
+      console.warn('No client found for socket')
+      return EMPTY
     }
 
     const q = unwrapQuery(wrappedQuery.data)
@@ -165,9 +177,10 @@ export class MykoGateway implements OnGatewayConnection {
         console.log(e)
         throw e
       }),
+      filter((x) => x.data.deletes.length > 0 || x.data.upserts.length > 0),
       takeUntil(this.clientDisconnects.pipe(filter((x) => x === clientId))),
       takeUntil(this.unsub.pipe(filter((u) => u === q.tx))),
-    )
+    ) as Observable<WSMQueryResponse>
   }
 
   @SubscribeMessage(MREPORT_CANCEL)
@@ -185,7 +198,8 @@ export class MykoGateway implements OnGatewayConnection {
     const clientId = this.reg.getClientIdFromSocket(socket)
 
     if (!clientId) {
-      throw new Error('No client found for socket')
+      console.warn('No client found for socket')
+      return EMPTY
     }
 
     return this.report.watch(report).pipe(
