@@ -15,7 +15,7 @@ import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { LoggerService } from '@rship/logging'
 import { Redis } from 'ioredis'
-import { unpack as decode, pack } from 'msgpackr'
+import { unpack as decode } from 'msgpackr'
 import {
   AdminClient,
   ConsumerGlobalConfig,
@@ -162,11 +162,15 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
   }
 
   protected encodeMsg(event: MEvent<T>): Buffer {
-    return pack(event)
+    return Buffer.from(JSON.stringify(event))
   }
 
   protected onMessage(message: Pick<Message, 'value' | 'offset'>) {
     const event = this.decodeMsg(message.value)
+
+    if (!event) {
+      return
+    }
 
     const id = event.item.id
 
