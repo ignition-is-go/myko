@@ -105,6 +105,7 @@ export class WSMClient {
   }
 
   clientId: ID | null = null
+  readonly clientId$ = new Subject<ID>()
 
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
@@ -370,6 +371,7 @@ export class WSMClient {
           ) {
             // console.log('got client id', cmd.clientId)
             this.clientId = cmd.clientId
+            this.clientId$.next(cmd.clientId)
             console.log('Got Client ID', this.clientId)
             this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
             ;[...this.resendQueries.values()].forEach((q) => {
