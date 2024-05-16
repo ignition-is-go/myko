@@ -11,7 +11,14 @@ import {
 } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { getFilters, getIds, watchIds } from '../registry'
-import { addMissingHash, ID, MEvent, MEventType, MItem } from '../types'
+import {
+  addMissingHash,
+  DeepPartial,
+  ID,
+  MEvent,
+  MEventType,
+  MItem,
+} from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
 
@@ -159,7 +166,7 @@ export abstract class Repo<T extends MItem> {
     return ids.map((id) => this.getId(id)).filter((x) => x !== null) as T[]
   }
 
-  watch(query: Partial<T>): Observable<T[]> {
+  watch(query: DeepPartial<T>): Observable<T[]> {
     const filterFunc = buildFilter(query)
 
     const ret = this.watchFilter(filterFunc)
@@ -296,6 +303,17 @@ const toArray = <T>(m: Map<string, T>): T[] => [...m.values()]
 const buildFilter =
   <T extends MItem>(query: Partial<T>) =>
   (ent: T) =>
-    Reflect.ownKeys(query).every(
-      (key) => Reflect.get(query, key) === Reflect.get(ent, key),
-    )
+    objectFilter(query, ent)
+
+const objectFilter = (query: object, ent: object) => {
+  return Reflect.ownKeys(query).every((key) => {
+    const querySide = Reflect.get(query, key)
+    const entSide = Reflect.get(ent, key)
+
+    if (typeof querySide === 'object' && typeof entSide === 'object') {
+      return objectFilter(querySide, entSide)
+    }
+
+    return querySide === entSide
+  })
+}
