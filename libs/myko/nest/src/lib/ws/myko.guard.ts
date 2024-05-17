@@ -1,4 +1,9 @@
-import { CommandUnwrapError, isAllInit, unwrapCommand } from '@myko/core'
+import {
+  CommandUnwrapError,
+  MWrappedCommand,
+  isAllInit,
+  unwrapCommand,
+} from '@myko/core'
 import {
   CanActivate,
   ExecutionContext,
@@ -42,6 +47,10 @@ export class MykoGuard implements CanActivate, OnModuleInit {
 
     const data = context.switchToWs().getData()
     const client = context.switchToWs().getClient()
+
+    if ((data as MWrappedCommand).commandId === undefined) {
+      return true
+    }
 
     try {
       const c = unwrapCommand(data)
