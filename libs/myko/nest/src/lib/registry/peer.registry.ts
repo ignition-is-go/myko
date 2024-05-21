@@ -20,39 +20,6 @@ export class PeerClientRegistry {
 
   private peers = new Map<ID, WSMClient>()
 
-  assertPeer(
-    server: Server,
-    me: Server,
-    token: string,
-    {
-      onConnect,
-      onDisconnect,
-    }: { onConnect: () => void; onDisconnect: () => void },
-  ) {
-    if (this.peers.has(server.id)) {
-      return
-    }
-
-    const client = new WSMClient(
-      server.address,
-      server.port,
-      (url) => new WebSocket(url),
-      {
-        onDisconnect: () => {
-          onDisconnect()
-        },
-        onConnect: () => {
-          onConnect()
-        },
-      },
-      { reconnect: false, secure: false },
-    )
-
-    client.setUser(token)
-
-    this.peers.set(server.id, client)
-  }
-
   getPeer(serverId: ID): Observable<WSMClient | null> {
     const log = this.logger.getLogger('getPeer').dev
 
@@ -75,12 +42,15 @@ export class PeerClientRegistry {
           server.port,
           (url) => new WebSocket(url),
           {
-            onDisconnect: () => {
+            onDisconnect: (_, willAttemptReconnect) => {
               log.debug(
                 `Peer Disconnected: ${server.address}:${server.port} ${server.id}`,
               )
-              this.events.publishDel(server, 'peer-disconnected')
-              this.peers.delete(serverId)
+
+              if (!willAttemptReconnect) {
+                this.events.publishDel(server, 'peer-disconnected')
+                this.peers.delete(serverId)
+              }
             },
             onConnect: () => {
               log.debug(
@@ -88,7 +58,7 @@ export class PeerClientRegistry {
               )
             },
           },
-          { reconnect: false, secure: false },
+          { reconnect: true, maxReconnectAttempts: 30, secure: false },
         )
 
         client.setUser(this.auth.getPeerToken())

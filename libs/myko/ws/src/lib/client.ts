@@ -74,6 +74,7 @@ type ClientStats = {
 type WSMClientOpts = {
   secure: boolean
   reconnect: boolean
+  maxReconnectAttempts: number
   disableMsgPack: boolean
 }
 export class WSMClient {
@@ -136,6 +137,8 @@ export class WSMClient {
   private opts: WSMClientOpts
 
   private shouldReconnect = true
+  private connectAttempts = 0
+  private reconnectDelay = 1000
 
   constructor(
     private host: string,
@@ -145,7 +148,7 @@ export class WSMClient {
       onClientId?: (clientId: ID) => void
       onStartConnect?: (url: string) => void
       onConnect?: (url: string) => void
-      onDisconnect?: (c: CloseEvent) => void
+      onDisconnect?: (c: CloseEvent, willAttemptReconnect: boolean) => void
       onError?: (e?: string) => void
     },
     opts?: Partial<WSMClientOpts>,
@@ -177,6 +180,7 @@ export class WSMClient {
       secure: false,
       reconnect: true,
       disableMsgPack: false,
+      maxReconnectAttempts: Infinity,
       ...opts,
     }
 
@@ -426,14 +430,29 @@ export class WSMClient {
     }
 
     this.ws.onclose = (e) => {
+      const willReconnect =
+        this.shouldReconnect &&
+        this.opts?.reconnect &&
+        this.connectAttempts < this.opts.maxReconnectAttempts
+
+      this.connectAttempts += 1
+
       this.protocol = MykoProtocol.JSON
-      this.hooks?.onDisconnect && this.hooks?.onDisconnect(e)
+
+      if (e.code === 1002) {
+        // this is just cuz the server is not up yet,
+        // so will try to reconnect, but not call the
+        //disconnect hooks cuz we expect to connect soon
+        this.hooks?.onDisconnect && this.hooks?.onDisconnect(e, willReconnect)
+      }
 
       setTimeout(() => {
-        if (this.shouldReconnect && this.opts?.reconnect) {
+        if (willReconnect) {
           this.connect()
         }
-      }, 1000)
+      }, this.reconnectDelay)
+
+      this.reconnectDelay *= 1.1
     }
 
     this.ws.onerror = (err) => {
@@ -475,7 +494,7 @@ export class WSMClient {
 
   disconnect() {
     this.shouldReconnect = false
-    this.hooks?.onDisconnect?.({} as CloseEvent)
+    this.hooks?.onDisconnect?.({} as CloseEvent, false)
     if (this.ws) {
       this.ws.onclose = () => {}
     }
