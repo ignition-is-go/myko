@@ -27,11 +27,7 @@ import {
 export type MykoSagaType = Type<MSaga>
 
 export abstract class AMykoEventBus extends ObservableBus<MEvent> {
-  protected serverId: ID
-
-  setServerId(serverId: string) {
-    this.serverId = serverId
-  }
+  abstract getServerId(): ID
 
   constructor(private commandBus: AMykoCommandBus) {
     super()
@@ -68,7 +64,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
-                  e.sourceId === this.serverId &&
+                  e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.foreignType,
               ),
@@ -147,7 +143,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
-                  e.sourceId === this.serverId &&
+                  e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.localType,
               ),
@@ -175,7 +171,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
-                  e.sourceId === this.serverId &&
+                  e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.foreignType,
               ),
@@ -281,7 +277,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
-                  e.sourceId === this.serverId &&
+                  e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.SET &&
                   dependencies.some((d) => d.foreignType === e.itemType),
               ),
@@ -327,7 +323,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
       )
     }
     const stream$ = saga(
-      this.subject$.pipe(filter((x) => x.sourceId === this.serverId)),
+      this.subject$.pipe(filter((x) => x.sourceId === this.getServerId())),
     )
     if (!(stream$ instanceof Observable)) {
       throw new Error(

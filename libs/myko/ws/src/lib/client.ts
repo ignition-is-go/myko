@@ -443,6 +443,7 @@ export class WSMClient {
         // this is just cuz the server is not up yet,
         // so will try to reconnect, but not call the
         //disconnect hooks cuz we expect to connect soon
+      } else {
         this.hooks?.onDisconnect && this.hooks?.onDisconnect(e, willReconnect)
       }
 

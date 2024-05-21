@@ -1,4 +1,5 @@
 export * from './command.bus'
 export * from './event.bus'
+export * from './peer.bus'
 export * from './query.bus'
 export * from './report.bus'

@@ -2,7 +2,7 @@ import { Module, OnModuleInit, forwardRef } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { LoggerModule, LoggerService } from '@rship/logging'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
-import { MykoQueryBus } from './busses'
+import { MykoQueryBus, PeerEventBus } from './busses'
 import { MykoCommandBus } from './busses/command.bus'
 import { MykoEventBus } from './busses/event.bus'
 import { MykoReportBus } from './busses/report.bus'
@@ -31,6 +31,7 @@ import { ExplorerService } from './services'
     RedisPersisterFactory,
     KafkaPersisterFactory,
     MykoDocsService,
+    PeerEventBus,
   ],
   exports: [
     MykoCommandBus,
@@ -41,6 +42,7 @@ import { ExplorerService } from './services'
     KafkaPersisterFactory,
     SocketRegistry,
     PeerClientRegistry,
+    PeerEventBus,
   ],
 })
 export class MykoModule implements OnModuleInit {

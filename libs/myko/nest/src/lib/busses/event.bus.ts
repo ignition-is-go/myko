@@ -4,9 +4,11 @@ import {
   MSaga,
   MYKO_SAGA_METADATA,
   MykoSagaType,
+  Server,
 } from '@myko/core'
-import { Injectable, Optional } from '@nestjs/common'
+import { Inject, Injectable, Optional } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
+import { SERVER_TOKEN } from '../../types'
 import { MykoBackplaneClient } from '../myko.backplane.client'
 import { MykoCommandBus } from './command.bus'
 
@@ -15,6 +17,7 @@ export class MykoEventBus extends AMykoEventBus {
   constructor(
     private moduleRef: ModuleRef,
     commandBus: MykoCommandBus,
+    @Inject(SERVER_TOKEN) private server: Server,
     @Optional()
     private backplane?: MykoBackplaneClient,
   ) {
@@ -22,12 +25,16 @@ export class MykoEventBus extends AMykoEventBus {
   }
 
   async publish<T extends MEvent>(event: T): Promise<void> {
-    if (!event.sourceId && !!this.serverId) {
-      Reflect.set(event, 'sourceId', this.serverId)
+    if (!event.sourceId && !!this.getServerId()) {
+      Reflect.set(event, 'sourceId', this.getServerId())
     }
     this.subject$.next(event)
     if (this.backplane) this.backplane.publishEvent(event)
     return
+  }
+
+  getServerId() {
+    return this.server.id
   }
 
   public registerSagas(types: MykoSagaType[]) {

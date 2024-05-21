@@ -112,10 +112,9 @@ export class MykoGatewayModule implements OnModuleInit {
 
   async onModuleInit() {
     watchInit((entity, registered, inited) => {
-      this.logger.getLogger(entity).dev.info(`Init: ${inited}/${registered}`)
+      // this.logger.getLogger(entity).dev.info(`Init: ${inited}/${registered}`)
     })
 
-    this.events.setServerId(this.server.id)
     this.events.publishSet(this.server, 'server:init')
 
     this.servers

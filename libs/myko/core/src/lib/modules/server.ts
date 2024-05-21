@@ -20,7 +20,7 @@ export class Server extends MItem<Server> {
 
 @MykoReport('server:eventlog')
 export class ServerEventLog extends MReport<MEvent> {
-  constructor(readonly serverId: ID) {
+  constructor() {
     super()
   }
 }

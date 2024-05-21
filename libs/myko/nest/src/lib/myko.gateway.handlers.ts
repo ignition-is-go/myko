@@ -148,6 +148,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
     if (client.serverId !== this.server.id) {
       // forward to server
+      console.log('forwarding to server')
       const peer = await firstValueFrom(this.peers.getPeer(client.serverId))
 
       if (!peer) {
@@ -213,11 +214,6 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
     try {
       if (query.peerId === this.server.id) {
         return this.query.watch(query.query)
-      }
-
-      if (!this.peers.getPeer(query.peerId)) {
-        this.logger.getLogger('PeerQueryHandler').dev.error('Peer Not Found')
-        return of([])
       }
 
       return this.peers.getPeer(query.peerId).pipe(
@@ -309,7 +305,7 @@ export class IsLeaderHandler implements MReportHandler<IsLeader> {
           server
             ? this.report
                 .watch(new GroupLeader(server.groupId))
-                .pipe(map((leader) => leader.id === server.id))
+                .pipe(map((leader) => leader?.id === server.id))
             : of(false),
         ),
       )
@@ -318,32 +314,33 @@ export class IsLeaderHandler implements MReportHandler<IsLeader> {
 
 @MykoReportHandler(PeerAlive)
 export class PeerAliveHandler implements MReportHandler<PeerAlive> {
-  constructor(private query: MykoQueryBus) {}
+  constructor(
+    private query: MykoQueryBus,
+    private peers: PeerClientRegistry,
+  ) {}
   execute(report: PeerAlive) {
-    return interval(500).pipe(
-      switchMap((_) => {
-        const now = performance.now()
-        return this.query
-          .watch(new PeerQuery(new GetConnectedServer(), report.peerId))
-          .pipe(map((x) => (x.length > 0 ? performance.now() - now : false)))
+    return this.peers.getPeer(report.peerId).pipe(
+      switchMap((peer) => {
+        return peer
+          ? interval(1000).pipe(
+              switchMap((_) => peer.ping().catch((e) => false)),
+            )
+          : of(false)
       }),
-    )
+    ) as Observable<number | false>
   }
 }
 
 @MykoReportHandler(PeerLastSeen)
 export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
-  constructor(private query: MykoQueryBus) {}
+  constructor(
+    private query: MykoQueryBus,
+    private report: MykoReportBus,
+  ) {}
   execute(report: PeerLastSeen) {
-    return interval(1000).pipe(
-      switchMap((_) => {
-        return this.query
-          .watch(new PeerQuery(new GetConnectedServer(), report.peerId))
-          .pipe(
-            filter((x) => x.length > 0),
-            map((_) => DateTime.utc().toISO()),
-          )
-      }),
+    return this.report.watch(new PeerAlive(report.peerId)).pipe(
+      filter((x) => x !== false),
+      map((x) => DateTime.utc().toISO()),
     )
   }
 }
