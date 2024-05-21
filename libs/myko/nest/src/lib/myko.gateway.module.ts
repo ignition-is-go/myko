@@ -5,6 +5,7 @@ import {
   ServerRepo,
   Stream,
   makeDel,
+  ofItems,
   watchInit,
 } from '@myko/core'
 import {
@@ -49,9 +50,13 @@ import { MykoGateway } from './ws/myko.gateway'
     },
     {
       provide: ServerRepo,
-      useFactory: (events: MykoEventBus) => {
+      useFactory: (events: MykoEventBus, persisters: KafkaPersisterFactory) => {
+        const p = persisters.getPersister<Server>(Server)
+
+        events.subject$.pipe(ofItems(Server)).subscribe((e) => p.persist(e))
+
         return new ServerRepo(Server, {
-          stream: events.subject$.pipe() as Stream<Server>,
+          stream: p.output.pipe(),
         })
       },
       inject: [MykoEventBus, KafkaPersisterFactory],

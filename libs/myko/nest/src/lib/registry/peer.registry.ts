@@ -9,7 +9,7 @@ import { MykoEventBus } from '../busses'
 import { MykoAuthService } from '../services'
 
 @Injectable()
-export class PeerRegistry {
+export class PeerClientRegistry {
   constructor(
     private servers: ServerRepo,
     @Inject(SERVER_TOKEN) private me: Server,

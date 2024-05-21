@@ -240,6 +240,10 @@ export class WSMClient {
       filter((r) => r.tx === query.tx),
 
       scan((acc, update) => {
+        if (update.data.sequence === 0) {
+          acc.clear()
+        }
+
         if (update.data.deletes.length > 0) {
           update.data.deletes.forEach((d) => {
             acc.delete(d)

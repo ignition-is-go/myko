@@ -47,6 +47,7 @@ export type WSMQuery = {
 }
 
 export type WSMQueryResponseData = {
+  sequence: number
   upserts: MWrappedItem[]
   deletes: ID[]
 }

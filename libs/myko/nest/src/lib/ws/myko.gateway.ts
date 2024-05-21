@@ -141,6 +141,8 @@ export class MykoGateway implements OnGatewayConnection {
 
     const asSent = new Map<ID, string>()
 
+    let sequence = -1
+
     return this.query.watch(q).pipe(
       catchError((e) => {
         console.log(wrappedQuery)
@@ -164,9 +166,12 @@ export class MykoGateway implements OnGatewayConnection {
 
         deletes.forEach((x) => asSent.delete(x))
 
+        sequence = sequence + 1
+
         return {
           data: {
             deletes: [...deletes],
+            sequence: sequence,
             upserts: upserts.map((x) => wrapItem(x)),
           },
           event: MQUERY_RESPONSE_EVENT,

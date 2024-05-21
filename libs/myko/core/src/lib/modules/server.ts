@@ -1,6 +1,6 @@
 import { Repo } from '../aggregates'
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
-import { ID, MItem, MQuery, MReport } from '../types'
+import { ID, MEvent, MItem, MQuery, MReport } from '../types'
 
 @MykoItem({
   doc: 'A Myko Server ',
@@ -16,6 +16,13 @@ export class Server extends MItem<Server> {
   startedAt: string // ISO DateTime
   @doc("The server's group id")
   groupId: string
+}
+
+@MykoReport('server:eventlog')
+export class ServerEventLog extends MReport<MEvent> {
+  constructor(readonly serverId: ID) {
+    super()
+  }
 }
 
 @MykoQuery('servers:getConnectedServer', Server)

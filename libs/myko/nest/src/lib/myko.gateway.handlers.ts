@@ -26,6 +26,7 @@ import {
   PeerAlive,
   PeerLastSeen,
   Server,
+  ServerEventLog,
   ServerRepo,
   getEvents,
   makeDel,
@@ -57,7 +58,7 @@ import {
 import { MykoCommandError, SERVER_TOKEN } from '../types'
 import { MykoEventBus, MykoQueryBus, MykoReportBus } from './busses'
 import { clientProtocols, encoders } from './registry/client.protocols'
-import { PeerRegistry } from './registry/peer.registry'
+import { PeerClientRegistry } from './registry/peer.registry'
 import { SocketRegistry } from './registry/socket.registry'
 
 @MykoQueryHandler(GetServers)
@@ -136,7 +137,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
     private reg: SocketRegistry,
     private clients: ClientRepo,
     @Inject(SERVER_TOKEN) private server: Server,
-    private peers: PeerRegistry,
+    private peers: PeerClientRegistry,
   ) {}
 
   async execute(command: ClientCommand): Promise<void> {
@@ -207,7 +208,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
     @Inject(SERVER_TOKEN) private server: Server,
     private query: MykoQueryBus,
     private logger: LoggerService,
-    private peers: PeerRegistry,
+    private peers: PeerClientRegistry,
   ) {}
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
     try {
@@ -237,7 +238,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
 
 @MykoCommandHandler(PeerCommand)
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
-  constructor(private peers: PeerRegistry) {}
+  constructor(private peers: PeerClientRegistry) {}
   async execute(command: PeerCommand): Promise<void> {
     const peer = await firstValueFrom(this.peers.getPeer(command.peerId))
     if (!peer) {
@@ -358,5 +359,19 @@ export class ConnectedToLeaderHandler
   ) {}
   execute(_: ConnectedToLeader) {
     return this.report.watch(new IsLeader(this.server.id))
+  }
+}
+
+@MykoReportHandler(ServerEventLog)
+export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {
+  constructor(
+    private events: MykoEventBus,
+    private query: MykoQueryBus,
+    @Inject(SERVER_TOKEN) private server: Server,
+  ) {}
+  execute(report: ServerEventLog) {
+    return this.events.subject$.pipe(
+      filter((x) => x.sourceId == this.server.id),
+    )
   }
 }

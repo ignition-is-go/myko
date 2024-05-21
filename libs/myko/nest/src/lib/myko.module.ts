@@ -10,7 +10,7 @@ import { MykoDocsService } from './myko.docs.service'
 import { MykoGatewayModule } from './myko.gateway.module'
 import { KafkaPersisterFactory } from './persisters'
 import { RedisPersisterFactory } from './persisters/redis.persisterFactory'
-import { PeerRegistry } from './registry/peer.registry'
+import { PeerClientRegistry } from './registry/peer.registry'
 import { SocketRegistry } from './registry/socket.registry'
 import { ExplorerService } from './services'
 
@@ -22,7 +22,7 @@ import { ExplorerService } from './services'
   ],
   providers: [
     SocketRegistry,
-    PeerRegistry,
+    PeerClientRegistry,
     ExplorerService,
     MykoCommandBus,
     MykoQueryBus,
@@ -40,7 +40,7 @@ import { ExplorerService } from './services'
     RedisPersisterFactory,
     KafkaPersisterFactory,
     SocketRegistry,
-    PeerRegistry,
+    PeerClientRegistry,
   ],
 })
 export class MykoModule implements OnModuleInit {
