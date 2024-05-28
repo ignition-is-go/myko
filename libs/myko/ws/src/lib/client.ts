@@ -266,6 +266,9 @@ export class WSMClient {
       map((r) => [...r.values()].map((rr) => unwrapItem(rr))),
 
       shareReplay(1),
+      // clone so downstream slices dont affect the original
+      map((x) => x.slice()),
+
       finalize(() => {
         this.resendQueries.delete(query.tx)
         this.send(wrapQueryCancel(query.tx))
@@ -285,6 +288,12 @@ export class WSMClient {
         return e.data as MReportResult<T>
       }),
       shareReplay(1),
+      map((x) => {
+        // clone the object
+        if (x instanceof Array) return x.slice()
+        if (x instanceof Object) return { ...x }
+        return x
+      }),
       finalize(() => {
         this.resendReports.delete(report.tx)
         this.send(wrapReportCancel(report.tx))
