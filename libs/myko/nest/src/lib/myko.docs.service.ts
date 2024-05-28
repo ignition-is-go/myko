@@ -183,9 +183,10 @@ export class MykoDocsService {
 
         const children = docRegistry
           .filter((x) => x.type === 'item' && x.extends === entityType)
-          .map(
-            (x: ItemDocInfo) =>
-              `* ${link(x.entityType, `#${x.entityType.toLocaleLowerCase()}`)}`,
+          .map((x: ItemDocInfo) =>
+            listItem(
+              link(x.entityType, `#${x.entityType.toLocaleLowerCase()}`),
+            ),
           )
 
         const childrenString =
@@ -226,6 +227,6 @@ const note = (str: string) => `> ${str}`
 
 const link = (str: string, url: string) => `[${str}](${url})`
 
-const listItem = (str: string) => `* ${str}`
+const listItem = (str: string) => `- ${str}`
 
 const list = (...strings: string[]) => `${strings.map(listItem).join('\n')}`
