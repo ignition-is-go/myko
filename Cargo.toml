@@ -3,14 +3,14 @@ resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 members = [
-  "apps/rship/link-cli",
-  "apps/rship/link-ui/src-tauri",
-  "apps/rship/linkd",
+  "apps/link-cli",
+  "apps/link-ui/src-tauri",
+  "apps/linkd",
   "apps/myko/backplane",
   "libs/myko/rs",
   "libs/link",
   "libs/myko/macros",
-  "apps/core",
+  "apps/labs/rs-core",
   "libs/entities",
   "libs/sdk/rs",
 ]

@@ -8,7 +8,12 @@
 *.jpg
 *.rs
 *.toml
+*.hbs
+*.npmrc
+*.lua
+
 Cargo.lock
+Dockerfile
 
 *.proto
 
@@ -23,6 +28,17 @@ Cargo.lock
 **/*.conf
 **/browserslist
 
+#android
+*.pro
+*.java
+*.xml
+*.gradle
+*.jar
+gradlew
+*.bat
+*.properties
+
+#ios
 *.swift
 *.plist
 *.usda
@@ -31,6 +47,13 @@ Cargo.lock
 *.xcsettings
 *.resolved
 *.pbxproj
+*.storyboard
+Podfile
+
+
+#3d assets
+*.glb
+*.fbx
 
 # jsoneditor script
 jsoneditor.js
@@ -52,3 +75,7 @@ libs/ableton/src/lib/max4node/*
 # generated
 
 apps/rship/link-ui/src/bindings.ts
+
+*.log
+*.log.*
+
