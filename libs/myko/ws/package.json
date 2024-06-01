@@ -8,7 +8,7 @@
   "dependencies": {
     "@myko/core": "workspace:*",
     "@rship/logging": "workspace:*",
-    "msgpackr": "^1.10.2",
+    "msgpackr": "^1.10.1",
     "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.1",
     "uuid": "^9.0.1"
