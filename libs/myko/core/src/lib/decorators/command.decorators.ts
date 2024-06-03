@@ -1,7 +1,17 @@
+/**
+ * Decorators for Myko commands and command handlers.
+ * @module command.decorators
+ */
+
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
 import { addCommandDoc } from '../registry'
 import { MCommand, MCommandHandler, MCommandResponse } from '../types'
 
+/**
+ * Decorator for defining a Myko command.
+ * @param {string} commandId - The unique identifier for the command.
+ * @returns {Function} - The decorator function.
+ */
 export const MykoCommand: (
   commandId: string,
 ) => <T extends MCommand<MCommandResponse<T>>>(
@@ -41,6 +51,11 @@ export const MykoCommand: (
     return withType
   }
 
+/**
+ * Decorator for defining a Myko command handler.
+ * @param {Function} command - The command class.
+ * @returns {Function} - The decorator function.
+ */
 export const MykoCommandHandler: <T extends MCommand<MCommandResponse<T>>>(
   command: new (...args: any[]) => T,
 ) => (target: new (...args: any[]) => MCommandHandler<T>) => void = <

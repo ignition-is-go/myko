@@ -2,11 +2,20 @@ import { MYKO_COMMAND_ID_KEY } from '../constants'
 import { MCommand, MCommandResponse } from '../types'
 import { CommandUnwrapError } from '../types/errors'
 
+/**
+ * Represents a wrapped command.
+ */
 export interface MWrappedCommand {
   command: MCommand<unknown>
   commandId: string
 }
 
+/**
+ * Wraps a command with its associated command ID.
+ * @param command The command to wrap.
+ * @returns The wrapped command.
+ * @throws {CommandUnwrapError} If the command does not have a command ID.
+ */
 export const wrapCommand = <T extends MCommand<unknown>>(
   command: T,
 ): MWrappedCommand => {
@@ -22,6 +31,11 @@ export const wrapCommand = <T extends MCommand<unknown>>(
   }
 }
 
+/**
+ * Unwraps a wrapped command and restores its command ID.
+ * @param wrappedCommand The wrapped command to unwrap.
+ * @returns The unwrapped command.
+ */
 export const unwrapCommand = <T extends MCommand<MCommandResponse<T>>>(
   wrappedCommand: MWrappedCommand,
 ): MCommand<MCommandResponse<T>> => {

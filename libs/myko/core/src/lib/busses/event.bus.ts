@@ -26,6 +26,11 @@ import {
 
 export type MykoSagaType = Type<MSaga>
 
+/**
+ * Abstract class representing a custom event bus in the Myko application.
+ * Extends the `ObservableBus` class and provides methods for publishing set and delete events,
+ * as well as registering sagas.
+ */
 export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   abstract getServerId(): ID
 
@@ -299,16 +304,32 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
   private readonly subscriptions: Subscription[]
 
+  /**
+   * Publishes a set event for an item to the event bus.
+   *
+   * @template T - The type of the item being published.
+   * @param item - The item to be published.
+   * @param tx - The transaction ID.
+   */
   publishSet<T extends MItem>(item: T, tx: ID) {
     recalculateHash(item)
     this.publish(makeSet(item, tx))
   }
 
+  /**
+   * Publishes a delete event for the specified item with the given transaction ID.
+   * @param item The item to delete.
+   * @param tx The transaction ID.
+   */
   publishDel<T extends MItem>(item: T, tx: ID) {
     recalculateHash(item)
     this.publish(makeDel(item, tx))
   }
 
+  /**
+   * Publishes multiple events to the event bus.
+   * @param event An array of MEvent objects representing the events to be published.
+   */
   publishAll(event: MEvent[]) {
     event.forEach((e) => recalculateHash(e.item))
     event.forEach((e) => this.publish(e))

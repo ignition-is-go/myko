@@ -1,5 +1,13 @@
 import { addItemDoc, addPropDoc } from '../registry'
 
+/**
+ * Decorator that adds documentation to a class.
+ * @param docString - The documentation string for the class.
+ * @param itemType - The type of the class.
+ * @param deprecated - A flag indicating if the class is deprecated.
+ * @param preventDocs - A flag indicating if the class should not be documented.
+ * @returns A class decorator function.
+ */
 export const docEntity =
   (
     docString?: string,
@@ -19,6 +27,14 @@ export const docEntity =
     })
   }
 
+/**
+ * Decorator that adds documentation to a class property.
+ *
+ * @param docString - The documentation string for the property.
+ * @param typeOverride - An optional override for the property type.
+ * @param deprecated - A flag indicating if the property is deprecated.
+ * @returns A property decorator function.
+ */
 export const doc = (
   docString?: string,
   typeOverride?: string,

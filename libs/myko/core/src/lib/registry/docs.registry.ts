@@ -48,9 +48,20 @@ export type DocTypeEntry =
 
 export const docRegistry: DocTypeEntry[] = []
 
+/**
+ * Adds a prop doc to the registry.
+ * @param item - The prop doc to add.
+ * @returns void
+ */
 export const addPropDoc: (item: Omit<PropDocInfo, 'type'>) => void = (item) => {
   docRegistry.push({ ...item, type: 'prop' })
 }
+
+/**
+ * Adds an item doc to the registry.
+ * @param info - The item doc to add.
+ * @returns void
+ */
 
 export const addItemDoc: (info: Omit<ItemDocInfo, 'type'>) => void = (info) => {
   docRegistry.push({ ...info, type: 'item' })
@@ -58,6 +69,13 @@ export const addItemDoc: (info: Omit<ItemDocInfo, 'type'>) => void = (info) => {
     inheritsRegistry.set(info.entityType, info.extends)
   }
 }
+
+/**
+ * Adds a command doc to the registry.
+ * @param info - The command doc to add.
+ * @param paramTypes - The types of the command parameters.
+ * @returns void
+ */
 
 export const addCommandDoc: (
   info: Omit<CommandDocInfo, 'type' | 'props'>,
@@ -70,6 +88,13 @@ export const addCommandDoc: (
   docRegistry.push({ ...info, props: props, type: 'command' })
 }
 
+/**
+ * Adds a query doc to the registry.
+ * @param item - The query doc to add.
+ * @param paramTypes - The types of the query parameters.
+ * @returns void
+ */
+
 export const addQueryDoc: (
   item: Omit<QueryDocInfo, 'type' | 'props'>,
   paramTypes: unknown[],
@@ -78,6 +103,14 @@ export const addQueryDoc: (
 
   docRegistry.push({ ...item, props, type: 'query' })
 }
+
+/**
+ * Creates a list of prop info objects.
+ * @param inherited - The inherited prop types.
+ * @param paramTypes - The types of the parameters.
+ * @param ctor - The constructor function.
+ * @returns An array of prop info objects.
+ */
 
 function makeProps(
   inherited: string[],

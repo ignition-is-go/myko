@@ -41,6 +41,12 @@ export interface RepoOptions<T extends MItem> {
   peerQuery?: (ids: ID[]) => Observable<T[]>
 }
 
+/**
+ * Represents an abstract repository for managing items of type T.
+ * Provides methods for querying and manipulating the underlying store.
+ *
+ * @template T - The type of items stored in the repository.
+ */
 export abstract class Repo<T extends MItem> {
   private readonly store: Store<T>
   private subject: Subject<MEvent<T>>
@@ -102,6 +108,13 @@ export abstract class Repo<T extends MItem> {
     }
   }
 
+  /**
+   * Returns an Observable that emits an array of filtered items whenever there is a change in the store.
+   * The items emitted are filtered based on the provided filter function.
+   *
+   * @param filterFunc The filter function used to determine which items to include in the emitted array.
+   * @returns An Observable that emits an array of filtered items.
+   */
   watchFilter(filterFunc: (ent: T) => boolean): Observable<T[]> {
     const init = this.store.getFilter(filterFunc)
     return this.subject.pipe(
@@ -133,6 +146,11 @@ export abstract class Repo<T extends MItem> {
     )
   }
 
+  /**
+   * Watches for changes to an item with the specified ID.
+   * @param id The ID of the item to watch.
+   * @returns An Observable that emits the item when it changes, or null if it is deleted.
+   */
   watchId(id: ID): Observable<T | null> {
     const obs = this.subject.pipe(
       filter((e) => e.item.id === id),
@@ -150,6 +168,13 @@ export abstract class Repo<T extends MItem> {
     return obs as Observable<T | null>
   }
 
+  /**
+   * Watches multiple IDs and returns an Observable of the corresponding values.
+   * If the provided array of IDs is empty or null, an empty array is returned.
+   *
+   * @param ids - An array of IDs to watch.
+   * @returns An Observable that emits an array of values corresponding to the watched IDs.
+   */
   watchIds(ids: ID[]): Observable<T[]> {
     if (!ids) {
       return of([])
@@ -162,10 +187,22 @@ export abstract class Repo<T extends MItem> {
     )
   }
 
+  /**
+   * Retrieves the objects with the specified IDs.
+   *
+   * @param ids - An array of IDs.
+   * @returns An array of objects with the specified IDs.
+   */
   getIds(ids: ID[]): T[] {
     return ids.map((id) => this.getId(id)).filter((x) => x !== null) as T[]
   }
 
+  /**
+   * Watches for changes in the repository based on the provided query.
+   * @param query - The query used to filter the changes.
+   * @returns An Observable that emits an array of items that match the query.
+   * @throws Error if there is an error making or getting the stream.
+   */
   watch(query: DeepPartial<T>): Observable<T[]> {
     const filterFunc = buildFilter(query)
 
@@ -177,10 +214,24 @@ export abstract class Repo<T extends MItem> {
     return ret
   }
 
+  /**
+   * Retrieves an item from the store based on the provided ID.
+   *
+   * @param id The ID of the item to retrieve.
+   * @returns The retrieved item if found, otherwise null.
+   */
   getId(id: ID): T | null {
     return this.store.get(id) ?? null
   }
 
+  /**
+   * Retrieves an array of entities from the store based on the specified index and value.
+   * If the index does not exist, it falls back to filtering the entities based on the index and value.
+   *
+   * @param index - The key of the index to search for.
+   * @param value - The value to match against the index.
+   * @returns An array of entities that match the specified index and value.
+   */
   getIndex(index: keyof T, value: any): T[] {
     try {
       return this.store.getIndex(index, value)
@@ -194,12 +245,24 @@ export abstract class Repo<T extends MItem> {
     }
   }
 
+  /**
+   * Retrieves an array of items that match the given query.
+   *
+   * @param query - The partial object used to filter the items.
+   * @returns An array of items that match the query.
+   */
   get(query: Partial<T>): T[] {
     const filterFunc = buildFilter(query)
     const arr = toArray(this.store.getFilter(filterFunc))
     return arr
   }
 
+  /**
+   * Retrieves an array of entities that match the provided filter function.
+   *
+   * @param filterFunc The filter function used to determine if an entity should be included in the result.
+   * @returns An array of entities that match the filter function.
+   */
   getFilter(filterFunc: (ent: T) => boolean): T[] {
     const arr = toArray(this.store.getFilter(filterFunc))
     return arr

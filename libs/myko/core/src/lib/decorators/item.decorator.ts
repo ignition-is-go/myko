@@ -1,3 +1,10 @@
+/**
+ * This file contains the implementation of the `MykoItem` decorator and related decorators.
+ * The `MykoItem` decorator is a class decorator that adds metadata to a class and its properties.
+ * It also registers relationships between classes and sets default values for properties.
+ * The `ownsMany`, `belongsTo`, `defaultValue`, and `ensureFor` decorators are property decorators
+ * that add specific metadata to the decorated properties.
+ */
 import 'reflect-metadata'
 import {
   MYKO_ITEM_BELONGS_TO_KEY,
@@ -10,6 +17,17 @@ import { propertyDefaults, relationRegistry } from '../registry'
 import { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
+/**
+ * Decorator that elevates a class to a Myko Item.
+ *
+ * @param opts - An optional object containing decorator options.
+ * @param opts.doc - The documentation string for the class.
+ * @param opts.itemTypeOverride - The override value for the item type.
+ * @param opts.deprecated - A flag indicating if the class is deprecated.
+ * @param opts.preventDoc - A flag indicating if the documentation should be prevented.
+ *
+ * @returns A class decorator function.
+ */
 export const MykoItem =
   (opts?: {
     doc?: string
@@ -107,6 +125,12 @@ export const MykoItem =
     return withType
   }
 
+/**
+ * Decorator that specifies that the target object owns many instances of the specified dependency type.
+ *
+ * @param depType The constructor function of the dependency type.
+ * @returns The property decorator function.
+ */
 export const ownsMany = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
@@ -122,6 +146,12 @@ export const ownsMany = (
   }
 }
 
+/**
+ * Decorator that specifies that the target object belongs to the specified dependency type.
+ * @param depType The constructor function of the dependency type.
+ * @returns The property decorator function.
+ *
+ */
 export const belongsTo = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
@@ -138,6 +168,11 @@ export const belongsTo = (
   }
 }
 
+/**
+ * Decorator that specifies a default value for the target property.
+ * @param value The default value for the property.
+ * @returns The property decorator function.
+ */
 export const defaultValue = (value: any): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     doc(`Defaults to ${value}`)(target, propertyKey)
@@ -150,6 +185,11 @@ export const defaultValue = (value: any): PropertyDecorator => {
   }
 }
 
+/**
+ * Decorator that specifies that the target object ensures the existence of the specified dependency type.
+ * @param depType The constructor function of the dependency type.
+ * @returns The property decorator function.
+ */
 export const ensureFor = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {

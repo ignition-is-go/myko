@@ -7,6 +7,11 @@ import {
 import { addQueryDoc } from '../registry'
 import { IMItem, MItem, MQuery, MQueryHandler } from '../types'
 
+/**
+ * Decorator for defining a Myko query.
+ * @param {string} queryId - The unique identifier for the query.
+ * @returns {Function} - The decorator function.
+ */
 export const MykoQuery: <U extends MItem<IMItem>>(
   queryId: string,
   item: new (...args: any[]) => U,

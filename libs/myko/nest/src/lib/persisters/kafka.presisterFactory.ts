@@ -1,6 +1,4 @@
 import {
-  ControledPersister,
-  ID,
   MEvent,
   MEventType,
   MItem,
@@ -21,17 +19,14 @@ import {
   ConsumerGlobalConfig,
   GlobalConfig,
   Message,
-  Producer,
   ProducerGlobalConfig,
 } from 'node-rdkafka'
 import { Subject } from 'rxjs'
-import { v4 as uuid } from 'uuid'
 import { SERVER_TOKEN } from '../../types'
 import { MykoQueryBus } from '../busses'
 import { newTopic } from './util/kafka.newTopic'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
-import { MultiMap } from './util/multimap'
 
 export type KafkaPersisterOptions = {
   enableEventLog: boolean
@@ -76,27 +71,27 @@ export class KafkaPersisterFactory {
     return brokersString.split(',')
   }
 
-  getControlledPersister<T extends MItem>(
-    ent: MItemConstructor<T>,
-  ): ControledPersister<T> {
-    const entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
+  // getControlledPersister<T extends MItem>(
+  //   ent: MItemConstructor<T>,
+  // ): ControledPersister<T> {
+  //   const entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
 
-    if (!entity) {
-      throw new Error('Cannot get Entity from Metadata')
-    }
+  //   if (!entity) {
+  //     throw new Error('Cannot get Entity from Metadata')
+  //   }
 
-    return new KafkaControlledPersister(
-      entity,
-      this.logger,
-      {
-        enableEventLog: false,
-      },
-      this.conf,
-      this.prodConf,
-      this.consConf,
-      this.server,
-    )
-  }
+  //   return new KafkaControlledPersister(
+  //     entity,
+  //     this.logger,
+  //     {
+  //       enableEventLog: false,
+  //     },
+  //     this.conf,
+  //     this.prodConf,
+  //     this.consConf,
+  //     this.server,
+  //   )
+  // }
 
   getPersister<T extends MItem>(
     ent: MItemConstructor<T>,
@@ -270,101 +265,101 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   }
 }
 
-export class KafkaControlledPersister<T extends MItem>
-  extends KafkaPersister<T>
-  implements ControledPersister<T>
-{
-  prod: Producer
+// export class KafkaControlledPersister<T extends MItem>
+//   extends KafkaPersister<T>
+//   implements ControledPersister<T>
+// {
+//   prod: Producer
 
-  prodConnected = false
+//   prodConnected = false
 
-  consumers: Map<ID, KafkaTopicConsumer> = new Map()
-  producers: Map<ID, KafkaTopicProducer> = new Map()
-  // maps from entityId to a set of releaseIds
-  handles: MultiMap<ID, ID> = new MultiMap()
+//   consumers: Map<ID, KafkaTopicConsumer> = new Map()
+//   producers: Map<ID, KafkaTopicProducer> = new Map()
+//   // maps from entityId to a set of releaseIds
+//   handles: MultiMap<ID, ID> = new MultiMap()
 
-  output: Subject<MEvent<T>>
+//   output: Subject<MEvent<T>>
 
-  constructor(
-    entity: string,
-    logger: LoggerService,
-    options: KafkaPersisterOptions,
-    private config: GlobalConfig,
-    private prodConf: ProducerGlobalConfig,
-    private consConf: ConsumerGlobalConfig,
-    server: Server,
-  ) {
-    super(entity, logger, options, server)
-  }
+//   constructor(
+//     entity: string,
+//     logger: LoggerService,
+//     options: KafkaPersisterOptions,
+//     private config: GlobalConfig,
+//     private prodConf: ProducerGlobalConfig,
+//     private consConf: ConsumerGlobalConfig,
+//     server: Server,
+//   ) {
+//     super(entity, logger, options, server)
+//   }
 
-  persist(event: MEvent<T>): void {
-    const topic = this.makeProducerTopic(event)
+//   persist(event: MEvent<T>): void {
+//     const topic = this.makeProducerTopic(event)
 
-    if (!this.producers.has(topic)) {
-      this.producers.set(
-        topic,
-        new KafkaTopicProducer(
-          topic,
-          {
-            ...this.config,
-            ...this.prodConf,
-          },
-          (msg) =>
-            this.logger
-              .getLogger(`${this.entity}.KafkaTopicProducer`)
-              .dev.log('info', msg),
-        ),
-      )
-    }
+//     if (!this.producers.has(topic)) {
+//       this.producers.set(
+//         topic,
+//         new KafkaTopicProducer(
+//           topic,
+//           {
+//             ...this.config,
+//             ...this.prodConf,
+//           },
+//           (msg) =>
+//             this.logger
+//               .getLogger(`${this.entity}.KafkaTopicProducer`)
+//               .dev.log('info', msg),
+//         ),
+//       )
+//     }
 
-    const producer = this.producers.get(topic)
+//     const producer = this.producers.get(topic)
 
-    if (!producer) {
-      throw new Error('Producer not found')
-    }
+//     if (!producer) {
+//       throw new Error('Producer not found')
+//     }
 
-    producer.publish(this.encodeMsg(event), event.item.id)
+//     producer.publish(this.encodeMsg(event), event.item.id)
 
-    this.onEvent(event)
-  }
+//     this.onEvent(event)
+//   }
 
-  listenId(id: string, fromBeginning = false) {
-    const releaseId = uuid()
+//   listenId(id: string, fromBeginning = false) {
+//     const releaseId = uuid()
 
-    if (this.consumers.has(id)) {
-      this.logger
-        .getLogger(`Kafka.${this.entity}`)
-        .dev.log('warn', `Already listening to ${id}`)
-      return
-    }
+//     if (this.consumers.has(id)) {
+//       this.logger
+//         .getLogger(`Kafka.${this.entity}`)
+//         .dev.log('warn', `Already listening to ${id}`)
+//       return
+//     }
 
-    const topic = `${this.entity}_${id}`
-    const cons = new KafkaTopicConsumer(
-      { ...this.config, ...this.consConf },
-      topic,
-      (msg) => this.onMessage(msg),
-      `${topic}:offset`,
-      `${topic}:partition`,
-    )
+//     const topic = `${this.entity}_${id}`
+//     const cons = new KafkaTopicConsumer(
+//       { ...this.config, ...this.consConf },
+//       topic,
+//       (msg) => this.onMessage(msg),
+//       `${topic}:offset`,
+//       `${topic}:partition`,
+//     )
 
-    this.handles.add(id, releaseId)
-    this.consumers.set(id, cons)
-    return releaseId
-  }
+//     this.handles.add(id, releaseId)
+//     this.consumers.set(id, cons)
+//     return releaseId
+//   }
 
-  release(releaseId: string): void {
-    const keyRemoved = this.handles.removeValue(releaseId)
+//   release(releaseId: string): void {
+//     const keyRemoved = this.handles.removeValue(releaseId)
 
-    if (!keyRemoved) {
-      return
-    }
+//     if (!keyRemoved) {
+//       return
+//     }
 
-    const cons = this.consumers.get(keyRemoved)
-    cons.disconnect()
-    this.consumers.delete(keyRemoved)
-  }
+//     const cons = this.consumers.get(keyRemoved)
+//     cons.disconnect()
+//     this.consumers.delete(keyRemoved)
+//   }
 
-  makeProducerTopic(event: MEvent<T>): string {
-    return `${this.entity}_${event.item.id}`
-  }
-}
+//   makeProducerTopic(event: MEvent<T>): string {
+//     return `${this.entity}_${event.item.id}`
+//   }
+// }

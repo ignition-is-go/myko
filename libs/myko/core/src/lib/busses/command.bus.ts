@@ -5,11 +5,22 @@ import { ObservableBus } from './observable.bus'
 
 export type MCommandHandlerType = Type<MCommandHandler<MCommand<unknown>>>
 
+/**
+ * Abstract class representing a command bus in the Myko framework.
+ * A command bus is responsible for executing commands and returning their responses.
+ * Subclasses of this class should implement the `registerHandler` method to bind command handlers.
+ */
 export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
   constructor() {
     super()
   }
 
+  /**
+   * Executes a command and returns the command response.
+   * @param command - The command to be executed.
+   * @returns A promise that resolves to the command response.
+   * @throws If a handler is not provided for the command.
+   */
   async execute<T extends MCommand<MCommandResponse<T>>>(
     command: T,
   ): Promise<MCommandResponse<T>> {
@@ -29,6 +40,14 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
   protected handlers: Map<string, MCommandHandler<MCommand<unknown>>> =
     new Map()
 
+  /**
+   * Binds a command handler to the specified ID.
+   *
+   * @template T - The type of the command.
+   * @param {MCommandHandler<T>} handler - The command handler to bind.
+   * @param {string} id - The ID to bind the command handler to.
+   * @returns {void}
+   */
   bind<T extends MCommand<MCommandResponse<T>>>(
     handler: MCommandHandler<T>,
     id: string,
@@ -36,9 +55,19 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     this.handlers.set(id, handler)
   }
 
+  /**
+   * Registers the given command handlers.
+   *
+   * @param handlers - An array of command handlers to register.
+   */
   register(handlers: MCommandHandlerType[]) {
     handlers.forEach((h) => this.registerHandler(h))
   }
 
+  /**
+   * Abstract method to register a command handler.
+   * @param handler - The command handler to register.
+   * @returns {void}
+   */
   protected abstract registerHandler(handler: MCommandHandlerType): void
 }
