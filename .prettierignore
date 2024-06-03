@@ -80,3 +80,4 @@ apps/link-ui/src-tauri/gen/schemas/*
 *.log
 *.log.*
 
+pnpm-lock.yaml
