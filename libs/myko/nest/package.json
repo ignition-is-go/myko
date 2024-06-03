@@ -9,8 +9,8 @@
   "license": "ISC",
   "dependencies": {
     "@liaoliaots/nestjs-redis": "^9.0.5",
-    "@myko/core": "workspace:*",
-    "@myko/ws": "workspace:*",
+    "@myko/core": "npm:@jsr/myko__core@0.1.4",
+    "@myko/ws": "npm:@jsr/myko__ws@0.1.1",
     "@nestjs/common": "^10.3.3",
     "@nestjs/config": "^3.2.0",
     "@nestjs/core": "^10.3.3",
