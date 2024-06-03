@@ -81,3 +81,6 @@ apps/link-ui/src-tauri/gen/schemas/*
 *.log.*
 
 pnpm-lock.yaml
+
+myko.json
+Readme.md
