@@ -1,13 +1,13 @@
-const hooks = new Map<string, Set<() => void>>()
+const hooks: Map<string, Set<() => void>> = new Map()
 
-const isRegistered = new Set<string>()
-const isInit = new Set<string>()
+const isRegistered: Set<string> = new Set()
+const isInit: Set<string> = new Set()
 
-const initWatchers = new Set<
+const initWatchers: Set<
   (entity: string, egistered: number, inited: number) => void
->()
+> = new Set()
 
-export const onInit = (itemTypes: string[], cb: () => void) => {
+export const onInit = (itemTypes: string[], cb: () => void): void => {
   const key = itemTypes.sort().join(':')
 
   if (!hooks.has(key)) {
@@ -17,7 +17,11 @@ export const onInit = (itemTypes: string[], cb: () => void) => {
   hooks.get(key).add(cb)
 }
 
-export const isAllInit = () => {
+export const isAllInit = (): {
+  done: boolean
+  registered: number
+  inited: number
+} => {
   return {
     done: isInit.size === isRegistered.size,
     registered: isRegistered.size,
@@ -25,7 +29,7 @@ export const isAllInit = () => {
   }
 }
 
-export const leftToInit = () => {
+export const leftToInit = (): string[] => {
   let registered = new Set(isRegistered)
   for (let i of isInit) {
     registered.delete(i)
@@ -33,7 +37,9 @@ export const leftToInit = () => {
   return [...registered]
 }
 
-export const watchInit = (
+export const watchInit: (
+  cb: (entity: string, registered: number, inited: number) => void,
+) => void = (
   cb: (entity: string, registered: number, inited: number) => void,
 ) => {
   initWatchers.add(cb)
@@ -56,6 +62,6 @@ export const fireInit = (itemType: string) => {
   })
 }
 
-export const beforeInit = (itemType: string) => {
+export const beforeInit: (itemType: string) => void = (itemType) => {
   isRegistered.add(itemType)
 }

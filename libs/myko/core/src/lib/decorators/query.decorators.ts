@@ -5,9 +5,14 @@ import {
   MYKO_QUERY_ITEM_TYPE_KEY,
 } from '../constants'
 import { addQueryDoc } from '../registry'
-import { MItem, MQuery, MQueryHandler } from '../types'
+import { IMItem, MItem, MQuery, MQueryHandler } from '../types'
 
-export const MykoQuery =
+export const MykoQuery: <U extends MItem<IMItem>>(
+  queryId: string,
+  item: new (...args: any[]) => U,
+) => <T extends MQuery<MItem<IMItem>>>(
+  target: new (...args: any[]) => T,
+) => any =
   <U extends MItem>(queryId: string, item: new (...args: any[]) => U) =>
   <T extends MQuery>(target: new (...args: any[]) => T) => {
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
@@ -44,7 +49,11 @@ export const MykoQuery =
     return withType
   }
 
-export const MykoQueryHandler = <T extends MQuery>(
+export const MykoQueryHandler: <T extends MQuery<MItem<IMItem>>>(
+  command: new (...args: any[]) => T,
+) => (target: new (...args: any[]) => MQueryHandler<T>) => void = <
+  T extends MQuery,
+>(
   command: new (...args: any[]) => T,
 ) => {
   return (target: new (...args: any[]) => MQueryHandler<T>) => {

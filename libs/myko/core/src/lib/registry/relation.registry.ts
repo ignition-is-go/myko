@@ -1,4 +1,4 @@
-export const relationRegistry = new Set<Relation>()
+export const relationRegistry: Set<Relation> = new Set<Relation>()
 
 export type Relation =
   | {

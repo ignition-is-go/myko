@@ -16,7 +16,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     super()
   }
 
-  protected handlers = new Map<string, MReportHandler<MReport<unknown>>>()
+  protected handlers: Map<string, MReportHandler<MReport<unknown>>> = new Map()
 
   protected bind<U>(handler: MReportHandler<MReport<U>>, id: string): void {
     this.handlers.set(id, handler)

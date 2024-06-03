@@ -16,7 +16,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
     super()
   }
 
-  protected handlers = new Map<string, MQueryHandler<MQuery>>()
+  protected handlers: Map<string, MQueryHandler<MQuery>> = new Map()
 
   protected bind<T>(handler: MQueryHandler<MQuery>, id: string): void {
     this.handlers.set(id, handler)

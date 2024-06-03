@@ -2,7 +2,11 @@ import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
 import { addCommandDoc } from '../registry'
 import { MCommand, MCommandHandler, MCommandResponse } from '../types'
 
-export const MykoCommand =
+export const MykoCommand: (
+  commandId: string,
+) => <T extends MCommand<MCommandResponse<T>>>(
+  target: new (...args: any[]) => T,
+) => any =
   (commandId: string) =>
   <T extends MCommand<MCommandResponse<T>>>(
     target: new (...args: any[]) => T,
@@ -37,7 +41,11 @@ export const MykoCommand =
     return withType
   }
 
-export const MykoCommandHandler = <T extends MCommand<MCommandResponse<T>>>(
+export const MykoCommandHandler: <T extends MCommand<MCommandResponse<T>>>(
+  command: new (...args: any[]) => T,
+) => (target: new (...args: any[]) => MCommandHandler<T>) => void = <
+  T extends MCommand<MCommandResponse<T>>,
+>(
   command: new (...args: any[]) => T,
 ) => {
   return (target: new (...args: any[]) => MCommandHandler<T>) => {

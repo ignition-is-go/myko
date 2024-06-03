@@ -1,4 +1,4 @@
-import { filter } from 'rxjs'
+import { OperatorFunction, filter } from 'rxjs'
 
 import { DateTime } from 'luxon'
 import { v4 as uuid } from 'uuid'
@@ -15,7 +15,7 @@ export class MCommand<T = void> {
     this.createdAt = DateTime.utc().toString()
   }
 
-  withTransaction(tx: ID) {
+  withTransaction(tx: ID): MCommand<T> {
     Reflect.set(this, 'tx', tx)
     return this
   }
@@ -27,7 +27,9 @@ export interface MCommandHandler<T extends MCommand<MCommandResponse<T>>> {
   execute(command: T): Promise<MCommandResponse<T>>
 }
 
-export const ofCommand = <T extends MCommand>(
+export const ofCommand: <T extends MCommand<void>>(
+  filterCommand: new (...args: any[]) => T,
+) => OperatorFunction<MCommand<void>, T> = <T extends MCommand>(
   filterCommand: new (...args: any[]) => T,
 ) =>
   filter(

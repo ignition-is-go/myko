@@ -48,21 +48,21 @@ export type DocTypeEntry =
 
 export const docRegistry: DocTypeEntry[] = []
 
-export const addPropDoc = (item: Omit<PropDocInfo, 'type'>) => {
+export const addPropDoc: (item: Omit<PropDocInfo, 'type'>) => void = (item) => {
   docRegistry.push({ ...item, type: 'prop' })
 }
 
-export const addItemDoc = (info: Omit<ItemDocInfo, 'type'>) => {
+export const addItemDoc: (info: Omit<ItemDocInfo, 'type'>) => void = (info) => {
   docRegistry.push({ ...info, type: 'item' })
   if (info.extends) {
     inheritsRegistry.set(info.entityType, info.extends)
   }
 }
 
-export const addCommandDoc = (
+export const addCommandDoc: (
   info: Omit<CommandDocInfo, 'type' | 'props'>,
   paramTypes: ('String' | 'Number' | 'Boolean' | 'Array' | unknown)[],
-) => {
+) => void = (info, paramTypes) => {
   const inherited = ['String', 'String']
 
   const props = makeProps(inherited, paramTypes, info.ctor)
@@ -70,10 +70,10 @@ export const addCommandDoc = (
   docRegistry.push({ ...info, props: props, type: 'command' })
 }
 
-export const addQueryDoc = (
+export const addQueryDoc: (
   item: Omit<QueryDocInfo, 'type' | 'props'>,
   paramTypes: unknown[],
-) => {
+) => void = (item, paramTypes) => {
   const props = makeProps(['String'], paramTypes, item.ctor)
 
   docRegistry.push({ ...item, props, type: 'query' })
@@ -83,7 +83,7 @@ function makeProps(
   inherited: string[],
   paramTypes: unknown[],
   ctor: new (...args: any[]) => any,
-) {
+): BasicPropInfo[] {
   const allParaams = [...inherited, ...paramTypes]
 
   const fakeArgs = allParaams.map((x) => {

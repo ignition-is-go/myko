@@ -1,10 +1,10 @@
 import { DateTime } from 'luxon'
 import type { MEvent as WASMEvent } from 'myko-wasm'
-import { filter } from 'rxjs'
+import { MonoTypeOperatorFunction, filter } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { MykoItem, MykoQuery, doc } from '../decorators'
 import { ID } from './base'
-import { MItem } from './item'
+import { IMItem, MItem } from './item'
 import { MQuery } from './query'
 
 export enum MEventType {
@@ -22,10 +22,16 @@ export type MEvent<
   readonly changeType: C
 }
 
-export const makeSet = <T extends MItem>(item: T, tx: ID) =>
+export const makeSet: <T extends MItem<IMItem>>(
+  item: T,
+  tx: ID,
+) => MEvent<T, MEventType.SET> = <T extends MItem>(item: T, tx: ID) =>
   makeMykoEvent(item, MEventType.SET, tx)
 
-export const makeDel = <T extends MItem>(item: T, tx: ID) =>
+export const makeDel: <T extends MItem<IMItem>>(
+  item: T,
+  tx: ID,
+) => MEvent<T, MEventType.DEL> = <T extends MItem>(item: T, tx: ID) =>
   makeMykoEvent(item, MEventType.DEL, tx)
 
 const makeMykoEvent = <T extends MItem, U extends MEventType>(
@@ -52,7 +58,9 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
   }
 }
 
-export const ofItems = <T extends MItem>(
+export const ofItems: <T extends MItem>(
+  ...filterTypes: (new (...args: any[]) => T)[]
+) => MonoTypeOperatorFunction<MEvent<T, MEventType>> = <T extends MItem>(
   ...filterTypes: (new (...args: any[]) => T)[]
 ) =>
   filter((event: MEvent<T, MEventType>) =>
@@ -62,8 +70,14 @@ export const ofItems = <T extends MItem>(
     ),
   )
 
-export const ofType = <T extends MItem, C extends MEventType>(filterType: C) =>
-  filter((event: MEvent<T, C>) => filterType === event.changeType)
+export const ofType: <T extends MItem, C extends MEventType>(
+  filterType: C,
+) => MonoTypeOperatorFunction<MEvent<T, C>> = <
+  T extends MItem,
+  C extends MEventType,
+>(
+  filterType: C,
+) => filter((event: MEvent<T, C>) => filterType === event.changeType)
 
 @MykoItem({
   doc: 'A container for events to allow them to be queried',

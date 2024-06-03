@@ -26,7 +26,8 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     return (await handler.execute(command)) as MCommandResponse<T>
   }
 
-  protected handlers = new Map<string, MCommandHandler<MCommand<unknown>>>()
+  protected handlers: Map<string, MCommandHandler<MCommand<unknown>>> =
+    new Map()
 
   bind<T extends MCommand<MCommandResponse<T>>>(
     handler: MCommandHandler<T>,

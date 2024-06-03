@@ -1,7 +1,7 @@
 export abstract class APublisher<MType> {
   constructor() {}
 
-  abstract publish
+  abstract publish()
 
   abstract publishCommand()
 }

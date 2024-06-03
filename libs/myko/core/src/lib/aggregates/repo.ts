@@ -162,7 +162,7 @@ export abstract class Repo<T extends MItem> {
     )
   }
 
-  getIds(ids: ID[]) {
+  getIds(ids: ID[]): T[] {
     return ids.map((id) => this.getId(id)).filter((x) => x !== null) as T[]
   }
 

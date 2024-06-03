@@ -165,7 +165,7 @@ export const ensureFor = (
   }
 }
 
-const makeOwnsKey = (propertyKey: string) =>
+const makeOwnsKey = (propertyKey: string): string =>
   `${MYKO_ITEM_OWNS_MANY_KEY}:${propertyKey}`
 
 const decodeOwnsKey = (ownsKey: string): string => {
@@ -173,7 +173,7 @@ const decodeOwnsKey = (ownsKey: string): string => {
   return propertyKey
 }
 
-const makeDepkey = (propertyKey: string) =>
+const makeDepkey = (propertyKey: string): string =>
   `${MYKO_ITEM_BELONGS_TO_KEY}:${propertyKey}`
 
 const decodeDepkey = (depKey: string): string => {
@@ -181,7 +181,7 @@ const decodeDepkey = (depKey: string): string => {
   return propertyKey
 }
 
-const makeEnsureKey = (propertyKey: string) =>
+const makeEnsureKey = (propertyKey: string): string =>
   `${MYKO_ITEM_ENSURE_KEY}:${propertyKey}`
 
 const decodeEnsureKey = (EnsureKey: string): string => {
@@ -189,7 +189,7 @@ const decodeEnsureKey = (EnsureKey: string): string => {
   return propertyKey
 }
 
-const makeDefaultValueKey = (propertyKey: string) =>
+const makeDefaultValueKey = (propertyKey: string): string =>
   `${MYKO_ITEM_DEFAULT_VALUE_KEY}:${propertyKey}`
 
 const decodeDefaultValueKey = (DefaultValueKey: string): string => {
