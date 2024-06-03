@@ -1,5 +1,4 @@
 import { DateTime } from 'luxon'
-import type { MEvent as WASMEvent } from 'myko-wasm'
 import { MonoTypeOperatorFunction, filter } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { MykoItem, MykoQuery, doc } from '../decorators'
@@ -12,7 +11,12 @@ export enum MEventType {
   DEL = 'DEL',
 }
 
-type IMEvent = Omit<WASMEvent, 'free' | 'item' | 'changeType'>
+export type IMEvent = {
+  readonly tx: ID
+  readonly itemType: string
+  readonly createdAt: string
+  readonly sourceId?: ID
+}
 
 export type MEvent<
   T extends MItem = MItem,

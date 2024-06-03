@@ -4,7 +4,6 @@
   "types": "./src/index.ts",
   "dependencies": {
     "luxon": "^3.4.4",
-    "myko-wasm": "workspace:^",
     "object-hash": "^3.0.0",
     "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.1",
@@ -14,6 +13,5 @@
     "@types/luxon": "^3.4.2",
     "@types/object-hash": "^3.0.6",
     "@types/uuid": "^9.0.8"
-  },
-  "version": "3.0.0-canary.118"
+  }
 }

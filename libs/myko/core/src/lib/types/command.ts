@@ -15,7 +15,7 @@ export class MCommand<T = void> {
     this.createdAt = DateTime.utc().toString()
   }
 
-  withTransaction(tx: ID): MCommand<T> {
+  withTransaction(tx: ID): this {
     Reflect.set(this, 'tx', tx)
     return this
   }

@@ -1,8 +1,10 @@
-import { type MItem as WASMItem } from 'myko-wasm'
 import { MD5 } from 'object-hash'
 import type { ID, PartialBy } from './base'
 
-export type IMItem = Omit<WASMItem, 'free'>
+export type IMItem = {
+  id: ID
+  hash: string
+}
 
 export type MItemConstructor<T extends IMItem> = new (
   args: PartialBy<T, 'hash'>,
