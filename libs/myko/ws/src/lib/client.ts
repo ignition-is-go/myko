@@ -97,16 +97,16 @@ export class WSMClient {
     return this.reportSubject.pipe()
   }
 
-  get errors() {
+  get errors(): Observable<WSMCommandError> {
     return this.errorsSubject.pipe()
   }
 
-  get successes() {
+  get successes(): Observable<string> {
     return this.successSubject.pipe()
   }
 
   clientId: ID | null = null
-  readonly clientId$ = new Subject<ID>()
+  readonly clientId$: Subject<ID> = new Subject<ID>()
 
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
@@ -187,7 +187,7 @@ export class WSMClient {
     this.connect()
   }
 
-  async ping() {
+  async ping(): Promise<number> {
     const id = v4()
     const timestamp = Date.now()
 

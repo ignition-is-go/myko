@@ -2,6 +2,7 @@
   "name": "@myko/core",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "description": "Core library for Myko - easy flexible event sourcing",
   "dependencies": {
     "luxon": "^3.4.4",
     "object-hash": "^3.0.0",
