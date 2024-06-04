@@ -35,7 +35,8 @@
     "sync": "git submodule update --init --recursive --remote",
     "format": "lint-staged",
     "format:all": "prettier --write .",
-    "prepare": "husky"
+    "prepare": "husky",
+    "docs:collect": "./tools/scripts/collect-docs.sh"
   },
   "lint-staged": {
     "*": "prettier --write --ignore-file .prettierignore"
