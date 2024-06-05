@@ -126,11 +126,9 @@ export const ofType: <T extends MItem, C extends MEventType>(
 
 /**
  * Represents a container for events to allow them to be queried.
- * @deprecated This class is deprecated.
  */
 @MykoItem({
   doc: 'A container for events to allow them to be queried',
-  deprecated: true,
   preventDoc: true,
 })
 export class EventContainer extends MItem<EventContainer> {
