@@ -11,6 +11,6 @@ members = [
   "libs/link",
   "libs/myko/macros",
   "apps/labs/rs-core",
-  "libs/entities",
+  "libs/entities/rs",
   "libs/sdk/rs",
 ]
