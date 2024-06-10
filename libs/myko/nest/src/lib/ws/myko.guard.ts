@@ -12,7 +12,6 @@ import {
   OnModuleInit,
   Optional,
 } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
 import { CommandNotAuthorized } from '../../types'
 import { MykoAuthService } from '../services'
 
@@ -21,25 +20,21 @@ export class MykoGuard implements CanActivate, OnModuleInit {
   authorizedClients = new Set<any>()
 
   constructor(
-    private logger: LoggerService,
     @Optional() @Inject(MykoAuthService) private auth: MykoAuthService,
   ) {}
 
   onModuleInit() {
     if (typeof this.auth !== 'object') {
-      this.logger
-        .getLogger('MykoGateway')
-        .dev.warn(
-          'NOT SECURED!. Please provide an implementation of MykoAuthService globally in the app to handle authentication',
-        )
+      console.warn(
+        'NOT SECURED!. Please provide an implementation of MykoAuthService globally in the app to handle authentication',
+      )
     }
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (!isAllInit().done) {
-      this.logger
-        .getLogger('MykoGuard')
-        .dev.warn('Connection Refused: Server not initialized')
+      console.warn('Connection Refused: Server not initialized')
+
       const client = context.switchToWs().getClient()
       client.close(1002, 'Server not initialized')
       return false

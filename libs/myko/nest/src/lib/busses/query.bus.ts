@@ -8,15 +8,11 @@ import {
 } from '@myko/core'
 import { Injectable } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
-import { LoggerService } from '@rship/logging'
 import { map, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoQueryBus extends AMykoQueryBus {
-  constructor(
-    private moduleRef: ModuleRef,
-    private logger: LoggerService,
-  ) {
+  constructor(private moduleRef: ModuleRef) {
     super()
   }
 
@@ -29,9 +25,7 @@ export class MykoQueryBus extends AMykoQueryBus {
     const err = `Handler not Provided for ${query.constructor.name} [${queryId}]. Check your module's providers array, and that the command is decorated with @MykoQuery(id: string)`
 
     if (!handler) {
-      this.logger
-        .getLogger('MykoQueryBus')
-        .dev.error({ message: err, data: query })
+      console.error(err)
       throw new Error(err)
     }
 

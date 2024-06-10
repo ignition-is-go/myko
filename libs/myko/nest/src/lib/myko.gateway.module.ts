@@ -16,7 +16,6 @@ import {
   forwardRef,
 } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
-import { LoggerModule, LoggerService } from '@rship/logging'
 import { DateTime } from 'luxon'
 import { v4 as uuid } from 'uuid'
 import { SERVER_TOKEN } from '../types'
@@ -28,11 +27,7 @@ import { MykoAuthService } from './services'
 import { MykoGateway } from './ws/myko.gateway'
 
 @Module({
-  imports: [
-    forwardRef(() => MykoModule),
-    ConfigModule,
-    LoggerModule.forModule({ moduleName: 'MykoGateway' }),
-  ],
+  imports: [forwardRef(() => MykoModule), ConfigModule],
   providers: [
     MykoGateway,
     {
@@ -106,7 +101,6 @@ export class MykoGatewayModule implements OnModuleInit {
     @Inject(SERVER_TOKEN) private server: Server,
     private servers: ServerRepo,
     @Optional() @Inject(MykoAuthService) private auth: MykoAuthService,
-    private logger: LoggerService,
     private clients: ClientRepo,
   ) {}
 

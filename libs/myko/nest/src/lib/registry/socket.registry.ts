@@ -1,7 +1,6 @@
 import { Client, ID, Server, SetClientId, isAllInit } from '@myko/core'
 import { wrapCommandWS } from '@myko/ws'
 import { Inject, Injectable } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
 import { v4 as uuid } from 'uuid'
 import type { WebSocket } from 'ws'
 import { SERVER_TOKEN } from '../../types'
@@ -13,7 +12,6 @@ export class SocketRegistry extends Map<ID, WebSocket> {
   constructor(
     private events: MykoEventBus,
     private query: MykoQueryBus,
-    private logger: LoggerService,
     private command: MykoCommandBus,
     @Inject(SERVER_TOKEN) private me: Server,
   ) {
@@ -38,7 +36,7 @@ export class SocketRegistry extends Map<ID, WebSocket> {
       this.reverse.delete(socket)
     })
     const c = new Client({ id, serverId })
-    this.logger.getLogger('SocketRegistry').dev.info(`Client Connected`)
+    console.log('Client Connected', c)
     this.events.publishSet(c, 'client-connected')
 
     const ws = wrapCommandWS(new SetClientId(id))
@@ -50,9 +48,7 @@ export class SocketRegistry extends Map<ID, WebSocket> {
   getClientIdFromSocket(socket: WebSocket): ID {
     const id = this.reverse.get(socket)
     if (!id) {
-      this.logger
-        .getLogger('SocketRegistry')
-        .dev.error(`No client found for socket`)
+      console.error('No client found for socket')
     }
 
     return id

@@ -8,15 +8,11 @@ import {
 } from '@myko/core'
 import { Injectable } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
-import { LoggerService } from '@rship/logging'
 import { map, shareReplay } from 'rxjs'
 
 @Injectable()
 export class MykoReportBus extends AMykoReportBus {
-  constructor(
-    private moduleRef: ModuleRef,
-    private logger: LoggerService,
-  ) {
+  constructor(private moduleRef: ModuleRef) {
     super()
   }
 
@@ -29,9 +25,7 @@ export class MykoReportBus extends AMykoReportBus {
     const err = `Handler not Provided for ${report.constructor.name} [${reportId}]. Check your module's providers array, and that the command is decorated with @MykoReport(id: string)`
 
     if (!handler) {
-      this.logger
-        .getLogger('MykoReportBus')
-        .dev.error({ message: err, data: report })
+      console.error(err)
       throw new Error(err)
     }
 

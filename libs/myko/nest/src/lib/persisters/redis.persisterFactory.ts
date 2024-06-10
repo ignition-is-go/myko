@@ -11,7 +11,6 @@ import {
   getEvents,
 } from '@myko/core'
 import { Injectable } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
 import { Redis } from 'ioredis'
 import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 
@@ -29,10 +28,7 @@ const optionDefaults: RedisPersisterOptions = {
 
 @Injectable()
 export class RedisPersisterFactory {
-  constructor(
-    private redis: RedisService,
-    private logger: LoggerService,
-  ) {}
+  constructor(private redis: RedisService) {}
   getPersister<T extends MItem>(
     ent: MItemConstructor<T>,
     options?: RedisPersisterOptions,
@@ -44,7 +40,7 @@ export class RedisPersisterFactory {
     if (!entity) {
       throw new Error('Cannot get Entity from Metadata')
     }
-    return new RedisStreamPersister<T>(client, entity, this.logger, {
+    return new RedisStreamPersister<T>(client, entity, {
       ...optionDefaults,
       ...options,
     })
@@ -62,7 +58,6 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
   constructor(
     private redis: Redis,
     private entity: string,
-    private logger: LoggerService,
     private readonly options: RedisPersisterOptions,
   ) {
     this.output = new Subject<MEvent<T>>()
@@ -134,7 +129,7 @@ export class RedisStreamPersister<T extends MItem> implements Persister<T> {
 
   async init() {
     const keys = await this.redis.keys(`${this.entity}:*`)
-    this.logger.getLogger('Init').dev.info(`${this.entity} Repo Initializing`)
+    console.log(this.entity, 'Repo Initializing')
 
     const itemIds = keys.map((key) => key.replace(`${this.entity}:`, ''))
 

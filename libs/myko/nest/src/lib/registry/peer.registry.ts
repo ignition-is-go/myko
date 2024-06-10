@@ -1,7 +1,6 @@
 import { ID, Server, ServerEventLog, ServerRepo } from '@myko/core'
 import { WSMClient } from '@myko/ws'
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
 import { Observable, Subscription, map } from 'rxjs'
 import * as WebSocket from 'ws'
 import { SERVER_TOKEN } from '../../types'
@@ -15,27 +14,22 @@ export class PeerClientRegistry implements OnModuleInit {
     @Inject(SERVER_TOKEN) private me: Server,
     private auth: MykoAuthService,
     private events: MykoEventBus,
-    private logger: LoggerService,
     private peerEvents: PeerEventBus,
   ) {}
 
   private peers = new Map<string, WSMClient>()
   private peerEventListenerSubs = new Map<string, Subscription>()
 
-  private log() {
-    return this.logger.getLogger('PeerClientRegistry').dev
-  }
-
   private assertPeerEventListener(server: Server) {
     const key = makePeerKey(server)
 
     if (this.peerEventListenerSubs.has(key)) {
-      this.log().debug('Already listening to peer events')
+      console.debug('Already listening to peer events')
       return
     }
 
     if (!this.peers.has(key)) {
-      this.log().debug('Peer not found', key)
+      console.debug('Peer not found', key)
       return
     }
 
@@ -52,7 +46,7 @@ export class PeerClientRegistry implements OnModuleInit {
     const key = makePeerKey(server)
 
     if (!this.peerEventListenerSubs.has(key)) {
-      this.log().debug('Already Not listening to peer events')
+      console.debug('Already Not listening to peer events')
       return
     }
 
@@ -85,7 +79,7 @@ export class PeerClientRegistry implements OnModuleInit {
       (url) => new WebSocket(url, { timeout: 1000 }),
       {
         onDisconnect: (_, willAttemptReconnect) => {
-          this.log().debug(
+          console.debug(
             `Peer Disconnected: ${server.address}:${server.port} ${server.id}, reconnecting: ${willAttemptReconnect}`,
           )
 
@@ -94,7 +88,7 @@ export class PeerClientRegistry implements OnModuleInit {
           this.teardownPeerEventListener(server)
         },
         onConnect: () => {
-          this.log().debug(
+          console.debug(
             `Connected to Peer: ${server.address}:${server.port} ${server.id},`,
           )
         },
@@ -112,14 +106,12 @@ export class PeerClientRegistry implements OnModuleInit {
   }
 
   getPeer(serverId: ID): Observable<WSMClient | undefined> {
-    const log = this.logger.getLogger('getPeer').dev
-
     const obs: Observable<WSMClient | undefined> = this.servers
       .watchId(serverId)
       .pipe(
         map((server) => {
           if (!server) {
-            log.warn(`Peer Not Found or Disappeared - ${serverId}`)
+            console.debug(`Peer Not Found or Disappeared - ${serverId}`)
             return undefined
           }
 

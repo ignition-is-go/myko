@@ -6,16 +6,15 @@ import {
   docRegistry,
 } from '@myko/core/src/lib/registry'
 import { Injectable } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
 import { mkdir, writeFile } from 'fs/promises'
 import { groupBy } from 'ramda'
 
 @Injectable()
 export class MykoDocsService {
-  constructor(private logger: LoggerService) {}
+  constructor() {}
 
   async writeDocs(path: string) {
-    this.logger.getLogger('Myko').dev.info('Writing Myko Documentation')
+    console.log('Writing Myko Documentation')
 
     await mkdir(path, { recursive: true })
     await writeFile(`${path}/README.md`, this.generateDocs())
@@ -26,7 +25,7 @@ export class MykoDocsService {
   }
 
   private generateDocs() {
-    this.logger.getLogger('Myko').dev.info('Generating Myko Documentation')
+    console.log('Generating Myko Documentation')
 
     const entityDocs = this.makeEntityDocs()
 

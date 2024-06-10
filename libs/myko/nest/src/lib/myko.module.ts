@@ -1,6 +1,5 @@
 import { Module, OnModuleInit, forwardRef } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
-import { LoggerModule, LoggerService } from '@rship/logging'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
 import { MykoQueryBus, PeerEventBus } from './busses'
 import { MykoCommandBus } from './busses/command.bus'
@@ -15,11 +14,7 @@ import { SocketRegistry } from './registry/socket.registry'
 import { ExplorerService } from './services'
 
 @Module({
-  imports: [
-    LoggerModule.forModule({ moduleName: 'Myko' }),
-    ConfigModule,
-    forwardRef(() => MykoGatewayModule),
-  ],
+  imports: [ConfigModule, forwardRef(() => MykoGatewayModule)],
   providers: [
     SocketRegistry,
     PeerClientRegistry,
@@ -52,7 +47,6 @@ export class MykoModule implements OnModuleInit {
     private readonly queryBus: MykoQueryBus,
     private readonly eventBus: MykoEventBus,
     private readonly reportBus: MykoReportBus,
-    private logger: LoggerService,
     private config: ConfigService,
     private docs: MykoDocsService,
   ) {}
@@ -82,9 +76,7 @@ export class MykoModule implements OnModuleInit {
           ),
         )
         .subscribe((e) => {
-          this.logger
-            .getLogger(e[0].itemType)
-            .dev.debug(`${e[0].changeType} [${e.length}]`)
+          console.log(e[0].itemType, e[0].changeType, e.length)
         })
     }
   }

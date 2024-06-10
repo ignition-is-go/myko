@@ -11,7 +11,6 @@ import {
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { LoggerService } from '@rship/logging'
 import { Redis } from 'ioredis'
 import { unpack as decode } from 'msgpackr'
 import {
@@ -43,7 +42,6 @@ export class KafkaPersisterFactory {
   private consConf: ConsumerGlobalConfig
 
   constructor(
-    private logger: LoggerService,
     private config: ConfigService,
     private query: MykoQueryBus,
     @Inject(SERVER_TOKEN) private server: Server,
@@ -110,7 +108,6 @@ export class KafkaPersisterFactory {
 
     return new KafkaEntityPersister<T>(
       entity,
-      this.logger,
       opts,
       this.conf,
       this.prodConf,
@@ -125,7 +122,6 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
 
   constructor(
     protected entity: string,
-    protected logger: LoggerService,
     protected options: KafkaPersisterOptions,
     protected server: Server,
   ) {
@@ -150,9 +146,8 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
       return JSON.parse(buffer.toString()) as MEvent<T>
     } catch (e) {}
 
-    this.logger
-      .getLogger('KafkaPersister')
-      .dev.warn('could not decode event', buffer.toString())
+    console.warn('could not decode event', buffer.toString())
+
     return null
   }
 
@@ -223,14 +218,13 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
 
   constructor(
     entity: string,
-    logger: LoggerService,
     options: KafkaPersisterOptions,
     private config: GlobalConfig,
     private prodConfig: ProducerGlobalConfig,
     private consConfig: ConsumerGlobalConfig,
     server: Server,
   ) {
-    super(entity, logger, options, server)
+    super(entity, options, server)
     beforeInit(entity)
 
     const admin = AdminClient.create(this.config)
@@ -250,10 +244,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     this.prod = new KafkaTopicProducer(
       this.entity,
       { ...this.config, ...this.prodConfig },
-      (msg) =>
-        this.logger
-          .getLogger(`${this.entity}.KafkaTopicProducer`)
-          .dev.log('info', msg),
+      (msg) => console.log(this.entity, 'KafkaTopicProducer', msg),
     )
 
     this.init()

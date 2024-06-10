@@ -39,7 +39,6 @@ import {
   wrapCommandOnlyWS,
 } from '@myko/ws'
 import { Inject, Injectable } from '@nestjs/common'
-import { LoggerService } from '@rship/logging'
 import { DateTime } from 'luxon'
 import { uniq } from 'ramda'
 import {
@@ -207,7 +206,6 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
   constructor(
     @Inject(SERVER_TOKEN) private server: Server,
     private query: MykoQueryBus,
-    private logger: LoggerService,
     private peers: PeerClientRegistry,
   ) {}
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
