@@ -1,4 +1,5 @@
 export * from './lib/busses'
+export * from './lib/logger'
 export * from './lib/myko.adapter'
 export * from './lib/myko.gateway.module'
 export * from './lib/myko.module'

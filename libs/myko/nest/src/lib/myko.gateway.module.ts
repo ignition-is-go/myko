@@ -27,7 +27,7 @@ import { MykoAuthService } from './services'
 import { MykoGateway } from './ws/myko.gateway'
 
 @Module({
-  imports: [forwardRef(() => MykoModule), ConfigModule],
+  imports: [forwardRef(() => MykoModule.forScope('Gateway')), ConfigModule],
   providers: [
     MykoGateway,
     {

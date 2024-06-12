@@ -1,10 +1,12 @@
-import { Module, OnModuleInit, forwardRef } from '@nestjs/common'
-import { ConfigModule, ConfigService } from '@nestjs/config'
+import { MItem, MItemConstructor, getItemName, log } from '@myko/core'
+import { DynamicModule, Module, OnModuleInit, forwardRef } from '@nestjs/common'
+import { ConfigModule } from '@nestjs/config'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
 import { MykoQueryBus, PeerEventBus } from './busses'
 import { MykoCommandBus } from './busses/command.bus'
 import { MykoEventBus } from './busses/event.bus'
 import { MykoReportBus } from './busses/report.bus'
+import { MykoLogger } from './logger'
 import { MykoDocsService } from './myko.docs.service'
 import { MykoGatewayModule } from './myko.gateway.module'
 import { KafkaPersisterFactory } from './persisters'
@@ -13,33 +15,7 @@ import { PeerClientRegistry } from './registry/peer.registry'
 import { SocketRegistry } from './registry/socket.registry'
 import { ExplorerService } from './services'
 
-@Module({
-  imports: [ConfigModule, forwardRef(() => MykoGatewayModule)],
-  providers: [
-    SocketRegistry,
-    PeerClientRegistry,
-    ExplorerService,
-    MykoCommandBus,
-    MykoQueryBus,
-    MykoEventBus,
-    MykoReportBus,
-    RedisPersisterFactory,
-    KafkaPersisterFactory,
-    MykoDocsService,
-    PeerEventBus,
-  ],
-  exports: [
-    MykoCommandBus,
-    MykoQueryBus,
-    MykoEventBus,
-    MykoReportBus,
-    RedisPersisterFactory,
-    KafkaPersisterFactory,
-    SocketRegistry,
-    PeerClientRegistry,
-    PeerEventBus,
-  ],
-})
+@Module({})
 export class MykoModule implements OnModuleInit {
   constructor(
     private explorer: ExplorerService,
@@ -47,12 +23,55 @@ export class MykoModule implements OnModuleInit {
     private readonly queryBus: MykoQueryBus,
     private readonly eventBus: MykoEventBus,
     private readonly reportBus: MykoReportBus,
-    private config: ConfigService,
     private docs: MykoDocsService,
+    private logger: MykoLogger,
   ) {}
 
+  static forItem(item: MItemConstructor<MItem>): DynamicModule {
+    const name = getItemName(item)
+
+    return MykoModule.forScope(name)
+  }
+
+  static forScope(scope: string): DynamicModule {
+    return {
+      module: MykoModule,
+      imports: [forwardRef(() => MykoGatewayModule), ConfigModule],
+      providers: [
+        {
+          provide: MykoLogger,
+          useFactory() {
+            return log.getSubLogger({ name: scope })
+          },
+        },
+        SocketRegistry,
+        PeerClientRegistry,
+        ExplorerService,
+        MykoCommandBus,
+        MykoQueryBus,
+        MykoEventBus,
+        MykoReportBus,
+        RedisPersisterFactory,
+        KafkaPersisterFactory,
+        MykoDocsService,
+        PeerEventBus,
+      ],
+      exports: [
+        MykoCommandBus,
+        MykoQueryBus,
+        MykoEventBus,
+        MykoReportBus,
+        RedisPersisterFactory,
+        KafkaPersisterFactory,
+        SocketRegistry,
+        PeerClientRegistry,
+        PeerEventBus,
+      ],
+    } satisfies DynamicModule
+  }
+
   onModuleInit() {
-    const doc = this.config.get('MYKO_DOC')
+    const doc = process.env.MYKO_DOC
 
     if (doc) {
       this.docs.writeDocs('.')
@@ -63,6 +82,8 @@ export class MykoModule implements OnModuleInit {
     this.queryBus.register(queries)
     this.reportBus.register(reports)
     this.eventBus.registerSagas(sagas)
+
+    this.logger.log('MykoModule initialized')
 
     if (process.env.LOG_LEVEL?.toLocaleLowerCase() === 'debug') {
       this.eventBus.subject$
@@ -76,7 +97,7 @@ export class MykoModule implements OnModuleInit {
           ),
         )
         .subscribe((e) => {
-          console.log(e[0].itemType, e[0].changeType, e.length)
+          this.logger.log(e[0].itemType, e[0].changeType, e.length)
         })
     }
   }

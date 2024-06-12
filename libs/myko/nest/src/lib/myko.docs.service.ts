@@ -8,13 +8,14 @@ import {
 import { Injectable } from '@nestjs/common'
 import { mkdir, writeFile } from 'fs/promises'
 import { groupBy } from 'ramda'
+import { MykoLogger } from './logger'
 
 @Injectable()
 export class MykoDocsService {
-  constructor() {}
+  constructor(private logger: MykoLogger) {}
 
   async writeDocs(path: string) {
-    console.log('Writing Myko Documentation')
+    this.logger.log('Writing Myko Documentation')
 
     await mkdir(path, { recursive: true })
     await writeFile(`${path}/README.md`, this.generateDocs())
@@ -25,7 +26,7 @@ export class MykoDocsService {
   }
 
   private generateDocs() {
-    console.log('Generating Myko Documentation')
+    this.logger.log('Generating Myko Documentation')
 
     const entityDocs = this.makeEntityDocs()
 

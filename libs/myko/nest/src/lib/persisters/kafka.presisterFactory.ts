@@ -9,7 +9,7 @@ import {
   beforeInit,
   fireInit,
 } from '@myko/core'
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, LoggerService } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Redis } from 'ioredis'
 import { unpack as decode } from 'msgpackr'
@@ -23,6 +23,7 @@ import {
 import { Subject } from 'rxjs'
 import { SERVER_TOKEN } from '../../types'
 import { MykoQueryBus } from '../busses'
+import { MykoLogger } from '../logger'
 import { newTopic } from './util/kafka.newTopic'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
@@ -44,6 +45,7 @@ export class KafkaPersisterFactory {
   constructor(
     private config: ConfigService,
     private query: MykoQueryBus,
+    private logger: MykoLogger,
     @Inject(SERVER_TOKEN) private server: Server,
   ) {
     this.conf = {
@@ -112,6 +114,7 @@ export class KafkaPersisterFactory {
       this.conf,
       this.prodConf,
       this.consConf,
+      this.logger,
       this.server,
     )
   }
@@ -222,6 +225,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     private config: GlobalConfig,
     private prodConfig: ProducerGlobalConfig,
     private consConfig: ConsumerGlobalConfig,
+    private logger: LoggerService,
     server: Server,
   ) {
     super(entity, options, server)
@@ -244,7 +248,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     this.prod = new KafkaTopicProducer(
       this.entity,
       { ...this.config, ...this.prodConfig },
-      (msg) => console.log(this.entity, 'KafkaTopicProducer', msg),
+      (msg) => this.logger.log(this.entity, 'KafkaTopicProducer', msg),
     )
 
     this.init()
