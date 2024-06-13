@@ -1,4 +1,4 @@
-import { MItem, MItemConstructor, getItemName, log } from '@myko/core'
+import { MItem, MItemConstructor, getItemName } from '@myko/core'
 import { DynamicModule, Module, OnModuleInit, forwardRef } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
@@ -41,7 +41,7 @@ export class MykoModule implements OnModuleInit {
         {
           provide: MykoLogger,
           useFactory() {
-            return log.getSubLogger({ name: scope })
+            return new MykoLogger(scope)
           },
         },
         SocketRegistry,
@@ -83,7 +83,7 @@ export class MykoModule implements OnModuleInit {
     this.reportBus.register(reports)
     this.eventBus.registerSagas(sagas)
 
-    this.logger.log('MykoModule initialized')
+    this.logger.info('MykoModule initialized')
 
     if (process.env.LOG_LEVEL?.toLocaleLowerCase() === 'debug') {
       this.eventBus.subject$
@@ -97,7 +97,7 @@ export class MykoModule implements OnModuleInit {
           ),
         )
         .subscribe((e) => {
-          this.logger.log(e[0].itemType, e[0].changeType, e.length)
+          this.logger.info(e[0].itemType, e[0].changeType, e.length)
         })
     }
   }

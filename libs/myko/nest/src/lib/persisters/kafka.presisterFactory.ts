@@ -9,7 +9,7 @@ import {
   beforeInit,
   fireInit,
 } from '@myko/core'
-import { Inject, Injectable, LoggerService } from '@nestjs/common'
+import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Redis } from 'ioredis'
 import { unpack as decode } from 'msgpackr'
@@ -225,7 +225,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     private config: GlobalConfig,
     private prodConfig: ProducerGlobalConfig,
     private consConfig: ConsumerGlobalConfig,
-    private logger: LoggerService,
+    private logger: MykoLogger,
     server: Server,
   ) {
     super(entity, options, server)
@@ -248,7 +248,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     this.prod = new KafkaTopicProducer(
       this.entity,
       { ...this.config, ...this.prodConfig },
-      (msg) => this.logger.log(this.entity, 'KafkaTopicProducer', msg),
+      (msg) => this.logger.info(this.entity, 'KafkaTopicProducer', msg),
     )
 
     this.init()
@@ -277,7 +277,6 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
 
 //   constructor(
 //     entity: string,
-//     logger: LoggerService,
 //     options: KafkaPersisterOptions,
 //     private config: GlobalConfig,
 //     private prodConf: ProducerGlobalConfig,

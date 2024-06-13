@@ -29,6 +29,7 @@
     "ramda": "^0.29.1",
     "reflect-metadata": "^0.1.14",
     "rxjs": "^7.8.1",
+    "tslog": "^4.9.3",
     "uuid": "^9.0.1"
   },
   "devDependencies": {

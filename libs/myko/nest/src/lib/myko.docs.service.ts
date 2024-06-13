@@ -15,7 +15,7 @@ export class MykoDocsService {
   constructor(private logger: MykoLogger) {}
 
   async writeDocs(path: string) {
-    this.logger.log('Writing Myko Documentation')
+    this.logger.info('Writing Myko Documentation')
 
     await mkdir(path, { recursive: true })
     await writeFile(`${path}/README.md`, this.generateDocs())
@@ -26,7 +26,7 @@ export class MykoDocsService {
   }
 
   private generateDocs() {
-    this.logger.log('Generating Myko Documentation')
+    this.logger.info('Generating Myko Documentation')
 
     const entityDocs = this.makeEntityDocs()
 

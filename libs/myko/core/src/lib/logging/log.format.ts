@@ -1,6 +1,6 @@
-import { ILogObj, Logger } from 'tslog'
+import { ILogObj, ISettingsParam } from 'tslog'
 
-export const log: Logger<ILogObj> = new Logger({
+export const loggerDefaultOptions: ISettingsParam<ILogObj> = {
   hideLogPositionForProduction: true,
   stylePrettyLogs: true,
-})
+}
