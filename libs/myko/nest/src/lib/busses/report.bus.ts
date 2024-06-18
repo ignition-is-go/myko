@@ -39,7 +39,7 @@ export class MykoReportBus extends AMykoReportBus {
     const txKey = `${reportId}:${report.tx}`
     const cacheKey = `${reportId}:${hash}`
 
-    if (this.cache.has(cacheKey)) {
+    if (this.cache.has(cacheKey) && !process.env.MYKO_DISABLE_REPORT_CACHE) {
       return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
     }
 

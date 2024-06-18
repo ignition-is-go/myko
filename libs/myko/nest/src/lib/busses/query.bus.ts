@@ -38,7 +38,7 @@ export class MykoQueryBus extends AMykoQueryBus {
 
     const cacheKey = `${queryId}:${hash}`
 
-    if (this.cache.has(cacheKey)) {
+    if (this.cache.has(cacheKey) && !process.env.MYKO_DISABLE_QUERY_CACHE) {
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 
