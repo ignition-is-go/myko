@@ -8,13 +8,7 @@ import {
   ofItems,
   watchInit,
 } from '@myko/core'
-import {
-  Inject,
-  Module,
-  OnModuleInit,
-  Optional,
-  forwardRef,
-} from '@nestjs/common'
+import { Inject, Module, OnModuleInit, forwardRef } from '@nestjs/common'
 import { ConfigModule, ConfigService } from '@nestjs/config'
 import { DateTime } from 'luxon'
 import { v4 as uuid } from 'uuid'
@@ -23,7 +17,6 @@ import { MykoEventBus } from './busses'
 import * as handlers from './myko.gateway.handlers'
 import { MykoModule } from './myko.module'
 import { KafkaPersisterFactory } from './persisters'
-import { MykoAuthService } from './services'
 import { MykoGateway } from './ws/myko.gateway'
 
 @Module({
@@ -100,8 +93,6 @@ export class MykoGatewayModule implements OnModuleInit {
     private events: MykoEventBus,
     @Inject(SERVER_TOKEN) private server: Server,
     private servers: ServerRepo,
-    @Optional() @Inject(MykoAuthService) private auth: MykoAuthService,
-    private clients: ClientRepo,
   ) {}
 
   async onModuleInit() {
@@ -114,9 +105,9 @@ export class MykoGatewayModule implements OnModuleInit {
     this.servers
       .watchFilter(
         (that) =>
-          that.address === this.server.address &&
           that.port === this.server.port &&
-          that.startedAt < this.server.startedAt,
+          that.startedAt < this.server.startedAt &&
+          that.groupId === this.server.groupId,
       )
       .subscribe((s) => {
         this.events.publishAll(s.map((y) => makeDel(y, 'server:delete')))
