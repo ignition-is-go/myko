@@ -1,23 +1,25 @@
+import * as flexsearch from 'flexsearch'
 import {
+  Observable,
+  Subject,
   combineLatest,
   filter,
   map,
-  Observable,
   of,
   scan,
   startWith,
-  Subject,
+  switchMap,
   tap,
 } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { getFilters, getIds, watchIds } from '../registry'
 import {
-  addMissingHash,
   DeepPartial,
   ID,
   MEvent,
   MEventType,
   MItem,
+  addMissingHash,
 } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
@@ -38,6 +40,8 @@ export interface RepoOptions<T extends MItem> {
   // indeces
   indeces?: (keyof T)[]
 
+  searchIndeces?: (keyof T)[]
+
   peerQuery?: (ids: ID[]) => Observable<T[]>
 }
 
@@ -51,11 +55,14 @@ export abstract class Repo<T extends MItem> {
   private readonly store: Store<T>
   private subject: Subject<MEvent<T>>
   private entity: string
+  private search: flexsearch.Index
+  private searchObs: Subject<flexsearch.Index>
 
   constructor(
     ent: new (...args: any[]) => T,
     private readonly options?: RepoOptions<T>,
   ) {
+    this.search = new flexsearch.Index({ tokenize: 'forward' })
     this.entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
 
     getIds.set(this.entity, this.getIds.bind(this))
@@ -65,12 +72,30 @@ export abstract class Repo<T extends MItem> {
     this.store = new Store({ enableLogs: options?.enableLogs })
 
     this.subject = new Subject()
+    this.searchObs = new Subject()
 
     if (this.options?.stream) {
       this.options.stream
         .pipe(
           filter((event) => event.itemType === this.entity),
-          tap((event: MEvent<MItem>) => {
+          tap((event: MEvent<T>) => {
+            if (options?.searchIndeces) {
+              const slug = options.searchIndeces
+                .map((key) => Reflect.get(event.item, key))
+                .join(' ')
+                .toLocaleLowerCase()
+
+              if (event.changeType === MEventType.SET) {
+                this.search.add(event.item.id, slug)
+              }
+
+              if (event.changeType === MEventType.DEL) {
+                this.search.remove(event.item.id)
+              }
+
+              this.searchObs.next(this.search)
+            }
+
             if (!options?.onEvent) {
               return
             }
@@ -106,6 +131,24 @@ export abstract class Repo<T extends MItem> {
     if (this.options?.enableLogs) {
       console.log(...args)
     }
+  }
+
+  getSearch(query: string): T[] {
+    return this.search
+      .search(query.toLocaleLowerCase())
+      .map((x) => this.getId(x.toString()) as T)
+  }
+
+  watchSearch(query: string): Observable<T[]> {
+    return this.searchObs.pipe(
+      startWith(this.search),
+      map((s) => s.search(query.toLocaleLowerCase())),
+      switchMap((ids) =>
+        ids.length === 0
+          ? of([])
+          : combineLatest(ids.map((id) => this.watchId(id.toString()).pipe())),
+      ),
+    )
   }
 
   /**
