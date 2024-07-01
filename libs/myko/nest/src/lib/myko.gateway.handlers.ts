@@ -30,8 +30,8 @@ import {
   ServerRepo,
   getEvents,
   makeDel,
+  watchIds,
 } from '@myko/core'
-import { watchIds } from '@myko/core/src/lib/registry'
 import {
   ClientCommand,
   PeerCommand,

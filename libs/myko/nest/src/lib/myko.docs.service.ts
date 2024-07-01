@@ -4,7 +4,7 @@ import {
   PropDocInfo,
   QueryDocInfo,
   docRegistry,
-} from '@myko/core/src/lib/registry'
+} from '@myko/core'
 import { Injectable } from '@nestjs/common'
 import { mkdir, writeFile } from 'fs/promises'
 import { groupBy } from 'ramda'

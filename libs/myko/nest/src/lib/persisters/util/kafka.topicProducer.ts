@@ -1,6 +1,5 @@
-import { AdminClient, Producer, ProducerGlobalConfig } from 'node-rdkafka'
+import { Kafka, Producer, ProducerConfig } from 'kafkajs'
 import { makeSafeTopic } from './helpers'
-import { newTopic } from './kafka.newTopic'
 
 export class KafkaTopicProducer {
   prod: Producer
@@ -10,24 +9,16 @@ export class KafkaTopicProducer {
   protected sendQueue: Map<string, Buffer> = new Map()
 
   constructor(
+    kafka: Kafka,
     private topic: string,
-    config: ProducerGlobalConfig,
+    config: ProducerConfig,
     private log: (msg: string) => void,
   ) {
-    const admin = AdminClient.create(config)
+    this.prod = kafka.producer(config)
 
-    const safeTopic = makeSafeTopic(topic)
-
-    admin.createTopic(newTopic(safeTopic))
-
-    this.prod = new Producer(config)
-
-    this.prod.connect()
-    this.prod.on('ready', () => {
-      this.log('Producer is ready')
-      this.prod.setPollInterval(100)
-      this.prod.poll()
+    this.prod.connect().then(() => {
       this.prodConnected = true
+
       if (this.sendQueue.size > 0) {
         log(`Sending ${this.sendQueue.size} queued messages`)
         ;[...this.sendQueue.entries()].forEach(([key, buf]) =>
@@ -35,10 +26,6 @@ export class KafkaTopicProducer {
         )
         this.sendQueue.clear()
       }
-    })
-
-    this.prod.on('event.error', (err) => {
-      console.warn('Error from producer', err)
     })
   }
 
@@ -56,7 +43,10 @@ export class KafkaTopicProducer {
     const streamKey = makeSafeTopic(this.topic)
 
     try {
-      this.prod.produce(streamKey, null, msg, key, Date.now())
+      this.prod.send({
+        messages: [{ key, value: msg }],
+        topic: streamKey,
+      })
     } catch (e) {
       if (e instanceof Error && e.message === 'Local: Queue full') {
       }
