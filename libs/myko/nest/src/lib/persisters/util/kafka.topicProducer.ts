@@ -1,4 +1,4 @@
-import { Kafka, Producer, ProducerConfig } from 'kafkajs'
+import type { Kafka, Producer, ProducerConfig } from 'kafkajs'
 import { makeSafeTopic } from './helpers'
 
 export class KafkaTopicProducer {

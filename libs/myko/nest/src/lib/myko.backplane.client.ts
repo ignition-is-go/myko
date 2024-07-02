@@ -1,123 +1,123 @@
-import { MEvent, MItem, MYKO_ITEM_TYPE } from '@myko/core'
-import { Injectable, OnModuleInit } from '@nestjs/common'
-import { QueryResponse, make_watch, make_watch_id } from 'myko-wasm'
-import { v4 as uuid } from 'uuid'
-import { WebSocket } from 'ws'
+// import { MEvent, MItem, MYKO_ITEM_TYPE } from '@myko/core'
+// import { Injectable, OnModuleInit } from '@nestjs/common'
+// import { QueryResponse, make_watch, make_watch_id } from 'myko-wasm'
+// import { v4 as uuid } from 'uuid'
+// import { WebSocket } from 'ws'
 
-@Injectable()
-export class MykoBackplaneClient implements OnModuleInit {
-  private client: WebSocket
+// @Injectable()
+// export class MykoBackplaneClient implements OnModuleInit {
+//   private client: WebSocket
 
-  constructor() {}
+//   constructor() {}
 
-  private connectCallbacks = new Set<() => () => void>()
-  private disconnectCallbacks = new Set<() => void>()
-  private queryCallbacks = new Map<string, (items: MItem[]) => void>()
+//   private connectCallbacks = new Set<() => () => void>()
+//   private disconnectCallbacks = new Set<() => void>()
+//   private queryCallbacks = new Map<string, (items: MItem[]) => void>()
 
-  onModuleInit() {
-    this.connect()
-  }
+//   onModuleInit() {
+//     this.connect()
+//   }
 
-  private async connect() {
-    try {
-      console.log('CONNECTING')
-      this.client = new WebSocket('ws://127.0.0.1:5156', { timeout: 1000 })
-      console.log('CONNECTED')
-    } catch (e) {
-      console.log(e)
-      this.client = undefined
-      return
-    }
+//   private async connect() {
+//     try {
+//       console.log('CONNECTING')
+//       this.client = new WebSocket('ws://127.0.0.1:5156', { timeout: 1000 })
+//       console.log('CONNECTED')
+//     } catch (e) {
+//       console.log(e)
+//       this.client = undefined
+//       return
+//     }
 
-    this.client.on('error', (e) => {
-      console.error(e)
-    })
+//     this.client.on('error', (e) => {
+//       console.error(e)
+//     })
 
-    this.client.on('open', () => {
-      this.connectCallbacks.forEach((cb) => this.disconnectCallbacks.add(cb()))
-    })
+//     this.client.on('open', () => {
+//       this.connectCallbacks.forEach((cb) => this.disconnectCallbacks.add(cb()))
+//     })
 
-    this.client.on('close', () => {
-      console.log('DISCONNECTED')
-      this.disconnectCallbacks.forEach((cb) => cb())
-      setTimeout(() => {
-        this.connect()
-      }, 1000)
-    })
+//     this.client.on('close', () => {
+//       console.log('DISCONNECTED')
+//       this.disconnectCallbacks.forEach((cb) => cb())
+//       setTimeout(() => {
+//         this.connect()
+//       }, 1000)
+//     })
 
-    this.client.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString()) as QueryResponse
+//     this.client.on('message', (data) => {
+//       try {
+//         const msg = JSON.parse(data.toString()) as QueryResponse
 
-        const cb = this.queryCallbacks.get(msg.tx)
+//         const cb = this.queryCallbacks.get(msg.tx)
 
-        if (!cb) {
-          console.warn('NO CALLBACK FOUND')
-          return
-        }
-        const item = msg.result as unknown as MItem[]
-        cb(item.slice())
-        item.forEach((item) => {})
-      } catch (e) {
-        console.error(e, data.toLocaleString())
-      }
-    })
-  }
+//         if (!cb) {
+//           console.warn('NO CALLBACK FOUND')
+//           return
+//         }
+//         const item = msg.result as unknown as MItem[]
+//         cb(item.slice())
+//         item.forEach((item) => {})
+//       } catch (e) {
+//         console.error(e, data.toLocaleString())
+//       }
+//     })
+//   }
 
-  async publishEvent(event: MEvent) {
-    this.send(event)
-  }
+//   async publishEvent(event: MEvent) {
+//     this.send(event)
+//   }
 
-  private async send(any: Record<string, any>) {
-    this.send_string(JSON.stringify(any))
-  }
+//   private async send(any: Record<string, any>) {
+//     this.send_string(JSON.stringify(any))
+//   }
 
-  private send_string(str: string) {
-    if (this.client?.readyState !== WebSocket.OPEN) {
-      console.warn('NOT OPEN YET')
-      return
-    }
+//   private send_string(str: string) {
+//     if (this.client?.readyState !== WebSocket.OPEN) {
+//       console.warn('NOT OPEN YET')
+//       return
+//     }
 
-    try {
-      this.client.send(str)
-    } catch (e) {
-      console.log('>>>', e)
-    }
-  }
+//     try {
+//       this.client.send(str)
+//     } catch (e) {
+//       console.log('>>>', e)
+//     }
+//   }
 
-  public watchId<T extends MItem>(
-    id: string,
-    type: new (args: any) => T,
-    onUpdate: (items: T) => void,
-  ) {
-    const tx = uuid()
-    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
-    this.send_string(make_watch_id(tx, id, itemType))
-    this.queryCallbacks.set(tx, (items) => onUpdate(items.shift() as T))
-  }
+//   public watchId<T extends MItem>(
+//     id: string,
+//     type: new (args: any) => T,
+//     onUpdate: (items: T) => void,
+//   ) {
+//     const tx = uuid()
+//     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
+//     this.send_string(make_watch_id(tx, id, itemType))
+//     this.queryCallbacks.set(tx, (items) => onUpdate(items.shift() as T))
+//   }
 
-  public watch<T extends MItem>(
-    partial: Partial<T>,
-    type: new (args: any) => T,
-    onUpdate: (items: T[]) => void,
-  ) {
-    const tx = uuid()
-    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
-    this.send_string(make_watch(tx, JSON.stringify(partial), itemType))
-    this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
-  }
+//   public watch<T extends MItem>(
+//     partial: Partial<T>,
+//     type: new (args: any) => T,
+//     onUpdate: (items: T[]) => void,
+//   ) {
+//     const tx = uuid()
+//     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
+//     this.send_string(make_watch(tx, JSON.stringify(partial), itemType))
+//     this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
+//   }
 
-  public watchAll<T extends MItem>(
-    type: new (args: any) => T,
-    onUpdate: (items: T[]) => void,
-  ) {
-    const tx = uuid()
-    const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
-    this.send_string(make_watch(tx, '{}', itemType))
-    this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
-  }
+//   public watchAll<T extends MItem>(
+//     type: new (args: any) => T,
+//     onUpdate: (items: T[]) => void,
+//   ) {
+//     const tx = uuid()
+//     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, type)
+//     this.send_string(make_watch(tx, '{}', itemType))
+//     this.queryCallbacks.set(tx, (items) => onUpdate(items as T[]))
+//   }
 
-  public onConnect(cb: () => () => void) {
-    this.connectCallbacks.add(cb)
-  }
-}
+//   public onConnect(cb: () => () => void) {
+//     this.connectCallbacks.add(cb)
+//   }
+// }

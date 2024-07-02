@@ -23,7 +23,6 @@
     "kafkajs": "^2.2.4",
     "luxon": "^3.4.4",
     "msgpackr": "^1.10.1",
-    "myko-wasm": "workspace:^",
     "passport": "^0.6.0",
     "passport-local": "^1.0.0",
     "ramda": "^0.29.1",

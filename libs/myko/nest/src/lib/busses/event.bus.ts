@@ -6,10 +6,10 @@ import {
   MykoSagaType,
   Server,
 } from '@myko/core'
-import { Inject, Injectable, Optional } from '@nestjs/common'
+import { Inject, Injectable } from '@nestjs/common'
 import { ModuleRef } from '@nestjs/core'
 import { SERVER_TOKEN } from '../../types'
-import { MykoBackplaneClient } from '../myko.backplane.client'
+// import { MykoBackplaneClient } from '../myko.backplane.client'
 import { MykoCommandBus } from './command.bus'
 
 @Injectable()
@@ -18,8 +18,8 @@ export class MykoEventBus extends AMykoEventBus {
     private moduleRef: ModuleRef,
     commandBus: MykoCommandBus,
     @Inject(SERVER_TOKEN) private server: Server,
-    @Optional()
-    private backplane?: MykoBackplaneClient,
+    // @Optional()
+    // private backplane?: MykoBackplaneClient,
   ) {
     super(commandBus)
   }
@@ -29,7 +29,7 @@ export class MykoEventBus extends AMykoEventBus {
       Reflect.set(event, 'sourceId', this.getServerId())
     }
     this.subject$.next(event)
-    if (this.backplane) this.backplane.publishEvent(event)
+    // if (this.backplane) this.backplane.publishEvent(event)
     return
   }
 

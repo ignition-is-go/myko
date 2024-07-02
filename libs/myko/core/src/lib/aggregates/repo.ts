@@ -1,4 +1,4 @@
-import * as flexsearch from 'flexsearch'
+import flexsearch from 'flexsearch'
 import {
   Observable,
   Subject,
@@ -15,11 +15,11 @@ import { MYKO_ITEM_TYPE } from '../constants'
 import { getFilters, getIds, watchIds } from '../registry'
 import {
   DeepPartial,
-  type ID,
   MEvent,
   MEventType,
   MItem,
   addMissingHash,
+  type ID,
 } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'

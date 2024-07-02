@@ -126,9 +126,6 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     protected options: KafkaPersisterOptions,
     protected server: Server,
   ) {
-    const redisHost = process.env.REDIS_HOST || 'localhost'
-    const redisPort = Number.parseInt(process.env.REDIS_PORT) || 6379
-
     this.output = new Subject<MEvent<T>>()
 
     this.init()
