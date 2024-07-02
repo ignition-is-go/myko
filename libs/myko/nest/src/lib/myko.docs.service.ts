@@ -19,6 +19,7 @@ export class MykoDocsService {
 
     await mkdir(path, { recursive: true })
     await writeFile(`${path}/README.md`, this.generateDocs())
+    await mkdir(`${path}/docs`, { recursive: true })
     await writeFile(
       `${path}/docs/myko.json`,
       JSON.stringify(docRegistry, null, 2),
