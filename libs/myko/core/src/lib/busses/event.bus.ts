@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
-  ID,
+  type ID,
   makeDel,
   makeSet,
   MEvent,

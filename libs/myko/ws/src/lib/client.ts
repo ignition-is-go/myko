@@ -43,7 +43,6 @@ import {
 } from './wrappers'
 
 import {
-  ID,
   MCommand,
   MCommandResponse,
   MEvent,
@@ -61,6 +60,7 @@ import {
   unwrapQuery,
   unwrapReport,
   wrapCommand,
+  type ID,
 } from '@myko/core'
 import { pack, unpack } from 'msgpackr'
 import { v4 } from 'uuid'

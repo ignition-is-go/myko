@@ -1,4 +1,4 @@
-import { ID, MItem } from '../types'
+import { type ID, MItem } from '../types'
 
 export class Store<T extends MItem> extends Map<ID, T> {
   indeces = new Map<keyof T, Map<any, Set<ID>>>()

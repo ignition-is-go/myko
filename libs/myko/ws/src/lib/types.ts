@@ -1,10 +1,10 @@
 import {
-  ID,
+  type ID,
   MCommand,
   MEvent,
   MItem,
   MQuery,
-  MWrappedCommand,
+  type MWrappedCommand,
   MWrappedItem,
   MWrappedQuery,
   MWrappedReport,

@@ -4,10 +4,12 @@
     "declaration": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
-    "moduleResolution": "node",
+    "moduleResolution": "NodeNext",
     "resolveJsonModule": true,
     "target": "es2020",
-    "module": "commonjs",
-    "lib": ["es2020", "dom"]
+    "module": "NodeNext",
+    "lib": ["es2020", "dom"],
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   }
 }

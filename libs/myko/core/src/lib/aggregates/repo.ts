@@ -15,7 +15,7 @@ import { MYKO_ITEM_TYPE } from '../constants'
 import { getFilters, getIds, watchIds } from '../registry'
 import {
   DeepPartial,
-  ID,
+  type ID,
   MEvent,
   MEventType,
   MItem,

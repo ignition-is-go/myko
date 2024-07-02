@@ -1,4 +1,4 @@
-import { ID } from '@myko/core'
+import type { ID } from '@myko/core'
 
 export class MykoAuthService {
   canActivate(token: string): Promise<boolean> {

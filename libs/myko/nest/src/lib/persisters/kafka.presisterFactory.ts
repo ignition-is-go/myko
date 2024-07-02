@@ -18,6 +18,7 @@ import {
   KafkaConfig,
   Message,
   ProducerConfig,
+  logLevel,
 } from 'kafkajs'
 import { Subject } from 'rxjs'
 import { SERVER_TOKEN } from '../../types'
@@ -48,6 +49,7 @@ export class KafkaPersisterFactory {
   ) {
     this.conf = {
       brokers: this.getBrokers(),
+      logLevel: logLevel.NOTHING,
     }
 
     this.prodConf = {

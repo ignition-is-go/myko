@@ -1,5 +1,5 @@
-import { ID } from '@myko/core'
-import { WSMCommandError } from '@myko/ws'
+import type { ID } from '@myko/core'
+import type { WSMCommandError } from '@myko/ws'
 import { WsException } from '@nestjs/websockets'
 
 export class CommandNotAuthorized

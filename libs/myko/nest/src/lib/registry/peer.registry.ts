@@ -1,4 +1,4 @@
-import { ID, Server, ServerEventLog, ServerRepo } from '@myko/core'
+import { type ID, Server, ServerEventLog, ServerRepo } from '@myko/core'
 import { WSMClient } from '@myko/ws'
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common'
 import { Observable, Subscription, map } from 'rxjs'

@@ -1,6 +1,6 @@
 import { Repo } from '../aggregates'
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
-import { ID, MEvent, MItem, MQuery, MReport } from '../types'
+import { type ID, MEvent, MItem, MQuery, MReport } from '../types'
 
 @MykoItem({
   doc: 'A Myko Server ',

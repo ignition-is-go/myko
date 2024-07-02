@@ -3,7 +3,7 @@ import { OperatorFunction, filter } from 'rxjs'
 import { DateTime } from 'luxon'
 import { v4 as uuid } from 'uuid'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
-import { ID } from './base'
+import type { ID } from './base'
 
 /**
  * The base class for Myko commands.

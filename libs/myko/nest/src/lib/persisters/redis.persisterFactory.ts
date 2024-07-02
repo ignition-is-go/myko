@@ -1,7 +1,7 @@
 import { RedisService } from '@liaoliaots/nestjs-redis'
 import {
   EventContainer,
-  ID,
+  type ID,
   MEvent,
   MItem,
   MItemConstructor,
