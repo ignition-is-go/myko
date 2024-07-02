@@ -1,7 +1,6 @@
 import 'reflect-metadata'
 import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
-  type ID,
   makeDel,
   makeSet,
   MEvent,
@@ -10,8 +9,9 @@ import {
   MSaga,
   recalculateHash,
   Type,
+  type ID,
 } from '../types'
-import { AMykoCommandBus } from './command.bus'
+import type { AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'

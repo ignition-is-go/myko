@@ -1,5 +1,5 @@
 import { MYKO_ITEM_TYPE } from '../constants'
-import { MEvent, MItem } from '../types'
+import type { MEvent, MItem } from '../types'
 
 /**
  * Represents a wrapped item.

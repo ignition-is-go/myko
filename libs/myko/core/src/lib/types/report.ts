@@ -1,4 +1,4 @@
-import { Observable } from 'rxjs'
+import type { Observable } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
 /**

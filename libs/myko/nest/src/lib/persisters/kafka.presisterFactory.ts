@@ -204,8 +204,6 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       { ...this.config, ...this.consConfig },
       this.entity,
       (msg) => this.onMessage(msg),
-      `${this.entity}:offset`,
-      `${this.entity}:partition`,
       () => {
         this.onInit()
       },

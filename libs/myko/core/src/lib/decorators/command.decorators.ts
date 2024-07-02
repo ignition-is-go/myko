@@ -5,7 +5,7 @@
 
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
 import { addCommandDoc } from '../registry'
-import { MCommand, MCommandHandler, MCommandResponse } from '../types'
+import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
 
 /**
  * Decorator for defining a Myko command.

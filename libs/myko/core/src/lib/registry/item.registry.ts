@@ -1,5 +1,5 @@
-import { Observable } from 'rxjs'
-import { EventContainer, ID, MItem } from '../types'
+import type { Observable } from 'rxjs'
+import type { EventContainer, ID, MItem } from '../types'
 
 export const getIds: Map<string, (ids: ID[]) => MItem[]> = new Map()
 

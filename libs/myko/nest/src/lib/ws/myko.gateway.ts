@@ -1,6 +1,5 @@
 import {
   Client,
-  type ID,
   MEventType,
   MykoProtocol,
   ProtocolMessages,
@@ -11,6 +10,7 @@ import {
   unwrapQuery,
   unwrapReport,
   wrapItem,
+  type ID,
 } from '@myko/core'
 import {
   MCOMMAND_EVENT,
@@ -21,6 +21,9 @@ import {
   MQUERY_RESPONSE_EVENT,
   MREPORT_CANCEL,
   MREPORT_EVENT,
+  WSMReportResponse,
+  wrapCommandResponseWS,
+  wrapReportResponseWS,
   type WSMCommand,
   type WSMCommandResponse,
   type WSMEvent,
@@ -29,10 +32,7 @@ import {
   type WSMQueryResponse,
   type WSMReport,
   type WSMReportCancel,
-  WSMReportResponse,
   type WSPingEvent,
-  wrapCommandResponseWS,
-  wrapReportResponseWS,
 } from '@myko/ws'
 import {
   ConnectedSocket,
@@ -87,6 +87,7 @@ export class MykoGateway implements OnGatewayConnection {
 
   handleConnection(client: WebSocket) {
     try {
+      console.log('Got Connection')
       this.reg.register(client)
     } catch (e) {
       client.close(1002, e.message)

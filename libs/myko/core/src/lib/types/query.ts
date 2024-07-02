@@ -1,5 +1,5 @@
-import { Observable } from 'rxjs'
-import { MItem } from './item'
+import type { Observable } from 'rxjs'
+import type { MItem } from './item'
 
 import { v4 as uuid } from 'uuid'
 

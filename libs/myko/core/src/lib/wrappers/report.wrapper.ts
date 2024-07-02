@@ -1,5 +1,5 @@
 import { MYKO_REPORT_ID_KEY, MYKO_REPORT_ITEM_TYPE_KEY } from '../constants'
-import { type ID, MReport } from '../types'
+import type { ID, MReport } from '../types'
 
 /**
  * Represents a wrapped report.

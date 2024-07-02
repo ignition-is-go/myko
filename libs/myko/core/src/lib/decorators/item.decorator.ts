@@ -14,7 +14,7 @@ import {
   MYKO_ITEM_TYPE,
 } from '../constants'
 import { propertyDefaults, relationRegistry } from '../registry'
-import { MItem } from '../types'
+import type { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
 /**

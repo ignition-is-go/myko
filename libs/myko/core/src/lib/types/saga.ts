@@ -1,6 +1,6 @@
-import { Observable } from 'rxjs'
-import { MCommand } from './command'
-import { MEvent } from './events'
+import type { Observable } from 'rxjs'
+import type { MCommand } from './command'
+import type { MEvent } from './events'
 
 /**
  * Represents a saga function that processes events and produces commands.

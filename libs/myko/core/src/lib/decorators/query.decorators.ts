@@ -5,7 +5,7 @@ import {
   MYKO_QUERY_ITEM_TYPE_KEY,
 } from '../constants'
 import { addQueryDoc } from '../registry'
-import { IMItem, MItem, MQuery, MQueryHandler } from '../types'
+import type { IMItem, MItem, MQuery, MQueryHandler } from '../types'
 
 /**
  * Decorator for defining a Myko query.

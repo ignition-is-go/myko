@@ -1,6 +1,6 @@
-import { Observable, Subject } from 'rxjs'
-import { MEvent, MEventType } from './events'
-import { MItem } from './item'
+import type { Observable, Subject } from 'rxjs'
+import type { MEvent, MEventType } from './events'
+import type { MItem } from './item'
 
 /**
  * Represents a stream of events for a specific type of item.

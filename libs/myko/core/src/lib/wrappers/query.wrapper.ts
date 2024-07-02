@@ -1,5 +1,5 @@
 import { MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../constants'
-import { MQuery } from '../types'
+import type { MQuery } from '../types'
 
 /**
  * Represents a wrapped query object.

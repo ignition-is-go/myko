@@ -1,5 +1,6 @@
+import 'reflect-metadata'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
-import { MReport, MReportHandler } from '../types/report'
+import type { MReport, MReportHandler } from '../types/report'
 
 /**
  * Decorator for defining a Myko report.

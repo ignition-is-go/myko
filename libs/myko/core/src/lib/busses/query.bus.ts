@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { firstValueFrom } from 'rxjs'
-import {
+import type {
   MLiveQueryResult,
   MQuery,
   MQueryHandler,
