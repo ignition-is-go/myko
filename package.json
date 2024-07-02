@@ -3,6 +3,7 @@
   "license": "MIT",
   "scripts": {
     "build": "turbo run build",
+    "build-docs": "turbo run build-docs",
     "publish": "./tools/scripts/export-version.sh && turbo run publish",
     "jsr": "turbo run jsr",
     "forge-publish": "turbo run forge-publish",
