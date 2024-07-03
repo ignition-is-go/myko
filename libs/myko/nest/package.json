@@ -19,6 +19,7 @@
     "@nestjs/passport": "^10.0.3",
     "@nestjs/platform-express": "10.3.9",
     "@nestjs/websockets": "10.3.9",
+    "colors": "^1.4.0",
     "ioredis": "^5.3.2",
     "kafkajs": "^2.2.4",
     "luxon": "^3.4.4",

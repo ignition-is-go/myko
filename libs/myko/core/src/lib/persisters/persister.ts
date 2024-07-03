@@ -1,5 +1,5 @@
-import { Observable } from 'rxjs'
-import { MEvent, MItem } from '../types'
+import type { Observable } from 'rxjs'
+import type { MEvent, MItem } from '../types'
 
 /**
  * Abstract class representing a persister in the Myko core library.
