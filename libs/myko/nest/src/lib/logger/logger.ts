@@ -29,7 +29,7 @@ export class MykoLogger {
       colors.gray(new Date().toLocaleDateString()),
       colors.gray(new Date().toLocaleTimeString()),
       colors.gray('|'),
-      colorLevel(level),
+      colorLevel(level.padEnd(5)),
       colors.gray('|'),
       this.name ? `${this.name.padEnd(longestName.get())}` : ``,
       colors.gray('|'),
