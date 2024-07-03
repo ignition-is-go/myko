@@ -87,7 +87,6 @@ export class MykoGateway implements OnGatewayConnection {
 
   handleConnection(client: WebSocket) {
     try {
-      console.log('Got Connection')
       this.reg.register(client)
     } catch (e) {
       client.close(1002, e.message)

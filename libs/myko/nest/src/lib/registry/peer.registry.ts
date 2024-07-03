@@ -24,12 +24,10 @@ export class PeerClientRegistry implements OnModuleInit {
     const key = makePeerKey(server)
 
     if (this.peerEventListenerSubs.has(key)) {
-      console.debug('Already listening to peer events')
       return
     }
 
     if (!this.peers.has(key)) {
-      console.debug('Peer not found', key)
       return
     }
 
@@ -46,7 +44,6 @@ export class PeerClientRegistry implements OnModuleInit {
     const key = makePeerKey(server)
 
     if (!this.peerEventListenerSubs.has(key)) {
-      console.debug('Already Not listening to peer events')
       return
     }
 
@@ -79,10 +76,6 @@ export class PeerClientRegistry implements OnModuleInit {
       (url) => new WebSocket(url, { timeout: 1000 }),
       {
         onDisconnect: (_, willAttemptReconnect) => {
-          console.debug(
-            `Peer Disconnected: ${server.address}:${server.port} ${server.id}, reconnecting: ${willAttemptReconnect}`,
-          )
-
           this.events.publishDel(server, 'peer-disconnected')
           this.peers.delete(makePeerKey(server))
           this.teardownPeerEventListener(server)

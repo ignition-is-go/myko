@@ -66,6 +66,7 @@ export class MykoModule implements OnModuleInit {
         SocketRegistry,
         PeerClientRegistry,
         PeerEventBus,
+        MykoLogger,
       ],
     } satisfies DynamicModule
   }

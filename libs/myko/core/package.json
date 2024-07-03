@@ -4,6 +4,7 @@
   "types": "./src/index.ts",
   "license": "ISC",
   "dependencies": {
+    "colors": "^1.4.0",
     "flexsearch": "^0.7.43",
     "luxon": "^3.4.4",
     "object-hash": "^3.0.0",

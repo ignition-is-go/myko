@@ -36,7 +36,6 @@ export class SocketRegistry extends Map<ID, WebSocket> {
       this.reverse.delete(socket)
     })
     const c = new Client({ id, serverId })
-    console.log('Client Connected', c)
     this.events.publishSet(c, 'client-connected')
 
     const ws = wrapCommandWS(new SetClientId(id))
