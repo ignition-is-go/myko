@@ -1,6 +1,6 @@
 import { MykoProtocol } from '@myko/core'
 import { pack, unpack } from 'msgpackr'
-import * as WebSocket from 'ws'
+import type WebSocket from 'ws'
 
 export const clientProtocols = new Map<WebSocket, MykoProtocol>()
 

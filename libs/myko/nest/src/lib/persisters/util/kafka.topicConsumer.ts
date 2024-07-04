@@ -4,7 +4,7 @@ import { makeSafeTopic } from './helpers'
 export class KafkaTopicConsumer {
   cons: Consumer
 
-  private readOffset: number = 0
+  caughtUp = false
 
   constructor(
     kafka: Kafka,
@@ -15,11 +15,29 @@ export class KafkaTopicConsumer {
   ) {
     this.cons = kafka.consumer({ ...config, groupId: crypto.randomUUID() })
 
+    this.cons.on('consumer.heartbeat', (e) => {
+      if (!this.caughtUp) {
+        this.caughtUp = true
+        this.onCaughtUp()
+      }
+    })
+
+    this.cons.on('consumer.end_batch_process', (e) => {
+      const last = Number.parseInt(e.payload.lastOffset)
+      const high = Number.parseInt(e.payload.highWatermark)
+
+      if (last === high - 1 && !this.caughtUp) {
+        this.caughtUp = true
+        this.onCaughtUp()
+      }
+    })
+
     this.cons
       .connect()
       .then(() => {
         return this.cons.subscribe({
           topic: makeSafeTopic(topic),
+
           fromBeginning: true,
         })
       })
@@ -28,14 +46,10 @@ export class KafkaTopicConsumer {
           eachMessage: async ({ message }) => {
             onMessage(message)
           },
+          autoCommit: true,
         })
       })
-      .then(() => {
-        this.onCaughtUp()
-      })
   }
-
-  checkCaughtUp() {}
 
   disconnect() {
     this.cons.disconnect()

@@ -1,3 +1,4 @@
+import { Injectable } from '@nestjs/common'
 import colors from 'colors'
 import { longestName, names } from './registry'
 
@@ -8,8 +9,9 @@ export enum LogLevel {
   LOG = 'LOG',
 }
 
+@Injectable()
 export class MykoLogger {
-  constructor(private name?: string) {
+  constructor(private name: string = '') {
     names.set(name, {})
 
     if (name.length > longestName.get()) {

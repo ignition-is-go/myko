@@ -1,7 +1,6 @@
 import { RedisService } from '@liaoliaots/nestjs-redis'
 import {
   EventContainer,
-  type ID,
   MEvent,
   MItem,
   MItemConstructor,
@@ -9,9 +8,10 @@ import {
   Persister,
   fireInit,
   getEvents,
+  type ID,
 } from '@myko/core'
 import { Injectable } from '@nestjs/common'
-import { Redis } from 'ioredis'
+import type { Redis } from 'ioredis'
 import { Observable, Subject, distinctUntilChanged, scan } from 'rxjs'
 
 import { unpack as decode, pack as encode } from 'msgpackr'

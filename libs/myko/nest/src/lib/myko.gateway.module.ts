@@ -14,6 +14,7 @@ import { DateTime } from 'luxon'
 import { v4 as uuid } from 'uuid'
 import { SERVER_TOKEN } from '../types'
 import { MykoEventBus } from './busses'
+import { MykoLogger } from './logger'
 import * as handlers from './myko.gateway.handlers'
 import { MykoModule } from './myko.module'
 import { KafkaPersisterFactory } from './persisters'
@@ -96,8 +97,12 @@ export class MykoGatewayModule implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    const logger = new MykoLogger('Gateway')
+
     watchInit((entity, registered, inited) => {
-      // this.logger.getLogger(entity).dev.info(`Init: ${inited}/${registered}`)
+      let regStr = registered.toString()
+      let initStr = inited.toString().padStart(regStr.length, ' ')
+      logger.info(`Init: ${initStr}/${regStr} [${entity}]`)
     })
 
     this.events.publishSet(this.server, 'server:init')
