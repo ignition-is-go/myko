@@ -7,6 +7,7 @@ import {
   Server,
   beforeInit,
   fireInit,
+  type ID,
 } from '@myko/core'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
@@ -22,7 +23,6 @@ import {
 } from 'kafkajs'
 import { Subject } from 'rxjs'
 import { SERVER_TOKEN } from '../../types'
-import { MykoQueryBus } from '../busses'
 import { MykoLogger } from '../logger'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
@@ -35,6 +35,88 @@ const optionDefaults: Partial<KafkaPersisterOptions> = {
   enableEventLog: true,
 }
 
+export class CoreKafkaPersisterFactory {
+  private conf: KafkaConfig
+  private prodConf: ProducerConfig
+  private consConf: ConsumerConfig
+
+  constructor(
+    private serverId: ID,
+    private logger: MykoLogger,
+  ) {
+    this.conf = {
+      brokers: this.getBrokers(),
+      logLevel: logLevel.NOTHING,
+    }
+
+    this.prodConf = {
+      allowAutoTopicCreation: true,
+    }
+
+    this.consConf = {
+      groupId: serverId,
+      allowAutoTopicCreation: true,
+    }
+  }
+
+  private getBrokers(): string[] {
+    const brokersString = process.env.KAFKA_BROKERS
+    if (!brokersString) {
+      throw new Error('KAFKA_BROKERS not set')
+    }
+
+    return brokersString.split(',')
+  }
+
+  // getControlledPersister<T extends MItem>(
+  //   ent: MItemConstructor<T>,
+  // ): ControledPersister<T> {
+  //   const entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
+
+  //   if (!entity) {
+  //     throw new Error('Cannot get Entity from Metadata')
+  //   }
+
+  //   return new KafkaControlledPersister(
+  //     entity,
+  //     this.logger,
+  //     {
+  //       enableEventLog: false,
+  //     },
+  //     this.conf,
+  //     this.prodConf,
+  //     this.consConf,
+  //     this.server,
+  //   )
+  // }
+
+  getPersister<T extends MItem>(
+    ent: MItemConstructor<T>,
+    options?: KafkaPersisterOptions,
+  ) {
+    const opts = {
+      ...optionDefaults,
+      ...options,
+    }
+
+    const entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
+
+    if (!entity) {
+      throw new Error('Cannot get Entity from Metadata')
+    }
+
+    return new KafkaEntityPersister<T>(
+      entity,
+      opts,
+      this.conf,
+      this.prodConf,
+      this.consConf,
+      this.logger,
+      this.serverId,
+    )
+  }
+}
+
 @Injectable()
 export class KafkaPersisterFactory {
   private conf: KafkaConfig
@@ -43,7 +125,7 @@ export class KafkaPersisterFactory {
 
   constructor(
     private config: ConfigService,
-    private query: MykoQueryBus,
+
     private logger: MykoLogger,
     @Inject(SERVER_TOKEN) private server: Server,
   ) {
@@ -115,7 +197,7 @@ export class KafkaPersisterFactory {
       this.prodConf,
       this.consConf,
       this.logger,
-      this.server,
+      this.server.id,
     )
   }
 }
@@ -124,7 +206,7 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
   constructor(
     protected entity: string,
     protected options: KafkaPersisterOptions,
-    protected server: Server,
+    protected serverId: ID,
   ) {
     this.output = new Subject<MEvent<T>>()
 
@@ -158,7 +240,7 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
       return
     }
 
-    if (event.sourceId === this.server.id) {
+    if (event.sourceId === this.serverId) {
       return
     }
 
@@ -189,9 +271,9 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     private prodConfig: ProducerConfig,
     private consConfig: ConsumerConfig,
     private logger: MykoLogger,
-    server: Server,
+    serverId: ID,
   ) {
-    super(entity, options, server)
+    super(entity, options, serverId)
     beforeInit(entity)
 
     const kafka = new Kafka(this.config)

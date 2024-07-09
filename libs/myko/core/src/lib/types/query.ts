@@ -1,5 +1,5 @@
 import type { Observable } from 'rxjs'
-import type { MItem } from './item'
+import type { IMItem, MItem } from './item'
 
 import { v4 as uuid } from 'uuid'
 
@@ -51,3 +51,11 @@ export interface MQueryHandler<H> {
    */
   execute(query: H): MLiveQueryResult<H>
 }
+
+export type MQueryHandlerConstructor<T extends MQuery<MItem<IMItem>>> = new (
+  ...args: any[]
+) => MQueryHandler<T>
+
+export type MQueryConstructor<T extends MQuery<MItem<IMItem>>> = new (
+  ...args: any[]
+) => T

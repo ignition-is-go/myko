@@ -6,6 +6,7 @@
  * that add specific metadata to the decorated properties.
  */
 import 'reflect-metadata'
+import { repo } from '../aggregates'
 import {
   MYKO_ITEM_BELONGS_TO_KEY,
   MYKO_ITEM_DEFAULT_VALUE_KEY,
@@ -38,6 +39,8 @@ export const MykoItem =
   (target) => {
     const original: any = target
     const autoItemType = Object.getOwnPropertyDescriptors(original).name.value
+
+    console.log(autoItemType)
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 
@@ -121,6 +124,10 @@ export const MykoItem =
         localType: itemType,
       })
     }
+
+    setTimeout(() => {
+      repo(withType)
+    })
 
     return withType
   }

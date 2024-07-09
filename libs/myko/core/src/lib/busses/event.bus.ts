@@ -11,7 +11,7 @@ import {
   Type,
   type ID,
 } from '../types'
-import type { AMykoCommandBus } from './command.bus'
+import { commandBus, type AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'
@@ -397,3 +397,23 @@ const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
 
   return result
 }
+
+export class EventBus extends AMykoEventBus {
+  private readonly serverId: ID
+
+  constructor(commandBus: AMykoCommandBus) {
+    super(commandBus)
+    this.serverId = uuid()
+  }
+
+  getServerId(): ID {
+    return this.serverId
+  }
+
+  publish<T extends MEvent>(event: T): Promise<void> {
+    this.subject$.next(event)
+    return Promise.resolve()
+  }
+}
+
+export const eventBus = new EventBus(commandBus)

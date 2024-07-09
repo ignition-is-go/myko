@@ -1,5 +1,5 @@
 import {
-  ClientRepo,
+  Client,
   ConnectedToLeader,
   DeleteClientsByServerId,
   EventContainer,
@@ -28,8 +28,12 @@ import {
   Server,
   ServerEventLog,
   ServerRepo,
+  eventBus,
   getEvents,
   makeDel,
+  queryBus,
+  repo,
+  reportBus,
   watchIds,
 } from '@myko/core'
 import {
@@ -54,17 +58,15 @@ import {
   switchMap,
 } from 'rxjs'
 import { MykoCommandError, SERVER_TOKEN } from '../types'
-import { MykoEventBus, MykoQueryBus, MykoReportBus } from './busses'
+import { MykoEventBus, MykoReportBus } from './busses'
 import { clientProtocols, encoders } from './registry/client.protocols'
 import { PeerClientRegistry } from './registry/peer.registry'
 import { SocketRegistry } from './registry/socket.registry'
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
-  constructor(private repo: ServerRepo) {}
-
   execute(_: GetServers): MLiveQueryResult<GetServers> {
-    return this.repo.watch({})
+    return repo(Server).watch({})
   }
 }
 
@@ -87,7 +89,7 @@ export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   ) {}
 
   execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return this.repo.watchFilter(
+    return repo(Server).watchFilter(
       (s) => s.id !== this.server.id && s.groupId === this.server.groupId,
     )
   }
@@ -97,10 +99,8 @@ export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
 export class GetServersByQueryHandler
   implements MQueryHandler<GetServersByQuery>
 {
-  constructor(private repo: ServerRepo) {}
-
   execute(query: GetServersByQuery): MLiveQueryResult<GetServersByQuery> {
-    return this.repo.watch(query.query)
+    return repo(Server).watch(query.query)
   }
 }
 
@@ -108,38 +108,32 @@ export class GetServersByQueryHandler
 export class GetServersByClientIdsHandler
   implements MQueryHandler<GetServersByClientIds>
 {
-  constructor(
-    private servers: ServerRepo,
-    private clients: ClientRepo,
-  ) {}
-
   execute(
     query: GetServersByClientIds,
   ): MLiveQueryResult<GetServersByClientIds> {
-    return this.clients.watchIds(query.clientIds).pipe(
-      map((clients) => clients.map((c) => c.serverId)),
-      map(uniq),
-      switchMap((serverIds) => this.servers.watchIds(serverIds)),
-    )
+    return repo(Client)
+      .watchIds(query.clientIds)
+      .pipe(
+        map((clients) => clients.map((c) => c.serverId)),
+        map(uniq),
+        switchMap((serverIds) => repo(Server).watchIds(serverIds)),
+      )
   }
 }
 
 @Injectable()
-export class ServerSagas {
-  constructor(private repo: ServerRepo) {}
-}
+export class ServerSagas {}
 
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   constructor(
     private reg: SocketRegistry,
-    private clients: ClientRepo,
     @Inject(SERVER_TOKEN) private server: Server,
     private peers: PeerClientRegistry,
   ) {}
 
   async execute(command: ClientCommand): Promise<void> {
-    const client = this.clients.getId(command.clientId)
+    const client = repo(Client).getId(command.clientId)
 
     if (!client) {
       throw new MykoCommandError(command.tx, 'Client Not Found')
@@ -171,9 +165,8 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
 @MykoQueryHandler(GetClientsByIds)
 export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
-  constructor(private repo: ClientRepo) {}
   execute(query: GetClientsByIds): Observable<any> {
-    return this.repo.watchIds(query.ids)
+    return repo(Server).watchIds(query.ids)
   }
 }
 
@@ -181,9 +174,8 @@ export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
 export class GetClientsByQueryHandler
   implements MQueryHandler<GetClientsByQuery>
 {
-  constructor(private repo: ClientRepo) {}
   execute(query: GetClientsByQuery): Observable<any> {
-    return this.repo.watch(query.partial)
+    return repo(Server).watch(query.partial)
   }
 }
 
@@ -191,13 +183,9 @@ export class GetClientsByQueryHandler
 export class DeleteClientsByServerIdHandler
   implements MCommandHandler<DeleteClientsByServerId>
 {
-  constructor(
-    private clients: ClientRepo,
-    private events: MykoEventBus,
-  ) {}
   async execute(command: DeleteClientsByServerId): Promise<void> {
-    const clients = this.clients.get({ serverId: command.serverId })
-    this.events.publishAll(clients.map((c) => makeDel(c, command.tx)))
+    const clients = repo(Client).get({ serverId: command.serverId })
+    eventBus.publishAll(clients.map((c) => makeDel(c, command.tx)))
   }
 }
 
@@ -205,13 +193,13 @@ export class DeleteClientsByServerIdHandler
 export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
   constructor(
     @Inject(SERVER_TOKEN) private server: Server,
-    private query: MykoQueryBus,
+
     private peers: PeerClientRegistry,
   ) {}
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
     try {
       if (query.peerId === this.server.id) {
-        return this.query.watch(query.query)
+        return queryBus.watch(query.query)
       }
 
       return this.peers.getPeer(query.peerId).pipe(
@@ -301,7 +289,7 @@ export class IsLeaderHandler implements MReportHandler<IsLeader> {
       .pipe(
         switchMap((server) =>
           server
-            ? this.report
+            ? reportBus
                 .watch(new GroupLeader(server.groupId))
                 .pipe(map((leader) => leader?.id === server.id))
             : of(false),
@@ -312,10 +300,7 @@ export class IsLeaderHandler implements MReportHandler<IsLeader> {
 
 @MykoReportHandler(PeerAlive)
 export class PeerAliveHandler implements MReportHandler<PeerAlive> {
-  constructor(
-    private query: MykoQueryBus,
-    private peers: PeerClientRegistry,
-  ) {}
+  constructor(private peers: PeerClientRegistry) {}
   execute(report: PeerAlive) {
     return this.peers.getPeer(report.peerId).pipe(
       switchMap((peer) => {
@@ -331,12 +316,9 @@ export class PeerAliveHandler implements MReportHandler<PeerAlive> {
 
 @MykoReportHandler(PeerLastSeen)
 export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
-  constructor(
-    private query: MykoQueryBus,
-    private report: MykoReportBus,
-  ) {}
+  constructor(private report: MykoReportBus) {}
   execute(report: PeerLastSeen) {
-    return this.report.watch(new PeerAlive(report.peerId)).pipe(
+    return reportBus.watch(new PeerAlive(report.peerId)).pipe(
       filter((x) => x !== false),
       map((x) => DateTime.utc().toISO()),
     )
@@ -352,7 +334,7 @@ export class ConnectedToLeaderHandler
     @Inject(SERVER_TOKEN) private server: Server,
   ) {}
   execute(_: ConnectedToLeader) {
-    return this.report.watch(new IsLeader(this.server.id))
+    return reportBus.watch(new IsLeader(this.server.id))
   }
 }
 
@@ -360,7 +342,7 @@ export class ConnectedToLeaderHandler
 export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {
   constructor(
     private events: MykoEventBus,
-    private query: MykoQueryBus,
+
     @Inject(SERVER_TOKEN) private server: Server,
   ) {}
   execute(report: ServerEventLog) {

@@ -4,8 +4,12 @@ import {
   MykoProtocol,
   ProtocolMessages,
   addMissingHash,
+  commandBus,
+  eventBus,
   ofItems,
   ofType,
+  queryBus,
+  reportBus,
   unwrapCommand,
   unwrapQuery,
   unwrapReport,
@@ -41,12 +45,6 @@ import {
   SubscribeMessage,
   WebSocketGateway,
 } from '@nestjs/websockets'
-import {
-  MykoCommandBus,
-  MykoEventBus,
-  MykoQueryBus,
-  MykoReportBus,
-} from '../busses'
 
 import { UseFilters, UseGuards } from '@nestjs/common'
 import {
@@ -71,14 +69,8 @@ export class MykoGateway implements OnGatewayConnection {
   private unsub = new Subject<ID>()
   private clientDisconnects = new Subject<ID>()
 
-  constructor(
-    private event: MykoEventBus,
-    private command: MykoCommandBus,
-    private query: MykoQueryBus,
-    private report: MykoReportBus,
-    private reg: SocketRegistry,
-  ) {
-    this.event.subject$
+  constructor(private reg: SocketRegistry) {
+    eventBus.subject$
       .pipe(ofItems(Client), ofType(MEventType.DEL))
       .subscribe((x) => {
         this.clientDisconnects.next(x.item.id)
@@ -100,7 +92,7 @@ export class MykoGateway implements OnGatewayConnection {
   ) {
     const hashed = addMissingHash(event.data.item)
     Reflect.set(event.data, 'item', hashed)
-    this.event.publish(event.data)
+    eventBus.publish(event.data)
   }
 
   @SubscribeMessage(ProtocolMessages.SwitchToMSGPACK)
@@ -114,7 +106,7 @@ export class MykoGateway implements OnGatewayConnection {
     @MessageBody() wrappedCommand: WSMCommand,
   ): Promise<WSMCommandResponse> {
     const cmd = unwrapCommand(wrappedCommand.data)
-    const res = await this.command.execute(cmd)
+    const res = await commandBus.execute(cmd)
     return wrapCommandResponseWS(cmd.tx, res)
   }
 
@@ -143,7 +135,7 @@ export class MykoGateway implements OnGatewayConnection {
 
     let sequence = -1
 
-    return this.query.watch(q).pipe(
+    return queryBus.watch(q).pipe(
       catchError((e) => {
         console.log(wrappedQuery)
         console.log(e)
@@ -207,7 +199,7 @@ export class MykoGateway implements OnGatewayConnection {
       return EMPTY
     }
 
-    return this.report.watch(report).pipe(
+    return reportBus.watch(report).pipe(
       map((r) => wrapReportResponseWS(report.tx, r)),
       catchError((e) => {
         console.log(e)

@@ -18,6 +18,7 @@ import {
   MEvent,
   MEventType,
   MItem,
+  MItemConstructor,
   addMissingHash,
   type ID,
 } from '../types'
@@ -51,7 +52,7 @@ export interface RepoOptions<T extends MItem> {
  *
  * @template T - The type of items stored in the repository.
  */
-export abstract class Repo<T extends MItem> {
+export class Repo<T extends MItem> {
   private readonly store: Store<T>
   private subject: Subject<MEvent<T>>
   private entity: string
@@ -59,7 +60,7 @@ export abstract class Repo<T extends MItem> {
   private searchObs: Subject<flexsearch.Index>
 
   constructor(
-    ent: new (...args: any[]) => T,
+    ent: MItemConstructor<T>,
     private readonly options?: RepoOptions<T>,
   ) {
     this.search = new flexsearch.Index({ tokenize: 'forward' })

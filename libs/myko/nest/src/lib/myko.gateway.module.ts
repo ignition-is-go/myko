@@ -4,6 +4,7 @@ import {
   Server,
   ServerRepo,
   Stream,
+  eventBus,
   makeDel,
   ofItems,
   watchInit,
@@ -91,7 +92,6 @@ import { MykoGateway } from './ws/myko.gateway'
 })
 export class MykoGatewayModule implements OnModuleInit {
   constructor(
-    private events: MykoEventBus,
     @Inject(SERVER_TOKEN) private server: Server,
     private servers: ServerRepo,
   ) {}
@@ -105,7 +105,7 @@ export class MykoGatewayModule implements OnModuleInit {
       logger.info(`Init: ${initStr}/${regStr} [${entity}]`)
     })
 
-    this.events.publishSet(this.server, 'server:init')
+    eventBus.publishSet(this.server, 'server:init')
 
     this.servers
       .watchFilter(
@@ -115,7 +115,7 @@ export class MykoGatewayModule implements OnModuleInit {
           that.groupId === this.server.groupId,
       )
       .subscribe((s) => {
-        this.events.publishAll(s.map((y) => makeDel(y, 'server:delete')))
+        eventBus.publishAll(s.map((y) => makeDel(y, 'server:delete')))
       })
   }
 }

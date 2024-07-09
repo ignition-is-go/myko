@@ -1,4 +1,4 @@
-import { MItem, MItemConstructor, getItemName } from '@myko/core'
+import { MItem, MItemConstructor, getItemName, queryBus } from '@myko/core'
 import { DynamicModule, Module, OnModuleInit, forwardRef } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { bufferTime, filter, groupBy, mergeMap } from 'rxjs'
@@ -80,7 +80,7 @@ export class MykoModule implements OnModuleInit {
 
     const { commands, queries, sagas, reports } = this.explorer.explore()
     this.commandBus.register(commands)
-    this.queryBus.register(queries)
+    queryBus.register(queries)
     this.reportBus.register(reports)
     this.eventBus.registerSagas(sagas)
 

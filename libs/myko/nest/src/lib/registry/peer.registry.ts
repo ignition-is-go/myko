@@ -1,4 +1,10 @@
-import { Server, ServerEventLog, ServerRepo, type ID } from '@myko/core'
+import {
+  Server,
+  ServerEventLog,
+  ServerRepo,
+  eventBus,
+  type ID,
+} from '@myko/core'
 import { WSMClient } from '@myko/ws'
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common'
 import { Observable, Subscription, map } from 'rxjs'
@@ -76,7 +82,7 @@ export class PeerClientRegistry implements OnModuleInit {
       (url) => new WebSocket(url, { timeout: 1000 }),
       {
         onDisconnect: (_, willAttemptReconnect) => {
-          this.events.publishDel(server, 'peer-disconnected')
+          eventBus.publishDel(server, 'peer-disconnected')
           this.peers.delete(makePeerKey(server))
           this.teardownPeerEventListener(server)
         },

@@ -3,6 +3,7 @@
  * @module command.decorators
  */
 
+import { commandBus } from '../busses'
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
 import { addCommandDoc } from '../registry'
 import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
@@ -66,5 +67,7 @@ export const MykoCommandHandler: <T extends MCommand<MCommandResponse<T>>>(
   return (target: new (...args: any[]) => MCommandHandler<T>) => {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     Reflect.defineMetadata(MYKO_HANDLER_COMMAND_ID_KEY, commandId, target)
+
+    commandBus.bind(new target(), commandId)
   }
 }

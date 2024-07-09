@@ -1,4 +1,4 @@
-import { MEvent } from '@myko/core'
+import type { MEvent } from '@myko/core'
 import { Injectable } from '@nestjs/common'
 import { Subject } from 'rxjs'
 

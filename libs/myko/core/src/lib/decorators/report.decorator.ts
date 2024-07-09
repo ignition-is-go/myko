@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import { reportBus } from '../busses'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type { MReport, MReportHandler } from '../types/report'
 
@@ -26,5 +27,6 @@ export const MykoReportHandler = <T extends MReport<T['$reportResult']>>(
   return (target: new (...args: any[]) => MReportHandler<T>) => {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, command)
     Reflect.defineMetadata(MYKO_HANDLER_REPORT_ID_KEY, reportId, target)
+    reportBus.registerHandler(target)
   }
 }
