@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 import type {
   MCommand,

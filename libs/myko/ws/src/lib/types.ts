@@ -1,15 +1,16 @@
 import {
-  type ID,
+  Client,
   MCommand,
   MEvent,
   MItem,
   MQuery,
-  type MWrappedCommand,
   MWrappedItem,
   MWrappedQuery,
   MWrappedReport,
   MykoCommand,
   MykoQuery,
+  type ID,
+  type MWrappedCommand,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'
@@ -113,13 +114,11 @@ export type WSMMessage =
 
 @MykoCommand('client:send-command')
 export class ClientCommand extends MCommand {
-  readonly command: MWrappedCommand
   constructor(
-    command: MWrappedCommand,
-    readonly clientId: ID,
+    readonly command: MWrappedCommand,
+    readonly client: Client,
   ) {
     super()
-    this.command = command
   }
 }
 

@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { reportBus } from '../busses'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type { MReport, MReportHandler } from '../types/report'

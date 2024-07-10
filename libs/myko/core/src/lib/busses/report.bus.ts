@@ -16,7 +16,9 @@ export type MykoReportHandlerType = Type<MReportHandler<MReport<unknown>>>
  * @template T - The type of report.
  */
 export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
-  constructor() {
+  constructor(
+    private options: { disableCache?: boolean } = { disableCache: false },
+  ) {
     super()
   }
 
@@ -71,7 +73,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     const txKey = `${reportId}:${report.tx}`
     const cacheKey = `${reportId}:${hash}`
 
-    if (this.cache.has(cacheKey) && !process.env.MYKO_DISABLE_REPORT_CACHE) {
+    if (this.cache.has(cacheKey) && !this.options?.disableCache) {
       return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
     }
 

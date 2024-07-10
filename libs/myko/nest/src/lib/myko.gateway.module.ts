@@ -7,6 +7,7 @@ import {
   eventBus,
   makeDel,
   ofItems,
+  repo,
   watchInit,
 } from '@myko/core'
 import { Inject, Module, OnModuleInit, forwardRef } from '@nestjs/common'
@@ -16,10 +17,10 @@ import { v4 as uuid } from 'uuid'
 import { SERVER_TOKEN } from '../types'
 import { MykoEventBus } from './busses'
 import { MykoLogger } from './logger'
-import * as handlers from './myko.gateway.handlers'
 import { MykoModule } from './myko.module'
 import { KafkaPersisterFactory } from './persisters'
 import { MykoGateway } from './ws/myko.gateway'
+export * as mykoGatewayHandlers from './myko.gateway.handlers'
 
 @Module({
   imports: [forwardRef(() => MykoModule.forScope('Gateway')), ConfigModule],
@@ -96,26 +97,24 @@ export class MykoGatewayModule implements OnModuleInit {
     private servers: ServerRepo,
   ) {}
 
-  async onModuleInit() {
-    const logger = new MykoLogger('Gateway')
-
-    watchInit((entity, registered, inited) => {
-      let regStr = registered.toString()
-      let initStr = inited.toString().padStart(regStr.length, ' ')
-      logger.info(`Init: ${initStr}/${regStr} [${entity}]`)
-    })
-
-    eventBus.publishSet(this.server, 'server:init')
-
-    this.servers
-      .watchFilter(
-        (that) =>
-          that.port === this.server.port &&
-          that.startedAt < this.server.startedAt &&
-          that.groupId === this.server.groupId,
-      )
-      .subscribe((s) => {
-        eventBus.publishAll(s.map((y) => makeDel(y, 'server:delete')))
-      })
-  }
+  async onModuleInit() {}
 }
+
+const logger = new MykoLogger('Gateway')
+
+watchInit((entity, registered, inited) => {
+  let regStr = registered.toString()
+  let initStr = inited.toString().padStart(regStr.length, ' ')
+  logger.info(`Init: ${initStr}/${regStr} [${entity}]`)
+})
+
+repo(Server)
+  .watchFilter(
+    (that) =>
+      that.port === this.server.port &&
+      that.startedAt < this.server.startedAt &&
+      that.groupId === this.server.groupId,
+  )
+  .subscribe((s) => {
+    eventBus.publishAll(s.map((y) => makeDel(y, 'server:delete')))
+  })

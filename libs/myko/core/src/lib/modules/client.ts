@@ -1,4 +1,3 @@
-import { Repo } from '../aggregates'
 import { MykoCommand, MykoItem, MykoQuery, belongsTo } from '../decorators'
 import { MCommand } from '../types'
 import { MItem } from '../types/item'
@@ -40,5 +39,3 @@ export class SetClientId extends MCommand {
     super()
   }
 }
-
-export class ClientRepo extends Repo<Client> {}

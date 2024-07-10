@@ -1,15 +1,5 @@
 import type { Observable } from 'rxjs'
-import type { EventContainer, ID, MItem } from '../types'
-
-export const getIds: Map<string, (ids: ID[]) => MItem[]> = new Map()
-
-export const getFilters: Map<
-  string,
-  (filterFunc: (el: MItem) => boolean) => MItem[]
-> = new Map()
-
-export const watchIds: Map<string, (ids: ID[]) => Observable<MItem[]>> =
-  new Map()
+import type { EventContainer } from '../types'
 
 export const getEvents: Map<
   string,

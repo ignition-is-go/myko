@@ -4,23 +4,13 @@ const isRegistered: Set<string> = new Set()
 const isInit: Set<string> = new Set()
 
 const initWatchers: Set<
-  (entity: string, egistered: number, inited: number) => void
+  (
+    entity: string,
+    egistered: string[],
+    inited: string[],
+    uninited: string[],
+  ) => void
 > = new Set()
-
-/**
- * Registers a callback to be called when all specified item types are initialized.
- * @param itemTypes - The item types to wait for.
- * @param cb - The callback to call when all item types are initialized.
- */
-export const onInit = (itemTypes: string[], cb: () => void): void => {
-  const key = itemTypes.sort().join(':')
-
-  if (!hooks.has(key)) {
-    hooks.set(key, new Set())
-  }
-
-  hooks.get(key).add(cb)
-}
 
 /**
  * Checks if all registered item types are initialized.
@@ -44,6 +34,7 @@ export const isAllInit = (): {
  */
 export const leftToInit = (): string[] => {
   let registered = new Set(isRegistered)
+
   for (let i of isInit) {
     registered.delete(i)
   }
@@ -55,9 +46,19 @@ export const leftToInit = (): string[] => {
  * @param cb - The callback to call when the initialization status changes.
  */
 export const watchInit: (
-  cb: (entity: string, registered: number, inited: number) => void,
+  cb: (
+    entity: string,
+    registered: string[],
+    inited: string[],
+    uninited: string[],
+  ) => void,
 ) => void = (
-  cb: (entity: string, registered: number, inited: number) => void,
+  cb: (
+    entity: string,
+    registered: string[],
+    inited: string[],
+    uninited: string[],
+  ) => void,
 ) => {
   initWatchers.add(cb)
 }
@@ -68,12 +69,15 @@ export const watchInit: (
  */
 export const fireInit = (itemType: string) => {
   if (isInit.has(itemType)) {
+    console.log('Skipping duplicate init for', itemType)
     return
   }
 
   isInit.add(itemType)
 
-  initWatchers.forEach((cb) => cb(itemType, isRegistered.size, isInit.size))
+  initWatchers.forEach((cb) =>
+    cb(itemType, [...isRegistered], [...isInit], leftToInit()),
+  )
 
   hooks.forEach((cb, key) => {
     const types = key.split(':')

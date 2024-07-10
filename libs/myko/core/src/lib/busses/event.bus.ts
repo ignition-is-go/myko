@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
   makeDel,
@@ -15,13 +14,12 @@ import { commandBus, type AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'
-import { onInit } from '../hooks'
+import { watchInit } from '../hooks'
 import {
-  getFilters,
-  getIds,
-  inheritsRegistry,
+  getServer,
   propertyDefaults,
   relationRegistry,
+  repoName,
 } from '../registry'
 
 export type MykoSagaType = Type<MSaga>
@@ -37,32 +35,39 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   constructor(private commandBus: AMykoCommandBus) {
     super()
     this.subscriptions = []
-    this.establishRelations()
+
+    watchInit((e, t, i, uninit) => {
+      if (uninit.length === 0) {
+        this.establishRelations()
+      }
+    })
   }
 
   private establishRelations() {
     relationRegistry.forEach((relation) => {
       switch (relation.type) {
         case 'belongs-to': {
-          // remove orphans
-          // onInit([relation.localType, relation.foreignType], () => {
-          //   const all = getFilters.get(relation.localType)(() => true)
-          //   all.forEach((item) => {
-          //     const getParents = getIds.get(relation.foreignType)
-          //     if (!getParents) {
-          //       console.warn('No getIds for', relation.foreignType, relation)
-          //       return
-          //     }
-          //     const parent = getParents([item[relation.localKey]])
-          //     if (parent.length < 1) {
-          //       console.log(
-          //         'Orphan found! Deleting',
-          //         relation.localType,
-          //         item.id,
-          //       )
-          //       this.publishDel(item, 'startup')
-          //     }
-          //   })
+          // const localRepo = repoName(relation.localType)
+
+          // const all = localRepo.get({})
+
+          // all.forEach((item) => {
+          //   const foreignRepo = repoName(relation.foreignType)
+
+          //   const parentGetById = foreignRepo.getId.bind(foreignRepo)
+
+          //   if (!parentGetById) {
+          //     console.warn('No getIds for', relation.foreignType, relation)
+          //     return
+          //   }
+
+          //   const parentId = item[relation.localKey]
+
+          //   const parent = parentGetById(parentId)
+          //   if (!parent) {
+          //     console.log('Orphan found! Deleting', relation.localType, item.id)
+          //     this.publishDel(item, 'startup')
+          //   }
           // })
 
           const sub = this.subject$
@@ -75,11 +80,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe((e) => {
-              const parentClass = inheritsRegistry.get(relation.localType)
+              const localRepo = repoName(relation.localType)
 
-              const ff =
-                getFilters.get(relation.localType) ??
-                (parentClass && getFilters.get(parentClass))
+              const ff = localRepo.getFilter.bind(localRepo)
 
               if (!ff) {
                 throw new Error(`No Filter for ${relation.localType}`)
@@ -98,51 +101,44 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
         }
 
         case 'owns-many': {
-          setTimeout(() => {
-            const foreignParent = inheritsRegistry.get(relation.foreignType)
-            const localParent = inheritsRegistry.get(relation.localType)
+          const ftRepo = repoName(relation.foreignType)
 
-            const getChildrenFilter =
-              getFilters.get(relation.foreignType) ??
-              (foreignParent && getFilters.get(foreignParent))
+          const ltRepo = repoName(relation.localType)
 
-            const getParentsFilter =
-              getFilters.get(relation.localType) ??
-              (localParent && getFilters.get(localParent))
+          const getChildrenFilter = ftRepo.getFilter.bind(ftRepo)
 
-            if (!getChildrenFilter || !getParentsFilter) {
-              console.warn(
-                'missing getFilters for',
-                relation.foreignType,
-                relation.localType,
-                relation,
-              )
-              return
-            }
+          const getParentsFilter = ltRepo.getFilter.bind(ltRepo)
 
-            const allParents = getParentsFilter(() => true)
-            const allChildrenIds = allParents.flatMap(
-              (parent) => parent[relation.localKey],
+          if (!getChildrenFilter || !getParentsFilter) {
+            console.warn(
+              'missing getFilters for',
+              relation.foreignType,
+              relation.localType,
+              relation,
+            )
+            return
+          }
+
+          const allParents = getParentsFilter(() => true)
+          const allChildrenIds = allParents.flatMap(
+            (parent) => parent[relation.localKey],
+          )
+
+          const orphans = getChildrenFilter(
+            (child) => !allChildrenIds.includes(child.id),
+          )
+
+          if (orphans.length > 0) {
+            console.log(
+              orphans.length,
+              'orphans found for',
+              relation.localType,
+              'owns many',
+              relation.foreignType,
             )
 
-            const orphans = getChildrenFilter(
-              (child) => !allChildrenIds.includes(child.id),
-            )
-
-            if (orphans.length > 0) {
-              console.log(
-                orphans.length,
-                'orphans found for',
-                relation.localType,
-                'owns many',
-                relation.foreignType,
-              )
-
-              this.publishAll(
-                orphans.map((orphan) => makeDel(orphan, 'startup')),
-              )
-            }
-          }, 2000)
+            this.publishAll(orphans.map((orphan) => makeDel(orphan, 'startup')))
+          }
 
           const forwardDeletes = this.subject$
             .pipe(
@@ -154,11 +150,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe((e) => {
-              const parentClass = inheritsRegistry.get(relation.foreignType)
+              const fRepo = repoName(relation.foreignType)
 
-              const ids =
-                getIds.get(relation.foreignType) ??
-                (parentClass && getIds.get(parentClass))
+              const ids = fRepo.getIds.bind(fRepo)
 
               if (!ids) {
                 throw new Error(`No getIds for ${relation.foreignType}`)
@@ -182,7 +176,8 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe((event) => {
-              const ff = getFilters.get(relation.localType)
+              const localRepo = repoName(relation.localType)
+              const ff = localRepo.getFilter.bind(localRepo)
               const affected = ff((e) =>
                 e[relation.localKey].includes(event.item.id),
               )
@@ -221,11 +216,8 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                 }
               }
 
-              const parentClass = inheritsRegistry.get(foreignType)
-
-              const getForeign =
-                getFilters.get(foreignType) ??
-                (parentClass && getFilters.get(parentClass))
+              const fr = repoName(foreignType)
+              const getForeign = fr.getFilter.bind(fr)
 
               if (!getForeign) {
                 throw new Error(`No Foreign getFilters for ${foreignType}`)
@@ -237,11 +229,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               }
             })
 
-            const parentClass = inheritsRegistry.get(localType)
+            const localRepo = repoName(localType)
+            const getLocal = localRepo.getFilter.bind(localRepo)
 
-            const getLocal =
-              getFilters.get(localType) ??
-              (parentClass && getFilters.get(parentClass))
             if (!getLocal) {
               throw new Error(`No Local getFilters for ${localType}`)
             }
@@ -273,6 +263,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                   id: uuid(),
                   ...props,
                 })
+
                 this.publishSet(newItem, tx)
               }
             })
@@ -293,9 +284,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
           this.subscriptions.push(ensureDeps)
 
-          onInit([...foreignTypes, relation.localType], () => {
-            ensure('server-init')
-          })
+          ensure('server-init')
           break
         }
       }
@@ -399,18 +388,23 @@ const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
 }
 
 export class EventBus extends AMykoEventBus {
-  private readonly serverId: ID
-
   constructor(commandBus: AMykoCommandBus) {
     super(commandBus)
-    this.serverId = uuid()
   }
 
   getServerId(): ID {
-    return this.serverId
+    return getServer().id
   }
 
   publish<T extends MEvent>(event: T): Promise<void> {
+    if (event.sourceId === undefined) {
+      Reflect.set(event, 'sourceId', this.getServerId())
+    }
+
+    if (event.itemType === 'BindingNode') {
+      console.log(event)
+    }
+
     this.subject$.next(event)
     return Promise.resolve()
   }

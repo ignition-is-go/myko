@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { firstValueFrom, map, shareReplay } from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import type {
@@ -17,7 +16,7 @@ import { ObservableBus } from './observable.bus'
  * @template MQuery The type of the query.
  */
 export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
-  constructor() {
+  constructor(private readonly options?: { disableCache?: boolean }) {
     super()
   }
 
@@ -68,7 +67,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
 
     const cacheKey = `${queryId}:${hash}`
 
-    if (this.cache.has(cacheKey) && !process.env.MYKO_DISABLE_QUERY_CACHE) {
+    if (this.cache.has(cacheKey) && !this.options?.disableCache) {
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 

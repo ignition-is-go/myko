@@ -5,8 +5,6 @@
  * The `ownsMany`, `belongsTo`, `defaultValue`, and `ensureFor` decorators are property decorators
  * that add specific metadata to the decorated properties.
  */
-import 'reflect-metadata'
-import { repo } from '../aggregates'
 import {
   MYKO_ITEM_BELONGS_TO_KEY,
   MYKO_ITEM_DEFAULT_VALUE_KEY,
@@ -14,7 +12,7 @@ import {
   MYKO_ITEM_OWNS_MANY_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import { propertyDefaults, relationRegistry } from '../registry'
+import { propertyDefaults, relationRegistry, repo } from '../registry'
 import type { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
@@ -39,8 +37,6 @@ export const MykoItem =
   (target) => {
     const original: any = target
     const autoItemType = Object.getOwnPropertyDescriptors(original).name.value
-
-    console.log(autoItemType)
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 
