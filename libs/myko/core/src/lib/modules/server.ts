@@ -1,6 +1,13 @@
-import { Repo } from '../aggregates'
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
-import { type ID, MEvent, MItem, MQuery, MReport } from '../types'
+import {
+  MEvent,
+  MItem,
+  MQuery,
+  MReport,
+  getItemName,
+  type ID,
+  type MItemConstructor,
+} from '../types'
 
 @MykoItem({
   doc: 'A Myko Server ',
@@ -91,4 +98,17 @@ export class PeerLastSeen extends MReport<string> {
   }
 }
 
-export class ServerRepo extends Repo<Server> {}
+@MykoReport('entity:search')
+export class EntitySearch<T extends MItem> extends MReport<T[]> {
+  readonly entityType: string
+  constructor(
+    readonly query: string,
+    item: MItemConstructor<T>,
+    readonly opts?: {
+      showAllOnEmpty?: boolean
+    },
+  ) {
+    super()
+    this.entityType = getItemName(item)
+  }
+}

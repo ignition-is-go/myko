@@ -2,6 +2,7 @@ import {
   Client,
   ConnectedToLeader,
   DeleteClientsByServerId,
+  EntitySearch,
   EventContainer,
   GetClientsByIds,
   GetClientsByQuery,
@@ -337,5 +338,16 @@ export class ClientConnectedSaga implements MSagaHandler {
         )
       }),
     )
+  }
+}
+
+@MykoReportHandler(EntitySearch)
+export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
+  execute(report: EntitySearch<any>): Observable<any> {
+    if (report.query.length === 0 && report.opts?.showAllOnEmpty) {
+      return repoName(report.entityType).watch({})
+    }
+
+    return repoName(report.entityType).watchSearch(report.query)
   }
 }
