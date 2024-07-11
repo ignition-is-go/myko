@@ -1,24 +1,28 @@
 import { filter } from 'rxjs'
-import { Repo, RepoOptions } from '../aggregates/repo'
+import { Repo } from '../aggregates/repo'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { PersisterFactory } from '../persisters'
 import type { MEvent, MItem, MItemConstructor, Stream } from '../types'
 import { getServer } from './self.registry'
 
-const repoOptions = new Map<string, RepoOptions<MItem>>()
+const repos = new Map<string, Repo<MItem>>()
 
 let defaultOpts: {
   defaultPersisterFactory?: PersisterFactory
 } = {}
 
+const needsPersister: string[] = []
+
 export const setDefaultRepoOptions = (args: {
   persisterFactory?: PersisterFactory
 }) => {
   defaultOpts.defaultPersisterFactory = args.persisterFactory
-}
 
-const repos = new Map<string, Repo<MItem>>()
+  needsPersister.forEach((itemName) => {
+    createRepo(itemName)
+  })
+}
 
 export const repo = <T extends MItem>(item: MItemConstructor<T>): Repo<T> => {
   const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
@@ -27,8 +31,17 @@ export const repo = <T extends MItem>(item: MItemConstructor<T>): Repo<T> => {
     throw new Error('No item name found')
   }
 
-  console.log('REPO FOR', itemName)
   return repoName(itemName)
+}
+
+export const initRepo = <T extends MItem>(item: MItemConstructor<T>) => {
+  const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
+
+  if (!itemName) {
+    throw new Error('No item name found')
+  }
+
+  createRepo(itemName)
 }
 
 export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
@@ -40,12 +53,19 @@ export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
     return repos.get(itemName) as unknown as Repo<T>
   }
 
+  throw new Error('Repo not found')
+}
+
+const createRepo = <T extends MItem>(itemName: string) => {
   const persister = defaultOpts?.defaultPersisterFactory?.(
     itemName,
     getServer(),
   )
 
-  console.log('PERSISTER for ', itemName)
+  if (!persister) {
+    needsPersister.push(itemName)
+    return
+  }
 
   const newRepo = new Repo<T>(itemName, {
     stream: persister?.output.pipe(
@@ -59,6 +79,4 @@ export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
   }
 
   repos.set(itemName, newRepo as unknown as Repo<MItem>)
-
-  return newRepo
 }

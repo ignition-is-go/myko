@@ -147,7 +147,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 @MykoQueryHandler(GetClientsByIds)
 export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
   execute(query: GetClientsByIds): Observable<any> {
-    return repo(Server).watchIds(query.ids)
+    return repo(Client).watchIds(query.ids)
   }
 }
 
@@ -156,7 +156,7 @@ export class GetClientsByQueryHandler
   implements MQueryHandler<GetClientsByQuery>
 {
   execute(query: GetClientsByQuery): Observable<any> {
-    return repo(Server).watch(query.partial)
+    return repo(Client).watch(query.partial)
   }
 }
 

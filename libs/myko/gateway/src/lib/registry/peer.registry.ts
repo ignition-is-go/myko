@@ -1,4 +1,11 @@
-import { Server, ServerEventLog, eventBus, repo, type ID } from '@myko/core'
+import {
+  Server,
+  ServerEventLog,
+  eventBus,
+  onAllInit,
+  repo,
+  type ID,
+} from '@myko/core'
 import { WSMClient } from '@myko/ws'
 import { Observable, Subscription, map } from 'rxjs'
 import WebSocket from 'ws'
@@ -11,18 +18,7 @@ export class PeerClientRegistry {
   private peers = new Map<string, WSMClient>()
   private peerEventListenerSubs = new Map<string, Subscription>()
 
-  constructor() {
-    repo(Server)
-      .watchFilter(
-        (s) =>
-          s.groupId === getServer().groupId &&
-          (s.address !== getServer().address || s.port !== getServer().port),
-      )
-      .pipe()
-      .subscribe((e) => {
-        e.forEach((s) => this.assertClient(s))
-      })
-  }
+  constructor() {}
 
   private assertPeerEventListener(server: Server) {
     const key = makePeerKey(server)
@@ -115,8 +111,25 @@ export class PeerClientRegistry {
   all() {
     return this.peers.entries()
   }
+
+  start() {
+    repo(Server)
+      .watchFilter(
+        (s) =>
+          s.groupId === getServer().groupId &&
+          (s.address !== getServer().address || s.port !== getServer().port),
+      )
+      .pipe()
+      .subscribe((e) => {
+        e.forEach((s) => this.assertClient(s))
+      })
+  }
 }
 
 const makePeerKey = (server: Server) => `${server.address}:${server.port}`
 
 export const peers = new PeerClientRegistry()
+
+onAllInit(() => {
+  peers.start()
+})

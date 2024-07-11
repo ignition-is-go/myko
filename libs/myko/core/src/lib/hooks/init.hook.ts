@@ -85,6 +85,13 @@ export const fireInit = (itemType: string) => {
       hooks.get(key).forEach((cb) => cb())
     }
   })
+
+  if (isAllInit().done) {
+    allInitCallbacks.forEach((cb) => cb())
+    allInitCallbacks.clear()
+    initWatchers.clear()
+    hooks.clear()
+  }
 }
 
 /**
@@ -93,4 +100,10 @@ export const fireInit = (itemType: string) => {
  */
 export const beforeInit: (itemType: string) => void = (itemType) => {
   isRegistered.add(itemType)
+}
+
+const allInitCallbacks: Set<() => void> = new Set()
+
+export const onAllInit = (cb: () => void) => {
+  allInitCallbacks.add(cb)
 }

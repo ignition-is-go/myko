@@ -12,6 +12,7 @@ export class MykoLogger {
     names.set(name, {})
 
     if (name.length > longestName.get()) {
+      console.log('setting longest name', name)
       longestName.set(name.length)
     }
   }

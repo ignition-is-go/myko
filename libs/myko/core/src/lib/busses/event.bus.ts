@@ -401,10 +401,6 @@ export class EventBus extends AMykoEventBus {
       Reflect.set(event, 'sourceId', this.getServerId())
     }
 
-    if (event.itemType === 'BindingNode') {
-      console.log(event)
-    }
-
     this.subject$.next(event)
     return Promise.resolve()
   }

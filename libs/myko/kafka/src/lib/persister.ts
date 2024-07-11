@@ -69,7 +69,7 @@ export const getPersister: PersisterFactory = <
     conf,
     prodConf,
     consConf,
-    new MykoLogger('KafkaEntityPersister: ' + entity),
+    new MykoLogger(entity),
     server.id,
   )
 }

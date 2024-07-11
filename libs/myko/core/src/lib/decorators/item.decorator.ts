@@ -12,7 +12,7 @@ import {
   MYKO_ITEM_OWNS_MANY_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import { propertyDefaults, relationRegistry, repo } from '../registry'
+import { initRepo, propertyDefaults, relationRegistry } from '../registry'
 import type { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
@@ -121,9 +121,7 @@ export const MykoItem =
       })
     }
 
-    setTimeout(() => {
-      repo(withType)
-    })
+    initRepo(withType)
 
     return withType
   }
