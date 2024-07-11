@@ -5,151 +5,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Rship Server: Attach Local 9229",
-      "address": "localhost",
-      "port": 9229,
+      "type": "bun",
       "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Rship Server: Attach Local 9230",
-      "address": "localhost",
-      "port": 9230,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Rship Server: Attach Local 9231",
-      "address": "localhost",
-      "port": 9231,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Rship Server: Attach b0:9229",
-      "address": "10.0.1.150",
-      "port": 9229,
-      "localRoot": "${workspaceFolder}/apps/rship/server/dist",
-      "remoteRoot": "/usr/src/app"
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Rship Server: Attach b0:9230",
-      "remoteRoot": "/usr/src/app",
-      "address": "10.0.1.150",
-      "port": 9230
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Rship Server: Attach b0:9231",
-      "remoteRoot": "/usr/src/app",
-      "address": "10.0.1.150",
-      "port": 9231
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Rship Server: Attach engines:9229",
-      "address": "engine1",
-      "port": 9229,
-      "localRoot": "${workspaceFolder}/apps/rship/server/dist",
-      "remoteRoot": "/usr/src/app"
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Rship Server: Attach engines:9230",
-      "remoteRoot": "/usr/src/app",
-      "address": "engine1",
-      "port": 9230
-    },
-    {
-      "type": "node",
-      "request": "attach",
-      "name": "Rship Server: Attach engines:9231",
-      "remoteRoot": "/usr/src/app",
-      "address": "engine1",
-      "port": 9231
-    },
-    {
-      "name": "Attach AutoScheduler",
-      "address": "localhost",
-      "port": 9279,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Attach Rship Dirigera Exec",
-      "address": "localhost",
-      "port": 9239,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Attach Rship Pixera Exec",
-      "address": "localhost",
-      "port": 9249,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Attach Rship Ventuz Exec",
-      "address": "localhost",
-      "port": 9259,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Attach Rship Noise Exec",
-      "address": "localhost",
-      "port": 9269,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Attach TestBed",
-      "address": "localhost",
-      "port": 9339,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Attach Ableton",
-      "address": "localhost",
-      "port": 9449,
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node",
-      "restart": true
-    },
-    {
-      "name": "Node: Attach by Process ID",
-      "processId": "${command:PickProcess}",
-      "request": "attach",
-      "skipFiles": ["<node_internals>/**"],
-      "type": "node"
+      "name": "Attach Bun to Process",
+      "url": "ws://localhost:9229/vscode"
     },
     {
       "name": "Python: Current File",
@@ -158,17 +17,6 @@
       "program": "${file}",
       "console": "integratedTerminal",
       "justMyCode": true
-    },
-    {
-      "type": "node",
-      "request": "launch",
-      "name": "Debug Current Test File",
-      "autoAttachChildProcesses": true,
-      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
-      "program": "${workspaceRoot}/node_modules/vitest/vitest.mjs",
-      "args": ["run", "${relativeFile}"],
-      "smartStep": true,
-      "console": "integratedTerminal"
     }
   ]
 }

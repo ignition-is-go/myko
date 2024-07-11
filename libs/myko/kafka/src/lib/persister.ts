@@ -54,13 +54,10 @@ export const getPersister: PersisterFactory = <
     logLevel: logLevel.NOTHING,
   }
 
-  const prodConf = {
-    allowAutoTopicCreation: true,
-  }
+  const prodConf = {}
 
   const consConf = {
     groupId: server.id,
-    allowAutoTopicCreation: true,
   }
 
   return new KafkaEntityPersister<T>(
@@ -149,6 +146,22 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     beforeInit(entity)
 
     const kafka = new Kafka(this.config)
+
+    const admin = kafka.admin()
+
+    admin.createTopics({
+      topics: [
+        {
+          topic: entity,
+          numPartitions: 1,
+          replicationFactor: 3,
+          configEntries: [
+            { name: 'retention.ms', value: '-1' },
+            { name: 'cleanup.policy', value: 'compact' },
+          ],
+        },
+      ],
+    })
 
     this.cons = new KafkaTopicConsumer(
       kafka,

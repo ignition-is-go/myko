@@ -38,6 +38,7 @@ import {
   makeDel,
   ofItems,
   ofType,
+  onAllInit,
   queryBus,
   repo,
   repoName,
@@ -67,6 +68,21 @@ import {
 } from 'rxjs'
 import { getServer, getTx } from '../registry'
 import { PeerClientRegistry, peers } from '../registry/peer.registry'
+
+onAllInit(() => {
+  const server = getServer()
+
+  const prev = repo(Server).get({
+    address: server.address,
+    port: server.port,
+  })
+
+  for (const p of prev) {
+    eventBus.publishDel(p, 'server-start')
+  }
+
+  eventBus.publishSet(server, 'server-start')
+})
 
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
