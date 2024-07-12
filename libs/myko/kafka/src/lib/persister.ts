@@ -1,22 +1,22 @@
 import {
-  MEvent,
+  type ID,
+  type MEvent,
   MItem,
   MykoLogger,
   Persister,
-  PersisterFactory,
+  type PersisterFactory,
   beforeInit,
   fireInit,
   getHostId,
-  type ID,
 } from '@myko/core'
 import { unpack as decode } from 'msgpackr'
 
 import {
-  ConsumerConfig,
+  type ConsumerConfig,
   Kafka,
-  KafkaConfig,
-  Message,
-  ProducerConfig,
+  type KafkaConfig,
+  type Message,
+  type ProducerConfig,
   logLevel,
 } from 'kafkajs'
 import { Subject } from 'rxjs'
@@ -59,6 +59,8 @@ export const getPersister: PersisterFactory = <
   const consConf = {
     groupId: getHostId(),
   }
+
+  new MykoLogger(entity).info('Connecting Persister to ', opts.brokers)
 
   return new KafkaEntityPersister<T>(
     entity,
