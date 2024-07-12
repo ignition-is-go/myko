@@ -1,4 +1,5 @@
 import {
+  MykoLogger,
   Server,
   ServerEventLog,
   eventBus,
@@ -17,8 +18,6 @@ import { getAuth } from './auth.registry'
 export class PeerClientRegistry {
   private peers = new Map<string, WSMClient>()
   private peerEventListenerSubs = new Map<string, Subscription>()
-
-  constructor() {}
 
   private assertPeerEventListener(server: Server) {
     const key = makePeerKey(server)
@@ -113,6 +112,15 @@ export class PeerClientRegistry {
   }
 
   start() {
+    try {
+      getServer()
+    } catch (e) {
+      new MykoLogger('Peer Registry').info(
+        'Not a Gateway, Skipping Peer Registry',
+      )
+      return
+    }
+
     repo(Server)
       .watchFilter(
         (s) =>

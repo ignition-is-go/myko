@@ -25,6 +25,7 @@ import {
   MReportHandler,
   MSagaHandler,
   MykoCommandHandler,
+  MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
   MykoSaga,
@@ -71,6 +72,13 @@ import { getServer, getTx } from '../registry'
 import { PeerClientRegistry, peers } from '../registry/peer.registry'
 
 onAllInit(() => {
+  try {
+    getServer()
+  } catch (e) {
+    new MykoLogger('Gateway Handler').info('Not a Server, Skipping Purge')
+    return
+  }
+
   const server = getServer()
 
   const prev = repo(Server).get({

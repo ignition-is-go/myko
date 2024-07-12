@@ -6,6 +6,7 @@ import {
   PersisterFactory,
   beforeInit,
   fireInit,
+  getHostId,
   type ID,
 } from '@myko/core'
 import { unpack as decode } from 'msgpackr'
@@ -37,7 +38,6 @@ export const getPersister: PersisterFactory = <
   T extends MItem,
 >(
   entity,
-  server,
   options: KafkaPersisterOptions,
 ) => {
   const opts = {
@@ -57,7 +57,7 @@ export const getPersister: PersisterFactory = <
   const prodConf = {}
 
   const consConf = {
-    groupId: server.id,
+    groupId: getHostId(),
   }
 
   return new KafkaEntityPersister<T>(
@@ -67,7 +67,7 @@ export const getPersister: PersisterFactory = <
     prodConf,
     consConf,
     new MykoLogger(entity),
-    server.id,
+    getHostId(),
   )
 }
 

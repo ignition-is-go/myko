@@ -1,5 +1,4 @@
 import type { Observable } from 'rxjs'
-import type { Server } from '../modules'
 import type { MEvent, MItem } from '../types'
 
 export abstract class Persister<T extends MItem> {
@@ -10,6 +9,5 @@ export abstract class Persister<T extends MItem> {
 
 export type PersisterFactory = <O extends Record<string, any>, T extends MItem>(
   itemName: string,
-  server: Server,
   options?: O,
 ) => Persister<T>

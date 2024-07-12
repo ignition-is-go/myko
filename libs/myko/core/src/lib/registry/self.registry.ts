@@ -1,8 +1,11 @@
+import { v4 } from 'uuid'
 import type { Server } from '../modules'
+import type { ID } from '../types'
 
-let server: Server | null
+let hostId: ID | null = null
+let server: Server | null = null
 
-export const getServer = (): Server => {
+export const getServer = () => {
   if (!server) {
     throw new Error('Server not initialized')
   }
@@ -19,4 +22,12 @@ export const setServer = (s: Server) => {
 
 export const clearServer = () => {
   server = null
+}
+
+export const getHostId = () => {
+  if (!hostId) {
+    hostId = v4()
+  }
+
+  return hostId
 }

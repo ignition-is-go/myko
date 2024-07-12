@@ -5,7 +5,6 @@ import { MYKO_ITEM_TYPE } from '../constants'
 import type { PersisterFactory } from '../persisters'
 import type { MEvent, MItem, MItemConstructor, Stream } from '../types'
 import { relationRegistry } from './relation.registry'
-import { getServer } from './self.registry'
 
 const repos = new Map<string, Repo<MItem>>()
 const searchKeys = new Map<string, string[]>()
@@ -62,10 +61,7 @@ const createRepo = <T extends MItem>(
   itemName: string,
   options: RepoOptions<T>,
 ) => {
-  const persister = defaultOpts?.defaultPersisterFactory?.(
-    itemName,
-    getServer(),
-  )
+  const persister = defaultOpts?.defaultPersisterFactory?.(itemName)
 
   if (!persister) {
     needsPersister.push(itemName)

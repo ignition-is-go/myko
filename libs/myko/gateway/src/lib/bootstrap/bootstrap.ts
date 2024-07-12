@@ -17,54 +17,50 @@ import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
 
 export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
-  const {
-    defaultPersister,
-    port,
-    wsAdapter,
-    authService,
-    version,
-    address,
-    groupId,
-  } = args
-
-  const startString = `Listening: ${address}:${port} @ ${version}`
-  const border = ''.padEnd(startString.length, '=')
-
-  console.log(border)
-  console.log(startString)
-  console.log(border)
+  const { defaultPersister, version, groupId } = args
 
   const serverId = randomUUID()
 
-  const server = new Server({
-    address,
-    groupId,
-    id: serverId,
-    port: port,
-    startedAt: DateTime.utc().toISO(),
-    version: args.version,
-  })
+  if (args.ws) {
+    const { host, port, wsAdapter } = args.ws
+    const startString = `Listening: ${host}:${port} @ ${version}`
+    const border = ''.padEnd(startString.length, '=')
 
-  setServer(server)
+    console.log(border)
+    console.log(startString)
+    console.log(border)
 
-  setAuth(authService)
+    const server = new Server({
+      address: host,
+      groupId,
+      id: serverId,
+      port: port,
+      startedAt: DateTime.utc().toISO(),
+      version: args.version,
+    })
+
+    setServer(server)
+    const tx = new Subject<{ clientId: ID; data: WSMMessage }>()
+    const rx = new Subject<{ clientId: ID; data: WSMMessage }>()
+
+    rx.subscribe(handleMessage(tx))
+
+    setAdapterBusses({ tx, rx })
+
+    wsAdapter({
+      port,
+      rx,
+      tx,
+      serverId,
+    })
+
+    if (args.ws.authService) {
+      setAuth(args.ws.authService)
+    }
+  }
 
   setDefaultRepoOptions({
     persisterFactory: defaultPersister,
-  })
-
-  const tx = new Subject<{ clientId: ID; data: WSMMessage }>()
-  const rx = new Subject<{ clientId: ID; data: WSMMessage }>()
-
-  rx.subscribe(handleMessage(tx))
-
-  setAdapterBusses({ tx, rx })
-
-  wsAdapter({
-    port,
-    rx,
-    tx,
-    serverId,
   })
 
   watchInit((ent, all, init, uninit) => {
