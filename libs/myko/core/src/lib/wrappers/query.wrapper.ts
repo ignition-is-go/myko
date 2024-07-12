@@ -1,3 +1,4 @@
+import 'reflect-metadata'
 import { MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../constants'
 import type { MQuery } from '../types'
 

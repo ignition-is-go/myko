@@ -2,15 +2,13 @@ import { reportBus } from '../busses'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type { MReport, MReportHandler } from '../types/report'
 
-/**
- * Decorator for defining a Myko report.
- * @param {string} reportId - The unique identifier for the report.
- * @returns {Function} - The decorator function.
- */
 export const MykoReport =
-  <R>(reportId: string) =>
+  <R>() =>
   <T extends MReport<R>>(target: new (...args: any[]) => T): any => {
     const original: any = target
+    const reportId = Object.getOwnPropertyDescriptors(original)['name']
+      .value as string
+
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_REPORT_ID_KEY, reportId, typed)

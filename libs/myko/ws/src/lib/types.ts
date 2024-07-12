@@ -112,7 +112,7 @@ export type WSMMessage =
   | WSMReportCancel
   | WSPingEvent
 
-@MykoCommand('client:send-command')
+@MykoCommand()
 export class ClientCommand extends MCommand {
   constructor(
     readonly command: MWrappedCommand,
@@ -122,7 +122,7 @@ export class ClientCommand extends MCommand {
   }
 }
 
-@MykoQuery('peer:send-query', MItem)
+@MykoQuery(MItem)
 export class PeerQuery extends MQuery<MItem> {
   constructor(
     readonly query: MQuery,
@@ -132,7 +132,7 @@ export class PeerQuery extends MQuery<MItem> {
   }
 }
 
-@MykoCommand('peer:send-command')
+@MykoCommand()
 export class PeerCommand extends MCommand {
   constructor(
     readonly command: MCommand,

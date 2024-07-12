@@ -1,7 +1,7 @@
 import { MykoQuery } from '../decorators'
-import { type ID, MItem, MQuery } from '../types'
+import { MItem, MQuery, type ID } from '../types'
 
-@MykoQuery('item.getByTypeAndId', MItem)
+@MykoQuery(MItem)
 export class GetItemsByTypeAndIds extends MQuery<MItem> {
   constructor(
     public type: string,

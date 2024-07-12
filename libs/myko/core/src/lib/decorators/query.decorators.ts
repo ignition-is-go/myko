@@ -20,19 +20,20 @@ import type {
  * @returns {Function} - The decorator function.
  */
 export const MykoQuery: <U extends MItem<IMItem>>(
-  queryId: string,
   item: new (...args: any[]) => U,
 ) => <T extends MQuery<MItem<IMItem>>>(target: MQueryConstructor<T>) => any =
-  <U extends MItem>(queryId: string, item: new (...args: any[]) => U) =>
+  <U extends MItem>(item: new (...args: any[]) => U) =>
   <T extends MQuery>(target: MQueryConstructor<T>) => {
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
     const original: any = target
 
-    const queryName = Object.getOwnPropertyDescriptors(original)?.name.value
+    const queryName = Object.getOwnPropertyDescriptors(original)?.['name'].value
 
     const paramtypes =
       Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
       []
+
+    const queryId = queryName
 
     addQueryDoc(
       {

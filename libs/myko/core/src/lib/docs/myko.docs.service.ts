@@ -1,16 +1,19 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { groupBy } from 'ramda'
-import type { MykoLogger } from '../logger'
+import { MykoLogger } from '../logger'
 import {
-  CommandDocInfo,
-  ItemDocInfo,
-  PropDocInfo,
-  QueryDocInfo,
   docRegistry,
+  type CommandDocInfo,
+  type ItemDocInfo,
+  type PropDocInfo,
+  type QueryDocInfo,
 } from '../registry'
 
 export class MykoDocsService {
-  constructor(private logger: MykoLogger) {}
+  private logger: MykoLogger
+  constructor() {
+    this.logger = new MykoLogger('DocsService')
+  }
 
   async writeDocs(path: string) {
     this.logger.info('Writing Myko Documentation')

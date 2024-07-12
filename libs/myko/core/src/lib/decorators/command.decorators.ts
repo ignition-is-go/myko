@@ -13,18 +13,19 @@ import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
  * @param {string} commandId - The unique identifier for the command.
  * @returns {Function} - The decorator function.
  */
-export const MykoCommand: (
-  commandId: string,
-) => <T extends MCommand<MCommandResponse<T>>>(
+export const MykoCommand: () => <T extends MCommand<MCommandResponse<T>>>(
   target: new (...args: any[]) => T,
 ) => any =
-  (commandId: string) =>
+  () =>
   <T extends MCommand<MCommandResponse<T>>>(
     target: new (...args: any[]) => T,
   ) => {
     const original: any = target
 
-    const commandName = Object.getOwnPropertyDescriptors(original)?.name.value
+    const commandName =
+      Object.getOwnPropertyDescriptors(original)?.['name'].value
+
+    const commandId = commandName
 
     const paramtypes =
       Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??

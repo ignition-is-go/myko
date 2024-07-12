@@ -1,12 +1,13 @@
 import {
-  ID,
   MykoLogger,
   Server,
   eventBus,
   setDefaultRepoOptions,
   setServer,
   watchInit,
+  type ID,
 } from '@myko/core'
+import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import type { WSMMessage } from '@myko/ws'
 import { randomUUID } from 'crypto'
 import { DateTime } from 'luxon'
@@ -29,6 +30,12 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
     console.log(border)
     console.log(startString)
     console.log(border)
+
+    const doc = new MykoDocsService()
+
+    if (args.docPath) {
+      doc.writeDocs(args.docPath)
+    }
 
     const server = new Server({
       address: host,

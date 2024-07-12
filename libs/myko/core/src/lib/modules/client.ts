@@ -9,31 +9,31 @@ import { Server } from './server'
 })
 export class Client extends MItem<Client> {
   @belongsTo(Server)
-  readonly serverId!: string
+  readonly serverId: string
 }
 
-@MykoQuery('clients:getByIds', Client)
+@MykoQuery(Client)
 export class GetClientsByIds extends MQuery<Client> {
   constructor(public ids: string[]) {
     super()
   }
 }
 
-@MykoQuery('clients:getByQuery', Client)
+@MykoQuery(Client)
 export class GetClientsByQuery extends MQuery<Client> {
   constructor(public partial: Partial<Client>) {
     super()
   }
 }
 
-@MykoCommand('clients:deleteByServerId')
+@MykoCommand()
 export class DeleteClientsByServerId extends MCommand {
   constructor(public serverId: string) {
     super()
   }
 }
 
-@MykoCommand('client:setId')
+@MykoCommand()
 export class SetClientId extends MCommand {
   constructor(readonly clientId: string) {
     super()

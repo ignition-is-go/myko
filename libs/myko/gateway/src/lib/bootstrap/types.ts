@@ -13,4 +13,5 @@ export type MykoGatewayBootstrapOptions = {
     authService?: MykoAuthService
   }
   modules: any[]
+  docPath?: string
 }
