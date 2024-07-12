@@ -1,16 +1,16 @@
 import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
+  type ID,
   makeDel,
   makeSet,
-  MEvent,
+  type MEvent,
   MEventType,
   MItem,
-  MSaga,
+  type MSaga,
   recalculateHash,
-  Type,
-  type ID,
+  type Type,
 } from '../types'
-import { commandBus, type AMykoCommandBus } from './command.bus'
+import { type AMykoCommandBus, commandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'

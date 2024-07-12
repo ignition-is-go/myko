@@ -20,6 +20,7 @@ import {
   logLevel,
 } from 'kafkajs'
 import { Subject } from 'rxjs'
+import { makeSafeTopic } from './util/helpers'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
 
@@ -80,8 +81,6 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     protected serverId: ID,
   ) {
     this.output = new Subject<MEvent<T>>()
-
-    this.init()
   }
 
   public output: Subject<MEvent<T>>
@@ -122,8 +121,6 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
     this.output.next(event)
   }
 
-  async init() {}
-
   abstract persist(event: MEvent<T>): void
 
   protected onInit() {
@@ -146,15 +143,18 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   ) {
     super(entity, options, serverId)
     beforeInit(entity)
+    this.init(entity)
+  }
 
+  async init(entity: string) {
     const kafka = new Kafka(this.config)
 
     const admin = kafka.admin()
 
-    admin.createTopics({
+    await admin.createTopics({
       topics: [
         {
-          topic: entity,
+          topic: makeSafeTopic(entity),
           numPartitions: 1,
           replicationFactor: 3,
           configEntries: [
@@ -181,8 +181,6 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       { ...this.config, ...this.prodConfig },
       (msg) => this.logger.info(this.entity, 'KafkaTopicProducer', msg),
     )
-
-    this.init()
   }
 
   persist(event: MEvent<T>): void {

@@ -1,9 +1,9 @@
 import { DateTime } from 'luxon'
-import { MonoTypeOperatorFunction, filter } from 'rxjs'
+import { type MonoTypeOperatorFunction, filter } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { MykoItem, MykoQuery, doc } from '../decorators'
 import type { ID } from './base'
-import { IMItem, MItem } from './item'
+import { type IMItem, MItem } from './item'
 import { MQuery } from './query'
 
 /**

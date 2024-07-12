@@ -1,5 +1,5 @@
 import { filter } from 'rxjs'
-import { Repo, RepoOptions } from '../aggregates/repo'
+import { Repo, type RepoOptions } from '../aggregates/repo'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { PersisterFactory } from '../persisters'
@@ -54,7 +54,8 @@ export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
     return repos.get(itemName) as unknown as Repo<T>
   }
 
-  throw new Error('Repo not found')
+  const err = `Repo not found for ${itemName}`
+  throw new Error(err)
 }
 
 const createRepo = <T extends MItem>(

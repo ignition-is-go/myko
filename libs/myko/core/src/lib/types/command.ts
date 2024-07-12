@@ -1,4 +1,4 @@
-import { OperatorFunction, filter } from 'rxjs'
+import { type OperatorFunction, filter } from 'rxjs'
 
 import { DateTime } from 'luxon'
 import { v4 as uuid } from 'uuid'

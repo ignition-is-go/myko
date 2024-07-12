@@ -1,5 +1,5 @@
 import type { ID } from '@myko/core'
-import { WSMCommandError } from '../types'
+import { type WSMCommandError } from '../types'
 
 export class MykoCommandError extends Error implements WSMCommandError {
   constructor(

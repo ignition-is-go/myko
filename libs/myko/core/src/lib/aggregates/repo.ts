@@ -12,12 +12,12 @@ import {
   tap,
 } from 'rxjs'
 import {
-  DeepPartial,
-  MEvent,
   MEventType,
   MItem,
   addMissingHash,
+  type DeepPartial,
   type ID,
+  type MEvent,
 } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
