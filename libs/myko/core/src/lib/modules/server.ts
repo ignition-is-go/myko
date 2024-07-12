@@ -1,11 +1,11 @@
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
 import {
-  MEvent,
   MItem,
   MQuery,
   MReport,
   getItemName,
   type ID,
+  type MEvent,
   type MItemConstructor,
 } from '../types'
 
@@ -14,15 +14,15 @@ import {
 })
 export class Server extends MItem<Server> {
   @doc()
-  version: string
+  version!: string
   @doc('xxx.xxx.xxx.xxx, where it can be reached publically')
-  address: string
+  address!: string
   @doc('The port the server is listening on')
-  port: number
+  port!: number
   @doc('ISO DateTime string')
-  startedAt: string // ISO DateTime
+  startedAt!: string // ISO DateTime
   @doc("The server's group id")
-  groupId: string
+  groupId!: string
 }
 
 @MykoReport('server:eventlog')
