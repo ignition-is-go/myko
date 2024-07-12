@@ -1,23 +1,23 @@
 import {
-  type ID,
-  type MEvent,
   MItem,
   MykoLogger,
   Persister,
-  type PersisterFactory,
   beforeInit,
   fireInit,
   getHostId,
+  type ID,
+  type MEvent,
+  type PersisterFactory,
 } from '@myko/core'
 import { unpack as decode } from 'msgpackr'
 
 import {
-  type ConsumerConfig,
   Kafka,
+  logLevel,
+  type ConsumerConfig,
   type KafkaConfig,
   type Message,
   type ProducerConfig,
-  logLevel,
 } from 'kafkajs'
 import { Subject } from 'rxjs'
 import { makeSafeTopic } from './util/helpers'
@@ -60,8 +60,6 @@ export const getPersister: PersisterFactory = <
   const consConf = {
     groupId: getHostId(),
   }
-
-  new MykoLogger(entity).info('Connecting Persister to ', opts.brokers)
 
   return new KafkaEntityPersister<T>(
     entity,
@@ -128,6 +126,21 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
   }
 }
 
+const kafkaCache = new Map<string, Kafka>()
+
+const getKafka = (options: KafkaConfig) => {
+  const key = JSON.stringify(options)
+
+  if (!kafkaCache.has(key)) {
+    new MykoLogger('Kafka Persister').info(
+      'Connecting Kafka at',
+      options.brokers,
+    )
+    kafkaCache.set(key, new Kafka(options))
+  }
+  return kafkaCache.get(key) as Kafka
+}
+
 export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   cons: KafkaTopicConsumer
   prod: KafkaTopicProducer
@@ -147,7 +160,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   }
 
   async init(entity: string) {
-    const kafka = new Kafka(this.config)
+    const kafka = getKafka(this.config)
 
     const admin = kafka.admin()
 
