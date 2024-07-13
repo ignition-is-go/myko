@@ -11,15 +11,13 @@ import {
   switchMap,
   tap,
 } from 'rxjs'
-import { MYKO_ITEM_TYPE } from '../constants'
-import { getFilters, getIds, watchIds } from '../registry'
 import {
-  DeepPartial,
-  MEvent,
   MEventType,
   MItem,
   addMissingHash,
+  type DeepPartial,
   type ID,
+  type MEvent,
 } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Store } from './store'
@@ -51,23 +49,17 @@ export interface RepoOptions<T extends MItem> {
  *
  * @template T - The type of items stored in the repository.
  */
-export abstract class Repo<T extends MItem> {
+export class Repo<T extends MItem> {
   private readonly store: Store<T>
   private subject: Subject<MEvent<T>>
-  private entity: string
   private search: flexsearch.Index
   private searchObs: Subject<flexsearch.Index>
 
   constructor(
-    ent: new (...args: any[]) => T,
+    private entity: string,
     private readonly options?: RepoOptions<T>,
   ) {
     this.search = new flexsearch.Index({ tokenize: 'forward' })
-    this.entity = Reflect.getMetadata(MYKO_ITEM_TYPE, ent)
-
-    getIds.set(this.entity, this.getIds.bind(this))
-    getFilters.set(this.entity, this.getFilter.bind(this))
-    watchIds.set(this.entity, this.watchIds.bind(this))
 
     this.store = new Store({ enableLogs: options?.enableLogs })
 

@@ -1,9 +1,9 @@
 import { DateTime } from 'luxon'
-import { MonoTypeOperatorFunction, filter } from 'rxjs'
+import { filter, type MonoTypeOperatorFunction } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { MykoItem, MykoQuery, doc } from '../decorators'
 import type { ID } from './base'
-import { IMItem, MItem } from './item'
+import { MItem, type IMItem } from './item'
 import { MQuery } from './query'
 
 /**
@@ -142,7 +142,7 @@ export class EventContainer extends MItem<EventContainer> {
 /**
  * Represents a query to get event logs.
  */
-@MykoQuery('event-log:get-events', EventContainer)
+@MykoQuery(EventContainer)
 export class GetEventLog extends MQuery<EventContainer> {
   /**
    * The time parameter for the query.

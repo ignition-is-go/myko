@@ -2,6 +2,11 @@ export const relationRegistry: Set<Relation> = new Set<Relation>()
 
 export type Relation =
   | {
+      type: 'searchable'
+      localType: string
+      localKey: string
+    }
+  | {
       type: 'belongs-to'
       foreignKey: 'id'
       foreignType: string

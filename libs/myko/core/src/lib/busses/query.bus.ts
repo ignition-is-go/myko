@@ -1,15 +1,14 @@
-import 'reflect-metadata'
-import { firstValueFrom } from 'rxjs'
+import { firstValueFrom, map, shareReplay } from 'rxjs'
+import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import type {
+  MItem,
   MLiveQueryResult,
   MQuery,
   MQueryHandler,
+  MQueryHandlerConstructor,
   MQueryResult,
-  Type,
 } from '../types'
 import { ObservableBus } from './observable.bus'
-
-export type MykoQueryHandlerType = Type<MQueryHandler<MQuery>>
 
 /**
  * Abstract class representing a query bus in the Myko framework.
@@ -17,7 +16,7 @@ export type MykoQueryHandlerType = Type<MQueryHandler<MQuery>>
  * @template MQuery The type of the query.
  */
 export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
-  constructor() {
+  constructor(private readonly options?: { disableCache?: boolean }) {
     super()
   }
 
@@ -36,7 +35,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * Registers multiple query handlers.
    * @param handlers An array of query handlers to register.
    */
-  register(handlers: MykoQueryHandlerType[]) {
+  register(handlers: MQueryHandlerConstructor<MQuery<MItem>>[]) {
     handlers.forEach((h) => this.registerHandler(h))
   }
 
@@ -46,7 +45,42 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * @returns The live query result.
    * @template T The type of the query.
    */
-  abstract watch<T extends MQuery>(query: T): MLiveQueryResult<T>
+  cache = new Map<string, MLiveQueryResult<MQuery>>()
+
+  watch<T extends MQuery>(query: T): MLiveQueryResult<T> {
+    const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
+    const handler = this.handlers.get(queryId)
+
+    const err = `Handler not Provided for ${query.constructor.name} [${queryId}]. Check your module's providers array, and that the command is decorated with @MykoQuery(id: string)`
+
+    if (!handler) {
+      console.error(err)
+      throw new Error(err)
+    }
+
+    let clone: MQuery = {
+      ...query,
+      tx: undefined,
+    }
+
+    const hash = JSON.stringify(clone)
+
+    const cacheKey = `${queryId}:${hash}`
+
+    if (this.cache.has(cacheKey) && !this.options?.disableCache) {
+      return this.cache.get(cacheKey) as MLiveQueryResult<T>
+    }
+
+    const obs = handler.execute(query).pipe(
+      shareReplay(1),
+      // clone the array so subsequent mutations dont ruin it for everyone else
+      map((x) => x.slice()),
+    ) as MLiveQueryResult<T>
+
+    this.cache.set(cacheKey, obs)
+
+    return obs
+  }
 
   /**
    * Executes a query and returns the query result.
@@ -63,5 +97,17 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * Registers a query handler.
    * @param handler The query handler to register.
    */
-  protected abstract registerHandler(handler: MykoQueryHandlerType): void
+  abstract registerHandler(
+    handler: MQueryHandlerConstructor<MQuery<MItem>>,
+  ): void
 }
+
+export class MQueryBus extends AMykoQueryBus {
+  registerHandler(handler: MQueryHandlerConstructor<MQuery<MItem>>): void {
+    const queryId = Reflect.getMetadata(MYKO_HANDLER_QUERY_ID_KEY, handler)
+
+    this.bind(new handler(), queryId)
+  }
+}
+
+export const queryBus = new MQueryBus()

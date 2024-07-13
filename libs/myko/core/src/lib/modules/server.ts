@@ -1,6 +1,13 @@
-import { Repo } from '../aggregates'
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
-import { type ID, MEvent, MItem, MQuery, MReport } from '../types'
+import {
+  MItem,
+  MQuery,
+  MReport,
+  getItemName,
+  type ID,
+  type MEvent,
+  type MItemConstructor,
+} from '../types'
 
 @MykoItem({
   doc: 'A Myko Server ',
@@ -18,77 +25,90 @@ export class Server extends MItem<Server> {
   groupId: string
 }
 
-@MykoReport('server:eventlog')
+@MykoReport()
 export class ServerEventLog extends MReport<MEvent> {
   constructor() {
     super()
   }
 }
 
-@MykoQuery('servers:getConnectedServer', Server)
+@MykoQuery(Server)
 export class GetConnectedServer extends MQuery<Server> {
   constructor() {
     super()
   }
 }
 
-@MykoQuery('servers:getPeerServers', Server)
+@MykoQuery(Server)
 export class GetPeerServers extends MQuery<Server> {
   constructor() {
     super()
   }
 }
 
-@MykoQuery('servers:getByClientIds', Server)
+@MykoQuery(Server)
 export class GetServersByClientIds extends MQuery<Server> {
   constructor(public clientIds: string[]) {
     super()
   }
 }
 
-@MykoQuery('servers:getByQuery', Server)
+@MykoQuery(Server)
 export class GetServersByQuery extends MQuery<Server> {
   constructor(public query: Partial<Server>) {
     super()
   }
 }
 
-@MykoQuery('servers:get', Server)
+@MykoQuery(Server)
 export class GetServers extends MQuery<Server> {}
 
-@MykoReport('servers:groupLeader')
+@MykoReport()
 export class GroupLeader extends MReport<Server> {
   constructor(readonly groupId: ID) {
     super()
   }
 }
 
-@MykoReport('server:isLeader')
+@MykoReport()
 export class IsLeader extends MReport<boolean> {
   constructor(readonly serverId: ID) {
     super()
   }
 }
 
-@MykoReport('server:connectedToLeader')
+@MykoReport()
 export class ConnectedToLeader extends MReport<boolean> {
   constructor() {
     super()
   }
 }
 
-@MykoReport('peer:alive')
+@MykoReport()
 export class PeerAlive extends MReport<number | false> {
   constructor(readonly peerId: ID) {
     super()
   }
 }
 
-@MykoReport('peer:last-seen')
+@MykoReport()
 export class PeerLastSeen extends MReport<string> {
   constructor(readonly peerId: ID) {
     super()
   }
 }
 
-export class ServerRepo extends Repo<Server> {}
+@MykoReport()
+export class EntitySearch<T extends MItem> extends MReport<T[]> {
+  readonly entityType: string
+  constructor(
+    readonly query: string,
+    item: MItemConstructor<T>,
+    readonly opts?: {
+      showAllOnEmpty?: boolean
+    },
+  ) {
+    super()
+    this.entityType = getItemName(item)
+  }
+}

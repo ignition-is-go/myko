@@ -1,5 +1,5 @@
-import 'reflect-metadata'
-import { firstValueFrom } from 'rxjs'
+import { firstValueFrom, map, shareReplay } from 'rxjs'
+import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type {
   MLiveReportResult,
   MReport,
@@ -16,7 +16,9 @@ export type MykoReportHandlerType = Type<MReportHandler<MReport<unknown>>>
  * @template T - The type of report.
  */
 export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
-  constructor() {
+  constructor(
+    private options: { disableCache?: boolean } = { disableCache: false },
+  ) {
     super()
   }
 
@@ -47,7 +49,48 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    * @param report - The report to watch.
    * @returns The live report result.
    */
-  abstract watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T>
+  cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
+
+  watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T> {
+    const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
+    const handler = this.handlers.get(reportId)
+
+    const err = `Handler not Provided for ${report.constructor.name} [${reportId}]. Check your module's providers array, and that the command is decorated with @MykoReport(id: string)`
+
+    if (!handler) {
+      console.error(err)
+      console.log(this.handlers)
+      throw new Error(err)
+    }
+
+    const clone: MReport<unknown> = {
+      ...report,
+      tx: undefined,
+    }
+
+    const hash = JSON.stringify(clone)
+
+    const txKey = `${reportId}:${report.tx}`
+    const cacheKey = `${reportId}:${hash}`
+
+    if (this.cache.has(cacheKey) && !this.options?.disableCache) {
+      return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
+    }
+
+    const obs = handler.execute(report).pipe(
+      shareReplay(1),
+      map((x) => {
+        // clone the object
+        if (x instanceof Array) return x.slice()
+        if (x instanceof Object) return { ...x }
+        return x
+      }),
+    ) as MLiveReportResult<T>
+
+    this.cache.set(cacheKey, obs)
+
+    return obs
+  }
 
   /**
    * Executes a report and returns the report result.
@@ -64,3 +107,12 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    */
   protected abstract registerHandler(handler: MykoReportHandlerType): void
 }
+
+export class MReportBus extends AMykoReportBus {
+  registerHandler(handler: MykoReportHandlerType): void {
+    const reportId = Reflect.getMetadata(MYKO_HANDLER_REPORT_ID_KEY, handler)
+    this.bind(new handler(), reportId)
+  }
+}
+
+export const reportBus = new MReportBus()

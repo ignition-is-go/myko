@@ -1,3 +1,4 @@
+import { queryBus } from '../busses'
 import {
   MYKO_HANDLER_QUERY_ID_KEY,
   MYKO_ITEM_TYPE,
@@ -5,7 +6,13 @@ import {
   MYKO_QUERY_ITEM_TYPE_KEY,
 } from '../constants'
 import { addQueryDoc } from '../registry'
-import type { IMItem, MItem, MQuery, MQueryHandler } from '../types'
+import type {
+  IMItem,
+  MItem,
+  MQuery,
+  MQueryConstructor,
+  MQueryHandlerConstructor,
+} from '../types'
 
 /**
  * Decorator for defining a Myko query.
@@ -13,21 +20,20 @@ import type { IMItem, MItem, MQuery, MQueryHandler } from '../types'
  * @returns {Function} - The decorator function.
  */
 export const MykoQuery: <U extends MItem<IMItem>>(
-  queryId: string,
   item: new (...args: any[]) => U,
-) => <T extends MQuery<MItem<IMItem>>>(
-  target: new (...args: any[]) => T,
-) => any =
-  <U extends MItem>(queryId: string, item: new (...args: any[]) => U) =>
-  <T extends MQuery>(target: new (...args: any[]) => T) => {
+) => <T extends MQuery<MItem<IMItem>>>(target: MQueryConstructor<T>) => any =
+  <U extends MItem>(item: new (...args: any[]) => U) =>
+  <T extends MQuery>(target: MQueryConstructor<T>) => {
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
     const original: any = target
 
-    const queryName = Object.getOwnPropertyDescriptors(original)?.name.value
+    const queryName = Object.getOwnPropertyDescriptors(original)?.['name'].value
 
     const paramtypes =
       Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
       []
+
+    const queryId = queryName
 
     addQueryDoc(
       {
@@ -55,14 +61,18 @@ export const MykoQuery: <U extends MItem<IMItem>>(
   }
 
 export const MykoQueryHandler: <T extends MQuery<MItem<IMItem>>>(
-  command: new (...args: any[]) => T,
-) => (target: new (...args: any[]) => MQueryHandler<T>) => void = <
-  T extends MQuery,
->(
-  command: new (...args: any[]) => T,
+  query: MQueryConstructor<T>,
+) => (handlerClass: MQueryHandlerConstructor<T>) => void = <T extends MQuery>(
+  query: MQueryConstructor<T>,
 ) => {
-  return (target: new (...args: any[]) => MQueryHandler<T>) => {
-    const commandId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, command)
-    Reflect.defineMetadata(MYKO_HANDLER_QUERY_ID_KEY, commandId, target)
+  const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
+
+  if (!queryId) {
+    throw new Error('queryId is undefined')
+  }
+
+  return (target: MQueryHandlerConstructor<T>) => {
+    Reflect.defineMetadata(MYKO_HANDLER_QUERY_ID_KEY, queryId, target)
+    queryBus.registerHandler(target)
   }
 }

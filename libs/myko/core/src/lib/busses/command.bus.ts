@@ -1,4 +1,3 @@
-import 'reflect-metadata'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 import type {
   MCommand,
@@ -76,3 +75,16 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
    */
   protected abstract registerHandler(handler: MCommandHandlerType): void
 }
+
+export class MCommandBus extends AMykoCommandBus {
+  constructor() {
+    super()
+  }
+
+  protected registerHandler(handler: MCommandHandlerType): void {
+    const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, handler)
+    this.bind(new handler(), commandId)
+  }
+}
+
+export const commandBus = new MCommandBus()

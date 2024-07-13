@@ -5,15 +5,15 @@
  * The `ownsMany`, `belongsTo`, `defaultValue`, and `ensureFor` decorators are property decorators
  * that add specific metadata to the decorated properties.
  */
-import 'reflect-metadata'
 import {
   MYKO_ITEM_BELONGS_TO_KEY,
   MYKO_ITEM_DEFAULT_VALUE_KEY,
   MYKO_ITEM_ENSURE_KEY,
   MYKO_ITEM_OWNS_MANY_KEY,
+  MYKO_ITEM_SEARCH_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import { propertyDefaults, relationRegistry } from '../registry'
+import { initRepo, propertyDefaults, relationRegistry } from '../registry'
 import type { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
@@ -60,6 +60,15 @@ export const MykoItem =
     const metaKeys = Reflect.getMetadataKeys(original)
 
     metaKeys.forEach((key) => {
+      if (key.startsWith(MYKO_ITEM_SEARCH_KEY)) {
+        const propertyKey = decodeSearchKey(key)
+        relationRegistry.add({
+          type: 'searchable',
+          localType: itemType,
+          localKey: propertyKey,
+        })
+      }
+
       if (key.startsWith(MYKO_ITEM_BELONGS_TO_KEY)) {
         // belongs to
         const propertyKey = decodeDepkey(key)
@@ -121,6 +130,8 @@ export const MykoItem =
         localType: itemType,
       })
     }
+
+    initRepo(withType)
 
     return withType
   }
@@ -205,6 +216,18 @@ export const ensureFor = (
   }
 }
 
+export const searchable = (): PropertyDecorator => {
+  return (target: object, propertyKey: string | symbol) => {
+    doc(`Searchable`)(target, propertyKey)
+
+    Reflect.defineMetadata(
+      makeSearchKey(propertyKey.toString()),
+      true,
+      target.constructor,
+    )
+  }
+}
+
 const makeOwnsKey = (propertyKey: string): string =>
   `${MYKO_ITEM_OWNS_MANY_KEY}:${propertyKey}`
 
@@ -234,5 +257,13 @@ const makeDefaultValueKey = (propertyKey: string): string =>
 
 const decodeDefaultValueKey = (DefaultValueKey: string): string => {
   const [_, propertyKey] = DefaultValueKey.split(':')
+  return propertyKey
+}
+
+const makeSearchKey = (propertyKey: string): string =>
+  `${MYKO_ITEM_SEARCH_KEY}:${propertyKey}`
+
+const decodeSearchKey = (SearchKey: string): string => {
+  const [_, propertyKey] = SearchKey.split(':')
   return propertyKey
 }

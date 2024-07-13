@@ -1,4 +1,3 @@
-import { Repo } from '../aggregates'
 import { MykoCommand, MykoItem, MykoQuery, belongsTo } from '../decorators'
 import { MCommand } from '../types'
 import { MItem } from '../types/item'
@@ -13,32 +12,30 @@ export class Client extends MItem<Client> {
   readonly serverId: string
 }
 
-@MykoQuery('clients:getByIds', Client)
+@MykoQuery(Client)
 export class GetClientsByIds extends MQuery<Client> {
   constructor(public ids: string[]) {
     super()
   }
 }
 
-@MykoQuery('clients:getByQuery', Client)
+@MykoQuery(Client)
 export class GetClientsByQuery extends MQuery<Client> {
   constructor(public partial: Partial<Client>) {
     super()
   }
 }
 
-@MykoCommand('clients:deleteByServerId')
+@MykoCommand()
 export class DeleteClientsByServerId extends MCommand {
   constructor(public serverId: string) {
     super()
   }
 }
 
-@MykoCommand('client:setId')
+@MykoCommand()
 export class SetClientId extends MCommand {
   constructor(readonly clientId: string) {
     super()
   }
 }
-
-export class ClientRepo extends Repo<Client> {}

@@ -1,15 +1,16 @@
 import {
-  type ID,
+  Client,
   MCommand,
-  MEvent,
   MItem,
   MQuery,
-  type MWrappedCommand,
-  MWrappedItem,
-  MWrappedQuery,
-  MWrappedReport,
   MykoCommand,
   MykoQuery,
+  type ID,
+  type MEvent,
+  type MWrappedCommand,
+  type MWrappedItem,
+  type MWrappedQuery,
+  type MWrappedReport,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'
@@ -111,19 +112,17 @@ export type WSMMessage =
   | WSMReportCancel
   | WSPingEvent
 
-@MykoCommand('client:send-command')
+@MykoCommand()
 export class ClientCommand extends MCommand {
-  readonly command: MWrappedCommand
   constructor(
-    command: MWrappedCommand,
-    readonly clientId: ID,
+    readonly command: MWrappedCommand,
+    readonly client: Client,
   ) {
     super()
-    this.command = command
   }
 }
 
-@MykoQuery('peer:send-query', MItem)
+@MykoQuery(MItem)
 export class PeerQuery extends MQuery<MItem> {
   constructor(
     readonly query: MQuery,
@@ -133,7 +132,7 @@ export class PeerQuery extends MQuery<MItem> {
   }
 }
 
-@MykoCommand('peer:send-command')
+@MykoCommand()
 export class PeerCommand extends MCommand {
   constructor(
     readonly command: MCommand,

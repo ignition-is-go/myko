@@ -1,13 +1,13 @@
 import {
   MCommand,
-  MEvent,
   MQuery,
   MReport,
-  MWrappedCommand,
   wrapCommand,
   wrapQuery,
   wrapReport,
   type ID,
+  type MEvent,
+  type MWrappedCommand,
 } from '@myko/core'
 import {
   MCOMMAND_EVENT,
@@ -18,14 +18,14 @@ import {
   MREPORT_CANCEL,
   MREPORT_EVENT,
   MREPORT_RESPONSE_EVENT,
-  WSMCommand,
-  WSMCommandResponse,
-  WSMEvent,
-  WSMQuery,
-  WSMQueryCancel,
-  WSMReport,
-  WSMReportCancel,
-  WSMReportResponse,
+  type WSMCommand,
+  type WSMCommandResponse,
+  type WSMEvent,
+  type WSMQuery,
+  type WSMQueryCancel,
+  type WSMReport,
+  type WSMReportCancel,
+  type WSMReportResponse,
 } from './types'
 
 export const wrapQueryWS = (query: MQuery): WSMQuery => ({
