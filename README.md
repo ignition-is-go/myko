@@ -3,9 +3,11 @@
 <div style="text-align: center;">
   <img src="assets/icons/rocketship.png" alt="Logo" width="100" height="100">
   <br>
-  <img src="https://github.com/ignition-is-go/rship/actions/workflows/release.yml/badge.svg?branch=canary" alt="Canary">
-  <img src="https://github.com/ignition-is-go/rship/actions/workflows/release.yml/badge.svg?branch=alpha" alt="Alpha">
 </div>
+
+#### Status 
+[![Linux Publish (Docker, Cross-Platform)](https://github.com/ignition-is-go/rship/actions/workflows/pub-linux.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-linux.yml)     
+[![Build and Publish Windows and MacOS](https://github.com/ignition-is-go/rship/actions/workflows/pub-win-mac.yml/badge.svg?branch=dev)](https://github.com/ignition-is-go/rship/actions/workflows/pub-win-mac.yml)
 
 ## Realtime Reactive Event Relationships
 
