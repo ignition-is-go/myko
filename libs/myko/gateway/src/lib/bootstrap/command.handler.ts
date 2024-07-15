@@ -1,16 +1,19 @@
 import {
   commandBus,
+  MykoCommandError,
+  MykoLogger,
   unwrapCommand,
   type ID,
   type MCommand,
   type MWrappedCommand,
 } from '@myko/core'
 import {
-  MykoCommandError,
+  wrapCommandErrorWS,
   wrapCommandResponseWS,
   type WSMMessage,
 } from '@myko/ws'
 import type { Subject } from 'rxjs'
+import { CommandNotAuthorized } from '../exceptions'
 import { getAuth } from '../registry'
 
 export const handleCommand = async (
@@ -26,7 +29,7 @@ export const handleCommand = async (
     const res = await auth.canActivate(command.command.userToken).catch((e) => {
       respond.next({
         clientId,
-        data: new MykoCommandError(txid, e.message),
+        data: wrapCommandErrorWS(new CommandNotAuthorized(command.command.tx)),
       })
       return false
     })
@@ -38,10 +41,15 @@ export const handleCommand = async (
 
   const unwrapped = unwrapCommand(command) as MCommand<unknown>
   const res = await commandBus.execute(unwrapped).catch((e) => {
-    respond.next({
-      clientId: clientId,
-      data: new MykoCommandError(txid, e.message),
-    })
+    new MykoLogger('Gateway').error(e.message)
+    if (e instanceof MykoCommandError) {
+      const wrapped = wrapCommandErrorWS(e)
+
+      respond.next({
+        clientId: clientId,
+        data: wrapped,
+      })
+    }
   })
 
   respond.next({
