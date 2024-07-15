@@ -1,5 +1,6 @@
 import { firstValueFrom, map, shareReplay } from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
+import { MykoLogger } from '../logger'
 import type {
   MLiveReportResult,
   MReport,
@@ -55,7 +56,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
     const handler = this.handlers.get(reportId)
 
-    const err = `Handler not Provided for ${report.constructor.name} [${reportId}]. Check your module's providers array, and that the command is decorated with @MykoReport(id: string)`
+    const err = `Handler not Provided for ${reportId}. Check that the handler is imported, and that the report is decorated with @MykoReport()`
 
     if (!handler) {
       console.error(err)
@@ -76,6 +77,8 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     if (this.cache.has(cacheKey) && !this.options?.disableCache) {
       return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
     }
+
+    new MykoLogger('ReportBus').info(`${reportId}`)
 
     const obs = handler.execute(report).pipe(
       shareReplay(1),

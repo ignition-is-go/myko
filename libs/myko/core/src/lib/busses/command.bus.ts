@@ -1,4 +1,5 @@
 import { MYKO_COMMAND_ID_KEY } from '../constants'
+import { MykoLogger } from '../logger'
 import type {
   MCommand,
   MCommandHandler,
@@ -31,13 +32,14 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     const handler = this.handlers.get(commandId)
 
-    const err = `Handler not Provided for ${command.constructor.name} [${commandId}]. Check your module's providers array, and that the command is decorated with @MykoCommand(id: string)`
+    const err = `Handler not Provided for ${commandId}. Check that your handler is imported, and that the command is decorated with @MykoCommand()`
 
     if (!handler) {
       console.error(err, command)
       throw err
     }
-    // console.log(commandId)
+
+    new MykoLogger('CommandBus').info(`${commandId}`)
     return (await handler.execute(command)) as MCommandResponse<T>
   }
 
