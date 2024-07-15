@@ -18,6 +18,7 @@ import {
   MCommand,
   MEventType,
   MItem,
+  MykoCommandError,
   MykoCommandHandler,
   MykoLogger,
   MykoQueryHandler,
@@ -49,7 +50,6 @@ import {
 } from '@myko/core'
 import {
   ClientCommand,
-  MykoCommandError,
   PeerCommand,
   PeerQuery,
   wrapCommandOnlyWS,

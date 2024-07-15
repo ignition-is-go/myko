@@ -43,16 +43,9 @@ import {
 } from './wrappers'
 
 import {
-  type ID,
   MCommand,
-  type MCommandResponse,
-  type MEvent,
-  type MLiveQueryResult,
-  type MLiveReportResult,
   MQuery,
   MReport,
-  type MReportResult,
-  type MWrappedItem,
   MykoProtocol,
   ProtocolMessages,
   SetClientId,
@@ -61,6 +54,13 @@ import {
   unwrapQuery,
   unwrapReport,
   wrapCommand,
+  type ID,
+  type MCommandResponse,
+  type MEvent,
+  type MLiveQueryResult,
+  type MLiveReportResult,
+  type MReportResult,
+  type MWrappedItem,
 } from '@myko/core'
 import { pack, unpack } from 'msgpackr'
 import { v4 } from 'uuid'
@@ -76,6 +76,7 @@ type WSMClientOpts = {
   reconnect: boolean
   maxReconnectAttempts: number
   disableMsgPack: boolean
+  preventThrowing: boolean
 }
 export class WSMClient {
   private q = new Set<WSMMessage>()
@@ -181,6 +182,7 @@ export class WSMClient {
       reconnect: true,
       disableMsgPack: false,
       maxReconnectAttempts: Infinity,
+      preventThrowing: false,
       ...opts,
     }
 
@@ -225,7 +227,8 @@ export class WSMClient {
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
             this.errorsSubject.next(e)
-            throw e
+            if (!this.opts.preventThrowing) throw e
+            return
           }
           this.successSubject.next(
             wrapped.data.commandId.split(':').reverse().join(' '),
