@@ -1,5 +1,4 @@
 import { MYKO_COMMAND_ID_KEY } from '../constants'
-import { MykoLogger } from '../logger'
 import type {
   MCommand,
   MCommandHandler,
@@ -39,7 +38,7 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
       throw err
     }
 
-    new MykoLogger('CommandBus').info(`${commandId}`)
+    // new MykoLogger('CommandBus').info(`${commandId}`)
     return (await handler.execute(command)) as MCommandResponse<T>
   }
 
