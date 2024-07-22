@@ -16,7 +16,6 @@
     "**/coverage": true
   },
   "editor.tabSize": 2,
-  "typescript.preferences.importModuleSpecifier": "auto",
   "json.schemas": [
     {
       "fileMatch": ["/apps/intake/src/app/testData/*"],
@@ -27,60 +26,14 @@
       "url": "/generated/watson-cli-config-schema.json"
     }
   ],
-  "nxConsole.useNVM": true,
-  "nxConsole.enableTelemetry": false,
-  "telemetry.enableTelemetry": false,
-  "github-actions.workflows.pinned.workflows": [
-    ".github/workflows/release.yml"
-  ],
-  "command-runner.terminal.name": "runCommand",
-  "command-runner.terminal.autoClear": false,
-  "command-runner.terminal.autoFocus": false,
-  "command-runner.commands": {
-    "poke sherlock": "touch ./apps/sherlock/server/src/environments/environment.local.ts",
-    "poke rship": "touch ./apps/rship/server/src/environments/environment.local.ts",
-    "poke intake": "touch ./apps/intake/src/environments/environment.local.ts"
-  },
   "[dockerfile]": {
     "editor.defaultFormatter": "ms-azuretools.vscode-docker"
   },
-  "[shellscript]": {
-    "editor.defaultFormatter": "foxundermoon.shell-format"
-  },
-  "redisXplorer.config": {
-    "profiles": [
-      {
-        "name": "INTAKE",
-        "host": "localhost",
-        "accessKey": "",
-        "filter": "*",
-        "port": "6379"
-      },
-      {
-        "name": "asdf",
-        "host": "10.32.23.85",
-        "accessKey": "",
-        "filter": "*",
-        "port": "6379"
-      }
-    ],
-    "scanLimit": 200
-  },
-  "githubPullRequests.ignoredPullRequestBranches": ["main"],
-  "[ignore]": {
-    "editor.defaultFormatter": "foxundermoon.shell-format"
-  },
-  "[env]": {
-    "editor.defaultFormatter": "IronGeek.vscode-env"
-  },
+
   "[svelte]": {
     "editor.defaultFormatter": "svelte.svelte-vscode"
   },
   "editor.formatOnPaste": true,
-  "[python]": {
-    "editor.defaultFormatter": "ms-python.python"
-  },
-  "python.formatting.provider": "none",
   "[rust]": {
     "editor.defaultFormatter": "rust-lang.rust-analyzer",
     "editor.inlayHints.enabled": "offUnlessPressed"
@@ -91,9 +44,6 @@
   "rust-analyzer.inlayHints.closingBraceHints.enable": true,
   "rust-analyzer.checkOnSave": true,
   "rust-analyzer.check.command": "clippy",
-  "[toml]": {
-    "editor.defaultFormatter": "tamasfe.even-better-toml"
-  },
   "git.autofetch": true,
   "[typescript]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
