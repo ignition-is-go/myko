@@ -2,6 +2,7 @@ import {
   MykoLogger,
   Server,
   eventBus,
+  getHostId,
   setDefaultRepoOptions,
   setServer,
   watchInit,
@@ -9,7 +10,6 @@ import {
 } from '@myko/core'
 import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import type { WSMMessage } from '@myko/ws'
-import { randomUUID } from 'crypto'
 import { DateTime } from 'luxon'
 import { groupBy } from 'ramda'
 import { Subject, bufferTime, filter, map } from 'rxjs'
@@ -20,7 +20,7 @@ import type { MykoGatewayBootstrapOptions } from './types'
 export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
   const { defaultPersister, version, groupId } = args
 
-  const serverId = randomUUID()
+  const serverId = getHostId()
 
   if (args.ws) {
     const { host, port, wsAdapter } = args.ws
@@ -68,6 +68,7 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
 
   setDefaultRepoOptions({
     persisterFactory: defaultPersister,
+    overrides: args.persisterOverrides,
   })
 
   watchInit((ent, all, init, uninit) => {
@@ -90,7 +91,7 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
         const [itemName, changeType] = k.split(':')
         const logger = new MykoLogger(itemName)
 
-        logger.info(changeType, v.length)
+        logger.info(changeType, v?.length)
       })
     })
 }

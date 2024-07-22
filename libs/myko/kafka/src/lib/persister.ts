@@ -5,7 +5,6 @@ import {
   beforeInit,
   fireInit,
   getHostId,
-  type ID,
   type MEvent,
   type PersisterFactory,
 } from '@myko/core'
@@ -19,7 +18,6 @@ import {
   type Message,
   type ProducerConfig,
 } from 'kafkajs'
-import { Subject } from 'rxjs'
 import { makeSafeTopic } from './util/helpers'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
@@ -68,20 +66,16 @@ export const getPersister: PersisterFactory = <
     prodConf,
     consConf,
     new MykoLogger(entity),
-    getHostId(),
   )
 }
 
-abstract class KafkaPersister<T extends MItem> implements Persister<T> {
+abstract class KafkaPersister<T extends MItem> extends Persister<T> {
   constructor(
     protected entity: string,
     protected options: KafkaPersisterOptions,
-    protected serverId: ID,
   ) {
-    this.output = new Subject<MEvent<T>>()
+    super()
   }
-
-  public output: Subject<MEvent<T>>
 
   private decodeMsg(buffer): MEvent<T> | null {
     try {
@@ -108,15 +102,16 @@ abstract class KafkaPersister<T extends MItem> implements Persister<T> {
       return
     }
 
-    if (event.sourceId === this.serverId) {
+    if (event.sourceId === getHostId()) {
       return
     }
 
-    this.onEvent(event)
+    this.outputEvent(event)
   }
 
-  protected onEvent(event: MEvent<T>) {
-    this.output.next(event)
+  protected outputEvent(event: MEvent<T>) {
+    console.log('Outputting', this.entity, event.sourceId, getHostId())
+    this.output$.next(event)
   }
 
   abstract persist(event: MEvent<T>): void
@@ -152,9 +147,8 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     private prodConfig: ProducerConfig,
     private consConfig: ConsumerConfig,
     private logger: MykoLogger,
-    serverId: ID,
   ) {
-    super(entity, options, serverId)
+    super(entity, options)
     beforeInit(entity)
     this.init(entity)
   }
@@ -197,8 +191,19 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
   }
 
   persist(event: MEvent<T>): void {
+    if (event.sourceId === undefined) {
+      Reflect.set(event, 'sourceId', getHostId())
+    }
+    console.log(
+      'Persisting',
+      this.entity,
+      'sourceid',
+      event.sourceId,
+      getHostId(),
+    )
+
     this.prod.publish(this.encodeMsg(event), event.item.id)
-    this.onEvent(event)
+    this.outputEvent(event)
   }
 }
 

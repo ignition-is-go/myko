@@ -1,4 +1,5 @@
 import { commandBus, eventBus } from '../busses'
+import { onAllInit } from '../hooks'
 import type { MSagaHandler } from '../types'
 
 /**
@@ -20,6 +21,9 @@ import type { MSagaHandler } from '../types'
 export const MykoSaga = () => {
   return (target: new () => MSagaHandler) => {
     const exec = new target()
-    exec.execute(eventBus.subject$).subscribe((c) => commandBus.execute(c))
+
+    onAllInit(() => {
+      exec.execute(eventBus.subject$).subscribe((c) => commandBus.execute(c))
+    })
   }
 }

@@ -1,6 +1,5 @@
 import { firstValueFrom, map, shareReplay } from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
-import { MykoLogger } from '../logger'
 import type {
   MLiveReportResult,
   MReport,
@@ -77,8 +76,6 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     if (this.cache.has(cacheKey) && !this.options?.disableCache) {
       return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
     }
-
-    new MykoLogger('ReportBus').info(`${reportId}`)
 
     const obs = handler.execute(report).pipe(
       shareReplay(1),

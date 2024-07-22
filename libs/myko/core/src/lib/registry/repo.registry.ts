@@ -3,7 +3,13 @@ import { Repo, type RepoOptions } from '../aggregates/repo'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { PersisterFactory } from '../persisters'
-import type { MEvent, MItem, MItemConstructor, Stream } from '../types'
+import {
+  getItemName,
+  type MEvent,
+  type MItem,
+  type MItemConstructor,
+  type Stream,
+} from '../types'
 import { relationRegistry } from './relation.registry'
 
 const repos = new Map<string, Repo<MItem>>()
@@ -11,14 +17,18 @@ const searchKeys = new Map<string, string[]>()
 
 let defaultOpts: {
   defaultPersisterFactory?: PersisterFactory
+  persisterOverrides?: PersisterOverrideData[]
 } = {}
 
 const needsPersister: string[] = []
 
 export const setDefaultRepoOptions = (args: {
   persisterFactory?: PersisterFactory
+  overrides?: PersisterOverrideData[]
 }) => {
   defaultOpts.defaultPersisterFactory = args.persisterFactory
+
+  defaultOpts.persisterOverrides = args.overrides || []
 
   needsPersister.forEach((itemName) => {
     createRepo(itemName, buildRepoOptions(itemName))
@@ -62,7 +72,11 @@ const createRepo = <T extends MItem>(
   itemName: string,
   options: RepoOptions<T>,
 ) => {
-  const persister = defaultOpts?.defaultPersisterFactory?.(itemName)
+  const factory =
+    defaultOpts.persisterOverrides?.find((x) => x.itemName === itemName)
+      ?.persister ?? defaultOpts.defaultPersisterFactory
+
+  const persister = factory?.(itemName, options)
 
   if (!persister) {
     needsPersister.push(itemName)
@@ -114,3 +128,17 @@ export const buildRepoOptions = <T extends MItem>(
     searchIndeces: searchKeys,
   } satisfies RepoOptions<T>
 }
+
+export type PersisterOverrideData = {
+  itemName: string
+  persister: PersisterFactory
+}
+
+export const persisterOverride = <T extends MItem>(
+  entity: MItemConstructor<T>,
+  persister: PersisterFactory,
+) =>
+  ({
+    itemName: getItemName(entity),
+    persister,
+  }) satisfies PersisterOverrideData

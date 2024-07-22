@@ -1,16 +1,16 @@
 import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
 import {
-  type ID,
   makeDel,
   makeSet,
-  type MEvent,
   MEventType,
   MItem,
-  type MSaga,
   recalculateHash,
+  type ID,
+  type MEvent,
+  type MSaga,
   type Type,
 } from '../types'
-import { type AMykoCommandBus, commandBus } from './command.bus'
+import { commandBus, type AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'
@@ -397,10 +397,6 @@ export class EventBus extends AMykoEventBus {
   }
 
   publish<T extends MEvent>(event: T): Promise<void> {
-    if (event.sourceId === undefined) {
-      Reflect.set(event, 'sourceId', this.getServerId())
-    }
-
     this.subject$.next(event)
     return Promise.resolve()
   }

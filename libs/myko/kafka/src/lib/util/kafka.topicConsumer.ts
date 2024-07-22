@@ -18,7 +18,7 @@ export class KafkaTopicConsumer {
     this.cons.on('consumer.heartbeat', (e) => {
       if (!this.caughtUp) {
         this.caughtUp = true
-        this.onCaughtUp()
+        this.onCaughtUp?.()
       }
     })
 
@@ -28,7 +28,7 @@ export class KafkaTopicConsumer {
 
       if (last === high - 1 && !this.caughtUp) {
         this.caughtUp = true
-        this.onCaughtUp()
+        this.onCaughtUp?.()
       }
     })
 

@@ -37,7 +37,8 @@ export const MykoItem =
   }): ClassDecorator =>
   (target) => {
     const original: any = target
-    const autoItemType = Object.getOwnPropertyDescriptors(original).name.value
+    const autoItemType =
+      Object.getOwnPropertyDescriptors(original)['name'].value
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 
