@@ -110,7 +110,6 @@ abstract class KafkaPersister<T extends MItem> extends Persister<T> {
   }
 
   protected outputEvent(event: MEvent<T>) {
-    console.log('Outputting', this.entity, event.sourceId, getHostId())
     this.output$.next(event)
   }
 
@@ -194,13 +193,6 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     if (event.sourceId === undefined) {
       Reflect.set(event, 'sourceId', getHostId())
     }
-    console.log(
-      'Persisting',
-      this.entity,
-      'sourceid',
-      event.sourceId,
-      getHostId(),
-    )
 
     this.prod.publish(this.encodeMsg(event), event.item.id)
     this.outputEvent(event)
