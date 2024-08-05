@@ -23,7 +23,7 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*": "prettier --write --ignore-file .prettierignore"
+    "*": "prettier --write --ignore-path .prettierignore"
   },
   "workspaces": [
     "apps/**",

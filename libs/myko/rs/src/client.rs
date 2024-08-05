@@ -218,7 +218,7 @@ async fn process_command(
 ) {
     if let Ok(command) = command {
         match command {
-            Command::SetId(set_id) => {
+            Command::SetClientId(set_id) => {
                 let con_state = connection.lock().await.clone();
 
                 match con_state {
@@ -261,15 +261,14 @@ struct TextMessage {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct SetId {
+struct SetClientId {
     client_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "commandId", content = "command")]
 enum Command {
-    #[serde(rename = "client:setId")]
-    SetId(SetId),
+    SetClientId(SetClientId),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
