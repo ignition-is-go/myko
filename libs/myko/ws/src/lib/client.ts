@@ -48,12 +48,10 @@ import {
   MReport,
   MykoProtocol,
   ProtocolMessages,
-  SetClientId,
   unwrapCommand,
   unwrapItem,
   unwrapQuery,
   unwrapReport,
-  wrapCommand,
   type ID,
   type MCommandResponse,
   type MEvent,
@@ -106,9 +104,6 @@ export class WSMClient {
     return this.successSubject.pipe()
   }
 
-  clientId: ID | null = null
-  readonly clientId$: Subject<ID> = new Subject<ID>()
-
   private commandSubject: Subject<MCommand>
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
@@ -146,11 +141,11 @@ export class WSMClient {
     private port: number,
     private makeSocket: (url: string) => any,
     private hooks?: {
-      onClientId?: (clientId: ID) => void
       onStartConnect?: (url: string) => void
       onConnect?: (url: string) => void
       onDisconnect?: (c: CloseEvent, willAttemptReconnect: boolean) => void
       onError?: (e?: string) => void
+      onLog?: (...msg: any[]) => void
     },
     opts?: Partial<WSMClientOpts>,
   ) {
@@ -357,12 +352,21 @@ export class WSMClient {
       return
     }
 
+    this.hooks.onLog?.('Connecting to', path)
+
     this.ws.onopen = () => {
       if (this.protocol !== MykoProtocol.MSGPACK && !this.opts.disableMsgPack) {
         // this.switchToMessagePack()
       }
+      this.hooks.onLog?.('Connected to', path)
       this.processQueue()
       this.hooks?.onConnect && this.hooks?.onConnect(path)
+      ;[...this.resendQueries.values()].forEach((q) => {
+        this.send(q)
+      })
+      ;[...this.resendReports.values()].forEach((r) => {
+        this.send(r)
+      })
     }
 
     this.ws.onmessage = (e) => {
@@ -383,25 +387,7 @@ export class WSMClient {
 
       switch (message.event) {
         case MCOMMAND_EVENT:
-          const cmd = unwrapCommand(message.data) as unknown as SetClientId
-
-          if (
-            message.data.commandId ===
-            wrapCommand(new SetClientId('fake')).commandId
-          ) {
-            // console.log('got client id', cmd.clientId)
-            this.clientId = cmd.clientId
-            this.clientId$.next(cmd.clientId)
-            console.log('Got Client ID', this.clientId)
-            this.hooks?.onClientId && this.hooks?.onClientId(this.clientId)
-            ;[...this.resendQueries.values()].forEach((q) => {
-              this.send(q)
-            })
-            ;[...this.resendReports.values()].forEach((r) => {
-              this.send(r)
-            })
-            break
-          }
+          const cmd = unwrapCommand(message.data)
 
           this.commandSubject.next(cmd)
           break
@@ -458,6 +444,8 @@ export class WSMClient {
       } else {
         this.hooks?.onDisconnect && this.hooks?.onDisconnect(e, willReconnect)
       }
+
+      this.hooks.onLog?.('Disconnected from', path)
 
       setTimeout(() => {
         if (willReconnect) {

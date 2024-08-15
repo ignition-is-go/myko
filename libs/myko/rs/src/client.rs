@@ -12,14 +12,7 @@ use crate::websocket::{AutoReconnectSocket, SocketConnectionStatus};
 use url::Url;
 
 #[derive(Clone, Debug)]
-pub struct ConnectionInfo {
-    pub address: String,
-    pub client_id: String,
-}
-
-#[derive(Clone, Debug)]
 pub enum ConnectionStatus {
-    Client(ConnectionInfo),
     Connected(String),
     Disconnected,
 }
@@ -185,14 +178,6 @@ impl MykoClient {
     pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
         BroadcastStream::new(self.client_pub.clone().subscribe()).filter_map(|x| x.ok())
     }
-
-    pub async fn get_client_id(&self) -> Option<String> {
-        let status = self.connection_status.lock().await;
-        match &*status {
-            ConnectionStatus::Client(info) => Some(info.client_id.clone()),
-            _ => None,
-        }
-    }
 }
 
 async fn process_message(
@@ -212,46 +197,11 @@ async fn process_message(
 }
 
 async fn process_command(
-    command: Result<Command, serde_json::Error>,
-    connection: Arc<Mutex<ConnectionStatus>>,
-    client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
+    _command: Result<Command, serde_json::Error>,
+    _connection: Arc<Mutex<ConnectionStatus>>,
+    _client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
 ) {
-    if let Ok(command) = command {
-        match command {
-            Command::SetClientId(set_id) => {
-                let con_state = connection.lock().await.clone();
-
-                match con_state {
-                    ConnectionStatus::Disconnected => {
-                        unreachable!("Received SetId Command, but not connected");
-                    }
-                    ConnectionStatus::Connected(addr) => {
-                        println!("Received Client Id: {:?}", set_id.client_id);
-                        let mut connection = connection.lock().await;
-
-                        *connection = ConnectionStatus::Client(ConnectionInfo {
-                            address: addr,
-                            client_id: set_id.client_id,
-                        });
-                        if client_pub.send(connection.clone()).is_err() {
-                            println!("Nothing listening to connection status");
-                        }
-                    }
-                    ConnectionStatus::Client(info) => {
-                        println!("Received New Client Id: {:?}", set_id.client_id);
-                        let mut connection = connection.lock().await;
-                        *connection = ConnectionStatus::Client(ConnectionInfo {
-                            address: info.address,
-                            client_id: set_id.client_id,
-                        });
-                        if client_pub.send(connection.clone()).is_err() {
-                            println!("Nothing listening to connection status");
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // handle commands here
 }
 
 #[derive(Serialize, Deserialize)]
@@ -268,7 +218,7 @@ struct SetClientId {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "commandId", content = "command")]
 enum Command {
-    SetClientId(SetClientId),
+    // SetClientId(SetClientId),
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -15,38 +15,28 @@ import {
   GetServersByQuery,
   GroupLeader,
   IsLeader,
-  MCommand,
-  MEventType,
   MItem,
   MykoCommandError,
   MykoCommandHandler,
   MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
-  MykoSaga,
   PeerAlive,
   PeerLastSeen,
   Server,
   ServerEventLog,
-  SetClientId,
   eventBus,
   getEvents,
   makeDel,
-  ofItems,
-  ofType,
   onAllInit,
   queryBus,
   repo,
   repoName,
   reportBus,
-  wrapCommand,
-  type IMItem,
   type MCommandHandler,
   type MLiveQueryResult,
   type MQueryHandler,
   type MReportHandler,
-  type MSagaHandler,
-  type Stream,
 } from '@myko/core'
 import {
   ClientCommand,
@@ -330,22 +320,6 @@ export class ConnectedToLeaderHandler
 export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {
   execute(report: ServerEventLog) {
     return eventBus.subject$.pipe(filter((x) => x.sourceId == getServer().id))
-  }
-}
-
-@MykoSaga()
-export class ClientConnectedSaga implements MSagaHandler {
-  execute(stream: Stream<MItem<IMItem>>): Observable<MCommand<void>> {
-    return stream.pipe(
-      ofItems(Client),
-      ofType(MEventType.SET),
-      map((x) => {
-        return new ClientCommand(
-          wrapCommand(new SetClientId(x.item.id)),
-          x.item,
-        )
-      }),
-    )
   }
 }
 
