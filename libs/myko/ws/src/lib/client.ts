@@ -339,7 +339,7 @@ export class WSMClient {
   }
 
   public connect(host: string, port: number) {
-    this.disconnect()
+    this.teardownSocket()
     this.host = host
     this.port = port
     this.createSocket()
@@ -453,6 +453,12 @@ export class WSMClient {
 
       this.hooks.onLog?.('Disconnected from', path)
 
+      if (willReconnect) {
+        this.hooks.onLog?.(
+          `Reconnecting in ${Math.round(this.reconnectDelay / 1000)} sec`,
+        )
+      }
+
       setTimeout(() => {
         if (willReconnect) {
           this.createSocket()
@@ -499,12 +505,16 @@ export class WSMClient {
     })
   }
 
-  disconnect() {
-    this.shouldReconnect = false
+  private teardownSocket() {
     this.hooks?.onDisconnect?.({} as CloseEvent, false)
     if (this.ws) {
       this.ws.onclose = () => {}
     }
     this.ws?.close()
+  }
+
+  disconnect() {
+    this.shouldReconnect = false
+    this.teardownSocket()
   }
 }
