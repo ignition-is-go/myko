@@ -1,4 +1,9 @@
-import { eventBus, type ID } from '@myko/core'
+import {
+  clientIdPropertyRegistry,
+  eventBus,
+  MykoLogger,
+  type ID,
+} from '@myko/core'
 import {
   MCOMMAND_EVENT,
   MEVENT_EVENT,
@@ -45,6 +50,18 @@ export const handleMessage =
       }
 
       case MEVENT_EVENT: {
+        if (clientIdPropertyRegistry.has(x.data.data.itemType)) {
+          Reflect.set(
+            x.data.data.item,
+            clientIdPropertyRegistry.get(x.data.data.itemType),
+            x.clientId,
+          )
+          new MykoLogger(x.data.data.itemType).info(
+            'Setting client id on ',
+            x.data.data.itemType,
+          )
+        }
+
         eventBus.publish(x.data.data)
         break
       }

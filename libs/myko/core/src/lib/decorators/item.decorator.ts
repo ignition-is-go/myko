@@ -6,6 +6,7 @@
  * that add specific metadata to the decorated properties.
  */
 import {
+  MYKO_CLIENT_ID_KEY,
   MYKO_ITEM_BELONGS_TO_KEY,
   MYKO_ITEM_DEFAULT_VALUE_KEY,
   MYKO_ITEM_ENSURE_KEY,
@@ -13,7 +14,12 @@ import {
   MYKO_ITEM_SEARCH_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
-import { initRepo, propertyDefaults, relationRegistry } from '../registry'
+import {
+  clientIdPropertyRegistry,
+  initRepo,
+  propertyDefaults,
+  relationRegistry,
+} from '../registry'
 import type { MItem } from '../types'
 import { doc, docEntity } from './doc.decorators'
 
@@ -108,6 +114,12 @@ export const MykoItem =
         propertyDefaults
           .get(itemType)
           .set(propertyKey, Reflect.getMetadata(key, original))
+      }
+
+      if (key.startsWith(MYKO_CLIENT_ID_KEY)) {
+        const propertyKey = decodeClientIdKey(key)
+
+        clientIdPropertyRegistry.set(itemType, propertyKey)
       }
     })
 
@@ -229,6 +241,18 @@ export const searchable = (): PropertyDecorator => {
   }
 }
 
+export const mykoClientId = (): PropertyDecorator => {
+  return (target: object, propertyKey: string | symbol) => {
+    doc(`Auto Client ID`)(target, propertyKey)
+
+    Reflect.defineMetadata(
+      makeClientIdKey(propertyKey.toString()),
+      true,
+      target.constructor,
+    )
+  }
+}
+
 const makeOwnsKey = (propertyKey: string): string =>
   `${MYKO_ITEM_OWNS_MANY_KEY}:${propertyKey}`
 
@@ -266,5 +290,13 @@ const makeSearchKey = (propertyKey: string): string =>
 
 const decodeSearchKey = (SearchKey: string): string => {
   const [_, propertyKey] = SearchKey.split(':')
+  return propertyKey
+}
+
+const makeClientIdKey = (propertyKey: string): string =>
+  `${MYKO_CLIENT_ID_KEY}:${propertyKey}`
+
+const decodeClientIdKey = (clientIdKey: string): string => {
+  const [_, propertyKey] = clientIdKey.split(':')
   return propertyKey
 }
