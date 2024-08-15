@@ -12,6 +12,9 @@
 /node_modules
 **/node_modules
 
+# python
+__pycache__
+
 # IDEs and editors
 /.idea
 .project
