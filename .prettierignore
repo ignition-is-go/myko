@@ -11,6 +11,8 @@
 *.hbs
 *.npmrc
 *.lua
+*.py
+*.lock
 
 Cargo.lock
 Dockerfile

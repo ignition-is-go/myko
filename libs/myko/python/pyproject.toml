@@ -1,18 +1,16 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "myko"
 version = "0.0.3"
-authors = [
-  { name="Trevor Sargent", email="trev@lucid.rocks" },
-]
-description = "The Myko library in python"
+description = "python tooling for the myko protocol"
+authors = ["Trevor Sargent <trevor@lucid.rocks>"]
 readme = "README.md"
-requires-python = ">=3.8"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+asyncio = "^3.4.3"
+websockets = "^12.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
