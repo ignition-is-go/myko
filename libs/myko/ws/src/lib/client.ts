@@ -339,6 +339,7 @@ export class WSMClient {
   }
 
   public connect(host: string, port: number) {
+    this.disconnect()
     this.host = host
     this.port = port
     this.createSocket()
