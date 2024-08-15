@@ -136,9 +136,10 @@ export class WSMClient {
   private connectAttempts = 0
   private reconnectDelay = 1000
 
+  private host: string
+  private port: number
+
   constructor(
-    private host: string,
-    private port: number,
     private makeSocket: (url: string) => any,
     private hooks?: {
       onStartConnect?: (url: string) => void
@@ -180,8 +181,6 @@ export class WSMClient {
       preventThrowing: false,
       ...opts,
     }
-
-    this.connect()
   }
 
   async ping(): Promise<number> {
@@ -339,7 +338,13 @@ export class WSMClient {
     return stats
   }
 
-  private connect() {
+  public connect(host: string, port: number) {
+    this.host = host
+    this.port = port
+    this.createSocket()
+  }
+
+  private createSocket() {
     const prefix = this.opts.secure ? 'wss' : 'ws'
     const port = this.opts.secure ? '' : `:${this.port}`
     const path = `${prefix}://${this.host}${port}/myko`
@@ -449,7 +454,7 @@ export class WSMClient {
 
       setTimeout(() => {
         if (willReconnect) {
-          this.connect()
+          this.createSocket()
         }
       }, this.reconnectDelay)
 

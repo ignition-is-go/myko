@@ -59,8 +59,6 @@ export class PeerClientRegistry {
     }
 
     const client = new WSMClient(
-      server.address,
-      server.port,
       (url) => new WebSocket(url, { timeout: 1000 }),
       {
         onDisconnect: (_, willAttemptReconnect) => {
@@ -77,6 +75,7 @@ export class PeerClientRegistry {
       { reconnect: true, maxReconnectAttempts: 5, secure: false },
     )
 
+    client.connect(server.address, server.port)
     client.setUser(getAuth().getPeerToken())
 
     this.peers.set(makePeerKey(server), client)
