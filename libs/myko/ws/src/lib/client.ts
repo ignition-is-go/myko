@@ -506,11 +506,12 @@ export class WSMClient {
   }
 
   private teardownSocket() {
-    this.hooks?.onDisconnect?.({} as CloseEvent, false)
     if (this.ws) {
+      this.hooks?.onDisconnect?.({} as CloseEvent, false)
       this.ws.onclose = () => {}
+      this.ws.close()
+      this.ws = null
     }
-    this.ws?.close()
   }
 
   disconnect() {
