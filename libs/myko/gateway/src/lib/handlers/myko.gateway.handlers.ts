@@ -50,6 +50,7 @@ import {
   Observable,
   combineLatest,
   debounceTime,
+  distinctUntilChanged,
   filter,
   firstValueFrom,
   interval,
@@ -81,6 +82,17 @@ onAllInit(() => {
   }
 
   eventBus.publishSet(server, 'server-start')
+
+  reportBus
+    .watch(new ConnectedToLeader())
+    .pipe(distinctUntilChanged())
+    .subscribe((isLeader) => {
+      if (isLeader) {
+        new MykoLogger('Gateway Handler').info('Server Became Leader')
+      } else {
+        new MykoLogger('Gateway Handler').info('Server No Longer Leader')
+      }
+    })
 })
 
 @MykoQueryHandler(GetServers)

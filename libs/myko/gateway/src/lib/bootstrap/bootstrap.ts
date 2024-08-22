@@ -25,11 +25,15 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
   if (args.ws) {
     const { host, port, wsAdapter } = args.ws
     const startString = `Listening: ${host}:${port} @ ${version}`
-    const border = ''.padEnd(startString.length, '=')
+    const serverInfo = `Server ID: ${serverId} | Group ID: ${groupId}`
 
-    console.log(border)
+    const maxLen = Math.max(startString.length, serverInfo.length)
+    const border = ''.padEnd(maxLen, '=')
+
+    console.log('\n' + border)
     console.log(startString)
-    console.log(border)
+    console.log(serverInfo)
+    console.log(border + '\n')
 
     const doc = new MykoDocsService()
 

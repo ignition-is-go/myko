@@ -67,8 +67,8 @@ export class PeerClientRegistry {
           this.teardownPeerEventListener(server)
         },
         onConnect: () => {
-          console.debug(
-            `Connected to Peer: ${server.address}:${server.port} ${server.id},`,
+          new MykoLogger('Peer Registry').info(
+            `Connected to Peer - ${server.address}:${server.port}`,
           )
         },
       },
@@ -91,7 +91,9 @@ export class PeerClientRegistry {
       .pipe(
         map((server) => {
           if (!server) {
-            console.debug(`Peer Not Found or Disappeared - ${serverId}`)
+            new MykoLogger('Peer Registry').info(
+              `Peer Not Found or Disappeared - ${serverId}`,
+            )
             return undefined
           }
 
