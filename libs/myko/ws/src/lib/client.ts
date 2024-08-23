@@ -62,6 +62,7 @@ import {
 } from '@myko/core'
 import { pack, unpack } from 'msgpackr'
 import { v4 } from 'uuid'
+import { ReconnectSocket } from './socket.reconnect'
 
 type ClientStats = {
   ping: number
@@ -78,7 +79,7 @@ type WSMClientOpts = {
 }
 export class WSMClient {
   private q = new Set<WSMMessage>()
-  private ws: WebSocket | null = null
+  private ws: ReconnectSocket
 
   get commands(): Observable<MCommand> {
     return this.commandSubject.pipe()
@@ -132,10 +133,6 @@ export class WSMClient {
 
   private opts: WSMClientOpts
 
-  private shouldReconnect = true
-  private connectAttempts = 0
-  private reconnectDelay = 1000
-
   private host: string
   private port: number
 
@@ -186,10 +183,6 @@ export class WSMClient {
   async ping(): Promise<number> {
     const id = v4()
     const timestamp = Date.now()
-
-    if (this.ws.readyState !== this.ws.OPEN) {
-      throw new Error('Not Connected')
-    }
 
     this.send({
       event: MPING_EVENT,
@@ -345,13 +338,110 @@ export class WSMClient {
     this.createSocket()
   }
 
+  private onOpen(path: string) {
+    if (this.protocol !== MykoProtocol.MSGPACK && !this.opts.disableMsgPack) {
+      // this.switchToMessagePack()
+    }
+    this.hooks.onLog?.('Connected to', path)
+    this.processQueue()
+    this.hooks?.onConnect && this.hooks?.onConnect(path)
+    ;[...this.resendQueries.values()].forEach((q) => {
+      this.send(q)
+    })
+    ;[...this.resendReports.values()].forEach((r) => {
+      this.send(r)
+    })
+  }
+
+  private onMessage(e: MessageEvent) {
+    this.downMsgCounter.next()
+
+    if (e.data === ProtocolMessages.SwitchToMSGPACK) {
+      this.protocol = MykoProtocol.MSGPACK
+      this.protocolReady = true
+      this.processQueue()
+      return
+    }
+
+    const body = e.data
+
+    const message: WSMMessage = this.decoders.get(this.protocol)(
+      this.datapreppers.get(this.protocol)(body),
+    )
+
+    switch (message.event) {
+      case MCOMMAND_EVENT:
+        const cmd = unwrapCommand(message.data)
+
+        this.commandSubject.next(cmd)
+        break
+
+      case MQUERY_EVENT:
+        const query = unwrapQuery(message.data)
+        this.querySubject.next(query)
+        break
+
+      case MEVENT_EVENT:
+        const evt = message.data
+        this.eventSubject.next(evt)
+        break
+      case MQUERY_RESPONSE_EVENT:
+        this.queryResponses.next(message)
+        break
+      case MCOMMAND_RESPONSE_EVENT:
+      case MCOMMAND_ERROR_EVENT:
+        this.commandResponses.next(message)
+        break
+
+      case MREPORT_EVENT:
+        const report = unwrapReport(message.data)
+        this.reportSubject.next(report)
+        break
+
+      case MREPORT_RESPONSE_EVENT:
+        this.reportResponses.next(message)
+        break
+
+      case MPING_EVENT:
+        this.pingSubject.next(message)
+        break
+
+      default:
+        console.warn('no idea what to do with this', message)
+    }
+  }
+
   private createSocket() {
     const prefix = this.opts.secure ? 'wss' : 'ws'
     const port = this.opts.secure ? '' : `:${this.port}`
     const path = `${prefix}://${this.host}${port}/myko`
     this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
-    this.ws = this.makeSocket(path)
-    this.ws.binaryType = 'arraybuffer'
+    this.ws = new ReconnectSocket(path, this.makeSocket, {
+      onClosed: () => {
+        console.log('CLOSED')
+      },
+      onConnected: (path) => {
+        this.onOpen(path)
+        console.log('CONNECTED')
+      },
+      onMessage: (e) => {
+        this.onMessage(e)
+        console.log('MESSAGE')
+      },
+      onReconnecting: () => {
+        console.log('RECONNECTING')
+      },
+      onError: (e) => {
+        this.hooks?.onError && this.hooks?.onError()
+        console.log('ERROR', e)
+      },
+      reconnect: !!this.opts.reconnect
+        ? {
+            interval: 1000,
+            maxAttempts: this.opts.maxReconnectAttempts,
+          }
+        : undefined,
+    })
 
     if (!this.ws) {
       this.hooks?.onError && this.hooks?.onError('No Socket')
@@ -359,122 +449,10 @@ export class WSMClient {
     }
 
     this.hooks.onLog?.('Connecting to', path)
-
-    this.ws.onopen = () => {
-      if (this.protocol !== MykoProtocol.MSGPACK && !this.opts.disableMsgPack) {
-        // this.switchToMessagePack()
-      }
-      this.hooks.onLog?.('Connected to', path)
-      this.processQueue()
-      this.hooks?.onConnect && this.hooks?.onConnect(path)
-      ;[...this.resendQueries.values()].forEach((q) => {
-        this.send(q)
-      })
-      ;[...this.resendReports.values()].forEach((r) => {
-        this.send(r)
-      })
-    }
-
-    this.ws.onmessage = (e) => {
-      this.downMsgCounter.next()
-
-      if (e.data === ProtocolMessages.SwitchToMSGPACK) {
-        this.protocol = MykoProtocol.MSGPACK
-        this.protocolReady = true
-        this.processQueue()
-        return
-      }
-
-      const body = e.data
-
-      const message: WSMMessage = this.decoders.get(this.protocol)(
-        this.datapreppers.get(this.protocol)(body),
-      )
-
-      switch (message.event) {
-        case MCOMMAND_EVENT:
-          const cmd = unwrapCommand(message.data)
-
-          this.commandSubject.next(cmd)
-          break
-
-        case MQUERY_EVENT:
-          const query = unwrapQuery(message.data)
-          this.querySubject.next(query)
-          break
-
-        case MEVENT_EVENT:
-          const evt = message.data
-          this.eventSubject.next(evt)
-          break
-        case MQUERY_RESPONSE_EVENT:
-          this.queryResponses.next(message)
-          break
-        case MCOMMAND_RESPONSE_EVENT:
-        case MCOMMAND_ERROR_EVENT:
-          this.commandResponses.next(message)
-          break
-
-        case MREPORT_EVENT:
-          const report = unwrapReport(message.data)
-          this.reportSubject.next(report)
-          break
-
-        case MREPORT_RESPONSE_EVENT:
-          this.reportResponses.next(message)
-          break
-
-        case MPING_EVENT:
-          this.pingSubject.next(message)
-          break
-
-        default:
-          console.warn('no idea what to do with this', message)
-      }
-    }
-
-    this.ws.onclose = (e) => {
-      const willReconnect =
-        this.shouldReconnect &&
-        this.opts?.reconnect &&
-        this.connectAttempts < this.opts.maxReconnectAttempts
-
-      this.connectAttempts += 1
-
-      this.protocol = MykoProtocol.JSON
-
-      if (e.code === 1002) {
-        // this is just cuz the server is not up yet,
-        // so will try to reconnect, but not call the
-        //disconnect hooks cuz we expect to connect soon
-      } else {
-        this.hooks?.onDisconnect && this.hooks?.onDisconnect(e, willReconnect)
-      }
-
-      this.hooks.onLog?.('Disconnected from', path)
-
-      if (willReconnect) {
-        this.hooks.onLog?.(
-          `Reconnecting in ${Math.round(this.reconnectDelay / 1000)} sec`,
-        )
-      }
-
-      setTimeout(() => {
-        if (willReconnect) {
-          this.createSocket()
-        }
-      }, this.reconnectDelay)
-
-      this.reconnectDelay *= 1.1
-    }
-
-    this.ws.onerror = (err) => {
-      this.hooks?.onError && this.hooks?.onError()
-    }
   }
 
   private forceSend(e: { event: string; data?: any }) {
-    if (!this.ws || this.ws.readyState !== this.ws.OPEN) {
+    if (!this.ws.ready()) {
       return
     }
 
@@ -484,11 +462,7 @@ export class WSMClient {
   }
 
   private send(item: WSMMessage) {
-    if (
-      !this.ws ||
-      this.ws.readyState !== this.ws.OPEN ||
-      !this.protocolReady
-    ) {
+    if (!this.ws.ready() || !this.protocolReady) {
       this.q.add(item)
       return
     }
@@ -508,14 +482,12 @@ export class WSMClient {
   private teardownSocket() {
     if (this.ws) {
       this.hooks?.onDisconnect?.({} as CloseEvent, false)
-      this.ws.onclose = () => {}
-      this.ws.close()
+      this.ws.teardown()
       this.ws = null
     }
   }
 
   disconnect() {
-    this.shouldReconnect = false
     this.teardownSocket()
   }
 }
