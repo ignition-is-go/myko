@@ -43,6 +43,7 @@ import {
 } from './wrappers'
 
 import {
+  GetPeerServers,
   MCommand,
   MQuery,
   MReport,
@@ -62,7 +63,7 @@ import {
 } from '@myko/core'
 import { pack, unpack } from 'msgpackr'
 import { v4 } from 'uuid'
-import { ReconnectSocket } from './socket.reconnect'
+import { SocketGroup, SocketSendMode } from './socket.group'
 
 type ClientStats = {
   ping: number
@@ -79,7 +80,10 @@ type WSMClientOpts = {
 }
 export class WSMClient {
   private q = new Set<WSMMessage>()
-  private ws: ReconnectSocket
+
+  private socketGroup: SocketGroup
+
+  // private ws: ReconnectSocket
 
   get commands(): Observable<MCommand> {
     return this.commandSubject.pipe()
@@ -131,16 +135,13 @@ export class WSMClient {
   private downMsgCounter = new Subject<void>()
   private upMsgCounter = new Subject<void>()
 
-  private opts: WSMClientOpts
-
-  private host: string
-  private port: number
+  private clientOpts: WSMClientOpts
 
   constructor(
     private makeSocket: (url: string) => any,
     private hooks?: {
+      onServerConnect?: (url: string) => void
       onStartConnect?: (url: string) => void
-      onConnect?: (url: string) => void
       onDisconnect?: (c: CloseEvent, willAttemptReconnect: boolean) => void
       onError?: (e?: string) => void
       onLog?: (...msg: any[]) => void
@@ -170,7 +171,7 @@ export class WSMClient {
     this.datapreppers.set(MykoProtocol.JSON, (data) => data.toString())
     this.datapreppers.set(MykoProtocol.MSGPACK, (data) => data)
 
-    this.opts = {
+    this.clientOpts = {
       secure: false,
       reconnect: true,
       disableMsgPack: false,
@@ -178,6 +179,58 @@ export class WSMClient {
       preventThrowing: false,
       ...opts,
     }
+
+    this.socketGroup = new SocketGroup(
+      this.makeSocket,
+      {
+        onClosed: () => {},
+        onConnected: (url) => {},
+        onError: (e) => {},
+        onMessage: (data) => {
+          this.onMessage(data)
+        },
+        onReconnecting: (url) => {},
+        reconnect: !!this.clientOpts.reconnect
+          ? {
+              interval: 1000,
+              maxAttempts: this.clientOpts.maxReconnectAttempts,
+            }
+          : undefined,
+        onTerminated: () => {},
+      },
+      {
+        onGroupClosed: () => {
+          this.hooks.onLog?.('Socket Group closed')
+        },
+        onGroupConnected: (url) => {
+          this.onServerConnect(url)
+        },
+        onGroupError: (error) => {
+          console.warn(error)
+        },
+        onGroupLog: (...log) => {
+          this.hooks?.onLog?.(...log)
+        },
+        onGroupMessage: (data) => {
+          this.onMessage(data)
+        },
+        onGroupMainServerChange: (url) => {
+          this.onServerConnect(url)
+        },
+        onMainSocketReconnecting: (url) => {
+          this.hooks?.onLog?.('Reconnecting to', url)
+        },
+        socketSendMode: SocketSendMode.Single,
+      },
+    )
+
+    const servers = this.watchQuery(new GetPeerServers())
+
+    servers.subscribe((s) => {
+      this.socketGroup.addServers(
+        s.map((s) => ({ host: s.address, port: s.port })),
+      )
+    })
   }
 
   async ping(): Promise<number> {
@@ -214,7 +267,7 @@ export class WSMClient {
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
             this.errorsSubject.next(e)
-            if (!this.opts.preventThrowing) throw e
+            if (!this.clientOpts.preventThrowing) throw e
             return
           }
           this.successSubject.next(
@@ -332,19 +385,19 @@ export class WSMClient {
   }
 
   public connect(host: string, port: number) {
-    this.teardownSocket()
-    this.host = host
-    this.port = port
-    this.createSocket()
+    this.socketGroup.bootstrap(host, port)
   }
 
-  private onOpen(path: string) {
-    if (this.protocol !== MykoProtocol.MSGPACK && !this.opts.disableMsgPack) {
+  private onServerConnect(path: string) {
+    if (
+      this.protocol !== MykoProtocol.MSGPACK &&
+      !this.clientOpts.disableMsgPack
+    ) {
       // this.switchToMessagePack()
     }
     this.hooks.onLog?.('Connected to', path)
+    this.hooks?.onServerConnect && this.hooks?.onServerConnect(path)
     this.processQueue()
-    this.hooks?.onConnect && this.hooks?.onConnect(path)
     ;[...this.resendQueries.values()].forEach((q) => {
       this.send(q)
     })
@@ -411,65 +464,24 @@ export class WSMClient {
     }
   }
 
-  private createSocket() {
-    const prefix = this.opts.secure ? 'wss' : 'ws'
-    const port = this.opts.secure ? '' : `:${this.port}`
-    const path = `${prefix}://${this.host}${port}/myko`
-    this.hooks?.onStartConnect && this.hooks?.onStartConnect(path)
-    this.ws = new ReconnectSocket(path, this.makeSocket, {
-      onClosed: () => {
-        console.log('CLOSED')
-      },
-      onConnected: (path) => {
-        this.onOpen(path)
-        console.log('CONNECTED')
-      },
-      onMessage: (e) => {
-        this.onMessage(e)
-        console.log('MESSAGE')
-      },
-      onReconnecting: () => {
-        console.log('RECONNECTING')
-      },
-      onError: (e) => {
-        this.hooks?.onError && this.hooks?.onError()
-        console.log('ERROR', e)
-      },
-      reconnect: !!this.opts.reconnect
-        ? {
-            interval: 1000,
-            maxAttempts: this.opts.maxReconnectAttempts,
-          }
-        : undefined,
-    })
-
-    if (!this.ws) {
-      this.hooks?.onError && this.hooks?.onError('No Socket')
-      return
-    }
-
-    this.hooks.onLog?.('Connecting to', path)
-  }
-
   private forceSend(e: { event: string; data?: any }) {
-    if (!this.ws.ready()) {
+    if (!this.socketGroup.ready) {
       return
     }
-
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(e)
 
-    this.ws.send(encoded)
+    this.socketGroup.send(encoded)
   }
 
   private send(item: WSMMessage) {
-    if (!this.ws.ready() || !this.protocolReady) {
+    if (!this.socketGroup.ready || !this.protocolReady) {
       this.q.add(item)
       return
     }
 
     const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
     this.upMsgCounter.next()
-    this.ws.send(encoded)
+    this.socketGroup.send(encoded)
   }
 
   private processQueue() {
@@ -479,15 +491,11 @@ export class WSMClient {
     })
   }
 
-  private teardownSocket() {
-    if (this.ws) {
-      this.hooks?.onDisconnect?.({} as CloseEvent, false)
-      this.ws.teardown()
-      this.ws = null
-    }
+  private teardown() {
+    this.socketGroup.teardown()
   }
 
   disconnect() {
-    this.teardownSocket()
+    this.teardown()
   }
 }
