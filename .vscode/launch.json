@@ -11,6 +11,12 @@
       "url": "ws://localhost:9229/vscode"
     },
     {
+      "type": "bun",
+      "request": "attach",
+      "name": "Attach to Noise Main",
+      "url": "ws://localhost:9239/vscode"
+    },
+    {
       "name": "Python: Current File",
       "type": "python",
       "request": "launch",
