@@ -77,6 +77,7 @@ type WSMClientOpts = {
   maxReconnectAttempts: number
   disableMsgPack: boolean
   preventThrowing: boolean
+  singleSocket: boolean
 }
 export class WSMClient {
   private q = new Set<WSMMessage>()
@@ -142,7 +143,7 @@ export class WSMClient {
     private hooks?: {
       onServerConnect?: (url: string) => void
       onStartConnect?: (url: string) => void
-      onDisconnect?: (c: CloseEvent, willAttemptReconnect: boolean) => void
+      onTerminated?: () => void
       onError?: (e?: string) => void
       onLog?: (...msg: any[]) => void
     },
@@ -177,6 +178,7 @@ export class WSMClient {
       disableMsgPack: false,
       maxReconnectAttempts: Infinity,
       preventThrowing: false,
+      singleSocket: false,
       ...opts,
     }
 
@@ -200,7 +202,7 @@ export class WSMClient {
       },
       {
         onGroupClosed: () => {
-          this.hooks.onLog?.('Socket Group closed')
+          this.hooks.onTerminated()
         },
         onGroupConnected: (url) => {
           this.onServerConnect(url)
@@ -226,6 +228,11 @@ export class WSMClient {
 
     const servers = this.watchQuery(new GetPeerServers())
 
+    if (this.clientOpts.singleSocket) {
+      return
+    }
+
+    this.hooks.onLog?.('Watching for Additional servers')
     servers.subscribe((s) => {
       this.socketGroup.addServers(
         s.map((s) => ({ host: s.address, port: s.port })),

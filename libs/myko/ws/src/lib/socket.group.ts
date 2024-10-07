@@ -83,6 +83,10 @@ export class SocketGroup {
     }
 
     this.socketKeys.next(Array.from(this.sockets.keys()))
+
+    if (this.sockets.size === 0) {
+      this.groupOpts.onGroupClosed()
+    }
   }
 
   async teardown() {
@@ -112,7 +116,6 @@ export class SocketGroup {
     const socket = new ReconnectSocket(socketUrl, this.makeSocket, {
       onClosed: () => {
         this.socketOpts.onClosed()
-        this.removeSocket(socketUrl)
       },
       onConnected: (url) => {
         this.saveSocket(url, socket)
@@ -130,7 +133,9 @@ export class SocketGroup {
         }
         this.socketOpts.onReconnecting(url)
       },
-      onTerminated: () => {},
+      onTerminated: () => {
+        this.removeSocket(socketUrl)
+      },
       reconnect: this.socketOpts.reconnect,
     })
   }

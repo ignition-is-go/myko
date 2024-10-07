@@ -61,18 +61,29 @@ export class PeerClientRegistry {
     const client = new WSMClient(
       (url) => new WebSocket(url, { timeout: 1000 }),
       {
-        onDisconnect: (_, willAttemptReconnect) => {
-          eventBus.publishDel(server, 'peer-disconnected')
-          this.peers.delete(makePeerKey(server))
+        onTerminated: () => {
+          new MykoLogger('Peer Registry').info(
+            `Peer Disconnected - ${server.address}:${server.port}`,
+          )
+
+          eventBus.publishDel(server, 'disconnected')
+
           this.teardownPeerEventListener(server)
         },
-        onConnect: () => {
+        onError: (e) => {
+          new MykoLogger('Peer Registry').error(
+            `Error Connecting to Peer - ${server.address}:${server.port}`,
+            e,
+          )
+        },
+        onLog: (...l) => {
           new MykoLogger('Peer Registry').info(
-            `Connected to Peer - ${server.address}:${server.port}`,
+            `Peer Log - ${server.address}:${server.port}`,
+            ...l,
           )
         },
       },
-      { reconnect: true, maxReconnectAttempts: 5, secure: false },
+      { secure: false, reconnect: false },
     )
 
     client.connect(server.address, server.port)
