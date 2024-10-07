@@ -82,8 +82,13 @@ export class PeerClientRegistry {
             ...l,
           )
         },
+        onServerConnect: (url) => {
+          new MykoLogger('Peer Registry').info(
+            `Peer Connected - ${server.address}:${server.port}`,
+          )
+        },
       },
-      { secure: false, reconnect: false },
+      { secure: false, reconnect: false, singleSocket: true },
     )
 
     client.connect(server.address, server.port)

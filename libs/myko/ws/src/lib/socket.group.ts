@@ -6,46 +6,54 @@ import {
   ReplaySubject,
   startWith,
 } from 'rxjs'
-import { ReconnectSocket, type ReconnectSocketOpts } from './socket.reconnect'
+import { ReconnectSocket } from './socket.reconnect'
 export enum SocketSendMode {
   Single = 'Single',
   Broadcast = 'Broadcast',
 }
 
 export type SocketGroupOpts = {
-  onGroupConnected: (url: string) => void
-  onGroupClosed: () => void
-  onGroupError: (error: string) => void
-  onGroupLog: (...log: any[]) => void
-  onGroupMessage: (data: MessageEvent) => void
-  onGroupMainServerChange: (url: string) => void
+  onConnected: (url: string) => void
+  onClosed: () => void
+  onError: (error: string) => void
+  onLog: (...log: any[]) => void
+  onMessage: (data: MessageEvent) => void
+  onMainServerChange: (url: string) => void
   onMainSocketReconnecting: (url: string) => void
   socketSendMode: SocketSendMode
+  reconnect: boolean
 }
 
 export class SocketGroup {
   private sockets = new Map<string, ReconnectSocket>()
 
-  private socketKeys = new ReplaySubject<string[]>(1)
+  private badSockets = new Set<string>()
+
+  private openSockets = new ReplaySubject<string[]>(1)
 
   private currentSocket: string
 
+  get goodSockets() {
+    return Array.from(this.sockets.keys()).filter(
+      (key) => !this.badSockets.has(key),
+    )
+  }
+
   get ready() {
-    return this.sockets.size > 0
+    return this.goodSockets.length > 0
   }
 
   constructor(
     private makeSocket: (socketUrl: string) => WebSocket,
-    private socketOpts: ReconnectSocketOpts,
     private groupOpts: SocketGroupOpts,
   ) {
-    this.socketKeys.pipe(startWith([]), pairwise()).subscribe((keys) => {
+    this.openSockets.pipe(startWith([]), pairwise()).subscribe((keys) => {
       if (keys[0].length === 0 && keys[1].length === 1) {
         this.onFirstClientConnected(keys[1][0])
       }
 
       if (keys[0].length > 0 && keys[1].length === 0) {
-        this.groupOpts.onGroupClosed()
+        this.groupOpts.onClosed()
         this.currentSocket = undefined
       }
     })
@@ -55,38 +63,49 @@ export class SocketGroup {
     const mainSocket = this.sockets.get(key)
 
     if (!mainSocket) {
-      this.groupOpts.onGroupError('Cannot Establish Main Socket')
+      this.groupOpts.onError('Cannot Establish Main Socket')
       return
     }
 
     this.currentSocket = key
 
-    this.groupOpts.onGroupConnected(key)
+    this.groupOpts.onConnected(key)
   }
 
-  private saveSocket(key: string, socket: ReconnectSocket) {
+  private tickSocketKeys() {
+    this.openSockets.next(this.goodSockets)
+
+    if (this.goodSockets.length === 0) {
+      this.groupOpts.onClosed()
+    }
+  }
+
+  private onSocketOpen(key: string, socket: ReconnectSocket) {
     this.sockets.set(key, socket)
-    this.socketKeys.next(Array.from(this.sockets.keys()))
+    this.badSockets.delete(key)
+
+    this.tickSocketKeys()
   }
 
-  private removeSocket(key: string) {
-    if (this.sockets.has(key)) {
-      this.sockets.delete(key)
+  private onSocketClosed(key: string) {
+    this.badSockets.add(key)
+
+    if (this.goodSockets.length === 0) {
+      this.groupOpts.onClosed()
+      return
     }
 
     if (key === this.currentSocket) {
-      this.currentSocket = this.sockets.keys().next().value
-
-      if (this.currentSocket) {
-        this.groupOpts.onGroupMainServerChange(this.currentSocket)
-      }
+      this.currentSocket = this.goodSockets[0]
+      this.groupOpts.onMainServerChange(this.currentSocket)
     }
 
-    this.socketKeys.next(Array.from(this.sockets.keys()))
+    this.tickSocketKeys()
+  }
 
-    if (this.sockets.size === 0) {
-      this.groupOpts.onGroupClosed()
-    }
+  private removeSocket(key: string) {
+    this.sockets.delete(key)
+    this.tickSocketKeys()
   }
 
   async teardown() {
@@ -99,13 +118,13 @@ export class SocketGroup {
     })
 
     await firstValueFrom(
-      this.socketKeys.pipe(
+      this.openSockets.pipe(
         filter((keys) => keys.length === 0),
         first(),
       ),
     )
 
-    this.groupOpts.onGroupClosed()
+    this.groupOpts.onClosed()
 
     return
   }
@@ -115,33 +134,36 @@ export class SocketGroup {
 
     const socket = new ReconnectSocket(socketUrl, this.makeSocket, {
       onClosed: () => {
-        this.socketOpts.onClosed()
+        this.onSocketClosed(socketUrl)
       },
       onConnected: (url) => {
-        this.saveSocket(url, socket)
+        this.onSocketOpen(url, socket)
       },
       onMessage: (data) => {
-        this.socketOpts.onMessage(data)
+        this.groupOpts.onMessage(data)
       },
       onError: (error) => {
-        this.groupOpts.onGroupError(error)
-        this.socketOpts.onError(error)
+        this.groupOpts.onError(error)
       },
       onReconnecting: (url) => {
         if (!this.currentSocket || this.currentSocket === url) {
           this.groupOpts.onMainSocketReconnecting(url)
         }
-        this.socketOpts.onReconnecting(url)
       },
       onTerminated: () => {
         this.removeSocket(socketUrl)
       },
-      reconnect: this.socketOpts.reconnect,
+      reconnect: this.groupOpts.reconnect
+        ? {
+            interval: 1000,
+            maxAttempts: Infinity,
+          }
+        : undefined,
     })
   }
 
   async bootstrap(host: string, port: number) {
-    this.groupOpts.onGroupLog('Bootstrapping Socket Group', host, port)
+    this.groupOpts.onLog('Bootstrapping Socket Group', host, port)
     await this.teardown()
 
     this.createSocket(host, port)
@@ -152,7 +174,7 @@ export class SocketGroup {
       const socket = this.sockets.get(this.currentSocket)
 
       if (!socket) {
-        this.groupOpts.onGroupError('No current socket for group')
+        this.groupOpts.onError('No current socket for group')
         return
       }
 

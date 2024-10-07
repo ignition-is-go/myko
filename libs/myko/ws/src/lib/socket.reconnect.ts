@@ -65,6 +65,7 @@ export class ReconnectSocket {
 
   send(data: string | ArrayBufferLike | Blob) {
     if (this.socket.readyState !== this.socket.OPEN) {
+      console.log('socket not ready', this.url)
       throw new Error('Not Connected')
     }
 

@@ -184,45 +184,31 @@ export class WSMClient {
 
     this.socketGroup = new SocketGroup(
       this.makeSocket,
+
       {
-        onClosed: () => {},
-        onConnected: (url) => {},
-        onError: (e) => {},
+        onClosed: () => {
+          this.hooks.onTerminated()
+        },
+        onConnected: (url) => {
+          this.onServerConnect(url)
+        },
+        onError: (error) => {
+          console.warn(error)
+        },
+        onLog: (...log) => {
+          this.hooks?.onLog?.(...log)
+        },
         onMessage: (data) => {
           this.onMessage(data)
         },
-        onReconnecting: (url) => {},
-        reconnect: !!this.clientOpts.reconnect
-          ? {
-              interval: 1000,
-              maxAttempts: this.clientOpts.maxReconnectAttempts,
-            }
-          : undefined,
-        onTerminated: () => {},
-      },
-      {
-        onGroupClosed: () => {
-          this.hooks.onTerminated()
-        },
-        onGroupConnected: (url) => {
-          this.onServerConnect(url)
-        },
-        onGroupError: (error) => {
-          console.warn(error)
-        },
-        onGroupLog: (...log) => {
-          this.hooks?.onLog?.(...log)
-        },
-        onGroupMessage: (data) => {
-          this.onMessage(data)
-        },
-        onGroupMainServerChange: (url) => {
+        onMainServerChange: (url) => {
           this.onServerConnect(url)
         },
         onMainSocketReconnecting: (url) => {
           this.hooks?.onLog?.('Reconnecting to', url)
         },
         socketSendMode: SocketSendMode.Single,
+        reconnect: opts.reconnect ?? false,
       },
     )
 
