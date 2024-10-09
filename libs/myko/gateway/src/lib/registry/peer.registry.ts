@@ -49,6 +49,7 @@ export class PeerClientRegistry {
     const sub = this.peerEventListenerSubs.get(key)
     sub.unsubscribe()
     this.peerEventListenerSubs.delete(key)
+    this.peers.delete(key)
   }
 
   onModuleInit() {}
