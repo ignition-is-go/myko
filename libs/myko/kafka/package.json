@@ -2,9 +2,9 @@
   "name": "@myko/kafka",
   "main": "./src/index.ts",
   "dependencies": {
-    "@myko/core": "workspace:*",
+    "@myko/core": "workspace:^",
     "kafkajs": "^2.2.4",
-    "msgpackr": "^1.11.0",
+    "msgpackr": "^1.10.2",
     "rxjs": "^7.8.1"
   }
 }
