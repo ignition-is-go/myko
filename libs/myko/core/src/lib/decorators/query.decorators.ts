@@ -5,7 +5,7 @@ import {
   MYKO_QUERY_ID_KEY,
   MYKO_QUERY_ITEM_TYPE_KEY,
 } from '../constants'
-import { addQueryDoc } from '../registry'
+import { addQueryDoc, queries, queryHandlers } from '../registry'
 import type {
   IMItem,
   MItem,
@@ -34,6 +34,8 @@ export const MykoQuery: <U extends MItem<IMItem>>(
       []
 
     const queryId = queryName
+
+    queries.add(queryId)
 
     addQueryDoc(
       {
@@ -70,6 +72,8 @@ export const MykoQueryHandler: <T extends MQuery<MItem<IMItem>>>(
   if (!queryId) {
     throw new Error('queryId is undefined')
   }
+
+  queryHandlers.add(queryId)
 
   return (target: MQueryHandlerConstructor<T>) => {
     Reflect.defineMetadata(MYKO_HANDLER_QUERY_ID_KEY, queryId, target)

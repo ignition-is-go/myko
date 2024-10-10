@@ -1,8 +1,15 @@
 import {
   MykoLogger,
   Server,
+  commandHandlers,
+  commands,
   eventBus,
   getHostId,
+  onAllInit,
+  queries,
+  queryHandlers,
+  reportHandlers,
+  reports,
   setDefaultRepoOptions,
   setServer,
   watchInit,
@@ -73,6 +80,42 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
   setDefaultRepoOptions({
     persisterFactory: defaultPersister,
     overrides: args.persisterOverrides,
+  })
+
+  onAllInit(() => {
+    const unhandledQueries = queries.difference(queryHandlers)
+    const unhandledReports = reports.difference(reportHandlers)
+    const unhandledCommands = commands.difference(commandHandlers)
+
+    if (unhandledQueries.size > 0) {
+      console.error(
+        [
+          'Unhandled Queries',
+          ...[...unhandledQueries.values()].map((x) => ` - ${x}`),
+          '',
+        ].join('\n'),
+      )
+    }
+
+    if (unhandledReports.size > 0) {
+      console.error(
+        [
+          'Unhandled Reports',
+          ...[...unhandledReports.values()].map((x) => ` - ${x}`),
+          '',
+        ].join('\n'),
+      )
+    }
+
+    if (unhandledCommands.size > 0) {
+      console.error(
+        [
+          'Unhandled Commands',
+          ...[...unhandledCommands.values()].map((x) => ` - ${x}`),
+          '',
+        ].join('\n'),
+      )
+    }
   })
 
   watchInit((ent, all, init, uninit) => {

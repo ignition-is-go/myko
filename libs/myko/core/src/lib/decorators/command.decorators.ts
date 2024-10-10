@@ -5,7 +5,7 @@
 
 import { commandBus } from '../busses'
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
-import { addCommandDoc } from '../registry'
+import { addCommandDoc, commandHandlers, commands } from '../registry'
 import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
 
 /**
@@ -13,10 +13,12 @@ import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
  * @param {string} commandId - The unique identifier for the command.
  * @returns {Function} - The decorator function.
  */
-export const MykoCommand: () => <T extends MCommand<MCommandResponse<T>>>(
+export const MykoCommand: (opts?: {
+  noHandler?: boolean
+}) => <T extends MCommand<MCommandResponse<T>>>(
   target: new (...args: any[]) => T,
 ) => any =
-  () =>
+  (opts) =>
   <T extends MCommand<MCommandResponse<T>>>(
     target: new (...args: any[]) => T,
   ) => {
@@ -26,6 +28,10 @@ export const MykoCommand: () => <T extends MCommand<MCommandResponse<T>>>(
       Object.getOwnPropertyDescriptors(original)?.['name'].value
 
     const commandId = commandName
+
+    if (!opts?.noHandler) {
+      commands.add(commandId)
+    }
 
     const paramtypes =
       Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
@@ -67,6 +73,8 @@ export const MykoCommandHandler: <T extends MCommand<MCommandResponse<T>>>(
 ) => {
   return (target: new (...args: any[]) => MCommandHandler<T>) => {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
+
+    commandHandlers.add(commandId)
     Reflect.defineMetadata(MYKO_HANDLER_COMMAND_ID_KEY, commandId, target)
 
     commandBus.bind(new target(), commandId)
