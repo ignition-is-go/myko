@@ -92,3 +92,6 @@ Readme.md
 
 CNAME
 *.lockb
+
+# images
+*.webp
