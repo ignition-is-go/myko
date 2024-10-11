@@ -208,7 +208,7 @@ export class WSMClient {
           this.hooks?.onLog?.('Reconnecting to', url)
         },
         socketSendMode: SocketSendMode.Single,
-        reconnect: opts.reconnect ?? false,
+        reconnect: this.clientOpts.reconnect,
       },
     )
 

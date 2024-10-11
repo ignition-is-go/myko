@@ -81,8 +81,18 @@ export class SocketGroup {
   }
 
   private onSocketOpen(key: string, socket: ReconnectSocket) {
+    const emptyAtStart = this.goodSockets.length === 0
+
     this.sockets.set(key, socket)
     this.badSockets.delete(key)
+
+    const hasOneNow = this.goodSockets.length === 1
+
+    if (emptyAtStart && hasOneNow) {
+      this.currentSocket = key
+      this.groupOpts.onMainServerChange(key)
+      this.groupOpts.onConnected(key)
+    }
 
     this.tickSocketKeys()
   }
