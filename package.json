@@ -18,12 +18,8 @@
     "setup": "pnpm run install && pnpm run sync",
     "ionic:build": "npm run build",
     "sync": "git submodule update --init --recursive --remote",
-    "format": "lint-staged",
     "format:all": "prettier --write .",
     "prepare": "husky"
-  },
-  "lint-staged": {
-    "*": "prettier --write --ignore-path .prettierignore"
   },
   "workspaces": [
     "apps/**",
