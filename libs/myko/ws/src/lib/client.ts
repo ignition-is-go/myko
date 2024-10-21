@@ -24,6 +24,7 @@ import {
   MQUERY_RESPONSE_EVENT,
   MREPORT_EVENT,
   MREPORT_RESPONSE_EVENT,
+  type WSMCommand,
   type WSMCommandError,
   type WSMCommandResponse,
   type WSMMessage,
@@ -61,6 +62,7 @@ import {
   type MReportResult,
   type MWrappedItem,
 } from '@myko/core'
+import { DateTime } from 'luxon'
 import { pack, unpack } from 'msgpackr'
 import { v4 } from 'uuid'
 import { SocketGroup, SocketSendMode } from './socket.group'
@@ -78,6 +80,14 @@ type WSMClientOpts = {
   disableMsgPack: boolean
   preventThrowing: boolean
   singleSocket: boolean
+}
+
+type CommandCompletion = {
+  command: WSMCommand
+  startTime: string
+  completeTime?: string
+  errorTime?: string
+  error?: WSMCommandError
 }
 export class WSMClient {
   private q = new Set<WSMMessage>()
@@ -138,6 +148,10 @@ export class WSMClient {
 
   private clientOpts: WSMClientOpts
 
+  private pendingCommands = new Map<ID, CommandCompletion>()
+
+  private pendingCommmandSubject = new Subject<CommandCompletion[]>()
+
   constructor(
     private makeSocket: (url: string) => any,
     private hooks?: {
@@ -159,6 +173,9 @@ export class WSMClient {
     this.errorsSubject = new Subject()
     this.successSubject = new Subject()
     this.pingSubject = new Subject()
+
+    this.pendingCommands = new Map()
+    this.pendingCommmandSubject = new Subject()
 
     this.resendQueries = new Map()
     this.resendReports = new Map()
@@ -246,13 +263,48 @@ export class WSMClient {
     )
   }
 
+  private setCommandPending(command: WSMCommand) {
+    this.pendingCommands.set(command.data.command.tx, {
+      command,
+      startTime: DateTime.utc().toISO(),
+    })
+    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+  }
+
+  private setCommandComplete(command: WSMCommand) {
+    const cmd = this.pendingCommands.get(command.data.command.tx)
+    if (cmd) {
+      cmd.completeTime = DateTime.utc().toISO()
+    }
+    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+    setTimeout(() => {
+      this.clearCommandCompletion(command.data.command.tx)
+    }, 1000)
+  }
+
+  private setCommandError(command: WSMCommand, error: WSMCommandError) {
+    const cmd = this.pendingCommands.get(command.data.command.tx)
+    if (cmd) {
+      cmd.error = error
+      cmd.errorTime = DateTime.utc().toISO()
+    }
+    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+  }
+
+  clearCommandCompletion(tx: ID) {
+    this.pendingCommands.delete(tx)
+    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+  }
+
   sendCommand<T extends MCommand<unknown>>(
     command: T,
   ): Promise<MCommandResponse<T>> {
     if (this.userToken) {
       command.userToken = this.userToken
     }
+
     const wrapped = wrapCommandWS(command)
+    this.setCommandPending(wrapped)
     this.send(wrapped)
     return firstValueFrom(
       this.commandResponses.pipe(
@@ -260,16 +312,22 @@ export class WSMClient {
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
             this.errorsSubject.next(e)
+            this.setCommandError(wrapped, e)
             if (!this.clientOpts.preventThrowing) throw e
             return
           }
           this.successSubject.next(
             wrapped.data.commandId.split(':').reverse().join(' '),
           )
+          this.setCommandComplete(wrapped)
           return e.data as MCommandResponse<T>
         }),
       ),
     )
+  }
+
+  watchCommandStatus(): Observable<CommandCompletion[]> {
+    return this.pendingCommmandSubject.asObservable()
   }
 
   watchQuery<T extends MQuery>(query: T): MLiveQueryResult<T> {

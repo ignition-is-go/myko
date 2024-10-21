@@ -6,11 +6,13 @@
   "license": "ISC",
   "dependencies": {
     "@myko/core": "workspace:*",
+    "luxon": "^3.5.0",
     "msgpackr": "^1.10.2",
     "rxjs": "^7.8.1",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@types/luxon": "^3.4.2",
     "@types/ws": "^8.5.10"
   }
 }
