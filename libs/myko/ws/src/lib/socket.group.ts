@@ -22,6 +22,7 @@ export type SocketGroupOpts = {
   onMainSocketReconnecting: (url: string) => void
   socketSendMode: SocketSendMode
   reconnect: boolean
+  secure: boolean
 }
 
 export class SocketGroup {
@@ -140,7 +141,7 @@ export class SocketGroup {
   }
 
   private createSocket(host: string, port: number) {
-    const socketUrl = `ws://${host}:${port}/myko`
+    const socketUrl = `${this.groupOpts.secure ? 'wss' : 'ws'}://${host}:${port}/myko`
 
     const socket = new ReconnectSocket(socketUrl, this.makeSocket, {
       onClosed: () => {

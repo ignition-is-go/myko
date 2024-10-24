@@ -226,6 +226,7 @@ export class WSMClient {
         },
         socketSendMode: SocketSendMode.Single,
         reconnect: this.clientOpts.reconnect,
+        secure: this.clientOpts.secure,
       },
     )
 
