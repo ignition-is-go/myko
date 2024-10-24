@@ -142,8 +142,8 @@ export class SocketGroup {
 
   private createSocket(host: string, port: number) {
     const socketUrl = this.groupOpts.secure
-      ? `wss://${host}:${port}/myko`
-      : `ws://${host}/myko`
+      ? `wss://${host}/myko`
+      : `ws://${host}:${port}/myko`
 
     const socket = new ReconnectSocket(socketUrl, this.makeSocket, {
       onClosed: () => {
