@@ -21,10 +21,7 @@
     "format:all": "prettier --write .",
     "prepare": "husky"
   },
-  "workspaces": [
-    "apps/**",
-    "libs/**"
-  ],
+  "packageManager": "pnpm@9.12.2",
   "private": true,
   "devDependencies": {
     "@capacitor/cli": "^5.7.8",
