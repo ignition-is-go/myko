@@ -1,6 +1,6 @@
 import {
   Client,
-  ConnectedToLeader,
+  // ConnectedToLeader,
   DeleteClientsByServerId,
   EntitySearch,
   EventContainer,
@@ -13,8 +13,8 @@ import {
   GetServers,
   GetServersByClientIds,
   GetServersByQuery,
-  GroupLeader,
-  IsLeader,
+  // GroupLeader,
+  // IsLeader,
   MItem,
   MykoCommandError,
   MykoCommandHandler,
@@ -50,7 +50,6 @@ import {
   Observable,
   combineLatest,
   debounceTime,
-  distinctUntilChanged,
   filter,
   firstValueFrom,
   interval,
@@ -83,16 +82,16 @@ onAllInit(() => {
 
   eventBus.publishSet(server, 'server-start')
 
-  reportBus
-    .watch(new ConnectedToLeader())
-    .pipe(distinctUntilChanged())
-    .subscribe((isLeader) => {
-      if (isLeader) {
-        new MykoLogger('Gateway Handler').info('Server Became Leader')
-      } else {
-        new MykoLogger('Gateway Handler').info('Server No Longer Leader')
-      }
-    })
+  // reportBus
+  //   .watch(new ConnectedToLeader())
+  //   .pipe(distinctUntilChanged())
+  //   .subscribe((isLeader) => {
+  //     if (isLeader) {
+  //       new MykoLogger('Gateway Handler').info('Server Became Leader')
+  //     } else {
+  //       new MykoLogger('Gateway Handler').info('Server No Longer Leader')
+  //     }
+  //   })
 })
 
 @MykoQueryHandler(GetServers)
@@ -264,35 +263,35 @@ export class GetItemByTypeAndIdHandler
   }
 }
 
-@MykoReportHandler(GroupLeader)
-export class GroupLeaderHandler implements MReportHandler<GroupLeader> {
-  execute(_: GroupLeader): Observable<Server> {
-    return repo(Server)
-      .watch({ groupId: getServer().groupId })
-      .pipe(
-        map((x) => {
-          return x.sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0]
-        }),
-      )
-  }
-}
+// @MykoReportHandler(GroupLeader)
+// export class GroupLeaderHandler implements MReportHandler<GroupLeader> {
+//   execute(_: GroupLeader): Observable<Server> {
+//     return repo(Server)
+//       .watch({ groupId: getServer().groupId })
+//       .pipe(
+//         map((x) => {
+//           return x.sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0]
+//         }),
+//       )
+//   }
+// }
 
-@MykoReportHandler(IsLeader)
-export class IsLeaderHandler implements MReportHandler<IsLeader> {
-  execute(report: IsLeader): Observable<boolean> {
-    return repo(Server)
-      .watchId(report.serverId)
-      .pipe(
-        switchMap((server) =>
-          server
-            ? reportBus
-                .watch(new GroupLeader(server.groupId))
-                .pipe(map((leader) => leader?.id === server.id))
-            : of(false),
-        ),
-      )
-  }
-}
+// @MykoReportHandler(IsLeader)
+// export class IsLeaderHandler implements MReportHandler<IsLeader> {
+//   execute(report: IsLeader): Observable<boolean> {
+//     return repo(Server)
+//       .watchId(report.serverId)
+//       .pipe(
+//         switchMap((server) =>
+//           server
+//             ? reportBus
+//                 .watch(new GroupLeader(server.groupId))
+//                 .pipe(map((leader) => leader?.id === server.id))
+//             : of(false),
+//         ),
+//       )
+//   }
+// }
 
 @MykoReportHandler(PeerAlive)
 export class PeerAliveHandler implements MReportHandler<PeerAlive> {
@@ -319,14 +318,14 @@ export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
   }
 }
 
-@MykoReportHandler(ConnectedToLeader)
-export class ConnectedToLeaderHandler
-  implements MReportHandler<ConnectedToLeader>
-{
-  execute(_: ConnectedToLeader) {
-    return reportBus.watch(new IsLeader(getServer().id))
-  }
-}
+// @MykoReportHandler(ConnectedToLeader)
+// export class ConnectedToLeaderHandler
+//   implements MReportHandler<ConnectedToLeader>
+// {
+//   execute(_: ConnectedToLeader) {
+//     return reportBus.watch(new IsLeader(getServer().id))
+//   }
+// }
 
 @MykoReportHandler(ServerEventLog)
 export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {

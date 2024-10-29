@@ -63,26 +63,26 @@ export class GetServersByQuery extends MQuery<Server> {
 @MykoQuery(Server)
 export class GetServers extends MQuery<Server> {}
 
-@MykoReport()
-export class GroupLeader extends MReport<Server> {
-  constructor(readonly groupId: ID) {
-    super()
-  }
-}
+// @MykoReport()
+// export class GroupLeader extends MReport<Server> {
+//   constructor(readonly groupId: ID) {
+//     super()
+//   }
+// }
 
-@MykoReport()
-export class IsLeader extends MReport<boolean> {
-  constructor(readonly serverId: ID) {
-    super()
-  }
-}
+// @MykoReport()
+// export class IsLeader extends MReport<boolean> {
+//   constructor(readonly serverId: ID) {
+//     super()
+//   }
+// }
 
-@MykoReport()
-export class ConnectedToLeader extends MReport<boolean> {
-  constructor() {
-    super()
-  }
-}
+// @MykoReport()
+// export class ConnectedToLeader extends MReport<boolean> {
+//   constructor() {
+//     super()
+//   }
+// }
 
 @MykoReport()
 export class PeerAlive extends MReport<number | false> {
