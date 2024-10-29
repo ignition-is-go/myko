@@ -269,7 +269,7 @@ export class WSMClient {
       command,
       startTime: DateTime.utc().toISO(),
     })
-    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+    this.pendingCommmandSubject.next([...this.pendingCommands.values()])
   }
 
   private setCommandComplete(command: WSMCommand) {
@@ -277,7 +277,7 @@ export class WSMClient {
     if (cmd) {
       cmd.completeTime = DateTime.utc().toISO()
     }
-    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+    this.pendingCommmandSubject.next([...this.pendingCommands.values()])
     setTimeout(() => {
       this.clearCommandCompletion(command.data.command.tx)
     }, 1000)
@@ -289,12 +289,12 @@ export class WSMClient {
       cmd.error = error
       cmd.errorTime = DateTime.utc().toISO()
     }
-    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+    this.pendingCommmandSubject.next([...this.pendingCommands.values()])
   }
 
   clearCommandCompletion(tx: ID) {
     this.pendingCommands.delete(tx)
-    this.pendingCommmandSubject.next(this.pendingCommands.values().toArray())
+    this.pendingCommmandSubject.next([...this.pendingCommands.values()])
   }
 
   sendCommand<T extends MCommand<unknown>>(
