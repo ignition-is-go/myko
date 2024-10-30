@@ -104,16 +104,9 @@ export class PeerClientRegistry {
           )
         },
         onLog: (...l) => {
-          new MykoLogger('Peer Registry').info(
-            `Peer Log - ${address}:${port}`,
-            ...l,
-          )
+          new MykoLogger('Peer Registry').info(...l)
         },
         onServerConnect: (url) => {
-          new MykoLogger('Peer Registry').info(
-            `Peer Connected - ${address}:${port}`,
-          )
-
           firstValueFrom(client.watchQuery(new GetConnectedServer())).then(
             (s) => {
               const server = s.shift()
@@ -170,6 +163,7 @@ export class PeerClientRegistry {
 
   start() {
     const peers = process.env['MYKO_PEERS']
+    new MykoLogger('Peer Registry').info('Starting with Peers:', peers)
 
     if (!peers) {
       return
