@@ -3,6 +3,7 @@ import { Repo, type RepoOptions } from '../aggregates/repo'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { PersisterFactory } from '../persisters'
+import { nullPersisterFactory } from '../persisters/null.persister'
 import {
   getItemName,
   type MEvent,
@@ -28,8 +29,13 @@ export const setDefaultRepoOptions = (args: {
 }) => {
   defaultOpts.defaultPersisterFactory = args.persisterFactory
 
-  defaultOpts.persisterOverrides = args.overrides || []
-
+  defaultOpts.persisterOverrides = [
+    ...args.overrides,
+    {
+      itemName: 'Server',
+      persister: nullPersisterFactory,
+    },
+  ]
   needsPersister.forEach((itemName) => {
     createRepo(itemName, buildRepoOptions(itemName))
   })

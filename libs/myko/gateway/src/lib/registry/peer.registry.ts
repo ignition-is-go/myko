@@ -1,26 +1,30 @@
 import {
+  GetConnectedServer,
+  GetPeerServers,
   MykoLogger,
+  RegisterPeer,
   Server,
   ServerEventLog,
   eventBus,
+  getServer,
   onAllInit,
   repo,
   type ID,
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
-import { Observable, Subscription, map } from 'rxjs'
+import { Observable, Subscription, firstValueFrom, map } from 'rxjs'
 import WebSocket from 'ws'
 
-import { getServer } from '@myko/core/src/lib/registry/self.registry'
 import { peerBus } from '../bus/peer.bus'
 import { getAuth } from './auth.registry'
 
 export class PeerClientRegistry {
   private peers = new Map<string, WSMClient>()
   private peerEventListenerSubs = new Map<string, Subscription>()
+  private gossipSubs = new Map<string, Subscription>()
 
-  private assertPeerEventListener(server: Server) {
-    const key = makePeerKey(server)
+  private assertPeerEventListener(address: string, port: number) {
+    const key = makePeerKey(address, port)
 
     if (this.peerEventListenerSubs.has(key)) {
       return
@@ -36,27 +40,43 @@ export class PeerClientRegistry {
       peerBus.next(e)
     })
 
+    const gossipSub = client.watchQuery(new GetPeerServers()).subscribe((s) => {
+      for (const server of s) {
+        if (server.id === getServer().id) {
+          continue
+        }
+
+        this.assertPeer(server.address, server.port)
+      }
+    })
+
     this.peerEventListenerSubs.set(key, sub)
+    this.gossipSubs.set(key, gossipSub)
   }
 
   private teardownPeerEventListener(server: Server) {
-    const key = makePeerKey(server)
+    const key = makePeerKey(server.address, server.port)
 
-    if (!this.peerEventListenerSubs.has(key)) {
-      return
+    if (this.gossipSubs.has(key)) {
+      const sub = this.gossipSubs.get(key)
+      sub.unsubscribe()
+      this.gossipSubs.delete(key)
     }
 
-    const sub = this.peerEventListenerSubs.get(key)
-    sub.unsubscribe()
-    this.peerEventListenerSubs.delete(key)
+    if (this.peerEventListenerSubs.has(key)) {
+      const sub = this.peerEventListenerSubs.get(key)
+      sub.unsubscribe()
+      this.peerEventListenerSubs.delete(key)
+    }
+
     this.peers.delete(key)
   }
 
   onModuleInit() {}
 
-  private assertClient(server: Server) {
-    if (this.peers.has(makePeerKey(server))) {
-      return this.peers.get(makePeerKey(server))
+  assertPeer(address: string, port: number) {
+    if (this.peers.has(makePeerKey(address, port))) {
+      return this.peers.get(makePeerKey(address, port))
     }
 
     const client = new WSMClient(
@@ -64,8 +84,14 @@ export class PeerClientRegistry {
       {
         onTerminated: () => {
           new MykoLogger('Peer Registry').info(
-            `Peer Disconnected - ${server.address}:${server.port}`,
+            `Peer Disconnected - ${address}:${port}`,
           )
+
+          const server = repo(Server).get({ address, port: port }).shift()
+
+          if (!server) {
+            return
+          }
 
           eventBus.publishDel(server, 'disconnected')
 
@@ -73,31 +99,44 @@ export class PeerClientRegistry {
         },
         onError: (e) => {
           new MykoLogger('Peer Registry').error(
-            `Error Connecting to Peer - ${server.address}:${server.port}`,
+            `Error Connecting to Peer - ${address}:${port}`,
             e,
           )
         },
         onLog: (...l) => {
           new MykoLogger('Peer Registry').info(
-            `Peer Log - ${server.address}:${server.port}`,
+            `Peer Log - ${address}:${port}`,
             ...l,
           )
         },
         onServerConnect: (url) => {
           new MykoLogger('Peer Registry').info(
-            `Peer Connected - ${server.address}:${server.port}`,
+            `Peer Connected - ${address}:${port}`,
           )
+
+          firstValueFrom(client.watchQuery(new GetConnectedServer())).then(
+            (s) => {
+              const server = s.shift()
+
+              if (!s) {
+                return
+              }
+              eventBus.publishSet(server, 'peer-connected')
+            },
+          )
+
+          client.sendCommand(new RegisterPeer(getServer()))
         },
       },
-      { secure: false, reconnect: false, singleSocket: true },
+      { secure: false, reconnect: true, singleSocket: true },
     )
 
-    client.connect(server.address, server.port)
+    client.connect(address, port)
     client.setUser(getAuth().getPeerToken())
 
-    this.peers.set(makePeerKey(server), client)
+    this.peers.set(makePeerKey(address, port), client)
 
-    this.assertPeerEventListener(server)
+    this.assertPeerEventListener(address, port)
 
     return client
   }
@@ -114,7 +153,7 @@ export class PeerClientRegistry {
             return undefined
           }
 
-          return this.assertClient(server)
+          return this.assertPeer(server.address, server.port)
         }),
       )
 
@@ -130,29 +169,22 @@ export class PeerClientRegistry {
   }
 
   start() {
-    try {
-      getServer()
-    } catch (e) {
-      new MykoLogger('Peer Registry').info(
-        'Not a Gateway, Skipping Peer Registry',
-      )
+    const peers = process.env['MYKO_PEERS']
+
+    if (!peers) {
       return
     }
 
-    repo(Server)
-      .watchFilter(
-        (s) =>
-          s.groupId === getServer().groupId &&
-          (s.address !== getServer().address || s.port !== getServer().port),
-      )
-      .pipe()
-      .subscribe((e) => {
-        e.forEach((s) => this.assertClient(s))
-      })
+    const peerList = peers.split(',')
+
+    peerList.forEach((p) => {
+      const [address, port] = p.split(':')
+      this.assertPeer(address, parseInt(port))
+    })
   }
 }
 
-const makePeerKey = (server: Server) => `${server.address}:${server.port}`
+const makePeerKey = (address: string, port: number) => `${address}:${port}`
 
 export const peers = new PeerClientRegistry()
 

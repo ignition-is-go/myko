@@ -1,5 +1,12 @@
-import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
 import {
+  MykoCommand,
+  MykoItem,
+  MykoQuery,
+  MykoReport,
+  doc,
+} from '../decorators'
+import {
+  MCommand,
   MItem,
   MQuery,
   MReport,
@@ -110,5 +117,12 @@ export class EntitySearch<T extends MItem> extends MReport<T[]> {
   ) {
     super()
     this.entityType = getItemName(item)
+  }
+}
+
+@MykoCommand()
+export class RegisterPeer extends MCommand {
+  constructor(readonly server: Server) {
+    super()
   }
 }

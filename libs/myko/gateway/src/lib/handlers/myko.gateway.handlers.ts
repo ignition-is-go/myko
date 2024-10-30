@@ -23,6 +23,7 @@ import {
   MykoReportHandler,
   PeerAlive,
   PeerLastSeen,
+  RegisterPeer,
   Server,
   ServerEventLog,
   eventBus,
@@ -342,5 +343,12 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
     }
 
     return repoName(report.entityType).watchSearch(report.query)
+  }
+}
+
+@MykoCommandHandler(RegisterPeer)
+export class RegisterPeerHandler implements MCommandHandler<RegisterPeer> {
+  async execute(command: RegisterPeer) {
+    peers.assertPeer(command.server.address, command.server.port)
   }
 }
