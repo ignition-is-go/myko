@@ -186,7 +186,7 @@ export class SocketGroup {
     if (this.groupOpts.socketSendMode === SocketSendMode.Single) {
       const socket = this.sockets.get(this.currentSocket)
 
-      if (!socket) {
+      if (!socket || !socket.ready()) {
         this.groupOpts.onError('No current socket for group')
         return
       }
@@ -196,7 +196,11 @@ export class SocketGroup {
 
     if (this.groupOpts.socketSendMode === SocketSendMode.Broadcast) {
       this.sockets.forEach((socket) => {
-        socket.send(event)
+        if (socket.ready()) {
+          socket.send(event)
+        } else {
+          this.groupOpts.onError('No socket ready for group')
+        }
       })
     }
   }
