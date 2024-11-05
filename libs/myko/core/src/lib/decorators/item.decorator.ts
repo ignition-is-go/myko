@@ -54,6 +54,7 @@ export const MykoItem =
 
     const withType: any = function (...args: any[]) {
       const typed = new original(...args)
+      args.forEach((arg) => Object.assign(typed, arg))
       Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, typed)
       return typed
     }

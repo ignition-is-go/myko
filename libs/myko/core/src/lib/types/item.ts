@@ -27,7 +27,8 @@ export class MItem<T extends IMItem = IMItem> {
 
   constructor(args: PartialBy<T, 'hash'>) {
     const hashed = addMissingHash(args)
-    return hashed as MItem<T>
+    this.id = hashed.id
+    this.hash = hashed.hash
   }
 }
 
