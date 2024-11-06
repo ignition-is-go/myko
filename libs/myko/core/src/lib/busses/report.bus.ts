@@ -49,7 +49,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    * @param report - The report to watch.
    * @returns The live report result.
    */
-  cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
+  private cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
 
   watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
@@ -115,4 +115,4 @@ export class MReportBus extends AMykoReportBus {
   }
 }
 
-export const reportBus = new MReportBus()
+export const reportBus: MReportBus = new MReportBus()

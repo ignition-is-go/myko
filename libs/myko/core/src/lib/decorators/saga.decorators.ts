@@ -18,7 +18,7 @@ import type { MSagaHandler } from '../types'
 //   }
 // }
 
-export const MykoSaga = () => {
+export const MykoSaga = (): Function => {
   return (target: new () => MSagaHandler) => {
     const exec = new target()
 

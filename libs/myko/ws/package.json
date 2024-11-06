@@ -5,7 +5,7 @@
   "author": "Trevor Sargent",
   "license": "ISC",
   "dependencies": {
-    "@myko/core": "workspace:*",
+    "@myko/core": "npm:@jsr/myko__core@0.1.11",
     "luxon": "^3.5.0",
     "msgpackr": "^1.10.2",
     "rxjs": "^7.8.1",

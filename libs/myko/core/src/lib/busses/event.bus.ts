@@ -402,4 +402,4 @@ export class EventBus extends AMykoEventBus {
   }
 }
 
-export const eventBus = new EventBus(commandBus)
+export const eventBus: EventBus = new EventBus(commandBus)

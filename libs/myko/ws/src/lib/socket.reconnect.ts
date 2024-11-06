@@ -72,7 +72,7 @@ export class ReconnectSocket {
     this.socket.send(data)
   }
 
-  ready() {
+  ready(): boolean {
     return this.socket.readyState === this.socket.OPEN
   }
 

@@ -45,7 +45,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * @returns The live query result.
    * @template T The type of the query.
    */
-  cache = new Map<string, MLiveQueryResult<MQuery>>()
+  private cache = new Map<string, MLiveQueryResult<MQuery>>()
 
   watch<T extends MQuery>(query: T): MLiveQueryResult<T> {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
@@ -110,4 +110,4 @@ export class MQueryBus extends AMykoQueryBus {
   }
 }
 
-export const queryBus = new MQueryBus()
+export const queryBus: MQueryBus = new MQueryBus()

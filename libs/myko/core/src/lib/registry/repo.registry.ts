@@ -26,7 +26,7 @@ const needsPersister: string[] = []
 export const setDefaultRepoOptions = (args: {
   persisterFactory?: PersisterFactory
   overrides?: PersisterOverrideData[]
-}) => {
+}): void => {
   defaultOpts.defaultPersisterFactory = args.persisterFactory
 
   defaultOpts.persisterOverrides = [
@@ -51,7 +51,7 @@ export const repo = <T extends MItem>(item: MItemConstructor<T>): Repo<T> => {
   return repoName(itemName)
 }
 
-export const initRepo = <T extends MItem>(item: MItemConstructor<T>) => {
+export const initRepo = <T extends MItem>(item: MItemConstructor<T>): void => {
   const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
   if (!itemName) {
@@ -107,7 +107,7 @@ const createRepo = <T extends MItem>(
 export const addSearchProperty = <T extends MItem>(
   item: MItemConstructor<T>,
   property: string,
-) => {
+): void => {
   const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
   if (!itemName) {
@@ -143,7 +143,7 @@ export type PersisterOverrideData = {
 export const persisterOverride = <T extends MItem>(
   entity: MItemConstructor<T>,
   persister: PersisterFactory,
-) =>
+): PersisterOverrideData =>
   ({
     itemName: getItemName(entity),
     persister,

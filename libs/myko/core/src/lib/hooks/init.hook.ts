@@ -104,6 +104,6 @@ export const beforeInit: (itemType: string) => void = (itemType) => {
 
 const allInitCallbacks: Set<() => void> = new Set()
 
-export const onAllInit = (cb: () => void) => {
+export const onAllInit = (cb: () => void): void => {
   allInitCallbacks.add(cb)
 }

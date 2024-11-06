@@ -1,4 +1,4 @@
-import { Subject } from 'rxjs'
+import { Observable, Subject } from 'rxjs'
 import type { MEvent, MItem } from '../types'
 
 export abstract class Persister<T extends MItem> {
@@ -8,7 +8,7 @@ export abstract class Persister<T extends MItem> {
 
   protected output$: Subject<MEvent<T>>
 
-  get output() {
+  get output(): Observable<MEvent<T>> {
     return this.output$.asObservable()
   }
 

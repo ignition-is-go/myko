@@ -88,4 +88,4 @@ export class MCommandBus extends AMykoCommandBus {
   }
 }
 
-export const commandBus = new MCommandBus()
+export const commandBus: MCommandBus = new MCommandBus()
