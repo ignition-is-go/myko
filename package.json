@@ -9,6 +9,8 @@
     "forge-publish": "turbo run forge-publish",
     "tauri-publish": "turbo run tauri-publish",
     "rust": "./tools/scripts/rust.sh",
+    "py": "./tools/scripts/py.sh",
+    "py:publish": "./tools/scripts/py-publish.sh",
     "preinstall": "pnpm run sync",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",

@@ -126,3 +126,5 @@ apps/rship/link-ui/src-tauri/gen/
 
 *.log
 *.log.*
+
+*.egg-info

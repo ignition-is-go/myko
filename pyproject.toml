@@ -1,0 +1,15 @@
+[project]
+name = "rship"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["libs/myko/python", "apps/execs/demo-py", "libs/sdk/python"]
+
+
+[tool.uv.sources]
+myko = { workspace = true }
+rship-sdk = { workspace = true }
