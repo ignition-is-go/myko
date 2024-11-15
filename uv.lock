@@ -21,7 +21,7 @@ wheels = [
 [[package]]
 name = "demo-py"
 version = "0.1.0"
-source = { editable = "apps/execs/demo-py" }
+source = { virtual = "apps/execs/demo-py" }
 dependencies = [
     { name = "rship-sdk" },
 ]
