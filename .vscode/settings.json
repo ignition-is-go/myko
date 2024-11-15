@@ -47,5 +47,7 @@
   "git.autofetch": true,
   "[typescript]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
-  }
+  },
+  "python.envFile": "",
+  "python.terminal.activateEnvironment": false
 }
