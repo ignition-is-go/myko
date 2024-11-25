@@ -36,12 +36,12 @@ impl AutoReconnectSocket {
         }
     }
 
-    pub async fn set_addr(&self, addr: String) {
+    pub async fn set_addr(&self, addr: Option<String>) {
         let prev_status = self.status.lock().await.clone();
 
         match prev_status {
             SocketConnectionStatus::Connected(current_addr, current_reconnect) => {
-                if current_addr == addr {
+                if Some(current_addr) == addr {
                     return;
                 }
 
@@ -56,12 +56,18 @@ impl AutoReconnectSocket {
                 }
 
                 *self.status.lock().await = SocketConnectionStatus::Disconnected;
+
+                if addr.is_none() {
+                    return;
+                }
+
+                let addr = addr.unwrap();
 
                 self.build(addr).await;
             }
 
             SocketConnectionStatus::Connecting(current_addr, current_reconnect) => {
-                if current_addr == addr {
+                if Some(current_addr) == addr {
                     return;
                 }
 
@@ -76,9 +82,21 @@ impl AutoReconnectSocket {
                 }
                 *self.status.lock().await = SocketConnectionStatus::Disconnected;
 
+                if addr.is_none() {
+                    return;
+                }
+
+                let addr = addr.unwrap();
+
                 self.build(addr).await;
             }
             SocketConnectionStatus::Disconnected => {
+                if addr.is_none() {
+                    return;
+                }
+
+                let addr = addr.unwrap();
+
                 self.build(addr).await;
             }
         }

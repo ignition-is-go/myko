@@ -148,7 +148,10 @@ impl MykoClient {
                     Ok(c) => c,
                     Err(e) => {
                         println!("Could not parse url: {:?}", e);
-                        self.socket.set_addr("".to_string()).await;
+                        self.socket.set_addr(None).await;
+
+                        *self.connection_status.lock().await = ConnectionStatus::Disconnected;
+                        let _ = self.client_pub.send(ConnectionStatus::Disconnected);
                         return;
                     }
                 }
@@ -156,7 +159,7 @@ impl MykoClient {
         };
 
         if parsed.scheme() != "ws" {
-            parsed.set_scheme("ws").unwrap();
+            let _ = parsed.set_scheme("ws");
         }
 
         if parsed.path() != "/myko" {
@@ -164,10 +167,10 @@ impl MykoClient {
         }
 
         if parsed.port().is_none() {
-            parsed.set_port(Some(5155)).unwrap();
+            let _ = parsed.set_port(Some(5155));
         }
 
-        self.socket.set_addr(parsed.to_string()).await;
+        self.socket.set_addr(Some(parsed.to_string())).await;
     }
 
     pub async fn get_connection_status(&self) -> ConnectionStatus {
