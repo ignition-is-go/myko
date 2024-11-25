@@ -13,7 +13,6 @@ import {
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
 import { Observable, Subscription, firstValueFrom, map } from 'rxjs'
-import WebSocket from 'ws'
 
 import { peerBus } from '../bus/peer.bus'
 import { getAuth } from './auth.registry'
@@ -80,14 +79,16 @@ export class PeerClientRegistry {
     }
 
     const client = new WSMClient(
-      (url) => new WebSocket(url, { timeout: 1000 }),
+      (url) => new WebSocket(url),
       {
-        onTerminated: () => {
+        onTerminated: async () => {
           new MykoLogger('Peer Registry').info(
             `Peer Disconnected - ${address}:${port}`,
           )
 
-          const server = repo(Server).get({ address, port: port }).shift()
+          const server = (
+            await repo(Server).get({ address, port: port })
+          ).shift()
 
           if (!server) {
             return
@@ -104,9 +105,9 @@ export class PeerClientRegistry {
           )
         },
         onLog: (...l) => {
-          new MykoLogger('Peer Registry').info(...l)
+          new MykoLogger('Peer Registry').info(l.join(' '))
         },
-        onServerConnect: (url) => {
+        onServerConnect: (_url) => {
           firstValueFrom(client.watchQuery(new GetConnectedServer())).then(
             (s) => {
               const server = s.shift()
@@ -163,11 +164,12 @@ export class PeerClientRegistry {
 
   start() {
     const peers = process.env['MYKO_PEERS']
-    new MykoLogger('Peer Registry').info('Starting with Peers:', peers)
 
     if (!peers) {
+      new MykoLogger('Peer Registry').info('No Peers Specified')
       return
     }
+    new MykoLogger('Peer Registry').info(`Starting with Peers:  ${peers}`)
 
     const peerList = peers.split(',')
 

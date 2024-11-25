@@ -1,22 +1,21 @@
-import { longestName, names } from './registry'
-
-export enum LogLevel {
-  INFO = 'INFO',
-  WARN = 'WARN',
-  ERROR = 'ERROR',
-  LOG = 'LOG',
-}
+import { DateTime } from 'luxon'
+import { v4 } from 'uuid'
+import { eventBus } from '../busses'
+import { getHostId } from '../registry'
+import type { ID } from '../types'
+import { Log, LogLevel } from './log.type'
+import { addName, longestName } from './registry'
 
 export class MykoLogger {
   constructor(private name: string = '') {
-    names.set(name, {})
+    addName(name)
 
     if (name.length > longestName.get()) {
       longestName.set(name.length)
     }
   }
 
-  private fmt(level: LogLevel, args: any[]) {
+  private fmt(level: LogLevel, args: string) {
     return [
       new Date().toLocaleDateString(),
       new Date().toLocaleTimeString(),
@@ -25,19 +24,57 @@ export class MykoLogger {
       '|',
       this.name ? `${this.name.padEnd(longestName.get())}` : ``,
       '|',
-      args.join(' '),
+      args,
     ].join(' ')
   }
 
-  error(...message: any[]) {
+  error(message: string, data?: any, tx?: ID) {
     console.error(this.fmt(LogLevel.ERROR, message))
+    if (data) {
+      console.error(data)
+    }
+    const log = new Log({
+      data,
+      id: v4(),
+      level: LogLevel.ERROR,
+      text: message,
+      serverId: getHostId(),
+      timestamp: DateTime.utc().toISO(),
+      loggerName: this.name,
+    })
+
+    eventBus.publishSet(log, tx)
   }
 
-  warn(...message: any[]) {
+  warn(message: string, data?: any, tx?: ID) {
     console.warn(this.fmt(LogLevel.WARN, message))
+
+    const log = new Log({
+      data,
+      id: v4(),
+      level: LogLevel.WARN,
+      text: message,
+      serverId: getHostId(),
+      timestamp: DateTime.utc().toISO(),
+      loggerName: this.name,
+    })
+
+    eventBus.publishSet(log, tx)
   }
 
-  info(...message: any[]) {
+  info(message: string, data?: any, tx?: ID) {
     console.info(this.fmt(LogLevel.INFO, message))
+
+    const log = new Log({
+      data,
+      id: v4(),
+      level: LogLevel.INFO,
+      text: message,
+      serverId: getHostId(),
+      timestamp: DateTime.utc().toISO(),
+      loggerName: this.name,
+    })
+
+    eventBus.publishSet(log, tx)
   }
 }

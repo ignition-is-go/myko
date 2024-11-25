@@ -1,5 +1,3 @@
-const hooks: Map<string, Set<() => void>> = new Map()
-
 const isRegistered: Set<string> = new Set()
 const isInit: Set<string> = new Set()
 
@@ -79,18 +77,10 @@ export const fireInit = (itemType: string) => {
     cb(itemType, [...isRegistered], [...isInit], leftToInit()),
   )
 
-  hooks.forEach((cb, key) => {
-    const types = key.split(':')
-    if (types.includes(itemType) && types.every((t) => isInit.has(t))) {
-      hooks.get(key).forEach((cb) => cb())
-    }
-  })
-
   if (isAllInit().done) {
     allInitCallbacks.forEach((cb) => cb())
     allInitCallbacks.clear()
     initWatchers.clear()
-    hooks.clear()
   }
 }
 

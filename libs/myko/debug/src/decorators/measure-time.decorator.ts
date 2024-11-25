@@ -7,8 +7,8 @@ let interval
 
 let enable = false
 try {
-  console.log(process.env.MYKO_MEASURE)
-  enable = process.env.MYKO_MEASURE === 'true'
+  console.log(process.env['MYKO_MEASURE'])
+  enable = process.env['MYKO_MEASURE'] === 'true'
   if (enable) {
     console.log('MYKO_MEASURE enabled')
   }
@@ -87,8 +87,8 @@ export function Measure() {
     if (!interval) {
       interval = setInterval(() => {
         try {
-          console.log('MYKO_MEASURE', process.env.MYKO_MEASURE)
-          if (!process.env.MYKO_MEASURE === true) {
+          console.log('MYKO_MEASURE', process.env['MYKO_MEASURE'])
+          if (!process.env['MYKO_MEASURE'] === true) {
             return
           }
 

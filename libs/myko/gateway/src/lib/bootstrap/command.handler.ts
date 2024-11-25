@@ -41,7 +41,7 @@ export const handleCommand = async (
 
   const unwrapped = unwrapCommand(command) as MCommand<unknown>
   const res = await commandBus.execute(unwrapped).catch((e) => {
-    new MykoLogger('Gateway').error(e.message)
+    new MykoLogger('Gateway').error(e.message, e.stack)
     if (e instanceof MykoCommandError) {
       const wrapped = wrapCommandErrorWS(e)
 

@@ -404,10 +404,10 @@ export class WSMClient {
     this.userToken = token
   }
 
-  private switchToMessagePack() {
-    this.protocolReady = false
-    this.forceSend({ event: ProtocolMessages.SwitchToMSGPACK })
-  }
+  // private switchToMessagePack() {
+  //   this.protocolReady = false
+  //   this.forceSend({ event: ProtocolMessages.SwitchToMSGPACK })
+  // }
 
   stats(): Observable<ClientStats> {
     const p = interval(1000).pipe(
@@ -516,14 +516,14 @@ export class WSMClient {
     }
   }
 
-  private forceSend(e: { event: string; data?: any }) {
-    if (!this.socketGroup.ready) {
-      return
-    }
-    const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(e)
+  // private forceSend(e: { event: string; data?: any }) {
+  //   if (!this.socketGroup.ready) {
+  //     return
+  //   }
+  //   const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(e)
 
-    this.socketGroup.send(encoded)
-  }
+  //   this.socketGroup.send(encoded)
+  // }
 
   private send(item: WSMMessage) {
     if (!this.socketGroup.ready || !this.protocolReady) {

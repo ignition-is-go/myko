@@ -1,15 +1,14 @@
 import { filter } from 'rxjs'
-import { Repo, type RepoOptions } from '../aggregates/repo'
+import { Repo, type RepoFactory } from '../aggregates'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
-import type { PersisterFactory } from '../persisters'
+import type { Persister, PersisterFactory } from '../persisters'
 import { nullPersisterFactory } from '../persisters/null.persister'
 import {
   getItemName,
   type MEvent,
   type MItem,
   type MItemConstructor,
-  type Stream,
 } from '../types'
 import { relationRegistry } from './relation.registry'
 
@@ -18,26 +17,37 @@ const searchKeys = new Map<string, string[]>()
 
 let defaultOpts: {
   defaultPersisterFactory?: PersisterFactory
+  defaultRepoFactory?: RepoFactory
   persisterOverrides?: PersisterOverrideData[]
+  repoOverrides?: RepoOverrideData[]
 } = {}
 
 const needsPersister: string[] = []
 
 export const setDefaultRepoOptions = (args: {
   persisterFactory?: PersisterFactory
-  overrides?: PersisterOverrideData[]
+  persisterOverrides?: PersisterOverrideData[]
+  repoFactory?: RepoFactory
+  repoOverrides?: RepoOverrideData[]
 }): void => {
   defaultOpts.defaultPersisterFactory = args.persisterFactory
 
   defaultOpts.persisterOverrides = [
-    ...args.overrides,
+    ...(args?.persisterOverrides ?? []),
     {
       itemName: 'Server',
       persister: nullPersisterFactory,
     },
   ]
+
+  defaultOpts.defaultRepoFactory = args.repoFactory
+
+  defaultOpts.repoOverrides = args.repoOverrides ?? [
+    ...(args?.repoOverrides ?? []),
+  ]
+
   needsPersister.forEach((itemName) => {
-    createRepo(itemName, buildRepoOptions(itemName))
+    createRepo(itemName)
   })
 }
 
@@ -58,7 +68,7 @@ export const initRepo = <T extends MItem>(item: MItemConstructor<T>): void => {
     throw new Error('No item name found')
   }
 
-  createRepo(itemName, buildRepoOptions(itemName))
+  createRepo(itemName)
 }
 
 export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
@@ -74,26 +84,29 @@ export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
   throw new Error(err)
 }
 
-const createRepo = <T extends MItem>(
-  itemName: string,
-  options: RepoOptions<T>,
-) => {
-  const factory =
+const createRepo = <T extends MItem>(itemName: string) => {
+  const persisterFactory =
     defaultOpts.persisterOverrides?.find((x) => x.itemName === itemName)
       ?.persister ?? defaultOpts.defaultPersisterFactory
 
-  const persister = factory?.(itemName, options)
+  const persister = persisterFactory?.(itemName)
+
+  const repoFactory =
+    defaultOpts.repoOverrides?.find((x) => x.itemName === itemName)?.repo ??
+    defaultOpts.defaultRepoFactory
 
   if (!persister) {
     needsPersister.push(itemName)
     return
   }
 
-  const newRepo = new Repo<T>(itemName, {
-    stream: persister?.output.pipe(
-      filter((x) => x.itemType === itemName),
-    ) as Stream<T>,
-    ...options,
+  if (!repoFactory) {
+    return
+  }
+
+  const newRepo = repoFactory(itemName, {
+    persister: persister as Persister<T>,
+    searchIndeces: buildSerachKeys(itemName),
   })
   if (persister) {
     eventBus.subject$
@@ -121,23 +134,24 @@ export const addSearchProperty = <T extends MItem>(
   searchKeys.get(itemName)?.push(property)
 }
 
-export const buildRepoOptions = <T extends MItem>(
-  itemName: string,
-): RepoOptions<T> => {
+export const buildSerachKeys = (itemName: string): any[] => {
   const searchKeys = []
   relationRegistry.forEach((relation) => {
     if (relation.type === 'searchable' && relation.localType === itemName)
       searchKeys.push(relation.localKey)
   })
 
-  return {
-    searchIndeces: searchKeys,
-  } satisfies RepoOptions<T>
+  return searchKeys
 }
 
 export type PersisterOverrideData = {
   itemName: string
   persister: PersisterFactory
+}
+
+export type RepoOverrideData = {
+  itemName: string
+  repo: RepoFactory
 }
 
 export const persisterOverride = <T extends MItem>(
@@ -148,3 +162,12 @@ export const persisterOverride = <T extends MItem>(
     itemName: getItemName(entity),
     persister,
   }) satisfies PersisterOverrideData
+
+export const repoOverride = <T extends MItem>(
+  entity: MItemConstructor<T>,
+  repo: RepoFactory,
+): RepoOverrideData =>
+  ({
+    itemName: getItemName(entity),
+    repo,
+  }) satisfies RepoOverrideData

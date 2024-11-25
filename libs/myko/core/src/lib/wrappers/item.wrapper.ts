@@ -32,7 +32,12 @@ export const wrapItem = (item: MItem): MWrappedItem => {
  * @returns The unwrapped item.
  */
 export const unwrapItem = (wrappedItem: MWrappedItem | MEvent): MItem => {
-  const { item, itemType } = wrappedItem
-  Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, item)
-  return item
+  try {
+    const { item, itemType } = wrappedItem
+    Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, item)
+    return item
+  } catch (e) {
+    console.log(wrappedItem)
+    throw e
+  }
 }

@@ -1,6 +1,5 @@
 import { mkdir, writeFile } from 'fs/promises'
 import { groupBy } from 'ramda'
-import { MykoLogger } from '../logger'
 import {
   docRegistry,
   type CommandDocInfo,
@@ -10,14 +9,9 @@ import {
 } from '../registry'
 
 export class MykoDocsService {
-  private logger: MykoLogger
-  constructor() {
-    this.logger = new MykoLogger('DocsService')
-  }
+  constructor() {}
 
   async writeDocs(path: string) {
-    this.logger.info('Writing Myko Documentation')
-
     await mkdir(path, { recursive: true })
     await writeFile(`${path}/README.md`, this.generateDocs())
     await mkdir(`${path}/docs`, { recursive: true })
@@ -28,8 +22,6 @@ export class MykoDocsService {
   }
 
   private generateDocs() {
-    this.logger.info('Generating Myko Documentation')
-
     const entityDocs = this.makeEntityDocs()
 
     const commandDocs = this.makeCommandDocs()

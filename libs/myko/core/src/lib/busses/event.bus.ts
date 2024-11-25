@@ -14,7 +14,7 @@ import { commandBus, type AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'
-import { watchInit } from '../hooks'
+import { onAllInit } from '../hooks'
 import {
   getServer,
   propertyDefaults,
@@ -36,40 +36,15 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
     super()
     this.subscriptions = []
 
-    watchInit((e, t, i, uninit) => {
-      if (uninit.length === 0) {
-        this.establishRelations()
-      }
+    onAllInit(() => {
+      this.establishRelations()
     })
   }
 
   private establishRelations() {
-    relationRegistry.forEach((relation) => {
+    relationRegistry.forEach(async (relation) => {
       switch (relation.type) {
         case 'belongs-to': {
-          // const localRepo = repoName(relation.localType)
-
-          // const all = localRepo.get({})
-
-          // all.forEach((item) => {
-          //   const foreignRepo = repoName(relation.foreignType)
-
-          //   const parentGetById = foreignRepo.getId.bind(foreignRepo)
-
-          //   if (!parentGetById) {
-          //     console.warn('No getIds for', relation.foreignType, relation)
-          //     return
-          //   }
-
-          //   const parentId = item[relation.localKey]
-
-          //   const parent = parentGetById(parentId)
-          //   if (!parent) {
-          //     console.log('Orphan found! Deleting', relation.localType, item.id)
-          //     this.publishDel(item, 'startup')
-          //   }
-          // })
-
           const sub = this.subject$
             .pipe(
               filter(
@@ -79,16 +54,17 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                   e.itemType === relation.foreignType,
               ),
             )
-            .subscribe((e) => {
+            .subscribe(async (e) => {
               const localRepo = repoName(relation.localType)
 
-              const ff = localRepo.getFilter.bind(localRepo)
+              const ff: typeof localRepo.getFilter =
+                localRepo.getFilter.bind(localRepo)
 
               if (!ff) {
                 throw new Error(`No Filter for ${relation.localType}`)
               }
 
-              const affected = ff(
+              const affected = await ff(
                 (item) => item[relation.localKey] === e.item.id,
               )
 
@@ -105,9 +81,11 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
           const ltRepo = repoName(relation.localType)
 
-          const getChildrenFilter = ftRepo.getFilter.bind(ftRepo)
+          const getChildrenFilter: typeof ftRepo.getFilter =
+            ftRepo.getFilter.bind(ftRepo)
 
-          const getParentsFilter = ltRepo.getFilter.bind(ltRepo)
+          const getParentsFilter: typeof ltRepo.getFilter =
+            ltRepo.getFilter.bind(ltRepo)
 
           if (!getChildrenFilter || !getParentsFilter) {
             console.warn(
@@ -119,12 +97,12 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             return
           }
 
-          const allParents = getParentsFilter(() => true)
+          const allParents = await getParentsFilter(() => true)
           const allChildrenIds = allParents.flatMap(
             (parent) => parent[relation.localKey],
           )
 
-          const orphans = getChildrenFilter(
+          const orphans = await getChildrenFilter(
             (child) => !allChildrenIds.includes(child.id),
           )
 
@@ -149,16 +127,16 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                   e.itemType === relation.localType,
               ),
             )
-            .subscribe((e) => {
+            .subscribe(async (e) => {
               const fRepo = repoName(relation.foreignType)
 
-              const ids = fRepo.getIds.bind(fRepo)
+              const ids: typeof fRepo.getIds = fRepo.getIds.bind(fRepo)
 
               if (!ids) {
                 throw new Error(`No getIds for ${relation.foreignType}`)
               }
 
-              const affected = ids(e.item[relation.localKey])
+              const affected = await ids(e.item[relation.localKey])
 
               affected.forEach((item) => {
                 this.publishDel(item, e.tx)
@@ -175,10 +153,11 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                   e.itemType === relation.foreignType,
               ),
             )
-            .subscribe((event) => {
+            .subscribe(async (event) => {
               const localRepo = repoName(relation.localType)
-              const ff = localRepo.getFilter.bind(localRepo)
-              const affected = ff((e) =>
+              const ff: typeof localRepo.getFilter =
+                localRepo.getFilter.bind(localRepo)
+              const affected = await ff((e) =>
                 e[relation.localKey].includes(event.item.id),
               )
 
@@ -204,33 +183,36 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
           const foreignTypes = dependencies.map((d) => d.foreignType)
 
-          const ensure = (
+          const ensure = async (
             tx: ID,
             override?: { name: string; value: MItem },
           ) => {
-            const foreigns = foreignTypes.map((foreignType) => {
-              if (override && override.name === foreignType) {
+            const foreigns = await Promise.all(
+              foreignTypes.map(async (foreignType) => {
+                if (override && override.name === foreignType) {
+                  return {
+                    name: foreignType,
+                    values: [override.value],
+                  }
+                }
+
+                const fr = repoName(foreignType)
+                const getForeign: typeof fr.getFilter = fr.getFilter.bind(fr)
+
+                if (!getForeign) {
+                  throw new Error(`No Foreign getFilters for ${foreignType}`)
+                }
+
                 return {
                   name: foreignType,
-                  values: [override.value],
+                  values: await getForeign((f) => true),
                 }
-              }
-
-              const fr = repoName(foreignType)
-              const getForeign = fr.getFilter.bind(fr)
-
-              if (!getForeign) {
-                throw new Error(`No Foreign getFilters for ${foreignType}`)
-              }
-
-              return {
-                name: foreignType,
-                values: getForeign((f) => true),
-              }
-            })
+              }),
+            )
 
             const localRepo = repoName(localType)
-            const getLocal = localRepo.getFilter.bind(localRepo)
+            const getLocal: typeof localRepo.getFilter =
+              localRepo.getFilter.bind(localRepo)
 
             if (!getLocal) {
               throw new Error(`No Local getFilters for ${localType}`)
@@ -238,8 +220,8 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
             const multiplex = getCombinations(foreigns)
 
-            multiplex.forEach((combination) => {
-              const exists = getLocal((item) =>
+            multiplex.forEach(async (combination) => {
+              const exists = await getLocal((item) =>
                 dependencies.every(
                   (d) =>
                     item[d.localKey] ===

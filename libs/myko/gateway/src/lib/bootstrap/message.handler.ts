@@ -57,8 +57,7 @@ export const handleMessage =
             x.clientId,
           )
           new MykoLogger(x.data.data.itemType).info(
-            'Setting client id on ',
-            x.data.data.itemType,
+            'Setting client id on ' + x.data.data.itemType,
           )
         }
 

@@ -2,11 +2,9 @@ import {
   MItem,
   MykoLogger,
   Persister,
-  beforeInit,
-  fireInit,
   getHostId,
   type MEvent,
-  type PersisterFactory,
+  type PersisterOutputEvent,
 } from '@myko/core'
 import { unpack as decode } from 'msgpackr'
 
@@ -18,6 +16,7 @@ import {
   type Message,
   type ProducerConfig,
 } from 'kafkajs'
+import type { Subject } from 'rxjs'
 import { makeSafeTopic } from './util/helpers'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
 import { KafkaTopicProducer } from './util/kafka.topicProducer'
@@ -32,11 +31,8 @@ const optionDefaults: KafkaPersisterOptions = {
   brokers: [],
 }
 
-export const getPersister: PersisterFactory = <
-  KafkaPersisterOptions,
-  T extends MItem,
->(
-  entity,
+export const buildKafkaPersister = <KafkaPersisterOptions, T extends MItem>(
+  entity: string,
   options: KafkaPersisterOptions,
 ) => {
   const opts = {
@@ -70,11 +66,14 @@ export const getPersister: PersisterFactory = <
 }
 
 abstract class KafkaPersister<T extends MItem> extends Persister<T> {
+  protected currentOut: Subject<PersisterOutputEvent<T>>
+
   constructor(
     protected entity: string,
     protected options: KafkaPersisterOptions,
   ) {
     super()
+    this.currentOut = this.load$
   }
 
   private decodeMsg(buffer): MEvent<T> | null {
@@ -95,7 +94,7 @@ abstract class KafkaPersister<T extends MItem> extends Persister<T> {
     return Buffer.from(JSON.stringify(event))
   }
 
-  protected onMessage(message: Message) {
+  protected onMessage(message: Message, percentLoaded: number) {
     const event = this.decodeMsg(message.value)
 
     if (!event) {
@@ -106,18 +105,17 @@ abstract class KafkaPersister<T extends MItem> extends Persister<T> {
       return
     }
 
-    this.outputEvent(event)
+    this.outputEvent(event, percentLoaded)
   }
 
-  protected outputEvent(event: MEvent<T>) {
-    this.output$.next(event)
+  protected outputEvent(event: MEvent<T>, percent: number) {
+    this.currentOut.next({
+      event,
+      percent,
+    })
   }
 
   abstract persist(event: MEvent<T>): void
-
-  protected onInit() {
-    fireInit(this.entity)
-  }
 }
 
 const kafkaCache = new Map<string, Kafka>()
@@ -127,8 +125,7 @@ const getKafka = (options: KafkaConfig) => {
 
   if (!kafkaCache.has(key)) {
     new MykoLogger('Kafka Persister').info(
-      'Connecting Kafka at',
-      options.brokers,
+      'Connecting Kafka at ' + options.brokers,
     )
     kafkaCache.set(key, new Kafka(options))
   }
@@ -148,7 +145,6 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     private logger: MykoLogger,
   ) {
     super(entity, options)
-    beforeInit(entity)
     this.init(entity)
   }
 
@@ -175,9 +171,10 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       kafka,
       { ...this.config, ...this.consConfig },
       this.entity,
-      (msg) => this.onMessage(msg),
+      (msg, percent) => this.onMessage(msg, percent),
       () => {
-        this.onInit()
+        this.currentOut.complete()
+        this.currentOut = this.output$
       },
     )
 
@@ -195,7 +192,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     }
 
     this.prod.publish(this.encodeMsg(event), event.item.id)
-    this.outputEvent(event)
+    this.outputEvent(event, 0)
   }
 }
 

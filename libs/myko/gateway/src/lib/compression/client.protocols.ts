@@ -1,4 +1,4 @@
-import { ID, MykoProtocol } from '@myko/core'
+import { type ID, MykoProtocol } from '@myko/core'
 import { pack, unpack } from 'msgpackr'
 import type { WSMMessage } from '../../../../ws/src'
 

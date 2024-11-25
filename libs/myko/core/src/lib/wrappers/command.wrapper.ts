@@ -1,4 +1,5 @@
 import { MYKO_COMMAND_ID_KEY } from '../constants'
+import { MykoLogger } from '../logger'
 import type { MCommand, MCommandResponse } from '../types'
 import { CommandUnwrapError } from '../types/errors'
 
@@ -40,6 +41,7 @@ export const unwrapCommand = <T extends MCommand<MCommandResponse<T>>>(
   wrappedCommand: MWrappedCommand,
 ): MCommand<MCommandResponse<T>> => {
   const { command, commandId } = wrappedCommand
+  Reflect.set(command, 'logger', new MykoLogger(commandId))
   Reflect.defineMetadata(MYKO_COMMAND_ID_KEY, commandId, command)
   return command as T
 }

@@ -1,10 +1,15 @@
-import { MItem } from '../types'
+import { MItem, type MEvent } from '../types'
 import { Persister, type PersisterFactory } from './persister'
 
 export class NullPersister<T extends MItem> extends Persister<T> {
-  persist(event) {
-    // loop thru
-    this.output$.next(event)
+  constructor() {
+    super()
+
+    this.load$.complete()
+  }
+
+  persist(event: MEvent<T>) {
+    this.output$.next({ event, percent: 100 })
   }
 }
 

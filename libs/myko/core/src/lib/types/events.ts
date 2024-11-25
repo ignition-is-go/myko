@@ -3,7 +3,7 @@ import { filter, type MonoTypeOperatorFunction } from 'rxjs'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { MykoItem, MykoQuery, doc } from '../decorators'
 import type { ID } from './base'
-import { MItem, type IMItem } from './item'
+import { MItem, type IMItem, type MItemConstructor } from './item'
 import { MQuery } from './query'
 
 /**
@@ -99,9 +99,9 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
  * @returns The filtered events.
  */
 export const ofItems: <T extends MItem>(
-  ...filterTypes: (new (...args: any[]) => T)[]
+  ...filterTypes: MItemConstructor<T>[]
 ) => MonoTypeOperatorFunction<MEvent<T, MEventType>> = <T extends MItem>(
-  ...filterTypes: (new (...args: any[]) => T)[]
+  ...filterTypes: MItemConstructor<T>[]
 ) =>
   filter((event: MEvent<T, MEventType>) =>
     filterTypes.some(

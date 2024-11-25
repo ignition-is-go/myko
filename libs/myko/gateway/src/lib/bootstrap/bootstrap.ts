@@ -3,7 +3,6 @@ import {
   Server,
   commandHandlers,
   commands,
-  eventBus,
   getHostId,
   onAllInit,
   queries,
@@ -18,14 +17,13 @@ import {
 import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
-import { groupBy } from 'ramda'
-import { Subject, bufferTime, filter, map } from 'rxjs'
+import { Subject } from 'rxjs'
 import { setAdapterBusses, setAuth } from '../registry'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
 
 export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
-  const { defaultPersister, version, groupId } = args
+  const { version, groupId } = args
 
   const serverId = getHostId()
 
@@ -78,8 +76,10 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
   }
 
   setDefaultRepoOptions({
-    persisterFactory: defaultPersister,
-    overrides: args.persisterOverrides,
+    persisterFactory: args.defaultPersister,
+    persisterOverrides: args.persisterOverrides,
+    repoFactory: args.defaultRepo,
+    repoOverrides: args.repoOverrides,
   })
 
   onAllInit(() => {
@@ -124,21 +124,6 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
     const allStr = `${all.length}`
     const initStr = `${init.length}`.padStart(allStr.length, ' ')
 
-    logger.info('Module Init', `${initStr}/${all.length} (${uninit.length})`)
+    logger.info(`Module Init ${initStr}/${all.length} (${uninit.length})`)
   })
-
-  eventBus.subject$
-    .pipe(
-      bufferTime(500),
-      filter((x) => x.length > 0),
-      map((x) => groupBy((y) => `${y.itemType}:${y.changeType}`, x)),
-    )
-    .subscribe((x) => {
-      Object.entries(x).forEach(([k, v]) => {
-        const [itemName, changeType] = k.split(':')
-        const logger = new MykoLogger(itemName)
-
-        logger.info(changeType, v?.length)
-      })
-    })
 }

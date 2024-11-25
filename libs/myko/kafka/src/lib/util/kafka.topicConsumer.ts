@@ -5,30 +5,43 @@ export class KafkaTopicConsumer {
   cons: Consumer
 
   caughtUp = false
+  hasSeenData = false
+  startTime = performance.now()
+
+  percent = 0
 
   constructor(
     kafka: Kafka,
     config: ConsumerConfig,
     topic: string,
-    onMessage: (buf: Message) => void,
+    onMessage: (buf: Message, percent) => void,
     private onCaughtUp?: () => void,
   ) {
     this.cons = kafka.consumer({ ...config, groupId: crypto.randomUUID() })
 
-    this.cons.on('consumer.heartbeat', (e) => {
-      if (!this.caughtUp) {
+    const admin = kafka.admin()
+
+    admin.fetchTopicOffsets(makeSafeTopic(topic)).then((offsets) => {
+      const high = offsets[0].high
+
+      if (high === '0') {
         this.caughtUp = true
         this.onCaughtUp?.()
       }
     })
 
     this.cons.on('consumer.end_batch_process', (e) => {
+      this.hasSeenData = true
       const last = Number.parseInt(e.payload.lastOffset)
       const high = Number.parseInt(e.payload.highWatermark)
 
       if (last === high - 1 && !this.caughtUp) {
         this.caughtUp = true
         this.onCaughtUp?.()
+      }
+
+      if (!this.caughtUp) {
+        this.percent = last / high
       }
     })
 
@@ -37,14 +50,13 @@ export class KafkaTopicConsumer {
       .then(() => {
         return this.cons.subscribe({
           topic: makeSafeTopic(topic),
-
           fromBeginning: true,
         })
       })
       .then(() => {
         this.cons.run({
           eachMessage: async ({ message }) => {
-            onMessage(message)
+            onMessage(message, this.percent)
           },
           autoCommit: true,
         })
