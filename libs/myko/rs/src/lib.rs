@@ -7,3 +7,4 @@ pub mod subscription;
 pub mod tests;
 pub mod utils;
 pub mod websocket;
+pub use myko_wasm::event;
