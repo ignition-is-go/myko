@@ -3,12 +3,13 @@ mod myko_tests {
 
     use myko_wasm::event::{MEvent, MEventType};
     use myko_wasm::item::Eventable;
-    use myko_wasm::query::{Query, QueryResponse};
+    use myko_wasm::query::Query;
     use partially::Partial;
     use serde::{Deserialize, Serialize};
     use tokio::sync::mpsc::Sender;
 
     use crate::kafka::KafkaClient;
+    use crate::query::QueryResponse;
     use crate::{
         module::Module,
         repo::{Repo, RepoStruct},

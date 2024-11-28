@@ -3,6 +3,7 @@ import {
   Server,
   commandHandlers,
   commands,
+  eventBus,
   getHostId,
   onAllInit,
   queries,
@@ -125,5 +126,11 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
     const initStr = `${init.length}`.padStart(allStr.length, ' ')
 
     logger.info(`Module Init ${initStr}/${all.length} (${uninit.length})`)
+  })
+
+  onAllInit(() => {
+    eventBus.subject$.subscribe((x) => {
+      console.log('Event', x.itemType, x.changeType, x.item.id)
+    })
   })
 }

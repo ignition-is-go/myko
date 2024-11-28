@@ -65,16 +65,20 @@ export const wrapCommandResponseWS = (
   response: unknown,
 ): WSMCommandResponse => ({
   event: MCOMMAND_RESPONSE_EVENT,
-  tx,
-  data: response,
+  data: {
+    tx,
+    response,
+  },
 })
 
 export const wrapCommandErrorWS = (
   error: MykoCommandError,
 ): WSMCommandError => ({
   event: MCOMMAND_ERROR_EVENT,
-  message: error.message,
-  tx: error.tx,
+  data: {
+    tx: error.tx,
+    message: error.message,
+  },
 })
 
 export const wrapQueryCancel = (tx: ID): WSMQueryCancel => ({
@@ -92,8 +96,10 @@ export const wrapReportResponseWS = (
   response: unknown,
 ): WSMReportResponse => ({
   event: MREPORT_RESPONSE_EVENT,
-  tx,
-  data: response,
+  data: {
+    response,
+    tx,
+  },
 })
 
 export const wrapReportCancel = (tx: ID): WSMReportCancel => ({

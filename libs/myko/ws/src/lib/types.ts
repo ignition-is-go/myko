@@ -51,10 +51,10 @@ export type WSMQueryResponseData = {
   sequence: number
   upserts: MWrappedItem[]
   deletes: ID[]
+  tx: ID
 }
 
 export type WSMQueryResponse = {
-  tx: ID
   event: typeof MQUERY_RESPONSE_EVENT
   data: WSMQueryResponseData
 }
@@ -71,9 +71,11 @@ export type WSMReport = {
 }
 
 export type WSMReportResponse = {
-  tx: ID
   event: typeof MREPORT_RESPONSE_EVENT
-  data: unknown
+  data: {
+    tx: ID
+    response: unknown
+  }
 }
 
 export type WSMReportCancel = {
@@ -88,14 +90,18 @@ export type WSMCommand = {
 }
 
 export type WSMCommandResponse = {
-  tx: ID
-  data: unknown
+  data: {
+    tx: ID
+    response: unknown
+  }
   event: typeof MCOMMAND_RESPONSE_EVENT
 }
 
 export type WSMCommandError = {
-  tx: ID
-  message: string
+  data: {
+    tx: ID
+    message: string
+  }
   event: typeof MCOMMAND_ERROR_EVENT
 }
 

@@ -180,3 +180,42 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
     gen.into()
 }
+
+use syn::{ItemStruct, Path};
+
+#[proc_macro_attribute]
+pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
+    // Parse the single argument (e.g., `File`) from the attribute
+    let query_item_type: Path = parse_macro_input!(attr as Path);
+
+    // Parse the input struct
+    let input_struct = parse_macro_input!(input as ItemStruct);
+    let struct_name = &input_struct.ident;
+
+    // Generate the implementation
+    let expanded = quote! {
+        #input_struct
+
+        impl MykoQuery<#query_item_type> for #struct_name {
+            fn watch(&self, client: MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
+                let mut query_obj = serde_json::to_value(self).unwrap();
+
+                query_obj
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("tx".to_string(), uuid::Uuid::new_v4().to_string().into());
+
+                let query = WrappedQuery {
+                    query: query_obj,
+                    query_id: stringify!(#struct_name).to_string(),
+                    query_item_type: stringify!(#query_item_type).to_string(),
+                };
+
+                client.watch_query(query)
+            }
+        }
+    };
+
+    // Return the generated code
+    TokenStream::from(expanded)
+}

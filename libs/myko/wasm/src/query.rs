@@ -101,40 +101,6 @@ impl Query {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[wasm_bindgen]
-pub struct QueryResponse {
-    #[serde(rename = "tx")]
-    tx: String,
-
-    #[serde(rename = "result")]
-    result: Vec<Value>,
-}
-
-impl QueryResponse {
-    pub fn new(tx: String, result: Vec<Value>) -> QueryResponse {
-        QueryResponse { tx, result }
-    }
-
-    pub fn to_string(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
-    }
-}
-
-#[wasm_bindgen]
-impl QueryResponse {
-    #[wasm_bindgen(getter, js_name = "tx")]
-    pub fn get_tx(&self) -> String {
-        self.tx.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "result")]
-    pub fn get_item(&self) -> String {
-        json!(self.result.clone()).to_string()
-    }
-}
-
 pub fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }

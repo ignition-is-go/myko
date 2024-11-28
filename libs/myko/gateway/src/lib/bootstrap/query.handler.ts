@@ -63,16 +63,21 @@ export const handleQuery = (
           deletes: [...deletes],
           sequence: sequence,
           upserts: upserts.map((x) => wrapItem(x)),
+          tx,
         },
         event: MQUERY_RESPONSE_EVENT,
-        tx,
       } satisfies WSMQueryResponse
     }),
     catchError((e) => {
       console.log(e)
       throw e
     }),
-    filter((x) => x.data.deletes.length > 0 || x.data.upserts.length > 0),
+    filter(
+      (x) =>
+        x.data.deletes.length > 0 ||
+        x.data.upserts.length > 0 ||
+        sequence === 0,
+    ),
     takeUntil(clientDisconnect(clientId)),
     takeUntil(unsub.pipe(filter((u) => u === q.tx))),
   ) as Observable<WSMQueryResponse>

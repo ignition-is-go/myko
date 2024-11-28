@@ -1,13 +1,17 @@
-use myko_wasm::event::MEvent;
-use serde::{Deserialize, Serialize};
+use myko_wasm::{event::MEvent, item::Eventable};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 
-use crate::websocket::{AutoReconnectSocket, SocketConnectionStatus};
+use crate::{
+    message::MykoMessage,
+    query::WrappedQuery,
+    websocket::{AutoReconnectSocket, SocketConnectionStatus},
+};
 
 use url::Url;
 
@@ -36,18 +40,9 @@ impl MykoClient {
 
         let socket = Arc::new(AutoReconnectSocket::new());
 
-        let mut incoming = socket.incoming.subscribe();
         let mut status = socket.status_tx.subscribe();
 
-        let connection_ref = connection.clone();
         let client_pub = tokio::sync::broadcast::channel(1).0;
-        let client_pub_ref = client_pub.clone();
-
-        tokio::spawn(async move {
-            while let Ok(msg) = incoming.recv().await {
-                process_message(connection_ref.clone(), client_pub_ref.clone(), msg).await;
-            }
-        });
 
         let connection_ref = connection.clone();
 
@@ -105,7 +100,7 @@ impl MykoClient {
         }
     }
 
-    pub async fn send_event(&self, event: MEvent) {
+    pub async fn send_event(&self, event: MEvent) -> Result<(), ()> {
         let myko_msg = MykoClientMessage::Event(event);
 
         let val = json!(myko_msg);
@@ -116,7 +111,9 @@ impl MykoClient {
 
         if self.socket.outgoing.send(msg).is_err() {
             println!("Could not send message to ws");
+            return Err(());
         }
+        Ok(())
     }
 
     pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> {
@@ -126,7 +123,7 @@ impl MykoClient {
             Ok(Message::Text(content)) => {
                 let d = serde_json::from_str::<Value>(content.as_str());
 
-                let data = d.expect("did not parse data");
+                let data = d.expect("did not parse data @ get_messages");
 
                 Some(data)
             }
@@ -181,30 +178,63 @@ impl MykoClient {
     pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
         BroadcastStream::new(self.client_pub.clone().subscribe()).filter_map(|x| x.ok())
     }
-}
 
-async fn process_message(
-    connection: Arc<Mutex<ConnectionStatus>>,
-    client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
-    message: Message,
-) {
-    if let Message::Text(content) = message {
-        let d = serde_json::from_str::<TextMessage>(content.as_str());
+    pub fn watch_query<
+        T: Clone + DeserializeOwned + Eventable<T, PT> + PartialEq + DeserializeOwned + 'static,
+        PT: Clone,
+    >(
+        &self,
+        query: WrappedQuery,
+    ) -> impl tokio_stream::Stream<Item = Vec<T>> {
+        let stream = self.get_messages();
 
-        let data = d.expect("did not parse data").data;
+        let msg = MykoMessage::Query(query);
 
-        let command = serde_json::from_value::<Command>(data.to_owned());
+        let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
 
-        process_command(command, connection, client_pub).await;
+        match self.socket.outgoing.send(msg) {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Could not send message to ws: {:?}", e);
+            }
+        }
+
+        let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
+
+        stream.filter_map(move |x| {
+            let d = serde_json::from_value::<MykoMessage>(x.clone());
+
+            let data = d.expect("did not parse data @ watch_query");
+
+            match data {
+                MykoMessage::QueryResponse(response) => {
+                    let mut state = state.lock().expect("Cannot lock state");
+                    let upserts = response.upserts;
+                    let deletes = response.deletes;
+
+                    let upserts: Vec<T> = upserts
+                        .iter()
+                        .map(|x| {
+                            let item = serde_json::from_value::<T>(x.item.clone());
+
+                            item.expect("Could not parse item")
+                        })
+                        .collect();
+
+                    for up in upserts.iter() {
+                        state.insert(up.id().clone(), up.clone());
+                    }
+
+                    for del in deletes.iter() {
+                        state.remove(del);
+                    }
+
+                    Some(state.values().cloned().collect())
+                }
+                _ => None,
+            }
+        })
     }
-}
-
-async fn process_command(
-    _command: Result<Command, serde_json::Error>,
-    _connection: Arc<Mutex<ConnectionStatus>>,
-    _client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
-) {
-    // handle commands here
 }
 
 #[derive(Serialize, Deserialize)]

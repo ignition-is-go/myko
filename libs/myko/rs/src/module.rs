@@ -1,10 +1,9 @@
-use myko_wasm::{
-    event::MEvent,
-    query::{Query, QueryResponse},
-};
+use myko_wasm::{event::MEvent, query::Query};
 
 use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
+
+use crate::query::QueryResponse;
 
 #[async_trait]
 pub trait Module {

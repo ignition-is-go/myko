@@ -309,7 +309,12 @@ export class WSMClient {
     this.send(wrapped)
     return firstValueFrom(
       this.commandResponses.pipe(
-        filter((c) => c.tx === command.tx),
+        filter(
+          (c) =>
+            (c.event === MCOMMAND_ERROR_EVENT ||
+              c.event === MCOMMAND_RESPONSE_EVENT) &&
+            c.data.tx === command.tx,
+        ),
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
             this.errorsSubject.next(e)
@@ -336,7 +341,7 @@ export class WSMClient {
     this.resendQueries.set(query.tx, wrappedQuery)
     this.send(wrappedQuery)
     return this.queryResponses.pipe(
-      filter((r) => r.tx === query.tx),
+      filter((r) => r.data.tx === query.tx),
 
       scan((acc, update) => {
         if (update.data.sequence === 0) {
@@ -377,10 +382,10 @@ export class WSMClient {
     this.send(wrappedReport)
 
     return this.reportResponses.pipe(
-      filter((r) => r.tx === report.tx),
+      filter((r) => r.data.tx === report.tx),
       map((e) => {
         // check for report errors here?
-        return e.data as MReportResult<T>
+        return e.data.response as MReportResult<T>
       }),
       shareReplay(1),
       map((x) => {
