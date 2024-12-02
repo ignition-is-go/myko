@@ -100,7 +100,7 @@ impl MykoClient {
         }
     }
 
-    pub async fn send_event(&self, event: MEvent) -> Result<(), ()> {
+    pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
         let myko_msg = MykoClientMessage::Event(event);
 
         let val = json!(myko_msg);
@@ -109,11 +109,11 @@ impl MykoClient {
 
         let msg = Message::Text(str);
 
-        if self.socket.outgoing.send(msg).is_err() {
-            println!("Could not send message to ws");
-            return Err(());
-        }
-        Ok(())
+        self.socket
+            .outgoing
+            .send(msg)
+            .map(|_| ())
+            .map_err(|_| "Could not send message".to_string())
     }
 
     pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> {
@@ -214,11 +214,7 @@ impl MykoClient {
 
                     let upserts: Vec<T> = upserts
                         .iter()
-                        .map(|x| {
-                            let item = serde_json::from_value::<T>(x.item.clone());
-
-                            item.expect("Could not parse item")
-                        })
+                        .filter_map(|x| serde_json::from_value::<T>(x.item.clone()).ok())
                         .collect();
 
                     for up in upserts.iter() {
