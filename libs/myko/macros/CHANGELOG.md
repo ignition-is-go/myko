@@ -5,12 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.1 (2024-12-02)
+
+### Chore
+
+ - <csr-id-30a94114c1f86c7527a958281f79c5bed6360a2a/> bump versions
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 1 commit contributed to the release.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Bump versions ([`30a9411`](https://github.com/ignition-is-go/rship/commit/30a94114c1f86c7527a958281f79c5bed6360a2a))
+</details>
+
 ## v0.1.0 (2024-12-02)
 
 <csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/>
 <csr-id-ee2d4434569e94b59d587afb1e8987289fa7ee6a/>
 <csr-id-edd280215235cdc44cf34d66ec401f235c837e1b/>
 <csr-id-07856acd96c826183fcabf9771259b6a5c7c18e6/>
+<csr-id-ce4eccabd74fdadf6a04633a04518c370ff3f413/>
 
 ### Chore
 
@@ -51,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 18 commits contributed to the release.
+ - 19 commits contributed to the release.
  - 14 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -62,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Bump myko-macros v0.1.0, myko-wasm v0.1.0, myko-rs v0.1.0, rship-entities v0.1.0, rship-sdk v0.1.0 ([`be34bbc`](https://github.com/ignition-is-go/rship/commit/be34bbca0ff802c6e40061f565b772488e7ed00d))
     - Update add descriptions and licenses ([`ce4ecca`](https://github.com/ignition-is-go/rship/commit/ce4eccabd74fdadf6a04633a04518c370ff3f413))
     - Release myko-macros v0.1.0, myko-wasm v0.1.0, myko-rs v0.1.0, rship-entities v0.1.0, rship-sdk v0.1.0 ([`5edc6dc`](https://github.com/ignition-is-go/rship/commit/5edc6dc0b154e5019ec38dee85f6fbc7bb1389a4))
     - Add changelogs ([`07856ac`](https://github.com/ignition-is-go/rship/commit/07856acd96c826183fcabf9771259b6a5c7c18e6))
