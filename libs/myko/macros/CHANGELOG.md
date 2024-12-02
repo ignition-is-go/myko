@@ -10,10 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/>
 <csr-id-ee2d4434569e94b59d587afb1e8987289fa7ee6a/>
 <csr-id-edd280215235cdc44cf34d66ec401f235c837e1b/>
+<csr-id-07856acd96c826183fcabf9771259b6a5c7c18e6/>
 
 ### Chore
 
  - <csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/> update version and references
+
+### Chore
+
+ - <csr-id-ce4eccabd74fdadf6a04633a04518c370ff3f413/> update add descriptions and licenses
 
 ### Chore
 
@@ -46,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 16 commits contributed to the release.
- - 13 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 18 commits contributed to the release.
+ - 14 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
 ### Commit Details
@@ -57,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Update add descriptions and licenses ([`ce4ecca`](https://github.com/ignition-is-go/rship/commit/ce4eccabd74fdadf6a04633a04518c370ff3f413))
+    - Release myko-macros v0.1.0, myko-wasm v0.1.0, myko-rs v0.1.0, rship-entities v0.1.0, rship-sdk v0.1.0 ([`5edc6dc`](https://github.com/ignition-is-go/rship/commit/5edc6dc0b154e5019ec38dee85f6fbc7bb1389a4))
     - Add changelogs ([`07856ac`](https://github.com/ignition-is-go/rship/commit/07856acd96c826183fcabf9771259b6a5c7c18e6))
     - Update version and references ([`c4f8e44`](https://github.com/ignition-is-go/rship/commit/c4f8e449ea5c9b16b8477e99a1468042db770037))
     - Add rust queries, move txids inside data ([`1f61b3e`](https://github.com/ignition-is-go/rship/commit/1f61b3ec95d4e3d59d682e196416a0e1e98539b5))

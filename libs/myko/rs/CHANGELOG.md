@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <csr-id-edd280215235cdc44cf34d66ec401f235c837e1b/>
 <csr-id-e96574d0f74e40d21c80e901bcb56ae45f2b1452/>
 <csr-id-f0887e066851473dc5e455804e299772e0f4a17b/>
+<csr-id-07856acd96c826183fcabf9771259b6a5c7c18e6/>
 
 ### Chore
 
@@ -34,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  - <csr-id-58fd22f88c42cf4d6d43604468e91f41ae4eb803/> cleanup
  - <csr-id-980407db6cd55835c205e20a9c068331597d2c80/> reorg
  - <csr-id-160408961d3d08bab0d2d2503f313cdc15ba190a/> reorg
+
+### Chore
+
+ - <csr-id-ce4eccabd74fdadf6a04633a04518c370ff3f413/> update add descriptions and licenses
 
 ### Chore
 
@@ -86,8 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 49 commits contributed to the release.
- - 40 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 51 commits contributed to the release.
+ - 41 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
 ### Commit Details
@@ -97,6 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Update add descriptions and licenses ([`ce4ecca`](https://github.com/ignition-is-go/rship/commit/ce4eccabd74fdadf6a04633a04518c370ff3f413))
+    - Release myko-macros v0.1.0, myko-wasm v0.1.0, myko-rs v0.1.0, rship-entities v0.1.0, rship-sdk v0.1.0 ([`5edc6dc`](https://github.com/ignition-is-go/rship/commit/5edc6dc0b154e5019ec38dee85f6fbc7bb1389a4))
     - Add changelogs ([`07856ac`](https://github.com/ignition-is-go/rship/commit/07856acd96c826183fcabf9771259b6a5c7c18e6))
     - Update version and references ([`c4f8e44`](https://github.com/ignition-is-go/rship/commit/c4f8e449ea5c9b16b8477e99a1468042db770037))
     - File browser ([`9701633`](https://github.com/ignition-is-go/rship/commit/9701633c121317a9ac465f0c4341e31cab5c4856))
