@@ -4686,7 +4686,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quote",
  "syn 2.0.89",
@@ -4694,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "futures-signals",
@@ -4721,7 +4721,7 @@ dependencies = [
 
 [[package]]
 name = "myko-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
@@ -8041,7 +8041,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "js-sys",
@@ -8060,7 +8060,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "myko-rs",
  "myko-wasm",
