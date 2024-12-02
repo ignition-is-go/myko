@@ -27,7 +27,7 @@ mod myko_tests {
         hash: String,
     }
 
-    #[derive(Clone, Partial, Serialize, Deserialize, PartialEq, Debug, macros::Eventable)]
+    #[derive(Clone, Partial, Serialize, Deserialize, PartialEq, Debug, myko_macros::Eventable)]
     #[partially(derive(Clone, Serialize, Deserialize, Default))]
     struct Auto {
         id: String,

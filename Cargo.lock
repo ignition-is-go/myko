@@ -1537,7 +1537,7 @@ name = "core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "macros",
+ "myko-macros",
  "myko-rs",
  "myko-wasm",
  "partially",
@@ -4407,14 +4407,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "macros"
-version = "0.1.0"
-dependencies = [
- "quote",
- "syn 2.0.89",
-]
-
-[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4693,14 +4685,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "myko-macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn 2.0.89",
+]
+
+[[package]]
 name = "myko-rs"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-signals",
  "futures-util",
- "macros",
  "md5",
+ "myko-macros",
  "myko-wasm",
  "openssl",
  "partially",
@@ -8045,7 +8045,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "js-sys",
- "macros",
+ "myko-macros",
  "myko-rs",
  "myko-wasm",
  "partially",

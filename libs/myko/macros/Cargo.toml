@@ -1,5 +1,5 @@
 [package]
-name = "macros"
+name = "myko-macros"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,5 +9,5 @@ edition = "2021"
 proc-macro = true
 
 [dependencies]
-syn = "2.0.48"
+syn = {version="2.0.48", features=["full"]}
 quote = "1.0.35"
