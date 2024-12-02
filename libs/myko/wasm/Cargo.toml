@@ -3,6 +3,8 @@ name = "myko-wasm"
 version = "0.1.0"
 authors = ["Trevor Sargent <trevor.a.sargent@gmail.com>"]
 edition = "2018"
+description = "myko wasm bindings"
+license = "AGPL-3.0-or-later"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
