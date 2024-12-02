@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.1.0 (2024-12-02)
 
+<csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/>
+<csr-id-ee2d4434569e94b59d587afb1e8987289fa7ee6a/>
+<csr-id-edd280215235cdc44cf34d66ec401f235c837e1b/>
+
 ### Chore
 
  - <csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/> update version and references
+
+### Chore
+
+ - <csr-id-07856acd96c826183fcabf9771259b6a5c7c18e6/> add changelogs
 
 ### New Features
 
@@ -38,8 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 15 commits contributed to the release.
- - 12 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 16 commits contributed to the release.
+ - 13 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
 ### Commit Details
@@ -49,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Add changelogs ([`07856ac`](https://github.com/ignition-is-go/rship/commit/07856acd96c826183fcabf9771259b6a5c7c18e6))
     - Update version and references ([`c4f8e44`](https://github.com/ignition-is-go/rship/commit/c4f8e449ea5c9b16b8477e99a1468042db770037))
     - Add rust queries, move txids inside data ([`1f61b3e`](https://github.com/ignition-is-go/rship/commit/1f61b3ec95d4e3d59d682e196416a0e1e98539b5))
     - Merge pull request #1352 from ignition-is-go/release/canary ([`16619ad`](https://github.com/ignition-is-go/rship/commit/16619adf23cda1f1222401d8dd125c82212c7c5a))

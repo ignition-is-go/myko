@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.1.0 (2024-12-02)
 
+<csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/>
+<csr-id-5beca017fbc44878128e52a033e51b755b45a138/>
+<csr-id-c455d174207d7c8a29cd021f8e739db5fce673c1/>
+<csr-id-c8af9d9cb226fe181350cb42ef7d841eebfc50d9/>
+<csr-id-baf2c8e2d86faeadd46aedaf170326b0e1720a19/>
+<csr-id-58fd22f88c42cf4d6d43604468e91f41ae4eb803/>
+<csr-id-980407db6cd55835c205e20a9c068331597d2c80/>
+<csr-id-160408961d3d08bab0d2d2503f313cdc15ba190a/>
+<csr-id-9701633c121317a9ac465f0c4341e31cab5c4856/>
+<csr-id-b1a02e395e87af64be82db68c9e2ccccb5666452/>
+<csr-id-6c4f366b17903baddc95c0f3c2690a10fae56b2b/>
+<csr-id-e16ba190c7365a8fe966c63e4d5bd144cd279303/>
+<csr-id-ee2d4434569e94b59d587afb1e8987289fa7ee6a/>
+<csr-id-edd280215235cdc44cf34d66ec401f235c837e1b/>
+<csr-id-e96574d0f74e40d21c80e901bcb56ae45f2b1452/>
+<csr-id-f0887e066851473dc5e455804e299772e0f4a17b/>
+
 ### Chore
 
  - <csr-id-c4f8e449ea5c9b16b8477e99a1468042db770037/> update version and references
@@ -17,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
  - <csr-id-58fd22f88c42cf4d6d43604468e91f41ae4eb803/> cleanup
  - <csr-id-980407db6cd55835c205e20a9c068331597d2c80/> reorg
  - <csr-id-160408961d3d08bab0d2d2503f313cdc15ba190a/> reorg
+
+### Chore
+
+ - <csr-id-07856acd96c826183fcabf9771259b6a5c7c18e6/> add changelogs
 
 ### New Features
 
@@ -65,8 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 48 commits contributed to the release.
- - 39 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 49 commits contributed to the release.
+ - 40 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
 ### Commit Details
@@ -76,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Add changelogs ([`07856ac`](https://github.com/ignition-is-go/rship/commit/07856acd96c826183fcabf9771259b6a5c7c18e6))
     - Update version and references ([`c4f8e44`](https://github.com/ignition-is-go/rship/commit/c4f8e449ea5c9b16b8477e99a1468042db770037))
     - File browser ([`9701633`](https://github.com/ignition-is-go/rship/commit/9701633c121317a9ac465f0c4341e31cab5c4856))
     - Add rust queries, move txids inside data ([`1f61b3e`](https://github.com/ignition-is-go/rship/commit/1f61b3ec95d4e3d59d682e196416a0e1e98539b5))
