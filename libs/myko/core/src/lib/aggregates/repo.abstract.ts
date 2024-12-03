@@ -284,7 +284,14 @@ export abstract class Repo<T extends MItem> {
     )
   }
 
-  watchSearch(query: string): Observable<T[]> {
+  watchSearch(
+    query: string,
+    opts?: { showAllOnEmpty?: boolean },
+  ): Observable<T[]> {
+    if (query === '' && opts?.showAllOnEmpty) {
+      return this.watch({} as DeepPartial<T>)
+    }
+
     return this.searchObs.pipe(
       startWith(this.search),
       map((s) => s.search(query.toLocaleLowerCase())),
