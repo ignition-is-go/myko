@@ -11,6 +11,7 @@
     "rust": "./tools/scripts/rust.sh",
     "py": "./tools/scripts/py.sh",
     "py:publish": "./tools/scripts/py-publish.sh",
+    "rust:publish": "./tools/scripts/rust-publish.sh",
     "preinstall": "pnpm run sync",
     "postinstall": "pnpm run versionstamp",
     "versionstamp": "node ./tools/scripts/version-stamp.js",
