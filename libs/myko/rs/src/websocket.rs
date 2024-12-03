@@ -103,6 +103,7 @@ impl AutoReconnectSocket {
     }
 
     pub async fn build(&self, addr: String) {
+        println!("Building Connection to {}", addr);
         match self.status.lock().await.clone() {
             SocketConnectionStatus::Connected(_, _token) => {
                 unreachable!("Should not be building when already connected");
@@ -116,11 +117,6 @@ impl AutoReconnectSocket {
         let reconnect_token = CancellationToken::new();
 
         let s = SocketConnectionStatus::Connecting(addr.clone(), reconnect_token.clone());
-
-        if self.status_tx.send(s.clone()).is_err() {
-            println!("Could not send status update");
-        }
-        *self.status.lock().await = s;
 
         let send = self.outgoing.clone();
         let recv = self.incoming.clone();
@@ -138,13 +134,6 @@ impl AutoReconnectSocket {
                     }
                 };
 
-                let s = SocketConnectionStatus::Connected(addr.clone(), reconnect_token.clone());
-
-                if status_sender.send(s.clone()).is_err() {
-                    println!("Could not send status update:128");
-                }
-                *status.lock().await = s;
-
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();
 
@@ -156,7 +145,7 @@ impl AutoReconnectSocket {
                 }
 
                 let mut local_send = send.subscribe();
-
+                println!("Spawning Write");
                 let write_handle = tokio::spawn(async move {
                     loop {
                         if int_send_cancel.is_cancelled() || rec_send_cancel.is_cancelled() {
@@ -179,11 +168,13 @@ impl AutoReconnectSocket {
                         }
                     }
                 });
+                println!("Write Spawned");
 
                 let rec_read_cancel = reconnect_token.clone();
                 let int_read_cancel = interior_cancel.clone();
 
                 let local_recv = recv.clone();
+                println!("Spawning Read");
 
                 let read_handle = tokio::spawn(async move {
                     while let (Some(Ok(msg)), false, false) = (
@@ -204,6 +195,15 @@ impl AutoReconnectSocket {
                     println!("Websocket Read Failed");
                     int_read_cancel.cancel();
                 });
+
+                println!("Read Spawned");
+
+                let s = SocketConnectionStatus::Connected(addr.clone(), reconnect_token.clone());
+
+                if status_sender.send(s.clone()).is_err() {
+                    println!("Could not send status update:128");
+                }
+                *status.lock().await = s;
 
                 write_handle.await.expect("msg write failed");
                 read_handle.await.expect("msg read failed");

@@ -113,7 +113,7 @@ impl MykoClient {
             .outgoing
             .send(msg)
             .map(|_| ())
-            .map_err(|_| "Could not send message".to_string())
+            .map_err(|err| err.to_string())
     }
 
     pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> {
@@ -124,7 +124,6 @@ impl MykoClient {
                 let d = serde_json::from_str::<Value>(content.as_str());
 
                 let data = d.expect("did not parse data @ get_messages");
-
                 Some(data)
             }
             _ => None,
@@ -188,6 +187,7 @@ impl MykoClient {
     ) -> impl tokio_stream::Stream<Item = Vec<T>> {
         let stream = self.get_messages();
 
+        let query_id = query.query_id.clone();
         let msg = MykoMessage::Query(query);
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
@@ -200,7 +200,6 @@ impl MykoClient {
         }
 
         let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
-
         stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage>(x.clone());
 
@@ -224,6 +223,13 @@ impl MykoClient {
                     for del in deletes.iter() {
                         state.remove(del);
                     }
+
+                    println!(
+                        "Query {} had {} inserts and {} deletes",
+                        query_id,
+                        upserts.len(),
+                        deletes.len()
+                    );
 
                     Some(state.values().cloned().collect())
                 }
