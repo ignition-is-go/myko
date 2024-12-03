@@ -5,17 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.1 (2024-12-02)
+## v0.1.2 (2024-12-03)
 
-### Chore
+### Bug Fixes
 
- - <csr-id-30a94114c1f86c7527a958281f79c5bed6360a2a/> bump versions
+ - <csr-id-6ddc40322d4af46c75c4b690ebf9afbfdf5a33e2/> wait till channels are open to return connected
 
 ### Commit Statistics
 
 <csr-read-only-do-not-edit/>
 
  - 1 commit contributed to the release.
+ - 1 day passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -26,6 +27,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Wait till channels are open to return connected ([`6ddc403`](https://github.com/ignition-is-go/rship/commit/6ddc40322d4af46c75c4b690ebf9afbfdf5a33e2))
+</details>
+
+## v0.1.1 (2024-12-02)
+
+<csr-id-30a94114c1f86c7527a958281f79c5bed6360a2a/>
+
+### Chore
+
+ - <csr-id-30a94114c1f86c7527a958281f79c5bed6360a2a/> bump versions
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 2 commits contributed to the release.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Release myko-macros v0.1.1, myko-wasm v0.1.1, myko-rs v0.1.1, rship-entities v0.1.1, rship-sdk v0.1.1 ([`91ab979`](https://github.com/ignition-is-go/rship/commit/91ab979a04bf5558d1cebec1e1ff571c31f0b8c0))
     - Bump versions ([`30a9411`](https://github.com/ignition-is-go/rship/commit/30a94114c1f86c7527a958281f79c5bed6360a2a))
 </details>
 
