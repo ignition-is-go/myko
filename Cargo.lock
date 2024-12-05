@@ -8131,7 +8131,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "myko-rs",
  "myko-wasm",
