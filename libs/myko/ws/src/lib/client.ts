@@ -334,7 +334,7 @@ export class WSMClient {
             wrapped.data.commandId.split(':').reverse().join(' '),
           )
           this.setCommandComplete(wrapped)
-          return e.data as MCommandResponse<T>
+          return e.data.response as MCommandResponse<T>
         }),
       ),
     )
