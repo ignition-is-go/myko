@@ -138,7 +138,8 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
       if (x.itemType === 'Log') {
         return
       }
-      console.log('Event', x.itemType, x.changeType, x.item.id)
+
+      new MykoLogger(x.itemType).info(`${x.changeType} - ${x.item.id}`)
     })
   })
 }
