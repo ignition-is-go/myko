@@ -12,22 +12,24 @@ import {
   type ID,
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
-import { Observable, Subscription, firstValueFrom, map } from 'rxjs'
+import {
+  Observable,
+  Subject,
+  filter,
+  firstValueFrom,
+  map,
+  takeUntil,
+} from 'rxjs'
 
 import { peerBus } from '../bus/peer.bus'
 import { getAuth } from './auth.registry'
 
 export class PeerClientRegistry {
   private peers = new Map<string, WSMClient>()
-  private peerEventListenerSubs = new Map<string, Subscription>()
-  private gossipSubs = new Map<string, Subscription>()
+  private unsubs = new Subject<ID>()
 
   private assertPeerEventListener(address: string, port: number) {
     const key = makePeerKey(address, port)
-
-    if (this.peerEventListenerSubs.has(key)) {
-      return
-    }
 
     if (!this.peers.has(key)) {
       return
@@ -35,43 +37,35 @@ export class PeerClientRegistry {
 
     const client = this.peers.get(key)
 
-    const sub = client.watchReport(new ServerEventLog()).subscribe((e) => {
-      peerBus.next(e)
-    })
+    const unsub = this.unsubs.pipe(filter((x) => x === key))
 
-    const gossipSub = client.watchQuery(new GetPeerServers()).subscribe((s) => {
-      for (const server of s) {
-        if (server.id === getServer().id) {
-          continue
+    client
+      .watchReport(new ServerEventLog())
+      .pipe(takeUntil(unsub))
+      .subscribe((e) => {
+        peerBus.next(e)
+      })
+
+    client
+      .watchQuery(new GetPeerServers())
+      .pipe(takeUntil(unsub))
+      .subscribe((s) => {
+        for (const server of s) {
+          if (server.id === getServer().id) {
+            continue
+          }
+
+          this.assertPeer(server.address, server.port)
         }
-
-        this.assertPeer(server.address, server.port)
-      }
-    })
-
-    this.peerEventListenerSubs.set(key, sub)
-    this.gossipSubs.set(key, gossipSub)
+      })
   }
 
   private teardownPeerEventListener(server: Server) {
     const key = makePeerKey(server.address, server.port)
 
-    if (this.gossipSubs.has(key)) {
-      const sub = this.gossipSubs.get(key)
-      sub.unsubscribe()
-      this.gossipSubs.delete(key)
-    }
-
-    if (this.peerEventListenerSubs.has(key)) {
-      const sub = this.peerEventListenerSubs.get(key)
-      sub.unsubscribe()
-      this.peerEventListenerSubs.delete(key)
-    }
-
+    this.unsubs.next(key)
     this.peers.delete(key)
   }
-
-  onModuleInit() {}
 
   assertPeer(address: string, port: number) {
     if (this.peers.has(makePeerKey(address, port))) {
