@@ -74,8 +74,8 @@ export const handleQuery = (
         sequence === 0,
     ),
     catchError((e) => {
-      console.log(query)
-      console.log(e)
+      console.error(query)
+      console.error(e)
       return of({
         data: {
           message: e.message,
