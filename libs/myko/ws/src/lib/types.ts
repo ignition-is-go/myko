@@ -3,10 +3,13 @@ import {
   MCommand,
   MItem,
   MQuery,
+  MReport,
   MykoCommand,
   MykoQuery,
+  MykoReport,
   type ID,
   type MEvent,
+  type MReportType,
   type MWrappedCommand,
   type MWrappedItem,
   type MWrappedQuery,
@@ -164,6 +167,23 @@ export class PeerCommand extends MCommand {
     readonly command: MCommand,
     readonly peerId: ID,
   ) {
+    super()
+  }
+}
+
+@MykoReport()
+export class PeerReport<T> extends MReport<MReportType<T>> {
+  constructor(
+    readonly report: T,
+    readonly peerId: ID,
+  ) {
+    super()
+  }
+}
+
+@MykoReport()
+export class ClientStatus extends MReport<{ online: boolean }> {
+  constructor(readonly clientId: ID) {
     super()
   }
 }

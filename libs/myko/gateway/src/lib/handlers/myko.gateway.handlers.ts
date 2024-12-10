@@ -33,18 +33,22 @@ import {
   reportBus,
   type MCommandHandler,
   type MLiveQueryResult,
+  type MLiveReportResult,
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
 import {
   ClientCommand,
+  ClientStatus,
   PeerCommand,
   PeerQuery,
+  PeerReport,
   wrapCommandOnlyWS,
 } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { uniq } from 'ramda'
 import {
+  EMPTY,
   Observable,
   combineLatest,
   debounceTime,
@@ -56,7 +60,7 @@ import {
   startWith,
   switchMap,
 } from 'rxjs'
-import { getServer, getTx } from '../registry'
+import { getClients, getServer, getTx } from '../registry'
 import { PeerClientRegistry, peers } from '../registry/peer.registry'
 
 onAllInit(async () => {
@@ -194,14 +198,14 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
       return peers.getPeer(query.peerId).pipe(
         switchMap((peer) => {
           if (!peer) {
-            return of([])
+            return EMPTY
           }
           return peer.watchQuery(query.query)
         }),
       )
     } catch (e) {
       console.warn('Cant Execute Peer Query', query)
-      return of([])
+      return EMPTY
     }
   }
 }
@@ -216,6 +220,34 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
     }
 
     peer.sendCommand(command.command)
+  }
+}
+
+@MykoReportHandler(PeerReport)
+export class PeerReportHandler implements MReportHandler<PeerReport<any>> {
+  execute(report: PeerReport<any>): Observable<any> {
+    return peers.getPeer(report.peerId).pipe(
+      switchMap((peer) => {
+        if (!peer) {
+          return EMPTY
+        }
+
+        return peer.watchReport(report.report)
+      }),
+    )
+  }
+}
+
+@MykoReportHandler(ClientStatus)
+export class ClientStatusHandler implements MReportHandler<ClientStatus> {
+  execute(report: ClientStatus): MLiveReportResult<ClientStatus> {
+    return getClients().pipe(
+      map((clients) => {
+        return {
+          online: clients.some((c) => c === report.clientId),
+        }
+      }),
+    )
   }
 }
 

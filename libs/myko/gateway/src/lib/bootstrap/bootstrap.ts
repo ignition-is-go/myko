@@ -18,7 +18,7 @@ import {
 import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
-import { Subject } from 'rxjs'
+import { ReplaySubject, Subject } from 'rxjs'
 import { setAdapterBusses, setAuth } from '../registry'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
@@ -59,6 +59,7 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
     setServer(server)
     const tx = new Subject<{ clientId: ID; data: WSMMessage }>()
     const rx = new Subject<{ clientId: ID; data: WSMMessage }>()
+    const clients = new ReplaySubject<ID[]>(1)
 
     rx.subscribe({
       next: handleMessage(tx),
@@ -67,12 +68,13 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
       },
     })
 
-    setAdapterBusses({ tx, rx })
+    setAdapterBusses({ tx, rx, clients })
 
     wsAdapter({
       port,
       rx,
       tx,
+      clients,
       serverId,
     })
 

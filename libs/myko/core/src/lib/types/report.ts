@@ -19,6 +19,8 @@ export class MReport<T> {
   }
 }
 
+export type MReportType<T> = T extends MReport<infer R> ? R : never
+
 /**
  * Represents the result type of a report.
  * @template T - The type of the report.

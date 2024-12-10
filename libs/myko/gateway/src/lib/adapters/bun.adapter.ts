@@ -1,7 +1,7 @@
 import {
   Client,
-  GetClientsByIds,
   eventBus,
+  GetClientsByIds,
   isAllInit,
   makeDel,
   queryBus,
@@ -20,8 +20,11 @@ export const bunAdapter: MykoWsAdapter = ({
   port,
   rx,
   tx,
+  clients,
   serverId,
 }: MykoWsAdapterOptions) => {
+  let clientSet = new Set<ID>()
+
   const s = Bun.serve({
     port,
 
@@ -53,6 +56,9 @@ export const bunAdapter: MykoWsAdapter = ({
       },
       open(ws: ServerWebSocket<BunWSClientData>) {
         ws.subscribe(ws.data.clientId)
+
+        clientSet.add(ws.data.clientId)
+        clients.next([...clientSet])
         eventBus.publishSet(
           new Client({ id: ws.data.clientId, serverId }),
           randomUUID(),
@@ -61,6 +67,10 @@ export const bunAdapter: MykoWsAdapter = ({
       drain(ws) {},
       close(ws, code, message) {
         ws.unsubscribe(ws.data.clientId)
+
+        clientSet.delete(ws.data.clientId)
+        clients.next([...clientSet])
+
         const existing = queryBus
           .execute(new GetClientsByIds([ws.data.clientId]))
           .then((clients) => {
