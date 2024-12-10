@@ -1,4 +1,4 @@
-import { filter, from, mergeMap, Observable, Subscription } from 'rxjs'
+import { filter, Subscription } from 'rxjs'
 import {
   makeDel,
   makeSet,
@@ -307,42 +307,6 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   }
 
   abstract publish<T extends MEvent>(Event: T): Promise<void>
-
-  protected registerSaga(saga: MSaga) {
-    if (!isFunction(saga)) {
-      throw new Error(
-        'Cannot Register Saga - Must retrun Observable of Commands',
-      )
-    }
-    const stream$ = saga(
-      this.subject$.pipe(filter((x) => x.sourceId === this.getServerId())),
-    )
-    if (!(stream$ instanceof Observable)) {
-      throw new Error(
-        'Cannot Register Saga - Must retrun Observable of Commands',
-      )
-    }
-
-    const subscription = stream$
-      .pipe(
-        filter((e) => !!e),
-        mergeMap((command) =>
-          from(
-            this.commandBus.execute(command).catch((e) => {
-              console.error(e)
-              return e
-            }),
-          ),
-        ),
-      )
-      .subscribe({
-        error: (error) => {
-          console.error(`Error in Command Handler executed by Saga`, error)
-        },
-      })
-
-    this.subscriptions.push(subscription)
-  }
 }
 
 const isFunction = (a: any) => typeof a === 'function'

@@ -73,7 +73,12 @@ export const bunAdapter: MykoWsAdapter = ({
     },
   })
 
-  tx.subscribe((m) => {
-    s.publish(m.clientId, serialize(m.clientId, m.data))
+  tx.subscribe({
+    next: (m) => {
+      s.publish(m.clientId, serialize(m.clientId, m.data))
+    },
+    error: (e) => {
+      console.error('Error in tx', e.message)
+    },
   })
 }

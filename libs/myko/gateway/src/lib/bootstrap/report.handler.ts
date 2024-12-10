@@ -4,8 +4,13 @@ import {
   type ID,
   type MWrappedReport,
 } from '@myko/core'
-import { wrapReportResponseWS, type WSMMessage } from '@myko/ws'
-import { catchError, filter, map, takeUntil, type Subject } from 'rxjs'
+import {
+  MREPORT_ERROR_EVENT,
+  wrapReportResponseWS,
+  type WSMMessage,
+  type WSMReportError,
+} from '@myko/ws'
+import { catchError, filter, map, of, takeUntil, type Subject } from 'rxjs'
 import { clientDisconnect, unsub } from './common'
 
 export const handleReport = (
@@ -18,8 +23,15 @@ export const handleReport = (
   const response = reportBus.watch(report).pipe(
     map((r) => wrapReportResponseWS(report.tx, r)),
     catchError((e) => {
-      console.log(e)
-      throw e
+      console.error(wrappedReport.reportId, e.message)
+
+      return of({
+        data: {
+          message: e.message,
+          tx: report.tx,
+        },
+        event: MREPORT_ERROR_EVENT,
+      } satisfies WSMReportError)
     }),
     takeUntil(clientDisconnect(clientId)),
     takeUntil(unsub.pipe(filter((u) => u === report.tx))),

@@ -6,14 +6,17 @@ import {
   type MWrappedQuery,
 } from '@myko/core'
 import {
+  MQUERY_ERROR_EVENT,
   MQUERY_RESPONSE_EVENT,
   type WSMMessage,
+  type WSMQueryError,
   type WSMQueryResponse,
 } from '@myko/ws'
 import {
   catchError,
   filter,
   map,
+  of,
   takeUntil,
   type Observable,
   type Subject,
@@ -34,11 +37,6 @@ export const handleQuery = (
   let sequence = -1
 
   const response = queryBus.watch(q).pipe(
-    catchError((e) => {
-      console.log(query)
-      console.log(e)
-      throw e
-    }),
     map((x) => x.filter((x) => !!x)),
     map((curr) => {
       const currMap = new Map(curr.map((x) => [x.id, x]))
@@ -68,16 +66,24 @@ export const handleQuery = (
         event: MQUERY_RESPONSE_EVENT,
       } satisfies WSMQueryResponse
     }),
-    catchError((e) => {
-      console.log(e)
-      throw e
-    }),
+
     filter(
       (x) =>
         x.data.deletes.length > 0 ||
         x.data.upserts.length > 0 ||
         sequence === 0,
     ),
+    catchError((e) => {
+      console.log(query)
+      console.log(e)
+      return of({
+        data: {
+          message: e.message,
+          tx: tx,
+        },
+        event: MQUERY_ERROR_EVENT,
+      } as WSMQueryError)
+    }),
     takeUntil(clientDisconnect(clientId)),
     takeUntil(unsub.pipe(filter((u) => u === q.tx))),
   ) as Observable<WSMQueryResponse>

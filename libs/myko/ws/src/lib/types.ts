@@ -19,9 +19,11 @@ export const MCOMMAND_RESPONSE_EVENT = 'ws:m:command-response'
 export const MCOMMAND_ERROR_EVENT = 'ws:m:command-error'
 export const MQUERY_EVENT = 'ws:m:query'
 export const MQUERY_RESPONSE_EVENT = 'ws:m:query-response'
+export const MQUERY_ERROR_EVENT = 'ws:m:query-error'
 export const MQUERY_CANCEL = 'ws:m:query-cancel'
 export const MREPORT_EVENT = 'ws:m:report'
 export const MREPORT_RESPONSE_EVENT = 'ws:m:report-response'
+export const MREPORT_ERROR_EVENT = 'ws:m:report-error'
 export const MREPORT_CANCEL = 'ws:m:report-cancel'
 export const MPING_EVENT = 'ws:m:ping'
 
@@ -59,6 +61,14 @@ export type WSMQueryResponse = {
   data: WSMQueryResponseData
 }
 
+export type WSMQueryError = {
+  event: typeof MQUERY_ERROR_EVENT
+  data: {
+    tx: ID
+    message: string
+  }
+}
+
 export type WSMQueryCancel = {
   tx: ID
   event: typeof MQUERY_CANCEL
@@ -68,6 +78,14 @@ export type WSMQueryCancel = {
 export type WSMReport = {
   event: typeof MREPORT_EVENT
   data: MWrappedReport
+}
+
+export type WSMReportError = {
+  event: typeof MREPORT_ERROR_EVENT
+  data: {
+    tx: ID
+    message: string
+  }
 }
 
 export type WSMReportResponse = {
@@ -113,9 +131,11 @@ export type WSMMessage =
   | WSMCommandResponse
   | WSMCommandError
   | WSMQueryCancel
+  | WSMQueryError
   | WSMReport
   | WSMReportResponse
   | WSMReportCancel
+  | WSMReportError
   | WSPingEvent
 
 @MykoCommand()

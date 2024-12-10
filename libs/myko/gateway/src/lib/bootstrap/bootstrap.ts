@@ -60,7 +60,12 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
     const tx = new Subject<{ clientId: ID; data: WSMMessage }>()
     const rx = new Subject<{ clientId: ID; data: WSMMessage }>()
 
-    rx.subscribe(handleMessage(tx))
+    rx.subscribe({
+      next: handleMessage(tx),
+      error: (e) => {
+        console.error('Error in rx', e)
+      },
+    })
 
     setAdapterBusses({ tx, rx })
 

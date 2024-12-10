@@ -20,8 +20,10 @@ import {
   MCOMMAND_RESPONSE_EVENT,
   MEVENT_EVENT,
   MPING_EVENT,
+  MQUERY_ERROR_EVENT,
   MQUERY_EVENT,
   MQUERY_RESPONSE_EVENT,
+  MREPORT_ERROR_EVENT,
   MREPORT_EVENT,
   MREPORT_RESPONSE_EVENT,
   type WSMCommand,
@@ -29,8 +31,10 @@ import {
   type WSMCommandResponse,
   type WSMMessage,
   type WSMQuery,
+  type WSMQueryError,
   type WSMQueryResponse,
   type WSMReport,
+  type WSMReportError,
   type WSMReportResponse,
   type WSPingEvent,
 } from './types'
@@ -113,7 +117,7 @@ export class WSMClient {
   }
 
   get errors(): Observable<WSMCommandError> {
-    return this.errorsSubject.pipe()
+    return this.commandErrorSubject.pipe()
   }
 
   get successes(): Observable<string> {
@@ -124,10 +128,12 @@ export class WSMClient {
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
   private reportSubject: Subject<MReport<unknown>>
-  private queryResponses: Subject<WSMQueryResponse>
+  private queryResponses: Subject<WSMQueryResponse | WSMQueryError>
   private commandResponses: Subject<WSMCommandResponse | WSMCommandError>
-  private reportResponses: Subject<WSMReportResponse>
-  private errorsSubject: Subject<WSMCommandError>
+  private reportResponses: Subject<WSMReportResponse | WSMReportError>
+  private commandErrorSubject: Subject<WSMCommandError>
+  private queryErrorSubject: Subject<WSMQueryError>
+  private reportErrorSubject: Subject<WSMReportError>
   private successSubject: Subject<string>
 
   private pingSubject: Subject<WSPingEvent>
@@ -170,7 +176,9 @@ export class WSMClient {
     this.queryResponses = new Subject()
     this.commandResponses = new Subject()
     this.reportResponses = new Subject()
-    this.errorsSubject = new Subject()
+    this.commandErrorSubject = new Subject()
+    this.reportErrorSubject = new Subject()
+    this.queryErrorSubject = new Subject()
     this.successSubject = new Subject()
     this.pingSubject = new Subject()
 
@@ -317,7 +325,7 @@ export class WSMClient {
         ),
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
-            this.errorsSubject.next(e)
+            this.commandErrorSubject.next(e)
             this.setCommandError(wrapped, e)
             if (!this.clientOpts.preventThrowing) throw e
             return
@@ -344,6 +352,11 @@ export class WSMClient {
       filter((r) => r.data.tx === query.tx),
 
       scan((acc, update) => {
+        if (update.event === MQUERY_ERROR_EVENT) {
+          this.queryErrorSubject.next(update)
+          return acc
+        }
+
         if (update.data.sequence === 0) {
           acc.clear()
         }
@@ -384,6 +397,11 @@ export class WSMClient {
     return this.reportResponses.pipe(
       filter((r) => r.data.tx === report.tx),
       map((e) => {
+        if (e.event === MREPORT_ERROR_EVENT) {
+          this.reportErrorSubject.next(e)
+          throw e
+        }
+
         // check for report errors here?
         return e.data.response as MReportResult<T>
       }),
@@ -496,6 +514,7 @@ export class WSMClient {
         this.eventSubject.next(evt)
         break
       case MQUERY_RESPONSE_EVENT:
+      case MQUERY_ERROR_EVENT:
         this.queryResponses.next(message)
         break
       case MCOMMAND_RESPONSE_EVENT:
@@ -509,6 +528,7 @@ export class WSMClient {
         break
 
       case MREPORT_RESPONSE_EVENT:
+      case MREPORT_ERROR_EVENT:
         this.reportResponses.next(message)
         break
 

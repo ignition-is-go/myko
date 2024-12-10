@@ -23,7 +23,10 @@ export const MykoSaga = (): Function => {
     const exec = new target()
 
     onAllInit(() => {
-      exec.execute(eventBus.subject$).subscribe((c) => commandBus.execute(c))
+      exec.execute(eventBus.subject$).subscribe({
+        next: (c) => commandBus.execute(c),
+        error: (e) => console.error(e.message),
+      })
     })
   }
 }
