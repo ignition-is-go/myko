@@ -135,6 +135,9 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
 
   onAllInit(() => {
     eventBus.subject$.subscribe((x) => {
+      if (x.itemType === 'Log') {
+        return
+      }
       console.log('Event', x.itemType, x.changeType, x.item.id)
     })
   })

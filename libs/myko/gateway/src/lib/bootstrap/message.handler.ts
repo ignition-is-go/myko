@@ -1,9 +1,4 @@
-import {
-  clientIdPropertyRegistry,
-  eventBus,
-  MykoLogger,
-  type ID,
-} from '@myko/core'
+import { clientIdPropertyRegistry, eventBus, type ID } from '@myko/core'
 import {
   MCOMMAND_EVENT,
   MEVENT_EVENT,
@@ -55,9 +50,6 @@ export const handleMessage =
             x.data.data.item,
             clientIdPropertyRegistry.get(x.data.data.itemType),
             x.clientId,
-          )
-          new MykoLogger(x.data.data.itemType).info(
-            'Setting client id on ' + x.data.data.itemType,
           )
         }
 
