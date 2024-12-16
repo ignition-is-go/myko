@@ -1,4 +1,4 @@
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{future::select_all, SinkExt, StreamExt};
 use std::{sync::Arc, time::Duration};
 
 use tokio::sync::Mutex;
@@ -116,8 +116,6 @@ impl AutoReconnectSocket {
 
         let reconnect_token = CancellationToken::new();
 
-        let s = SocketConnectionStatus::Connecting(addr.clone(), reconnect_token.clone());
-
         let send = self.outgoing.clone();
         let recv = self.incoming.clone();
 
@@ -205,10 +203,17 @@ impl AutoReconnectSocket {
                 }
                 *status.lock().await = s;
 
-                write_handle.await.expect("msg write failed");
-                read_handle.await.expect("msg read failed");
+                let _ = select_all(vec![write_handle, read_handle]).await;
 
-                println!("Read/Write Exited - Reconnecting in 1s");
+                println!("Read and/or Write Exited - Reconnecting in 1s");
+
+                let s = SocketConnectionStatus::Disconnected;
+
+                if status_sender.send(s.clone()).is_err() {
+                    println!("Could not send status update:141");
+                }
+
+                *status.lock().await = s;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
