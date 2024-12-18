@@ -101,7 +101,7 @@ impl MykoClient {
     }
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
-        let myko_msg = MykoClientMessage::Event(event);
+        let myko_msg = MykoMessage::Event(event);
 
         let val = json!(myko_msg);
 
@@ -192,16 +192,43 @@ impl MykoClient {
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
 
-        match self.socket.outgoing.send(msg) {
-            Ok(_) => {}
+        let query_send_socket = self.socket.clone();
+        let query_send_self = self.clone();
+        let query_send_query_id = query_id.clone();
+
+        match query_send_socket.outgoing.send(msg.clone()) {
+            Ok(_) => {
+                println!("Watching query {}", query_send_query_id);
+            }
             Err(e) => {
                 println!("Could not send message to ws: {:?}", e);
             }
         }
 
+        tokio::spawn(async move {
+            while let Some(status) = query_send_self.watch_connection_status().next().await {
+                match status {
+                    ConnectionStatus::Connected(_) => {
+                        match query_send_socket.outgoing.send(msg) {
+                            Ok(_) => {
+                                println!("Watching query {}", query_send_query_id);
+                            }
+                            Err(e) => {
+                                println!("Could not send message to ws: {:?}", e);
+                            }
+                        }
+                        break;
+                    }
+                    ConnectionStatus::Disconnected => {
+                        println!("Not connected, waiting for connection");
+                    }
+                }
+            }
+        });
+
         let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
         stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage>(x.clone());
+            let d = serde_json::from_value::<MykoMessage>(x);
 
             let data = d.expect("did not parse data @ watch_query");
 
@@ -210,6 +237,12 @@ impl MykoClient {
                     let mut state = state.lock().expect("Cannot lock state");
                     let upserts = response.upserts;
                     let deletes = response.deletes;
+                    let seq = response.sequence;
+
+                    if seq == 0 {
+                        println!("Clearing {} state", query_id);
+                        state.clear();
+                    }
 
                     let upserts: Vec<T> = upserts
                         .iter()
@@ -237,31 +270,4 @@ impl MykoClient {
             }
         })
     }
-}
-
-#[derive(Serialize, Deserialize)]
-struct TextMessage {
-    data: Value,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct SetClientId {
-    client_id: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "commandId", content = "command")]
-enum Command {
-    // SetClientId(SetClientId),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "event", content = "data")]
-enum MykoClientMessage {
-    #[serde(rename = "ws:m:event")]
-    Event(MEvent),
-
-    #[serde(rename = "ws:m:command")]
-    Command(Command),
 }

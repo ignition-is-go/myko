@@ -1,3 +1,4 @@
+use myko_wasm::event::MEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{QueryResponse, WrappedQuery};
@@ -9,4 +10,6 @@ pub enum MykoMessage {
     Query(WrappedQuery),
     #[serde(rename = "ws:m:query-response")]
     QueryResponse(QueryResponse),
+    #[serde(rename = "ws:m:event")]
+    Event(MEvent),
 }
