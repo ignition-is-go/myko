@@ -11,3 +11,4 @@ pub use myko_wasm::event;
 pub mod item;
 pub mod message;
 pub mod query;
+pub mod report;

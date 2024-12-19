@@ -219,3 +219,38 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     // Return the generated code
     TokenStream::from(expanded)
 }
+
+#[proc_macro_attribute]
+pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let report_item_type: Path = parse_macro_input!(attr as Path);
+
+    // Parse the input struct
+    let input_struct = parse_macro_input!(input as ItemStruct);
+    let struct_name = &input_struct.ident;
+
+    // Generate the implementation
+    let expanded = quote! {
+        #input_struct
+
+        impl MykoReport<#report_item_type> for #struct_name {
+            fn watch(&self, client: MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
+                let mut report_obj = serde_json::to_value(self).unwrap();
+
+                report_obj
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("tx".to_string(), uuid::Uuid::new_v4().to_string().into());
+
+                let report = WrappedReport {
+                    report: report_obj,
+                    report_id: stringify!(#struct_name).to_string(),
+                };
+
+                client.watch_report::<#struct_name, #report_item_type>(report)
+            }
+        }
+    };
+
+    // Return the generated code
+    TokenStream::from(expanded)
+}

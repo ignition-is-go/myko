@@ -10,6 +10,7 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use crate::{
     message::MykoMessage,
     query::WrappedQuery,
+    report::{MykoReport, WrappedReport},
     websocket::{AutoReconnectSocket, SocketConnectionStatus},
 };
 
@@ -176,6 +177,70 @@ impl MykoClient {
 
     pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
         BroadcastStream::new(self.client_pub.clone().subscribe()).filter_map(|x| x.ok())
+    }
+
+    pub fn watch_report<T: MykoReport<U>, U: DeserializeOwned>(
+        &self,
+        report: WrappedReport,
+    ) -> impl tokio_stream::Stream<Item = U> {
+        let stream = self.get_messages();
+
+        let report_id = report.report_id.clone();
+        let msg = MykoMessage::<()>::Report(report);
+
+        let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
+
+        let report_send_socket = self.socket.clone();
+        let report_send_self = self.clone();
+        let report_send_report_id = report_id.clone();
+
+        match report_send_socket.outgoing.send(msg.clone()) {
+            Ok(_) => {
+                println!("Watching report {}", report_send_report_id);
+            }
+            Err(e) => {
+                println!("Could not send message to ws: {:?}", e);
+            }
+        }
+
+        tokio::spawn(async move {
+            while let Some(status) = report_send_self.watch_connection_status().next().await {
+                match status {
+                    ConnectionStatus::Connected(_) => {
+                        match report_send_socket.outgoing.send(msg) {
+                            Ok(_) => {
+                                println!("Watching report {}", report_send_report_id);
+                            }
+                            Err(e) => {
+                                println!("Could not send message to ws: {:?}", e);
+                            }
+                        }
+                        break;
+                    }
+                    ConnectionStatus::Disconnected => {
+                        println!("Not connected, waiting for connection");
+                    }
+                }
+            }
+        });
+
+        stream.filter_map(move |x| {
+            let d = serde_json::from_value::<MykoMessage<()>>(x);
+
+            let data = d.expect("did not parse data @ watch_report");
+
+            match data {
+                MykoMessage::ReportResponse(response) => {
+                    let data = serde_json::from_value::<U>(response.response.clone())
+                        .expect("could not parse report value @ watch_report ");
+
+                    println!("Report {} had response: {}", report_id, response.response);
+
+                    Some(data)
+                }
+                _ => None,
+            }
+        })
     }
 
     pub fn watch_query<
