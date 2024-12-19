@@ -1,4 +1,4 @@
-import { firstValueFrom, map, shareReplay } from 'rxjs'
+import { firstValueFrom, map, shareReplay, throwError } from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type {
   MLiveReportResult,
@@ -55,12 +55,10 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
     const handler = this.handlers.get(reportId)
 
-    const err = `Handler not Provided for ${reportId}. Check that the handler is imported, and that the report is decorated with @MykoReport()`
+    const err = `Handler not Provided for [${reportId}]`
 
     if (!handler) {
-      console.error(err)
-      console.log(this.handlers)
-      throw new Error(err)
+      return throwError(() => new Error(err)) as unknown as MLiveReportResult<T>
     }
 
     const clone: MReport<unknown> = {

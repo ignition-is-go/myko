@@ -23,8 +23,7 @@ export const handleReport = (
   const response = reportBus.watch(report).pipe(
     map((r) => wrapReportResponseWS(report.tx, r)),
     catchError((e) => {
-      console.error(wrappedReport.reportId, e.message)
-
+      console.error(e.message)
       return of({
         data: {
           message: e.message,

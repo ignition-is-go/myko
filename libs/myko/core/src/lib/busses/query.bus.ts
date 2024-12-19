@@ -1,4 +1,4 @@
-import { firstValueFrom, map, shareReplay } from 'rxjs'
+import { firstValueFrom, map, shareReplay, throwError } from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import type {
   MItem,
@@ -51,11 +51,10 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
     const handler = this.handlers.get(queryId)
 
-    const err = `Handler not Provided for ${query.constructor.name} [${queryId}]. Check your module's providers array, and that the command is decorated with @MykoQuery(id: string)`
+    const err = `Handler not Provided for [${queryId}]`
 
     if (!handler) {
-      console.error(err)
-      throw new Error(err)
+      return throwError(() => new Error(err)) as unknown as MLiveQueryResult<T>
     }
 
     let clone: MQuery = {

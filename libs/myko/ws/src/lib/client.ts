@@ -8,6 +8,7 @@ import {
   firstValueFrom,
   interval,
   map,
+  merge,
   Observable,
   scan,
   shareReplay,
@@ -116,8 +117,8 @@ export class WSMClient {
     return this.reportSubject.pipe()
   }
 
-  get errors(): Observable<WSMCommandError> {
-    return this.commandErrorSubject.pipe()
+  get errors(): Observable<WSMQueryError | WSMCommandError | WSMReportError> {
+    return this.errorSubject.pipe()
   }
 
   get successes(): Observable<string> {
@@ -128,12 +129,13 @@ export class WSMClient {
   private querySubject: Subject<MQuery>
   private eventSubject: Subject<MEvent>
   private reportSubject: Subject<MReport<unknown>>
-  private queryResponses: Subject<WSMQueryResponse | WSMQueryError>
-  private commandResponses: Subject<WSMCommandResponse | WSMCommandError>
-  private reportResponses: Subject<WSMReportResponse | WSMReportError>
-  private commandErrorSubject: Subject<WSMCommandError>
-  private queryErrorSubject: Subject<WSMQueryError>
-  private reportErrorSubject: Subject<WSMReportError>
+  private queryResponses: Subject<WSMQueryResponse>
+  private commandResponses: Subject<WSMCommandResponse>
+  private reportResponses: Subject<WSMReportResponse>
+
+  private errorSubject: Subject<
+    WSMQueryError | WSMCommandError | WSMReportError
+  >
   private successSubject: Subject<string>
 
   private pingSubject: Subject<WSPingEvent>
@@ -176,9 +178,7 @@ export class WSMClient {
     this.queryResponses = new Subject()
     this.commandResponses = new Subject()
     this.reportResponses = new Subject()
-    this.commandErrorSubject = new Subject()
-    this.reportErrorSubject = new Subject()
-    this.queryErrorSubject = new Subject()
+    this.errorSubject = new Subject()
     this.successSubject = new Subject()
     this.pingSubject = new Subject()
 
@@ -316,7 +316,10 @@ export class WSMClient {
     this.setCommandPending(wrapped)
     this.send(wrapped)
     return firstValueFrom(
-      this.commandResponses.pipe(
+      merge(
+        this.commandResponses,
+        this.errorSubject.pipe(filter((x) => x.event === MCOMMAND_ERROR_EVENT)),
+      ).pipe(
         filter(
           (c) =>
             (c.event === MCOMMAND_ERROR_EVENT ||
@@ -325,7 +328,6 @@ export class WSMClient {
         ),
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
-            this.commandErrorSubject.next(e)
             this.setCommandError(wrapped, e)
             if (!this.clientOpts.preventThrowing) throw e
             return
@@ -352,11 +354,6 @@ export class WSMClient {
       filter((r) => r.data.tx === query.tx),
 
       scan((acc, update) => {
-        if (update.event === MQUERY_ERROR_EVENT) {
-          this.queryErrorSubject.next(update)
-          return acc
-        }
-
         if (update.data.sequence === 0) {
           acc.clear()
         }
@@ -397,11 +394,6 @@ export class WSMClient {
     return this.reportResponses.pipe(
       filter((r) => r.data.tx === report.tx),
       map((e) => {
-        if (e.event === MREPORT_ERROR_EVENT) {
-          this.reportErrorSubject.next(e)
-          throw e
-        }
-
         // check for report errors here?
         return e.data.response as MReportResult<T>
       }),
@@ -500,7 +492,6 @@ export class WSMClient {
     switch (message.event) {
       case MCOMMAND_EVENT:
         const cmd = unwrapCommand(message.data)
-
         this.commandSubject.next(cmd)
         break
 
@@ -513,12 +504,19 @@ export class WSMClient {
         const evt = message.data
         this.eventSubject.next(evt)
         break
-      case MQUERY_RESPONSE_EVENT:
+
       case MQUERY_ERROR_EVENT:
+        this.errorSubject.next(message)
+        break
+      case MQUERY_RESPONSE_EVENT:
         this.queryResponses.next(message)
         break
-      case MCOMMAND_RESPONSE_EVENT:
+
       case MCOMMAND_ERROR_EVENT:
+        this.errorSubject.next(message)
+        break
+
+      case MCOMMAND_RESPONSE_EVENT:
         this.commandResponses.next(message)
         break
 
@@ -527,8 +525,10 @@ export class WSMClient {
         this.reportSubject.next(report)
         break
 
-      case MREPORT_RESPONSE_EVENT:
       case MREPORT_ERROR_EVENT:
+        this.errorSubject.next(message)
+        break
+      case MREPORT_RESPONSE_EVENT:
         this.reportResponses.next(message)
         break
 
