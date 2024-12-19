@@ -101,7 +101,7 @@ impl MykoClient {
     }
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
-        let myko_msg = MykoMessage::Event(event);
+        let myko_msg = MykoMessage::<()>::Event(event);
 
         let val = json!(myko_msg);
 
@@ -188,7 +188,7 @@ impl MykoClient {
         let stream = self.get_messages();
 
         let query_id = query.query_id.clone();
-        let msg = MykoMessage::Query(query);
+        let msg = MykoMessage::<()>::Query(query);
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
 
@@ -228,7 +228,7 @@ impl MykoClient {
 
         let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
         stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage>(x);
+            let d = serde_json::from_value::<MykoMessage<()>>(x);
 
             let data = d.expect("did not parse data @ watch_query");
 
