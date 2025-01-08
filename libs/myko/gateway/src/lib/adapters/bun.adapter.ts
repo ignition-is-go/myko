@@ -51,8 +51,12 @@ export const bunAdapter: MykoWsAdapter = ({
     },
     websocket: {
       message(ws: ServerWebSocket<BunWSClientData>, message) {
-        const parsed = parse(ws.data.clientId, message)
-        rx.next({ clientId: ws.data.clientId, data: parsed })
+        try {
+          const parsed = parse(ws.data.clientId, message)
+          rx.next({ clientId: ws.data.clientId, data: parsed })
+        } catch (e) {
+          ws.send('Error parsing message')
+        }
       },
       open(ws: ServerWebSocket<BunWSClientData>) {
         ws.subscribe(ws.data.clientId)
