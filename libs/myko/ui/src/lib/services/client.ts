@@ -1,13 +1,11 @@
-// @ts-ignore
 import { dev } from '$app/environment';
-
-// @ts-ignore
-import { env } from '$env/dynamic/public';
 import * as WSM from '@myko/ws';
 
 const connectHandlers: ((str: string) => void)[] = [];
 const disconnectHandlers: (() => void)[] = [];
 const onStartConnectHandlers: (() => void)[] = [];
+
+const isHttps = window.location.protocol === 'https:';
 
 export const client = new WSM.WSMClient(
 	(url) => {
@@ -27,13 +25,11 @@ export const client = new WSM.WSMClient(
 		}
 	},
 	{
-		secure: !dev,
+		secure: isHttps,
 		disableMsgPack: !!dev,
 		preventThrowing: true
 	}
 );
-
-client.connect(env.PUBLIC_SERVER_ADDRESS ?? window.location.hostname, WSM.MYKO_WS_PORT);
 
 export const onStartConnect = (func: () => void) => {
 	onStartConnectHandlers.push(func);
