@@ -227,7 +227,13 @@ impl MykoClient {
         stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage<()>>(x);
 
-            let data = d.expect("did not parse data @ watch_report");
+            let data = match d {
+                Ok(d) => d,
+                Err(e) => {
+                    println!("Could not parse data @ watch_report: {:?}", e);
+                    return None;
+                }
+            };
 
             match data {
                 MykoMessage::ReportResponse(response) => {
@@ -295,7 +301,13 @@ impl MykoClient {
         stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage<()>>(x);
 
-            let data = d.expect("did not parse data @ watch_query");
+            let data = match d {
+                Ok(d) => d,
+                Err(e) => {
+                    println!("Could not parse data @ watch_query: {:?}", e);
+                    return None;
+                }
+            };
 
             match data {
                 MykoMessage::QueryResponse(response) => {

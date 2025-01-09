@@ -17,6 +17,10 @@ pub enum MykoMessage<Commands> {
     Report(WrappedReport),
     #[serde(rename = "ws:m:report-response")]
     ReportResponse(ReportResponse),
+    // #[serde(rename = "ws:m:report-error")]
+    // ReportError(Value),
+    // #[serde(rename = "ws:m:query-error")]
+    // QueryError(Value),
     #[serde(rename = "ws:m:event")]
     Event(MEvent),
     #[serde(rename = "ws:m:command")]
