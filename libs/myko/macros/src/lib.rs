@@ -197,7 +197,7 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
         #input_struct
 
         impl MykoQuery<#query_item_type> for #struct_name {
-            fn watch(&self, client: MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
+            fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
                 let mut query_obj = serde_json::to_value(self).unwrap();
 
                 query_obj
@@ -233,7 +233,7 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
         #input_struct
 
         impl MykoReport<#report_item_type> for #struct_name {
-            fn watch(&self, client: MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
+            fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
                 let mut report_obj = serde_json::to_value(self).unwrap();
 
                 report_obj

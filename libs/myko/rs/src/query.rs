@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::{client::MykoClient, item::WrappedItem};
 
 pub trait MykoQuery<T> {
-    fn watch(&self, client: MykoClient) -> impl tokio_stream::Stream<Item = Vec<T>>;
+    fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<T>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
