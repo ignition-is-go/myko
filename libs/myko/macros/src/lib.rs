@@ -198,20 +198,19 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 
         impl MykoQuery<#query_item_type> for #struct_name {
             fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
-                let mut query_obj = serde_json::to_value(self).unwrap();
+                client.watch_query(self)
+            }
+        }
 
-                query_obj
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("tx".to_string(), uuid::Uuid::new_v4().to_string().into());
+        impl QueryId for &#struct_name {
+            fn query_id(&self) -> String {
+                stringify!(#struct_name).to_string()
+            }
+        }
 
-                let query = WrappedQuery {
-                    query: query_obj,
-                    query_id: stringify!(#struct_name).to_string(),
-                    query_item_type: stringify!(#query_item_type).to_string(),
-                };
-
-                client.watch_query(query)
+        impl QueryItemType for &#struct_name {
+            fn query_item_type(&self) -> String {
+                stringify!(#query_item_type).to_string()
             }
         }
     };
@@ -232,21 +231,27 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
+        impl MykoReport<#report_item_type> for &#struct_name {
+            fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
+                client.watch_report::<&#struct_name, #report_item_type>(self)
+            }
+        }
+
         impl MykoReport<#report_item_type> for #struct_name {
             fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
-                let mut report_obj = serde_json::to_value(self).unwrap();
+                client.watch_report::<#struct_name, #report_item_type>(self)
+            }
+        }
 
-                report_obj
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("tx".to_string(), uuid::Uuid::new_v4().to_string().into());
-
-                let report = WrappedReport {
-                    report: report_obj,
-                    report_id: stringify!(#struct_name).to_string(),
-                };
-
-                client.watch_report::<#struct_name, #report_item_type>(report)
+        impl ReportId for &#struct_name {
+            fn report_id(&self) -> String {
+                stringify!(#struct_name).to_string()
+            }
+        }
+        
+        impl ReportId for #struct_name {
+            fn report_id(&self) -> String {
+                stringify!(#struct_name).to_string()
             }
         }
     };

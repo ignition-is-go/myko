@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{ser::Error, Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{client::MykoClient, item::WrappedItem};
@@ -20,7 +20,7 @@ pub struct QueryResponse {
 }
 
 impl QueryResponse {
-    pub fn new(tx: String, result: Vec<Value>) -> QueryResponse {
+    pub fn new(tx: String, _result: Vec<Value>) -> QueryResponse {
         QueryResponse {
             sequence: 0,
             upserts: vec![],
@@ -36,7 +36,7 @@ impl QueryResponse {
 
 impl QueryResponse {
     pub fn get_tx(&self) -> String {
-        "".to_string()
+        self.tx.clone()
     }
 
     // #[wasm_bindgen(getter, js_name = "result")]
@@ -51,4 +51,42 @@ pub struct WrappedQuery {
     pub query: Value,
     pub query_id: String,
     pub query_item_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryError {
+    pub tx: String,
+    pub message: String,
+}
+
+pub trait QueryId {
+    fn query_id(&self) -> String;
+}
+
+pub trait QueryItemType {
+    fn query_item_type(&self) -> String;
+}
+
+pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
+    tx: String,
+    query: Q,
+) -> Result<WrappedQuery, serde_json::Error> {
+    let mut json = serde_json::to_value(query.clone())?;
+
+    let obj_mut = json.as_object_mut();
+
+    if obj_mut.is_none() {
+        return Err(serde_json::Error::custom("Could not convert to object"));
+    }
+
+    let obj = obj_mut.unwrap();
+
+    obj.insert("tx".to_string(), tx.into());
+
+    Ok(WrappedQuery {
+        query: json,
+        query_id: query.query_id(),
+        query_item_type: query.query_item_type(),
+    })
 }

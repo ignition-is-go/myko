@@ -2,8 +2,8 @@ use myko_wasm::event::MEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    query::{QueryResponse, WrappedQuery},
-    report::{ReportResponse, WrappedReport},
+    query::{QueryError, QueryResponse, WrappedQuery},
+    report::{ReportError, ReportResponse, WrappedReport},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,10 +17,10 @@ pub enum MykoMessage<Commands> {
     Report(WrappedReport),
     #[serde(rename = "ws:m:report-response")]
     ReportResponse(ReportResponse),
-    // #[serde(rename = "ws:m:report-error")]
-    // ReportError(Value),
-    // #[serde(rename = "ws:m:query-error")]
-    // QueryError(Value),
+    #[serde(rename = "ws:m:report-error")]
+    ReportError(ReportError),
+    #[serde(rename = "ws:m:query-error")]
+    QueryError(QueryError),
     #[serde(rename = "ws:m:event")]
     Event(MEvent),
     #[serde(rename = "ws:m:command")]

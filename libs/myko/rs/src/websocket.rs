@@ -1,7 +1,6 @@
+use futures_signals::signal::Mutable;
 use futures_util::{future::select_all, SinkExt, StreamExt};
-use std::{sync::Arc, time::Duration};
-
-use tokio::sync::Mutex;
+use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
 use tungstenite::Message;
@@ -14,8 +13,7 @@ pub enum SocketConnectionStatus {
 }
 
 pub struct AutoReconnectSocket {
-    status: Arc<Mutex<SocketConnectionStatus>>,
-    pub status_tx: tokio::sync::broadcast::Sender<SocketConnectionStatus>,
+    pub status: Mutable<SocketConnectionStatus>,
     pub incoming: tokio::sync::broadcast::Sender<Message>,
     pub outgoing: tokio::sync::broadcast::Sender<Message>,
 }
@@ -29,82 +27,41 @@ impl Default for AutoReconnectSocket {
 impl AutoReconnectSocket {
     pub fn new() -> Self {
         Self {
-            status: Arc::new(Mutex::new(SocketConnectionStatus::Disconnected)),
-            status_tx: tokio::sync::broadcast::channel(1).0,
-            incoming: tokio::sync::broadcast::channel(1).0,
-            outgoing: tokio::sync::broadcast::channel(1).0,
+            status: Mutable::new(SocketConnectionStatus::Disconnected),
+            incoming: tokio::sync::broadcast::channel(1000).0,
+            outgoing: tokio::sync::broadcast::channel(1000).0,
         }
     }
 
-    pub async fn set_addr(&self, addr: Option<String>) {
-        let prev_status = self.status.lock().await.clone();
-
-        match prev_status {
-            SocketConnectionStatus::Connected(current_addr, current_reconnect) => {
+    pub fn set_addr(&self, addr: Option<String>) {
+        match self.status.lock_ref().clone() {
+            SocketConnectionStatus::Connected(current_addr, teardown)
+            | SocketConnectionStatus::Connecting(current_addr, teardown) => {
                 if Some(current_addr) == addr {
                     return;
                 }
 
-                current_reconnect.cancel();
+                teardown.cancel();
 
-                if self
-                    .status_tx
-                    .send(SocketConnectionStatus::Disconnected)
-                    .is_err()
-                {
-                    println!("Could not send status update");
+                self.status.set(SocketConnectionStatus::Disconnected);
+
+                if let Some(addr) = addr {
+                    self.build(addr);
                 }
-
-                *self.status.lock().await = SocketConnectionStatus::Disconnected;
-
-                if addr.is_none() {
-                    return;
-                }
-
-                let addr = addr.unwrap();
-
-                self.build(addr).await;
             }
 
-            SocketConnectionStatus::Connecting(current_addr, current_reconnect) => {
-                if Some(current_addr) == addr {
-                    return;
-                }
-
-                current_reconnect.cancel();
-
-                if self
-                    .status_tx
-                    .send(SocketConnectionStatus::Disconnected)
-                    .is_err()
-                {
-                    println!("Could not send status update");
-                }
-                *self.status.lock().await = SocketConnectionStatus::Disconnected;
-
-                if addr.is_none() {
-                    return;
-                }
-
-                let addr = addr.unwrap();
-
-                self.build(addr).await;
-            }
             SocketConnectionStatus::Disconnected => {
-                if addr.is_none() {
-                    return;
+                if let Some(addr) = addr {
+                    self.build(addr);
                 }
-
-                let addr = addr.unwrap();
-
-                self.build(addr).await;
             }
         }
     }
 
-    pub async fn build(&self, addr: String) {
+    pub fn build(&self, addr: String) {
         println!("Building Connection to {}", addr);
-        match self.status.lock().await.clone() {
+
+        match self.status.lock_ref().clone() {
             SocketConnectionStatus::Connected(_, _token) => {
                 unreachable!("Should not be building when already connected");
             }
@@ -114,16 +71,16 @@ impl AutoReconnectSocket {
             SocketConnectionStatus::Disconnected => (),
         }
 
-        let reconnect_token = CancellationToken::new();
+        let teardown = CancellationToken::new();
 
         let send = self.outgoing.clone();
         let recv = self.incoming.clone();
 
-        let status_sender = self.status_tx.clone();
         let status = self.status.clone();
 
         tokio::spawn(async move {
             loop {
+                println!("Connecting to {}", addr);
                 let ws_stream = match connect_async(&addr).await {
                     Ok((ws_stream, _)) => ws_stream,
                     Err(_) => {
@@ -136,14 +93,13 @@ impl AutoReconnectSocket {
                 let interior_cancel = CancellationToken::new();
 
                 let int_send_cancel = interior_cancel.clone();
-                let rec_send_cancel = reconnect_token.clone();
+                let rec_send_cancel = teardown.clone();
 
-                if reconnect_token.is_cancelled() {
+                if teardown.is_cancelled() {
                     break;
                 }
 
                 let mut local_send = send.subscribe();
-                println!("Spawning Write");
                 let write_handle = tokio::spawn(async move {
                     loop {
                         if int_send_cancel.is_cancelled() || rec_send_cancel.is_cancelled() {
@@ -166,13 +122,11 @@ impl AutoReconnectSocket {
                         }
                     }
                 });
-                println!("Write Spawned");
 
-                let rec_read_cancel = reconnect_token.clone();
+                let rec_read_cancel = teardown.clone();
                 let int_read_cancel = interior_cancel.clone();
 
                 let local_recv = recv.clone();
-                println!("Spawning Read");
 
                 let read_handle = tokio::spawn(async move {
                     while let (Some(Ok(msg)), false, false) = (
@@ -194,14 +148,9 @@ impl AutoReconnectSocket {
                     int_read_cancel.cancel();
                 });
 
-                println!("Read Spawned");
+                let s = SocketConnectionStatus::Connected(addr.clone(), teardown.clone());
 
-                let s = SocketConnectionStatus::Connected(addr.clone(), reconnect_token.clone());
-
-                if status_sender.send(s.clone()).is_err() {
-                    println!("Could not send status update:128");
-                }
-                *status.lock().await = s;
+                status.set(s);
 
                 let _ = select_all(vec![write_handle, read_handle]).await;
 
@@ -209,11 +158,8 @@ impl AutoReconnectSocket {
 
                 let s = SocketConnectionStatus::Disconnected;
 
-                if status_sender.send(s.clone()).is_err() {
-                    println!("Could not send status update:141");
-                }
+                status.set(s);
 
-                *status.lock().await = s;
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });

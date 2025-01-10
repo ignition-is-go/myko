@@ -4361,6 +4361,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-channel",
  "directories",
+ "futures-signals",
  "homedir",
  "hostname",
  "lazy_static",

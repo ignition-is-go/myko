@@ -5,6 +5,16 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Linkd",
+      "program": "${workspaceFolder}/target/debug/linkd",
+      "args": [],
+      "cwd": "${workspaceFolder}/apps/linkd",
+      "sourceLanguages": ["rust"],
+      "preLaunchTask": "rust: cargo build"
+    },
+    {
       "type": "bun",
       "request": "attach",
       "name": "Attach Bun to Process",

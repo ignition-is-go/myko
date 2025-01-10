@@ -4,50 +4,11 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "dev",
-      "problemMatcher": []
-    },
-    {
-      "type": "npm",
-      "script": "gen:graph:remote",
-      "problemMatcher": []
-    },
-    {
-      "label": "compile-satellite-main",
-      "type": "npm",
-      "script": "satellite:electron:build",
-      "problemMatcher": ["$tsc"]
-    },
-    {
-      "type": "ng",
-      "command": "serve",
-      "label": "serve-satellite",
-      "project": "satellite"
-    },
-    {
-      "type": "ng",
+      "type": "cargo",
       "command": "build",
-      "label": "build-satellite-client",
-      "project": "satellite"
-    },
-    {
-      "label": "build-satellite-dist",
-      "type": "shell",
-      "problemMatcher": ["$tsc"],
-      "dependsOn": ["build-satellite-client", "compile-satellite-main"]
-    },
-    {
-      "type": "shell",
-      "label": "build-satellite-served",
-      "dependsOn": ["build-satellite-main", "serve-satellite"],
-      "command": "echo 'done'"
-    },
-    {
-      "label": "build observation-deck-electron",
-      "type": "shell",
-      "command": "ng build observation-deck-electron",
-      "problemMatcher": []
+      "problemMatcher": ["$rustc"],
+      "group": "build",
+      "label": "rust: cargo build"
     }
   ]
 }

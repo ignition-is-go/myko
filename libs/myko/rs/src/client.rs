@@ -1,22 +1,20 @@
-use myko_wasm::{event::MEvent, item::Eventable};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::{collections::HashMap, hash::Hash, sync::Arc};
-use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::protocol::Message;
-
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
-
 use crate::{
     message::MykoMessage,
-    query::WrappedQuery,
-    report::{MykoReport, WrappedReport},
+    query::{wrap_query, QueryId, QueryItemType},
+    report::{wrap_report, MykoReport, ReportId},
     websocket::{AutoReconnectSocket, SocketConnectionStatus},
 };
+use futures_signals::signal::{Signal, SignalExt};
+use myko_wasm::{event::MEvent, item::Eventable};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, Value};
+use std::{collections::HashMap, sync::Arc};
+use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tokio_tungstenite::tungstenite::protocol::Message;
 
 use url::Url;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ConnectionStatus {
     Connected(String),
     Disconnected,
@@ -24,9 +22,7 @@ pub enum ConnectionStatus {
 
 #[derive(Clone)]
 pub struct MykoClient {
-    connection_status: Arc<Mutex<ConnectionStatus>>,
     socket: Arc<AutoReconnectSocket>,
-    client_pub: tokio::sync::broadcast::Sender<ConnectionStatus>,
 }
 
 impl Default for MykoClient {
@@ -37,68 +33,21 @@ impl Default for MykoClient {
 
 impl MykoClient {
     pub fn new() -> MykoClient {
-        let connection = Arc::new(Mutex::new(ConnectionStatus::Disconnected));
-
         let socket = Arc::new(AutoReconnectSocket::new());
 
-        let mut status = socket.status_tx.subscribe();
+        MykoClient { socket }
+    }
 
-        let client_pub = tokio::sync::broadcast::channel(1).0;
-
-        let connection_ref = connection.clone();
-
-        let client_pub_ref = client_pub.clone();
-
-        tokio::spawn(async move {
-            loop {
-                match status.recv().await {
-                    Ok(conn) => match conn {
-                        SocketConnectionStatus::Connecting(addr, _) => {
-                            let mut connection = connection_ref.lock().await;
-                            *connection = ConnectionStatus::Connected(addr.clone());
-                            drop(connection);
-                            if client_pub_ref
-                                .send(ConnectionStatus::Connected(addr))
-                                .is_err()
-                            {
-                                println!("Nothing listening to connection status");
-                            }
-                        }
-                        SocketConnectionStatus::Connected(addr, _) => {
-                            let mut connection = connection_ref.lock().await;
-                            *connection = ConnectionStatus::Connected(addr.clone());
-                            drop(connection);
-
-                            if client_pub_ref
-                                .send(ConnectionStatus::Connected(addr))
-                                .is_err()
-                            {
-                                println!("Nothing listening to connection status");
-                            }
-                        }
-
-                        SocketConnectionStatus::Disconnected => {
-                            let mut connection = connection_ref.lock().await;
-                            *connection = ConnectionStatus::Disconnected;
-                            drop(connection);
-
-                            if client_pub_ref.send(ConnectionStatus::Disconnected).is_err() {
-                                println!("Nothing listening to connection status");
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        println!("Error in connection status stream: {:?}", e);
-                    }
-                }
-            }
-        });
-
-        MykoClient {
-            connection_status: connection,
-            socket,
-            client_pub,
-        }
+    pub fn get_status(&self) -> impl Signal<Item = ConnectionStatus> {
+        self.socket
+            .status
+            .signal_cloned()
+            .map(|x| match x {
+                SocketConnectionStatus::Connecting(_addr, _) => ConnectionStatus::Disconnected,
+                SocketConnectionStatus::Connected(addr, _) => ConnectionStatus::Connected(addr),
+                SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
+            })
+            .dedupe_cloned()
     }
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
@@ -125,13 +74,14 @@ impl MykoClient {
                 let d = serde_json::from_str::<Value>(content.as_str());
 
                 let data = d.expect("did not parse data @ get_messages");
+
                 Some(data)
             }
             _ => None,
         })
     }
 
-    pub async fn set_address(&self, addr: String) {
+    pub fn set_address(&self, addr: String) {
         let parsed = Url::parse(addr.as_str());
 
         let mut parsed = match parsed {
@@ -145,10 +95,7 @@ impl MykoClient {
                     Ok(c) => c,
                     Err(e) => {
                         println!("Could not parse url: {:?}", e);
-                        self.socket.set_addr(None).await;
-
-                        *self.connection_status.lock().await = ConnectionStatus::Disconnected;
-                        let _ = self.client_pub.send(ConnectionStatus::Disconnected);
+                        self.socket.set_addr(None);
                         return;
                     }
                 }
@@ -167,64 +114,30 @@ impl MykoClient {
             let _ = parsed.set_port(Some(5155));
         }
 
-        self.socket.set_addr(Some(parsed.to_string())).await;
+        self.socket.set_addr(Some(parsed.to_string()));
     }
 
     pub async fn get_connection_status(&self) -> ConnectionStatus {
-        let status = self.connection_status.lock().await;
-        status.clone()
+        self.get_status().to_future().await
     }
 
     pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
-        BroadcastStream::new(self.client_pub.clone().subscribe()).filter_map(|x| x.ok())
+        self.get_status().to_stream()
     }
 
-    pub fn watch_report<T: MykoReport<U>, U: DeserializeOwned>(
+    pub fn watch_report<T: MykoReport<U> + Clone + Serialize + ReportId, U: DeserializeOwned>(
         &self,
-        report: WrappedReport,
+        report: &T,
     ) -> impl tokio_stream::Stream<Item = U> {
         let stream = self.get_messages();
 
-        let report_id = report.report_id.clone();
-        let msg = MykoMessage::<()>::Report(report);
+        let report_id = report.report_id().clone();
 
-        let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
+        let tx = uuid::Uuid::new_v4().to_string();
 
-        let report_send_socket = self.socket.clone();
-        let report_send_self = self.clone();
-        let report_send_report_id = report_id.clone();
+        let wrapped = wrap_report(tx.clone(), report);
 
-        match report_send_socket.outgoing.send(msg.clone()) {
-            Ok(_) => {
-                println!("Watching report {}", report_send_report_id);
-            }
-            Err(e) => {
-                println!("Could not send message to ws: {:?}", e);
-            }
-        }
-
-        tokio::spawn(async move {
-            while let Some(status) = report_send_self.watch_connection_status().next().await {
-                match status {
-                    ConnectionStatus::Connected(_) => {
-                        match report_send_socket.outgoing.send(msg) {
-                            Ok(_) => {
-                                println!("Watching report {}", report_send_report_id);
-                            }
-                            Err(e) => {
-                                println!("Could not send message to ws: {:?}", e);
-                            }
-                        }
-                        break;
-                    }
-                    ConnectionStatus::Disconnected => {
-                        println!("Not connected, waiting for connection");
-                    }
-                }
-            }
-        });
-
-        stream.filter_map(move |x| {
+        let stream = stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage<()>>(x);
 
             let data = match d {
@@ -237,68 +150,83 @@ impl MykoClient {
 
             match data {
                 MykoMessage::ReportResponse(response) => {
+                    if response.tx != tx {
+                        return None;
+                    }
+
                     let data = serde_json::from_value::<U>(response.response.clone())
                         .expect("could not parse report value @ watch_report ");
 
-                    println!("Report {} had response: {}", report_id, response.response);
+                    // println!("Report {} had response: {}", report_id, response.response);
 
                     Some(data)
                 }
                 _ => None,
             }
-        })
-    }
+        });
 
-    pub fn watch_query<
-        T: Clone + DeserializeOwned + Eventable<T, PT> + PartialEq + DeserializeOwned + 'static,
-        PT: Clone,
-    >(
-        &self,
-        query: WrappedQuery,
-    ) -> impl tokio_stream::Stream<Item = Vec<T>> {
-        let stream = self.get_messages();
+        if wrapped.is_err() {
+            eprint!("Could not wrap report: {:?}", wrapped.err());
+            return stream;
+        }
 
-        let query_id = query.query_id.clone();
-        let msg = MykoMessage::<()>::Query(query);
+        let wrapped = wrapped.unwrap();
+        let msg = MykoMessage::<()>::Report(wrapped);
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
 
-        let query_send_socket = self.socket.clone();
-        let query_send_self = self.clone();
-        let query_send_query_id = query_id.clone();
-
-        match query_send_socket.outgoing.send(msg.clone()) {
-            Ok(_) => {
-                println!("Watching query {}", query_send_query_id);
-            }
-            Err(e) => {
-                println!("Could not send message to ws: {:?}", e);
-            }
-        }
+        let report_send_socket = self.socket.clone();
+        let report_send_self = self.clone();
+        let report_send_report_id = report_id.clone();
 
         tokio::spawn(async move {
-            while let Some(status) = query_send_self.watch_connection_status().next().await {
+            let mut stream = report_send_self.watch_connection_status();
+            while let Some(status) = stream.next().await {
                 match status {
                     ConnectionStatus::Connected(_) => {
-                        match query_send_socket.outgoing.send(msg) {
+                        match report_send_socket.outgoing.send(msg.clone()) {
                             Ok(_) => {
-                                println!("Watching query {}", query_send_query_id);
+                                println!("Watching report {}", report_send_report_id);
                             }
                             Err(e) => {
                                 println!("Could not send message to ws: {:?}", e);
                             }
                         }
-                        break;
                     }
                     ConnectionStatus::Disconnected => {
-                        println!("Not connected, waiting for connection");
+                        println!("Report {} Disconnected", report_send_report_id);
                     }
                 }
             }
         });
 
+        stream
+    }
+
+    pub fn watch_query<
+        T: Clone
+            + DeserializeOwned
+            + Eventable<T, PT>
+            + PartialEq
+            + DeserializeOwned
+            + std::fmt::Debug,
+        PT: Clone,
+        Q: QueryId + QueryItemType + Serialize + Clone,
+    >(
+        &self,
+        query: Q,
+    ) -> impl tokio_stream::Stream<Item = Vec<T>> {
+        let stream = self.get_messages();
+
+        let tx = uuid::Uuid::new_v4().to_string();
+
+        let query_id = query.query_id();
+        let wrapped = wrap_query(tx.clone(), query);
+
+        let send_query_id = query_id.clone();
         let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
-        stream.filter_map(move |x| {
+
+        let stream = stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage<()>>(x);
 
             let data = match d {
@@ -309,15 +237,19 @@ impl MykoClient {
                 }
             };
 
-            match data {
+            let vec = match data {
                 MykoMessage::QueryResponse(response) => {
+                    if response.tx != tx {
+                        return None;
+                    }
+
                     let mut state = state.lock().expect("Cannot lock state");
                     let upserts = response.upserts;
                     let deletes = response.deletes;
                     let seq = response.sequence;
 
                     if seq == 0 {
-                        println!("Clearing {} state", query_id);
+                        println!("Clearing {} state", query_id.clone());
                         state.clear();
                     }
 
@@ -327,24 +259,58 @@ impl MykoClient {
                         .collect();
 
                     for up in upserts.iter() {
+                        let _len = state.len();
                         state.insert(up.id().clone(), up.clone());
                     }
 
                     for del in deletes.iter() {
+                        let _len = state.len();
                         state.remove(del);
                     }
 
-                    println!(
-                        "Query {} had {} inserts and {} deletes",
-                        query_id,
-                        upserts.len(),
-                        deletes.len()
-                    );
-
-                    Some(state.values().cloned().collect())
+                    Some(state.values().cloned().collect::<Vec<T>>())
                 }
                 _ => None,
+            };
+
+            vec
+        });
+
+        if wrapped.is_err() {
+            eprint!("Could not wrap query: {:?}", wrapped.err());
+            return stream;
+        }
+
+        let wrapped = wrapped.unwrap();
+
+        let msg = MykoMessage::<()>::Query(wrapped);
+
+        let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
+
+        let query_send_socket = self.socket.clone();
+        let query_send_self = self.clone();
+
+        tokio::spawn(async move {
+            let mut stream = query_send_self.watch_connection_status();
+            while let Some(status) = stream.next().await {
+                match status {
+                    ConnectionStatus::Connected(_) => {
+                        match query_send_socket.outgoing.send(msg.clone()) {
+                            Ok(_) => {
+                                println!("Watching query {}", send_query_id);
+                            }
+                            Err(e) => {
+                                println!("Could not send message to ws: {:?}", e);
+                            }
+                        }
+                    }
+                    ConnectionStatus::Disconnected => {
+                        println!("Query {} Disconnected", send_query_id);
+                    }
+                }
             }
-        })
+        });
+
+        stream
     }
 }
