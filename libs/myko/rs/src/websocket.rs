@@ -89,6 +89,8 @@ impl AutoReconnectSocket {
                     }
                 };
 
+                println!("Connected to {}", addr);
+
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();
 
@@ -103,12 +105,14 @@ impl AutoReconnectSocket {
                 let write_handle = tokio::spawn(async move {
                     loop {
                         if int_send_cancel.is_cancelled() || rec_send_cancel.is_cancelled() {
+                            eprintln!("Exiting Write Loop");
                             break;
                         }
 
-                        let msg = match local_send.try_recv() {
+                        let msg = match local_send.recv().await {
                             Ok(msg) => msg,
-                            Err(_) => {
+                            Err(e) => {
+                                eprintln!("Error receiving message to send: {:?}", e);
                                 continue;
                             }
                         };
@@ -121,6 +125,7 @@ impl AutoReconnectSocket {
                             }
                         }
                     }
+                    println!("Websocket Write Loop Exited");
                 });
 
                 let rec_read_cancel = teardown.clone();
