@@ -81,7 +81,14 @@ impl MykoClient {
         })
     }
 
-    pub fn set_address(&self, addr: String) {
+    pub fn set_address(&self, addr: Option<String>) {
+        if addr.is_none() {
+            self.socket.set_addr(None);
+            return;
+        }
+
+        let addr = addr.unwrap();
+
         let parsed = Url::parse(addr.as_str());
 
         let mut parsed = match parsed {
@@ -93,8 +100,8 @@ impl MykoClient {
 
                 match Url::parse(add_ws.as_str()) {
                     Ok(c) => c,
-                    Err(e) => {
-                        println!("Could not parse url: {:?}", e);
+                    Err(_e) => {
+                        println!("Setting Url to None");
                         self.socket.set_addr(None);
                         return;
                     }
@@ -118,7 +125,12 @@ impl MykoClient {
     }
 
     pub async fn get_connection_status(&self) -> ConnectionStatus {
-        self.get_status().to_future().await
+        self.get_status()
+            .to_stream()
+            .take(1)
+            .next()
+            .await
+            .unwrap_or(ConnectionStatus::Disconnected)
     }
 
     pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {

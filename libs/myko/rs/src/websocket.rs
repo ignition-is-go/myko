@@ -5,7 +5,7 @@ use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
 use tungstenite::Message;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SocketConnectionStatus {
     Disconnected,
     Connecting(String, CancellationToken),
@@ -34,7 +34,11 @@ impl AutoReconnectSocket {
     }
 
     pub fn set_addr(&self, addr: Option<String>) {
-        match self.status.lock_ref().clone() {
+        let lock = self.status.lock_ref();
+        let s = lock.clone();
+        drop(lock);
+
+        match s {
             SocketConnectionStatus::Connected(current_addr, teardown)
             | SocketConnectionStatus::Connecting(current_addr, teardown) => {
                 if Some(current_addr) == addr {
@@ -44,7 +48,6 @@ impl AutoReconnectSocket {
                 teardown.cancel();
 
                 self.status.set(SocketConnectionStatus::Disconnected);
-
                 if let Some(addr) = addr {
                     self.build(addr);
                 }
@@ -61,7 +64,11 @@ impl AutoReconnectSocket {
     pub fn build(&self, addr: String) {
         println!("Building Connection to {}", addr);
 
-        match self.status.lock_ref().clone() {
+        let lock = self.status.lock_ref();
+        let s = lock.clone();
+        drop(lock);
+
+        match s {
             SocketConnectionStatus::Connected(_, _token) => {
                 unreachable!("Should not be building when already connected");
             }
