@@ -11,6 +11,7 @@ import {
   MQuery,
   MReport,
   getItemName,
+  type DeepPartial,
   type ID,
   type MEvent,
   type MItemConstructor,
@@ -114,6 +115,7 @@ export class EntitySearch<T extends MItem> extends MReport<T[]> {
     readonly opts?: {
       showAllOnEmpty?: boolean
     },
+    readonly filter?: DeepPartial<T>,
   ) {
     super()
     this.entityType = getItemName(item)

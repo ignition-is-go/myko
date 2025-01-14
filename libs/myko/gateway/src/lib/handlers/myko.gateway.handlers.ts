@@ -317,11 +317,15 @@ export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {
 @MykoReportHandler(EntitySearch)
 export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
   execute(report: EntitySearch<any>): Observable<any> {
-    if (report.query.length === 0 && report.opts?.showAllOnEmpty) {
-      return repoName(report.entityType).watch({})
-    }
-
-    return repoName(report.entityType).watchSearch(report.query)
+    return repoName(report.entityType).watchSearch(
+      report.query,
+      {
+        showAllOnEmpty: report.opts?.showAllOnEmpty,
+      },
+      {
+        query: report.filter,
+      },
+    )
   }
 }
 

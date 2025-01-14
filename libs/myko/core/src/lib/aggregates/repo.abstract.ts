@@ -287,9 +287,15 @@ export abstract class Repo<T extends MItem> {
   watchSearch(
     query: string,
     opts?: { showAllOnEmpty?: boolean },
+    filters?: {
+      func?: (ent: T) => boolean
+      query?: DeepPartial<T>
+    },
   ): Observable<T[]> {
+    const filterFunc = filters?.func || buildFilter(filters?.query || {})
+
     if (query === '' && opts?.showAllOnEmpty) {
-      return this.watch({} as DeepPartial<T>)
+      return this.watchFilter(filterFunc)
     }
 
     return this.searchObs.pipe(
@@ -300,6 +306,7 @@ export abstract class Repo<T extends MItem> {
           ? of([])
           : combineLatest(ids.map((id) => this.watchId(id.toString()).pipe())),
       ),
+      map((x) => x.filter(filterFunc)),
     )
   }
 
