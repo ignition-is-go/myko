@@ -1,11 +1,10 @@
-import { dev } from '$app/environment';
 import * as WSM from '@myko/ws';
 
 const connectHandlers: ((str: string) => void)[] = [];
 const disconnectHandlers: (() => void)[] = [];
 const onStartConnectHandlers: (() => void)[] = [];
 
-const isHttps = window.location.protocol === 'https:';
+const isHttps = window?.location.protocol === 'https:';
 
 export const client = new WSM.WSMClient(
 	(url) => {
@@ -26,7 +25,7 @@ export const client = new WSM.WSMClient(
 	},
 	{
 		secure: isHttps,
-		disableMsgPack: !!dev,
+		disableMsgPack: true,
 		preventThrowing: true
 	}
 );
