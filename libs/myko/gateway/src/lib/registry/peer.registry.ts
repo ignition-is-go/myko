@@ -35,7 +35,7 @@ export class PeerClientRegistry {
       return
     }
 
-    const client = this.peers.get(key)
+    const client = this.peers.get(key)!
 
     const unsub = this.unsubs.pipe(filter((x) => x === key))
 
@@ -109,7 +109,7 @@ export class PeerClientRegistry {
               if (!s) {
                 return
               }
-              eventBus.publishSet(server, 'peer-connected')
+              eventBus.publishSet(server!, 'peer-connected')
             },
           )
 
