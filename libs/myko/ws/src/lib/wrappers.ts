@@ -81,6 +81,14 @@ export const wrapCommandErrorWS = (
   },
 })
 
+export const wrapError = (e: Error, tx: ID): WSMCommandError => ({
+  event: MCOMMAND_ERROR_EVENT,
+  data: {
+    tx,
+    message: e.message,
+  },
+})
+
 export const wrapQueryCancel = (tx: ID): WSMQueryCancel => ({
   event: MQUERY_CANCEL,
   tx: tx,

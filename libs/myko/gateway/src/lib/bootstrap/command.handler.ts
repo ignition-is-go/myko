@@ -10,6 +10,7 @@ import {
 import {
   wrapCommandErrorWS,
   wrapCommandResponseWS,
+  wrapError,
   type WSMMessage,
 } from '@myko/ws'
 import type { Subject } from 'rxjs'
@@ -22,38 +23,56 @@ export const handleCommand = async (
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
   const txid = command.command.tx
+  const userToken = command.command.userToken
 
   const auth = getAuth()
 
+  const fail = () => {
+    respond.next({
+      clientId,
+      data: wrapCommandErrorWS(new CommandNotAuthorized(command.command.tx)),
+    })
+  }
+
   if (auth) {
-    const res = await auth.canActivate(command.command.userToken).catch((e) => {
-      respond.next({
-        clientId,
-        data: wrapCommandErrorWS(new CommandNotAuthorized(command.command.tx)),
-      })
+    if (!userToken) {
+      fail()
+      return false
+    }
+    const res = await auth.canActivate(userToken).catch((e) => {
+      fail()
       return false
     })
 
     if (!res) {
+      fail()
       return
     }
   }
 
   const unwrapped = unwrapCommand(command) as MCommand<unknown>
-  const res = await commandBus.execute(unwrapped).catch((e) => {
-    new MykoLogger('Gateway').error(e.message, e.stack)
-    if (e instanceof MykoCommandError) {
-      const wrapped = wrapCommandErrorWS(e)
-
+  await commandBus
+    .execute(unwrapped)
+    .then((res) => {
       respond.next({
         clientId: clientId,
-        data: wrapped,
+        data: wrapCommandResponseWS(txid, res),
       })
-    }
-  })
-
-  respond.next({
-    clientId: clientId,
-    data: wrapCommandResponseWS(txid, res),
-  })
+    })
+    .catch((e) => {
+      new MykoLogger('Gateway').error(e.message, e.stack)
+      if (e instanceof MykoCommandError) {
+        const wrapped = wrapCommandErrorWS(e)
+        respond.next({
+          clientId: clientId,
+          data: wrapped,
+        })
+      } else {
+        const wrapped = wrapError(e, txid)
+        respond.next({
+          clientId: clientId,
+          data: wrapped,
+        })
+      }
+    })
 }
