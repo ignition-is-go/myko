@@ -132,7 +132,9 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
     const allStr = `${all.length}`
     const initStr = `${init.length}`.padStart(allStr.length, ' ')
 
-    logger.info(`Module Init ${initStr}/${all.length} (${uninit.length})`)
+    const leftStr = uninit.slice(0, 3).join(', ')
+
+    logger.info(`Module Init ${initStr}/${all.length} [ ${leftStr} ]`)
   })
 
   onAllInit(() => {
