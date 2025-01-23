@@ -80,7 +80,9 @@ export class SocketGroup {
 
     if (key === this.currentSocket) {
       this.currentSocket = this.openAddresses[0]
-      this.groupOpts.onMainServerChange(this.currentSocket)
+      if (this.currentSocket) {
+        this.groupOpts.onMainServerChange(this.currentSocket)
+      }
     }
 
     this.checkForGroupClose()
