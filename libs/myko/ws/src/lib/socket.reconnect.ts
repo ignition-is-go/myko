@@ -5,7 +5,7 @@ export type ReconnectSocketOpts = {
   onMessage: (data: MessageEvent) => void
   onError: (error) => void
   onTerminated: () => void
-  reconnect: {
+  reconnect?: {
     interval: number
     maxAttempts: number
   }
@@ -19,19 +19,23 @@ export class ReconnectSocket {
   private tornDown = false
 
   constructor(
-    private url: string,
     private makeSocket: (socketUrl: string) => WebSocket,
     private opts: ReconnectSocketOpts,
-  ) {
-    this.connect()
+  ) {}
+
+  connect(url: string) {
+    this.teardown()
+    this.tornDown = false
+    this.build(url)
   }
 
-  private connect() {
-    this.socket = this.makeSocket(this.url)
+  private build(url: string) {
+    this.socket = this.makeSocket(url)
+
     this.socket.binaryType = 'arraybuffer'
 
     this.socket.onopen = () => {
-      this.opts.onConnected(this.url)
+      this.opts.onConnected(url)
     }
 
     this.socket.onclose = () => {
@@ -48,8 +52,8 @@ export class ReconnectSocket {
       ) {
         this.attempts++
         setTimeout(() => {
-          this.opts.onReconnecting(this.url)
-          this.connect()
+          this.opts.onReconnecting(url)
+          this.build(url)
         }, this.opts.reconnect.interval)
 
         return
@@ -65,7 +69,7 @@ export class ReconnectSocket {
 
   send(data: string | ArrayBufferLike | Blob) {
     if (this.socket.readyState !== this.socket.OPEN) {
-      console.log('socket not ready', this.url)
+      console.log('socket not ready')
       throw new Error('Not Connected')
     }
 
@@ -78,6 +82,6 @@ export class ReconnectSocket {
 
   teardown() {
     this.tornDown = true
-    this.socket.close()
+    this.socket?.close()
   }
 }

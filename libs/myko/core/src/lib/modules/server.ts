@@ -17,6 +17,8 @@ import {
   type MItemConstructor,
 } from '../types'
 
+import Z from 'zod'
+
 @MykoItem({
   doc: 'A Myko Server ',
 })
@@ -32,6 +34,16 @@ export class Server extends MItem<Server> {
   @doc("The server's group id")
   groupId: string
 }
+
+export const serverSchema = Z.object({
+  id: Z.string().uuid(),
+  hash: Z.string(),
+  version: Z.string(),
+  address: Z.string(),
+  port: Z.number().positive(),
+  startedAt: Z.string().datetime(),
+  groupId: Z.string().nonempty(),
+})
 
 @MykoReport()
 export class ServerEventLog extends MReport<MEvent> {

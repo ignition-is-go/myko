@@ -2,6 +2,7 @@ import {
   Client,
   eventBus,
   GetClientsByIds,
+  getServer,
   isAllInit,
   makeDel,
   queryBus,
@@ -27,15 +28,18 @@ export const bunAdapter: MykoWsAdapter = ({
 
   const s = Bun.serve({
     port,
-
     fetch(req, server) {
+      const url = new URL(req.url)
+
+      if (url.pathname === '/server') {
+        return new Response(JSON.stringify(getServer()), { status: 200 })
+      }
+
       const isInit = isAllInit()
 
       if (!isInit.done) {
         return new Response('Not Ready', { status: 500 })
       }
-
-      const url = new URL(req.url)
 
       if (url.pathname === '/myko') {
         const clientId = randomUUID()
@@ -68,14 +72,14 @@ export const bunAdapter: MykoWsAdapter = ({
           randomUUID(),
         )
       },
-      drain(ws) {},
+      drain(_ws) {},
       close(ws, code, message) {
         ws.unsubscribe(ws.data.clientId)
 
         clientSet.delete(ws.data.clientId)
         clients.next([...clientSet])
-
-        const existing = queryBus
+        console.log('Client disconnected', ws.data.clientId, code, message)
+        queryBus
           .execute(new GetClientsByIds([ws.data.clientId]))
           .then((clients) => {
             if (clients.length === 0) {

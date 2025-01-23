@@ -4,20 +4,25 @@
 	import { Observable, interval, map, of, switchMap } from 'rxjs';
 	import { client } from '../services/client.js';
 
-	export let server: Server;
+	interface Props {
+		server: Server;
+		isClientServer?: boolean;
+		isLeader: boolean;
+	}
 
-	export let isClientServer: boolean = false;
+	let { server, isClientServer = false, isLeader }: Props = $props();
 
-	export let isLeader: boolean;
+	let alive = $derived(
+		isClientServer
+			? (interval(500).pipe(switchMap(() => client.ping().catch((e) => false))) as Observable<
+					number | false
+				>)
+			: client.watchReport(new PeerAlive(server.id))
+	);
 
-	$: alive = isClientServer
-		? (interval(500).pipe(switchMap(() => client.ping().catch((e) => false))) as Observable<
-				number | false
-			>)
-		: client.watchReport(new PeerAlive(server.id));
-
-	$: ping =
-		$alive === undefined ? 'Connecting' : $alive === false ? 'Dead' : `${Math.round($alive)}ms`;
+	let ping = $derived(
+		$alive === undefined ? 'Connecting' : $alive === false ? 'Dead' : `${Math.round($alive)}ms`
+	);
 </script>
 
 <div class="server flex gap-5">
@@ -37,7 +42,7 @@
 				<span class="badge leader">leader</span>
 			{/if}
 		</div>
-		<span>Ping: {ping}</span>
+		<span>Ping {isClientServer ? '' : 'to connected'}: {ping}</span>
 	</div>
 </div>
 
@@ -62,6 +67,7 @@
 
 	span {
 		display: block;
+		white-space: nowrap;
 	}
 
 	.version {

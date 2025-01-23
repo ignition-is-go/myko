@@ -212,10 +212,11 @@ export class WSMClient {
 
       {
         onClosed: () => {
-          this.hooks.onTerminated()
+          this.hooks?.onTerminated?.()
         },
         onConnected: (url) => {
-          this.onServerConnect(url)
+          this.resendMessages(url)
+          this.hooks?.onServerConnect?.(url)
         },
         onError: (error) => {
           console.warn(error)
@@ -227,10 +228,13 @@ export class WSMClient {
           this.onMessage(data)
         },
         onMainServerChange: (url) => {
-          this.onServerConnect(url)
+          this.hooks?.onLog?.('Connection Switched to', url)
+          this.hooks?.onServerConnect?.(url)
+          this.resendMessages(url)
         },
         onMainSocketReconnecting: (url) => {
           this.hooks?.onLog?.('Reconnecting to', url)
+          this.hooks?.onStartConnect?.(url)
         },
         socketSendMode: SocketSendMode.Single,
         reconnect: this.clientOpts.reconnect,
@@ -244,7 +248,7 @@ export class WSMClient {
       return
     }
 
-    this.hooks.onLog?.('Watching for Additional servers')
+    this.hooks?.onLog?.('Watching for Additional servers')
     servers.subscribe((s) => {
       this.socketGroup.addServers(
         s.map((s) => ({ host: s.address, port: s.port })),
@@ -307,7 +311,7 @@ export class WSMClient {
 
   sendCommand<T extends MCommand<unknown>>(
     command: T,
-  ): Promise<MCommandResponse<T>> {
+  ): Promise<MCommandResponse<T> | undefined> {
     if (this.userToken) {
       command.userToken = this.userToken
     }
@@ -455,15 +459,14 @@ export class WSMClient {
     this.socketGroup.bootstrap(host, port)
   }
 
-  private onServerConnect(path: string) {
+  private resendMessages(path: string) {
     if (
       this.protocol !== MykoProtocol.MSGPACK &&
       !this.clientOpts.disableMsgPack
     ) {
       // this.switchToMessagePack()
     }
-    this.hooks.onLog?.('Connected to', path)
-    this.hooks?.onServerConnect && this.hooks?.onServerConnect(path)
+
     this.processQueue()
     ;[...this.resendQueries.values()].forEach((q) => {
       this.send(q)
@@ -485,9 +488,21 @@ export class WSMClient {
 
     const body = e.data
 
-    const message: WSMMessage = this.decoders.get(this.protocol)(
-      this.datapreppers.get(this.protocol)(body),
-    )
+    const decoder = this.decoders.get(this.protocol)
+
+    if (!decoder) {
+      console.error('No decoder for protocol', this.protocol)
+      return
+    }
+
+    const dataPrepper = this.datapreppers.get(this.protocol)
+
+    if (!dataPrepper) {
+      console.error('No data prepper for protocol', this.protocol)
+      return
+    }
+
+    const message: WSMMessage = decoder(dataPrepper(body))
 
     switch (message.event) {
       case MCOMMAND_EVENT:
@@ -556,7 +571,15 @@ export class WSMClient {
       return
     }
 
-    const encoded = this.encoders.get(this.protocol ?? MykoProtocol.JSON)(item)
+    const encoder = this.encoders.get(this.protocol ?? MykoProtocol.JSON)
+
+    if (!encoder) {
+      console.error('No encoder for protocol', this.protocol)
+      return
+    }
+
+    const encoded = encoder(item)
+
     this.upMsgCounter.next()
     this.socketGroup.send(encoded)
   }

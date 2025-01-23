@@ -9,33 +9,30 @@ import {
   getServer,
   onAllInit,
   repo,
+  serverSchema,
   type ID,
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
-import {
-  Observable,
-  Subject,
-  filter,
-  firstValueFrom,
-  map,
-  takeUntil,
-} from 'rxjs'
+import { Subject, filter, firstValueFrom, takeUntil } from 'rxjs'
 
 import { peerBus } from '../bus/peer.bus'
 import { getAuth } from './auth.registry'
+import { startDockerDiscovery } from './discovery/docker.discovery'
+import { startUdpDiscovery } from './discovery/udp.discovery'
 
 export class PeerClientRegistry {
-  private peers = new Map<string, WSMClient>()
+  private peerClients = new Map<string, WSMClient>()
   private unsubs = new Subject<ID>()
+  private logger = new MykoLogger('Peer Registry')
 
-  private assertPeerEventListener(address: string, port: number) {
-    const key = makePeerKey(address, port)
+  private assertPeerEventListener(server: Server) {
+    const key = server.id
 
-    if (!this.peers.has(key)) {
+    if (!this.peerClients.has(key)) {
       return
     }
 
-    const client = this.peers.get(key)!
+    const client = this.peerClients.get(key)!
 
     const unsub = this.unsubs.pipe(filter((x) => x === key))
 
@@ -55,30 +52,63 @@ export class PeerClientRegistry {
             continue
           }
 
-          this.assertPeer(server.address, server.port)
+          this.addPeer(server.address, server.port)
         }
       })
   }
 
   private teardownPeerEventListener(server: Server) {
-    const key = makePeerKey(server.address, server.port)
-
-    this.unsubs.next(key)
-    this.peers.delete(key)
+    this.unsubs.next(server.id)
+    this.peerClients.delete(server.id)
   }
 
-  assertPeer(address: string, port: number) {
-    if (this.peers.has(makePeerKey(address, port))) {
-      return this.peers.get(makePeerKey(address, port))
+  async addPeer(address: string, port: number) {
+    const url = `http://${address}:${port}/server`
+
+    this.logger.info(`Fetching Peer Info - ${url}`)
+
+    const serverInfo = await fetch(`http://${address}:${port}/server`)
+      .then((x) => x.json())
+      .catch((e) => {
+        this.logger.error(`Error Fetching Peer Info - ${address}:${port}`, e)
+        return null
+      })
+
+    if (!serverInfo) {
+      return
     }
+
+    const parsed = serverSchema.safeParse(serverInfo)
+
+    if (!parsed.success) {
+      this.logger.error(
+        `Peer Server Info Invalid - ${address}:${port}`,
+        parsed.error.format(),
+      )
+      return
+    }
+
+    const server = parsed.data as Server
+
+    if (server.id === getServer().id) {
+      this.logger.info(`Peer is Self - ${address}:${port}`)
+      return
+    }
+
+    if (this.peerClients.has(server.id)) {
+      this.logger.info(
+        `Peer Already Connected - ${address}:${port} [${server.id}]`,
+      )
+      return
+    }
+
+    this.logger.info(`Connecting to Peer - ${address}:${port} [${server.id}]`)
 
     const client = new WSMClient(
       (url) => new WebSocket(url),
       {
         onTerminated: async () => {
-          new MykoLogger('Peer Registry').info(
-            `Peer Disconnected - ${address}:${port}`,
-          )
+          this.logger.info(`Peer Disconnected - ${address}:${port}`)
 
           const server = (
             await repo(Server).get({ address, port: port })
@@ -93,23 +123,41 @@ export class PeerClientRegistry {
           this.teardownPeerEventListener(server)
         },
         onError: (e) => {
-          new MykoLogger('Peer Registry').error(
-            `Error Connecting to Peer - ${address}:${port}`,
-            e,
-          )
+          this.logger.error(`Error Connecting to Peer - ${address}:${port}`, e)
         },
         onLog: (...l) => {
-          new MykoLogger('Peer Registry').info(l.join(' '))
+          this.logger.info(l.join(' '))
         },
         onServerConnect: (_url) => {
           firstValueFrom(client.watchQuery(new GetConnectedServer())).then(
             (s) => {
-              const server = s.shift()
+              const connected = s.shift()
 
-              if (!s) {
+              if (!connected) {
+                this.logger.error('Connected Server Not Found')
+                client.disconnect()
                 return
               }
-              eventBus.publishSet(server!, 'peer-connected')
+
+              const me = getServer()
+
+              if (connected.id === me.id) {
+                this.logger.error('Somehow Connected to Self: Disconnecting')
+                client.disconnect()
+                return
+              }
+
+              if (connected.id !== server.id) {
+                this.logger.error('Connected to Wrong Server: Disconnecting')
+                client.disconnect()
+                return
+              }
+
+              this.peerClients.set(connected.id, client)
+
+              this.assertPeerEventListener(connected)
+
+              eventBus.publishSet(connected, 'peer-connected')
             },
           )
 
@@ -121,63 +169,63 @@ export class PeerClientRegistry {
 
     client.connect(address, port)
     client.setUser(getAuth().getPeerToken())
-
-    this.peers.set(makePeerKey(address, port), client)
-
-    this.assertPeerEventListener(address, port)
-
-    return client
   }
 
-  getPeer(serverId: ID): Observable<WSMClient | undefined> {
-    const obs: Observable<WSMClient | undefined> = repo(Server)
-      .watchId(serverId)
-      .pipe(
-        map((server) => {
-          if (!server) {
-            new MykoLogger('Peer Registry').info(
-              `Peer Not Found or Disappeared - ${serverId}`,
-            )
-            return undefined
-          }
-
-          return this.assertPeer(server.address, server.port)
-        }),
-      )
-
-    return obs
+  getPeer(serverId: ID): WSMClient | undefined {
+    return this.peerClients.get(serverId)
   }
 
   size() {
-    return this.peers.size
+    return this.peerClients.size
   }
 
   all() {
-    return this.peers.entries()
+    return this.peerClients.entries()
   }
 
   start() {
     const peers = process.env['MYKO_PEERS']
 
     if (!peers) {
-      new MykoLogger('Peer Registry').info('No Peers Specified')
       return
     }
-    new MykoLogger('Peer Registry').info(`Starting with Peers:  ${peers}`)
 
     const peerList = peers.split(',')
 
     peerList.forEach((p) => {
       const [address, port] = p.split(':')
-      this.assertPeer(address, parseInt(port))
+      new MykoLogger('Environment Peers').info(
+        `Found Peer - ${address}:${port}`,
+      )
+      this.addPeer(address, parseInt(port))
     })
   }
 }
-
-const makePeerKey = (address: string, port: number) => `${address}:${port}`
 
 export const peers = new PeerClientRegistry()
 
 onAllInit(() => {
   peers.start()
+
+  const ENABLE_UDP_DISCOVERY = process.env['MYKO_ENABLE_UDP_DISCOVERY']
+
+  const ENABLE_DOCKER_DISOCVERY = process.env['MYKO_ENABLE_DOCKER_DISCOVERY']
+
+  if (ENABLE_UDP_DISCOVERY) {
+    startUdpDiscovery((server) => {
+      new MykoLogger('UDP Discovery').info(
+        `Found Peer - ${server.address}:${server.port}`,
+      )
+      peers.addPeer(server.address, server.port)
+    })
+  }
+
+  if (ENABLE_DOCKER_DISOCVERY) {
+    startDockerDiscovery((d) => {
+      new MykoLogger('Docker Discovery').info(
+        `Found Peer - ${d.address}:${d.port}`,
+      )
+      peers.addPeer(d.address, d.port)
+    })
+  }
 })

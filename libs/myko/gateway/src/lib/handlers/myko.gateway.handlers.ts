@@ -53,7 +53,6 @@ import {
   combineLatest,
   debounceTime,
   filter,
-  firstValueFrom,
   interval,
   map,
   of,
@@ -146,7 +145,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
     if (command.client.serverId !== getServer().id) {
       // forward to server
       console.log('forwarding to server')
-      const peer = await firstValueFrom(peers.getPeer(command.client.serverId))
+      const peer = peers.getPeer(command.client.serverId)
 
       if (!peer) {
         throw new MykoCommandError(command.tx, 'Peer Not Found')
@@ -195,14 +194,13 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
         return queryBus.watch(query.query)
       }
 
-      return peers.getPeer(query.peerId).pipe(
-        switchMap((peer) => {
-          if (!peer) {
-            return EMPTY
-          }
-          return peer.watchQuery(query.query)
-        }),
-      )
+      const peer = peers.getPeer(query.peerId)
+
+      if (!peer) {
+        return EMPTY
+      }
+
+      return peer.watchQuery(query.query)
     } catch (e) {
       console.warn('Cant Execute Peer Query', query)
       return EMPTY
@@ -214,7 +212,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
   constructor(private peers: PeerClientRegistry) {}
   async execute(command: PeerCommand): Promise<void> {
-    const peer = await firstValueFrom(this.peers.getPeer(command.peerId))
+    const peer = this.peers.getPeer(command.peerId)
     if (!peer) {
       throw new MykoCommandError(command.tx, 'Peer Not Found')
     }
@@ -226,15 +224,13 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
 @MykoReportHandler(PeerReport)
 export class PeerReportHandler implements MReportHandler<PeerReport<any>> {
   execute(report: PeerReport<any>): Observable<any> {
-    return peers.getPeer(report.peerId).pipe(
-      switchMap((peer) => {
-        if (!peer) {
-          return EMPTY
-        }
+    const peer = peers.getPeer(report.peerId)
 
-        return peer.watchReport(report.report)
-      }),
-    )
+    if (!peer) {
+      return EMPTY
+    }
+
+    return peer.watchReport(report.report)
   }
 }
 
@@ -285,13 +281,14 @@ export class GetItemByTypeAndIdHandler
 @MykoReportHandler(PeerAlive)
 export class PeerAliveHandler implements MReportHandler<PeerAlive> {
   execute(report: PeerAlive) {
-    return peers.getPeer(report.peerId).pipe(
-      switchMap((peer) => {
-        return peer
-          ? interval(1000).pipe(
-              switchMap((_) => peer.ping().catch((_e) => false)),
-            )
-          : of(false)
+    return interval(1000).pipe(
+      switchMap((_) => {
+        const peer = peers.getPeer(report.peerId)
+        if (!peer) {
+          return of(false) as Observable<number | false>
+        }
+
+        return peer.ping().catch((_e) => false)
       }),
     ) as Observable<number | false>
   }
@@ -332,6 +329,6 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
 @MykoCommandHandler(RegisterPeer)
 export class RegisterPeerHandler implements MCommandHandler<RegisterPeer> {
   async execute(command: RegisterPeer) {
-    peers.assertPeer(command.server.address, command.server.port)
+    peers.addPeer(command.server.address, command.server.port)
   }
 }

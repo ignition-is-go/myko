@@ -12,16 +12,10 @@
 
 <div class="page">
 	{#if $connected}
-		<div class="scroll">
-			<Server server={$connected} isClientServer isLeader={false} />
-			<Logs serverId={$connected.id}></Logs>
-		</div>
+		<Server server={$connected} isClientServer isLeader={false} />
 	{/if}
 	{#each $peers as server (server.id)}
-		<div class="scroll">
-			<Server {server} isLeader={false} />
-			<Logs serverId={server.id}></Logs>
-		</div>
+		<Server {server} isLeader={false} />
 	{/each}
 </div>
 
@@ -31,15 +25,8 @@
 		box-sizing: border-box;
 		padding: 1rem;
 		display: flex;
+		gap: 1rem;
 		flex-direction: row;
 		max-height: 100%;
-	}
-
-	.scroll {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		overflow: auto;
-		padding: 0.5rem;
 	}
 </style>
