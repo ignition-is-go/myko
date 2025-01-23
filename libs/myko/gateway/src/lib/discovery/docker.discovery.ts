@@ -1,4 +1,4 @@
-import type { Server } from '@myko/core'
+import { type Server } from '@myko/core'
 import * as dns from 'dns/promises'
 
 export const startDockerDiscovery = (

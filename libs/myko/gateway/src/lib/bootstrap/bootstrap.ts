@@ -19,27 +19,18 @@ import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { ReplaySubject, Subject } from 'rxjs'
+import { dockerAddress } from '../identity'
 import { setAdapterBusses, setAuth } from '../registry'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
 
-export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
+export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
   const { version, groupId } = args
 
   const serverId = getHostId()
 
   if (args.ws) {
     const { host, port, wsAdapter } = args.ws
-    const startString = `Listening: ${host}:${port} @ ${version}`
-    const serverInfo = `Server ID: ${serverId} | Group ID: ${groupId}`
-
-    const maxLen = Math.max(startString.length, serverInfo.length)
-    const border = ''.padEnd(maxLen, '=')
-
-    console.log('\n' + border)
-    console.log(startString)
-    console.log(serverInfo)
-    console.log(border + '\n')
 
     const doc = new MykoDocsService()
 
@@ -47,16 +38,6 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
       doc.writeDocs(args.docPath)
     }
 
-    const server = new Server({
-      address: host,
-      groupId,
-      id: serverId,
-      port: port,
-      startedAt: DateTime.utc().toISO(),
-      version: args.version,
-    })
-
-    setServer(server)
     const tx = new Subject<{ clientId: ID; data: WSMMessage }>()
     const rx = new Subject<{ clientId: ID; data: WSMMessage }>()
     const clients = new ReplaySubject<ID[]>(1)
@@ -77,6 +58,37 @@ export const bootstrap = (args: MykoGatewayBootstrapOptions) => {
       clients,
       serverId,
     })
+
+    const ENV_MYKO_PRIVATE_HOST = process.env['MYKO_PRIVATE_HOST']
+
+    const MYKO_PRIVATE_HOST = ENV_MYKO_PRIVATE_HOST ?? (await dockerAddress())
+
+    if (!MYKO_PRIVATE_HOST) {
+      throw new Error('MYKO_PRIVATE_HOST must be set')
+    }
+
+    const server = new Server({
+      address: host,
+      groupId,
+      id: serverId,
+      port: port,
+      startedAt: DateTime.utc().toISO(),
+      version: args.version,
+      privateAddress: MYKO_PRIVATE_HOST,
+    })
+    const publicHost = `Listening: ${host}:${port} @ ${version}`
+    const privateHost = `Private: ${MYKO_PRIVATE_HOST}`
+    const serverInfo = `Server ID: ${serverId} | Group ID: ${groupId}`
+    const maxLen = Math.max(publicHost.length, serverInfo.length)
+    const border = ''.padEnd(maxLen, '=')
+
+    console.log('\n' + border)
+    console.log(publicHost)
+    console.log(privateHost)
+    console.log(serverInfo)
+    console.log(border + '\n')
+
+    setServer(server)
 
     if (args.ws.authService) {
       setAuth(args.ws.authService)
