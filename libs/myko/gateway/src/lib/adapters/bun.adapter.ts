@@ -21,11 +21,8 @@ export const bunAdapter: MykoWsAdapter = ({
   port,
   rx,
   tx,
-  clients,
   serverId,
 }: MykoWsAdapterOptions) => {
-  let clientSet = new Set<ID>()
-
   const s = Bun.serve({
     port,
     fetch(req, server) {
@@ -65,8 +62,6 @@ export const bunAdapter: MykoWsAdapter = ({
       open(ws: ServerWebSocket<BunWSClientData>) {
         ws.subscribe(ws.data.clientId)
 
-        clientSet.add(ws.data.clientId)
-        clients.next([...clientSet])
         eventBus.publishSet(
           new Client({ id: ws.data.clientId, serverId }),
           randomUUID(),
@@ -75,9 +70,6 @@ export const bunAdapter: MykoWsAdapter = ({
       drain(_ws) {},
       close(ws, code, message) {
         ws.unsubscribe(ws.data.clientId)
-
-        clientSet.delete(ws.data.clientId)
-        clients.next([...clientSet])
         console.log('Client disconnected', ws.data.clientId, code, message)
         queryBus
           .execute(new GetClientsByIds([ws.data.clientId]))

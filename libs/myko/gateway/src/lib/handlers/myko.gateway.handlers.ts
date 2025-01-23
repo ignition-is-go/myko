@@ -61,7 +61,7 @@ import {
   startWith,
   switchMap,
 } from 'rxjs'
-import { getClients, getTx } from '../registry'
+import { getTx } from '../registry'
 import { PeerClientRegistry, peers } from '../registry/peer.registry'
 
 onAllInit(async () => {
@@ -248,10 +248,10 @@ export class PeerReportHandler implements MReportHandler<PeerReport<any>> {
 @MykoReportHandler(ClientStatus)
 export class ClientStatusHandler implements MReportHandler<ClientStatus> {
   execute(report: ClientStatus): MLiveReportResult<ClientStatus> {
-    return getClients().pipe(
+    return queryBus.watch(new GetClientsByQuery({})).pipe(
       map((clients) => {
         return {
-          online: clients.some((c) => c === report.clientId),
+          online: clients.some((c) => c.id === report.clientId),
         }
       }),
     )
