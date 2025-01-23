@@ -105,18 +105,7 @@ export class GetConnectedServerHandler
 @MykoQueryHandler(GetPeerServers)
 export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return repo(Server)
-      .watchId(getHostId())
-      .pipe(
-        switchMap((me) => {
-          if (!me) {
-            return EMPTY
-          }
-          return repo(Server).watchFilter(
-            (s) => s.groupId === me.groupId && s.id !== me.id,
-          )
-        }),
-      )
+    return repo(Server).watchFilter((s) => s.id !== getHostId())
   }
 }
 

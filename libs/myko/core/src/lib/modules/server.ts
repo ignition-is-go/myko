@@ -33,8 +33,6 @@ export class Server extends MItem<Server> {
   port: number
   @doc('ISO DateTime string')
   startedAt: string // ISO DateTime
-  @doc("The server's group id")
-  groupId: string
 }
 
 export const serverSchema = Z.object({
@@ -45,7 +43,6 @@ export const serverSchema = Z.object({
   privateAddress: Z.string(),
   port: Z.number().positive(),
   startedAt: Z.string().datetime(),
-  groupId: Z.string().nonempty(),
 })
 
 @MykoReport()
@@ -85,27 +82,6 @@ export class GetServersByQuery extends MQuery<Server> {
 
 @MykoQuery(Server)
 export class GetServers extends MQuery<Server> {}
-
-// @MykoReport()
-// export class GroupLeader extends MReport<Server> {
-//   constructor(readonly groupId: ID) {
-//     super()
-//   }
-// }
-
-// @MykoReport()
-// export class IsLeader extends MReport<boolean> {
-//   constructor(readonly serverId: ID) {
-//     super()
-//   }
-// }
-
-// @MykoReport()
-// export class ConnectedToLeader extends MReport<boolean> {
-//   constructor() {
-//     super()
-//   }
-// }
 
 @MykoReport()
 export class PeerAlive extends MReport<number | false> {

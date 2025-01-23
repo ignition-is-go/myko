@@ -12,7 +12,6 @@ export type MykoGatewayBootstrapOptions = {
   persisterOverrides?: PersisterOverrideData[]
   defaultRepo: RepoFactory
   repoOverrides?: RepoOverrideData[]
-  groupId: string
   version: string
   ws?: {
     host: string

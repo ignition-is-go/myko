@@ -25,7 +25,7 @@ import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
 
 export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
-  const { version, groupId } = args
+  const { version } = args
 
   const serverId = getHostId()
 
@@ -67,7 +67,6 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
 
     const server = new Server({
       address: host,
-      groupId,
       id: serverId,
       port: port,
       startedAt: DateTime.utc().toISO(),
@@ -76,7 +75,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
     })
     const publicHost = `Listening: ${host}:${port} @ ${version}`
     const privateHost = `Private: ${MYKO_PRIVATE_HOST}`
-    const serverInfo = `Server ID: ${serverId} | Group ID: ${groupId}`
+    const serverInfo = `Server ID: ${serverId}`
     const maxLen = Math.max(publicHost.length, serverInfo.length)
     const border = ''.padEnd(maxLen, '=')
 

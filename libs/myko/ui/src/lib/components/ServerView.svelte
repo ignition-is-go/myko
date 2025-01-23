@@ -7,10 +7,9 @@
 	interface Props {
 		server: Server;
 		isClientServer?: boolean;
-		isLeader: boolean;
 	}
 
-	let { server, isClientServer = false, isLeader }: Props = $props();
+	let { server, isClientServer = false }: Props = $props();
 
 	let alive = $derived(
 		isClientServer
@@ -29,40 +28,15 @@
 	<div class="info">
 		<span class="address">{server.address}:{server.port}</span>
 		<span class="version">{server.version}</span>
-		<span class="name">Group: {server.groupId}</span>
 		<span class="id">ID: {server.id}</span>
 		<span class="started">Started: {DateTime.fromISO(server.startedAt).toRelative()}</span>
-	</div>
-	<div class="stats flex flex-col flex-1 items-end justify-between">
-		<div class="badges flex gap-2">
-			{#if isClientServer}
-				<span class="badge connected">connected</span>
-			{/if}
-			{#if isLeader}
-				<span class="badge leader">leader</span>
-			{/if}
-		</div>
 		<span>Ping {isClientServer ? '' : 'to connected'}: {ping}</span>
 	</div>
 </div>
 
 <style>
-	.badge {
-		padding: 0 0.5rem;
-		border-radius: 10rem;
-	}
-
-	.connected {
-		background-color: rgb(0, 77, 77);
-	}
-
-	.leader {
-		background-color: rgb(77, 0, 68);
-	}
-
 	.server {
 		position: relative;
-		width: 350px;
 	}
 
 	span {
