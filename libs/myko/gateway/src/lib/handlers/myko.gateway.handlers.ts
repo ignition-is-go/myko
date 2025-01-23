@@ -25,6 +25,8 @@ import {
   ServerEventLog,
   eventBus,
   getEvents,
+  getHostId,
+  getServer,
   makeDel,
   onAllInit,
   queryBus,
@@ -59,7 +61,7 @@ import {
   startWith,
   switchMap,
 } from 'rxjs'
-import { getClients, getServer, getTx } from '../registry'
+import { getClients, getTx } from '../registry'
 import { PeerClientRegistry, peers } from '../registry/peer.registry'
 
 onAllInit(async () => {
@@ -73,7 +75,7 @@ onAllInit(async () => {
   const server = getServer()
 
   const prev = await repo(Server).get({
-    address: server.address,
+    privateAddress: server.privateAddress,
     port: server.port,
   })
 
@@ -96,16 +98,25 @@ export class GetConnectedServerHandler
   implements MQueryHandler<GetConnectedServer>
 {
   execute(_: GetConnectedServer): MLiveQueryResult<GetConnectedServer> {
-    return of(getServer()).pipe(map((x) => [x]))
+    return repo(Server).watch({ id: getHostId() })
   }
 }
 
 @MykoQueryHandler(GetPeerServers)
 export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return repo(Server).watchFilter(
-      (s) => s.id !== getServer().id && s.groupId === getServer().groupId,
-    )
+    return repo(Server)
+      .watchId(getHostId())
+      .pipe(
+        switchMap((me) => {
+          if (!me) {
+            return EMPTY
+          }
+          return repo(Server).watchFilter(
+            (s) => s.groupId === me.groupId && s.id !== me.id,
+          )
+        }),
+      )
   }
 }
 
@@ -142,7 +153,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       throw new MykoCommandError(command.tx, 'Client Not Found')
     }
 
-    if (command.client.serverId !== getServer().id) {
+    if (command.client.serverId !== getHostId()) {
       // forward to server
       console.log('forwarding to server')
       const peer = peers.getPeer(command.client.serverId)
@@ -190,7 +201,7 @@ export class DeleteClientsByServerIdHandler
 export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
     try {
-      if (query.peerId === getServer().id) {
+      if (query.peerId === getHostId()) {
         return queryBus.watch(query.query)
       }
 
@@ -307,7 +318,7 @@ export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
 @MykoReportHandler(ServerEventLog)
 export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {
   execute(_report: ServerEventLog) {
-    return eventBus.subject$.pipe(filter((x) => x.sourceId == getServer().id))
+    return eventBus.subject$.pipe(filter((x) => x.sourceId == getHostId()))
   }
 }
 
@@ -329,6 +340,6 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
 @MykoCommandHandler(RegisterPeer)
 export class RegisterPeerHandler implements MCommandHandler<RegisterPeer> {
   async execute(command: RegisterPeer) {
-    peers.addPeer(command.server.address, command.server.port)
+    peers.addPeer(command.server.privateAddress, command.server.port)
   }
 }

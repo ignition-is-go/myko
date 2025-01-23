@@ -3,7 +3,6 @@ import { Repo, type RepoFactory } from '../aggregates'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { Persister, PersisterFactory } from '../persisters'
-import { nullPersisterFactory } from '../persisters/null.persister'
 import {
   getItemName,
   type MEvent,
@@ -32,13 +31,7 @@ export const setDefaultRepoOptions = (args: {
 }): void => {
   defaultOpts.defaultPersisterFactory = args.persisterFactory
 
-  defaultOpts.persisterOverrides = [
-    ...(args?.persisterOverrides ?? []),
-    {
-      itemName: 'Server',
-      persister: nullPersisterFactory,
-    },
-  ]
+  defaultOpts.persisterOverrides = [...(args?.persisterOverrides ?? [])]
 
   defaultOpts.defaultRepoFactory = args.repoFactory
 
@@ -135,7 +128,7 @@ export const addSearchProperty = <T extends MItem>(
 }
 
 export const buildSerachKeys = (itemName: string): any[] => {
-  const searchKeys = []
+  const searchKeys: string[] = []
   relationRegistry.forEach((relation) => {
     if (relation.type === 'searchable' && relation.localType === itemName)
       searchKeys.push(relation.localKey)

@@ -16,7 +16,7 @@ import { ObservableBus } from './observable.bus'
 import { v4 as uuid } from 'uuid'
 import { onAllInit } from '../hooks'
 import {
-  getServer,
+  getHostId,
   propertyDefaults,
   relationRegistry,
   repoName,
@@ -309,10 +309,8 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   abstract publish<T extends MEvent>(Event: T): Promise<void>
 }
 
-const isFunction = (a: any) => typeof a === 'function'
-
 const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
-  const result = []
+  const result: any[] = []
 
   function helper(current, index) {
     if (index === arrays.length) {
@@ -339,7 +337,7 @@ export class EventBus extends AMykoEventBus {
   }
 
   getServerId(): ID {
-    return getServer().id
+    return getHostId()
   }
 
   publish<T extends MEvent>(event: T): Promise<void> {

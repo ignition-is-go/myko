@@ -2,7 +2,7 @@ import {
   Client,
   eventBus,
   GetClientsByIds,
-  getServer,
+  getHostId,
   isAllInit,
   makeDel,
   queryBus,
@@ -32,7 +32,7 @@ export const bunAdapter: MykoWsAdapter = ({
       const url = new URL(req.url)
 
       if (url.pathname === '/server') {
-        return new Response(JSON.stringify(getServer()), { status: 200 })
+        return new Response(getHostId(), { status: 200 })
       }
 
       const isInit = isAllInit()
