@@ -11,7 +11,11 @@ import {
 import type { ServerWebSocket } from 'bun'
 import { randomUUID } from 'crypto'
 import { parse, serialize } from '../compression/client.protocols'
-import type { MykoWsAdapter, MykoWsAdapterOptions } from './types'
+import type {
+  MykoWsAdapter,
+  MykoWsAdapterOptions,
+  MykoWsAdapterResult,
+} from './types'
 
 type BunWSClientData = {
   clientId: ID
@@ -22,7 +26,7 @@ export const bunAdapter: MykoWsAdapter = ({
   rx,
   tx,
   serverId,
-}: MykoWsAdapterOptions) => {
+}: MykoWsAdapterOptions): MykoWsAdapterResult => {
   const s = Bun.serve({
     port,
     fetch(req, server) {
@@ -66,11 +70,12 @@ export const bunAdapter: MykoWsAdapter = ({
           new Client({ id: ws.data.clientId, serverId }),
           randomUUID(),
         )
+
+        ws.ping()
       },
       drain(_ws) {},
       close(ws, code, message) {
         ws.unsubscribe(ws.data.clientId)
-        console.log('Client disconnected', ws.data.clientId, code, message)
         queryBus
           .execute(new GetClientsByIds([ws.data.clientId]))
           .then((clients) => {
@@ -91,4 +96,10 @@ export const bunAdapter: MykoWsAdapter = ({
       console.error('Error in tx', e.message)
     },
   })
+
+  return {
+    clientHealthCheck: (id: ID) => {
+      return s.subscriberCount(id) > 0
+    },
+  }
 }

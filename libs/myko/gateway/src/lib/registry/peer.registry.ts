@@ -5,7 +5,6 @@ import {
   Server,
   ServerEventLog,
   eventBus,
-  getHostId,
   onAllInit,
   queryBus,
   repo,
@@ -15,14 +14,14 @@ import { WSMClient } from '@myko/ws'
 import { Subject, filter, firstValueFrom, takeUntil } from 'rxjs'
 
 import { peerBus } from '../bus/peer.bus'
-import { startDockerDiscovery } from '../discovery/docker.discovery'
-import { startUdpDiscovery } from '../discovery/udp.discovery'
 import { getAuth } from './auth.registry'
 
 export class PeerClientRegistry {
   private peerClients = new Map<string, WSMClient>()
   private unsubs = new Subject<ID>()
   private logger = new MykoLogger('Peer Registry')
+
+  private connectedAddresses = new Set<string>()
 
   private assertPeerEventListener(server: Server) {
     const key = server.id
@@ -48,91 +47,98 @@ export class PeerClientRegistry {
     this.peerClients.delete(server.id)
   }
 
-  async addPeer(privateAddress: string, port: number) {
+  async addPeer(server: Server) {
+    const { address, port, id } = server
+
+    const addressKey = `${address}:${port}`
+
+    if (this.connectedAddresses.has(addressKey)) {
+      return
+    }
+
+    this.connectedAddresses.add(addressKey)
+
     const client = new WSMClient(
       (url) => new WebSocket(url),
       {
         onTerminated: async () => {
-          this.logger.info(`Peer Disconnected - ${privateAddress}:${port}`)
+          this.logger.error(`Peer Terminated - ${address}:${port}`)
 
-          const cleanup = await repo(Server).get({
-            privateAddress: privateAddress,
-            port,
-          })
+          this.connectedAddresses.delete(addressKey)
 
-          const legacyCleaup = await repo(Server).get({
-            address: privateAddress,
-            port,
-          })
+          this.teardownPeerEventListener(server)
 
-          for (const c of [...cleanup, ...legacyCleaup]) {
-            eventBus.publishDel(c, 'disconnected')
-            this.peerClients.delete(c.id)
-            this.teardownPeerEventListener(c)
-          }
+          eventBus.publishDel(server, 'server-disconnected')
+
+          // this fires if the socket fails to open as well, so we know there is no server at this address
         },
         onError: (e) => {
-          this.logger.error(
-            `Error Connecting to Peer - ${privateAddress}:${port}`,
-            e,
-          )
+          this.logger.error(`Error Connecting to Peer`, e)
         },
         onLog: (...l) => {
           this.logger.info(l.join(' '))
         },
         onServerConnect: (_url) => {
-          firstValueFrom(client.watchQuery(new GetConnectedServer())).then(
-            async (s) => {
-              const connectedServer = s.shift()
+          firstValueFrom(
+            client
+              .watchQuery(new GetConnectedServer())
+              .pipe(filter((x) => x.length > 0)),
+          ).then(async (s) => {
+            const connectedServer = s.shift()
 
-              if (!connectedServer) {
-                this.logger.error('Connected Server Not Found')
-                client.disconnect()
-                return
-              }
-
-              if (connectedServer.id === getHostId()) {
-                this.logger.error('Somehow Connected to Self: Disconnecting')
-                client.disconnect()
-                return
-              }
-
-              const olds = await repo(Server).get({
-                privateAddress: connectedServer.privateAddress,
-                port: connectedServer.port,
-              })
-
-              const legacyOlds = await repo(Server).get({
-                address: connectedServer.privateAddress,
-                port: connectedServer.port,
-              })
-
-              const toDelete = [...olds, ...legacyOlds].filter(
-                (x) => x.id !== connectedServer.id,
+            if (!connectedServer) {
+              this.logger.error(
+                `Connected Server Not Found - ${address}:${port}`,
               )
+              client.disconnect()
 
-              for (const o of toDelete) {
-                eventBus.publishDel(o, 'disconnected')
-                this.peerClients.delete(o.id)
-                this.teardownPeerEventListener(o)
-              }
+              return
+            }
 
-              this.peerClients.set(connectedServer.id, client)
+            if (connectedServer.id !== id) {
+              this.logger.error(
+                `Connected Server ID Mismatch - ${address}:${port}`,
+              )
+              client.disconnect()
 
-              this.assertPeerEventListener(connectedServer)
-            },
-          )
+              eventBus.publishDel(server, 'server-is-old')
+
+              return
+            }
+
+            this.logger.info(`Found Peer @ ${address}:${port}`)
+
+            this.peerClients.set(connectedServer.id, client)
+
+            this.assertPeerEventListener(connectedServer)
+          })
         },
       },
       { secure: false, reconnect: false, singleSocket: true },
     )
 
-    client.connect(privateAddress, port)
+    client.connect(address, port)
     client.setUser(getAuth().getPeerToken())
   }
 
   getPeer(serverId: ID): WSMClient | undefined {
     return this.peerClients.get(serverId)
+  }
+
+  assertPeer(serverId: ID) {
+    if (this.peerClients.has(serverId)) {
+      return
+    }
+
+    repo(Server)
+      .getId(serverId)
+      .then((server) => {
+        if (!server) {
+          return
+        }
+
+        this.addPeer(server)
+      })
   }
 
   size() {
@@ -142,56 +148,14 @@ export class PeerClientRegistry {
   all() {
     return this.peerClients.entries()
   }
-
-  async start() {
-    const peers = process.env['MYKO_PEERS']
-
-    if (!peers) {
-      return
-    }
-
-    const peerList = peers.split(',')
-
-    peerList.forEach((p) => {
-      const [address, port] = p.split(':')
-      new MykoLogger('Environment Peers').info(
-        `Found Peer - ${address}:${port}`,
-      )
-      this.addPeer(address, parseInt(port))
-    })
-  }
 }
 
 export const peers = new PeerClientRegistry()
 
-onAllInit(() => {
-  peers.start()
-
-  const ENABLE_UDP_DISCOVERY = process.env['MYKO_ENABLE_UDP_DISCOVERY']
-
-  const ENABLE_DOCKER_DISOCVERY = process.env['MYKO_ENABLE_DOCKER_DISCOVERY']
-
-  if (ENABLE_UDP_DISCOVERY) {
-    startUdpDiscovery((server) => {
-      new MykoLogger('UDP Discovery').info(
-        `Found Peer - ${server.address}:${server.port}`,
-      )
-      peers.addPeer(server.address, server.port)
-    })
-  }
-
-  if (ENABLE_DOCKER_DISOCVERY) {
-    startDockerDiscovery((d) => {
-      new MykoLogger('Docker Discovery').info(
-        `Found Peer - ${d.address}:${d.port}`,
-      )
-      peers.addPeer(d.address, d.port)
-    })
-  }
-
+onAllInit(async () => {
   queryBus.watch(new GetPeerServers()).subscribe((q) => {
     for (const server of q) {
-      peers.addPeer(server.privateAddress, server.port)
+      peers.addPeer(server)
     }
   })
 })

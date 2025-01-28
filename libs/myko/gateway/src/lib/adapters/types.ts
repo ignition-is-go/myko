@@ -9,4 +9,8 @@ export type MykoWsAdapterOptions = {
   serverId: ID
 }
 
-export type MykoWsAdapter = (args: MykoWsAdapterOptions) => void
+export type MykoWsAdapterResult = {
+  clientHealthCheck: (id: ID) => boolean
+}
+
+export type MykoWsAdapter = (args: MykoWsAdapterOptions) => MykoWsAdapterResult

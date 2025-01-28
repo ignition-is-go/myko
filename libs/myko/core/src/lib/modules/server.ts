@@ -1,12 +1,5 @@
+import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
 import {
-  MykoCommand,
-  MykoItem,
-  MykoQuery,
-  MykoReport,
-  doc,
-} from '../decorators'
-import {
-  MCommand,
   MItem,
   MQuery,
   MReport,
@@ -27,8 +20,6 @@ export class Server extends MItem<Server> {
   version: string
   @doc('xxx.xxx.xxx.xxx, where it can be reached publically')
   address: string
-  @doc('xxx.xxx.xxx.xxx, where it can be reached privately')
-  privateAddress: string
   @doc('The port the server is listening on')
   port: number
   @doc('ISO DateTime string')
@@ -40,7 +31,6 @@ export const serverSchema = Z.object({
   hash: Z.string(),
   version: Z.string(),
   address: Z.string(),
-  privateAddress: Z.string(),
   port: Z.number().positive(),
   startedAt: Z.string().datetime(),
 })
@@ -110,12 +100,5 @@ export class EntitySearch<T extends MItem> extends MReport<T[]> {
   ) {
     super()
     this.entityType = getItemName(item)
-  }
-}
-
-@MykoCommand()
-export class RegisterPeer extends MCommand {
-  constructor(readonly server: Server) {
-    super()
   }
 }

@@ -1,4 +1,7 @@
-import type { MykoWsAdapterOptions } from '../adapters/types'
+import type {
+  MykoWsAdapterOptions,
+  MykoWsAdapterResult,
+} from '../adapters/types'
 
 let tx: MykoWsAdapterOptions['tx'] | null
 let rx: MykoWsAdapterOptions['rx'] | null
@@ -31,4 +34,22 @@ export const getRx = () => {
   }
 
   return rx
+}
+
+let adapterResult: MykoWsAdapterResult | null
+
+export const setAdapterResult = (args: MykoWsAdapterResult) => {
+  if (adapterResult) {
+    throw new Error('adapter result already set')
+  }
+
+  adapterResult = args
+}
+
+export const getAdapterResult = () => {
+  if (!adapterResult) {
+    throw new Error('adapter result not set')
+  }
+
+  return adapterResult
 }

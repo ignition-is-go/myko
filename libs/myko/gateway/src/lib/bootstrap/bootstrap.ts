@@ -19,8 +19,7 @@ import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { Subject } from 'rxjs'
-import { dockerAddress } from '../identity'
-import { setAdapterBusses, setAuth } from '../registry'
+import { setAdapterBusses, setAdapterResult, setAuth } from '../registry'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
 
@@ -50,20 +49,14 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
 
     setAdapterBusses({ tx, rx })
 
-    wsAdapter({
+    const res = wsAdapter({
       port,
       rx,
       tx,
       serverId,
     })
 
-    const ENV_MYKO_PRIVATE_HOST = process.env['MYKO_PRIVATE_HOST']
-
-    const MYKO_PRIVATE_HOST = ENV_MYKO_PRIVATE_HOST ?? (await dockerAddress())
-
-    if (!MYKO_PRIVATE_HOST) {
-      throw new Error('MYKO_PRIVATE_HOST must be set')
-    }
+    setAdapterResult(res)
 
     const server = new Server({
       address: host,
@@ -71,17 +64,15 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
       port: port,
       startedAt: DateTime.utc().toISO(),
       version: args.version,
-      privateAddress: MYKO_PRIVATE_HOST,
     })
+
     const publicHost = `Listening: ${host}:${port} @ ${version}`
-    const privateHost = `Private: ${MYKO_PRIVATE_HOST}`
     const serverInfo = `Server ID: ${serverId}`
     const maxLen = Math.max(publicHost.length, serverInfo.length)
     const border = ''.padEnd(maxLen, '=')
 
     console.log('\n' + border)
     console.log(publicHost)
-    console.log(privateHost)
     console.log(serverInfo)
     console.log(border + '\n')
 

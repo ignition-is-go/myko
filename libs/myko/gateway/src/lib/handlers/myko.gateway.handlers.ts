@@ -20,7 +20,7 @@ import {
   MykoReportHandler,
   PeerAlive,
   PeerLastSeen,
-  RegisterPeer,
+  // RegisterPeer,
   Server,
   ServerEventLog,
   eventBus,
@@ -74,14 +74,14 @@ onAllInit(async () => {
 
   const server = getServer()
 
-  const prev = await repo(Server).get({
-    privateAddress: server.privateAddress,
-    port: server.port,
-  })
+  // const prev = await repo(Server).get({
+  //   privateAddress: server.privateAddress,
+  //   port: server.port,
+  // })
 
-  for (const p of prev) {
-    eventBus.publishDel(p, 'server-start')
-  }
+  // for (const p of prev) {
+  //   eventBus.publishDel(p, 'server-start')
+  // }
 
   eventBus.publishSet(server, 'server-start')
 })
@@ -105,7 +105,9 @@ export class GetConnectedServerHandler
 @MykoQueryHandler(GetPeerServers)
 export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return repo(Server).watchFilter((s) => s.id !== getHostId())
+    return repo(Server).watchFilter(
+      (s) => s.address != getServer().address || s.port != getServer().port,
+    )
   }
 }
 
@@ -283,12 +285,20 @@ export class PeerAliveHandler implements MReportHandler<PeerAlive> {
   execute(report: PeerAlive) {
     return interval(1000).pipe(
       switchMap((_) => {
+        peers.assertPeer(report.peerId)
+
         const peer = peers.getPeer(report.peerId)
         if (!peer) {
+          new MykoLogger('PeerAliveHandler').info(
+            `Peer Not Found ${report.peerId}`,
+          )
           return of(false) as Observable<number | false>
         }
 
-        return peer.ping().catch((_e) => false)
+        return peer.ping().catch((_e) => {
+          new MykoLogger('PeerAliveHandler').info(`Peer Dead, ${report.peerId}`)
+          return false
+        })
       }),
     ) as Observable<number | false>
   }
@@ -323,12 +333,5 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
         query: report.filter,
       },
     )
-  }
-}
-
-@MykoCommandHandler(RegisterPeer)
-export class RegisterPeerHandler implements MCommandHandler<RegisterPeer> {
-  async execute(command: RegisterPeer) {
-    peers.addPeer(command.server.privateAddress, command.server.port)
   }
 }

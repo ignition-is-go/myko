@@ -3,6 +3,7 @@
 	import { DateTime } from 'luxon';
 	import { Observable, interval, map, of, switchMap } from 'rxjs';
 	import { client } from '../services/client.js';
+	import { onDestroy } from 'svelte';
 
 	interface Props {
 		server: Server;
@@ -22,6 +23,16 @@
 	let ping = $derived(
 		$alive === undefined ? 'Connecting' : $alive === false ? 'Dead' : `${Math.round($alive)}ms`
 	);
+
+	let started = $state(DateTime.fromISO(server.startedAt).toRelative());
+
+	let startedInterbal = setInterval(() => {
+		started = DateTime.fromISO(server.startedAt).toRelative();
+	}, 1000);
+
+	onDestroy(() => {
+		clearInterval(startedInterbal);
+	});
 </script>
 
 <div class="server flex gap-5">
@@ -29,7 +40,7 @@
 		<span class="address">{server.address}:{server.port}</span>
 		<span class="version">{server.version}</span>
 		<span class="id">ID: {server.id}</span>
-		<span class="started">Started: {DateTime.fromISO(server.startedAt).toRelative()}</span>
+		<span class="started">Started: {started}</span>
 		<span>Ping {isClientServer ? '' : 'to connected'}: {ping}</span>
 	</div>
 </div>
