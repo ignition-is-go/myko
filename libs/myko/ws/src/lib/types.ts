@@ -1,15 +1,6 @@
 import {
-  Client,
-  MCommand,
-  MItem,
-  MQuery,
-  MReport,
-  MykoCommand,
-  MykoQuery,
-  MykoReport,
   type ID,
   type MEvent,
-  type MReportType,
   type MWrappedCommand,
   type MWrappedItem,
   type MWrappedQuery,
@@ -140,50 +131,3 @@ export type WSMMessage =
   | WSMReportCancel
   | WSMReportError
   | WSPingEvent
-
-@MykoCommand()
-export class ClientCommand extends MCommand {
-  constructor(
-    readonly command: MWrappedCommand,
-    readonly client: Client,
-  ) {
-    super()
-  }
-}
-
-@MykoQuery(MItem)
-export class PeerQuery extends MQuery<MItem> {
-  constructor(
-    readonly query: MQuery,
-    readonly peerId: ID,
-  ) {
-    super()
-  }
-}
-
-@MykoCommand()
-export class PeerCommand extends MCommand {
-  constructor(
-    readonly command: MCommand,
-    readonly peerId: ID,
-  ) {
-    super()
-  }
-}
-
-@MykoReport()
-export class PeerReport<T> extends MReport<MReportType<T>> {
-  constructor(
-    readonly report: T,
-    readonly peerId: ID,
-  ) {
-    super()
-  }
-}
-
-@MykoReport()
-export class ClientStatus extends MReport<{ online: boolean }> {
-  constructor(readonly clientId: ID) {
-    super()
-  }
-}

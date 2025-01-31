@@ -1,3 +1,4 @@
 export * from './client'
+export * from './federation'
 export * from './item'
 export * from './server'

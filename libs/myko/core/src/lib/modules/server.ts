@@ -1,14 +1,5 @@
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
-import {
-  MItem,
-  MQuery,
-  MReport,
-  getItemName,
-  type DeepPartial,
-  type ID,
-  type MEvent,
-  type MItemConstructor,
-} from '../types'
+import { MItem, MQuery, MReport, type ID, type MEvent } from '../types'
 
 import Z from 'zod'
 
@@ -84,21 +75,5 @@ export class PeerAlive extends MReport<number | false> {
 export class PeerLastSeen extends MReport<string> {
   constructor(readonly peerId: ID) {
     super()
-  }
-}
-
-@MykoReport()
-export class EntitySearch<T extends MItem> extends MReport<T[]> {
-  readonly entityType: string
-  constructor(
-    readonly query: string,
-    item: MItemConstructor<T>,
-    readonly opts?: {
-      showAllOnEmpty?: boolean
-    },
-    readonly filter?: DeepPartial<T>,
-  ) {
-    super()
-    this.entityType = getItemName(item)
   }
 }

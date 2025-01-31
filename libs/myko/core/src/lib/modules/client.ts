@@ -1,7 +1,14 @@
-import { MykoCommand, MykoItem, MykoQuery, belongsTo } from '../decorators'
-import { MCommand } from '../types'
+import {
+  MykoCommand,
+  MykoItem,
+  MykoQuery,
+  MykoReport,
+  belongsTo,
+} from '../decorators'
+import { MCommand, MReport, type ID } from '../types'
 import { MItem } from '../types/item'
 import { MQuery } from '../types/query'
+import type { MWrappedCommand } from '../wrappers'
 import { Server } from './server'
 
 @MykoItem({
@@ -29,6 +36,23 @@ export class GetClientsByQuery extends MQuery<Client> {
 @MykoCommand()
 export class DeleteClientsByServerId extends MCommand {
   constructor(public serverId: string) {
+    super()
+  }
+}
+
+@MykoCommand()
+export class ClientCommand extends MCommand {
+  constructor(
+    readonly command: MWrappedCommand,
+    readonly client: Client,
+  ) {
+    super()
+  }
+}
+
+@MykoReport()
+export class ClientStatus extends MReport<{ online: boolean }> {
+  constructor(readonly clientId: ID) {
     super()
   }
 }

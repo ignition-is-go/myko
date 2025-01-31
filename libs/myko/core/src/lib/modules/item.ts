@@ -1,5 +1,13 @@
-import { MykoQuery } from '../decorators'
-import { MItem, MQuery, type ID } from '../types'
+import { MykoQuery, MykoReport } from '../decorators'
+import {
+  getItemName,
+  MItem,
+  MQuery,
+  MReport,
+  type DeepPartial,
+  type ID,
+  type MItemConstructor,
+} from '../types'
 
 @MykoQuery(MItem)
 export class GetItemsByTypeAndIds extends MQuery<MItem> {
@@ -8,5 +16,21 @@ export class GetItemsByTypeAndIds extends MQuery<MItem> {
     public ids: ID[],
   ) {
     super()
+  }
+}
+
+@MykoReport()
+export class EntitySearch<T extends MItem> extends MReport<T[]> {
+  readonly entityType: string
+  constructor(
+    readonly query: string,
+    item: MItemConstructor<T>,
+    readonly opts?: {
+      showAllOnEmpty?: boolean
+    },
+    readonly filter?: DeepPartial<T>,
+  ) {
+    super()
+    this.entityType = getItemName(item)
   }
 }
