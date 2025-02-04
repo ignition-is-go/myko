@@ -10,8 +10,9 @@ import {
   map,
   merge,
   Observable,
+  ReplaySubject,
   scan,
-  shareReplay,
+  share,
   Subject,
   switchMap,
 } from 'rxjs'
@@ -379,7 +380,9 @@ export class WSMClient {
 
       map((r) => [...r.values()].map((rr) => unwrapItem(rr))),
 
-      shareReplay(1),
+      share({
+        connector: () => new ReplaySubject(1),
+      }),
       // clone so downstream slices dont affect the original
       map((x) => x.slice()),
 
@@ -401,7 +404,10 @@ export class WSMClient {
         // check for report errors here?
         return e.data.response as MReportResult<T>
       }),
-      shareReplay(1),
+
+      share({
+        connector: () => new ReplaySubject(1),
+      }),
       map((x) => {
         // clone the object
         if (x instanceof Array) return x.slice()

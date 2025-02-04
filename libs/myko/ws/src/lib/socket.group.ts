@@ -70,12 +70,6 @@ export class SocketGroup {
   }
 
   private onSocketClosed(key: string) {
-    const socket = this.openSockets.get(key)
-
-    if (!socket) {
-      return
-    }
-
     this.openSockets.delete(key)
 
     if (key === this.currentSocket) {
