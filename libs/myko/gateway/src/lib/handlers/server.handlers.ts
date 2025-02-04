@@ -50,14 +50,14 @@ onAllInit(async () => {
 
   const server = getServer()
 
-  // const prev = await repo(Server).get({
-  //   privateAddress: server.privateAddress,
-  //   port: server.port,
-  // })
+  const prev = await repo(Server).get({
+    address: server.address,
+    port: server.port,
+  })
 
-  // for (const p of prev) {
-  //   eventBus.publishDel(p, 'server-start')
-  // }
+  for (const p of prev) {
+    eventBus.publishDel(p, 'server-start')
+  }
 
   eventBus.publishSet(server, 'server-start')
 })
