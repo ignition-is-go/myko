@@ -113,7 +113,7 @@ export const MykoItem =
         }
 
         propertyDefaults
-          .get(itemType)
+          .get(itemType)!
           .set(propertyKey, Reflect.getMetadata(key, original))
       }
 

@@ -1,4 +1,11 @@
-import { firstValueFrom, map, shareReplay, throwError } from 'rxjs'
+import {
+  finalize,
+  firstValueFrom,
+  map,
+  ReplaySubject,
+  share,
+  throwError,
+} from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type {
   MLiveReportResult,
@@ -68,20 +75,24 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
 
     const hash = JSON.stringify(clone)
 
-    const txKey = `${reportId}:${report.tx}`
     const cacheKey = `${reportId}:${hash}`
 
     if (this.cache.has(cacheKey) && !this.options?.disableCache) {
-      return this.cache.get(cacheKey).pipe() as MLiveReportResult<T>
+      return this.cache.get(cacheKey)!.pipe() as MLiveReportResult<T>
     }
 
     const obs = handler.execute(report).pipe(
-      shareReplay(1),
+      share({
+        connector: () => new ReplaySubject(1),
+      }),
       map((x) => {
         // clone the object
         if (x instanceof Array) return x.slice()
         if (x instanceof Object) return { ...x }
         return x
+      }),
+      finalize(() => {
+        this.cache.delete(cacheKey)
       }),
     ) as MLiveReportResult<T>
 

@@ -16,6 +16,7 @@ import {
   catchError,
   filter,
   map,
+  merge,
   of,
   takeUntil,
   type Observable,
@@ -25,18 +26,18 @@ import { clientDisconnect, unsub } from './common'
 
 export const handleQuery = (
   clientId: ID,
-  query: MWrappedQuery,
+  wrapperQuery: MWrappedQuery,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-  const q = unwrapQuery(query)
+  const query = unwrapQuery(wrapperQuery)
 
-  const tx = q.tx
+  const tx = query.tx
 
   const asSent = new Map<ID, string>()
 
   let sequence = -1
 
-  const response = queryBus.watch(q).pipe(
+  const response = queryBus.watch(query).pipe(
     map((x) => x.filter((x) => !!x)),
     map((curr) => {
       const currMap = new Map(curr.map((x) => [x.id, x]))
@@ -83,8 +84,12 @@ export const handleQuery = (
         event: MQUERY_ERROR_EVENT,
       } as WSMQueryError)
     }),
-    takeUntil(clientDisconnect(clientId)),
-    takeUntil(unsub.pipe(filter((u) => u === q.tx))),
+    takeUntil(
+      merge(
+        clientDisconnect(clientId),
+        unsub.pipe(filter((u) => u === query.tx)),
+      ),
+    ),
   ) as Observable<WSMQueryResponse>
 
   response.subscribe((x) => {

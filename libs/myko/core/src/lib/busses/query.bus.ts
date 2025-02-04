@@ -1,4 +1,11 @@
-import { firstValueFrom, map, shareReplay, throwError } from 'rxjs'
+import {
+  finalize,
+  firstValueFrom,
+  map,
+  ReplaySubject,
+  share,
+  throwError,
+} from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import type {
   MItem,
@@ -27,7 +34,10 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * @param handler The query handler to bind.
    * @param id The identifier for the query handler.
    */
-  protected bind<T>(handler: MQueryHandler<MQuery>, id: string): void {
+  protected bind<T extends MItem>(
+    handler: MQueryHandler<MQuery<T>>,
+    id: string,
+  ): void {
     this.handlers.set(id, handler)
   }
 
@@ -71,9 +81,14 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
     }
 
     const obs = handler.execute(query).pipe(
-      shareReplay(1),
+      share({
+        connector: () => new ReplaySubject(1),
+      }),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
+      finalize(() => {
+        this.cache.delete(cacheKey)
+      }),
     ) as MLiveQueryResult<T>
 
     this.cache.set(cacheKey, obs)
