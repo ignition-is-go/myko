@@ -1,3 +1,4 @@
+export * from './autoballance.registry'
 export * from './docs.registry'
 export * from './handler.registry'
 export * from './item.registry'

@@ -7,9 +7,9 @@ export type IMItem = {
   hash: string
 }
 
-export type MItemConstructor<T extends IMItem> = new (
+export type MItemConstructor<T extends IMItem> = (new (
   args: PartialBy<T, 'hash'>,
-) => MItem<T>
+) => MItem<T>) & { name: string }
 
 export const getItemName = <T extends IMItem = IMItem>(
   item: MItemConstructor<T>,

@@ -4,6 +4,7 @@ import type { ForecastResolutionContext, ForecastResolver } from './types'
 export const linearForecaster = Z.object({
   type: Z.literal('linear'),
   slope: Z.number().describe('literal amount change per ms'),
+  sampleRate: Z.number(),
 })
 
 export type LinearForecaster = Z.infer<typeof linearForecaster>
@@ -17,7 +18,11 @@ export const resolveLinearForecast: ForecastResolver<LinearForecaster> = ({
 
   return {
     deltaMs: 0,
-    forecaster: { slope: forecaster.slope, type: 'linear' },
+    forecaster: {
+      slope: forecaster.slope,
+      type: 'linear',
+      sampleRate: forecaster.sampleRate,
+    },
     value: v,
   }
 }
@@ -27,6 +32,7 @@ export const parabolicForecaster = Z.object({
   a: Z.number(),
   b: Z.number(),
   c: Z.number(),
+  sampleRate: Z.number(),
 })
 
 export type ParabolicForecaster = Z.infer<typeof parabolicForecaster>
@@ -44,6 +50,7 @@ export const resolveParabolicForecast: ForecastResolver<
       b: forecaster.b,
       c: forecaster.c,
       type: 'parabolic',
+      sampleRate: forecaster.sampleRate,
     },
     value: v,
   }

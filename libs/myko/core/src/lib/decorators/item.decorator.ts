@@ -16,6 +16,7 @@ import {
 } from '../constants'
 import {
   clientIdPropertyRegistry,
+  constructorRegistry,
   initRepo,
   propertyDefaults,
   relationRegistry,
@@ -62,6 +63,8 @@ export const MykoItem =
     Reflect.setPrototypeOf(withType, original)
 
     Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
+
+    constructorRegistry.set(itemType, withType)
 
     docEntity(opts?.doc, itemType, opts?.deprecated, opts?.preventDoc)(target)
 

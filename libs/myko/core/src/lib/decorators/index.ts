@@ -1,3 +1,4 @@
+export * from './autoballance.decorator'
 export * from './command.decorators'
 export * from './doc.decorators'
 export * from './item.decorator'

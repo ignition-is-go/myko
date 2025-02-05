@@ -24,7 +24,7 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
   ) {
     super(entity, options)
 
-    this.store = new Store({ enableLogs: options?.enableLogs })
+    this.store = new Store({ enableLogs: !!options?.enableLogs })
 
     if (this.options?.indeces) {
       this.store.createIndeces(this.options.indeces)

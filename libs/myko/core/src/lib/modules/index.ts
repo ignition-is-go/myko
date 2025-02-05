@@ -1,3 +1,4 @@
+export * from './autoballance'
 export * from './client'
 export * from './federation'
 export * from './item'
