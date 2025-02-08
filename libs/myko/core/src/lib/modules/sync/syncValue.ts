@@ -12,7 +12,7 @@ import { MD5 } from 'object-hash'
 import { filter, Observable, ReplaySubject, scan, share } from 'rxjs'
 import * as Z from 'zod'
 import { eventBus, reportBus } from '../../busses'
-import { getHostId } from '../../registry'
+import { getHostId, repo } from '../../registry'
 import { Server } from '../server'
 import { resolveForecast, type Forecaster } from './forecasters'
 
@@ -27,16 +27,12 @@ export class SyncValue
   @ballance(Server)
   serverId: ID
 
-  @doc('The frequency (in ms) to sync the value and forecast')
-  syncFrequency: number
-
   @doc('info for creating sync value updates')
   context: SyncValueContextBase<string>
 }
 
 const syncValueSchema = Z.object({
   serverId: Z.string(),
-  syncFrequency: Z.number(),
 })
 
 @MykoQuery(SyncValue)
@@ -94,7 +90,10 @@ export const syncValueKey = <T extends SyncValueContextBase<string>>(
 
 export const updateFactories = new Map<
   string,
-  (ctx: any) => Observable<SyncUpdate>
+  (
+    ctx: any,
+    init?: Pick<SyncUpdate, 'lastUpdated' | 'value'>,
+  ) => Observable<SyncUpdate>
 >()
 
 export const useSyncValue = <T extends SyncValueContextBase<string>>(
@@ -104,7 +103,10 @@ export const useSyncValue = <T extends SyncValueContextBase<string>>(
     value?: number
   }>,
 ) => {
-  const updateObsFactory = (ctx: T) => {
+  const updateObsFactory = (
+    ctx: T,
+    init?: Pick<SyncUpdate, 'lastUpdated' | 'value'>,
+  ) => {
     const key = syncValueKey(ctx)
 
     const obs = makeUpdates(ctx as T).pipe(
@@ -112,14 +114,23 @@ export const useSyncValue = <T extends SyncValueContextBase<string>>(
         (prev, update) => {
           const NOW = DateTime.utc()
 
-          const PREV = prev ? DateTime.fromISO(prev.lastUpdated) : NOW
+          if (!prev) {
+            return {
+              valueId: key,
+              forecaster: update.forecast,
+              lastUpdated: init?.lastUpdated ?? NOW.toISO(),
+              value: update.value ?? init?.value ?? 0,
+            }
+          }
+
+          const PREV = DateTime.fromISO(prev.lastUpdated)
 
           const deltaMs = NOW.toMillis() - PREV.toMillis()
 
           const forecasted = resolveForecast({
             deltaMs,
-            forecaster: prev?.forecaster ?? update.forecast,
-            value: prev?.value ?? 0,
+            forecaster: prev.forecaster,
+            value: prev.value,
           })
 
           return {
@@ -141,19 +152,25 @@ export const useSyncValue = <T extends SyncValueContextBase<string>>(
   }
 
   updateFactories.set(code, updateObsFactory)
-  console.log('set up update factory for', code)
 
   return (ctx: T) => {
     const key = syncValueKey(ctx)
     console.log('setting up sync value', key)
-    const syncValue = new SyncValue({
-      context: ctx,
-      id: key,
-      serverId: getHostId(),
-      syncFrequency: 1000,
-    })
 
-    eventBus.publishSet(syncValue, crypto.randomUUID())
+    repo(SyncValue)
+      .getId(key)
+      .then((sync) => {
+        if (!sync) {
+          const syncValue = new SyncValue({
+            context: ctx,
+            id: key,
+            serverId: getHostId(),
+          })
+
+          eventBus.publishSet(syncValue, crypto.randomUUID())
+        }
+      })
+
     return reportBus.watch(new LiveSyncValue(key))
   }
 }

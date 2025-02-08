@@ -12,5 +12,10 @@ members = [
   "libs/myko/macros",
   "apps/labs/rs-core",
   "libs/entities/rs",
-  "libs/sdk/rs", "apps/execs/music-analysis", "apps/execs/demo-rs",
+  "libs/sdk/rs", 
+  "apps/execs/music-analysis", 
+  "apps/execs/demo-rs",
+  "libs/sync/core",
+  "libs/sync/ffi",
+  "apps/sync_server",
 ]
