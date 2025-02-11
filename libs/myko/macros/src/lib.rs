@@ -193,26 +193,76 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
-        impl myko_rs::query::MykoQuery<#query_item_type> for #struct_name {
-            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
+        impl myko_rs::query::MykoQuery for #struct_name {
+            type Item = #query_item_type;
+            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = Vec<Self::Item>> {
                 client.watch_query(self)
             }
         }
 
+        // both as ref
         impl myko_rs::query::QueryId for &#struct_name {
             fn query_id(&self) -> String {
                 stringify!(#struct_name).to_string()
             }
         }
 
+        // and as value
+        impl myko_rs::query::QueryId for #struct_name {
+            fn query_id(&self) -> String {
+                stringify!(#struct_name).to_string()
+            }
+        }
+
+        // as ref
         impl myko_rs::query::QueryItemType for &#struct_name {
             fn query_item_type(&self) -> String {
                 stringify!(#query_item_type).to_string()
             }
         }
+
+        // and as value
+        impl myko_rs::query::QueryItemType for #struct_name {
+            fn query_item_type(&self) -> String {
+                stringify!(#query_item_type).to_string()
+            }
+        }
+
     };
 
     // Return the generated code
+    TokenStream::from(expanded)
+}
+
+#[proc_macro_attribute]
+pub fn myko_query_handler(attr: TokenStream, input: TokenStream) -> TokenStream {
+    // attr is a function name that will be called to handle the query
+    let query_handler: Path = parse_macro_input!(attr as Path);
+
+    // Parse the input struct
+
+    let input_struct = parse_macro_input!(input as ItemStruct);
+
+    let struct_name = &input_struct.ident;
+
+    // Generate the implementation
+
+    let expanded = quote! {
+        #input_struct
+
+        impl myko_rs::query::QueryHandler<#struct_name> for #struct_name {
+            fn handle_query(
+                &self,
+                query: #struct_name,
+                tx: String,
+            ) -> impl tokio_stream::Stream<Item = myko_rs::query::QueryResult<<#struct_name as myko_rs::query::MykoQuery>::Item>> {
+                #query_handler(query, tx)
+            }
+        }
+    };
+
+    // Return the generated code
+
     TokenStream::from(expanded)
 }
 

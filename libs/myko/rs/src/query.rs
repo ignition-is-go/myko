@@ -3,8 +3,10 @@ use serde_json::Value;
 
 use crate::{client::MykoClient, item::WrappedItem};
 
-pub trait MykoQuery<T> {
-    fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<T>>;
+pub trait MykoQuery {
+    type Item;
+
+    fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<Self::Item>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +19,24 @@ pub struct QueryResponse {
     pub sequence: u64,
 
     pub tx: String,
+}
+
+pub struct QueryResult<T> {
+    pub deletes: Vec<String>,
+    pub upserts: Vec<T>,
+    pub sequence: u64,
+    pub tx: String,
+}
+
+impl<T> QueryResult<T> {
+    pub fn new(tx: String, upserts: Vec<T>) -> QueryResult<T> {
+        QueryResult {
+            deletes: vec![],
+            upserts,
+            sequence: 0,
+            tx,
+        }
+    }
 }
 
 impl QueryResponse {
@@ -89,4 +109,12 @@ pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
         query_id: query.query_id(),
         query_item_type: query.query_item_type(),
     })
+}
+
+pub trait QueryHandler<Q: MykoQuery> {
+    fn handle_query(
+        &self,
+        query: Q,
+        tx: String,
+    ) -> impl tokio_stream::Stream<Item = QueryResult<Q::Item>>;
 }
