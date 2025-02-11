@@ -1,7 +1,7 @@
-use myko_wasm::event::MEvent;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    event::MEvent,
     query::{QueryError, QueryResponse, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
 };

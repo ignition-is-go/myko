@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
 use tungstenite::Message;
+use url::Url;
 
 #[derive(Clone, Debug)]
 pub enum SocketConnectionStatus {
@@ -88,7 +89,31 @@ impl AutoReconnectSocket {
         tokio::spawn(async move {
             loop {
                 println!("Connecting to {}", addr);
-                let ws_stream = match connect_async(&addr).await {
+
+                let parsed = Url::parse(addr.as_str());
+
+                let mut parsed = match parsed {
+                    Ok(c) => c,
+                    Err(e) => {
+                        println!("Could not parse url: {:?}", e);
+
+                        let add_ws = format!("ws://{}", addr);
+
+                        match Url::parse(add_ws.as_str()) {
+                            Ok(c) => c,
+                            Err(_e) => {
+                                println!("Could not Parse Url: {_e} {add_ws}");
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                if parsed.scheme() != "ws" {
+                    let _ = parsed.set_scheme("ws");
+                }
+
+                let ws_stream = match connect_async(&parsed.to_string()).await {
                     Ok((ws_stream, _)) => ws_stream,
                     Err(_) => {
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -96,7 +121,7 @@ impl AutoReconnectSocket {
                     }
                 };
 
-                println!("Connected to {}", addr);
+                println!("Connected to {}", parsed.to_string());
 
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();

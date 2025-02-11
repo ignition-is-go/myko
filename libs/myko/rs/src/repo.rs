@@ -1,11 +1,10 @@
 use crate::{
+    event::{MEvent, MEventType},
+    item::Eventable,
     subscription::{Publisher, Subscription},
     utils::filter_query,
 };
-use myko_wasm::{
-    event::{MEvent, MEventType},
-    item::Eventable,
-};
+
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};

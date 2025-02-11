@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use partially::Partial;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9,4 +10,14 @@ pub struct WrappedItem<T> {
 
 pub trait WithId {
     fn id(&self) -> String;
+}
+
+pub trait Eventable<T, PT: Clone>:
+    Partial<Item = PT> + Serialize + DeserializeOwned + Clone + Send + Sync + Sized
+{
+    type T;
+
+    fn id(&self) -> String;
+    fn hash(&self) -> String;
+    fn entity_name(&self) -> String;
 }

@@ -1,6 +1,3 @@
-// lib.rs
-extern crate proc_macro;
-
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{parse_macro_input, DeriveInput};
@@ -34,7 +31,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
     let partial_name = format_ident!("Partial{}", name);
 
     let gen = quote! {
-        impl Eventable<#name, #partial_name> for #name {
+        impl myko_rs::item::Eventable<#name, #partial_name> for #name {
             type T = #partial_name;
 
             fn id(&self) -> String {
@@ -51,21 +48,21 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
         }
 
         pub struct #module_name {
-            repo: Arc<Mutex<RepoStruct<#name, #partial_name>>>,
-            kafka: Option<KafkaClient>,
+            repo: std::sync::Arc<tokio::sync::Mutex<myko_rs::repo::RepoStruct<#name, #partial_name>>>,
+            kafka: Option<myko_rs::kafka::KafkaClient>,
         }
 
         #[async_trait::async_trait]
-        impl Module for #module_name {
+        impl myko_rs::module::Module for #module_name {
             fn new() -> Self {
                 #module_name {
-                    repo: Arc::new(Mutex::new(RepoStruct::new())),
+                    repo: std::sync::Arc::new(tokio::sync::Mutex::new(myko_rs::repo::RepoStruct::new())),
                     kafka: None,
                 }
             }
 
-          async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: tokio::sync::mpsc::Sender<myko_wasm::event::MEvent>) {
-                let k = KafkaClient::new(brokers.join(",").as_str(), #name_str).await;
+          async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: tokio::sync::mpsc::Sender<myko_rs::event::MEvent>) {
+                let k = myko_rs::kafka::KafkaClient::new(brokers.join(",").as_str(), #name_str).await;
 
                 k.consume_events(from_kafka_tx).await;
 
@@ -76,7 +73,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                 #name_str.to_string()
             }
 
-            async fn process_event(&mut self, event:  myko_wasm::event::MEvent, persist: bool)  {
+            async fn process_event(&mut self, event:  myko_rs::event::MEvent, persist: bool)  {
                 if event.item_type() != #name_str {
                     return;
                 }
@@ -97,81 +94,81 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                 }
             }
 
-            async fn handle_query(
-                &mut self,
-                query: myko_wasm::query::Query,
-            ) -> Option<tokio::sync::mpsc::Receiver<QueryResponse>> {
-                match query {
-                        Query::WatchId(query) => {
-                        if query.item_type != #name_str {
-                            return None;
-                        }
-                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
+            // async fn handle_query(
+            //     &mut self,
+            //     query: myko_rs::query::Query,
+            // ) -> Option<tokio::sync::mpsc::Receiver<QueryResponse>> {
+            //     match query {
+            //             Query::WatchId(query) => {
+            //             if query.item_type != #name_str {
+            //                 return None;
+            //             }
+            //             let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
-                        let query_filter = #partial_name {
-                            id: Some(query.item_id),
-                            ..Default::default()
-                        };
+            //             let query_filter = #partial_name {
+            //                 id: Some(query.item_id),
+            //                 ..Default::default()
+            //             };
 
-                        let mut qrx = self.repo.lock().await.watch(query_filter);
+            //             let mut qrx = self.repo.lock().await.watch(query_filter);
 
-                        tokio::spawn(async move {
-                            while let Some(items) = qrx.recv().await {
-                                let values = items
-                                    .iter()
-                                    .map(|x| serde_json::to_value(x))
-                                    .filter_map(Result::ok)
-                                    .collect::<Vec<Value>>();
+            //             tokio::spawn(async move {
+            //                 while let Some(items) = qrx.recv().await {
+            //                     let values = items
+            //                         .iter()
+            //                         .map(|x| serde_json::to_value(x))
+            //                         .filter_map(Result::ok)
+            //                         .collect::<Vec<Value>>();
 
-                                let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response).await {
-                                    Ok(_) => (),
-                                    Err(e) => println!("Failed to send response: {}", e),
-                                }
-                            }
-                        });
+            //                     let response = QueryResponse::new(query.tx.clone(), values);
+            //                     match tx.send(response).await {
+            //                         Ok(_) => (),
+            //                         Err(e) => println!("Failed to send response: {}", e),
+            //                     }
+            //                 }
+            //             });
 
-                        return Some(rx);
-                    }
-                    Query::Watch(query) => {
-                        if query.item_type != #name_str {
-                            return None;
-                        }
-                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
+            //             return Some(rx);
+            //         }
+            //         Query::Watch(query) => {
+            //             if query.item_type != #name_str {
+            //                 return None;
+            //             }
+            //             let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
-                        let filter_query =
-                            serde_json::from_str::<#partial_name>(query.query.as_str());
+            //             let filter_query =
+            //                 serde_json::from_str::<#partial_name>(query.query.as_str());
 
-                        let safe_filter_query = match filter_query {
-                            Ok(fq) => fq,
-                            Err(e) => {
-                                println!("Failed to parse query: {}", e);
-                                return None;
-                            }
-                        };
+            //             let safe_filter_query = match filter_query {
+            //                 Ok(fq) => fq,
+            //                 Err(e) => {
+            //                     println!("Failed to parse query: {}", e);
+            //                     return None;
+            //                 }
+            //             };
 
-                        let mut qrx = self.repo.lock().await.watch(safe_filter_query);
+            //             let mut qrx = self.repo.lock().await.watch(safe_filter_query);
 
-                        tokio::spawn(async move {
-                            while let Some(items) = qrx.recv().await {
-                                let values = items
-                                    .iter()
-                                    .map(|x| serde_json::to_value(x))
-                                    .filter_map(Result::ok)
-                                    .collect::<Vec<Value>>();
+            //             tokio::spawn(async move {
+            //                 while let Some(items) = qrx.recv().await {
+            //                     let values = items
+            //                         .iter()
+            //                         .map(|x| serde_json::to_value(x))
+            //                         .filter_map(Result::ok)
+            //                         .collect::<Vec<Value>>();
 
-                                let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response).await {
-                                    Ok(_) => (),
-                                    Err(e) => println!("Failed to send response: {}", e),
-                                }
-                            }
-                        });
+            //                     let response = QueryResponse::new(query.tx.clone(), values);
+            //                     match tx.send(response).await {
+            //                         Ok(_) => (),
+            //                         Err(e) => println!("Failed to send response: {}", e),
+            //                     }
+            //                 }
+            //             });
 
-                        return Some(rx);
-                    }
-                }
-            }
+            //             return Some(rx);
+            //         }
+            //     }
+            // }
 
 
         }
@@ -196,19 +193,19 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
-        impl MykoQuery<#query_item_type> for #struct_name {
-            fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
+        impl myko_rs::query::MykoQuery<#query_item_type> for #struct_name {
+            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = Vec<#query_item_type>> {
                 client.watch_query(self)
             }
         }
 
-        impl QueryId for &#struct_name {
+        impl myko_rs::query::QueryId for &#struct_name {
             fn query_id(&self) -> String {
                 stringify!(#struct_name).to_string()
             }
         }
 
-        impl QueryItemType for &#struct_name {
+        impl myko_rs::query::QueryItemType for &#struct_name {
             fn query_item_type(&self) -> String {
                 stringify!(#query_item_type).to_string()
             }
@@ -231,25 +228,25 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
-        impl MykoReport<#report_item_type> for &#struct_name {
-            fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
+        impl myko_rs::report::MykoReport<#report_item_type> for &#struct_name {
+            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
                 client.watch_report::<&#struct_name, #report_item_type>(self)
             }
         }
 
-        impl MykoReport<#report_item_type> for #struct_name {
-            fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
+        impl myko_rs::report::MykoReport<#report_item_type> for #struct_name {
+            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
                 client.watch_report::<#struct_name, #report_item_type>(self)
             }
         }
 
-        impl ReportId for &#struct_name {
+        impl myko_rs::report::ReportId for &#struct_name {
             fn report_id(&self) -> String {
                 stringify!(#struct_name).to_string()
             }
         }
-        
-        impl ReportId for #struct_name {
+
+        impl myko_rs::report::ReportId for #struct_name {
             fn report_id(&self) -> String {
                 stringify!(#struct_name).to_string()
             }

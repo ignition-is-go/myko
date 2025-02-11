@@ -1,5 +1,4 @@
 use futures_util::stream::StreamExt;
-use myko_wasm::event::MEvent;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::config::{ClientConfig, FromClientConfig};
 use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -8,6 +7,8 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+use crate::event::MEvent;
 
 pub struct KafkaClient {
     brokers: String,

@@ -1,11 +1,12 @@
 use crate::{
+    event::MEvent,
+    item::Eventable,
     message::MykoMessage,
     query::{wrap_query, QueryId, QueryItemType},
     report::{wrap_report, MykoReport, ReportId},
     websocket::{AutoReconnectSocket, SocketConnectionStatus},
 };
 use futures_signals::signal::{Signal, SignalExt};
-use myko_wasm::{event::MEvent, item::Eventable};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc};

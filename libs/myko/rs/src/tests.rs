@@ -1,22 +1,20 @@
 #[cfg(test)]
 mod myko_tests {
 
-    use myko_wasm::event::{MEvent, MEventType};
-    use myko_wasm::item::Eventable;
-    use myko_wasm::query::Query;
+    use crate as myko_rs;
     use partially::Partial;
     use serde::{Deserialize, Serialize};
     use tokio::sync::mpsc::Sender;
 
+    use crate::event::{MEvent, MEventType};
+    use crate::item::Eventable;
     use crate::kafka::KafkaClient;
-    use crate::query::QueryResponse;
     use crate::{
         module::Module,
         repo::{Repo, RepoStruct},
         utils::matches,
     };
 
-    use serde_json::Value;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -200,81 +198,81 @@ mod myko_tests {
                 }
             }
 
-            async fn handle_query(
-                &mut self,
-                query: myko_wasm::query::Query,
-            ) -> Option<tokio::sync::mpsc::Receiver<QueryResponse>> {
-                match query {
-                    Query::WatchId(query) => {
-                        if query.item_type != "Auto" {
-                            return None;
-                        }
-                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
+            // async fn handle_query(
+            //     &mut self,
+            //     query: myko_wasm::query::Query,
+            // ) -> Option<tokio::sync::mpsc::Receiver<QueryResponse>> {
+            //     match query {
+            //         Query::WatchId(query) => {
+            //             if query.item_type != "Auto" {
+            //                 return None;
+            //             }
+            //             let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
-                        let query_filter = PartialDemo {
-                            id: Some(query.item_id),
-                            ..Default::default()
-                        };
+            //             let query_filter = PartialDemo {
+            //                 id: Some(query.item_id),
+            //                 ..Default::default()
+            //             };
 
-                        let mut qrx = self.repo.lock().await.watch(query_filter);
+            //             let mut qrx = self.repo.lock().await.watch(query_filter);
 
-                        tokio::spawn(async move {
-                            while let Some(items) = qrx.recv().await {
-                                let values = items
-                                    .iter()
-                                    .map(serde_json::to_value)
-                                    .filter_map(Result::ok)
-                                    .collect::<Vec<Value>>();
+            //             tokio::spawn(async move {
+            //                 while let Some(items) = qrx.recv().await {
+            //                     let values = items
+            //                         .iter()
+            //                         .map(serde_json::to_value)
+            //                         .filter_map(Result::ok)
+            //                         .collect::<Vec<Value>>();
 
-                                let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response).await {
-                                    Ok(_) => (),
-                                    Err(e) => println!("Failed to send response: {}", e),
-                                }
-                            }
-                        });
+            //                     let response = QueryResponse::new(query.tx.clone(), values);
+            //                     match tx.send(response).await {
+            //                         Ok(_) => (),
+            //                         Err(e) => println!("Failed to send response: {}", e),
+            //                     }
+            //                 }
+            //             });
 
-                        return Some(rx);
-                    }
-                    Query::Watch(query) => {
-                        if query.item_type != "Auto" {
-                            return None;
-                        }
-                        let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
+            //             return Some(rx);
+            //         }
+            //         Query::Watch(query) => {
+            //             if query.item_type != "Auto" {
+            //                 return None;
+            //             }
+            //             let (tx, rx) = tokio::sync::mpsc::channel::<QueryResponse>(1);
 
-                        let filter_query =
-                            serde_json::from_str::<PartialDemo>(query.query.as_str());
+            //             let filter_query =
+            //                 serde_json::from_str::<PartialDemo>(query.query.as_str());
 
-                        let safe_filter_query = match filter_query {
-                            Ok(fq) => fq,
-                            Err(e) => {
-                                println!("Failed to parse query: {}", e);
-                                return None;
-                            }
-                        };
+            //             let safe_filter_query = match filter_query {
+            //                 Ok(fq) => fq,
+            //                 Err(e) => {
+            //                     println!("Failed to parse query: {}", e);
+            //                     return None;
+            //                 }
+            //             };
 
-                        let mut qrx = self.repo.lock().await.watch(safe_filter_query);
+            //             let mut qrx = self.repo.lock().await.watch(safe_filter_query);
 
-                        tokio::spawn(async move {
-                            while let Some(items) = qrx.recv().await {
-                                let values = items
-                                    .iter()
-                                    .map(serde_json::to_value)
-                                    .filter_map(Result::ok)
-                                    .collect::<Vec<Value>>();
+            //             tokio::spawn(async move {
+            //                 while let Some(items) = qrx.recv().await {
+            //                     let values = items
+            //                         .iter()
+            //                         .map(serde_json::to_value)
+            //                         .filter_map(Result::ok)
+            //                         .collect::<Vec<Value>>();
 
-                                let response = QueryResponse::new(query.tx.clone(), values);
-                                match tx.send(response).await {
-                                    Ok(_) => (),
-                                    Err(e) => println!("Failed to send response: {}", e),
-                                }
-                            }
-                        });
+            //                     let response = QueryResponse::new(query.tx.clone(), values);
+            //                     match tx.send(response).await {
+            //                         Ok(_) => (),
+            //                         Err(e) => println!("Failed to send response: {}", e),
+            //                     }
+            //                 }
+            //             });
 
-                        return Some(rx);
-                    }
-                }
-            }
+            //             return Some(rx);
+            //         }
+            //     }
+            // }
         }
     }
 }

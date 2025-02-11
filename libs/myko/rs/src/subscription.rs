@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
-use myko_wasm::{event::MEventType, item::Eventable};
 use tokio::sync::mpsc::error::TrySendError;
 
-use crate::utils::matches;
+use crate::{event::MEventType, item::Eventable, utils::matches};
 
 pub struct Subscription<T: Eventable<T, PT>, PT: Clone> {
     pub state: HashMap<String, T>,

@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_util::{stream::StreamExt, SinkExt};
-use myko_wasm::{event::MEvent, query::Query};
 use tokio::{
     net::TcpListener,
     sync::{
@@ -12,7 +11,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 
-use crate::module::Module;
+use crate::{event::MEvent, module::Module};
 
 #[derive(PartialEq)]
 enum StartupState {
@@ -199,60 +198,60 @@ async fn handle_connection(
                         Err(_e) => {}
                     };
 
-                    match Query::from_str_trim(text) {
-                        Ok(query) => {
-                            println!("Received query: {:?}", query);
+                    // match Query::from_str_trim(text) {
+                    //     Ok(query) => {
+                    //         println!("Received query: {:?}", query);
 
-                            let mut modules = modules.lock().await;
+                    //         let mut modules = modules.lock().await;
 
-                            let item_type = match query.clone() {
-                                Query::Watch(q) => q.item_type.clone(),
-                                Query::WatchId(q) => q.item_type.clone(),
-                            };
+                    //         let item_type = match query.clone() {
+                    //             Query::Watch(q) => q.item_type.clone(),
+                    //             Query::WatchId(q) => q.item_type.clone(),
+                    //         };
 
-                            let module = modules.get_mut(&item_type);
+                    //         let module = modules.get_mut(&item_type);
 
-                            if module.is_none() {
-                                println!("No module found for item type: {}", item_type);
-                                continue;
-                            }
+                    //         if module.is_none() {
+                    //             println!("No module found for item type: {}", item_type);
+                    //             continue;
+                    //         }
 
-                            let module = module.unwrap();
+                    //         let module = module.unwrap();
 
-                            if let Some(mut rx) = module.handle_query(query.clone()).await {
-                                let tx_clone = to_ws_tx.clone();
+                    //         if let Some(mut rx) = module.handle_query(query.clone()).await {
+                    //             let tx_clone = to_ws_tx.clone();
 
-                                tokio::spawn(async move {
-                                    while let Some(response) = rx.recv().await {
-                                        let response_str = match response.to_string() {
-                                            Ok(s) => s,
-                                            Err(e) => {
-                                                println!(
-                                                    "Failed to convert response to string: {}",
-                                                    e
-                                                );
-                                                continue;
-                                            }
-                                        };
+                    //             tokio::spawn(async move {
+                    //                 while let Some(response) = rx.recv().await {
+                    //                     let response_str = match response.to_string() {
+                    //                         Ok(s) => s,
+                    //                         Err(e) => {
+                    //                             println!(
+                    //                                 "Failed to convert response to string: {}",
+                    //                                 e
+                    //                             );
+                    //                             continue;
+                    //                         }
+                    //                     };
 
-                                        if (tx_clone
-                                            .clone()
-                                            .send(Message::from(response_str))
-                                            .await)
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                });
-                            };
+                    //                     if (tx_clone
+                    //                         .clone()
+                    //                         .send(Message::from(response_str))
+                    //                         .await)
+                    //                         .is_err()
+                    //                     {
+                    //                         break;
+                    //                     }
+                    //                 }
+                    //             });
+                    //         };
 
-                            continue;
-                        }
-                        Err(_e) => {
-                            println!("Failed to parse query: {}", _e);
-                        }
-                    };
+                    //         continue;
+                    //     }
+                    //     Err(_e) => {
+                    //         println!("Failed to parse query: {}", _e);
+                    //     }
+                    // };
 
                     println!("Received other message, broadcasting to all connections");
                     broadcast_tx.send(message).unwrap();

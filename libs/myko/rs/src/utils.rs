@@ -1,7 +1,8 @@
-use myko_wasm::item::Eventable;
 use serde_json::Value;
 
 use std::collections::HashMap;
+
+use crate::item::Eventable;
 
 pub fn mask_filter(filter: &Value, candidate: &Value) -> bool {
     match (filter, candidate) {

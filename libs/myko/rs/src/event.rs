@@ -5,16 +5,13 @@ use chrono::Utc;
 use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MEventType {
     SET,
     DEL,
 }
 
-#[wasm_bindgen]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MEvent {
     item: Value,
@@ -63,32 +60,12 @@ impl MEvent {
             source_id: None,
         }
     }
-}
 
-#[wasm_bindgen]
-impl MEvent {
-    #[wasm_bindgen(getter, js_name = "itemType")]
-    pub fn item_type(&self) -> String {
-        self.item_type.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "createdAt")]
-    pub fn created_at(&self) -> String {
-        self.created_at.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "changeType")]
     pub fn change_type(&self) -> MEventType {
         self.change_type
     }
 
-    #[wasm_bindgen(getter)]
-    pub fn tx(&self) -> String {
-        self.tx.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = "sourceId")]
-    pub fn source_id(&self) -> Option<String> {
-        self.source_id.clone()
+    pub fn item_type(&self) -> String {
+        self.item_type.to_string()
     }
 }

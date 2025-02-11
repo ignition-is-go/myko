@@ -773,7 +773,6 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "myko-rs",
- "myko-wasm",
  "rdkafka",
  "redis",
  "serde",
@@ -1531,16 +1530,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console_error_panic_hook"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a06aeb73f470f66dcdbf7223caeebb85984942f22f1adb2a088cf9668146bbbc"
-dependencies = [
- "cfg-if 1.0.0",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1571,7 +1560,6 @@ dependencies = [
  "async-trait",
  "myko-macros",
  "myko-rs",
- "myko-wasm",
  "partially",
  "rship-entities",
  "serde",
@@ -5025,11 +5013,11 @@ name = "myko-rs"
 version = "0.1.2"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures-signals",
  "futures-util",
  "md5",
  "myko-macros",
- "myko-wasm",
  "openssl",
  "partially",
  "rdkafka",
@@ -5045,20 +5033,6 @@ dependencies = [
  "url 2.5.4",
  "uuid",
  "web-sys",
-]
-
-[[package]]
-name = "myko-wasm"
-version = "0.1.1"
-dependencies = [
- "chrono",
- "console_error_panic_hook",
- "partially",
- "rmp-serde",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -8417,7 +8391,6 @@ dependencies = [
  "js-sys",
  "myko-macros",
  "myko-rs",
- "myko-wasm",
  "partially",
  "schemars",
  "serde",
@@ -8425,7 +8398,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "uuid",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -8433,7 +8405,6 @@ name = "rship-sdk"
 version = "0.1.6"
 dependencies = [
  "myko-rs",
- "myko-wasm",
  "rship-entities",
  "schemars",
  "serde",
@@ -10886,31 +10857,6 @@ name = "wasm-bindgen-shared"
 version = "0.2.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af190c94f2773fdb3729c55b007a722abb5384da03bc0986df4c289bf5567e96"
-
-[[package]]
-name = "wasm-bindgen-test"
-version = "0.3.42"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9bf62a58e0780af3e852044583deee40983e5886da43a271dd772379987667b"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "scoped-tls",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wasm-bindgen-test-macro",
-]
-
-[[package]]
-name = "wasm-bindgen-test-macro"
-version = "0.3.42"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7f89739351a2e03cb94beb799d47fb2cac01759b40ec441f7de39b00cbf7ef0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.89",
-]
 
 [[package]]
 name = "wasm-streams"
