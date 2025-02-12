@@ -128,3 +128,4 @@ apps/rship/link-ui/src-tauri/gen/
 *.log.*
 
 *.egg-info
+apps/labs/bun-webview/main
