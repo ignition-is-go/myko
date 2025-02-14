@@ -59,5 +59,8 @@
     "msgpackr-extract",
     "node-rdkafka",
     "svelte-preprocess"
-  ]
+  ],
+  "engines": {
+    "node": "^22"
+  }
 }
