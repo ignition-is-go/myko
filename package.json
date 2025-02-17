@@ -22,7 +22,7 @@
     "live": "turbo run live",
     "prepare": "git config --local core.hooksPath .githooks"
   },
-  "packageManager": "pnpm@10.4.0",
+  "packageManager": "pnpm@10.4.1",
   "private": true,
   "devDependencies": {
     "@capacitor/cli": "^5.7.8",
