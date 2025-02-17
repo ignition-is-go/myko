@@ -1,0 +1,2 @@
+pnpm run versionstamp
+git add package.json
