@@ -55,5 +55,20 @@
     "msgpackr-extract",
     "node-rdkafka",
     "svelte-preprocess"
-  ]
+  ],
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@serialport/bindings-cpp",
+      "@sveltejs/kit",
+      "bufferutil",
+      "core-js",
+      "electron",
+      "electron-winstaller",
+      "esbuild",
+      "msgpackr-extract",
+      "svelte-preprocess",
+      "utf-8-validate",
+      "workerd"
+    ]
+  }
 }
