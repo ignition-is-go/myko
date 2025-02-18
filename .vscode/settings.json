@@ -44,5 +44,9 @@
     "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
   "python.envFile": "",
-  "python.terminal.activateEnvironment": false
+  "python.terminal.activateEnvironment": false,
+  "prettier.semi": false,
+  "prettier.singleAttributePerLine": true,
+  "prettier.useTabs": true,
+  "javascript.preferences.organizeImports": {}
 }
