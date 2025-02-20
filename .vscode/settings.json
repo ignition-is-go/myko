@@ -43,6 +43,10 @@
   "[typescript]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "always"
+  },
+
   "python.envFile": "",
   "python.terminal.activateEnvironment": false,
   "prettier.semi": false,
