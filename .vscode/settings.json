@@ -48,5 +48,23 @@
   "prettier.semi": false,
   "prettier.singleAttributePerLine": true,
   "prettier.useTabs": true,
-  "javascript.preferences.organizeImports": {}
+  "javascript.preferences.organizeImports": {},
+  "restoreTerminals.terminals": [
+    {
+      "splitTerminals": [
+        {
+          "name": "SyncServer",
+          "commands": ["cd apps/sync_server", "cargo watch -x run"]
+        },
+        {
+          "name": "Server",
+          "commands": ["cd apps/server", "pnpm run dev"]
+        },
+        {
+          "name": "UI",
+          "commands": ["cd apps/ui", "pnpm run dev"]
+        }
+      ]
+    }
+  ]
 }
