@@ -135,25 +135,25 @@ mod myko_tests {
             .unwrap();
     }
 
+    impl Eventable<Demo, PartialDemo> for Demo {
+        type T = PartialDemo;
+
+        fn id(&self) -> String {
+            self.id.clone()
+        }
+
+        fn hash(&self) -> String {
+            self.hash.clone()
+        }
+
+        fn entity_name(&self) -> String {
+            "Demo".to_string()
+        }
+    }
+
     #[tokio::test]
     async fn it_makes_a_module() {
         let _module: AutoModule = AutoModule::new();
-
-        impl Eventable<Demo, PartialDemo> for Demo {
-            type T = PartialDemo;
-
-            fn id(&self) -> String {
-                self.id.clone()
-            }
-
-            fn hash(&self) -> String {
-                self.hash.clone()
-            }
-
-            fn entity_name(&self) -> String {
-                "Demo".to_string()
-            }
-        }
 
         struct DemoModule {
             repo: Arc<Mutex<RepoStruct<Demo, PartialDemo>>>,

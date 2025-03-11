@@ -121,7 +121,7 @@ impl AutoReconnectSocket {
                     }
                 };
 
-                println!("Connected to {}", parsed.to_string());
+                println!("Connected to {}", parsed);
 
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();

@@ -1,4 +1,4 @@
-use std::{io::Cursor, u8};
+use std::io::Cursor;
 
 use crate::{item::Eventable, utils::remove_whitespace};
 use chrono::Utc;
