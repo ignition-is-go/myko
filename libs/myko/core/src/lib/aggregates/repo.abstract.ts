@@ -281,7 +281,7 @@ export abstract class Repo<T extends MItem> {
       this.search
         .search(query.toLocaleLowerCase())
         .map((x) => this.getId(x.toString())),
-    )
+    ).then((x) => x.filter((x) => x !== null))
   }
 
   watchSearch(
@@ -306,6 +306,7 @@ export abstract class Repo<T extends MItem> {
           ? of([])
           : combineLatest(ids.map((id) => this.watchId(id.toString()).pipe())),
       ),
+      map((x) => x.filter((x) => x !== null)),
       map((x) => x.filter(filterFunc)),
     )
   }
@@ -325,8 +326,8 @@ export abstract class Repo<T extends MItem> {
    * @returns An array of objects with the specified IDs.
    */
   async getIds(ids: ID[]): Promise<T[]> {
-    return await Promise.all(
-      ids.map((id) => this.getId(id)).filter((x) => x !== null),
+    return await Promise.all(ids.map((id) => this.getId(id))).then((x) =>
+      x.filter((x) => x !== null),
     )
   }
 
@@ -362,11 +363,11 @@ export abstract class Repo<T extends MItem> {
 export const toArray = <T>(m: Map<string, T>): T[] => [...m.values()]
 
 export const buildFilter =
-  <T extends MItem>(query: Partial<T>) =>
-  (ent: T) =>
+  <T extends MItem>(query: Partial<T>): ((ent: T) => boolean) =>
+  (ent: T): boolean =>
     objectFilter(query, ent)
 
-export const objectFilter = (query: object, ent: object) => {
+export const objectFilter = (query: object, ent: object): boolean => {
   return Reflect.ownKeys(query).every((key) => {
     const querySide = Reflect.get(query, key)
     const entSide = Reflect.get(ent, key)
