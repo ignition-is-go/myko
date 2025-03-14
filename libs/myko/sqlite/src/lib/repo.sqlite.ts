@@ -48,7 +48,7 @@ export class SQLiteRepo<T extends MItem> extends Repo<T> {
 
     this.db.exec(
       `INSERT INTO ${this.eventTableName} (tx, createdAt, sourceId, changeType, data) VALUES (?, ?, ?, ?, ?)`,
-      [event.tx, event.createdAt, event.sourceId, event.changeType, data],
+      [event.tx, event.createdAt, event.sourceId!, event.changeType, data],
     )
     if (event.changeType === MEventType.SET) {
       this.db.exec(
@@ -64,13 +64,13 @@ export class SQLiteRepo<T extends MItem> extends Repo<T> {
     return event
   }
 
-  async getId(id: ID): Promise<T> {
+  async getId(id: ID): Promise<T | null> {
     const sql = `SELECT * FROM ${this.tableName} WHERE id = ?`
 
     const prep = this.db.prepare(sql).get(id)
 
     if (!prep) {
-      return undefined
+      return null
     }
 
     return unwrap([prep], this.entity)[0] as T
