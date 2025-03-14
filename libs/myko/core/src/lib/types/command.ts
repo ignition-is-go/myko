@@ -1,3 +1,4 @@
+import 'reflect-metadata'
 import { type OperatorFunction, filter } from 'rxjs'
 
 import { DateTime } from 'luxon'

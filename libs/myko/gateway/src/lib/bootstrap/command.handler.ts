@@ -1,5 +1,6 @@
 import {
   commandBus,
+  getHistoryProvider,
   MykoCommandError,
   MykoLogger,
   unwrapCommand,
@@ -47,6 +48,11 @@ export const handleCommand = async (
     if (!res) {
       fail()
       return
+    }
+
+    const userId = await auth.getUserId(userToken)
+    if (userId) {
+      getHistoryProvider().recordUserTransaction(userId, txid)
     }
   }
 

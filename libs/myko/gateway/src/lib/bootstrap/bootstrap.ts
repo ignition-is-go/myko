@@ -4,6 +4,7 @@ import {
   commandHandlers,
   commands,
   eventBus,
+  getHistoryProvider,
   getHostId,
   onAllInit,
   queries,
@@ -11,11 +12,13 @@ import {
   reportHandlers,
   reports,
   setDefaultRepoOptions,
+  setHistoryProvider,
   setServer,
   watchInit,
   type ID,
 } from '@myko/core'
 import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
+
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { Subject } from 'rxjs'
@@ -27,6 +30,12 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
   const { version } = args
 
   const serverId = getHostId()
+
+  if (args.historyProvider) {
+    setHistoryProvider(args.historyProvider)
+  }
+
+  await getHistoryProvider().init()
 
   if (args.ws) {
     const { host, port, wsAdapter } = args.ws

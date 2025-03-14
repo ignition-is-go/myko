@@ -1,6 +1,7 @@
 export * from './autoballance.registry'
 export * from './docs.registry'
 export * from './handler.registry'
+export * from './history.registry'
 export * from './item.registry'
 export * from './relation.registry'
 export * from './repo.registry'

@@ -1,5 +1,6 @@
 export * from './autoballance'
 export * from './client'
 export * from './federation'
+export * from './history'
 export * from './item'
 export * from './server'
