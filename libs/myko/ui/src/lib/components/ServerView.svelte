@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { PeerAlive, type Server } from '@myko/core';
 	import { DateTime } from 'luxon';
-	import { Observable, interval, map, of, switchMap } from 'rxjs';
-	import { client } from '../services/client.js';
+	import { Observable, interval, switchMap } from 'rxjs';
 	import { onDestroy } from 'svelte';
+	import { client } from '../services/client.js';
 
 	interface Props {
 		server: Server;
