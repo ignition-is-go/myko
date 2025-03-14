@@ -31,7 +31,7 @@ export class Auth0UserService implements MykoAuthService {
     return res
   }
 
-  async getUserId(token: string): Promise<string> {
+  async getUserId(token: string): Promise<string | undefined> {
     return jose.decodeJwt(token).sub
   }
 
