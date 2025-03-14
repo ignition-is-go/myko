@@ -1,0 +1,15 @@
+{
+  "name": "@myko/postgres",
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@electric-sql/client": "1.0.0-beta.5",
+    "@myko/core": "workspace:^",
+    "luxon": "^3.5.0",
+    "postgres": "^3.4.5",
+    "ramda": "^0.30.1",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@types/ramda": "^0.30.2"
+  }
+}
