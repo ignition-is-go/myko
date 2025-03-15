@@ -1,5 +1,6 @@
 import {
   AllTransactions,
+  EventsForEntity,
   EventsForTransaction,
   EventsInRange,
   getHistoryProvider,
@@ -51,5 +52,14 @@ export class EventsForTransactionHandler
     const history = getHistoryProvider()
 
     return from(history.getEventsForTransaction(report.transactionId))
+  }
+}
+
+@MykoReportHandler(EventsForEntity)
+export class EventsForEntityHandler implements MReportHandler<EventsForEntity> {
+  execute(report: EventsForEntity): Observable<MEvent[]> {
+    const history = getHistoryProvider()
+
+    return history.getEntityHistory(report.entityId, report.start, report.end)
   }
 }

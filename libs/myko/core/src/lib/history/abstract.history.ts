@@ -4,7 +4,11 @@ import { type MEvent } from '../types'
 export abstract class HistoryProvider {
   constructor() {}
 
-  abstract getEntityHistory(id: string): Promise<MEvent[]>
+  abstract getEntityHistory(
+    id: string,
+    start?: string,
+    end?: string,
+  ): Observable<MEvent[]>
 
   abstract getEventsForTransaction(id: string): Promise<MEvent[]>
 

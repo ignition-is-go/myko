@@ -26,12 +26,12 @@ export const create_index_userId = async () =>
 
 export const create_table_events = async () =>
   await sql<EventCols[]>`CREATE TABLE IF NOT EXISTS myko_events(
-      id TEXT NOT NULL PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
       entity_id TEXT NOT NULL,
       item_type TEXT NOT NULL,
       change_type TEXT NOT NULL,
       item JSONB NOT NULL,
-      created_at TIMESTAMP NOT NULL,
+      created_at TIMESTAMP WITH TIME ZONE,
       tx TEXT,
       source_id TEXT
       )`.catch((_e) => {})
@@ -91,11 +91,8 @@ export const get_event_stream = (): Observable<MEvent> => {
 }
 
 export const save_event = async (event: MEvent): Promise<void> => {
-  const eventId = `${event.itemType}-${event.item.id}-${event.createdAt}`
-
   await sql<EventCols[]>`
       INSERT INTO myko_events (
-        id,
         entity_id, 
         item_type,
         change_type,
@@ -103,13 +100,12 @@ export const save_event = async (event: MEvent): Promise<void> => {
         created_at,
         tx,
         source_id
-      ) OVERRIDING SYSTEM VALUE VALUES (
-        ${eventId}, 
+      )  VALUES (
         ${event.item.id}, 
         ${event.itemType}, 
         ${event.changeType}, 
         ${JSON.stringify(event.item)}, 
-        ${event.createdAt ?? new Date()}, 
+        ${event.createdAt}, 
         ${event.tx ?? randomUUID()},
         ${event.sourceId ?? ''}
       )

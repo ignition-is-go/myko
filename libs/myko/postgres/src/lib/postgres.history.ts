@@ -39,14 +39,54 @@ export class PostgresHistory extends HistoryProvider {
     await get_db_size()
   }
 
-  async getEntityHistory(id: string): Promise<MEvent[]> {
+  getEntityHistory(
+    id: string,
+    start?: string,
+    end?: string,
+  ): Observable<MEvent[]> {
     // get all events for entity
 
-    const events = await sql<EventCols[]>`
-      SELECT * FROM myko_events WHERE entity_id = ${id}
+    const init =
+      start && end
+        ? sql<EventCols[]>`
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at >= ${start} AND created_at <= ${end} ORDER BY created_at DESC
+    `
+        : end
+          ? sql<EventCols[]>`
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at <= ${end} ORDER BY created_at DESC
+    `
+          : start
+            ? sql<EventCols[]>`
+    
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at >= ${start} ORDER BY created_at DESC
+    `
+            : sql<EventCols[]>`
+      SELECT * FROM myko_events WHERE entity_id = ${id} ORDER BY created_at DESC
     `
 
-    return events.map(rowToEvent)
+    const items = init.then((x) => x.map(rowToEvent))
+
+    const stream = get_event_stream()
+
+    return from(items).pipe(
+      switchMap((init) => {
+        return stream.pipe(
+          scan((acc, event) => {
+            if (
+              event.item.id === id &&
+              start &&
+              event.createdAt >= start &&
+              end &&
+              event.createdAt <= end
+            ) {
+              return [event, ...acc]
+            }
+            return acc
+          }, init),
+          startWith(init),
+        )
+      }),
+    )
   }
 
   async getEntitySnapshot<T extends MItem>(

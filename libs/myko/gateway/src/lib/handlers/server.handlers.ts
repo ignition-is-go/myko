@@ -25,6 +25,7 @@ import {
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
+import { randomUUID } from 'crypto'
 import { DateTime } from 'luxon'
 import { uniq } from 'ramda'
 import {
@@ -55,11 +56,13 @@ onAllInit(async () => {
     port: server.port,
   })
 
+  const serverStartTx = randomUUID()
+
   for (const p of prev) {
-    eventBus.publishDel(p, 'server-start')
+    eventBus.publishDel(p, serverStartTx)
   }
 
-  eventBus.publishSet(server, 'server-start')
+  eventBus.publishSet(server, serverStartTx)
 })
 
 @MykoQueryHandler(GetServers)

@@ -35,3 +35,14 @@ export class EventsForTransaction extends MReport<MEvent[]> {
     super()
   }
 }
+
+@MykoReport()
+export class EventsForEntity extends MReport<MEvent[]> {
+  constructor(
+    readonly entityId: string,
+    readonly start?: string,
+    readonly end?: string,
+  ) {
+    super()
+  }
+}
