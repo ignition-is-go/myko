@@ -6,10 +6,10 @@ import {
 } from '@myko/core'
 import { from, map, scan, startWith, switchMap, type Observable } from 'rxjs'
 import {
-  create_index_entityId,
-  create_index_tx,
+  create_index_myko_events_entityId,
+  create_index_myko_events_tx,
   create_index_userId,
-  create_notify_events,
+  create_notify_myko_events,
   create_table_events,
   create_table_transactions,
   get_db_size,
@@ -26,13 +26,13 @@ export class PostgresHistory extends HistoryProvider {
 
   async init(): Promise<void> {
     await create_table_events()
-    await create_index_entityId()
-    await create_index_tx()
+    await create_index_myko_events_entityId()
+    await create_index_myko_events_tx()
 
     await create_table_transactions()
     await create_index_userId()
 
-    await create_notify_events()
+    await create_notify_myko_events()
 
     this.isInit = true
 
