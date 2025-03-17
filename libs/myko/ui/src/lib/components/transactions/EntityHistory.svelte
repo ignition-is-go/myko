@@ -1,17 +1,29 @@
 <script lang="ts">
 	import { client } from '$lib/services/client.js';
-	import { ChildEntities, EventsForEntity, type ID } from '@myko/core';
+	import { ChildEntities, EventsForEntity, type EventContainer, type ID } from '@myko/core';
 	import { startWith } from 'rxjs';
 	import { getContext } from 'svelte';
 	import {
 		fromISOMemo,
+		isoToMillisMemo,
 		TRANSACTIONS_VIEW_STATE,
 		type TransactionsViewState
 	} from '../state/viewstate.svelte.js';
 
+	import { inview } from 'svelte-inview';
 	import EntityHistory from './EntityHistory.svelte';
 	import TransactionEvent from './TransactionEvent.svelte';
-	const { id, itemType, level = 0 }: { id: ID; itemType: string; level?: number } = $props();
+	import TransactionEventGroup from './TransactionEventGroup.svelte';
+
+	const {
+		id,
+		itemType,
+		level = 0
+	}: {
+		id: ID;
+		itemType: string;
+		level?: number;
+	} = $props();
 
 	const viewState = getContext(TRANSACTIONS_VIEW_STATE) as TransactionsViewState;
 
@@ -45,18 +57,95 @@
 		)
 	);
 
-	const children = $derived(client.watchReport(new ChildEntities(itemType, id)));
+	type EventRenderInfo = {
+		eventContainer: EventContainer;
+		leftPx: number;
+	};
+
+	const visibleEventRenders: EventRenderInfo[] = $derived(
+		visibleEvents.map((x) => {
+			const timeMilis = $derived(isoToMillisMemo(x.event.createdAt));
+
+			const leftTimeMilis = $derived(timeMilis - viewState.leftTimeMilis);
+
+			const leftPx = $derived(leftTimeMilis / viewState.durationMilisPerPx);
+
+			return {
+				eventContainer: x,
+				leftPx
+			};
+		})
+	);
+
+	type EventRenderGroup = {
+		firstPx: number;
+		lastPx: number;
+		events: EventRenderInfo[];
+	};
+
+	const eventGroups = $derived(
+		visibleEventRenders.reduce((acc, x) => {
+			const lastGroup = acc[acc.length - 1];
+			if (lastGroup && x.leftPx - lastGroup.lastPx < 10) {
+				lastGroup.lastPx = x.leftPx;
+				lastGroup.events.push(x);
+			} else {
+				acc.push({
+					firstPx: x.leftPx,
+					lastPx: x.leftPx,
+					events: [x]
+				});
+			}
+			return acc;
+		}, [] as EventRenderGroup[])
+	);
+
+	const children = $derived(
+		client.watchReport(new ChildEntities(itemType, id)).pipe(startWith([]))
+	);
+
+	let isInView = $state(false);
+
+	const msWidth = $derived(1 / viewState.durationMilisPerPx);
+
+	const msLefts = $derived(viewState.width / msWidth + 2);
+
+	const overlayOffset = $derived((viewState.leftTimeMilis % 1) * msWidth);
 </script>
 
-<div class="entity-history">
-	<div class="self">
+<div class="entity-history" style="min-height:{($children.length + 1) * 10}px;">
+	{#if isRoot && msWidth > 100}
+		<div class="overlay">
+			{#each Array.from({ length: msLefts }) as _, i}
+				<div class="tick" style="left: {i * msWidth - overlayOffset}px;"></div>
+			{/each}
+		</div>
+	{/if}
+
+	<div
+		class="self"
+		use:inview={{}}
+		on:inview_enter={() => (isInView = true)}
+		on:inview_leave={() => (isInView = false)}
+	>
 		<h2 style="margin-left: {level * 1}rem;">
 			{name}
+			{$children.length}
 		</h2>
 		<div class="events">
-			{#each visibleEvents as container (container.id)}
-				<TransactionEvent event={container.event} />
-			{/each}
+			{#if isInView}
+				{#each eventGroups as group}
+					{#if group.events.length === 1}
+						<TransactionEvent event={group.events[0].eventContainer.event} />
+					{:else}
+						<TransactionEventGroup
+							firstPx={group.firstPx}
+							lastPx={group.lastPx}
+							numEvents={group.events.length}
+						/>
+					{/if}
+				{/each}
+			{/if}
 		</div>
 	</div>
 
@@ -86,5 +175,18 @@
 		display: flex;
 		align-items: center;
 		inset: 0;
+	}
+
+	.overlay {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+		z-index: 999;
+	}
+
+	.tick {
+		position: absolute;
+		height: 100%;
+		border-left: 1px solid rgba(255, 255, 255, 0.5);
 	}
 </style>

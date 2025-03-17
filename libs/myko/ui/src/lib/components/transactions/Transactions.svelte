@@ -13,7 +13,7 @@
 	const { entrypointId, entrypointItemType }: { entrypointId: ID; entrypointItemType: string } =
 		$props();
 
-	const onscroll = (e: WheelEvent) => {
+	const onwheel = (e: WheelEvent) => {
 		if (e.ctrlKey || e.metaKey) {
 			e.preventDefault();
 			viewstate.zoom(e.deltaY);
@@ -44,7 +44,7 @@
 		console.log('RESIZE', e.clientWidth);
 		viewstate.width = e.clientWidth;
 	}}
-	onwheel={onscroll}
+	{onwheel}
 	{onmousemove}
 >
 	<div class="header">

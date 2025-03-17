@@ -63,17 +63,18 @@
 		--size: 8px;
 		width: var(--size);
 		height: var(--size);
-		margin-left: calc(var(--size) / -2);
+		/* margin-left: calc(var(--size) / -2); */
+		border-left: 2px solid white;
 		margin-top: calc(var(--size) / -2);
-		border-radius: 50%;
+		/* border-radius: 50%; */
 	}
 
 	.DEL .icon {
-		background-color: orangered;
+		background: linear-gradient(to right, orangered, transparent);
 	}
 
 	.SET .icon {
-		background-color: lightgreen;
+		background: linear-gradient(to right, lightgreen, transparent);
 	}
 
 	.hover-data {
