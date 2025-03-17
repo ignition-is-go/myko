@@ -8,13 +8,21 @@ import {
   relationRegistry,
   repoName,
   wrapItem,
+  type MItemStub,
   type MLiveReportResult,
   type MQueryHandler,
   type MReportHandler,
   type MWrappedItem,
 } from '@myko/core'
 import { uniqBy } from 'ramda'
-import { combineLatest, map, of, switchMap, type Observable } from 'rxjs'
+import {
+  combineLatest,
+  distinctUntilChanged,
+  map,
+  of,
+  switchMap,
+  type Observable,
+} from 'rxjs'
 
 @MykoQueryHandler(GetItemsByTypeAndIds)
 export class GetItemByTypeAndIdHandler
@@ -101,6 +109,29 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
       }),
     )
 
-    return children
+    return children.pipe(
+      map((x) =>
+        x.map(
+          (y) =>
+            ({
+              id: y.item.id,
+              itemType: y.itemType,
+              name: 'name' in y.item ? (y.item.name as string) : undefined,
+            }) satisfies MItemStub,
+        ),
+      ),
+      distinctUntilChanged((prev, current) => {
+        const p = new Set(prev.map((p) => `${p.id}-${p.itemType}-${p.name}`))
+        const c = new Set(current.map((p) => `${p.id}-${p.itemType}-${p.name}`))
+
+        const diff = p.symmetricDifference(c)
+
+        if (diff.size > 0) {
+          console.log('sym diff', diff, report.parentId, report.parentType)
+        }
+
+        return diff.size === 0
+      }),
+    )
   }
 }

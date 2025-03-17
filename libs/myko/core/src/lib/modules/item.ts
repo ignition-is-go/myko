@@ -8,7 +8,6 @@ import {
   type ID,
   type MItemConstructor,
 } from '../types'
-import type { MWrappedItem } from '../wrappers'
 
 @MykoQuery(MItem)
 export class GetItemsByTypeAndIds extends MQuery<MItem> {
@@ -36,8 +35,14 @@ export class EntitySearch<T extends MItem> extends MReport<T[]> {
   }
 }
 
+export type MItemStub = {
+  id: ID
+  itemType: string
+  name?: string
+}
+
 @MykoReport()
-export class ChildEntities extends MReport<MWrappedItem[]> {
+export class ChildEntities extends MReport<MItemStub[]> {
   constructor(
     readonly parentType: string,
     readonly parentId: ID,

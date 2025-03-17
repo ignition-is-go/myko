@@ -1,5 +1,5 @@
-import { MykoReport } from '../decorators'
-import { MReport, type ID, type MEvent } from '../types'
+import { MykoQuery, MykoReport } from '../decorators'
+import { EventContainer, MQuery, MReport, type ID, type MEvent } from '../types'
 
 @MykoReport()
 export class TransactionsInRange extends MReport<ID[]> {
@@ -36,8 +36,8 @@ export class EventsForTransaction extends MReport<MEvent[]> {
   }
 }
 
-@MykoReport()
-export class EventsForEntity extends MReport<MEvent[]> {
+@MykoQuery(EventContainer)
+export class EventsForEntity extends MQuery<EventContainer> {
   constructor(
     readonly entityId: string,
     readonly start?: string,

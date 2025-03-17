@@ -1,22 +1,23 @@
 <script lang="ts">
 	import type { MEvent } from '@myko/core';
-	import { DateTime } from 'luxon';
 	import { getContext } from 'svelte';
 	import {
+		fromISOMemo,
 		FULL_DATE_FORMAT,
+		isoToMillisMemo,
 		TRANSACTIONS_VIEW_STATE,
 		type TransactionsViewState
 	} from '../state/viewstate.svelte.js';
 
 	const { event }: { event: MEvent } = $props();
 
-	const time = $derived(DateTime.fromISO(event.createdAt));
+	const timeMilis = $derived(isoToMillisMemo(event.createdAt));
 
 	const viewState = getContext(TRANSACTIONS_VIEW_STATE) as TransactionsViewState;
 
-	const leftTime = $derived(time.diff(viewState.leftTime));
+	const leftTimeMilis = $derived(timeMilis - viewState.leftTimeMilis);
 
-	const leftPx = $derived(leftTime.as('milliseconds') / viewState.durationPerPx.as('milliseconds'));
+	const leftPx = $derived(leftTimeMilis / viewState.durationMilisPerPx);
 
 	let showDetail = $state(false);
 
@@ -28,6 +29,7 @@
 		showDetail = false;
 	};
 
+	const time = $derived(fromISOMemo(event.createdAt));
 	// $inspect(leftTime, 'leftTime');
 </script>
 

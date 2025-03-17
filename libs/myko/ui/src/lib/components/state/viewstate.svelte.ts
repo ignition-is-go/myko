@@ -1,5 +1,5 @@
-import { DateTime, Duration } from 'luxon';
-import { uniq } from 'ramda';
+import { DateTime } from 'luxon';
+import { memoizeWith, uniq } from 'ramda';
 import { SvelteSet } from 'svelte/reactivity';
 
 export class TransactionsViewState {
@@ -7,21 +7,24 @@ export class TransactionsViewState {
 
 	#timeZero: DateTime = $state(DateTime.now());
 
-	// #timeRange: Duration = $state(Duration.fromObject({ minutes: 15 }));
+	#leftTimeMilis = $state(DateTime.now().minus({ minutes: 15 }).toMillis());
 
-	#leftTime: DateTime = $state(DateTime.now().minus({ minutes: 15 }));
-	#rightTime: DateTime | null = $state(DateTime.now());
-	readonly #timeRange: Duration = $derived(this.rightTime.diff(this.#leftTime));
+	#rightTimeMilis: number | null = $state(DateTime.now().toMillis());
 
 	#widthPx: number = $state(0);
-
-	#durationPerPx: Duration = $derived(
-		Duration.fromMillis(this.#timeRange.as('milliseconds') / this.#widthPx)
-	);
 
 	#now: DateTime = $state(DateTime.now());
 
 	#mouseX: number = $state(0);
+
+	readonly #leftTime: DateTime = $derived(fromMillisMemo(this.#leftTimeMilis));
+	readonly #rightTime: DateTime | null = $derived(
+		this.#rightTimeMilis ? fromMillisMemo(this.#rightTimeMilis) : null
+	);
+
+	readonly #timeRangeMilis: number = $derived(this.rightTimeMilis - this.#leftTimeMilis);
+
+	readonly #durationMilisPerPx = $derived(this.#timeRangeMilis / this.#widthPx);
 
 	constructor() {
 		const updateTime = () => {
@@ -42,15 +45,55 @@ export class TransactionsViewState {
 	}
 
 	set rightTime(value: DateTime) {
-		this.#rightTime = value;
+		throw new Error('Cannot set rightTime use rightTimeMilis');
+	}
+
+	get rightTimeMilis(): number {
+		return this.#rightTimeMilis ?? this.#now.toMillis();
+	}
+
+	set rightTimeMilis(value: number) {
+		throw new Error('Cannot set rightTimeMilis. [readonly]');
+	}
+
+	get durationMilisPerPx(): number {
+		return this.#durationMilisPerPx;
+	}
+
+	set durationMilisPerPx(value: number) {
+		throw new Error('Cannot set durationMilisPerPx. [readonly]');
 	}
 
 	get leftTime(): DateTime {
-		return this.rightTime.minus(this.#timeRange);
+		return this.#leftTime;
 	}
 
-	get durationPerPx(): Duration {
-		return this.#durationPerPx;
+	set leftTime(value: DateTime) {
+		throw new Error('Cannot set leftTime [readonly]');
+	}
+
+	get leftTimeMilis(): number {
+		return this.#leftTimeMilis;
+	}
+
+	set leftTimeMilis(value: number) {
+		throw new Error('Cannot set leftTimeMilis [readonly]');
+	}
+
+	get timeRangeMilis(): number {
+		return this.#timeRangeMilis;
+	}
+
+	set timeRangeMilis(value: number) {
+		throw new Error('Cannot set timeRangeMilis [readonly]');
+	}
+
+	get milisPerPx(): number {
+		return this.#timeRangeMilis / this.#widthPx;
+	}
+
+	set milisPerPx(value: number) {
+		throw new Error('Cannot set milisPerPx [readonly]');
 	}
 
 	set width(value: number) {
@@ -73,14 +116,20 @@ export class TransactionsViewState {
 		return this.#now;
 	}
 
+	set now(value: DateTime) {
+		throw new Error('Cannot set now [readonly]');
+	}
+
 	set mouseX(value: number) {
 		this.#mouseX = value;
 	}
 
+	get mouseX(): number {
+		throw new Error('why are you getting mouseX?');
+	}
+
 	get allEventTimestamps(): number[] {
-		const times = Array.from(this.#visibleEvents.values()).map((ts) =>
-			DateTime.fromISO(ts).toMillis()
-		);
+		const times = Array.from(this.#visibleEvents.values()).map((ts) => fromISOMemo(ts).toMillis());
 
 		const adjustedMs = times.map((t) => t - this.#timeZero.toMillis());
 
@@ -93,14 +142,18 @@ export class TransactionsViewState {
 		return uniq(adjustedPx);
 	}
 
+	set allEventTimestamps(value: number[]) {
+		throw new Error('Cannot set allEventTimestamps [readonly]');
+	}
+
 	zoomAllTheWayOut() {
-		this.#rightTime = this.#now;
-		this.#leftTime = this.#timeZero;
+		this.#rightTimeMilis = this.#now.toMillis();
+		this.#leftTimeMilis = this.#timeZero.toMillis();
 	}
 
 	zoom(delta: number) {
 		const factor = 1 + delta / 1000;
-		const oldTimeRangeMilis = this.#timeRange.as('milliseconds');
+		const oldTimeRangeMilis = this.#timeRangeMilis;
 		const newTimeRangeMilis = oldTimeRangeMilis * factor;
 
 		const normX = this.#mouseX / this.#widthPx;
@@ -117,14 +170,15 @@ export class TransactionsViewState {
 		const newRightTimeMilis = Math.min(rightTimeMilis + rightTimeDiff, nowMilis);
 		const newLeftTimeMilis = Math.max(leftTimeMilis - leftTimeDiff, this.#timeZero.toMillis());
 
-		this.#rightTime = DateTime.fromMillis(newRightTimeMilis);
-		this.#leftTime = DateTime.fromMillis(newLeftTimeMilis);
+		this.#rightTimeMilis = newRightTimeMilis;
+
+		this.#leftTimeMilis = newLeftTimeMilis;
 	}
 
 	pan(delta: number) {
 		const factor = delta / -5000;
 
-		const timeRangeMilis = this.#timeRange.as('milliseconds');
+		const timeRangeMilis = this.#timeRangeMilis;
 
 		const timeDiff = timeRangeMilis * factor;
 
@@ -142,11 +196,18 @@ export class TransactionsViewState {
 			return;
 		}
 
-		this.#leftTime = DateTime.fromMillis(newLeftTimeMilis);
-		this.#rightTime = DateTime.fromMillis(newRightTimeMilis);
+		this.#leftTimeMilis = newLeftTimeMilis;
+		this.#rightTimeMilis = newRightTimeMilis;
 	}
 }
 
 export const TRANSACTIONS_VIEW_STATE = Symbol('transactions-view-state');
 
 export const FULL_DATE_FORMAT = `yyyy-MM-dd HH:mm:ss`;
+
+export const fromISOMemo = memoizeWith((isoString) => isoString, DateTime.fromISO);
+export const fromMillisMemo = memoizeWith((millis) => millis.toString(), DateTime.fromMillis);
+export const isoToMillisMemo = memoizeWith(
+	(isoString) => isoString,
+	(isoString: string) => DateTime.fromISO(isoString).toMillis()
+);

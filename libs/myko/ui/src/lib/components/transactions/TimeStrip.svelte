@@ -98,25 +98,21 @@
 	.shuntLeft {
 		right: calc(var(--width) + 0.5rem) !important;
 		left: unset;
-		background-color: red;
 	}
 
 	.shuntRight {
 		right: unset;
 		left: calc(var(--width) + 0.5rem) !important;
-		background-color: red;
 	}
 
 	.doubleShuntLeft {
 		left: unset;
 		right: calc(var(--right-width) + 1rem) !important;
-		background-color: blue;
 	}
 
 	.doubleShuntRight {
 		right: unset;
 		left: calc(var(--left-width) + 1rem) !important;
-		background-color: blue;
 	}
 
 	.view-region {

@@ -4,11 +4,11 @@
 	import { startWith } from 'rxjs';
 	import { getContext } from 'svelte';
 	import {
+		fromISOMemo,
 		TRANSACTIONS_VIEW_STATE,
 		type TransactionsViewState
 	} from '../state/viewstate.svelte.js';
 
-	import { DateTime } from 'luxon';
 	import EntityHistory from './EntityHistory.svelte';
 	import TransactionEvent from './TransactionEvent.svelte';
 	const { id, itemType, level = 0 }: { id: ID; itemType: string; level?: number } = $props();
@@ -20,28 +20,28 @@
 
 	const isRoot = $derived(level == 0);
 
-	const history = $derived(client.watchReport(new EventsForEntity(id)).pipe(startWith([])));
+	const history = client.watchQuery(new EventsForEntity(id)).pipe(startWith([]));
 
 	const name = $derived(
-		$history.length > 0 && 'name' in $history[0].item
-			? $history[0].item.name
+		$history.length > 0 && 'name' in $history[0].event.item
+			? $history[0].event.item.name
 			: `Unknown ${itemType}`
 	);
 
 	$effect(() => {
 		const firstEvent = $history && $history.length > 0 ? $history[$history.length - 1] : undefined;
 		if (isRoot && firstEvent) {
-			viewState.timeZero = DateTime.fromISO(firstEvent.createdAt);
+			viewState.timeZero = fromISOMemo(firstEvent.event.createdAt);
 		}
 	});
 
 	$effect(() => {
-		viewState.registerEvents($history.map((x) => x.createdAt));
+		viewState.registerEvents($history.map((x) => x.event.createdAt));
 	});
 
 	const visibleEvents = $derived(
 		$history.filter(
-			(x) => (start ? x.createdAt >= start : true) && (end ? x.createdAt <= end : true)
+			(x) => (start ? x.event.createdAt >= start : true) && (end ? x.event.createdAt <= end : true)
 		)
 	);
 
@@ -54,14 +54,14 @@
 			{name}
 		</h2>
 		<div class="events">
-			{#each visibleEvents as event (`event-${event.item.id}-${event.createdAt}`)}
-				<TransactionEvent {event} />
+			{#each visibleEvents as container (container.id)}
+				<TransactionEvent event={container.event} />
 			{/each}
 		</div>
 	</div>
 
-	{#each $children as child (child.item.id)}
-		<EntityHistory id={child.item.id} itemType={child.itemType} level={level + 1} />
+	{#each $children as child (child.id)}
+		<EntityHistory id={child.id} itemType={child.itemType} level={level + 1} />
 	{/each}
 </div>
 
