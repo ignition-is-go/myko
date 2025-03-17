@@ -49,19 +49,19 @@ export class PostgresHistory extends HistoryProvider {
     const init =
       start && end
         ? sql<EventCols[]>`
-      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at >= ${start} AND created_at <= ${end} ORDER BY created_at DESC
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at >= ${start} AND created_at <= ${end} ORDER BY created_at ASC
     `
         : end
           ? sql<EventCols[]>`
-      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at <= ${end} ORDER BY created_at DESC
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at <= ${end} ORDER BY created_at ASC
     `
           : start
             ? sql<EventCols[]>`
     
-      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at >= ${start} ORDER BY created_at DESC
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND created_at >= ${start} ORDER BY created_at ASC
     `
             : sql<EventCols[]>`
-      SELECT * FROM myko_events WHERE entity_id = ${id} ORDER BY created_at DESC
+      SELECT * FROM myko_events WHERE entity_id = ${id} ORDER BY created_at ASC
     `
 
     const items = init.then((x) => x.map(rowToEvent))
@@ -140,12 +140,12 @@ export class PostgresHistory extends HistoryProvider {
             SELECT DISTINCT tx, created_at FROM myko_events 
             WHERE created_at >= ${start} 
             AND created_at <= ${end}
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
           `
         : sql<{ tx: string }[]>`
             SELECT DISTINCT tx, created_at FROM myko_events 
             WHERE created_at >= ${start} 
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
           `
     } else {
       // Apply exclusions
@@ -155,13 +155,13 @@ export class PostgresHistory extends HistoryProvider {
             WHERE created_at >= ${start} 
             AND created_at <= ${end} 
             AND item_type NOT IN ${sql(excludeEntities)} 
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
           `
         : sql<{ tx: string }[]>`
             SELECT DISTINCT tx, created_at FROM myko_events 
             WHERE created_at >= ${start} 
             AND item_type NOT IN ${sql(excludeEntities)} 
-            ORDER BY created_at DESC
+            ORDER BY created_at ASC
           `
     }
 
@@ -191,13 +191,13 @@ export class PostgresHistory extends HistoryProvider {
 
   getEventsInTimeRange(start: string, end: string): Promise<MEvent[]> {
     return sql<EventCols[]>`
-      SELECT * FROM myko_events WHERE created_at >= ${start} AND created_at <= ${end} ORDER BY created_at DESC
+      SELECT * FROM myko_events WHERE created_at >= ${start} AND created_at <= ${end} ORDER BY created_at ASC
     `.then((res) => res.map(rowToEvent))
   }
 
   getAllTransactions(): Promise<string[]> {
     return sql<{ tx: string }[]>`
-      SELECT tx, created_at from myko_events ORDER BY created_at DESC
+      SELECT tx, created_at from myko_events ORDER BY created_at ASC
     `
       .then((res) => res.map((r) => r.tx))
       .then(uniq)
