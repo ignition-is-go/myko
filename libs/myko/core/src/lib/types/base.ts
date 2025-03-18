@@ -1,3 +1,6 @@
+import { DateTime } from 'luxon'
+import { v4 as uuid } from 'uuid'
+
 /**
  * Base types
  * @module Base
@@ -43,3 +46,46 @@ export type DeepPartial<T> = T extends object
       [P in keyof T]?: DeepPartial<T[P]>
     }
   : T
+
+export class WithContext {
+  /**
+   * The transaction ID associated with the command.
+   */
+  readonly tx: string
+
+  readonly commandClientId: string
+
+  /**
+   * The timestamp when the command was created.
+   */
+  readonly createdAt: string
+
+  constructor() {
+    this.tx = uuid()
+    this.createdAt = DateTime.utc().toString()
+  }
+
+  /**
+   * Sets the transaction ID for the command.
+   * @param tx The transaction ID.
+   * @returns The modified command instance.
+   */
+  withTransaction(tx: ID): this {
+    Reflect.set(this, 'tx', tx)
+    return this
+  }
+
+  /**
+   * Sets the transaction ID for the command.
+   * @param clientId the client ID.
+   * @returns The modified command instance.
+   */
+  withClientId(clientId: ID): this {
+    Reflect.set(this, 'commandClientId', clientId)
+    return this
+  }
+
+  withContext(ctx: WithContext): this {
+    return this.withClientId(ctx.commandClientId).withTransaction(ctx.tx)
+  }
+}

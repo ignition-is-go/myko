@@ -1,9 +1,4 @@
-import {
-  reportBus,
-  unwrapReport,
-  type ID,
-  type MWrappedReport,
-} from '@myko/core'
+import { MReport, reportBus, type ID, type MWrappedReport } from '@myko/core'
 import {
   MREPORT_ERROR_EVENT,
   wrapReportResponseWS,
@@ -26,7 +21,7 @@ export const handleReport = (
   wrappedReport: MWrappedReport,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-  const report = unwrapReport(wrappedReport)
+  const report = MReport.fromWrappedReport(wrappedReport).withClientId(clientId)
 
   const response = reportBus.watch(report).pipe(
     map((r) => wrapReportResponseWS(report.tx, r)),

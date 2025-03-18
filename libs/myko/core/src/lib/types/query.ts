@@ -1,28 +1,53 @@
 import type { Observable } from 'rxjs'
 import type { IMItem, MItem } from './item'
 
-import { v4 as uuid } from 'uuid'
+import { MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../constants'
+import type { MWrappedQuery } from '../wrappers'
+import { WithContext } from './base'
 
 /**
  * Represents a query object used for retrieving data.
  * @template T - The type of the query result.
  */
-export class MQuery<T extends MItem = MItem> {
+export class MQuery<T extends MItem = MItem> extends WithContext {
   /**
    * The result of the query.
    */
   $queryResult: T[]
 
   /**
-   * The transaction ID associated with the query.
-   */
-  readonly tx: string
-
-  /**
    * Creates a new instance of the MQuery class.
    */
   constructor() {
-    this.tx = uuid()
+    super()
+  }
+
+  wrap(): MWrappedQuery {
+    const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, this)
+    const queryItemType = Reflect.getMetadata(MYKO_QUERY_ITEM_TYPE_KEY, this)
+    if (!queryId || !queryItemType) {
+      throw new Error('Could not get query ID from Metadata')
+    }
+
+    return {
+      query: this,
+      queryId,
+      queryItemType,
+    }
+  }
+
+  static fromWrappedQuery<R extends MItem>(
+    wrappedQuery: MWrappedQuery,
+  ): MQuery<R> {
+    const { query: queryInner, queryId } = wrappedQuery
+    const query = new MQuery<R>()
+
+    Object.assign(query, queryInner)
+
+    Reflect.defineMetadata(MYKO_QUERY_ID_KEY, queryId, query)
+    Reflect.defineMetadata(MYKO_QUERY_ITEM_TYPE_KEY, queryId, query)
+
+    return query
   }
 }
 

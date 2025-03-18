@@ -1,11 +1,10 @@
 import {
   commandBus,
   getHistoryProvider,
+  MCommand,
   MykoCommandError,
   MykoLogger,
-  unwrapCommand,
   type ID,
-  type MCommand,
   type MWrappedCommand,
 } from '@myko/core'
 import {
@@ -56,7 +55,8 @@ export const handleCommand = async (
     }
   }
 
-  const unwrapped = unwrapCommand(command) as MCommand<unknown>
+  const unwrapped = MCommand.fromWrappedCommand(command).withClientId(clientId)
+  // unwrapCommand(command) as MCommand<unknown>
   await commandBus
     .execute(unwrapped)
     .then((res) => {

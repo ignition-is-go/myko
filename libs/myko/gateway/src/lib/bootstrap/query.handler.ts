@@ -1,6 +1,6 @@
 import {
+  MQuery,
   queryBus,
-  unwrapQuery,
   wrapItem,
   type ID,
   type MWrappedQuery,
@@ -26,10 +26,10 @@ import { clientDisconnect, unsub } from './common'
 
 export const handleQuery = (
   clientId: ID,
-  wrapperQuery: MWrappedQuery,
+  wrappedQuery: MWrappedQuery,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-  const query = unwrapQuery(wrapperQuery)
+  const query = MQuery.fromWrappedQuery(wrappedQuery).withClientId(clientId) // unwrapQuery(wrapperQuery)
 
   const tx = query.tx
 

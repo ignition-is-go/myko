@@ -3,9 +3,6 @@ import {
   MQuery,
   MReport,
   MykoCommandError,
-  wrapCommand,
-  wrapQuery,
-  wrapReport,
   type ID,
   type MEvent,
   type MWrappedCommand,
@@ -32,12 +29,12 @@ import {
 } from './types'
 
 export const wrapQueryWS = (query: MQuery): WSMQuery => ({
-  data: wrapQuery(query),
+  data: query.wrap(),
   event: MQUERY_EVENT,
 })
 
 export const wrapCommandWS = (command: MCommand<unknown>): WSMCommand => ({
-  data: wrapCommand(command),
+  data: command.wrap(),
   event: MCOMMAND_EVENT,
 })
 
@@ -95,7 +92,7 @@ export const wrapQueryCancel = (tx: ID): WSMQueryCancel => ({
 })
 
 export const wrapReportWS = (report: MReport<any>): WSMReport => ({
-  data: wrapReport(report),
+  data: report.wrap(),
   event: MREPORT_EVENT,
 })
 

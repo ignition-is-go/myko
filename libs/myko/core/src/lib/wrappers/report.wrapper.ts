@@ -1,10 +1,9 @@
-import { MYKO_REPORT_ID_KEY, MYKO_REPORT_ITEM_TYPE_KEY } from '../constants'
-import type { ID, MReport } from '../types'
+import { MReport, type ID } from '../types'
 
 /**
  * Represents a wrapped report.
  */
-export interface MWrappedReport {
+export type MWrappedReport = {
   report: MReport<any>
   reportId: ID
 }
@@ -13,30 +12,21 @@ export interface MWrappedReport {
  * Wraps a report with its ID.
  * @param report - The report to be wrapped.
  * @returns The wrapped report.
- * @throws Error if the query ID cannot be retrieved from metadata.
+ * @throws Error if the query ID cannot be retrieved from metadata.\
+ * @deprecated use MReport.wrap instead.
  */
 export const wrapReport = (report: MReport<unknown>): MWrappedReport => {
-  const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
-  if (!reportId) {
-    throw new Error('Could not get query ID from Metadata')
-  }
-
-  return {
-    report,
-    reportId: reportId,
-  }
+  return report.wrap()
 }
 
 /**
  * Unwraps a wrapped report.
  * @param wrappedQuery - The wrapped report to be unwrapped.
  * @returns The unwrapped report.
+ * @deprecated use MReport.fromWrappedReport instead.
  */
 export const unwrapReport = (
   wrappedQuery: MWrappedReport,
 ): MReport<unknown> => {
-  const { report, reportId } = wrappedQuery
-  Reflect.defineMetadata(MYKO_REPORT_ID_KEY, reportId, report)
-  Reflect.defineMetadata(MYKO_REPORT_ITEM_TYPE_KEY, reportId, report)
-  return report
+  return MReport.fromWrappedReport(wrappedQuery)
 }

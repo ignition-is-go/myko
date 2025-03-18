@@ -1,7 +1,4 @@
-import { MYKO_COMMAND_ID_KEY } from '../constants'
-import { MykoLogger } from '../logger'
-import type { MCommand, MCommandResponse } from '../types'
-import { CommandUnwrapError } from '../types/errors'
+import { MCommand, type MCommandResponse } from '../types'
 
 /**
  * Represents a wrapped command.
@@ -16,32 +13,22 @@ export interface MWrappedCommand {
  * @param command The command to wrap.
  * @returns The wrapped command.
  * @throws {CommandUnwrapError} If the command does not have a command ID.
+ * @deprecated use MCommand.wrap instead.
  */
 export const wrapCommand = <T extends MCommand<unknown>>(
   command: T,
 ): MWrappedCommand => {
-  const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
-
-  if (!commandId) {
-    throw new CommandUnwrapError()
-  }
-
-  return {
-    command,
-    commandId,
-  }
+  return command.wrap()
 }
 
 /**
  * Unwraps a wrapped command and restores its command ID.
  * @param wrappedCommand The wrapped command to unwrap.
  * @returns The unwrapped command.
+ * @deprecated use MCommand.fromWrappedCommand instead.
  */
 export const unwrapCommand = <T extends MCommand<MCommandResponse<T>>>(
   wrappedCommand: MWrappedCommand,
 ): MCommand<MCommandResponse<T>> => {
-  const { command, commandId } = wrappedCommand
-  Reflect.set(command, 'logger', new MykoLogger(commandId))
-  Reflect.defineMetadata(MYKO_COMMAND_ID_KEY, commandId, command)
-  return command as T
+  return MCommand.fromWrappedCommand(wrappedCommand)
 }

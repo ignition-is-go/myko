@@ -1,21 +1,43 @@
 import type { Observable } from 'rxjs'
-import { v4 as uuid } from 'uuid'
+import { MYKO_REPORT_ID_KEY, MYKO_REPORT_ITEM_TYPE_KEY } from '../constants'
+import type { MWrappedReport } from '../wrappers'
+import { WithContext } from './base'
 
 /**
  * Represents a generic report.
  * @template T - The type of the report result.
  */
-export class MReport<T> {
+export class MReport<T> extends WithContext {
   /**
    * The result of the report.
    */
   $reportResult: T
-  /**
-   * The transaction ID of the report.
-   */
-  readonly tx: string
+
   constructor() {
-    this.tx = uuid()
+    super()
+  }
+
+  static fromWrappedReport<R>(wrappedReport: MWrappedReport): MReport<R> {
+    const { report: reportInner, reportId } = wrappedReport
+    const report = new MReport<R>()
+
+    Object.assign(report, reportInner)
+    Reflect.defineMetadata(MYKO_REPORT_ID_KEY, reportId, report)
+    Reflect.defineMetadata(MYKO_REPORT_ITEM_TYPE_KEY, reportId, report)
+
+    return report
+  }
+
+  wrap(): MWrappedReport {
+    const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, this)
+    if (!reportId) {
+      throw new Error('Could not get query ID from Metadata')
+    }
+
+    return {
+      report: this,
+      reportId: reportId,
+    }
   }
 }
 
