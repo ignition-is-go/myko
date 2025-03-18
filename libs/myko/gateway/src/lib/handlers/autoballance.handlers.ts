@@ -17,6 +17,7 @@ import {
   type Stream,
 } from '@myko/core'
 import { from, merge, mergeMap, Observable, of, switchMap } from 'rxjs'
+import { v4 as uuid } from 'uuid'
 
 @MykoSaga()
 export class AutoBallanceSaga implements MSagaHandler {
@@ -26,7 +27,12 @@ export class AutoBallanceSaga implements MSagaHandler {
         const localReballance = autoballanceRegistry.get(event.itemType)
 
         if (localReballance && event.changeType === MEventType.SET) {
-          return of(new ReballanceItem(event.itemType, event.item.id))
+          // Use withTransaction to set the tx from the event
+          return of(
+            new ReballanceItem(event.itemType, event.item.id).withTransaction(
+              event.tx,
+            ),
+          )
         }
 
         const foreignReballance = Array.from(autoballanceRegistry.entries())
@@ -42,8 +48,10 @@ export class AutoBallanceSaga implements MSagaHandler {
             ).pipe(
               switchMap((items) => {
                 return of(
-                  ...items.map(
-                    (item) => new ReballanceItem(info.local, item.id),
+                  ...items.map((item) =>
+                    new ReballanceItem(info.local, item.id).withTransaction(
+                      event.tx,
+                    ),
                   ),
                 )
               }),
@@ -162,8 +170,12 @@ onAllInit(async () => {
       throw new Error(`Cannot find any local items`)
     }
 
+    // Generate a transaction ID for this initialization
+    const initTx = uuid()
     for (const local of allLocals) {
-      commandBus.execute(new ReballanceItem(key, local.id))
+      commandBus.execute(
+        new ReballanceItem(key, local.id).withTransaction(initTx),
+      )
     }
   }
 })

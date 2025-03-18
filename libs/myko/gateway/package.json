@@ -12,11 +12,13 @@
     "msgpackr": "^1.10.2",
     "peerjs": "^1.5.4",
     "ramda": "^0.29.1",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.13",
     "@types/luxon": "^3.4.2",
-    "@types/ramda": "^0.29.11"
+    "@types/ramda": "^0.29.11",
+    "@types/uuid": "^10.0.0"
   }
 }

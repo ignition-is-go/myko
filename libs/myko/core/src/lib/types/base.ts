@@ -85,7 +85,7 @@ export class WithContext {
     return this
   }
 
-  withContext(ctx: WithContext): this {
+  withContext(ctx: Pick<WithContext, 'commandClientId' | 'tx'>): this {
     return this.withClientId(ctx.commandClientId).withTransaction(ctx.tx)
   }
 }

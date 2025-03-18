@@ -143,10 +143,12 @@ export class PeerAliveHandler implements MReportHandler<PeerAlive> {
 @MykoReportHandler(PeerLastSeen)
 export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
   execute(report: PeerLastSeen) {
-    return reportBus.watch(new PeerAlive(report.peerId)).pipe(
-      filter((x) => x !== false),
-      map((_x) => DateTime.utc().toISO()),
-    )
+    return reportBus
+      .watch(new PeerAlive(report.peerId).withContext(report))
+      .pipe(
+        filter((x) => x !== false),
+        map((_x) => DateTime.utc().toISO()),
+      )
   }
 }
 

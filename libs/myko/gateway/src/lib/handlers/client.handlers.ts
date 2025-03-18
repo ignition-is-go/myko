@@ -77,7 +77,7 @@ export class DeleteClientsByServerIdHandler
 @MykoReportHandler(ClientStatus)
 export class ClientStatusHandler implements MReportHandler<ClientStatus> {
   execute(report: ClientStatus): MLiveReportResult<ClientStatus> {
-    return queryBus.watch(new GetClientsByQuery({})).pipe(
+    return queryBus.watch(new GetClientsByQuery({}).withContext(report)).pipe(
       map((clients) => {
         return {
           online: clients.some((c) => c.id === report.clientId),
