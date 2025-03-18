@@ -24,6 +24,18 @@ export const create_index_userId = async () =>
     (_e) => {},
   )
 
+export const get_entities_as_of = async (itemType: string, timestamp: string) =>
+  await sql<EventCols[]>`
+      WITH latest_events AS (
+        SELECT DISTINCT ON (entity_id) *
+        FROM myko_events
+        WHERE item_type = ${itemType}
+        AND created_at <= ${timestamp}
+        ORDER BY created_at DESC
+      )
+      SELECT * FROM latest_events WHERE change_type = 'SET'
+    `.catch((_e) => {})
+
 export const create_table_events = async () =>
   await sql<EventCols[]>`CREATE TABLE IF NOT EXISTS myko_events(
       id SERIAL PRIMARY KEY,
@@ -45,6 +57,12 @@ export const create_index_myko_events_entityId = async () =>
 export const create_index_myko_events_tx = async () =>
   await sql`
       CREATE INDEX IF NOT EXISTS myko_events_tx ON myko_events(tx)`.catch(
+    (_e) => {},
+  )
+
+export const create_index_myko_events_created_at = async () =>
+  await sql`
+      CREATE INDEX IF NOT EXISTS myko_events_created_at ON myko_events(created_at)`.catch(
     (_e) => {},
   )
 

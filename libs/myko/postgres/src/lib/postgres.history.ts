@@ -1,11 +1,13 @@
 import {
   HistoryProvider,
   MEventType,
+  unwrapItem,
   type MEvent,
   type MItem,
 } from '@myko/core'
 import { from, map, scan, startWith, switchMap, type Observable } from 'rxjs'
 import {
+  create_index_myko_events_created_at,
   create_index_myko_events_entityId,
   create_index_myko_events_tx,
   create_index_userId,
@@ -13,6 +15,7 @@ import {
   create_table_events,
   create_table_transactions,
   get_db_size,
+  get_entities_as_of,
   get_event_stream,
   save_event,
   sql,
@@ -28,6 +31,7 @@ export class PostgresHistory extends HistoryProvider {
     await create_table_events()
     await create_index_myko_events_entityId()
     await create_index_myko_events_tx()
+    await create_index_myko_events_created_at()
 
     await create_table_transactions()
     await create_index_userId()
@@ -89,6 +93,25 @@ export class PostgresHistory extends HistoryProvider {
     )
   }
 
+  async getEntitiesAsOf<T extends MItem>(
+    time: string,
+    entity_type: string,
+  ): Promise<T[]> {
+    // get all entities as of time
+    const mostRecentEventsRows = await get_entities_as_of(entity_type, time)
+
+    if (!mostRecentEventsRows) {
+      return []
+    }
+    const mostRecentEvents = mostRecentEventsRows.map(rowToEvent)
+
+    const mostRecentItems = mostRecentEvents
+      .filter((x) => x.changeType !== MEventType.DEL)
+      .map(unwrapItem)
+
+    return mostRecentItems as T[]
+  }
+
   async getEntitySnapshot<T extends MItem>(
     id: string,
     entity_type: string,
@@ -100,13 +123,17 @@ export class PostgresHistory extends HistoryProvider {
       SELECT * FROM myko_events WHERE entity_id = ${id} AND item_type = ${entity_type} AND created_at < ${time}
       ORDER BY created_at DESC
       LIMIT 1
-    `.then((res) => res[0] as { data: T; event_type: MEventType } | undefined)
+    `.then((res) => res.map(rowToEvent)[0])
 
-    if (item?.event_type === MEventType.DEL) {
+    if (item?.changeType === MEventType.DEL) {
       return undefined
     }
 
-    return item?.data
+    if (!item) {
+      return undefined
+    }
+
+    return unwrapItem(item) as T
   }
 
   async saveEvent(event: MEvent): Promise<void> {
