@@ -128,15 +128,18 @@ export class MykoDocsService {
         const byProp = groupBy((e) => e.propName, propEntries)
 
         const props = Object.keys(byProp).map((propName) => {
-          const prop = byProp[propName][0]
-          const docStrings = byProp[propName]
+          const prop = byProp[propName]?.[0] || {
+            propName,
+            propType: 'unknown',
+          }
+          const docStrings = (byProp[propName] || [])
             .map((p) => p.docString)
             .filter((x) => x?.length > 0)
             .map(comment)
 
-          const nameAndType = `${prop.propName}: ${prop.propType}`
+          const nameAndType = `${prop.propName}: ${prop.propType || 'unknown'}`
 
-          const dep = byProp[propName].some((x) => !!x.deprecated)
+          const dep = (byProp[propName] || []).some((x) => !!x.deprecated)
 
           if (dep) {
             docStrings.push('// WARNING: deprecated')
@@ -161,7 +164,7 @@ export class MykoDocsService {
 
         const queryStrings = list(
           ...queries.map((x) =>
-            link(x.queryName, `#${x.queryName.toLocaleLowerCase()}`),
+            link(x.queryName, `#${x.queryName.toLowerCase()}`),
           ),
         )
 
@@ -171,16 +174,14 @@ export class MykoDocsService {
         const parents = itemEntries
           .map((i) => i.extends)
           .filter((x) => !!x)
-          .map((x) => `extends ${link(x, `#${x.toLocaleLowerCase()}`)}`)
+          .map((x) => `extends ${link(x || '', `#${(x || '').toLowerCase()}`)}`)
 
         const extendsString = parents.length > 0 ? [parents.join(', '), ''] : []
 
         const children = docRegistry
           .filter((x) => x.type === 'item' && x.extends === entityType)
           .map((x: ItemDocInfo) =>
-            listItem(
-              link(x.entityType, `#${x.entityType.toLocaleLowerCase()}`),
-            ),
+            listItem(link(x.entityType, `#${x.entityType.toLowerCase()}`)),
           )
 
         const childrenString =

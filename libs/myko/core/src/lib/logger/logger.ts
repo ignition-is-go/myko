@@ -43,7 +43,7 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx)
+    eventBus.publishSet(log, tx ?? v4())
   }
 
   warn(message: string, data?: any, tx?: ID) {
@@ -59,7 +59,7 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx)
+    eventBus.publishSet(log, tx ?? v4())
   }
 
   info(message: string, data?: any, tx?: ID) {
@@ -75,6 +75,6 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx)
+    eventBus.publishSet(log, tx ?? v4())
   }
 }

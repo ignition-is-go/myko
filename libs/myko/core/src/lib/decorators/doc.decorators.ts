@@ -19,8 +19,8 @@ export const docEntity =
     const parentName = Object.getPrototypeOf(Object.getPrototypeOf(target)).name
 
     addItemDoc({
-      docString,
-      entityType: itemType,
+      docString: docString || '',
+      entityType: itemType || '',
       deprecated,
       extends: parentName,
       preventDocs,
@@ -43,20 +43,21 @@ export const doc = (
   return (target: object, propertyKey: string | symbol) => {
     const propType =
       typeOverride ??
-      Reflect.getMetadata(
+      (Reflect.getMetadata(
         'design:type',
         target,
         propertyKey,
-      )?.name.toLowerCase()
+      )?.name.toLowerCase() ||
+        '')
 
-    const autoItemType = Object.getOwnPropertyDescriptors(target.constructor)
-      .name.value
+    const autoItemType =
+      Object.getOwnPropertyDescriptors(target.constructor).name?.value || ''
 
     addPropDoc({
-      docString: docString,
+      docString: docString || '',
       entityType: autoItemType,
       propName: propertyKey.toString(),
-      propType: propType,
+      propType: propType || '',
       deprecated,
     })
   }

@@ -8,15 +8,21 @@ export class MultiMap<K, V> {
     }
 
     this.reverseMap.set(value, key)
-    this.map.get(key).add(value)
+    const valueSet = this.map.get(key)
+    if (valueSet) {
+      valueSet.add(value)
+    }
   }
 
   removeValue(value: V): K | null {
     if (!this.reverseMap.has(value)) {
-      return
+      return null
     }
 
     const key = this.reverseMap.get(value)
+    if (key === undefined) {
+      return null
+    }
     return this.remove(key, value)
   }
 
@@ -25,9 +31,14 @@ export class MultiMap<K, V> {
       return null
     }
 
-    this.map.get(key).delete(value)
+    const valueSet = this.map.get(key)
+    if (!valueSet) {
+      return null
+    }
 
-    if (this.map.get(key).size === 0) {
+    valueSet.delete(value)
+
+    if (valueSet.size === 0) {
       this.map.delete(key)
       return key
     }
@@ -35,7 +46,11 @@ export class MultiMap<K, V> {
   }
 
   get(key: K): Set<V> {
-    return this.map.get(key)
+    const valueSet = this.map.get(key)
+    if (!valueSet) {
+      return new Set<V>()
+    }
+    return valueSet
   }
 
   has(key: K): boolean {

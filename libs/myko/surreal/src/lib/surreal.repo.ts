@@ -108,7 +108,7 @@ export class SurrealRepo<T extends MItem> extends Repo<T> {
       return x[0].map(unwrapItem) as T[]
     })
   }
-  getId(id: ID): Promise<T> {
+  getId(id: ID): Promise<T | null> {
     const sid = new RecordId(this.entity, id)
 
     const query = `SELECT * FROM ${this.entity} WHERE id == ${sid}`

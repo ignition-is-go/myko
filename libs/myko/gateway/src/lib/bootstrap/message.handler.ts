@@ -46,11 +46,10 @@ export const handleMessage =
 
       case MEVENT_EVENT: {
         if (clientIdPropertyRegistry.has(x.data.data.itemType)) {
-          Reflect.set(
-            x.data.data.item,
-            clientIdPropertyRegistry.get(x.data.data.itemType),
-            x.clientId,
-          )
+          const propertyKey = clientIdPropertyRegistry.get(x.data.data.itemType)
+          if (propertyKey) {
+            Reflect.set(x.data.data.item, propertyKey, x.clientId)
+          }
         }
 
         eventBus.publish(x.data.data)
