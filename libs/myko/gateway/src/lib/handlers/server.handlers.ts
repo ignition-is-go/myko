@@ -11,13 +11,13 @@ import {
   GetServers,
   GetServersByClientIds,
   GetServersByQuery,
+  liveRepo,
   MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
   onAllInit,
   PeerAlive,
   PeerLastSeen,
-  repo,
   reportBus,
   Server,
   ServerEventLog,
@@ -51,7 +51,7 @@ onAllInit(async () => {
 
   const server = getServer()
 
-  const prev = await repo(Server).get({
+  const prev = await liveRepo(Server).get({
     address: server.address,
     port: server.port,
   })
@@ -68,7 +68,7 @@ onAllInit(async () => {
 @MykoQueryHandler(GetServers)
 export class GetServersHandler implements MQueryHandler<GetServers> {
   execute(_: GetServers): MLiveQueryResult<GetServers> {
-    return repo(Server).watch({})
+    return liveRepo(Server).watch({})
   }
 }
 
@@ -77,14 +77,14 @@ export class GetConnectedServerHandler
   implements MQueryHandler<GetConnectedServer>
 {
   execute(_: GetConnectedServer): MLiveQueryResult<GetConnectedServer> {
-    return repo(Server).watch({ id: getHostId() })
+    return liveRepo(Server).watch({ id: getHostId() })
   }
 }
 
 @MykoQueryHandler(GetPeerServers)
 export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
-    return repo(Server).watchFilter(
+    return liveRepo(Server).watchFilter(
       (s) => s.address != getServer().address || s.port != getServer().port,
     )
   }
@@ -95,7 +95,7 @@ export class GetServersByQueryHandler
   implements MQueryHandler<GetServersByQuery>
 {
   execute(query: GetServersByQuery): MLiveQueryResult<GetServersByQuery> {
-    return repo(Server).watch(query.query)
+    return liveRepo(Server).watch(query.query)
   }
 }
 
@@ -106,12 +106,12 @@ export class GetServersByClientIdsHandler
   execute(
     query: GetServersByClientIds,
   ): MLiveQueryResult<GetServersByClientIds> {
-    return repo(Client)
+    return liveRepo(Client)
       .watchIds(query.clientIds)
       .pipe(
         map((clients) => clients.map((c) => c.serverId)),
         map(uniq),
-        switchMap((serverIds) => repo(Server).watchIds(serverIds)),
+        switchMap((serverIds) => liveRepo(Server).watchIds(serverIds)),
       )
   }
 }

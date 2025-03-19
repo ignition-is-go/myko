@@ -6,9 +6,9 @@ import {
   ServerEventLog,
   eventBus,
   getHostId,
+  liveRepo,
   onAllInit,
   queryBus,
-  repo,
   type ID,
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
@@ -132,7 +132,7 @@ export class PeerClientRegistry {
       return
     }
 
-    repo(Server)
+    liveRepo(Server)
       .getId(serverId)
       .then((server) => {
         if (!server) {

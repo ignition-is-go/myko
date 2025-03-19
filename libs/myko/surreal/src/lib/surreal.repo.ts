@@ -126,7 +126,7 @@ export class SurrealRepo<T extends MItem> extends Repo<T> {
   getIndex(_index: keyof T, _value: any): Promise<T[]> {
     throw new Error('Method not implemented, getIndex')
   }
-  get(query: Partial<T>): Promise<T[]> {
+  get(query: DeepPartial<T>): Promise<T[]> {
     const comparisons = Object.entries(query).map(([key, value]) => {
       return `item.${key} == "${value}"`
     })
@@ -149,7 +149,7 @@ export class SurrealRepo<T extends MItem> extends Repo<T> {
       'getFilter is not fast in implemented for SurrealRepo',
       this.entity,
     )
-    return this.get({} as Partial<T>).then((x) => x.filter(filterFunc))
+    return this.get({} as DeepPartial<T>).then((x) => x.filter(filterFunc))
   }
 }
 

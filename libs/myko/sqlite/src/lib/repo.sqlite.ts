@@ -4,6 +4,7 @@ import {
   MItem,
   Repo,
   unwrapItem,
+  type DeepPartial,
   type ID,
   type MEvent,
   type RepoOptions,
@@ -80,7 +81,7 @@ export class SQLiteRepo<T extends MItem> extends Repo<T> {
     return this.getFilter((el) => el[index] === value)
   }
 
-  async get(query: Partial<T>): Promise<T[]> {
+  async get(query: DeepPartial<T>): Promise<T[]> {
     const filter = buildFilter(query)
 
     return this.getFilter(filter)

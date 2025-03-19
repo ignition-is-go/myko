@@ -7,6 +7,7 @@ import {
   GetClientsByIds,
   GetClientsByQuery,
   getHostId,
+  liveRepo,
   makeDel,
   type MCommandHandler,
   type MLiveReportResult,
@@ -17,7 +18,6 @@ import {
   MykoQueryHandler,
   MykoReportHandler,
   queryBus,
-  repo,
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
 import { map, type Observable } from 'rxjs'
@@ -51,7 +51,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 @MykoQueryHandler(GetClientsByIds)
 export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
   execute(query: GetClientsByIds): Observable<any> {
-    return repo(Client).watchIds(query.ids)
+    return liveRepo(Client).watchIds(query.ids)
   }
 }
 
@@ -60,7 +60,7 @@ export class GetClientsByQueryHandler
   implements MQueryHandler<GetClientsByQuery>
 {
   execute(query: GetClientsByQuery): Observable<any> {
-    return repo(Client).watch(query.partial)
+    return liveRepo(Client).watch(query.partial)
   }
 }
 
@@ -69,7 +69,7 @@ export class DeleteClientsByServerIdHandler
   implements MCommandHandler<DeleteClientsByServerId>
 {
   async execute(command: DeleteClientsByServerId): Promise<void> {
-    const clients = await repo(Client).get({ serverId: command.serverId })
+    const clients = await liveRepo(Client).get({ serverId: command.serverId })
     eventBus.publishAll(clients.map((c) => makeDel(c, command.tx)))
   }
 }
