@@ -347,7 +347,7 @@ export abstract class Repo<T extends MItem> {
    * @param query - The partial object used to filter the items.
    * @returns An array of items that match the query.
    */
-  abstract get(query: Partial<T>): Promise<T[]>
+  abstract get(query: DeepPartial<T>): Promise<T[]>
 
   /**
    * Retrieves an array of entities that match the provided filter function.
@@ -379,3 +379,8 @@ export const objectFilter = (query: object, ent: object): boolean => {
     return querySide === entSide
   })
 }
+
+export type IRepo<T extends MItem> = Omit<
+  Repo<T>,
+  'entity' | 'safeLog' | 'subject' | 'search' | 'searchObs' | 'save'
+>

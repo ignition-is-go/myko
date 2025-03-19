@@ -1,10 +1,13 @@
-import { filter } from 'rxjs'
-import { Repo, type RepoFactory } from '../aggregates'
+import { filter, type Observable } from 'rxjs'
+import { Repo, type IRepo, type RepoFactory } from '../aggregates/repo.abstract'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
+import { wrapWithHistory } from '../history/repo.manager'
+import type { Client } from '../modules'
 import type { Persister, PersisterFactory } from '../persisters'
 import {
   getItemName,
+  type IContext,
   type MEvent,
   type MItem,
   type MItemConstructor,
@@ -44,16 +47,6 @@ export const setDefaultRepoOptions = (args: {
   })
 }
 
-export const repo = <T extends MItem>(item: MItemConstructor<T>): Repo<T> => {
-  const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
-
-  if (!itemName) {
-    throw new Error('No item name found')
-  }
-
-  return repoName(itemName)
-}
-
 export const initRepo = <T extends MItem>(item: MItemConstructor<T>): void => {
   const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
@@ -64,7 +57,54 @@ export const initRepo = <T extends MItem>(item: MItemConstructor<T>): void => {
   createRepo(itemName)
 }
 
-export const repoName = <T extends MItem>(itemName: string): Repo<T> => {
+export const repo = <T extends MItem>(
+  item: MItemConstructor<T>,
+  ctx: IContext,
+): IRepo<T> => {
+  const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
+
+  if (!itemName) {
+    throw new Error('No item name found')
+  }
+
+  return repoName<T>(itemName, ctx)
+}
+
+export const repoName = <T extends MItem>(
+  itemName: string,
+  ctx: IContext,
+): IRepo<T> => {
+  const base = liveRepoName<T>(itemName)
+
+  const withHistory = wrapWithHistory(
+    itemName,
+    base,
+    ctx,
+    (clientId) =>
+      liveRepoName('Client').watchId(clientId) as Observable<Client>,
+  )
+
+  if (!withHistory) {
+    const err = `Repo not found for ${itemName}`
+    throw new Error(err)
+  }
+
+  return withHistory
+}
+
+export const liveRepo = <T extends MItem>(
+  item: MItemConstructor<T>,
+): Repo<T> => {
+  const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
+
+  if (!itemName) {
+    throw new Error('No item name found')
+  }
+
+  return liveRepoName<T>(itemName)
+}
+
+export const liveRepoName = <T extends MItem>(itemName: string): Repo<T> => {
   if (!itemName) {
     throw new Error('No item name found')
   }

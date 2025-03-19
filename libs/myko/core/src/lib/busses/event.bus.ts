@@ -17,9 +17,9 @@ import { v4 as uuid } from 'uuid'
 import { onAllInit } from '../hooks'
 import {
   getHostId,
+  liveRepoName,
   propertyDefaults,
   relationRegistry,
-  repoName,
 } from '../registry'
 
 export type MykoSagaType = Type<MSaga>
@@ -55,7 +55,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe(async (e) => {
-              const localRepo = repoName(relation.localType)
+              const localRepo = liveRepoName(relation.localType)
 
               const ff: typeof localRepo.getFilter =
                 localRepo.getFilter.bind(localRepo)
@@ -77,9 +77,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
         }
 
         case 'owns-many': {
-          const ftRepo = repoName(relation.foreignType)
+          const ftRepo = liveRepoName(relation.foreignType)
 
-          const ltRepo = repoName(relation.localType)
+          const ltRepo = liveRepoName(relation.localType)
 
           const getChildrenFilter: typeof ftRepo.getFilter =
             ftRepo.getFilter.bind(ftRepo)
@@ -128,7 +128,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe(async (e) => {
-              const fRepo = repoName(relation.foreignType)
+              const fRepo = liveRepoName(relation.foreignType)
 
               const ids: typeof fRepo.getIds = fRepo.getIds.bind(fRepo)
 
@@ -154,7 +154,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               ),
             )
             .subscribe(async (event) => {
-              const localRepo = repoName(relation.localType)
+              const localRepo = liveRepoName(relation.localType)
               const ff: typeof localRepo.getFilter =
                 localRepo.getFilter.bind(localRepo)
               const affected = await ff((e) =>
@@ -196,7 +196,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                   }
                 }
 
-                const fr = repoName(foreignType)
+                const fr = liveRepoName(foreignType)
                 const getForeign: typeof fr.getFilter = fr.getFilter.bind(fr)
 
                 if (!getForeign) {
@@ -210,7 +210,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               }),
             )
 
-            const localRepo = repoName(localType)
+            const localRepo = liveRepoName(localType)
             const getLocal: typeof localRepo.getFilter =
               localRepo.getFilter.bind(localRepo)
 

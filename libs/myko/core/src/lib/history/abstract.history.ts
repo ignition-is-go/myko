@@ -1,5 +1,5 @@
 import type { Observable } from 'rxjs'
-import { type MEvent } from '../types'
+import { type DeepPartial, type MEvent, type MItem } from '../types'
 
 export abstract class HistoryProvider {
   constructor() {}
@@ -9,6 +9,23 @@ export abstract class HistoryProvider {
     start?: string,
     end?: string,
   ): Observable<MEvent[]>
+
+  abstract getItemAsOfTime<T extends MItem>(
+    id: string,
+    itemType: string,
+    time: string,
+  ): Promise<T | null>
+
+  abstract getItemsByQueryAsOfTime<T extends MItem>(
+    query: DeepPartial<T>,
+    itemType: string,
+    time: string,
+  ): Promise<T[]>
+
+  abstract getAllItemsAsOfTime<T extends MItem>(
+    itemType: string,
+    time: string,
+  ): Promise<T[]>
 
   abstract getEventsForTransaction(id: string): Promise<MEvent[]>
 

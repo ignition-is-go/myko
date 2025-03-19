@@ -2,6 +2,7 @@ import {
   MEventType,
   MItem,
   addMissingHash,
+  type DeepPartial,
   type ID,
   type MEvent,
 } from '../types'
@@ -84,7 +85,7 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
    * @param query - The partial object used to filter the items.
    * @returns An array of items that match the query.
    */
-  async get(query: Partial<T>): Promise<T[]> {
+  async get(query: DeepPartial<T>): Promise<T[]> {
     const filterFunc = buildFilter(query)
     const arr = toArray(this.store.getFilter(filterFunc))
     return arr

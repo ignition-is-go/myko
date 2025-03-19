@@ -4,6 +4,7 @@ import {
   constructorRegistry,
   eventBus,
   getHostId,
+  liveRepoName,
   MEventType,
   MItem,
   MykoCommandHandler,
@@ -11,7 +12,6 @@ import {
   MykoSaga,
   onAllInit,
   ReballanceItem,
-  repoName,
   type MCommandHandler,
   type MSagaHandler,
   type Stream,
@@ -45,7 +45,7 @@ export class AutoBallanceSaga implements MSagaHandler {
         return merge(
           ...foreignReballance.map((info) => {
             return from(
-              repoName(info.local).get({ [info.propName]: event.item.id }),
+              liveRepoName(info.local).get({ [info.propName]: event.item.id }),
             ).pipe(
               switchMap((items) => {
                 return of(
@@ -69,7 +69,7 @@ export class AutoBallanceSaga implements MSagaHandler {
 export class RebalanceItemHandler implements MCommandHandler<ReballanceItem> {
   private logger = new MykoLogger(RebalanceItemHandler.name)
   async execute(command: ReballanceItem): Promise<void> {
-    const localItems = repoName(command.entityType)
+    const localItems = liveRepoName(command.entityType)
 
     if (!localItems) {
       throw new Error(`Cannot find repo for ${command.entityType}`)
@@ -81,7 +81,7 @@ export class RebalanceItemHandler implements MCommandHandler<ReballanceItem> {
       throw new Error(`Cannot find reballance info for ${command.entityType}`)
     }
 
-    const foreignItems = repoName(reballanceInfo.foreignType)
+    const foreignItems = liveRepoName(reballanceInfo.foreignType)
 
     if (!foreignItems) {
       throw new Error(`Cannot find repo for ${reballanceInfo.foreignType}`)
@@ -160,7 +160,7 @@ onAllInit(async () => {
   for (const [key, value] of autoballanceRegistry.entries()) {
     console.log('Reballance', key, value)
 
-    const localItems = repoName(key)
+    const localItems = liveRepoName(key)
 
     if (!localItems) {
       throw new Error(`Cannot find repo for ${key}`)

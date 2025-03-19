@@ -2,6 +2,7 @@ import {
   HistoryProvider,
   MEventType,
   unwrapItem,
+  type DeepPartial,
   type MEvent,
   type MItem,
 } from '@myko/core'
@@ -41,6 +42,28 @@ export class PostgresHistory extends HistoryProvider {
     this.isInit = true
 
     await get_db_size()
+  }
+
+  getItemAsOfTime<T extends MItem>(
+    id: string,
+    itemType: string,
+    time: string,
+  ): Promise<T | null> {
+    throw new Error('Method not implemented.')
+  }
+
+  getItemsByQueryAsOfTime<T extends MItem>(
+    query: DeepPartial<T>,
+    itemType: string,
+    time: string,
+  ): Promise<T[]> {
+    throw new Error('Method not implemented.')
+  }
+  getAllItemsAsOfTime<T extends MItem>(
+    itemType: string,
+    time: string,
+  ): Promise<T[]> {
+    throw new Error('Method not implemented.')
   }
 
   getEntityHistory(
