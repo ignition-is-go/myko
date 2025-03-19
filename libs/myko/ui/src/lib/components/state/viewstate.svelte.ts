@@ -44,7 +44,7 @@ export class TransactionsViewState {
 		return this.#rightTime ?? this.#now;
 	}
 
-	set rightTime(value: DateTime) {
+	set rightTime(_value: DateTime) {
 		throw new Error('Cannot set rightTime use rightTimeMilis');
 	}
 
@@ -52,7 +52,7 @@ export class TransactionsViewState {
 		return this.#rightTimeMilis ?? this.#now.toMillis();
 	}
 
-	set rightTimeMilis(value: number) {
+	set rightTimeMilis(_value: number) {
 		throw new Error('Cannot set rightTimeMilis. [readonly]');
 	}
 
@@ -60,7 +60,7 @@ export class TransactionsViewState {
 		return this.#durationMilisPerPx;
 	}
 
-	set durationMilisPerPx(value: number) {
+	set durationMilisPerPx(_value: number) {
 		throw new Error('Cannot set durationMilisPerPx. [readonly]');
 	}
 
@@ -68,7 +68,7 @@ export class TransactionsViewState {
 		return this.#leftTime;
 	}
 
-	set leftTime(value: DateTime) {
+	set leftTime(_value: DateTime) {
 		throw new Error('Cannot set leftTime [readonly]');
 	}
 
@@ -76,7 +76,7 @@ export class TransactionsViewState {
 		return this.#leftTimeMilis;
 	}
 
-	set leftTimeMilis(value: number) {
+	set leftTimeMilis(_value: number) {
 		throw new Error('Cannot set leftTimeMilis [readonly]');
 	}
 
@@ -84,7 +84,7 @@ export class TransactionsViewState {
 		return this.#timeRangeMilis;
 	}
 
-	set timeRangeMilis(value: number) {
+	set timeRangeMilis(_value: number) {
 		throw new Error('Cannot set timeRangeMilis [readonly]');
 	}
 
@@ -92,7 +92,7 @@ export class TransactionsViewState {
 		return this.#timeRangeMilis / this.#widthPx;
 	}
 
-	set milisPerPx(value: number) {
+	set milisPerPx(_value: number) {
 		throw new Error('Cannot set milisPerPx [readonly]');
 	}
 
@@ -116,7 +116,7 @@ export class TransactionsViewState {
 		return this.#now;
 	}
 
-	set now(value: DateTime) {
+	set now(_value: DateTime) {
 		throw new Error('Cannot set now [readonly]');
 	}
 
@@ -142,7 +142,7 @@ export class TransactionsViewState {
 		return uniq(adjustedPx);
 	}
 
-	set allEventTimestamps(value: number[]) {
+	set allEventTimestamps(_value: number[]) {
 		throw new Error('Cannot set allEventTimestamps [readonly]');
 	}
 

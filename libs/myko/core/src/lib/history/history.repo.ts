@@ -20,11 +20,11 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
   watch(query: DeepPartial<T>): Observable<T[]> {
     return from(this.get(query))
   }
-  getSearch(query: string): Promise<T[]> {
+  getSearch(_query: string): Promise<T[]> {
     throw new Error('Method not implemented.')
   }
 
-  getIds(ids: ID[]): Promise<T[]> {
+  getIds(_ids: ID[]): Promise<T[]> {
     throw new Error('Method not implemented.')
   }
 
@@ -52,14 +52,14 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
     return this
   }
 
-  getIndex(index: keyof T, value: any): Promise<T[]> {
+  getIndex(_index: keyof T, _value: any): Promise<T[]> {
     throw new Error('Method not implemented.')
   }
 
   watchSearch(
-    query: string,
-    opts?: { showAllOnEmpty?: boolean },
-    filters?:
+    _query: string,
+    _opts?: { showAllOnEmpty?: boolean },
+    _filters?:
       | {
           func?: ((ent: T) => boolean) | undefined
           query?: DeepPartial<T> | undefined

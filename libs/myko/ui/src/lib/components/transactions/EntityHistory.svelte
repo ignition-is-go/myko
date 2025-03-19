@@ -121,12 +121,11 @@
 			{/each}
 		</div>
 	{/if}
-
 	<div
 		class="self"
 		use:inview={{}}
-		on:inview_enter={() => (isInView = true)}
-		on:inview_leave={() => (isInView = false)}
+		oninview_enter={() => (isInView = true)}
+		oninview_leave={() => (isInView = false)}
 	>
 		<h2 style="margin-left: {level * 1}rem;">
 			{name}

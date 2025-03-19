@@ -10,7 +10,6 @@ import {
   type MSaga,
   type Type,
 } from '../types'
-import { commandBus, type AMykoCommandBus } from './command.bus'
 import { ObservableBus } from './observable.bus'
 
 import { v4 as uuid } from 'uuid'
@@ -32,7 +31,7 @@ export type MykoSagaType = Type<MSaga>
 export abstract class AMykoEventBus extends ObservableBus<MEvent> {
   abstract getServerId(): ID
 
-  constructor(private commandBus: AMykoCommandBus) {
+  constructor() {
     super()
     this.subscriptions = []
 
@@ -205,7 +204,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 
                 return {
                   name: foreignType,
-                  values: await getForeign((f) => true),
+                  values: await getForeign((_) => true),
                 }
               }),
             )
@@ -332,8 +331,8 @@ const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
 }
 
 export class EventBus extends AMykoEventBus {
-  constructor(commandBus: AMykoCommandBus) {
-    super(commandBus)
+  constructor() {
+    super()
   }
 
   getServerId(): ID {
@@ -346,4 +345,4 @@ export class EventBus extends AMykoEventBus {
   }
 }
 
-export const eventBus: EventBus = new EventBus(commandBus)
+export const eventBus: EventBus = new EventBus()

@@ -465,7 +465,7 @@ export class WSMClient {
     this.socketGroup.bootstrap(host, port)
   }
 
-  private resendMessages(path: string) {
+  private resendMessages(_path: string) {
     if (
       this.protocol !== MykoProtocol.MSGPACK &&
       !this.clientOpts.disableMsgPack

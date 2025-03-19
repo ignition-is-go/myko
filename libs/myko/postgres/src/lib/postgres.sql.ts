@@ -102,7 +102,7 @@ export const listen_notify_myko_events = async (
 
 export const get_event_stream = (): Observable<MEvent> => {
   return new Observable((subscriber) => {
-    const teardown = listen_notify_myko_events((payload) => {
+    listen_notify_myko_events((payload) => {
       subscriber.next(rowToEvent(JSON.parse(payload)))
     })
   })

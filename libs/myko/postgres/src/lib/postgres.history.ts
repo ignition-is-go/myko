@@ -45,23 +45,23 @@ export class PostgresHistory extends HistoryProvider {
   }
 
   getItemAsOfTime<T extends MItem>(
-    id: string,
-    itemType: string,
-    time: string,
+    _id: string,
+    _itemType: string,
+    _time: string,
   ): Promise<T | null> {
     throw new Error('Method not implemented.')
   }
 
   getItemsByQueryAsOfTime<T extends MItem>(
-    query: DeepPartial<T>,
-    itemType: string,
-    time: string,
+    _query: DeepPartial<T>,
+    _itemType: string,
+    _time: string,
   ): Promise<T[]> {
     throw new Error('Method not implemented.')
   }
   getAllItemsAsOfTime<T extends MItem>(
-    itemType: string,
-    time: string,
+    _itemType: string,
+    _time: string,
   ): Promise<T[]> {
     throw new Error('Method not implemented.')
   }

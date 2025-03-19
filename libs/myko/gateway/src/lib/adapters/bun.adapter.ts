@@ -75,7 +75,7 @@ export const bunAdapter: MykoWsAdapter = ({
         ws.ping()
       },
       drain(_ws) {},
-      close(ws, code, message) {
+      close(ws, _code, _message) {
         ws.unsubscribe(ws.data.clientId)
         queryBus
           .execute(

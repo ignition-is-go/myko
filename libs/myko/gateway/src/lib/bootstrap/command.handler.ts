@@ -39,7 +39,7 @@ export const handleCommand = async (
       fail()
       return false
     }
-    const res = await auth.canActivate(userToken).catch((e) => {
+    const res = await auth.canActivate(userToken).catch((_) => {
       fail()
       return false
     })

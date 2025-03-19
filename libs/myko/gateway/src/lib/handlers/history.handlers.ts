@@ -41,7 +41,7 @@ export class EventsInRangeHandler implements MReportHandler<EventsInRange> {
 
 @MykoReportHandler(AllTransactions)
 export class AllTransactionsHandler implements MReportHandler<AllTransactions> {
-  execute(report: AllTransactions): Observable<string[]> {
+  execute(_report: AllTransactions): Observable<string[]> {
     const history = getHistoryProvider()
 
     return from(history.getAllTransactions())
