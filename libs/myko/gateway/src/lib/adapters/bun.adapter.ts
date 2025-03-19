@@ -10,6 +10,7 @@ import {
 } from '@myko/core'
 import type { ServerWebSocket } from 'bun'
 import { randomUUID } from 'crypto'
+import { v4 as uuid } from 'uuid'
 import { parse, serialize } from '../compression/client.protocols'
 import type {
   MykoWsAdapter,
@@ -77,7 +78,12 @@ export const bunAdapter: MykoWsAdapter = ({
       close(ws, code, message) {
         ws.unsubscribe(ws.data.clientId)
         queryBus
-          .execute(new GetClientsByIds([ws.data.clientId]))
+          .execute(
+            new GetClientsByIds([ws.data.clientId]).withContext({
+              commandClientId: getHostId(),
+              tx: uuid(),
+            }),
+          )
           .then((clients) => {
             if (clients.length === 0) {
               return

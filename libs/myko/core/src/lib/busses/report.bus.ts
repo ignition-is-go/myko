@@ -8,6 +8,7 @@ import {
 } from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import type {
+  ContextPhantom,
   MLiveReportResult,
   MReport,
   MReportHandler,
@@ -58,7 +59,9 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    */
   private cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
 
-  watch<T extends MReport<unknown>>(report: T): MLiveReportResult<T> {
+  watch<T extends MReport<unknown> & ContextPhantom>(
+    report: T,
+  ): MLiveReportResult<T> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
     const handler = this.handlers.get(reportId)
 
@@ -106,7 +109,9 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    * @param report - The report to execute.
    * @returns The report result.
    */
-  execute<U, T extends MReport<U>>(report: T): MReportResult<T> {
+  execute<U, T extends MReport<U> & ContextPhantom>(
+    report: T,
+  ): MReportResult<T> {
     return firstValueFrom(this.watch(report)) as MReportResult<T>
   }
 

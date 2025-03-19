@@ -8,6 +8,7 @@ import {
 } from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import type {
+  ContextPhantom,
   MItem,
   MLiveQueryResult,
   MQuery,
@@ -57,7 +58,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    */
   private cache = new Map<string, MLiveQueryResult<MQuery>>()
 
-  watch<T extends MQuery>(query: T): MLiveQueryResult<T> {
+  watch<T extends MQuery & ContextPhantom>(query: T): MLiveQueryResult<T> {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
     const handler = this.handlers.get(queryId)
 
@@ -102,7 +103,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * @returns The query result.
    * @template T The type of the query.
    */
-  execute<T extends MQuery>(query: T): MQueryResult<T> {
+  execute<T extends MQuery & ContextPhantom>(query: T): MQueryResult<T> {
     // console.log(wrapQuery(query).queryId)
     return firstValueFrom(this.watch(query)) as MQueryResult<T>
   }

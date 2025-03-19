@@ -5,6 +5,7 @@ import {
   Server,
   ServerEventLog,
   eventBus,
+  getHostId,
   onAllInit,
   queryBus,
   repo,
@@ -13,6 +14,7 @@ import {
 import { WSMClient } from '@myko/ws'
 import { Subject, filter, firstValueFrom, takeUntil } from 'rxjs'
 
+import { v4 as uuid } from 'uuid'
 import { peerBus } from '../bus/peer.bus'
 import { getAuth } from './auth.registry'
 
@@ -153,9 +155,16 @@ export class PeerClientRegistry {
 export const peers = new PeerClientRegistry()
 
 onAllInit(async () => {
-  queryBus.watch(new GetPeerServers()).subscribe((q) => {
-    for (const server of q) {
-      peers.addPeer(server)
-    }
-  })
+  queryBus
+    .watch(
+      new GetPeerServers().withContext({
+        commandClientId: getHostId(),
+        tx: uuid(),
+      }),
+    )
+    .subscribe((q) => {
+      for (const server of q) {
+        peers.addPeer(server)
+      }
+    })
 })

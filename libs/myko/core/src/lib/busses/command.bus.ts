@@ -1,5 +1,6 @@
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 import type {
+  ContextPhantom,
   MCommand,
   MCommandHandler,
   MCommandResponse,
@@ -25,7 +26,7 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
    * @returns A promise that resolves to the command response.
    * @throws If a handler is not provided for the command.
    */
-  async execute<T extends MCommand<MCommandResponse<T>>>(
+  async execute<T extends MCommand<MCommandResponse<T>> & ContextPhantom>(
     command: T,
   ): Promise<MCommandResponse<T>> {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)

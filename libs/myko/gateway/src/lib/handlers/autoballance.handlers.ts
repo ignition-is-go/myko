@@ -3,7 +3,7 @@ import {
   commandBus,
   constructorRegistry,
   eventBus,
-  MCommand,
+  getHostId,
   MEventType,
   MItem,
   MykoCommandHandler,
@@ -16,12 +16,12 @@ import {
   type MSagaHandler,
   type Stream,
 } from '@myko/core'
-import { from, merge, mergeMap, Observable, of, switchMap } from 'rxjs'
+import { from, merge, mergeMap, of, switchMap } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
 @MykoSaga()
 export class AutoBallanceSaga implements MSagaHandler {
-  execute(stream: Stream<MItem>): Observable<MCommand> {
+  execute(stream: Stream<MItem>) {
     return stream.pipe(
       mergeMap((event) => {
         const localReballance = autoballanceRegistry.get(event.itemType)
@@ -29,9 +29,10 @@ export class AutoBallanceSaga implements MSagaHandler {
         if (localReballance && event.changeType === MEventType.SET) {
           // Use withTransaction to set the tx from the event
           return of(
-            new ReballanceItem(event.itemType, event.item.id).withTransaction(
-              event.tx,
-            ),
+            new ReballanceItem(event.itemType, event.item.id).withContext({
+              commandClientId: getHostId(),
+              tx: event.tx,
+            }),
           )
         }
 
@@ -49,9 +50,10 @@ export class AutoBallanceSaga implements MSagaHandler {
               switchMap((items) => {
                 return of(
                   ...items.map((item) =>
-                    new ReballanceItem(info.local, item.id).withTransaction(
-                      event.tx,
-                    ),
+                    new ReballanceItem(info.local, item.id).withContext({
+                      commandClientId: getHostId(),
+                      tx: event.tx,
+                    }),
                   ),
                 )
               }),

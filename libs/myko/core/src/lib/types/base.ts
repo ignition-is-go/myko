@@ -47,6 +47,10 @@ export type DeepPartial<T> = T extends object
     }
   : T
 
+export type ContextPhantom = {
+  $withContext: true
+}
+
 export class WithContext {
   /**
    * The transaction ID associated with the command.
@@ -70,9 +74,9 @@ export class WithContext {
    * @param tx The transaction ID.
    * @returns The modified command instance.
    */
-  withTransaction(tx: ID): this {
+  withTransaction(tx: ID): this & ContextPhantom {
     Reflect.set(this, 'tx', tx)
-    return this
+    return this as this & ContextPhantom
   }
 
   /**
@@ -80,12 +84,19 @@ export class WithContext {
    * @param clientId the client ID.
    * @returns The modified command instance.
    */
-  withClientId(clientId: ID): this {
+  withClientId(clientId: ID): this & ContextPhantom {
     Reflect.set(this, 'commandClientId', clientId)
-    return this
+    return this as this & ContextPhantom
   }
 
-  withContext(ctx: Pick<WithContext, 'commandClientId' | 'tx'>): this {
-    return this.withClientId(ctx.commandClientId).withTransaction(ctx.tx)
+  withContext(ctx: IWithContext): this & ContextPhantom {
+    return this.withClientId(ctx.commandClientId).withTransaction(
+      ctx.tx,
+    ) as this & ContextPhantom
   }
 }
+
+export type IWithContext = Omit<
+  WithContext,
+  'withClientId' | 'withTransaction' | 'withContext' | 'createdAt'
+>

@@ -21,7 +21,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
   execute(query: PeerQuery): MLiveQueryResult<PeerQuery> {
     try {
       if (query.peerId === getHostId()) {
-        return queryBus.watch(query.query)
+        return queryBus.watch(query.query.withContext(query))
       }
 
       const peer = peers.getPeer(query.peerId)

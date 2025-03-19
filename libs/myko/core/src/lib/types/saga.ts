@@ -1,4 +1,5 @@
 import type { Observable } from 'rxjs'
+import type { ContextPhantom } from './base'
 import type { MCommand } from './command'
 import type { MEvent } from './events'
 import type { MItem } from './item'
@@ -22,5 +23,5 @@ export interface MSagaHandler {
    * @param query - The query to execute.
    * @returns The live query result as an Observable.
    */
-  execute(stream: Stream<MItem>): Observable<MCommand>
+  execute(stream: Stream<MItem>): Observable<MCommand & ContextPhantom>
 }
