@@ -21,7 +21,10 @@ export const handleReport = (
   wrappedReport: MWrappedReport,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-  const report = MReport.fromWrappedReport(wrappedReport).withClientId(clientId)
+  const report = MReport.fromWrappedReport(wrappedReport).withContext({
+    commandClientId: clientId,
+    tx: wrappedReport.report.tx,
+  })
 
   const response = reportBus.watch(report).pipe(
     map((r) => wrapReportResponseWS(report.tx, r)),

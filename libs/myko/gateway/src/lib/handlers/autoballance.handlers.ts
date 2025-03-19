@@ -27,7 +27,7 @@ export class AutoBallanceSaga implements MSagaHandler {
         const localReballance = autoballanceRegistry.get(event.itemType)
 
         if (localReballance && event.changeType === MEventType.SET) {
-          // Use withTransaction to set the tx from the event
+          // Use withContext to set the context from the event
           return of(
             new ReballanceItem(event.itemType, event.item.id).withContext({
               commandClientId: getHostId(),
@@ -175,9 +175,11 @@ onAllInit(async () => {
     // Generate a transaction ID for this initialization
     const initTx = uuid()
     for (const local of allLocals) {
-      commandBus.execute(
-        new ReballanceItem(key, local.id).withTransaction(initTx),
-      )
+      const context = {
+        commandClientId: getHostId(),
+        tx: initTx,
+      }
+      commandBus.execute(new ReballanceItem(key, local.id).withContext(context))
     }
   }
 })

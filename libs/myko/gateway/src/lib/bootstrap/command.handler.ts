@@ -55,7 +55,10 @@ export const handleCommand = async (
     }
   }
 
-  const unwrapped = MCommand.fromWrappedCommand(command).withClientId(clientId)
+  const unwrapped = MCommand.fromWrappedCommand(command).withContext({
+    commandClientId: clientId,
+    tx: txid,
+  })
   // unwrapCommand(command) as MCommand<unknown>
   await commandBus
     .execute(unwrapped)

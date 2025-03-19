@@ -69,34 +69,12 @@ export class WithContext {
     this.createdAt = DateTime.utc().toString()
   }
 
-  /**
-   * Sets the transaction ID for the command.
-   * @param tx The transaction ID.
-   * @returns The modified command instance.
-   */
-  withTransaction(tx: ID): this & ContextPhantom {
-    Reflect.set(this, 'tx', tx)
-    return this as this & ContextPhantom
-  }
-
-  /**
-   * Sets the transaction ID for the command.
-   * @param clientId the client ID.
-   * @returns The modified command instance.
-   */
-  withClientId(clientId: ID): this & ContextPhantom {
-    Reflect.set(this, 'commandClientId', clientId)
-    return this as this & ContextPhantom
-  }
-
   withContext(ctx: IContext): this & ContextPhantom {
-    return this.withClientId(ctx.commandClientId).withTransaction(
-      ctx.tx,
-    ) as this & ContextPhantom
+    Reflect.set(this, 'tx', ctx.tx)
+    Reflect.set(this, 'commandClientId', ctx.commandClientId)
+
+    return this as this & ContextPhantom
   }
 }
 
-export type IContext = Omit<
-  WithContext,
-  'withClientId' | 'withTransaction' | 'withContext' | 'createdAt'
->
+export type IContext = Omit<WithContext, 'withContext' | 'createdAt'>
