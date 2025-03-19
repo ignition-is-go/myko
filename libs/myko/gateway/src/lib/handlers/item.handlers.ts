@@ -30,14 +30,14 @@ export class GetItemByTypeAndIdHandler
 {
   constructor() {}
   execute(query: GetItemsByTypeAndIds): Observable<MItem[]> {
-    return repoName(query.type).watchIds(query.ids)
+    return repoName(query.type, query).watchIds(query.ids)
   }
 }
 
 @MykoReportHandler(EntitySearch)
 export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
   execute(report: EntitySearch<any>): Observable<any> {
-    return repoName(report.entityType).watchSearch(
+    return repoName(report.entityType, report).watchSearch(
       report.query,
       {
         showAllOnEmpty: report.opts?.showAllOnEmpty,
@@ -52,7 +52,7 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
 @MykoReportHandler(ChildEntities)
 export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
   execute(report: ChildEntities): MLiveReportResult<ChildEntities> {
-    const item = repoName(report.parentType).watchId(report.parentId)
+    const item = repoName(report.parentType, report).watchId(report.parentId)
 
     const relValues = [...relationRegistry.values()]
 
@@ -64,7 +64,7 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
 
         const ownsMany = relValues.map((x) =>
           x.type === 'owns-many' && x.localType === report.parentType
-            ? repoName(x.foreignType).watch({
+            ? repoName(x.foreignType, report).watch({
                 [x.foreignKey]: item[x.localKey],
               })
             : of([]),
@@ -82,14 +82,14 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
             (y) => y.foreignType === report.parentType,
           )!
 
-          return repoName(x.localType).watch({
+          return repoName(x.localType, report).watch({
             [dep.localKey]: item[dep.foreignKey],
           })
         })
 
         const belongsToThis = relValues.map((x) =>
           x.type === 'belongs-to' && x.foreignType === report.parentType
-            ? repoName(x.localType).watch({
+            ? repoName(x.localType, report).watch({
                 [x.localKey]: item[x.foreignKey],
               })
             : of([]),
