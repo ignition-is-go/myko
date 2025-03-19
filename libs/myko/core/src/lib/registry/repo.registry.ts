@@ -1,8 +1,8 @@
-import { filter, type Observable } from 'rxjs'
+import { filter } from 'rxjs'
 import { Repo, type IRepo, type RepoFactory } from '../aggregates/repo.abstract'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
-import { wrapWithHistory } from '../history/repo.manager'
+import { RepoWithHistory } from '../history/repo.manager'
 import type { Client } from '../modules'
 import type { Persister, PersisterFactory } from '../persisters'
 import {
@@ -76,12 +76,8 @@ export const repoName = <T extends MItem>(
 ): IRepo<T> => {
   const base = liveRepoName<T>(itemName)
 
-  const withHistory = wrapWithHistory(
-    itemName,
-    base,
-    ctx,
-    (clientId) =>
-      liveRepoName('Client').watchId(clientId) as Observable<Client>,
+  const withHistory = new RepoWithHistory(ctx, itemName, base, (clientId) =>
+    liveRepoName<Client>('Client').watchId(clientId),
   )
 
   if (!withHistory) {
