@@ -89,14 +89,14 @@ export class WithContext {
     return this as this & ContextPhantom
   }
 
-  withContext(ctx: IWithContext): this & ContextPhantom {
+  withContext(ctx: IContext): this & ContextPhantom {
     return this.withClientId(ctx.commandClientId).withTransaction(
       ctx.tx,
     ) as this & ContextPhantom
   }
 }
 
-export type IWithContext = Omit<
+export type IContext = Omit<
   WithContext,
   'withClientId' | 'withTransaction' | 'withContext' | 'createdAt'
 >
