@@ -5,7 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.2 (2025-03-20)
+
+### New Features
+
+ - <csr-id-399ad0a1e3b250966670606fd473583df9c4037b/> add reports
+
+### Bug Fixes
+
+ - <csr-id-fa57f11fa469b0ca33eaf0865cc7f4c1ab9f7e5b/> big rust rehash
+ - <csr-id-aab1aa3c1fa01c64179d75b5fd5ba003542edb87/> query and report watch dont consume client
+
+### Other
+
+ - <csr-id-ee03a43ad332dd8d26f5e47f9744790889ea3d96/> rust query handlers
+ - <csr-id-75d2a73dadbe7bbf57ba6303b406b192c8a4ad3e/> rship/myko rust refactor
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 9 commits contributed to the release.
+ - 5 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Merge pull request #173 from ignition-is-go/fix/ui ([`2ab7d5c`](https://github.com/ignition-is-go/rship/commit/2ab7d5c2b3f517d8b8d2fbc2d05f6df7b50869cc))
+    - Rust query handlers ([`ee03a43`](https://github.com/ignition-is-go/rship/commit/ee03a43ad332dd8d26f5e47f9744790889ea3d96))
+    - Rship/myko rust refactor ([`75d2a73`](https://github.com/ignition-is-go/rship/commit/75d2a73dadbe7bbf57ba6303b406b192c8a4ad3e))
+    - Merge pull request #171 from ignition-is-go/feat/asset-movement ([`2be13e4`](https://github.com/ignition-is-go/rship/commit/2be13e4bbe3604a92026982d8adb6c4645fd8fa8))
+    - Big rust rehash ([`fa57f11`](https://github.com/ignition-is-go/rship/commit/fa57f11fa469b0ca33eaf0865cc7f4c1ab9f7e5b))
+    - Query and report watch dont consume client ([`aab1aa3`](https://github.com/ignition-is-go/rship/commit/aab1aa3c1fa01c64179d75b5fd5ba003542edb87))
+    - Merge pull request #170 from ignition-is-go/feat/torrent ([`2004fbf`](https://github.com/ignition-is-go/rship/commit/2004fbff033491378b979c975daa16bf1315488c))
+    - Add reports ([`399ad0a`](https://github.com/ignition-is-go/rship/commit/399ad0a1e3b250966670606fd473583df9c4037b))
+    - Merge pull request #167 from ignition-is-go/feat/files ([`38648b5`](https://github.com/ignition-is-go/rship/commit/38648b5025aa9b00aa578d1d9ecfcd624c5efb71))
+</details>
+
 ## v0.1.1 (2024-12-02)
+
+<csr-id-30a94114c1f86c7527a958281f79c5bed6360a2a/>
 
 ### Chore
 
@@ -15,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 1 commit contributed to the release.
+ - 2 commits contributed to the release.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -26,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-macros v0.1.1, myko-wasm v0.1.1, myko-rs v0.1.1, rship-entities v0.1.1, rship-sdk v0.1.1 ([`91ab979`](https://github.com/ignition-is-go/rship/commit/91ab979a04bf5558d1cebec1e1ff571c31f0b8c0))
     - Bump versions ([`30a9411`](https://github.com/ignition-is-go/rship/commit/30a94114c1f86c7527a958281f79c5bed6360a2a))
 </details>
 

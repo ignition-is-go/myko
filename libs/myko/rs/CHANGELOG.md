@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.3 (2025-03-20)
+
+### Chore
+
+ - <csr-id-4dd73ff44d9412f090490c8de11411741821261b/> clean up rust diagnostics
+
+### New Features
+
+ - <csr-id-bab4b5d02fcf21b6b5badc92d45aa74f771b454e/> files are movin
+ - <csr-id-399ad0a1e3b250966670606fd473583df9c4037b/> add reports
+ - <csr-id-b07b42c1b38638fd234d978ba3beaee25b53b7fe/> make MykoMessage generic over commands enum
+
+### Bug Fixes
+
+ - <csr-id-c751f05ec833a8be1c13494b00e902134e979180/> disconnect
+ - <csr-id-f5b3165ab6ec924a788f5d08211e2867f7f8c58e/> reconnect folders
+ - <csr-id-fa57f11fa469b0ca33eaf0865cc7f4c1ab9f7e5b/> big rust rehash
+ - <csr-id-aab1aa3c1fa01c64179d75b5fd5ba003542edb87/> query and report watch dont consume client
+ - <csr-id-e886eabc12e2fecaabb34c4893cac28e2da98911/> resend query on reconnect and reset state on seq 0
+ - <csr-id-8200a096bd0796f2469c9c31b1aa1a3b215e6342/> properly notify disconnect
+
+### Other
+
+ - <csr-id-ee03a43ad332dd8d26f5e47f9744790889ea3d96/> rust query handlers
+ - <csr-id-75d2a73dadbe7bbf57ba6303b406b192c8a4ad3e/> rship/myko rust refactor
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 17 commits contributed to the release.
+ - 12 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Merge pull request #202 from ignition-is-go/feat/remote-routes ([`eaecbb3`](https://github.com/ignition-is-go/rship/commit/eaecbb3c741baf7898db155da727204c3284e3c3))
+    - Clean up rust diagnostics ([`4dd73ff`](https://github.com/ignition-is-go/rship/commit/4dd73ff44d9412f090490c8de11411741821261b))
+    - Merge pull request #173 from ignition-is-go/fix/ui ([`2ab7d5c`](https://github.com/ignition-is-go/rship/commit/2ab7d5c2b3f517d8b8d2fbc2d05f6df7b50869cc))
+    - Rust query handlers ([`ee03a43`](https://github.com/ignition-is-go/rship/commit/ee03a43ad332dd8d26f5e47f9744790889ea3d96))
+    - Rship/myko rust refactor ([`75d2a73`](https://github.com/ignition-is-go/rship/commit/75d2a73dadbe7bbf57ba6303b406b192c8a4ad3e))
+    - Merge pull request #171 from ignition-is-go/feat/asset-movement ([`2be13e4`](https://github.com/ignition-is-go/rship/commit/2be13e4bbe3604a92026982d8adb6c4645fd8fa8))
+    - Disconnect ([`c751f05`](https://github.com/ignition-is-go/rship/commit/c751f05ec833a8be1c13494b00e902134e979180))
+    - Reconnect folders ([`f5b3165`](https://github.com/ignition-is-go/rship/commit/f5b3165ab6ec924a788f5d08211e2867f7f8c58e))
+    - Big rust rehash ([`fa57f11`](https://github.com/ignition-is-go/rship/commit/fa57f11fa469b0ca33eaf0865cc7f4c1ab9f7e5b))
+    - Files are movin ([`bab4b5d`](https://github.com/ignition-is-go/rship/commit/bab4b5d02fcf21b6b5badc92d45aa74f771b454e))
+    - Query and report watch dont consume client ([`aab1aa3`](https://github.com/ignition-is-go/rship/commit/aab1aa3c1fa01c64179d75b5fd5ba003542edb87))
+    - Merge pull request #170 from ignition-is-go/feat/torrent ([`2004fbf`](https://github.com/ignition-is-go/rship/commit/2004fbff033491378b979c975daa16bf1315488c))
+    - Add reports ([`399ad0a`](https://github.com/ignition-is-go/rship/commit/399ad0a1e3b250966670606fd473583df9c4037b))
+    - Make MykoMessage generic over commands enum ([`b07b42c`](https://github.com/ignition-is-go/rship/commit/b07b42c1b38638fd234d978ba3beaee25b53b7fe))
+    - Resend query on reconnect and reset state on seq 0 ([`e886eab`](https://github.com/ignition-is-go/rship/commit/e886eabc12e2fecaabb34c4893cac28e2da98911))
+    - Properly notify disconnect ([`8200a09`](https://github.com/ignition-is-go/rship/commit/8200a096bd0796f2469c9c31b1aa1a3b215e6342))
+    - Merge pull request #167 from ignition-is-go/feat/files ([`38648b5`](https://github.com/ignition-is-go/rship/commit/38648b5025aa9b00aa578d1d9ecfcd624c5efb71))
+</details>
+
 ## v0.1.2 (2024-12-03)
 
 ### Bug Fixes
@@ -15,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 1 commit contributed to the release.
+ - 2 commits contributed to the release.
  - 1 day passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -27,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-rs v0.1.2, rship-entities v0.1.2, rship-sdk v0.1.5 ([`69f3a46`](https://github.com/ignition-is-go/rship/commit/69f3a460f03b4d340395956d4a41a32ae8370498))
     - Wait till channels are open to return connected ([`6ddc403`](https://github.com/ignition-is-go/rship/commit/6ddc40322d4af46c75c4b690ebf9afbfdf5a33e2))
 </details>
 
@@ -144,7 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 52 commits contributed to the release.
+ - 52 commits contributed to the release over the course of 380 calendar days.
  - 41 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
