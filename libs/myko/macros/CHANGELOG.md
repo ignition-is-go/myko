@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.1.2 (2025-03-20)
 
+<csr-id-ee03a43ad332dd8d26f5e47f9744790889ea3d96/>
+<csr-id-75d2a73dadbe7bbf57ba6303b406b192c8a4ad3e/>
+
 ### New Features
 
  - <csr-id-399ad0a1e3b250966670606fd473583df9c4037b/> add reports
@@ -25,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 9 commits contributed to the release.
+ - 10 commits contributed to the release.
  - 5 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -36,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-macros v0.1.2, myko-rs v0.1.3, rship-entities v0.1.3, rship-sdk v0.1.7 ([`d62808b`](https://github.com/ignition-is-go/rship/commit/d62808b17b21beac2754f9e3327e4503626db981))
     - Merge pull request #173 from ignition-is-go/fix/ui ([`2ab7d5c`](https://github.com/ignition-is-go/rship/commit/2ab7d5c2b3f517d8b8d2fbc2d05f6df7b50869cc))
     - Rust query handlers ([`ee03a43`](https://github.com/ignition-is-go/rship/commit/ee03a43ad332dd8d26f5e47f9744790889ea3d96))
     - Rship/myko rust refactor ([`75d2a73`](https://github.com/ignition-is-go/rship/commit/75d2a73dadbe7bbf57ba6303b406b192c8a4ad3e))
