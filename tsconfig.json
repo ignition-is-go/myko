@@ -6,7 +6,8 @@
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "strict": false,
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    "verbatimModuleSyntax": false
   },
   "include": ["apps", "libs"],
   "exclude": [
