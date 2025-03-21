@@ -1,4 +1,5 @@
 import {
+  ClearClientWindbackTime,
   Client,
   ClientCommand,
   ClientStatus,
@@ -9,6 +10,7 @@ import {
   getHostId,
   liveRepo,
   makeDel,
+  makeSet,
   type MCommandHandler,
   type MLiveReportResult,
   type MQueryHandler,
@@ -18,8 +20,11 @@ import {
   MykoQueryHandler,
   MykoReportHandler,
   queryBus,
+  SetClientWindbackTime,
+  WindbackStatus,
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
+import { ok } from 'assert'
 import { map, type Observable } from 'rxjs'
 import { getTx, peers } from '../registry'
 
@@ -84,5 +89,56 @@ export class ClientStatusHandler implements MReportHandler<ClientStatus> {
         }
       }),
     )
+  }
+}
+
+@MykoCommandHandler(SetClientWindbackTime)
+export class SetClientWindbackTimeHandler
+  implements MCommandHandler<SetClientWindbackTime>
+{
+  async execute(command: SetClientWindbackTime): Promise<void> {
+    const existing = await liveRepo(Client).getId(command.commandClientId)
+
+    ok(existing, 'Client not found')
+
+    const client = new Client({
+      ...existing,
+      windback: command.windback,
+      hash: undefined,
+    })
+
+    eventBus.publish(makeSet(client, command.tx))
+  }
+}
+
+@MykoCommandHandler(ClearClientWindbackTime)
+export class ClearClientWindbackTimeHandler
+  implements MCommandHandler<ClearClientWindbackTime>
+{
+  async execute(command: ClearClientWindbackTime): Promise<void> {
+    const existing = await liveRepo(Client).getId(command.commandClientId)
+
+    ok(existing, 'Client not found')
+
+    const client = new Client({
+      ...existing,
+      windback: undefined,
+      hash: undefined,
+    })
+
+    eventBus.publish(makeSet(client, command.tx))
+  }
+}
+
+@MykoReportHandler(WindbackStatus)
+export class WindbackStatusHandler implements MReportHandler<WindbackStatus> {
+  execute(report: WindbackStatus): MLiveReportResult<WindbackStatus> {
+    return liveRepo(Client)
+      .watchId(report.commandClientId)
+      .pipe(
+        map((client) => {
+          return client?.windback
+        }),
+      )
   }
 }

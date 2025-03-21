@@ -41,7 +41,7 @@
 	);
 
 	$effect(() => {
-		const firstEvent = $history && $history.length > 0 ? $history[$history.length - 1] : undefined;
+		const firstEvent = $history && $history.length > 0 ? $history[0] : undefined;
 		if (isRoot && firstEvent) {
 			viewState.timeZero = fromISOMemo(firstEvent.event.createdAt);
 		}
@@ -105,22 +105,9 @@
 	);
 
 	let isInView = $state(false);
-
-	const msWidth = $derived(1 / viewState.durationMilisPerPx);
-
-	const msLefts = $derived(viewState.width / msWidth + 2);
-
-	const overlayOffset = $derived((viewState.leftTimeMilis % 1) * msWidth);
 </script>
 
 <div class="entity-history" style="min-height:{($children.length + 1) * 10}px;">
-	{#if isRoot && msWidth > 100}
-		<div class="overlay">
-			{#each Array.from({ length: msLefts }) as _, i}
-				<div class="tick" style="left: {i * msWidth - overlayOffset}px;"></div>
-			{/each}
-		</div>
-	{/if}
 	<div
 		class="self"
 		use:inview={{}}
@@ -161,6 +148,7 @@
 		margin-bottom: 0.1rem;
 	}
 	.entity-history {
+		position: relative;
 		background-color: rgba(255, 255, 255, 0.05);
 		min-height: 10px;
 	}
@@ -174,18 +162,5 @@
 		display: flex;
 		align-items: center;
 		inset: 0;
-	}
-
-	.overlay {
-		position: absolute;
-		inset: 0;
-		pointer-events: none;
-		z-index: 999;
-	}
-
-	.tick {
-		position: absolute;
-		height: 100%;
-		border-left: 1px solid rgba(255, 255, 255, 0.5);
 	}
 </style>

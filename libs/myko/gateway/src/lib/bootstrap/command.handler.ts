@@ -1,6 +1,8 @@
 import {
+  Client,
   commandBus,
   getHistoryProvider,
+  liveRepo,
   MCommand,
   MykoCommandError,
   MykoLogger,
@@ -52,6 +54,29 @@ export const handleCommand = async (
     const userId = await auth.getUserId(userToken)
     if (userId) {
       getHistoryProvider().recordUserTransaction(userId, txid)
+    }
+
+    const client = await liveRepo(Client).getId(clientId)
+
+    if (!client) {
+      respond.next({
+        clientId,
+
+        data: wrapCommandErrorWS(
+          new MykoCommandError(txid, 'Client not found'),
+        ),
+      })
+      return
+    }
+
+    if (!!client.windback) {
+      respond.next({
+        clientId,
+        data: wrapCommandErrorWS(
+          new MykoCommandError(txid, 'Client is in windback mode'),
+        ),
+      })
+      return
     }
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { DateTime } from 'luxon';
 	import { getContext } from 'svelte';
 	import { watchResize } from 'svelte-watch-resize';
 	import {
@@ -39,13 +40,47 @@
 	const doubleShuntRight = $derived(
 		shuntRight && !shuntLeft && viewWidthPx < (leftTextRect?.width ?? 0)
 	);
+
+	const { windbackCursor }: { windbackCursor: DateTime } = $props();
+
+	const windbackCursorPx = $derived(
+		(windbackCursor.diff(viewState.timeZero).as('milliseconds') / fullDuration.as('milliseconds')) *
+			viewState.width
+	);
+
+	const windbackCursorVisible = $derived(
+		windbackCursor >= viewState.timeZero && windbackCursor <= viewState.now
+	);
+
+	const cursorMilis = $derived(windbackCursor ? windbackCursor.toMillis() : undefined);
+
+	const cursorPx = $derived(
+		cursorMilis ? (cursorMilis - viewState.leftTimeMilis) / viewState.durationMilisPerPx : 0
+	);
+
+	let timestampsEl: HTMLElement | null = $state(null);
 </script>
+
+<div class="bounds">
+	<div class="start-time">{viewState.timeZero.toFormat(FULL_DATE_FORMAT)}</div>
+	<div class="end-time">{viewState.now.toFormat(FULL_DATE_FORMAT)}</div>
+</div>
 
 <div class="all-time">
 	<div class="all-times">
 		{#each viewState.allEventTimestamps as timestamp}
-			<div class="tick" style="left: {timestamp}px"></div>
+			<div class="event" style="left: {timestamp}px"></div>
 		{/each}
+	</div>
+
+	<div class="cursor-time">
+		<div
+			class="cursor"
+			style="left: {windbackCursorPx}px; display: {windbackCursorVisible ? 'block' : 'none'}"
+		>
+			<div class="line"></div>
+			<div class="triangle"></div>
+		</div>
 	</div>
 
 	<div
@@ -74,12 +109,64 @@
 		</p>
 	</div>
 </div>
+<div class="timestamps" bind:this={timestampsEl}>
+	{#each viewState.majors as { leftPx, time: majorTime }, i}
+		<div class="major timestamp" style="left: {leftPx}px;">
+			<div class="tick"></div>
+			<span class="timestamp-text"
+				>{DateTime.fromMillis(majorTime).toFormat(viewState.majorResolution.majorFormat)}</span
+			>
+			{#each viewState.minors as { leftPx, time: minorTime }, i}
+				<div class="minor timestamp" style="left: {leftPx}px;">
+					<div class="tick"></div>
+					<span class="timestamp-text"
+						>{DateTime.fromMillis(minorTime + majorTime).toFormat(
+							viewState.minorResolution.minorFormat
+						)}</span
+					>
+				</div>
+			{/each}
+		</div>
+	{/each}
+	<div class="overlay">
+		<div class="cursor" style="left: {cursorPx}px;">
+			<div class="line"></div>
+			<div class="triangle"></div>
+		</div>
+	</div>
+</div>
 
 <style>
+	/* bounds */
+
+	.bounds {
+		display: flex;
+		width: 100%;
+		padding: 0.1rem 0.5rem;
+		justify-content: space-between;
+		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+	}
+
+	/* VIEW REGION (scroll bar) */
+
 	.all-time {
 		position: relative;
 		height: 1.5rem;
-		background-color: rgba(255, 255, 255, 0.1);
+		border-bottom: rgba(255, 255, 255, 0.1) 1px solid;
+	}
+	.view-region {
+		position: absolute;
+		top: 3px;
+		bottom: 3px;
+		border-radius: 0.2rem;
+		background-color: rgba(255, 255, 255, 0.2);
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		color: white;
+		padding: 0 0.5rem;
+		box-sizing: border-box;
+		user-select: none;
 	}
 
 	.text {
@@ -115,26 +202,48 @@
 		left: calc(var(--left-width) + 1rem) !important;
 	}
 
-	.view-region {
+	.event {
 		position: absolute;
-		top: 3px;
-		bottom: 3px;
-		border-radius: 0.2rem;
-		background-color: rgba(255, 255, 255, 0.1);
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		color: white;
-		padding: 0 0.5rem;
-		box-sizing: border-box;
-		user-select: none;
+		height: 100%;
+		border-left: 1px solid rgba(255, 255, 255, 0.2);
+	}
+
+	/* timestamps and grid lines */
+	.timestamps {
+		position: relative;
+		height: 2rem;
+	}
+	.timestamp {
+		position: absolute;
+	}
+
+	.timestamp-text {
+		left: 3px;
+		position: relative;
+	}
+
+	.overlay {
+		position: absolute;
+		inset: 0;
+		bottom: unset;
+		height: 100vh;
+		pointer-events: none;
+		z-index: 999;
 	}
 
 	.tick {
 		position: absolute;
 		top: 0;
-		bottom: 0;
-		width: 1px;
-		background-color: rgba(255, 255, 255, 0.1);
+		height: 100vh;
+		width: 0px;
+		border-left: 1px solid rgba(255, 255, 255, 0.5);
+	}
+
+	.minor .tick {
+		opacity: 0.25;
+	}
+
+	.major {
+		opacity: 0.5;
 	}
 </style>

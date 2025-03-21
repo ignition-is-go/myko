@@ -2,7 +2,6 @@ import {
   HistoryProvider,
   MEventType,
   unwrapItem,
-  type DeepPartial,
   type MEvent,
   type MItem,
 } from '@myko/core'
@@ -44,26 +43,56 @@ export class PostgresHistory extends HistoryProvider {
     await get_db_size()
   }
 
-  getItemAsOfTime<T extends MItem>(
-    _id: string,
-    _itemType: string,
-    _time: string,
+  async getItemAsOfTime<T extends MItem>(
+    id: string,
+    itemType: string,
+    time: string,
   ): Promise<T | null> {
-    throw new Error('Method not implemented.')
+    const result = await sql<EventCols[]>`
+      SELECT * FROM myko_events WHERE entity_id = ${id} AND item_type = ${itemType} AND created_at < ${time}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+
+    const events = result.map(rowToEvent)
+
+    if (events.length === 0) {
+      return null
+    }
+
+    const event = events[0]
+
+    if (event.changeType === MEventType.DEL) {
+      return null
+    }
+
+    return unwrapItem(event) as T
   }
 
-  getItemsByQueryAsOfTime<T extends MItem>(
-    _query: DeepPartial<T>,
-    _itemType: string,
-    _time: string,
+  // getItemsByQueryAsOfTime<T extends MItem>(
+  //   _query: DeepPartial<T>,
+  //   _itemType: string,
+  //   _time: string,
+  // ): Promise<T[]> {
+  //   throw new Error('getItemsByQueryAsOfTime not implemented')
+  // }
+
+  async getAllItemsAsOfTime<T extends MItem>(
+    itemType: string,
+    time: string,
   ): Promise<T[]> {
-    throw new Error('Method not implemented.')
-  }
-  getAllItemsAsOfTime<T extends MItem>(
-    _itemType: string,
-    _time: string,
-  ): Promise<T[]> {
-    throw new Error('Method not implemented.')
+    const result = await sql<EventCols[]>`
+      SELECT DISTINCT ON (entity_id) *
+      FROM myko_events
+      WHERE item_type = ${itemType} 
+      AND created_at <= ${time}
+      ORDER BY entity_id, created_at DESC
+    `
+
+    return result
+      .map(rowToEvent)
+      .filter((x) => x.changeType === MEventType.SET)
+      .map(unwrapItem) as T[]
   }
 
   getEntityHistory(

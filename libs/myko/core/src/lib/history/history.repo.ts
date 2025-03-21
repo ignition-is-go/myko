@@ -1,5 +1,5 @@
 import { firstValueFrom, from, type Observable } from 'rxjs'
-import { type IRepo } from '../aggregates/repo.abstract'
+import { buildFilter, type IRepo } from '../aggregates/repo.abstract'
 import type { DeepPartial, ID, MItem } from '../types'
 import type { HistoryProvider } from './abstract.history'
 
@@ -28,7 +28,7 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
 
   getIds(ids: ID[]): Promise<T[]> {
     return Promise.all(ids.map((id) => this.getId(id))).then(
-      (res) => res.filter((ent) => ent !== null) as T[],
+      (res) => res.filter(Boolean) as T[],
     )
   }
 
@@ -37,11 +37,11 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
   }
 
   get(query: DeepPartial<T>): Promise<T[]> {
-    return this.history.getItemsByQueryAsOfTime<T>(
-      query,
-      this.entity,
-      this.windbackTime,
-    )
+    const filterFunc = buildFilter(query)
+
+    return this.history
+      .getAllItemsAsOfTime<T>(this.entity, this.windbackTime)
+      .then((res) => res.filter(filterFunc))
   }
 
   getFilter(filterFunc: (ent: T) => boolean): Promise<T[]> {
@@ -51,7 +51,7 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
   }
 
   getIndex(_index: keyof T, _value: any): Promise<T[]> {
-    throw new Error('Method not implemented.')
+    throw new Error('HistoryRepo: getIndex not implemented')
   }
 
   watchSearch(
@@ -64,7 +64,7 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
         }
       | undefined,
   ): Observable<T[]> {
-    throw new Error('Method not implemented.')
+    throw new Error('HistoryRepo: watchSearch not implemented')
   }
 
   getSearch(_query: string): Promise<T[]> {

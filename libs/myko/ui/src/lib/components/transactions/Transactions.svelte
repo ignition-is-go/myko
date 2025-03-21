@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { type ID } from '@myko/core';
+	import type { DateTime } from 'luxon';
 	import { setContext } from 'svelte';
 	import { watchResize } from 'svelte-watch-resize';
 	import { TRANSACTIONS_VIEW_STATE, TransactionsViewState } from '../state/viewstate.svelte';
@@ -10,8 +11,17 @@
 
 	setContext(TRANSACTIONS_VIEW_STATE, viewstate);
 
-	const { entrypointId, entrypointItemType }: { entrypointId: ID; entrypointItemType: string } =
-		$props();
+	const {
+		entrypointId,
+		entrypointItemType,
+		windbackCursor,
+		onWindbackCursorUpdate
+	}: {
+		entrypointId: ID;
+		entrypointItemType: string;
+		windbackCursor: DateTime;
+		onWindbackCursorUpdate: (cursor: DateTime) => void;
+	} = $props();
 
 	const onwheel = (e: WheelEvent) => {
 		if (e.ctrlKey || e.metaKey) {
@@ -38,7 +48,9 @@
 
 <svelte:window {onkeydown} />
 <div
-	class="transactions-frame"
+	class="transactions-frame extra class"
+	onmousedown={(e) => e.stopPropagation()}
+	onmouseup={(e) => e.stopPropagation()}
 	role="presentation"
 	use:watchResize={(e) => {
 		console.log('RESIZE', e.clientWidth);
@@ -48,7 +60,7 @@
 	{onmousemove}
 >
 	<div class="header">
-		<TimeStrip></TimeStrip>
+		<TimeStrip {windbackCursor}></TimeStrip>
 	</div>
 	<div class="scroll">
 		<EntityHistory id={entrypointId} itemType={entrypointItemType} />

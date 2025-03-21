@@ -58,3 +58,24 @@ export class ClientStatus extends MReport<{ online: boolean }> {
     super()
   }
 }
+
+@MykoCommand()
+export class SetClientWindbackTime extends MCommand {
+  constructor(readonly windback: string) {
+    super()
+  }
+}
+
+@MykoCommand()
+export class ClearClientWindbackTime extends MCommand {
+  constructor() {
+    super()
+  }
+}
+
+@MykoReport()
+export class WindbackStatus extends MReport<string | undefined> {
+  constructor() {
+    super()
+  }
+}
