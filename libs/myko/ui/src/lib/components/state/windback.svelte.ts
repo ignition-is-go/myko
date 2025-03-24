@@ -7,9 +7,12 @@ export class WindbackState {
 
 	#liveWindbackTime: WindbackStatus['$reportResult'] = $state();
 
+	#localWindbackTime: DateTime | undefined = $state();
+
 	constructor() {
 		client.watchReport(new WindbackStatus()).subscribe((result) => {
 			this.#liveWindbackTime = result;
+			this.#localWindbackTime = result ? DateTime.fromISO(result) : undefined;
 		});
 	}
 
@@ -25,16 +28,23 @@ export class WindbackState {
 		return !!this.#liveWindbackTime && !!this.#ctx;
 	}
 
-	get cursor(): DateTime {
-		return this.#liveWindbackTime ? DateTime.fromISO(this.#liveWindbackTime) : DateTime.utc();
+	get cursor(): DateTime | undefined {
+		return this.#localWindbackTime ? this.#localWindbackTime : undefined;
+	}
+
+	get caughtUp() {
+		console.log('Caught up', this.#liveWindbackTime, this.#localWindbackTime?.toUTC()?.toISO());
+		return this.#liveWindbackTime === this.#localWindbackTime?.toUTC()?.toISO();
 	}
 
 	updateCursor(time: DateTime) {
 		const valid = time.toUTC().toISO();
+
 		if (!valid) {
 			console.error('Invalid time', time);
 			return;
 		}
+		this.#localWindbackTime = time;
 		client.sendCommand(new SetClientWindbackTime(valid));
 	}
 }

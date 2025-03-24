@@ -6,6 +6,7 @@
 		TRANSACTIONS_VIEW_STATE,
 		type TransactionsViewState
 	} from '../state/viewstate.svelte.js';
+	import { windbackState } from '../state/windback.svelte.js';
 
 	const viewState = getContext(TRANSACTIONS_VIEW_STATE) as TransactionsViewState;
 
@@ -40,16 +41,6 @@
 	// 	shuntRight && !shuntLeft && viewWidthPx < (leftTextRect?.width ?? 0)
 	// );
 
-	const { windbackCursor }: { windbackCursor: DateTime } = $props();
-
-	const windbackCursorPx = $derived(
-		(windbackCursor.toMillis() - viewState.leftTimeMilis) / viewState.durationMilisPerPx
-	);
-
-	const windbackCursorVisible = $derived(
-		windbackCursor >= viewState.timeZero && windbackCursor <= viewState.now
-	);
-
 	let timestampsEl: HTMLElement | null = $state(null);
 </script>
 
@@ -65,10 +56,7 @@
 	</div>
 
 	<div class="cursor-time">
-		<div
-			class="cursor"
-			style="left: {windbackCursorPx}px; display: {windbackCursorVisible ? 'block' : 'none'}"
-		>
+		<div class="cursor" style="left: {viewState.windbackFullX}px; ">
 			<div class="line"></div>
 			<div class="triangle"></div>
 		</div>
@@ -78,32 +66,6 @@
 		class="view-region"
 		style="left: {viewLeftPx}px; width: {viewWidthPx}px; --width: {viewWidthPx}px;"
 	></div>
-
-	<!-- <div
-		class="view-region"
-		style="left: {viewLeftPx}px; width: {viewWidthPx}px; --left-width: {leftTextRect?.width}px; --right-width: {rightTextRect?.width}px; --width: {viewWidthPx}px;"
-	>
-		<p
-			class="text left"
-			use:watchResize={(e) => {
-				leftTextRect = e.getBoundingClientRect();
-			}}
-			class:shuntLeft
-			class:doubleShuntLeft
-		>
-			{viewState.leftTime.toFormat(FULL_DATE_FORMAT)}
-		</p>
-		<p
-			class="text right"
-			use:watchResize={(e) => {
-				rightTextRect = e.getBoundingClientRect();
-			}}
-			class:shuntRight
-			class:doubleShuntRight
-		>
-			{viewState.rightTime.toFormat(FULL_DATE_FORMAT)}
-		</p>
-	</div> -->
 </div>
 <div class="timestamps" bind:this={timestampsEl}>
 	{#each viewState.majors as { leftPx, time: majorTime }, i}
@@ -125,22 +87,25 @@
 		</div>
 	{/each}
 	<div class="overlay">
-		<div class="windback-cursor cursor">
-			<div class="line" style="left: {windbackCursorPx}px">
-				<div class="text">
-					<p>
-						{windbackCursor.toFormat(FULL_DATE_FORMAT)}
-					</p>
-					<p>
-						{viewState.now
-							.diff(windbackCursor)
-							.rescale()
-							.normalize()
-							.toHuman({ compactDisplay: 'short', unitDisplay: 'narrow' })} ago
-					</p>
+		{#if windbackState.cursor}
+			<div class="windback-cursor cursor" class:lagging={!viewState.windbackState.caughtUp}>
+				<div class="line" style="left: {viewState.windbackX}px">
+					<div class="text">
+						<p>
+							{windbackState.cursor.toFormat(FULL_DATE_FORMAT)}
+						</p>
+						<p>
+							{viewState.now
+								.diff(windbackState.cursor)
+								.rescale()
+								.normalize()
+								.toHuman({ compactDisplay: 'short', unitDisplay: 'narrow' })} ago
+						</p>
+					</div>
+					<div class="click-area"></div>
 				</div>
 			</div>
-		</div>
+		{/if}
 		<div class="live-cursor cursor">
 			<div class="line" style="left: {viewState.mouseX}px">
 				<div class="text">
@@ -181,6 +146,7 @@
 	.all-times {
 		position: absolute;
 		inset: 0;
+		z-index: 999;
 	}
 	.view-region {
 		position: absolute;
@@ -295,6 +261,26 @@
 
 		.line {
 			border-color: cornflowerblue;
+		}
+	}
+
+	.click-area {
+		position: absolute;
+		inset: 0;
+		width: 20px;
+		left: -10px;
+		z-index: 999;
+		background-color: rgba(255, 255, 255, 0.1);
+	}
+
+	.click-area:hover {
+		cursor: ew-resize;
+		background-color: rgba(255, 255, 255, 0.9);
+	}
+
+	.lagging {
+		.line {
+			border-color: orangered;
 		}
 	}
 </style>

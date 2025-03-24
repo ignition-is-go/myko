@@ -1,26 +1,24 @@
 <script lang="ts">
 	import { type ID } from '@myko/core';
-	import type { DateTime } from 'luxon';
 	import { setContext } from 'svelte';
 	import { watchResize } from 'svelte-watch-resize';
 	import { TRANSACTIONS_VIEW_STATE, TransactionsViewState } from '../state/viewstate.svelte';
+	import { windbackState } from '../state/windback.svelte.js';
 	import EntityHistory from './EntityHistory.svelte';
 	import TimeStrip from './TimeStrip.svelte';
 
-	const viewstate = new TransactionsViewState();
+	const viewstate = new TransactionsViewState(windbackState);
 
 	setContext(TRANSACTIONS_VIEW_STATE, viewstate);
 
+	let isMouseDown = $state(false);
+
 	const {
 		entrypointId,
-		entrypointItemType,
-		windbackCursor,
-		onWindbackCursorUpdate
+		entrypointItemType
 	}: {
 		entrypointId: ID;
 		entrypointItemType: string;
-		windbackCursor: DateTime;
-		onWindbackCursorUpdate: (cursor: DateTime) => void;
 	} = $props();
 
 	const onwheel = (e: WheelEvent) => {
@@ -44,13 +42,25 @@
 			viewstate.zoomAllTheWayOut();
 		}
 	};
+
+	const onmousedown = (e: MouseEvent) => {
+		e.stopPropagation();
+		if (e.button === 0) {
+		}
+
+		viewstate.startDragWindback();
+	};
+
+	const onmouseup = (e: MouseEvent) => {
+		e.stopPropagation();
+
+		viewstate.stopDragWindback();
+	};
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} {onmousedown} {onmouseup} />
 <div
 	class="transactions-frame extra class"
-	onmousedown={(e) => e.stopPropagation()}
-	onmouseup={(e) => e.stopPropagation()}
 	role="presentation"
 	use:watchResize={(e) => {
 		console.log('RESIZE', e.clientWidth);
@@ -60,7 +70,7 @@
 	{onmousemove}
 >
 	<div class="header">
-		<TimeStrip {windbackCursor}></TimeStrip>
+		<TimeStrip></TimeStrip>
 	</div>
 	<div class="scroll">
 		<EntityHistory id={entrypointId} itemType={entrypointItemType} />

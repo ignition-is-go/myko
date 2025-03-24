@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { windbackState } from '../state/windback.svelte.js';
 	import Transactions from '../transactions/Transactions.svelte';
-	import { windbackState } from './windback.svelte.js';
 
 	const { children }: { children: Snippet } = $props();
 </script>
@@ -18,8 +18,6 @@
 			<Transactions
 				entrypointId={windbackState.ctx.id}
 				entrypointItemType={windbackState.ctx.itemType}
-				windbackCursor={windbackState.cursor}
-				onWindbackCursorUpdate={windbackState.updateCursor}
 			/>
 		{/if}
 	</div>

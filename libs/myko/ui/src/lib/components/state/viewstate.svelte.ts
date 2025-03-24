@@ -1,6 +1,8 @@
 import { DateTime, Duration } from 'luxon';
 import { memoizeWith, uniq } from 'ramda';
 import { SvelteSet } from 'svelte/reactivity';
+import { resolutions, type Resolution } from './resolutions.js';
+import { WindbackState } from './windback.svelte.js';
 
 export class TransactionsViewState {
 	#visibleEvents = new SvelteSet<string>();
@@ -17,6 +19,10 @@ export class TransactionsViewState {
 
 	#mouseX: number = $state(0);
 
+	#mousePinX: number | undefined = $state();
+
+	#draggingWindback = $state(false);
+
 	readonly #leftTime: DateTime = $derived(fromMillisMemo(this.#leftTimeMilis));
 	readonly #rightTime: DateTime | null = $derived(
 		this.#rightTimeMilis ? fromMillisMemo(this.#rightTimeMilis) : null
@@ -26,7 +32,7 @@ export class TransactionsViewState {
 
 	readonly #durationMilisPerPx = $derived(this.#timeRangeMilis / this.#widthPx);
 
-	constructor() {
+	constructor(readonly windbackState: WindbackState) {
 		const updateTime = () => {
 			this.#now = DateTime.now();
 
@@ -34,6 +40,52 @@ export class TransactionsViewState {
 		};
 
 		updateTime();
+
+		$effect(() => {
+			if (
+				this.#draggingWindback &&
+				this.#mousePinX &&
+				Math.abs(this.#mouseX - this.#mousePinX) > 10
+			) {
+				this.#mousePinX = this.#mouseX;
+				console.log('Updaring Cursor', this.mouseTime);
+				this.windbackState.updateCursor(this.mouseTime);
+			}
+		});
+	}
+
+	get windbackX() {
+		if (!this.windbackState.cursor) {
+			return 0;
+		}
+
+		const time = this.windbackState.cursor.toMillis();
+
+		const left = this.#leftTime.toMillis();
+		const right = this.rightTime.toMillis();
+
+		const range = right - left;
+
+		const norm = (time - left) / range;
+
+		return norm * this.#widthPx;
+	}
+
+	get windbackFullX() {
+		if (!this.windbackState.cursor) {
+			return 0;
+		}
+
+		const time = this.windbackState.cursor.toMillis();
+
+		const left = this.#timeZero.toMillis();
+		const right = this.#now.toMillis();
+
+		const range = right - left;
+
+		const norm = (time - left) / range;
+
+		return norm * this.#widthPx;
 	}
 
 	registerEvents(events: string[]) {
@@ -124,7 +176,19 @@ export class TransactionsViewState {
 		this.#mouseX = value;
 	}
 
+	get isOverWindback(): boolean {
+		return Math.abs(this.#mouseX - this.windbackX) < 10;
+	}
+
 	get mouseX(): number {
+		if (!this.windbackState.ctx) {
+			return this.#mouseX;
+		}
+
+		if (this.isOverWindback) {
+			return this.windbackX;
+		}
+
 		return this.#mouseX;
 	}
 
@@ -289,6 +353,23 @@ export class TransactionsViewState {
 		this.#leftTimeMilis = newLeftTimeMilis;
 		this.#rightTimeMilis = newRightTimeMilis;
 	}
+
+	startDragWindback() {
+		if (!this.windbackState.ctx) {
+			return;
+		}
+
+		if (!this.isOverWindback) {
+			return;
+		}
+		this.#mousePinX = this.#mouseX;
+		this.#draggingWindback = true;
+	}
+
+	stopDragWindback() {
+		this.#mousePinX = undefined;
+		this.#draggingWindback = false;
+	}
 }
 
 export const TRANSACTIONS_VIEW_STATE = Symbol('transactions-view-state');
@@ -301,139 +382,3 @@ export const isoToMillisMemo = memoizeWith(
 	(isoString) => isoString,
 	(isoString: string) => DateTime.fromISO(isoString).toMillis()
 );
-
-export type Resolution = {
-	milis: number;
-	majorFormat: string;
-	minorFormat: string;
-};
-
-const resolutions = [
-	{
-		label: '1ms',
-		majorFormat: 'dd MMM HH:mm:ss.SSS',
-		minorFormat: '.SSS',
-		milis: Duration.fromObject({ milliseconds: 1 }).as('milliseconds')
-	},
-	{
-		label: '5ms',
-		majorFormat: 'dd MMM HH:mm:ss.SSS',
-		minorFormat: '.SSS',
-		milis: Duration.fromObject({ milliseconds: 5 }).as('milliseconds')
-	},
-	{
-		label: '10ms',
-		minorFormat: '.SSS',
-		majorFormat: 'dd MMM HH:mm:ss.SSS',
-		milis: Duration.fromObject({ milliseconds: 10 }).as('milliseconds')
-	},
-	{
-		label: '50ms',
-		minorFormat: '.SSS',
-		majorFormat: 'dd MMM HH:mm:ss.SSS',
-		milis: Duration.fromObject({ milliseconds: 50 }).as('milliseconds')
-	},
-	{
-		label: '100ms',
-		majorFormat: 'dd MMM HH:mm:ss.SSS',
-		minorFormat: '.SSS',
-
-		milis: Duration.fromObject({ milliseconds: 100 }).as('milliseconds')
-	},
-	{
-		label: '500ms',
-		majorFormat: 'dd MMM HH:mm:ss.SSS',
-		minorFormat: '.SSS',
-		milis: Duration.fromObject({ milliseconds: 500 }).as('milliseconds')
-	},
-	{
-		label: '1s',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'ss',
-		milis: Duration.fromObject({ seconds: 1 }).as('milliseconds')
-	},
-	{
-		label: '5s',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'ss',
-		milis: Duration.fromObject({ seconds: 5 }).as('milliseconds')
-	},
-	{
-		label: '10s',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'ss',
-		milis: Duration.fromObject({ seconds: 10 }).as('milliseconds')
-	},
-	{
-		label: '30s',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'ss',
-		milis: Duration.fromObject({ seconds: 30 }).as('milliseconds')
-	},
-	{
-		label: '1m',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'mm:ss',
-		milis: Duration.fromObject({ minutes: 1 }).as('milliseconds')
-	},
-	{
-		label: '5m',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'mm:ss',
-		milis: Duration.fromObject({ minutes: 5 }).as('milliseconds')
-	},
-	{
-		label: '10m',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'mm:ss',
-		milis: Duration.fromObject({ minutes: 10 }).as('milliseconds')
-	},
-	{
-		label: '30m',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'mm:ss',
-		milis: Duration.fromObject({ minutes: 30 }).as('milliseconds')
-	},
-	{
-		label: '1h',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'HH:mm',
-		milis: Duration.fromObject({ hours: 1 }).as('milliseconds')
-	},
-	{
-		label: '6h',
-		majorFormat: 'dd MMM HH:mm:ss',
-		minorFormat: 'HH:mm',
-		milis: Duration.fromObject({ hours: 6 }).as('milliseconds')
-	},
-	{
-		label: '12h',
-		majorFormat: 'dd MMM',
-		minorFormat: 'HH:mm',
-		milis: Duration.fromObject({ hours: 12 }).as('milliseconds')
-	},
-	{
-		label: '1d',
-		majorFormat: 'dd MMM',
-		minorFormat: 'dd',
-		milis: Duration.fromObject({ days: 1 }).as('milliseconds')
-	},
-	{
-		label: '1w',
-		majorFormat: 'dd MMM yyyy',
-		minorFormat: 'dd',
-		milis: Duration.fromObject({ weeks: 1 }).as('milliseconds')
-	},
-	{
-		label: '1M',
-		majorFormat: 'MMM yyyy',
-		minorFormat: 'MMM',
-		milis: Duration.fromObject({ months: 1 }).as('milliseconds')
-	},
-	{
-		label: '1y',
-		majorFormat: 'yyyy',
-		minorFormat: 'yyyy',
-		milis: Duration.fromObject({ years: 1 }).as('milliseconds')
-	}
-];
