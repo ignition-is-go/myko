@@ -43,18 +43,11 @@
 	const { windbackCursor }: { windbackCursor: DateTime } = $props();
 
 	const windbackCursorPx = $derived(
-		(windbackCursor.diff(viewState.timeZero).as('milliseconds') / fullDuration.as('milliseconds')) *
-			viewState.width
+		(windbackCursor.toMillis() - viewState.leftTimeMilis) / viewState.durationMilisPerPx
 	);
 
 	const windbackCursorVisible = $derived(
 		windbackCursor >= viewState.timeZero && windbackCursor <= viewState.now
-	);
-
-	const cursorMilis = $derived(windbackCursor ? windbackCursor.toMillis() : undefined);
-
-	const cursorPx = $derived(
-		cursorMilis ? (cursorMilis - viewState.leftTimeMilis) / viewState.durationMilisPerPx : 0
 	);
 
 	let timestampsEl: HTMLElement | null = $state(null);
@@ -132,18 +125,35 @@
 		</div>
 	{/each}
 	<div class="overlay">
-		<div class="cursor" style="left: {cursorPx}px;">
-			<div class="line"></div>
-			<div class="triangle"></div>
+		<div class="windback-cursor cursor">
+			<div class="line" style="left: {windbackCursorPx}px">
+				<div class="text">
+					<p>
+						{windbackCursor.toFormat(FULL_DATE_FORMAT)}
+					</p>
+					<p>
+						{viewState.now
+							.diff(windbackCursor)
+							.rescale()
+							.normalize()
+							.toHuman({ compactDisplay: 'short', unitDisplay: 'narrow' })} ago
+					</p>
+				</div>
+			</div>
 		</div>
-		<div class="live-cursor">
+		<div class="live-cursor cursor">
 			<div class="line" style="left: {viewState.mouseX}px">
 				<div class="text">
 					<p>
 						{viewState.mouseTime.toFormat(viewState.majorResolution.majorFormat)}
 					</p>
 					<p>
-						{viewState.mouseTimeRelative.rescale().toHuman()} ago
+						{viewState.mouseTimeRelative.rescale().normalize().toHuman({
+							compactDisplay: 'short',
+							unitDisplay: 'narrow',
+							maximumFractionDigits: 0
+						})}
+						ago
 					</p>
 				</div>
 			</div>
@@ -265,16 +275,26 @@
 		opacity: 0.5;
 	}
 
-	.live-cursor .line {
+	.cursor .line {
 		position: absolute;
 		top: 0;
 		bottom: 0;
 		border-left: 1px solid rgba(255, 255, 255, 0.2);
 	}
 
-	.live-cursor .text {
+	.cursor .text {
 		white-space: nowrap;
-		background-color: rgba(0, 0, 0, 0.5);
+		background-color: rgba(0, 0, 0, 0.9);
 		padding: 0 0.25rem;
+	}
+
+	.windback-cursor {
+		border-color: cornflowerblue;
+
+		color: cornflowerblue;
+
+		.line {
+			border-color: cornflowerblue;
+		}
 	}
 </style>

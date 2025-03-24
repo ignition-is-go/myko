@@ -129,7 +129,7 @@ export class TransactionsViewState {
 	}
 
 	get mouseTime(): DateTime {
-		const milis = this.#timeZero.toMillis() + this.#mouseX * this.#durationMilisPerPx;
+		const milis = this.#leftTimeMilis + this.#mouseX * this.#durationMilisPerPx;
 		return fromMillisMemo(milis);
 	}
 
