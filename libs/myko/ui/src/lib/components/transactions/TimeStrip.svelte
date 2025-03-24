@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { DateTime } from 'luxon';
 	import { getContext } from 'svelte';
-	import { watchResize } from 'svelte-watch-resize';
 	import {
 		FULL_DATE_FORMAT,
 		TRANSACTIONS_VIEW_STATE,
@@ -22,24 +21,24 @@
 		(viewDuration.as('milliseconds') / fullDuration.as('milliseconds')) * viewState.width
 	);
 
-	let leftTextRect: DOMRect | undefined = $state();
-	let rightTextRect: DOMRect | undefined = $state();
+	// let leftTextRect: DOMRect | undefined = $state();
+	// let rightTextRect: DOMRect | undefined = $state();
 
-	const shuntLeft = $derived(
-		leftTextRect && viewLeftPx > leftTextRect.width && leftTextRect.width + 10 > viewWidthPx / 2
-	);
-	const shuntRight = $derived(
-		rightTextRect &&
-			viewState.width - viewLeftPx - viewWidthPx > rightTextRect.width &&
-			rightTextRect.width + 10 > viewWidthPx / 2
-	);
+	// const shuntLeft = $derived(
+	// 	leftTextRect && viewLeftPx > leftTextRect.width && leftTextRect.width + 10 > viewWidthPx / 2
+	// );
+	// const shuntRight = $derived(
+	// 	rightTextRect &&
+	// 		viewState.width - viewLeftPx - viewWidthPx > rightTextRect.width &&
+	// 		rightTextRect.width + 10 > viewWidthPx / 2
+	// );
 
-	const doubleShuntLeft = $derived(
-		shuntLeft && !shuntRight && viewWidthPx < (rightTextRect?.width ?? 0)
-	);
-	const doubleShuntRight = $derived(
-		shuntRight && !shuntLeft && viewWidthPx < (leftTextRect?.width ?? 0)
-	);
+	// const doubleShuntLeft = $derived(
+	// 	shuntLeft && !shuntRight && viewWidthPx < (rightTextRect?.width ?? 0)
+	// );
+	// const doubleShuntRight = $derived(
+	// 	shuntRight && !shuntLeft && viewWidthPx < (leftTextRect?.width ?? 0)
+	// );
 
 	const { windbackCursor }: { windbackCursor: DateTime } = $props();
 
@@ -61,12 +60,11 @@
 	let timestampsEl: HTMLElement | null = $state(null);
 </script>
 
-<div class="bounds">
-	<div class="start-time">{viewState.timeZero.toFormat(FULL_DATE_FORMAT)}</div>
-	<div class="end-time">{viewState.now.toFormat(FULL_DATE_FORMAT)}</div>
-</div>
-
 <div class="all-time">
+	<div class="bounds">
+		<div class="start-time">{viewState.timeZero.toFormat(FULL_DATE_FORMAT)}</div>
+		<div class="end-time">{viewState.now.toFormat(FULL_DATE_FORMAT)}</div>
+	</div>
 	<div class="all-times">
 		{#each viewState.allEventTimestamps as timestamp}
 			<div class="event" style="left: {timestamp}px"></div>
@@ -84,6 +82,11 @@
 	</div>
 
 	<div
+		class="view-region"
+		style="left: {viewLeftPx}px; width: {viewWidthPx}px; --width: {viewWidthPx}px;"
+	></div>
+
+	<!-- <div
 		class="view-region"
 		style="left: {viewLeftPx}px; width: {viewWidthPx}px; --left-width: {leftTextRect?.width}px; --right-width: {rightTextRect?.width}px; --width: {viewWidthPx}px;"
 	>
@@ -107,7 +110,7 @@
 		>
 			{viewState.rightTime.toFormat(FULL_DATE_FORMAT)}
 		</p>
-	</div>
+	</div> -->
 </div>
 <div class="timestamps" bind:this={timestampsEl}>
 	{#each viewState.majors as { leftPx, time: majorTime }, i}
@@ -133,26 +136,41 @@
 			<div class="line"></div>
 			<div class="triangle"></div>
 		</div>
+		<div class="live-cursor">
+			<div class="line" style="left: {viewState.mouseX}px">
+				<div class="text">
+					<p>
+						{viewState.mouseTime.toFormat(viewState.majorResolution.majorFormat)}
+					</p>
+					<p>
+						{viewState.mouseTimeRelative.rescale().toHuman()} ago
+					</p>
+				</div>
+			</div>
+		</div>
 	</div>
 </div>
 
 <style>
 	/* bounds */
 
+	.all-time {
+		position: relative;
+		border-bottom: rgba(255, 255, 255, 0.1) 1px solid;
+	}
+
 	.bounds {
 		display: flex;
 		width: 100%;
 		padding: 0.1rem 0.5rem;
 		justify-content: space-between;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 	}
 
 	/* VIEW REGION (scroll bar) */
 
-	.all-time {
-		position: relative;
-		height: 1.5rem;
-		border-bottom: rgba(255, 255, 255, 0.1) 1px solid;
+	.all-times {
+		position: absolute;
+		inset: 0;
 	}
 	.view-region {
 		position: absolute;
@@ -169,7 +187,7 @@
 		user-select: none;
 	}
 
-	.text {
+	/* .text {
 		position: absolute;
 		white-space: nowrap;
 	}
@@ -200,7 +218,7 @@
 	.doubleShuntRight {
 		right: unset;
 		left: calc(var(--left-width) + 1rem) !important;
-	}
+	} */
 
 	.event {
 		position: absolute;
@@ -245,5 +263,18 @@
 
 	.major {
 		opacity: 0.5;
+	}
+
+	.live-cursor .line {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		border-left: 1px solid rgba(255, 255, 255, 0.2);
+	}
+
+	.live-cursor .text {
+		white-space: nowrap;
+		background-color: rgba(0, 0, 0, 0.5);
+		padding: 0 0.25rem;
 	}
 </style>

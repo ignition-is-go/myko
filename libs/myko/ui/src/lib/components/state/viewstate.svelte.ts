@@ -125,7 +125,20 @@ export class TransactionsViewState {
 	}
 
 	get mouseX(): number {
-		throw new Error('why are you getting mouseX?');
+		return this.#mouseX;
+	}
+
+	get mouseTime(): DateTime {
+		const milis = this.#timeZero.toMillis() + this.#mouseX * this.#durationMilisPerPx;
+		return fromMillisMemo(milis);
+	}
+
+	set mouseTime(_value: DateTime) {
+		throw new Error('Cannot set mouseTime [readonly]');
+	}
+
+	get mouseTimeRelative(): Duration {
+		return this.#now.diff(this.mouseTime);
 	}
 
 	get allEventTimestamps(): number[] {
