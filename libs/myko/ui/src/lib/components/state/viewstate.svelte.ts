@@ -61,8 +61,8 @@ export class TransactionsViewState {
 
 		const time = this.windbackState.cursor.toMillis();
 
-		const left = this.#leftTime.toMillis();
-		const right = this.rightTime.toMillis();
+		const left = this.#leftTimeMilis;
+		const right = this.rightTimeMilis;
 
 		const range = right - left;
 
