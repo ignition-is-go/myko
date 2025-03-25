@@ -95,7 +95,16 @@ type CommandCompletion = {
   errorTime?: string
   error?: WSMCommandError
 }
+
+export enum ConnectionStatus {
+  Connected = 'Connected',
+  Disconnected = 'Disconnected',
+  Connecting = 'Connecting',
+}
+
 export class WSMClient {
+  #connectionStatus = new ReplaySubject<ConnectionStatus>(1)
+
   private q = new Set<WSMMessage>()
 
   private socketGroup: SocketGroup
@@ -214,10 +223,12 @@ export class WSMClient {
       {
         onClosed: () => {
           this.hooks?.onTerminated?.()
+          this.#connectionStatus.next(ConnectionStatus.Disconnected)
         },
         onConnected: (url) => {
           this.resendMessages(url)
           this.hooks?.onServerConnect?.(url)
+          this.#connectionStatus.next(ConnectionStatus.Connected)
         },
         onError: (error) => {
           console.warn(error)
@@ -231,11 +242,13 @@ export class WSMClient {
         onMainServerChange: (url) => {
           this.hooks?.onLog?.('Connection Switched to', url)
           this.hooks?.onServerConnect?.(url)
+          this.#connectionStatus.next(ConnectionStatus.Connected)
           this.resendMessages(url)
         },
         onMainSocketReconnecting: (url) => {
           this.hooks?.onLog?.('Reconnecting to', url)
           this.hooks?.onStartConnect?.(url)
+          this.#connectionStatus.next(ConnectionStatus.Connecting)
         },
         socketSendMode: SocketSendMode.Single,
         reconnect: this.clientOpts.reconnect,
@@ -255,6 +268,10 @@ export class WSMClient {
         s.map((s) => ({ host: s.address, port: s.port })),
       )
     })
+  }
+
+  get connectionStatus(): Observable<ConnectionStatus> {
+    return this.#connectionStatus.pipe()
   }
 
   async ping(): Promise<number> {
