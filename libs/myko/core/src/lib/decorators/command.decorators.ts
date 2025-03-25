@@ -6,6 +6,7 @@
 import { commandBus } from '../busses'
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
 import { addCommandDoc, commandHandlers, commands } from '../registry'
+import { allowedDuringWindback } from '../registry/windback.registry'
 import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
 
 /**
@@ -15,6 +16,7 @@ import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
  */
 export const MykoCommand: (opts?: {
   noHandler?: boolean
+  allowDuringWindback?: boolean
 }) => <T extends MCommand<MCommandResponse<T>>>(
   target: new (...args: any[]) => T,
 ) => any =
@@ -31,6 +33,10 @@ export const MykoCommand: (opts?: {
 
     if (!opts?.noHandler) {
       commands.add(commandId)
+    }
+
+    if (opts?.allowDuringWindback) {
+      allowedDuringWindback.add(commandId)
     }
 
     const paramtypes =

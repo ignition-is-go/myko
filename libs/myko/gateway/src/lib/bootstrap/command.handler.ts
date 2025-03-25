@@ -9,6 +9,7 @@ import {
   type ID,
   type MWrappedCommand,
 } from '@myko/core'
+import { allowedDuringWindback } from '@myko/core/src/lib/registry/windback.registry'
 import {
   wrapCommandErrorWS,
   wrapCommandResponseWS,
@@ -69,7 +70,7 @@ export const handleCommand = async (
       return
     }
 
-    if (!!client.windback) {
+    if (!!client.windback && !allowedDuringWindback.has(command.commandId)) {
       respond.next({
         clientId,
         data: wrapCommandErrorWS(

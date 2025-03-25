@@ -40,23 +40,15 @@ export class TransactionsViewState {
 		};
 
 		updateTime();
-
-		$effect(() => {
-			if (
-				this.#draggingWindback &&
-				this.#mousePinX &&
-				Math.abs(this.#mouseX - this.#mousePinX) > 10
-			) {
-				this.#mousePinX = this.#mouseX;
-				console.log('Updaring Cursor', this.mouseTime);
-				this.windbackState.updateCursor(this.mouseTime);
-			}
-		});
 	}
 
 	get windbackX() {
 		if (!this.windbackState.cursor) {
 			return 0;
+		}
+
+		if (this.#draggingWindback) {
+			return this.#mouseX;
 		}
 
 		const time = this.windbackState.cursor.toMillis();
@@ -369,6 +361,7 @@ export class TransactionsViewState {
 	stopDragWindback() {
 		this.#mousePinX = undefined;
 		this.#draggingWindback = false;
+		this.windbackState.updateCursor(this.mouseTime);
 	}
 }
 
