@@ -292,4 +292,13 @@ export class PostgresHistory extends HistoryProvider {
       console.error('Error recording user transaction', e)
     })
   }
+
+  getAllEntitiesNoDeletes<T extends MItem>(itemType: string): Promise<T[]> {
+    return sql<EventCols[]>`
+      SELECT DISTINCT ON (entity_id) * FROM myko_events WHERE item_type = ${itemType} AND change_type = ${MEventType.SET} ORDER BY entity_id, created_at DESC
+    `
+      .then((res) => res.map(rowToEvent))
+      .then((events) => events.filter((x) => x.changeType === MEventType.SET))
+      .then((events) => events.map(unwrapItem) as T[])
+  }
 }

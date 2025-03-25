@@ -22,25 +22,6 @@
 		(viewDuration.as('milliseconds') / fullDuration.as('milliseconds')) * viewState.width
 	);
 
-	// let leftTextRect: DOMRect | undefined = $state();
-	// let rightTextRect: DOMRect | undefined = $state();
-
-	// const shuntLeft = $derived(
-	// 	leftTextRect && viewLeftPx > leftTextRect.width && leftTextRect.width + 10 > viewWidthPx / 2
-	// );
-	// const shuntRight = $derived(
-	// 	rightTextRect &&
-	// 		viewState.width - viewLeftPx - viewWidthPx > rightTextRect.width &&
-	// 		rightTextRect.width + 10 > viewWidthPx / 2
-	// );
-
-	// const doubleShuntLeft = $derived(
-	// 	shuntLeft && !shuntRight && viewWidthPx < (rightTextRect?.width ?? 0)
-	// );
-	// const doubleShuntRight = $derived(
-	// 	shuntRight && !shuntLeft && viewWidthPx < (leftTextRect?.width ?? 0)
-	// );
-
 	let timestampsEl: HTMLElement | null = $state(null);
 </script>
 
@@ -132,6 +113,7 @@
 	.all-time {
 		position: relative;
 		border-bottom: rgba(255, 255, 255, 0.1) 1px solid;
+		user-select: none;
 	}
 
 	.bounds {

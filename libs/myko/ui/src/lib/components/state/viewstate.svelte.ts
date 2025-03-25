@@ -9,7 +9,7 @@ export class TransactionsViewState {
 
 	#timeZero: DateTime = $state(DateTime.now());
 
-	#leftTimeMilis = $state(DateTime.now().minus({ minutes: 15 }).toMillis());
+	#leftTimeMilis = $state(DateTime.utc().minus({ minutes: 1 }).toMillis());
 
 	#rightTimeMilis: number | null = $state(DateTime.now().toMillis());
 
@@ -18,8 +18,6 @@ export class TransactionsViewState {
 	#now: DateTime = $state(DateTime.now());
 
 	#mouseX: number = $state(0);
-
-	#mousePinX: number | undefined = $state();
 
 	#draggingWindback = $state(false);
 
@@ -354,12 +352,10 @@ export class TransactionsViewState {
 		if (!this.isOverWindback) {
 			return;
 		}
-		this.#mousePinX = this.#mouseX;
 		this.#draggingWindback = true;
 	}
 
 	stopDragWindback() {
-		this.#mousePinX = undefined;
 		this.#draggingWindback = false;
 		this.windbackState.updateCursor(this.mouseTime);
 	}

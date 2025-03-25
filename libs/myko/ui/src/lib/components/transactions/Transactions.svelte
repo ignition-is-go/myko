@@ -60,6 +60,7 @@
 
 <svelte:window {onkeydown} {onmousedown} {onmouseup} />
 <div
+	class:windbackCursor={viewstate.isOverWindback}
 	class="transactions-frame extra class"
 	role="presentation"
 	use:watchResize={(e) => {
@@ -69,10 +70,10 @@
 	{onwheel}
 	{onmousemove}
 >
-	<div class="header">
+	<div class="header pad">
 		<TimeStrip></TimeStrip>
 	</div>
-	<div class="scroll">
+	<div class="scroll pad">
 		<EntityHistory id={entrypointId} itemType={entrypointItemType} />
 	</div>
 </div>
@@ -89,9 +90,14 @@
 
 	.scroll {
 		overflow: scroll;
+		scrollbar-width: none;
 	}
 
 	.header {
 		flex-shrink: 0;
+	}
+
+	.windbackCursor {
+		cursor: ew-resize;
 	}
 </style>

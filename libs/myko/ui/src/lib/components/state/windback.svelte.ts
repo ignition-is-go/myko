@@ -55,7 +55,7 @@ export const startWindback = (root: MItemStub) => {
 	console.log('Starting Windback', root);
 	windbackState.ctx = root;
 
-	client.sendCommand(new SetClientWindbackTime(DateTime.utc().minus({ hours: 3 }).toISO()));
+	client.sendCommand(new SetClientWindbackTime(DateTime.utc().minus({ seconds: 5 }).toISO()));
 };
 
 export const exitWindback = () => {

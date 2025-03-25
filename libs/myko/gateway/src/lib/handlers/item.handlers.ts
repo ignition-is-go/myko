@@ -1,7 +1,10 @@
 import {
   ChildEntities,
+  ChildEntitiesAllTime,
   EntitySearch,
+  getHistoryProvider,
   GetItemsByTypeAndIds,
+  liveRepoName,
   MItem,
   MykoQueryHandler,
   MykoReportHandler,
@@ -18,6 +21,7 @@ import { uniqBy } from 'ramda'
 import {
   combineLatest,
   distinctUntilChanged,
+  from,
   map,
   of,
   switchMap,
@@ -106,6 +110,112 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
           map((x) => uniqBy((y) => y.id, x)),
           map((x) => x.map(wrapItem)),
         )
+      }),
+    )
+
+    return children.pipe(
+      map((x) =>
+        x.map(
+          (y) =>
+            ({
+              id: y.item.id,
+              itemType: y.itemType,
+              name: 'name' in y.item ? (y.item.name as string) : undefined,
+            }) satisfies MItemStub,
+        ),
+      ),
+      distinctUntilChanged((prev, current) => {
+        const p = new Set(prev.map((p) => `${p.id}-${p.itemType}-${p.name}`))
+        const c = new Set(current.map((p) => `${p.id}-${p.itemType}-${p.name}`))
+
+        const diff = p.symmetricDifference(c)
+
+        if (diff.size > 0) {
+          console.log('sym diff', diff, report.parentId, report.parentType)
+        }
+
+        return diff.size === 0
+      }),
+    )
+  }
+}
+
+@MykoReportHandler(ChildEntitiesAllTime)
+export class ChildEntitiesAllTimeHandler
+  implements MReportHandler<ChildEntitiesAllTime>
+{
+  execute(
+    report: ChildEntitiesAllTime,
+  ): MLiveReportResult<ChildEntitiesAllTime> {
+    const item = liveRepoName(report.parentType).watchId(report.parentId)
+
+    const relValues = [...relationRegistry.values()]
+
+    const children = item.pipe(
+      switchMap((item) => {
+        if (!item) {
+          return of([] as MWrappedItem[])
+        }
+
+        const ownsMany = Promise.all(
+          relValues.map((rel) => {
+            return rel.type === 'owns-many' &&
+              rel.localType === report.parentType
+              ? getHistoryProvider()
+                  .getAllEntitiesNoDeletes(rel.foreignType)
+                  .then((items) =>
+                    items.filter(
+                      (y) => y[rel.foreignKey] === item[rel.localKey],
+                    ),
+                  )
+              : []
+          }),
+        ).then((x) => x.flat())
+
+        const ensuredFor = Promise.all(
+          relValues.map((rel) => {
+            if (
+              rel.type !== 'ensure-for' ||
+              !rel.dependencies.some(
+                (dep) => dep.foreignType === report.parentType,
+              )
+            ) {
+              return [] as MItem[]
+            }
+
+            const dep = rel.dependencies.find(
+              (dep) => dep.foreignType === report.parentType,
+            )!
+
+            return getHistoryProvider()
+              .getAllEntitiesNoDeletes(rel.localType)
+              .then((items) =>
+                items.filter((y) => y[dep.localKey] === item[dep.foreignKey]),
+              )
+          }),
+        ).then((x) => x.flat())
+
+        const belongsToThis = Promise.all(
+          relValues.map((rel) => {
+            return rel.type === 'belongs-to' &&
+              rel.foreignType === report.parentType
+              ? getHistoryProvider()
+                  .getAllEntitiesNoDeletes(rel.localType)
+                  .then((items) =>
+                    items.filter(
+                      (y) => y[rel.localKey] === item[rel.foreignKey],
+                    ),
+                  )
+              : []
+          }),
+        ).then((x) => x.flat())
+
+        const items = Promise.all([ownsMany, ensuredFor, belongsToThis])
+          .then((x) => x.flat())
+          .then(uniqBy((x) => x.id))
+          .then((x) => x.map(wrapItem))
+
+        return from(items)
       }),
     )
 

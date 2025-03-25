@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { client } from '$lib/services/client.js';
-	import { ChildEntities, EventsForEntity, type EventContainer, type ID } from '@myko/core';
+	import { ChildEntitiesAllTime, EventsForEntity, type EventContainer, type ID } from '@myko/core';
 	import { startWith } from 'rxjs';
 	import { getContext } from 'svelte';
 	import {
@@ -101,7 +101,7 @@
 	);
 
 	const children = $derived(
-		client.watchReport(new ChildEntities(itemType, id)).pipe(startWith([]))
+		client.watchReport(new ChildEntitiesAllTime(itemType, id)).pipe(startWith([]))
 	);
 
 	let isInView = $state(false);

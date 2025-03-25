@@ -45,4 +45,8 @@ export abstract class HistoryProvider {
     userId: string,
     transactionId: string,
   ): Promise<void>
+
+  abstract getAllEntitiesNoDeletes<T extends MItem>(
+    itemType: string,
+  ): Promise<T[]>
 }

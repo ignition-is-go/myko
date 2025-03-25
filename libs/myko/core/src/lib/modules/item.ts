@@ -50,3 +50,13 @@ export class ChildEntities extends MReport<MItemStub[]> {
     super()
   }
 }
+
+@MykoReport()
+export class ChildEntitiesAllTime extends MReport<MItemStub[]> {
+  constructor(
+    readonly parentType: string,
+    readonly parentId: ID,
+  ) {
+    super()
+  }
+}
