@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { type ID } from '@myko/core';
+	import { client } from '$lib/services/client.js';
+	import { EntitySnapshotDifference, type ID } from '@myko/core';
 	import { setContext } from 'svelte';
 	import { watchResize } from 'svelte-watch-resize';
 	import { TRANSACTIONS_VIEW_STATE, TransactionsViewState } from '../state/viewstate.svelte';
@@ -56,6 +57,9 @@
 
 		viewstate.stopDragWindback();
 	};
+
+	const diff = client.watchReport(new EntitySnapshotDifference(entrypointItemType, entrypointId));
+	$inspect('diff', $diff);
 </script>
 
 <svelte:window {onkeydown} {onmousedown} {onmouseup} />

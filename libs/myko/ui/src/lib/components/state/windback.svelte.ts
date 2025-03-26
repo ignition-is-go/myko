@@ -38,13 +38,20 @@ export class WindbackState {
 	}
 
 	updateCursor(time: DateTime) {
-		const valid = time.toUTC().toISO();
+		this.#localWindbackTime = time;
+	}
 
-		if (!valid) {
-			console.error('Invalid time', time);
+	saveWindbackTime() {
+		if (!this.#localWindbackTime) {
 			return;
 		}
-		this.#localWindbackTime = time;
+
+		const valid = this.#localWindbackTime.toUTC().toISO();
+
+		if (!valid) {
+			console.error('Invalid time', this.#localWindbackTime);
+			return;
+		}
 		client.sendCommand(new SetClientWindbackTime(valid));
 	}
 }

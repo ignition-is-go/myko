@@ -38,15 +38,17 @@ export class TransactionsViewState {
 		};
 
 		updateTime();
+
+		$effect(() => {
+			if (!this.#draggingWindback) return;
+
+			this.windbackState.updateCursor(this.mouseTime);
+		});
 	}
 
 	get windbackX() {
 		if (!this.windbackState.cursor) {
 			return 0;
-		}
-
-		if (this.#draggingWindback) {
-			return this.#mouseX;
 		}
 
 		const time = this.windbackState.cursor.toMillis();
@@ -357,7 +359,7 @@ export class TransactionsViewState {
 
 	stopDragWindback() {
 		this.#draggingWindback = false;
-		this.windbackState.updateCursor(this.mouseTime);
+		this.windbackState.saveWindbackTime();
 	}
 }
 

@@ -39,6 +39,7 @@ export type MItemStub = {
   id: ID
   itemType: string
   name?: string
+  hash: string
 }
 
 @MykoReport()
@@ -53,6 +54,21 @@ export class ChildEntities extends MReport<MItemStub[]> {
 
 @MykoReport()
 export class ChildEntitiesAllTime extends MReport<MItemStub[]> {
+  constructor(
+    readonly parentType: string,
+    readonly parentId: ID,
+  ) {
+    super()
+  }
+}
+
+export type EntitySnapshotDifferenceData = {
+  changed: MItemStub[]
+  added: MItemStub[]
+  removed: MItemStub[]
+}
+@MykoReport()
+export class EntitySnapshotDifference extends MReport<EntitySnapshotDifferenceData> {
   constructor(
     readonly parentType: string,
     readonly parentId: ID,

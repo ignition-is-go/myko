@@ -2,7 +2,9 @@ import {
   ChildEntities,
   ChildEntitiesAllTime,
   EntitySearch,
+  EntitySnapshotDifference,
   getHistoryProvider,
+  getHostId,
   GetItemsByTypeAndIds,
   liveRepoName,
   MItem,
@@ -10,7 +12,9 @@ import {
   MykoReportHandler,
   relationRegistry,
   repoName,
+  reportBus,
   wrapItem,
+  type EntitySnapshotDifferenceData,
   type MItemStub,
   type MLiveReportResult,
   type MQueryHandler,
@@ -121,6 +125,7 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
               id: y.item.id,
               itemType: y.itemType,
               name: 'name' in y.item ? (y.item.name as string) : undefined,
+              hash: y.item.hash,
             }) satisfies MItemStub,
         ),
       ),
@@ -227,6 +232,7 @@ export class ChildEntitiesAllTimeHandler
               id: y.item.id,
               itemType: y.itemType,
               name: 'name' in y.item ? (y.item.name as string) : undefined,
+              hash: y.item.hash,
             }) satisfies MItemStub,
         ),
       ),
@@ -241,6 +247,53 @@ export class ChildEntitiesAllTimeHandler
         }
 
         return diff.size === 0
+      }),
+    )
+  }
+}
+
+@MykoReportHandler(EntitySnapshotDifference)
+export class EntitySnapshotDifferenceHandler
+  implements MReportHandler<EntitySnapshotDifference>
+{
+  execute(
+    report: EntitySnapshotDifference,
+  ): Observable<EntitySnapshotDifferenceData> {
+    const pinned = reportBus.watch(
+      new ChildEntities(report.parentType, report.parentId).withContext(report),
+    )
+
+    const upToDate = reportBus.watch(
+      new ChildEntities(report.parentType, report.parentId).withContext({
+        commandClientId: getHostId(),
+        tx: report.tx,
+      }),
+    )
+
+    return combineLatest([pinned, upToDate]).pipe(
+      map(([pinned, upToDate]) => {
+        const pinnedIds = new Set(pinned.map((x) => x.id))
+        const upToDateIds = new Set(upToDate.map((x) => x.id))
+
+        const addedIds = pinnedIds.difference(upToDateIds)
+        const removedIds = upToDateIds.difference(pinnedIds)
+
+        const potentiallyChanged = pinnedIds.intersection(upToDateIds)
+
+        const changed = [...potentiallyChanged].filter((id) => {
+          const p = pinned.find((x) => x.id === id)!
+          const u = upToDate.find((x) => x.id === id)!
+
+          return p.hash !== u.hash
+        })
+
+        return {
+          added: [...addedIds].map((id) => upToDate.find((x) => x.id === id)!),
+          removed: [...removedIds].map(
+            (id) => pinned.find((x) => x.id === id)!,
+          ),
+          changed: changed.map((id) => pinned.find((x) => x.id === id)!),
+        } satisfies EntitySnapshotDifferenceData
       }),
     )
   }
