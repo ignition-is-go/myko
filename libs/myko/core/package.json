@@ -21,7 +21,7 @@
     "@types/uuid": "^9.0.8"
   },
   "scripts": {
-    "jsr-publish": "jsr publish",
-    "jsr-publish:dry": "jsr publish --dry-run"
+    "jsr-publish": "jsr publish --allow-dirty --allow-slow-types",
+    "jsr-publish:dry": "jsr publish --allow-dirty --allow-slow-types --dry-run"
   }
 }
