@@ -23,5 +23,6 @@
   "scripts": {
     "jsr-publish": "jsr publish --allow-dirty --allow-slow-types",
     "jsr-publish:dry": "jsr publish --allow-dirty --allow-slow-types --dry-run"
-  }
+  },
+  "version": "3.0.0-canary.558"
 }

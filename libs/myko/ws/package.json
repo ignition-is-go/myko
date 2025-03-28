@@ -5,7 +5,7 @@
   "author": "Trevor Sargent",
   "license": "ISC",
   "dependencies": {
-    "@myko/core": "npm:@jsr/myko__core@0.1.11",
+    "@myko/core": "npm:@jsr/myko__core@3.0.0-canary.558",
     "luxon": "^3.5.0",
     "msgpackr": "^1.10.2",
     "rxjs": "^7.8.1",
@@ -18,5 +18,6 @@
   "scripts": {
     "jsr-publish": "jsr publish --allow-dirty --allow-slow-types",
     "jsr-publish:dry": "jsr publish --allow-dirty --allow-slow-types --dry-run"
-  }
+  },
+  "version": "3.0.0-canary.558"
 }
