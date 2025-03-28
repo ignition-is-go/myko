@@ -14,5 +14,9 @@
   "devDependencies": {
     "@types/luxon": "^3.4.2",
     "@types/ws": "^8.5.10"
+  },
+  "scripts": {
+    "jsr-publish": "jsr publish",
+    "jsr-publish:dry": "jsr publish --dry-run"
   }
 }

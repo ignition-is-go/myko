@@ -19,5 +19,9 @@
     "@types/object-hash": "^3.0.6",
     "@types/ramda": "^0.29.11",
     "@types/uuid": "^9.0.8"
+  },
+  "scripts": {
+    "jsr-publish": "jsr publish",
+    "jsr-publish:dry": "jsr publish --dry-run"
   }
 }
