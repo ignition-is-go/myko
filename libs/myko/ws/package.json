@@ -16,8 +16,8 @@
     "@types/ws": "^8.5.10"
   },
   "scripts": {
-    "jsr-publish": "jsr publish --allow-dirty --allow-slow-types",
-    "jsr-publish:dry": "jsr publish --allow-dirty --allow-slow-types --dry-run"
+    "jsr-publish": "pnpx jsr publish --allow-dirty --allow-slow-types",
+    "jsr-publish:dry": "pnpx jsr publish --allow-dirty --allow-slow-types --dry-run"
   },
   "version": "3.0.0-canary.558"
 }
