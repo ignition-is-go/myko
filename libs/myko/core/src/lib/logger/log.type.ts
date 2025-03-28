@@ -6,7 +6,9 @@ export enum LogLevel {
   ERROR = 'ERROR',
   LOG = 'LOG',
 }
-@MykoItem()
+@MykoItem({
+  preventLogs: true,
+})
 export class Log extends MItem<Log> {
   @doc()
   text: string

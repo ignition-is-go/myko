@@ -16,6 +16,7 @@ import {
   type ID,
 } from '@myko/core'
 import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
+import { logsPreventedEntities } from '@myko/core/src/lib/logger/registry'
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { Subject } from 'rxjs'
@@ -139,7 +140,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
 
   onAllInit(() => {
     eventBus.subject$.subscribe((x) => {
-      if (x.itemType === 'Log') {
+      if (logsPreventedEntities.has(x.itemType)) {
         return
       }
 

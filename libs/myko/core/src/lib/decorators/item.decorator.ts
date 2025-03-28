@@ -14,6 +14,7 @@ import {
   MYKO_ITEM_SEARCH_KEY,
   MYKO_ITEM_TYPE,
 } from '../constants'
+import { logsPreventedEntities } from '../logger/registry'
 import {
   clientIdPropertyRegistry,
   constructorRegistry,
@@ -41,6 +42,7 @@ export const MykoItem =
     itemTypeOverride?: string
     deprecated?: boolean
     preventDoc?: boolean
+    preventLogs?: boolean
   }): ClassDecorator =>
   (target) => {
     const original: any = target
@@ -67,6 +69,10 @@ export const MykoItem =
     constructorRegistry.set(itemType, withType)
 
     docEntity(opts?.doc, itemType, opts?.deprecated, opts?.preventDoc)(target)
+
+    if (opts?.preventLogs) {
+      logsPreventedEntities.add(itemType)
+    }
 
     const metaKeys = Reflect.getMetadataKeys(original)
 
