@@ -10,8 +10,8 @@ import { addItemDoc, addPropDoc } from '../registry'
  */
 export const docEntity =
   (
-    docString?: string,
-    itemType?: string,
+    docString: string | undefined,
+    itemType: string,
     deprecated?: boolean,
     preventDocs?: boolean,
   ): ClassDecorator =>
@@ -51,6 +51,12 @@ export const doc = (
 
     const autoItemType = Object.getOwnPropertyDescriptors(target.constructor)
       .name.value
+
+    if (!autoItemType) {
+      throw new Error(
+        `The class ${target.constructor.name} does not have a valid item type.`,
+      )
+    }
 
     addPropDoc({
       docString: docString,

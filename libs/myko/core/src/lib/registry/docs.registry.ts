@@ -4,14 +4,14 @@ export type PropDocInfo = {
   entityType: string
   propName: string
   propType: string
-  docString: string
+  docString: string | undefined
   deprecated?: boolean
   type: 'prop'
 }
 
 export type ItemDocInfo = {
   entityType: string
-  docString: string
+  docString: string | undefined
   deprecated?: boolean
   extends?: string
   preventDocs?: boolean
