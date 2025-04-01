@@ -1,4 +1,5 @@
 import flexsearch from 'flexsearch'
+import { uniq } from 'ramda'
 import {
   bufferTime,
   combineLatest,
@@ -63,15 +64,21 @@ export type RepoFactory = <T extends MItem>(
  */
 export abstract class Repo<T extends MItem> {
   protected subject: Subject<MEvent<T>>
-  private search: flexsearch.Index
-  private searchObs: Subject<flexsearch.Index>
+  private search: flexsearch.Document<T>
+  private searchObs: Subject<flexsearch.Document<T>>
   constructor(
     protected entity: string,
     protected readonly options: RepoOptions<T>,
   ) {
     this.subject = new Subject()
     this.searchObs = new Subject()
-    this.search = new flexsearch.Index({ tokenize: 'forward' })
+    this.search = new flexsearch.Document({
+      document: {
+        id: 'id',
+        index: (options.searchIndeces || []) as any as string[],
+      },
+      tokenize: 'full',
+    })
 
     const loaded = new Subject<number>()
     let stopLoadingLogs = false
@@ -127,14 +134,9 @@ export abstract class Repo<T extends MItem> {
       .pipe(
         filter((event) => event.itemType === this.entity),
         tap((event: MEvent<T>) => {
-          if (options?.searchIndeces) {
-            const slug = options.searchIndeces
-              .map((key) => Reflect.get(event.item, key))
-              .join(' ')
-              .toLocaleLowerCase()
-
+          if (options?.searchIndeces && options.searchIndeces.length > 0) {
             if (event.changeType === MEventType.SET) {
-              this.search.add(event.item.id, slug)
+              this.search.add(event.item)
             }
 
             if (event.changeType === MEventType.DEL) {
@@ -281,7 +283,7 @@ export abstract class Repo<T extends MItem> {
       this.search
         .search(query.toLocaleLowerCase())
         .map((x) => this.getId(x.toString())),
-    )
+    ).then((x) => x.filter((x) => x !== null))
   }
 
   watchSearch(
@@ -300,12 +302,18 @@ export abstract class Repo<T extends MItem> {
 
     return this.searchObs.pipe(
       startWith(this.search),
-      map((s) => s.search(query.toLocaleLowerCase())),
+      map((s) =>
+        s
+          .search(query.toLocaleLowerCase(), Infinity, { suggest: true })
+          .flatMap((x) => x.result),
+      ),
+      map(uniq),
       switchMap((ids) =>
         ids.length === 0
           ? of([])
           : combineLatest(ids.map((id) => this.watchId(id.toString()).pipe())),
       ),
+      map((x) => x.filter((y) => y !== null)),
       map((x) => x.filter(filterFunc)),
     )
   }
@@ -325,8 +333,8 @@ export abstract class Repo<T extends MItem> {
    * @returns An array of objects with the specified IDs.
    */
   async getIds(ids: ID[]): Promise<T[]> {
-    return await Promise.all(
-      ids.map((id) => this.getId(id)).filter((x) => x !== null),
+    return await Promise.all(ids.map((id) => this.getId(id))).then((x) =>
+      x.filter((x) => x !== null),
     )
   }
 

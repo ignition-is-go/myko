@@ -5,7 +5,7 @@
   "license": "ISC",
   "dependencies": {
     "colors": "^1.4.0",
-    "flexsearch": "^0.7.43",
+    "flexsearch": "^0.8.147",
     "luxon": "^3.4.4",
     "object-hash": "^3.0.0",
     "ramda": "^0.29.1",
