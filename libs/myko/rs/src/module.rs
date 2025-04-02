@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use tokio::sync::mpsc::Sender;
+// use tokio::sync::mpsc::Sender;
 
 use crate::event::MEvent;
 
@@ -18,5 +18,5 @@ pub trait Module {
 
     fn entity_name(&self) -> String;
 
-    async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: Sender<MEvent>);
+    // async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: Sender<MEvent>);
 }

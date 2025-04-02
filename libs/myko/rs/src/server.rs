@@ -46,11 +46,11 @@ impl Server {
 
         let (from_kafka_tx, from_kafka_rx) = mpsc::channel::<MEvent>(100);
 
-        for module in modules.iter_mut() {
-            module
-                .start_kafka(self.config.kafka_brokers, from_kafka_tx.clone())
-                .await;
-        }
+        // for module in modules.iter_mut() {
+        //     module
+        //         .start_kafka(self.config.kafka_brokers, from_kafka_tx.clone())
+        //         .await;
+        // }
 
         self.modules_map = Arc::new(Mutex::new(
             modules.into_iter().map(|m| (m.entity_name(), m)).collect(),

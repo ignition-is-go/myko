@@ -49,7 +49,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
         pub struct #module_name {
             repo: std::sync::Arc<tokio::sync::Mutex<myko_rs::repo::RepoStruct<#name, #partial_name>>>,
-            kafka: Option<myko_rs::kafka::KafkaClient>,
+            // kafka: Option<myko_rs::kafka::KafkaClient>,
         }
 
         #[async_trait::async_trait]
@@ -57,17 +57,17 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
             fn new() -> Self {
                 #module_name {
                     repo: std::sync::Arc::new(tokio::sync::Mutex::new(myko_rs::repo::RepoStruct::new())),
-                    kafka: None,
+                    // kafka: None,
                 }
             }
 
-          async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: tokio::sync::mpsc::Sender<myko_rs::event::MEvent>) {
-                let k = myko_rs::kafka::KafkaClient::new(brokers.join(",").as_str(), #name_str).await;
+        //   async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: tokio::sync::mpsc::Sender<myko_rs::event::MEvent>) {
+        //         let k = myko_rs::kafka::KafkaClient::new(brokers.join(",").as_str(), #name_str).await;
 
-                k.consume_events(from_kafka_tx).await;
+        //         k.consume_events(from_kafka_tx).await;
 
-                self.kafka = Some(k);
-            }
+        //         self.kafka = Some(k);
+        //     }
 
             fn entity_name(&self) -> String {
                 #name_str.to_string()
@@ -79,14 +79,14 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                 }
                 println!("Processing event in {}", #name_str);
 
-                if persist {
-                    match self.kafka {
-                        Some(ref k) => {
-                            k.append_event(&event).await;
-                        }
-                        None => (),
-                    }
-                }
+                // if persist {
+                //     match self.kafka {
+                //         Some(ref k) => {
+                //             k.append_event(&event).await;
+                //         }
+                //         None => (),
+                //     }
+                // }
 
                 match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),
