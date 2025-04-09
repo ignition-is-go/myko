@@ -7,13 +7,14 @@ import {
   throwError,
 } from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
-import type {
-  MItem,
-  MLiveQueryResult,
-  MQuery,
-  MQueryHandler,
-  MQueryHandlerConstructor,
-  MQueryResult,
+import {
+  tapN,
+  type MItem,
+  type MLiveQueryResult,
+  type MQuery,
+  type MQueryHandler,
+  type MQueryHandlerConstructor,
+  type MQueryResult,
 } from '../types'
 import { ObservableBus } from './observable.bus'
 
@@ -80,7 +81,10 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 
+    this.on_prepare?.(query.tx, queryId)
+
     const obs = handler.execute(query).pipe(
+      tapN(1, () => this.on_result?.(query.tx, queryId)),
       share({
         connector: () => new ReplaySubject(1),
       }),

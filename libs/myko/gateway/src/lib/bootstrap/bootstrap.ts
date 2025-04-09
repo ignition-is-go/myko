@@ -1,13 +1,16 @@
 import {
   MykoLogger,
   Server,
+  commandBus,
   commandHandlers,
   commands,
   eventBus,
   getHostId,
   onAllInit,
   queries,
+  queryBus,
   queryHandlers,
+  reportBus,
   reportHandlers,
   reports,
   setDefaultRepoOptions,
@@ -21,6 +24,12 @@ import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { Subject } from 'rxjs'
 import { setAdapterBusses, setAdapterResult, setAuth } from '../registry'
+import {
+  beginTraceTransaction,
+  endTraceTransaction,
+  processEvent,
+} from '../telemetry'
+// import { initTracing } from '../telemetry/instrumentation'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions } from './types'
 
@@ -40,6 +49,27 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
 
     const tx = new Subject<{ clientId: ID; data: WSMMessage }>()
     const rx = new Subject<{ clientId: ID; data: WSMMessage }>()
+
+    if (args.tracing?.enabled) {
+      queryBus.onPrepare((tx, tag) => beginTraceTransaction(tx, tag, 'm:query'))
+      queryBus.onResult((tx, tag) => endTraceTransaction(tx, tag, 'm:query'))
+
+      commandBus.onPrepare((tx, tag) =>
+        beginTraceTransaction(tx, tag, 'm:command'),
+      )
+      commandBus.onResult((tx, tag) =>
+        endTraceTransaction(tx, tag, 'm:command'),
+      )
+
+      reportBus.onPrepare((tx, tag) =>
+        beginTraceTransaction(tx, tag, 'm:report'),
+      )
+      reportBus.onResult((tx, tag) => endTraceTransaction(tx, tag, 'm:report'))
+
+      eventBus.subject$.subscribe((x) => {
+        processEvent(x)
+      })
+    }
 
     rx.subscribe({
       next: handleMessage(tx),

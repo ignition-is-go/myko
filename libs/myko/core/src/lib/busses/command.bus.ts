@@ -39,7 +39,11 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     }
 
     // new MykoLogger('CommandBus').info(`${commandId}`)
-    return (await handler.execute(command)) as MCommandResponse<T>
+    this.on_prepare?.(command.tx, commandId)
+    return (await handler.execute(command).then((x) => {
+      this.on_result?.(command.tx, commandId)
+      return x
+    })) as MCommandResponse<T>
   }
 
   protected handlers: Map<string, MCommandHandler<MCommand<unknown>>> =
