@@ -4,6 +4,7 @@ import {
   map,
   ReplaySubject,
   share,
+  tap,
   throwError,
 } from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
@@ -88,6 +89,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       share({
         connector: () => new ReplaySubject(1),
       }),
+      tap(() => this.on_follow_up?.(query.tx, queryId)),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
       finalize(() => {

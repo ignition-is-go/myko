@@ -11,6 +11,7 @@ export class ObservableBus<T> {
 
   protected on_prepare: ((tx: ID, tag: string) => void) | undefined
   protected on_result: ((tx: ID, tag: string) => void) | undefined
+  protected on_follow_up: ((tx: ID, tag: string) => void) | undefined
 
   constructor() {}
 
@@ -35,5 +36,12 @@ export class ObservableBus<T> {
       throw new Error('Result callback already set')
     }
     this.on_result = cb
+  }
+
+  onFollowUp(cb: (tx: ID, tag: string) => void): void {
+    if (this.on_follow_up) {
+      throw new Error('Result callback already set')
+    }
+    this.on_follow_up = cb
   }
 }

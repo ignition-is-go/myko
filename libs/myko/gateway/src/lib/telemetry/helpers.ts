@@ -6,42 +6,20 @@ import {
   MREPORT_EVENT,
   type WSMMessage,
 } from '@myko/ws'
-import { metrics, trace } from '@opentelemetry/api'
-
-export const transactionStartTimes = new Map<ID, number>()
-export const transactionAttributes = new Map<
-  ID,
-  { [key: string]: string | number }
->()
-
-const spans = new Map<ID, any>()
-
-const eventCounts = new Map<string, number>()
-
-const txCounts = new Map<ID, number>()
-
-const txTimes = new Map<ID, number>()
-
-const tracer = trace.getTracer('MykoGateway')
-
-const meter = metrics.getMeter('MykoGateway')
-
-const transactionDurationHist = meter.createHistogram(
-  'myko.gateway.client.transaction.duration.hist',
-)
-const transactionDurationGauge = meter.createGauge(
-  'myko.gateway.client.transaction.duration',
-)
-
-const transactioncountGuage = meter.createGauge(
-  'myko.gateway.client.transaction.rate',
-)
-
-const transactionTotalTime = meter.createGauge(
-  'myko.gateway.client.transaction.duration.total',
-)
-
-const eventCountGuage = meter.createGauge('myko.gateway.client.event.rate')
+import {
+  // tracer,
+  transactionDurationGauge,
+  transactionDurationHist,
+} from './meters'
+import {
+  eventCounts,
+  spans,
+  transactionAttributes,
+  transactionStartTimes,
+  txCounts,
+  txResults,
+  txTimes,
+} from './state'
 
 export const beginTraceTransaction = (
   tx: ID,
@@ -50,9 +28,9 @@ export const beginTraceTransaction = (
 ) => {
   const startTime = performance.now()
   transactionStartTimes.set(tx, startTime)
-  tracer.startActiveSpan(tag, (span) => {
-    spans.set(tx, span)
-  })
+  // tracer().startActiveSpan(tag, (span) => {
+  //   spans.set(tx, span)
+  // })
 
   const count = txCounts.get(tag) ?? 0
   const newCount = count + 1
@@ -69,12 +47,12 @@ export const endTraceTransaction = (
   const duration = startTime ? endTime - startTime : undefined
 
   if (duration) {
-    transactionDurationHist.record(duration, {
+    transactionDurationHist().record(duration, {
       event,
       tag,
       hostId: getHostId(),
     })
-    transactionDurationGauge.record(duration, {
+    transactionDurationGauge().record(duration, {
       event,
       tag,
       hostId: getHostId(),
@@ -93,14 +71,14 @@ export const endTraceTransaction = (
   }
 }
 
-export const addTransactionAttribute = (
-  txId: ID,
-  key: string,
-  value: string | number,
+export const countResults = (
+  tx: ID,
+  tag: string,
+  event: 'm:query' | 'm:report',
 ) => {
-  const attributes = transactionAttributes.get(txId) ?? {}
-  attributes[key] = value
-  transactionAttributes.set(txId, attributes)
+  const count = txResults.get(tag) ?? 0
+  const newCount = count + 1
+  txResults.set(tag, newCount)
 }
 
 export const getAttributes = (
@@ -153,17 +131,27 @@ export const completeOutgoingMessage = (m: WSMMessage) => {
     const duration = endTime - txStartTime
     const attributes = transactionAttributes.get(tx)
 
-    transactionDurationHist.record(duration, {
+    transactionDurationHist().record(duration, {
       event: m.event,
       ...attributes,
       hostId: getHostId(),
     })
-    transactionDurationGauge.record(duration, {
+    transactionDurationGauge().record(duration, {
       event: m.event,
       ...attributes,
       hostId: getHostId(),
     })
   }
+}
+
+export const addTransactionAttribute = (
+  txId: ID,
+  key: string,
+  value: string | number,
+) => {
+  const attributes = transactionAttributes.get(txId) ?? {}
+  attributes[key] = value
+  transactionAttributes.set(txId, attributes)
 }
 
 export const processEvent = (e: MEvent) => {
@@ -171,28 +159,3 @@ export const processEvent = (e: MEvent) => {
   const newCount = count + 1
   eventCounts.set(e.itemType, newCount)
 }
-
-setInterval(() => {
-  for (const [key, value] of txCounts.entries()) {
-    transactioncountGuage.record(value, {
-      tag: key,
-      hostId: getHostId(),
-    })
-    txCounts.set(key, 0)
-  }
-  for (const [key, value] of txTimes.entries()) {
-    transactionTotalTime.record(value, {
-      tag: key,
-      hostId: getHostId(),
-    })
-    txTimes.set(key, 0)
-  }
-
-  for (const [key, value] of eventCounts.entries()) {
-    eventCountGuage.record(value, {
-      event: key,
-      hostId: getHostId(),
-    })
-    eventCounts.set(key, 0)
-  }
-}, 1000)

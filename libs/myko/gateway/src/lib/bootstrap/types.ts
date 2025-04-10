@@ -32,3 +32,8 @@ export type MykoGatewayBootstrapOptions = {
         enabled: false
       }
 }
+
+export type StartupReportEntry = {
+  module: string
+  lines: string[]
+}

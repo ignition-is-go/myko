@@ -4,6 +4,7 @@ import {
   map,
   ReplaySubject,
   share,
+  tap,
   throwError,
 } from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
@@ -88,6 +89,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
       share({
         connector: () => new ReplaySubject(1),
       }),
+      tap(() => this.on_follow_up?.(report.tx, reportId)),
       map((x) => {
         // clone the object
         if (x instanceof Array) return x.slice()
