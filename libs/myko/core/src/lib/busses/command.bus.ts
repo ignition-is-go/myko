@@ -1,3 +1,4 @@
+import { v4 } from 'uuid'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 import type {
   ContextPhantom,
@@ -39,10 +40,12 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
       throw err
     }
 
+    const callId = v4()
+
     // new MykoLogger('CommandBus').info(`${commandId}`)
-    this.on_prepare?.(command.tx, commandId)
+    this.on_prepare?.(command.tx, commandId, callId)
     return (await handler.execute(command).then((x) => {
-      this.on_result?.(command.tx, commandId)
+      this.on_result?.(command.tx, commandId, callId)
       return x
     })) as MCommandResponse<T>
   }

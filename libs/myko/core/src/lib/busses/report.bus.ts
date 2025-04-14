@@ -7,6 +7,7 @@ import {
   tap,
   throwError,
 } from 'rxjs'
+import { v4 } from 'uuid'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import {
   tapN,
@@ -86,13 +87,15 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
       return this.cache.get(cacheKey)!.pipe() as MLiveReportResult<T>
     }
 
-    this.on_prepare?.(report.tx, reportId)
+    const callId = v4()
+
+    this.on_prepare?.(report.tx, reportId, callId)
     const obs = handler.execute(report).pipe(
-      tapN(1, () => this.on_result?.(report.tx, reportId)),
+      tapN(1, () => this.on_result?.(report.tx, reportId, callId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
-      tap(() => this.on_follow_up?.(report.tx, reportId)),
+      tap(() => this.on_follow_up?.(report.tx, reportId, callId)),
       map((x) => {
         // clone the object
         if (x instanceof Array) return x.slice()

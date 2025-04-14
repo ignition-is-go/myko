@@ -7,6 +7,7 @@ import {
   tap,
   throwError,
 } from 'rxjs'
+import { v4 } from 'uuid'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import {
   tapN,
@@ -83,14 +84,16 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 
-    this.on_prepare?.(query.tx, queryId)
+    const callId = v4()
+
+    this.on_prepare?.(query.tx, queryId, callId)
 
     const obs = handler.execute(query).pipe(
-      tapN(1, () => this.on_result?.(query.tx, queryId)),
+      tapN(1, () => this.on_result?.(query.tx, queryId, callId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
-      tap(() => this.on_follow_up?.(query.tx, queryId)),
+      tap(() => this.on_follow_up?.(query.tx, queryId, callId)),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
       finalize(() => {

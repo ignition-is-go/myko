@@ -9,9 +9,11 @@ import type { ID } from '../types'
 export class ObservableBus<T> {
   protected _subject$: Subject<T> = new Subject()
 
-  protected on_prepare: ((tx: ID, tag: string) => void) | undefined
-  protected on_result: ((tx: ID, tag: string) => void) | undefined
-  protected on_follow_up: ((tx: ID, tag: string) => void) | undefined
+  protected on_prepare: ((tx: ID, tag: string, callId: ID) => void) | undefined
+  protected on_result: ((tx: ID, tag: string, callId: ID) => void) | undefined
+  protected on_follow_up:
+    | ((tx: ID, tag: string, callId: ID) => void)
+    | undefined
 
   constructor() {}
 
@@ -24,21 +26,21 @@ export class ObservableBus<T> {
     return this._subject$
   }
 
-  onPrepare(cb: (tx: ID, tag: string) => void): void {
+  onPrepare(cb: (tx: ID, tag: string, callId: ID) => void): void {
     if (this.on_prepare) {
       throw new Error('Prepare callback already set')
     }
     this.on_prepare = cb
   }
 
-  onResult(cb: (tx: ID, tag: string) => void): void {
+  onResult(cb: (tx: ID, tag: string, callId: ID) => void): void {
     if (this.on_result) {
       throw new Error('Result callback already set')
     }
     this.on_result = cb
   }
 
-  onFollowUp(cb: (tx: ID, tag: string) => void): void {
+  onFollowUp(cb: (tx: ID, tag: string, callId: ID) => void): void {
     if (this.on_follow_up) {
       throw new Error('Result callback already set')
     }
