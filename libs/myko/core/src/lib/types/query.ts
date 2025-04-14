@@ -49,6 +49,10 @@ export class MQuery<T extends MItem = MItem> extends WithContext {
 
     return query
   }
+
+  getTag(): string {
+    return Reflect.getMetadata(MYKO_QUERY_ID_KEY, this)
+  }
 }
 
 /**

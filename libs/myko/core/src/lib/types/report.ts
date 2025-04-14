@@ -39,6 +39,10 @@ export class MReport<T> extends WithContext {
       reportId: reportId,
     }
   }
+
+  getTag(): string {
+    return Reflect.getMetadata(MYKO_REPORT_ID_KEY, this)
+  }
 }
 
 export type MReportType<T> = T extends MReport<infer R> ? R : never

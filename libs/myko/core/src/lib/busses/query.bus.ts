@@ -86,14 +86,14 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
 
     const callId = v4()
 
-    this.on_prepare?.(query.tx, queryId, callId)
+    this.on_prepare?.(query, callId)
 
     const obs = handler.execute(query).pipe(
-      tapN(1, () => this.on_result?.(query.tx, queryId, callId)),
+      tapN(1, () => this.on_result?.(query, callId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
-      tap(() => this.on_follow_up?.(query.tx, queryId, callId)),
+      tap(() => this.on_follow_up?.(query, callId)),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
       finalize(() => {

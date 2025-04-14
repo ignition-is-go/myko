@@ -64,6 +64,8 @@ export class WithContext {
    */
   readonly createdAt: string
 
+  readonly lineage: string[]
+
   constructor() {
     this.tx = uuid()
     this.createdAt = DateTime.utc().toString()
@@ -73,8 +75,21 @@ export class WithContext {
     Reflect.set(this, 'tx', ctx.tx)
     Reflect.set(this, 'commandClientId', ctx.commandClientId)
 
+    const lineage = Reflect.get(ctx, 'lineage')
+
+    const updatedLineage = [...(lineage ?? []), this.getTag()]
+
+    Reflect.set(this, 'lineage', updatedLineage)
+
     return this as this & ContextPhantom
+  }
+
+  getTag(): string {
+    throw new Error('Method not implemented.')
   }
 }
 
-export type IContext = Omit<WithContext, 'withContext' | 'createdAt'>
+export type IContext = Omit<
+  WithContext,
+  'withContext' | 'createdAt' | 'getTag' | 'lineage'
+>

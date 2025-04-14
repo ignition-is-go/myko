@@ -1,8 +1,10 @@
 import {
   metrics,
+  trace,
   type Gauge,
   type Histogram,
   type Meter,
+  type Tracer,
 } from '@opentelemetry/api'
 
 let _meter: Meter | null
@@ -81,10 +83,10 @@ export const serverGuage = () => {
   return _serverGuage
 }
 
-// let _tracer: Tracer | null = null
-// export const tracer = () => {
-//   if (!_tracer) {
-//     _tracer = trace.getTracer('MykoGateway')
-//   }
-//   return _tracer
-// }
+let _tracer: Tracer | null = null
+export const tracer = () => {
+  if (!_tracer) {
+    _tracer = trace.getTracer('MykoGateway')
+  }
+  return _tracer
+}

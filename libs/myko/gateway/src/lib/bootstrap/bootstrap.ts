@@ -1,7 +1,6 @@
 import {
   MykoLogger,
   Server,
-  commandBus,
   commandHandlers,
   commands,
   eventBus,
@@ -9,9 +8,7 @@ import {
   getHostId,
   onAllInit,
   queries,
-  queryBus,
   queryHandlers,
-  reportBus,
   reportHandlers,
   reports,
   setDefaultRepoOptions,
@@ -27,14 +24,7 @@ import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
 import { Subject } from 'rxjs'
 import { setAdapterBusses, setAdapterResult, setAuth } from '../registry'
-import {
-  beginTraceTransaction,
-  countResults,
-  endTraceTransaction,
-  processEvent,
-} from '../telemetry/helpers'
 import { initTracing } from '../telemetry/instrumentation'
-import { exportMetrics } from '../telemetry/metrics'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions, StartupReportEntry } from './types'
 
@@ -60,27 +50,8 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
   })
 
   if (args.tracing?.enabled) {
-    const report = initTracing(args.tracing)
+    const report = initTracing(args)
     startupReport.push(report)
-
-    queryBus.onPrepare((tx, tag) => beginTraceTransaction(tx, tag, 'm:query'))
-    queryBus.onResult((tx, tag) => endTraceTransaction(tx, tag, 'm:query'))
-    queryBus.onFollowUp((tx, tag) => countResults(tx, tag, 'm:query'))
-
-    reportBus.onPrepare((tx, tag) => beginTraceTransaction(tx, tag, 'm:report'))
-    reportBus.onResult((tx, tag) => endTraceTransaction(tx, tag, 'm:report'))
-    reportBus.onFollowUp((tx, tag) => countResults(tx, tag, 'm:report'))
-
-    commandBus.onPrepare((tx, tag) =>
-      beginTraceTransaction(tx, tag, 'm:command'),
-    )
-    commandBus.onResult((tx, tag) => endTraceTransaction(tx, tag, 'm:command'))
-
-    eventBus.subject$.subscribe((x) => {
-      processEvent(x)
-    })
-
-    exportMetrics(args)
   }
 
   if (args.ws) {

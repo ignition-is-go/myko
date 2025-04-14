@@ -1,50 +1,86 @@
-import { getHostId, type ID, type MEvent } from '@myko/core'
+import { getHostId, type ID, type MEvent, type WithContext } from '@myko/core'
 import {
-  getTx,
   MCOMMAND_EVENT,
   MQUERY_EVENT,
   MREPORT_EVENT,
   type WSMMessage,
 } from '@myko/ws'
+import { context, trace } from '@opentelemetry/api'
 import {
+  tracer,
   // tracer,
   transactionDurationGauge,
   transactionDurationHist,
 } from './meters'
 import {
+  callStartTimes,
   eventCounts,
-  spans,
-  transactionAttributes,
-  transactionStartTimes,
-  txCounts,
-  txResults,
-  txTimes,
+  spansByCall,
+  spansByTx,
+  tagCounts,
+  tagResults,
+  tagTimes,
 } from './state'
 
 export const beginTraceTransaction = (
-  tx: ID,
-  tag: string,
+  mContext: WithContext,
   event: 'm:query' | 'm:command' | 'm:report',
+  callId: ID,
 ) => {
-  const startTime = performance.now()
-  transactionStartTimes.set(tx, startTime)
-  // tracer().startActiveSpan(tag, (span) => {
-  //   spans.set(tx, span)
-  // })
+  const tag = mContext.getTag()
+  const tx = mContext.tx
 
-  const count = txCounts.get(tag) ?? 0
+  const startTime = performance.now()
+  callStartTimes.set(callId, startTime)
+
+  const existingTx = spansByTx.get(tx)
+
+  if (existingTx) {
+    let ctx = trace.setSpan(context.active(), existingTx)
+
+    const childSpan = tracer().startSpan(
+      tag,
+      {
+        attributes: {
+          event,
+          tag,
+          hostId: getHostId(),
+          lineage: mContext.lineage,
+        },
+      },
+      ctx,
+    )
+
+    spansByCall.set(callId, childSpan)
+  } else {
+    const span = tracer().startSpan(`Entry: ${tag}`, {
+      attributes: {
+        event,
+        tag,
+        hostId: getHostId(),
+      },
+    })
+    spansByTx.set(tx, span)
+    spansByCall.set(callId, span)
+  }
+
+  const count = tagCounts.get(tag) ?? 0
   const newCount = count + 1
-  txCounts.set(tag, newCount)
+  tagCounts.set(tag, newCount)
 }
 
 export const endTraceTransaction = (
-  tx: ID,
-  tag: string,
+  mContext: WithContext,
   event: 'm:query' | 'm:command' | 'm:report',
+  callId: ID,
 ) => {
-  const startTime = transactionStartTimes.get(tx)
+  const startTime = callStartTimes.get(callId)
   const endTime = performance.now()
   const duration = startTime ? endTime - startTime : undefined
+  callStartTimes.delete(callId)
+
+  const tag = mContext.getTag()
+  const tx = mContext.tx
 
   if (duration) {
     transactionDurationHist().record(duration, {
@@ -58,27 +94,24 @@ export const endTraceTransaction = (
       hostId: getHostId(),
     })
 
-    const totalTime = txTimes.get(tag) ?? 0
+    const totalTime = tagTimes.get(tag) ?? 0
     const newTotalTime = totalTime + duration
-    txTimes.set(tag, newTotalTime)
+    tagTimes.set(tag, newTotalTime)
   }
 
-  transactionStartTimes.delete(tx)
-  const span = spans.get(tx)
-  if (span) {
-    span.end()
-    spans.delete(tx)
-  }
+  spansByCall.get(callId)?.end()
+  spansByCall.delete(callId)
 }
 
 export const countResults = (
-  tx: ID,
-  tag: string,
+  mContext: WithContext,
   event: 'm:query' | 'm:report',
+  callId: ID,
 ) => {
-  const count = txResults.get(tag) ?? 0
+  const tag = mContext.getTag()
+  const count = tagResults.get(tag) ?? 0
   const newCount = count + 1
-  txResults.set(tag, newCount)
+  tagResults.set(tag, newCount)
 }
 
 export const getAttributes = (
@@ -111,50 +144,50 @@ export const getAttributes = (
   }
 }
 
-export const initIncomingMessage = (m: WSMMessage) => {
-  const tx = getTx(m)
-  const startTime = performance.now()
-  transactionStartTimes.set(tx, startTime)
+// export const initIncomingMessage = (m: WSMMessage) => {
+//   const tx = getTx(m)
+//   const startTime = performance.now()
+//   transactionStartTimes.set(tx, startTime)
 
-  const attributes = getAttributes(m)
-  transactionAttributes.set(tx, attributes)
-}
+//   const attributes = getAttributes(m)
+//   transactionAttributes.set(tx, attributes)
+// }
 
-export const completeOutgoingMessage = (m: WSMMessage) => {
-  const tx = getTx(m)
+// export const completeOutgoingMessage = (m: WSMMessage) => {
+//   const tx = getTx(m)
 
-  const endTime = performance.now()
+//   const endTime = performance.now()
 
-  const txStartTime = transactionStartTimes.get(tx)
-  if (txStartTime) {
-    transactionStartTimes.delete(tx)
-    const duration = endTime - txStartTime
-    const attributes = transactionAttributes.get(tx)
+//   const txStartTime = transactionStartTimes.get(tx)
+//   if (txStartTime) {
+//     transactionStartTimes.delete(tx)
+//     const duration = endTime - txStartTime
+//     const attributes = transactionAttributes.get(tx)
 
-    transactionDurationHist().record(duration, {
-      event: m.event,
-      ...attributes,
-      hostId: getHostId(),
-    })
-    transactionDurationGauge().record(duration, {
-      event: m.event,
-      ...attributes,
-      hostId: getHostId(),
-    })
-  }
-}
+//     transactionDurationHist().record(duration, {
+//       event: m.event,
+//       ...attributes,
+//       hostId: getHostId(),
+//     })
+//     transactionDurationGauge().record(duration, {
+//       event: m.event,
+//       ...attributes,
+//       hostId: getHostId(),
+//     })
+//   }
+// }
 
-export const addTransactionAttribute = (
-  txId: ID,
-  key: string,
-  value: string | number,
-) => {
-  const attributes = transactionAttributes.get(txId) ?? {}
-  attributes[key] = value
-  transactionAttributes.set(txId, attributes)
-}
+// export const addTransactionAttribute = (
+//   txId: ID,
+//   key: string,
+//   value: string | number,
+// ) => {
+//   const attributes = transactionAttributes.get(txId) ?? {}
+//   attributes[key] = value
+//   transactionAttributes.set(txId, attributes)
+// }
 
-export const processEvent = (e: MEvent) => {
+export const countEvent = (e: MEvent) => {
   const count = eventCounts.get(e.itemType) ?? 0
   const newCount = count + 1
   eventCounts.set(e.itemType, newCount)

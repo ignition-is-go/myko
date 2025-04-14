@@ -89,13 +89,13 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
 
     const callId = v4()
 
-    this.on_prepare?.(report.tx, reportId, callId)
+    this.on_prepare?.(report, callId)
     const obs = handler.execute(report).pipe(
-      tapN(1, () => this.on_result?.(report.tx, reportId, callId)),
+      tapN(1, () => this.on_result?.(report, callId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
-      tap(() => this.on_follow_up?.(report.tx, reportId, callId)),
+      tap(() => this.on_follow_up?.(report, callId)),
       map((x) => {
         // clone the object
         if (x instanceof Array) return x.slice()

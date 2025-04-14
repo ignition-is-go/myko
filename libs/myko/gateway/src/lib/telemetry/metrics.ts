@@ -8,23 +8,23 @@ import {
   transactionResultGuage,
   transactionTotalTime,
 } from './meters'
-import { eventCounts, txCounts, txResults, txTimes } from './state'
+import { eventCounts, tagCounts, tagResults, tagTimes } from './state'
 
 export const exportMetrics = (args: MykoGatewayBootstrapOptions) => {
   setInterval(() => {
-    for (const [key, value] of txCounts.entries()) {
+    for (const [key, value] of tagCounts.entries()) {
       transactioncountGuage().record(value, {
         tag: key,
         hostId: getHostId(),
       })
-      txCounts.set(key, 0)
+      tagCounts.set(key, 0)
     }
-    for (const [key, value] of txTimes.entries()) {
+    for (const [key, value] of tagTimes.entries()) {
       transactionTotalTime().record(value, {
         tag: key,
         hostId: getHostId(),
       })
-      txTimes.set(key, 0)
+      tagTimes.set(key, 0)
     }
 
     for (const [key, value] of eventCounts.entries()) {
@@ -35,12 +35,12 @@ export const exportMetrics = (args: MykoGatewayBootstrapOptions) => {
       eventCounts.set(key, 0)
     }
 
-    for (const [key, value] of txResults.entries()) {
+    for (const [key, value] of tagResults.entries()) {
       transactionResultGuage().record(value, {
         tag: key,
         hostId: getHostId(),
       })
-      txResults.set(key, 0)
+      tagResults.set(key, 0)
     }
 
     if (args.ws) {

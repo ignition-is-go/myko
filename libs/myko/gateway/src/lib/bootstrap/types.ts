@@ -29,6 +29,14 @@ export type MykoGatewayBootstrapOptions = {
         serviceName: string
         serviceVersion: string
         endpoint: string
+        pyroscope?:
+          | {
+              enabled: true
+              endpoint: string
+            }
+          | {
+              enabled: false
+            }
       }
     | {
         enabled: false

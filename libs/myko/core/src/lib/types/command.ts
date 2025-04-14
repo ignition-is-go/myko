@@ -54,6 +54,10 @@ export class MCommand<T = void> extends WithContext {
 
     return command
   }
+
+  getTag(): string {
+    return Reflect.getMetadata(MYKO_COMMAND_ID_KEY, this)
+  }
 }
 
 /**
