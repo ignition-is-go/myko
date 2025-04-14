@@ -1,7 +1,7 @@
 pub mod client;
 pub mod event;
 pub mod item;
-pub mod kafka;
+// pub mod kafka;
 pub mod message;
 pub mod module;
 pub mod query;

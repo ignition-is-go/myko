@@ -1,4 +1,5 @@
 import flexsearch from 'flexsearch'
+import { uniq } from 'ramda'
 import {
   bufferTime,
   combineLatest,
@@ -63,15 +64,21 @@ export type RepoFactory = <T extends MItem>(
  */
 export abstract class Repo<T extends MItem> {
   protected subject: Subject<MEvent<T>>
-  private search: flexsearch.Index
-  private searchObs: Subject<flexsearch.Index>
+  private search: flexsearch.Document<T>
+  private searchObs: Subject<flexsearch.Document<T>>
   constructor(
     protected entity: string,
     protected readonly options: RepoOptions<T>,
   ) {
     this.subject = new Subject()
     this.searchObs = new Subject()
-    this.search = new flexsearch.Index({ tokenize: 'forward' })
+    this.search = new flexsearch.Document({
+      document: {
+        id: 'id',
+        index: (options.searchIndeces || []) as any as string[],
+      },
+      tokenize: 'full',
+    })
 
     const loaded = new Subject<number>()
     let stopLoadingLogs = false
@@ -127,14 +134,9 @@ export abstract class Repo<T extends MItem> {
       .pipe(
         filter((event) => event.itemType === this.entity),
         tap((event: MEvent<T>) => {
-          if (options?.searchIndeces) {
-            const slug = options.searchIndeces
-              .map((key) => Reflect.get(event.item, key))
-              .join(' ')
-              .toLocaleLowerCase()
-
+          if (options?.searchIndeces && options.searchIndeces.length > 0) {
             if (event.changeType === MEventType.SET) {
-              this.search.add(event.item.id, slug)
+              this.search.add(event.item)
             }
 
             if (event.changeType === MEventType.DEL) {
@@ -300,7 +302,12 @@ export abstract class Repo<T extends MItem> {
 
     return this.searchObs.pipe(
       startWith(this.search),
-      map((s) => s.search(query.toLocaleLowerCase())),
+      map((s) =>
+        s
+          .search(query.toLocaleLowerCase(), Infinity, { suggest: true })
+          .flatMap((x) => x.result),
+      ),
+      map(uniq),
       switchMap((ids) =>
         ids.length === 0
           ? of([])

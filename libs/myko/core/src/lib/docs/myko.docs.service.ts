@@ -134,7 +134,7 @@ export class MykoDocsService {
           }
           const docStrings = (byProp[propName] || [])
             .map((p) => p.docString)
-            .filter((x) => x?.length > 0)
+            .filter((x) => x?.length ?? 0 > 0)
             .map(comment)
 
           const nameAndType = `${prop.propName}: ${prop.propType || 'unknown'}`

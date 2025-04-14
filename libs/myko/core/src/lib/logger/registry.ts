@@ -26,3 +26,5 @@ export class Cell<T> {
 }
 
 export const longestName = new Cell<number>(0)
+
+export const logsPreventedEntities = new Set<string>()

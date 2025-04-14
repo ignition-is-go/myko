@@ -15,6 +15,8 @@
     "preinstall": "git submodule update --init --recursive --remote",
     "postinstall": "bun run ./tools/scripts/version-stamp.js",
     "versionstamp": "bun run ./tools/scripts/version-stamp.js",
+    "versionwrite": "bun run ./tools/scripts/version-write.ts",
+    "versionecho": "bun run ./tools/scripts/version-echo.ts",
     "gen": "bun run ./tools/scaffold/generate.js && bun run ./tools/scripts/generate-entity-index.js",
     "clean": "./tools/scripts/clean.sh",
     "sync": "git submodule update --init --recursive --remote",
@@ -22,7 +24,9 @@
     "live": "turbo run live",
     "prepare": "git config --local core.hooksPath .githooks",
     "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
-    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json"
+    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
+    "jsr-publish": "turbo run jsr-publish",
+    "jsr-publish:dry": "turbo run jsr-publish:dry"
   },
   "packageManager": "pnpm@10.3.0+sha512.ee592eda8815a8a293c206bb0917c4bb0ff274c50def7cbc17be05ec641fc2d1b02490ce660061356bd0d126a4d7eb2ec8830e6959fb8a447571c631d5a2442d",
   "private": true,
@@ -74,5 +78,6 @@
       "utf-8-validate",
       "workerd"
     ]
-  }
+  },
+  "version": "3.0.0-canary.575"
 }

@@ -4,17 +4,19 @@ import {
   map,
   ReplaySubject,
   share,
+  tap,
   throwError,
 } from 'rxjs'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
-import type {
-  ContextPhantom,
-  MItem,
-  MLiveQueryResult,
-  MQuery,
-  MQueryHandler,
-  MQueryHandlerConstructor,
-  MQueryResult,
+import {
+  tapN,
+  type ContextPhantom,
+  type MItem,
+  type MLiveQueryResult,
+  type MQuery,
+  type MQueryHandler,
+  type MQueryHandlerConstructor,
+  type MQueryResult,
 } from '../types'
 import { ObservableBus } from './observable.bus'
 
@@ -81,10 +83,14 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 
+    this.on_prepare?.(query.tx, queryId)
+
     const obs = handler.execute(query).pipe(
+      tapN(1, () => this.on_result?.(query.tx, queryId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
+      tap(() => this.on_follow_up?.(query.tx, queryId)),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
       finalize(() => {

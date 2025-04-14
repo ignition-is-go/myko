@@ -23,4 +23,19 @@ export type MykoGatewayBootstrapOptions = {
   }
   modules: any[]
   docPath?: string
+  tracing?:
+    | {
+        enabled: true
+        serviceName: string
+        serviceVersion: string
+        endpoint: string
+      }
+    | {
+        enabled: false
+      }
+}
+
+export type StartupReportEntry = {
+  module: string
+  lines: string[]
 }

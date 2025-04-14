@@ -8,7 +8,7 @@ mod myko_tests {
 
     use crate::event::{MEvent, MEventType};
     use crate::item::Eventable;
-    use crate::kafka::KafkaClient;
+    // use crate::kafka::KafkaClient;
     use crate::{
         module::Module,
         repo::{Repo, RepoStruct},
@@ -157,7 +157,7 @@ mod myko_tests {
 
         struct DemoModule {
             repo: Arc<Mutex<RepoStruct<Demo, PartialDemo>>>,
-            kafka: Option<KafkaClient>,
+            // kafka: Option<KafkaClient>,
         }
 
         #[async_trait::async_trait]
@@ -165,17 +165,17 @@ mod myko_tests {
             fn new() -> Self {
                 DemoModule {
                     repo: Arc::new(Mutex::new(RepoStruct::new())),
-                    kafka: None,
+                    // kafka: None,
                 }
             }
 
-            async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: Sender<MEvent>) {
-                let k = KafkaClient::new(brokers.join(",").as_str(), "Demo").await;
+            // async fn start_kafka(&mut self, brokers: &[&str], from_kafka_tx: Sender<MEvent>) {
+            //     let k = KafkaClient::new(brokers.join(",").as_str(), "Demo").await;
 
-                k.consume_events(from_kafka_tx).await;
+            //     k.consume_events(from_kafka_tx).await;
 
-                self.kafka = Some(k);
-            }
+            //     self.kafka = Some(k);
+            // }
 
             fn entity_name(&self) -> String {
                 "Demo".to_string()
@@ -188,9 +188,9 @@ mod myko_tests {
 
                 println!("Processing event in Demo");
 
-                if let Some(k) = &self.kafka {
-                    k.append_event(&event).await;
-                }
+                // if let Some(k) = &self.kafka {
+                //     k.append_event(&event).await;
+                // }
 
                 match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),

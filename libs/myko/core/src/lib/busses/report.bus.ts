@@ -4,16 +4,18 @@ import {
   map,
   ReplaySubject,
   share,
+  tap,
   throwError,
 } from 'rxjs'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
-import type {
-  ContextPhantom,
-  MLiveReportResult,
-  MReport,
-  MReportHandler,
-  MReportResult,
-  Type,
+import {
+  tapN,
+  type ContextPhantom,
+  type MLiveReportResult,
+  type MReport,
+  type MReportHandler,
+  type MReportResult,
+  type Type,
 } from '../types'
 import { ObservableBus } from './observable.bus'
 
@@ -84,10 +86,13 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
       return this.cache.get(cacheKey)!.pipe() as MLiveReportResult<T>
     }
 
+    this.on_prepare?.(report.tx, reportId)
     const obs = handler.execute(report).pipe(
+      tapN(1, () => this.on_result?.(report.tx, reportId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
+      tap(() => this.on_follow_up?.(report.tx, reportId)),
       map((x) => {
         // clone the object
         if (x instanceof Array) return x.slice()

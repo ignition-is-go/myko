@@ -1,4 +1,5 @@
 import { Subject } from 'rxjs'
+import type { ID } from '../types'
 
 /**
  * Represents an observable bus that allows subscribing and emitting values of type T.
@@ -7,6 +8,10 @@ import { Subject } from 'rxjs'
  */
 export class ObservableBus<T> {
   protected _subject$: Subject<T> = new Subject()
+
+  protected on_prepare: ((tx: ID, tag: string) => void) | undefined
+  protected on_result: ((tx: ID, tag: string) => void) | undefined
+  protected on_follow_up: ((tx: ID, tag: string) => void) | undefined
 
   constructor() {}
 
@@ -17,5 +22,26 @@ export class ObservableBus<T> {
    */
   public get subject$(): Subject<T> {
     return this._subject$
+  }
+
+  onPrepare(cb: (tx: ID, tag: string) => void): void {
+    if (this.on_prepare) {
+      throw new Error('Prepare callback already set')
+    }
+    this.on_prepare = cb
+  }
+
+  onResult(cb: (tx: ID, tag: string) => void): void {
+    if (this.on_result) {
+      throw new Error('Result callback already set')
+    }
+    this.on_result = cb
+  }
+
+  onFollowUp(cb: (tx: ID, tag: string) => void): void {
+    if (this.on_follow_up) {
+      throw new Error('Result callback already set')
+    }
+    this.on_follow_up = cb
   }
 }
