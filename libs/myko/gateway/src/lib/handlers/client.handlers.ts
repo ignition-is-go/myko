@@ -7,6 +7,7 @@ import {
   eventBus,
   GetClientsByIds,
   GetClientsByQuery,
+  getHistoryProvider,
   getHostId,
   liveRepo,
   makeDel,
@@ -96,7 +97,18 @@ export class ClientStatusHandler implements MReportHandler<ClientStatus> {
 export class SetClientWindbackTimeHandler
   implements MCommandHandler<SetClientWindbackTime>
 {
-  async execute(command: SetClientWindbackTime): Promise<void> {
+  async execute(command: SetClientWindbackTime): Promise<true> {
+    try {
+      getHistoryProvider()
+    } catch (e) {
+      throw new MykoCommandError(
+        command.tx,
+        'History not provided. No Undo Functionality',
+      )
+    }
+
+    console.log('Setting windback time', command.windback)
+
     const existing = await liveRepo(Client).getId(command.commandClientId)
 
     ok(existing, 'Client not found')
@@ -108,6 +120,7 @@ export class SetClientWindbackTimeHandler
     })
 
     eventBus.publish(makeSet(client, command.tx))
+    return true
   }
 }
 

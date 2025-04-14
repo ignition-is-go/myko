@@ -54,7 +54,9 @@ export const handleCommand = async (
 
     const userId = await auth.getUserId(userToken)
     if (userId) {
-      getHistoryProvider().recordUserTransaction(userId, txid)
+      try {
+        getHistoryProvider().recordUserTransaction(userId, txid)
+      } catch (e) {}
     }
 
     const client = await liveRepo(Client).getId(clientId)

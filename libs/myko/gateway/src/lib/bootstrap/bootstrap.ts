@@ -46,9 +46,13 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
 
   if (args.historyProvider) {
     setHistoryProvider(args.historyProvider)
-  }
+    await getHistoryProvider().init()
 
-  await getHistoryProvider().init()
+    startupReport.push({
+      lines: [`History Provider Initialized`],
+      module: 'History',
+    })
+  }
 
   startupReport.push({
     lines: [`Starting: ${version}`, `Host ID: ${serverId}`],

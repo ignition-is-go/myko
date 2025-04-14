@@ -3,7 +3,7 @@ import { SetClientWindbackTime, WindbackStatus, type MItemStub } from '@myko/cor
 import { DateTime } from 'luxon';
 
 export class WindbackState {
-	#ctx: MItemStub | undefined = $state();
+	#ctx: Omit<MItemStub, 'hash'> | undefined = $state();
 
 	#liveWindbackTime: WindbackStatus['$reportResult'] = $state();
 
@@ -16,11 +16,11 @@ export class WindbackState {
 		});
 	}
 
-	get ctx() {
+	get ctx(): Omit<MItemStub, 'hash'> | undefined {
 		return this.#ctx;
 	}
 
-	set ctx(value: MItemStub | undefined) {
+	set ctx(value: Omit<MItemStub, 'hash'> | undefined) {
 		this.#ctx = value;
 	}
 
@@ -42,6 +42,10 @@ export class WindbackState {
 	}
 
 	saveWindbackTime() {
+		if (!this.#ctx) {
+			return;
+		}
+
 		if (!this.#localWindbackTime) {
 			return;
 		}
@@ -58,11 +62,16 @@ export class WindbackState {
 
 export const windbackState = new WindbackState();
 
-export const startWindback = (root: MItemStub) => {
-	console.log('Starting Windback', root);
-	windbackState.ctx = root;
+export const startWindback = (root: Omit<MItemStub, 'hash'>) => {
+	client
+		.sendCommand(new SetClientWindbackTime(DateTime.utc().minus({ seconds: 5 }).toISO()))
 
-	client.sendCommand(new SetClientWindbackTime(DateTime.utc().minus({ seconds: 5 }).toISO()));
+		.then((x) => {
+			if (!x) {
+				return;
+			}
+			windbackState.ctx = root;
+		});
 };
 
 export const exitWindback = () => {
