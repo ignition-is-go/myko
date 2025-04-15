@@ -26,30 +26,43 @@ export const handleReport = (
     tx: wrappedReport.report.tx,
   })
 
-  const response = reportBus.watch(report).pipe(
-    map((r) => wrapReportResponseWS(report.tx, r)),
-    catchError((e) => {
-      console.error(e.message)
-      return of({
-        data: {
-          message: e.message,
-          tx: report.tx,
-        },
-        event: MREPORT_ERROR_EVENT,
-      } satisfies WSMReportError)
-    }),
-    takeUntil(
-      merge(
-        clientDisconnect(clientId),
-        unsub.pipe(filter((u) => u === report.tx)),
+  try {
+    const response = reportBus.watch(report).pipe(
+      map((r) => wrapReportResponseWS(report.tx, r)),
+      catchError((e) => {
+        console.error(e.message)
+        return of({
+          data: {
+            message: e.message,
+            tx: report.tx,
+          },
+          event: MREPORT_ERROR_EVENT,
+        } satisfies WSMReportError)
+      }),
+      takeUntil(
+        merge(
+          clientDisconnect(clientId),
+          unsub.pipe(filter((u) => u === report.tx)),
+        ),
       ),
-    ),
-  )
+    )
 
-  response.subscribe((x) => {
+    response.subscribe((x) => {
+      respond.next({
+        clientId: clientId,
+        data: x,
+      })
+    })
+  } catch (e) {
     respond.next({
       clientId: clientId,
-      data: x,
+      data: {
+        event: MREPORT_ERROR_EVENT,
+        data: {
+          message: (e as Error).message,
+          tx: report.tx,
+        },
+      } as WSMReportError,
     })
-  })
+  }
 }

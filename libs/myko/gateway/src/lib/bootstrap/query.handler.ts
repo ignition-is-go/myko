@@ -40,65 +40,78 @@ export const handleQuery = (
 
   let sequence = -1
 
-  const response = queryBus.watch(query).pipe(
-    map((x) => x.filter((x) => !!x)),
-    map((curr) => {
-      const currMap = new Map(curr.map((x) => [x.id, x]))
+  try {
+    const response = queryBus.watch(query).pipe(
+      map((x) => x.filter((x) => !!x)),
+      map((curr) => {
+        const currMap = new Map(curr.map((x) => [x.id, x]))
 
-      const upserts = curr.filter(
+        const upserts = curr.filter(
+          (x) =>
+            x.hash == null ||
+            x.hash === undefined ||
+            !asSent.has(x.id) ||
+            asSent.get(x.id) !== x.hash,
+        )
+        const deletes = Array.from(asSent.keys()).filter((x) => !currMap.has(x))
+
+        upserts.forEach((x) => asSent.set(x.id, x.hash))
+
+        deletes.forEach((x) => asSent.delete(x))
+
+        sequence = sequence + 1
+
+        return {
+          data: {
+            deletes: [...deletes],
+            sequence: sequence,
+            upserts: upserts.map((x) => wrapItem(x)),
+            tx,
+          },
+          event: MQUERY_RESPONSE_EVENT,
+        } satisfies WSMQueryResponse
+      }),
+
+      filter(
         (x) =>
-          x.hash == null ||
-          x.hash === undefined ||
-          !asSent.has(x.id) ||
-          asSent.get(x.id) !== x.hash,
-      )
-      const deletes = Array.from(asSent.keys()).filter((x) => !currMap.has(x))
-
-      upserts.forEach((x) => asSent.set(x.id, x.hash))
-
-      deletes.forEach((x) => asSent.delete(x))
-
-      sequence = sequence + 1
-
-      return {
-        data: {
-          deletes: [...deletes],
-          sequence: sequence,
-          upserts: upserts.map((x) => wrapItem(x)),
-          tx,
-        },
-        event: MQUERY_RESPONSE_EVENT,
-      } satisfies WSMQueryResponse
-    }),
-
-    filter(
-      (x) =>
-        x.data.deletes.length > 0 ||
-        x.data.upserts.length > 0 ||
-        sequence === 0,
-    ),
-    catchError((e) => {
-      console.error(e.message)
-      return of({
-        data: {
-          message: e.message,
-          tx: tx,
-        },
-        event: MQUERY_ERROR_EVENT,
-      } as WSMQueryError)
-    }),
-    takeUntil(
-      merge(
-        clientDisconnect(clientId),
-        unsub.pipe(filter((u) => u === query.tx)),
+          x.data.deletes.length > 0 ||
+          x.data.upserts.length > 0 ||
+          sequence === 0,
       ),
-    ),
-  ) as Observable<WSMQueryResponse>
+      catchError((e) => {
+        console.error(e.message)
+        return of({
+          data: {
+            message: e.message,
+            tx: tx,
+          },
+          event: MQUERY_ERROR_EVENT,
+        } as WSMQueryError)
+      }),
+      takeUntil(
+        merge(
+          clientDisconnect(clientId),
+          unsub.pipe(filter((u) => u === query.tx)),
+        ),
+      ),
+    ) as Observable<WSMQueryResponse>
 
-  response.subscribe((x) => {
+    response.subscribe((x) => {
+      respond.next({
+        clientId: clientId,
+        data: x,
+      })
+    })
+  } catch (e) {
     respond.next({
       clientId: clientId,
-      data: x,
+      data: {
+        event: MQUERY_ERROR_EVENT,
+        data: {
+          message: (e as Error).message,
+          tx,
+        },
+      } as WSMQueryError,
     })
-  })
+  }
 }
