@@ -1,1 +1,4 @@
+BUN_INSTALL="$HOME/.bun"
+PATH="$BUN_INSTALL/bin:$PATH"
+
 pnpm run versionstamp
