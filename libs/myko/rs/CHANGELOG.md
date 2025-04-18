@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.4 (2025-04-18)
+
+### Chore
+
+ - <csr-id-a37d619a60993b951b836b4306b21a7754fc9773/> actually comment out kafka
+
+### Bug Fixes
+
+ - <csr-id-5ebdd025742e8e0acc54eb7f90f5079e2a905fbe/> actually remove kafka from build deps for rust
+ - <csr-id-98ccb04242008c273d4de982c315568edc8d1028/> remove kafka from myko core
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 8 commits contributed to the release over the course of 28 calendar days.
+ - 29 days passed between releases.
+ - 3 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Actually comment out kafka ([`a37d619`](https://github.com/ignition-is-go/rship/commit/a37d619a60993b951b836b4306b21a7754fc9773))
+    - Merge remote-tracking branch 'origin/dev' into feat/history ([`c3d898c`](https://github.com/ignition-is-go/rship/commit/c3d898c1aeb6fe58edd5b9ce76b02759e94c4dc4))
+    - Merge remote-tracking branch 'origin/dev' into docs ([`837f173`](https://github.com/ignition-is-go/rship/commit/837f173046b2d108d422d2a809a716b794204477))
+    - Actually remove kafka from build deps for rust ([`5ebdd02`](https://github.com/ignition-is-go/rship/commit/5ebdd025742e8e0acc54eb7f90f5079e2a905fbe))
+    - Merge remote-tracking branch 'origin/dev' into docs ([`38323d9`](https://github.com/ignition-is-go/rship/commit/38323d96dd82bc8262898f82b57446cb52ef7e4b))
+    - Merge pull request #270 from ignition-is-go/daily/04-01-2025 ([`24f1f65`](https://github.com/ignition-is-go/rship/commit/24f1f6586cc42e7f610e3b888dffca55c76fba97))
+    - Remove kafka from myko core ([`98ccb04`](https://github.com/ignition-is-go/rship/commit/98ccb04242008c273d4de982c315568edc8d1028))
+    - Merge branch 'dev' into feat/history ([`cc7a979`](https://github.com/ignition-is-go/rship/commit/cc7a979be48128a12f48bb73626057b242a46f49))
+</details>
+
 ## v0.1.3 (2025-03-20)
 
 <csr-id-4dd73ff44d9412f090490c8de11411741821261b/>
@@ -39,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 18 commits contributed to the release.
+ - 19 commits contributed to the release.
  - 12 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -50,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-macros v0.1.2, myko-rs v0.1.3, rship-entities v0.1.3, rship-sdk v0.1.7 ([`821141d`](https://github.com/ignition-is-go/rship/commit/821141dc259547dd14d3c1dba6e06dedc79c550f))
     - Release myko-macros v0.1.2, myko-rs v0.1.3, rship-entities v0.1.3, rship-sdk v0.1.7 ([`d62808b`](https://github.com/ignition-is-go/rship/commit/d62808b17b21beac2754f9e3327e4503626db981))
     - Merge pull request #202 from ignition-is-go/feat/remote-routes ([`eaecbb3`](https://github.com/ignition-is-go/rship/commit/eaecbb3c741baf7898db155da727204c3284e3c3))
     - Clean up rust diagnostics ([`4dd73ff`](https://github.com/ignition-is-go/rship/commit/4dd73ff44d9412f090490c8de11411741821261b))
