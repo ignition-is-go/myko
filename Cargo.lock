@@ -8482,7 +8482,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "myko-rs",
  "rship-entities",
