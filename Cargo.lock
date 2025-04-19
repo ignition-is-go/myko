@@ -4995,7 +4995,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "quote",
  "syn 2.0.100",
@@ -5003,7 +5003,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -8482,7 +8482,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.10"
+version = "0.1.13"
 dependencies = [
  "myko-rs",
  "rship-entities",

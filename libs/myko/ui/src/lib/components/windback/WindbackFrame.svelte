@@ -41,15 +41,14 @@
 	}
 
 	.windback-frame {
-		transform-origin: 50% 10%;
-		flex: 1;
-		position: relative;
 		width: 100%;
+		height: 100%;
 		background-color: black;
 		transition: filter 1s ease-in-out;
-
+		transition: height 1s ease-in-out;
 		&.windingBack {
 			filter: saturate(0.25);
+			height: 70%;
 		}
 	}
 
