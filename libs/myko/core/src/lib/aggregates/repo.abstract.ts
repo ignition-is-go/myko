@@ -371,8 +371,8 @@ export const toArray = <T>(m: Map<string, T>): T[] => [...m.values()]
 
 export const buildFilter =
   <T extends MItem>(query: Partial<T>): ((ent: T) => boolean) =>
-  (ent: T): boolean =>
-    objectFilter(query, ent)
+    (ent: T): boolean =>
+      objectFilter(query, ent)
 
 export const objectFilter = (query: object, ent: object): boolean => {
   return Reflect.ownKeys(query).every((key) => {
