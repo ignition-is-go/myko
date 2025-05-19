@@ -32,7 +32,11 @@ export class Auth0UserService implements MykoAuthService {
   }
 
   async getUserId(token: string): Promise<string | undefined> {
-    return jose.decodeJwt(token).sub
+    try {
+      return jose.decodeJwt(token).sub
+    } catch (e) {
+      return undefined
+    }
   }
 
   getPeerToken(): string {
