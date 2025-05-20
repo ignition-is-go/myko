@@ -74,6 +74,8 @@
       "electron-winstaller",
       "esbuild",
       "msgpackr-extract",
+      "protobufjs",
+      "sharp",
       "svelte-preprocess",
       "utf-8-validate",
       "workerd"
