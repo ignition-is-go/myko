@@ -55,7 +55,10 @@ public class MykoClient : IDisposable
         _client?.Dispose();
         _client = new WebsocketClient(new Uri(url))
         {
-            ReconnectTimeout = TimeSpan.FromSeconds(30)
+            // The ReconnectTimeout might have been causing periodic disconnections
+            // Remove it to prevent automatic reconnection attempts based on timeout
+            // Only reconnect when there's an actual connection error
+            ErrorReconnectTimeout = TimeSpan.FromSeconds(5)
         };
 
         _client.MessageReceived.Subscribe(OnMessageReceived);
@@ -93,7 +96,8 @@ public class MykoClient : IDisposable
 
     private void OnDisconnectionHappened(DisconnectionInfo info)
     {
-        _logger?.LogWarning("Disconnection happened: {Type}, {CloseStatus}", info.Type, info.CloseStatus);
+        _logger?.LogWarning("Disconnection happened: {Type}, CloseStatus: {CloseStatus}", 
+            info.Type, info.CloseStatus);
         SetConnectionStatus(ConnectionStatus.Disconnected);
     }
 
