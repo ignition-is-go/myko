@@ -129,3 +129,6 @@ apps/rship/link-ui/src-tauri/gen/
 
 *.egg-info
 apps/labs/bun-webview/main
+libs/myko/csharp/bin/*
+libs/myko/csharp/obj/*
+nupkgs
