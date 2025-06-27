@@ -5050,12 +5050,13 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "chrono",
  "futures-signals",
  "futures-util",
+ "log 0.4.27",
  "md5",
  "myko-macros",
  "openssl",
