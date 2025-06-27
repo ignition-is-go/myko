@@ -1,5 +1,6 @@
 use futures_signals::signal::Mutable;
 use futures_util::{future::select_all, SinkExt, StreamExt};
+use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
@@ -63,7 +64,7 @@ impl AutoReconnectSocket {
     }
 
     pub fn build(&self, addr: String) {
-        println!("Building Connection to {}", addr);
+        info!("Building Connection to {}", addr);
 
         let lock = self.status.lock_ref();
         let s = lock.clone();
@@ -88,21 +89,21 @@ impl AutoReconnectSocket {
 
         tokio::spawn(async move {
             loop {
-                println!("Connecting to {}", addr);
+                info!("Connecting to {}", addr);
 
                 let parsed = Url::parse(addr.as_str());
 
                 let mut parsed = match parsed {
                     Ok(c) => c,
                     Err(e) => {
-                        println!("Could not parse url: {:?}", e);
+                        error!("Could not parse url: {:?}", e);
 
                         let add_ws = format!("ws://{}", addr);
 
                         match Url::parse(add_ws.as_str()) {
                             Ok(c) => c,
                             Err(_e) => {
-                                println!("Could not Parse Url: {_e} {add_ws}");
+                                error!("Could not Parse Url: {_e} {add_ws}");
                                 return;
                             }
                         }
@@ -121,7 +122,7 @@ impl AutoReconnectSocket {
                     }
                 };
 
-                println!("Connected to {}", parsed);
+                info!("Connected to {}", parsed);
 
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();
@@ -137,14 +138,14 @@ impl AutoReconnectSocket {
                 let write_handle = tokio::spawn(async move {
                     loop {
                         if int_send_cancel.is_cancelled() || rec_send_cancel.is_cancelled() {
-                            eprintln!("Exiting Write Loop");
+                            debug!("Exiting Write Loop");
                             break;
                         }
 
                         let msg = match local_send.recv().await {
                             Ok(msg) => msg,
                             Err(e) => {
-                                eprintln!("Error receiving message to send: {:?}", e);
+                                error!("Error receiving message to send: {:?}", e);
                                 continue;
                             }
                         };
@@ -153,11 +154,11 @@ impl AutoReconnectSocket {
                             Ok(_) => {}
                             Err(e) => {
                                 int_send_cancel.cancel();
-                                println!("Websocket write failed: {:?}", e);
+                                error!("Websocket write failed: {:?}", e);
                             }
                         }
                     }
-                    println!("Websocket Write Loop Exited");
+                    debug!("Websocket Write Loop Exited");
                 });
 
                 let rec_read_cancel = teardown.clone();
@@ -173,15 +174,15 @@ impl AutoReconnectSocket {
                     ) {
                         match local_recv.send(msg) {
                             Ok(_num) => {
-                                // println!("Sent Message Downstream to {} Listeners", num);
+                                // debug!("Sent Message Downstream to {} Listeners", num);
                             }
                             Err(_e) => {
-                                println!("No Downstream Listeners");
+                                debug!("No Downstream Listeners");
                             }
                         }
                     }
 
-                    println!("Websocket Read Failed");
+                    error!("Websocket Read Failed");
                     int_read_cancel.cancel();
                 });
 
@@ -191,7 +192,7 @@ impl AutoReconnectSocket {
 
                 let _ = select_all(vec![write_handle, read_handle]).await;
 
-                println!("Read and/or Write Exited - Reconnecting in 1s");
+                warn!("Read and/or Write Exited - Reconnecting in 1s");
 
                 let s = SocketConnectionStatus::Disconnected;
 

@@ -5,7 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.5 (2025-06-26)
+
+### Chore
+
+ - <csr-id-759836b80884fc921aecc175979d4fd1c00b63f9/> add log dep
+
+### New Features
+
+ - <csr-id-1ea499477a3ec342458b36c97933ba8062041197/> websocket logging
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 3 commits contributed to the release.
+ - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Add log dep ([`759836b`](https://github.com/ignition-is-go/rship/commit/759836b80884fc921aecc175979d4fd1c00b63f9))
+    - Websocket logging ([`1ea4994`](https://github.com/ignition-is-go/rship/commit/1ea499477a3ec342458b36c97933ba8062041197))
+    - Merge pull request #286 from ignition-is-go/feat/random-4-15-25 ([`02a77a4`](https://github.com/ignition-is-go/rship/commit/02a77a46b8b849095247ceeb7985c95c994da397))
+</details>
+
 ## v0.1.4 (2025-04-18)
+
+<csr-id-a37d619a60993b951b836b4306b21a7754fc9773/>
 
 ### Chore
 
@@ -20,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 8 commits contributed to the release over the course of 28 calendar days.
+ - 9 commits contributed to the release over the course of 28 calendar days.
  - 29 days passed between releases.
  - 3 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -32,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-macros v0.1.3, myko-rs v0.1.4, rship-sdk v0.1.11 ([`8e039ea`](https://github.com/ignition-is-go/rship/commit/8e039ea489e79ed8d5d8cf8f53f2d56ec4c1f2f6))
     - Actually comment out kafka ([`a37d619`](https://github.com/ignition-is-go/rship/commit/a37d619a60993b951b836b4306b21a7754fc9773))
     - Merge remote-tracking branch 'origin/dev' into feat/history ([`c3d898c`](https://github.com/ignition-is-go/rship/commit/c3d898c1aeb6fe58edd5b9ce76b02759e94c4dc4))
     - Merge remote-tracking branch 'origin/dev' into docs ([`837f173`](https://github.com/ignition-is-go/rship/commit/837f173046b2d108d422d2a809a716b794204477))
