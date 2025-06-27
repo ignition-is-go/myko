@@ -8544,7 +8544,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "env_logger 0.11.8",
  "log 0.4.27",
