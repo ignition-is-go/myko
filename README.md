@@ -25,7 +25,7 @@ Local timing within a Scene is controlled via **Event Tracks**, which can be cre
 
 Global timing is controlled by placing Scenes onto **Calendars**, which schedules their activation and deactivation.
 
-See the [user guide](https://docs.rship.io/docs/user) for a complete reference.
+See the [user guide](https://docs.rship.io) for a complete reference.
 
 ## Executor Downloads
 
@@ -35,7 +35,7 @@ Official releases of rship Executors can be found [on the rship website](https:/
 
 We welcome contributions from the community via pull requests.
 
-If you would like to integrate a system with rship by writing an Executor, please consult the [developer guide](https://docs.rship.io/docs/dev).
+If you would like to integrate a system with rship by writing an Executor, please consult the [Executor API](https://docs.rship.io/executor-development/api).
 
 ### Commits
 
