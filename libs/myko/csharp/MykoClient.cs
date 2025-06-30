@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using System.Threading.Tasks;
 using Websocket.Client;
 using MykoSdk.Events;
 using MykoSdk.Messages;
