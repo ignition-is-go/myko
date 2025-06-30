@@ -72,10 +72,30 @@ export const bunAdapter: MykoWsAdapter = ({
           randomUUID(),
         )
 
+        // Send initial ping
         ws.ping()
+
+        // Set up periodic pings to keep connection alive (every 25 seconds)
+        const keepAliveInterval = setInterval(() => {
+          try {
+            ws.ping()
+          } catch (error) {
+            console.warn(`Failed to ping client ${ws.data.clientId}:`, error)
+            clearInterval(keepAliveInterval)
+          }
+        }, 25000) // 25 seconds - well before typical 30s timeout
+
+          // Store the interval so we can clean it up on close
+          ; (ws as any).__keepAliveInterval = keepAliveInterval
       },
-      drain(_ws) {},
+      drain(_ws) { },
       close(ws, _code, _message) {
+        // Clean up keep-alive interval
+        const keepAliveInterval = (ws as any).__keepAliveInterval
+        if (keepAliveInterval) {
+          clearInterval(keepAliveInterval)
+        }
+
         ws.unsubscribe(ws.data.clientId)
         queryBus
           .execute(
