@@ -48,27 +48,35 @@ public class MykoClient : IDisposable
 
     public async Task ConnectAsync(string url)
     {
-        _logger?.LogInformation("Connecting to {Url}", url);
+        _logger?.LogInformation("🔗 Connecting to WebSocket at {Url}", url);
         
         SetConnectionStatus(ConnectionStatus.Connecting);
 
         _client?.Dispose();
         _client = new WebsocketClient(new Uri(url))
         {
-            // The ReconnectTimeout might have been causing periodic disconnections
-            // Remove it to prevent automatic reconnection attempts based on timeout
-            // Only reconnect when there's an actual connection error
-            ErrorReconnectTimeout = TimeSpan.FromSeconds(5)
+            // Disable automatic reconnection timeouts that might cause disconnects
+            ReconnectTimeout = null,
+            
+            // Only reconnect on actual errors, with a short delay
+            ErrorReconnectTimeout = TimeSpan.FromSeconds(5),
+            
+            // Enable reconnection for connection issues
+            IsReconnectionEnabled = true
         };
 
         _client.MessageReceived.Subscribe(OnMessageReceived);
         _client.ReconnectionHappened.Subscribe(OnReconnectionHappened);
         _client.DisconnectionHappened.Subscribe(OnDisconnectionHappened);
 
+        _logger?.LogDebug("WebSocket client configured - ReconnectTimeout: null, ErrorReconnectTimeout: 5s, IsReconnectionEnabled: true");
+
         await _client.Start();
+        _logger?.LogInformation("WebSocket client started");
         
         // Start processing events
         _ = Task.Run(ProcessEventsAsync, _cancellationTokenSource.Token);
+        _logger?.LogDebug("Event processing task started");
     }
 
     private void OnMessageReceived(ResponseMessage message)
@@ -90,14 +98,19 @@ public class MykoClient : IDisposable
 
     private void OnReconnectionHappened(ReconnectionInfo info)
     {
-        _logger?.LogInformation("Reconnection happened: {Type}", info.Type);
+        _logger?.LogInformation("WebSocket reconnection happened - Type: {Type}", info.Type);
+        _logger?.LogDebug("Reconnection details - Type: {Type}", info.Type);
+        
         SetConnectionStatus(ConnectionStatus.Connected);
     }
 
     private void OnDisconnectionHappened(DisconnectionInfo info)
     {
-        _logger?.LogWarning("Disconnection happened: {Type}, CloseStatus: {CloseStatus}", 
-            info.Type, info.CloseStatus);
+        _logger?.LogWarning("WebSocket disconnection happened - Type: {Type}, CloseStatus: {CloseStatus}, CloseStatusDescription: {Description}", 
+            info.Type, info.CloseStatus, info.CloseStatusDescription);
+        _logger?.LogDebug("Disconnection details - Type: {Type}, CloseStatus: {CloseStatus}, CloseStatusDescription: {Description}", 
+            info.Type, info.CloseStatus, info.CloseStatusDescription);
+        
         SetConnectionStatus(ConnectionStatus.Disconnected);
     }
 
@@ -105,7 +118,12 @@ public class MykoClient : IDisposable
     {
         if (_connectionStatus != status)
         {
+            var previousStatus = _connectionStatus;
             _connectionStatus = status;
+            
+            _logger?.LogInformation("Connection status changed: {PreviousStatus} -> {NewStatus}", 
+                previousStatus, status);
+            
             ConnectionStatusChanged?.Invoke(this, status);
         }
     }
@@ -157,9 +175,13 @@ public class MykoClient : IDisposable
 
     public void Dispose()
     {
+        _logger?.LogInformation("Disposing MykoClient");
+        
         _cancellationTokenSource.Cancel();
         _client?.Dispose();
         _eventWriter.Complete();
         _cancellationTokenSource.Dispose();
+        
+        _logger?.LogDebug("MykoClient disposed");
     }
 }
