@@ -12,6 +12,8 @@
     "py": "./tools/scripts/py.sh",
     "py:publish": "./tools/scripts/py-publish.sh",
     "rust:publish": "./tools/scripts/rust-publish.sh",
+    "cs:version": "./tools/scripts/cs-update-versions.sh",
+    "cs:publish": "./tools/scripts/cs-publish.sh",
     "preinstall": "git submodule update --init --recursive --remote",
     "postinstall": "bun run ./tools/scripts/version-stamp.js",
     "versionstamp": "bun run ./tools/scripts/version-stamp.js",
