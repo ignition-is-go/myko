@@ -1844,17 +1844,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "575f75dfd25738df5b91b8e43e14d44bda14637a58fae779fd2b064f8bf3e010"
 
 [[package]]
-name = "demo-rs"
-version = "0.1.0"
-dependencies = [
- "dotenv",
- "rship-sdk",
- "schemars",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "deranged"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
