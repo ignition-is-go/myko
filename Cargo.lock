@@ -8514,8 +8514,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "schemars",
+ "serde",
+ "serde_json",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "rship-entities"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -8534,11 +8546,12 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.16"
+version = "0.1.18"
 dependencies = [
  "env_logger 0.11.8",
  "log 0.4.27",
  "myko-rs",
+ "rs-macros",
  "rship-entities",
  "schemars",
  "serde",
