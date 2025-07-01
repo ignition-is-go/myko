@@ -1844,6 +1844,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "575f75dfd25738df5b91b8e43e14d44bda14637a58fae779fd2b064f8bf3e010"
 
 [[package]]
+name = "demo"
+version = "0.1.0"
+dependencies = [
+ "rs-macros",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deranged"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8514,6 +8524,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "schemars",
+ "serde",
+ "serde_json",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "rship-entities"
 version = "0.1.6"
 dependencies = [
@@ -8534,11 +8556,12 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.17"
+version = "0.1.16"
 dependencies = [
  "env_logger 0.11.8",
  "log 0.4.27",
  "myko-rs",
+ "rs-macros",
  "rship-entities",
  "schemars",
  "serde",
