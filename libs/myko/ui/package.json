@@ -1,6 +1,6 @@
 {
   "name": "@myko/ui",
-  "version": "3.0.0-canary.590",
+  "version": "3.0.0-canary.591",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build && pnpm run package",
