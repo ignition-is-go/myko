@@ -6,8 +6,9 @@ import {
   MCommand,
   MykoCommandError,
   MykoLogger,
+  noAuthCommands,
   type ID,
-  type MWrappedCommand,
+  type MWrappedCommand
 } from '@myko/core'
 import { allowedDuringWindback } from '@myko/core/src/lib/registry/windback.registry'
 import {
@@ -25,10 +26,8 @@ export const handleCommand = async (
   command: MWrappedCommand,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-  const txid = command.command.tx
-  const userToken = command.command.userToken
 
-  const auth = getAuth()
+  const txid = command.command.tx
 
   const fail = () => {
     respond.next({
@@ -37,50 +36,11 @@ export const handleCommand = async (
     })
   }
 
-  if (auth) {
-    if (!userToken) {
-      fail()
-      return false
-    }
-    const res = await auth.canActivate(userToken).catch((_) => {
-      fail()
-      return false
-    })
 
-    if (!res) {
-      fail()
-      return
-    }
+  const proceedRes = await proceed(fail, respond, clientId, command)
 
-    const userId = await auth.getUserId(userToken)
-    if (userId) {
-      try {
-        getHistoryProvider().recordUserTransaction(userId, txid)
-      } catch (e) {}
-    }
-
-    const client = await liveRepo(Client).getId(clientId)
-
-    if (!client) {
-      respond.next({
-        clientId,
-
-        data: wrapCommandErrorWS(
-          new MykoCommandError(txid, 'Client not found'),
-        ),
-      })
-      return
-    }
-
-    if (!!client.windback && !allowedDuringWindback.has(command.commandId)) {
-      respond.next({
-        clientId,
-        data: wrapCommandErrorWS(
-          new MykoCommandError(txid, 'Client is in windback mode'),
-        ),
-      })
-      return
-    }
+  if (!proceedRes) {
+    return
   }
 
   const unwrapped = MCommand.fromWrappedCommand(command).withContext({
@@ -112,4 +72,72 @@ export const handleCommand = async (
         })
       }
     })
+}
+
+
+const proceed = async (fail: () => void, respond: Subject<{ clientId: ID; data: WSMMessage }>, clientId: ID, command: MWrappedCommand) => {
+
+  const txid = command.command.tx
+  const userToken = command.command.userToken
+
+  const auth = getAuth()
+
+
+  if (!auth) {
+    return true
+  }
+
+
+  const pub = noAuthCommands.has(command.commandId)
+
+  if (pub) {
+    return true
+  }
+
+
+  if (!userToken) {
+    fail()
+    return false
+  }
+  const res = await auth.canActivate(userToken).catch((_) => {
+    fail()
+    return false
+  })
+
+  if (!res) {
+    fail()
+    return
+  }
+
+  const userId = await auth.getUserId(userToken)
+  if (userId) {
+    try {
+      getHistoryProvider().recordUserTransaction(userId, txid)
+    } catch (e) { }
+  }
+
+  const client = await liveRepo(Client).getId(clientId)
+
+  if (!client) {
+    respond.next({
+      clientId,
+
+      data: wrapCommandErrorWS(
+        new MykoCommandError(txid, 'Client not found'),
+      ),
+    })
+    return
+  }
+
+  if (!!client.windback && !allowedDuringWindback.has(command.commandId)) {
+    respond.next({
+      clientId,
+      data: wrapCommandErrorWS(
+        new MykoCommandError(txid, 'Client is in windback mode'),
+      ),
+    })
+    return
+  }
+
+  return true
 }
