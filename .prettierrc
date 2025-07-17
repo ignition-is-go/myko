@@ -8,6 +8,7 @@
 	"bracketSpacing": true,
 	"quoteProps": "as-needed",
 	"trailingComma": "all",
+	"printWidth": 80,
 	"plugins": [
 		"prettier-plugin-organize-imports",
 		"prettier-plugin-svelte"
