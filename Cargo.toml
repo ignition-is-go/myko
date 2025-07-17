@@ -17,5 +17,6 @@ members = [
   "libs/sync/core",
   "libs/sync/ffi",
   "apps/sync_server",
-  "libs/rs-macros"
+  "libs/rs-macros",
+  "libs/opencv"
 ]

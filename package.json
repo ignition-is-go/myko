@@ -71,6 +71,7 @@
       "@serialport/bindings-cpp",
       "@sveltejs/kit",
       "bufferutil",
+      "bun",
       "core-js",
       "electron",
       "electron-winstaller",
