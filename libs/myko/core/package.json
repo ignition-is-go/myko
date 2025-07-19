@@ -21,8 +21,8 @@
     "@types/uuid": "^9.0.8"
   },
   "scripts": {
-    "jsr-publish": "pnpx jsr publish --allow-dirty --token $JSR_TOKEN --allow-slow-types",
-    "jsr-publish:dry": "pnpx jsr publish --allow-dirty --allow-slow-types --dry-run"
+    "jsr-publish": " jsr publish --allow-dirty --token $JSR_TOKEN --allow-slow-types",
+    "jsr-publish:dry": " jsr publish --allow-dirty --allow-slow-types --dry-run"
   },
   "version": "3.0.0-canary.605"
 }
