@@ -2,13 +2,6 @@
   "name": "rship",
   "license": "MIT",
   "scripts": {
-    "build": "turbo run build",
-    "build-docs": "turbo run build-docs",
-    "publish": "./tools/scripts/export-version.sh && turbo run publish",
-    "jsr": "turbo run jsr",
-    "forge-publish": "turbo run forge-publish",
-    "tauri-publish": "turbo run tauri-publish",
-    "ionic:build": "npm run build",
     "py": "./tools/scripts/py.sh",
     "py:publish": "./tools/scripts/py-publish.sh",
     "rust:publish": "./tools/scripts/rust-publish.sh",
@@ -23,14 +16,11 @@
     "clean": "./tools/scripts/clean.sh",
     "sync": "git submodule update --init --recursive --remote",
     "format:all": "prettier --write .",
-    "live": "turbo run live",
     "prepare": "git config --local core.hooksPath .githooks",
     "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
-    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
-    "jsr-publish": "turbo run jsr-publish",
-    "jsr-publish:dry": "turbo run jsr-publish:dry"
+    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json"
   },
-  "packageManager": "pnpm@10.3.0+sha512.ee592eda8815a8a293c206bb0917c4bb0ff274c50def7cbc17be05ec641fc2d1b02490ce660061356bd0d126a4d7eb2ec8830e6959fb8a447571c631d5a2442d",
+  "packageManager": "pnpm@10.13.1",
   "private": true,
   "devDependencies": {
     "@capacitor/cli": "^5.7.8",
@@ -52,7 +42,6 @@
     "prettier-plugin-svelte": "^3.2.7",
     "tsc-watch": "^6.2.1",
     "tslib": "^2.8.0",
-    "turbo": "^2.4.1",
     "typescript": "^5.8.2"
   },
   "trustedDependencies": [
@@ -84,5 +73,5 @@
       "workerd"
     ]
   },
-  "version": "3.0.0-canary.598"
+  "version": "3.0.0-canary.610"
 }
