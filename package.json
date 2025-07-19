@@ -11,7 +11,6 @@
     "postinstall": "bun run ./tools/scripts/version-stamp.js",
     "versionstamp": "bun run ./tools/scripts/version-stamp.js",
     "versionwrite": "bun run ./tools/scripts/version-write.ts",
-    "versionexport": "bun run ./tools/scripts/export-version.ts",
     "versionecho": "bun run ./tools/scripts/version-echo.ts",
     "gen": "bun run ./tools/scaffold/generate.js && bun run ./tools/scripts/generate-entity-index.js",
     "clean": "./tools/scripts/clean.sh",
