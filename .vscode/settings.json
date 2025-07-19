@@ -62,11 +62,11 @@
         },
         {
           "name": "Server",
-          "commands": ["cd apps/server", "pnpm run dev"]
+          "commands": ["cd apps/server", "pnpm dev"]
         },
         {
           "name": "UI",
-          "commands": ["cd apps/ui", "pnpm run dev"]
+          "commands": ["cd apps/ui", "pnpm dev"]
         }
       ]
     }
