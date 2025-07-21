@@ -132,3 +132,4 @@ apps/labs/bun-webview/main
 libs/myko/csharp/bin/*
 libs/myko/csharp/obj/*
 nupkgs
+apps/link-ui/src-tauri/gen/*
