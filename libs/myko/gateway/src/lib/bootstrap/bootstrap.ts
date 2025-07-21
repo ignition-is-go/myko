@@ -181,7 +181,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
         return
       }
 
-      // new MykoLogger(x.itemType).info(`${x.changeType} - ${x.item.id}`)
+      new MykoLogger(x.itemType).info(`${x.changeType} - ${x.item.id}`)
     })
   })
 }
