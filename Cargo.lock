@@ -4147,6 +4147,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d93587f37623a1a17d94ef2bc9ada592f5465fe7732084ab7beefabe5c77c0c4"
+dependencies = [
+ "bitflags 2.9.0",
+ "cfg-if 1.0.0",
+ "libc",
+]
+
+[[package]]
 name = "iovec"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4541,19 +4552,21 @@ name = "link-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "link-client",
+ "link-rpc",
  "prost",
  "tokio",
  "tonic",
 ]
 
 [[package]]
-name = "link-client"
+name = "link-rpc"
 version = "0.1.0"
 dependencies = [
  "link",
  "myko-rs",
  "prost",
+ "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-build",
 ]
@@ -4577,6 +4590,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-specta",
  "tokio",
+ "tokio-stream",
  "tungstenite",
  "websocket",
 ]
@@ -4590,7 +4604,7 @@ dependencies = [
  "directories",
  "lazy_static",
  "link",
- "link-client",
+ "link-rpc",
  "midir",
  "myko-rs",
  "nusb",
@@ -10252,17 +10266,19 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.44.1"
+version = "1.46.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f382da615b842244d4b8738c82ed1275e6c5dd90c459a30941cd07080b06c91a"
+checksum = "0cc3a2344dafbe23a245241fe8b09735b521110d30fcefbbd5feb1797ca35d17"
 dependencies = [
  "backtrace",
  "bytes 1.10.1",
+ "io-uring",
  "libc",
  "mio 1.0.3",
  "parking_lot 0.12.3",
  "pin-project-lite",
  "signal-hook-registry",
+ "slab",
  "socket2 0.5.9",
  "tokio-macros",
  "tracing",

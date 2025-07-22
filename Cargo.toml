@@ -9,7 +9,7 @@ members = [
   "apps/myko/backplane",
   "libs/myko/rs",
   "libs/link/core",
-  "libs/link/client/rs",
+  "libs/link/rpc/rs",
   "libs/myko/macros",
   "apps/labs/rs-core",
   "libs/entities/rs",
