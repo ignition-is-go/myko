@@ -4541,10 +4541,21 @@ name = "link-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
- "linkd",
+ "link-client",
  "prost",
  "tokio",
  "tonic",
+]
+
+[[package]]
+name = "link-client"
+version = "0.1.0"
+dependencies = [
+ "link",
+ "myko-rs",
+ "prost",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -4579,6 +4590,7 @@ dependencies = [
  "directories",
  "lazy_static",
  "link",
+ "link-client",
  "midir",
  "myko-rs",
  "nusb",
@@ -4592,7 +4604,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonic",
- "tonic-build",
  "tungstenite",
  "uuid",
 ]
