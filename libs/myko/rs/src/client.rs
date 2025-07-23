@@ -245,7 +245,7 @@ impl MykoClient {
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {
-                    println!("Could not parse data @ watch_query: {:?}", e);
+                    println!("Could not parse data @ watch_query: {e:?}");
                     return None;
                 }
             };
@@ -310,15 +310,15 @@ impl MykoClient {
                     ConnectionStatus::Connected(_) => {
                         match query_send_socket.outgoing.send(msg.clone()) {
                             Ok(_) => {
-                                println!("Watching query {}", send_query_id);
+                                println!("Watching query {send_query_id}");
                             }
                             Err(e) => {
-                                println!("Could not send message to ws: {:?}", e);
+                                println!("Could not send message to ws: {e:?}");
                             }
                         }
                     }
                     ConnectionStatus::Disconnected => {
-                        println!("Query {} Disconnected", send_query_id);
+                        println!("Query {send_query_id} Disconnected");
                     }
                 }
             }
