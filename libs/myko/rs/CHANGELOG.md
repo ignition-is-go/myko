@@ -5,7 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.6 (2025-07-24)
+
+### Chore
+
+ - <csr-id-45cf20e47b3ac8b7705a951711f2151df1a11e08/> clean up rust log formatting
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 2 commits contributed to the release over the course of 26 calendar days.
+ - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Clean up rust log formatting ([`45cf20e`](https://github.com/ignition-is-go/rship/commit/45cf20e47b3ac8b7705a951711f2151df1a11e08))
+    - Merge remote-tracking branch 'origin/dev' into feat/cs-sdk ([`b67f872`](https://github.com/ignition-is-go/rship/commit/b67f8728313b8fe238d270a86630444ee1a45019))
+</details>
+
 ## v0.1.5 (2025-06-26)
+
+<csr-id-759836b80884fc921aecc175979d4fd1c00b63f9/>
 
 ### Chore
 
@@ -19,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 3 commits contributed to the release.
+ - 4 commits contributed to the release.
  - 2 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -30,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-rs v0.1.5 ([`550462c`](https://github.com/ignition-is-go/rship/commit/550462c047fd4ef0719f9f52767c0712ecb3afdf))
     - Add log dep ([`759836b`](https://github.com/ignition-is-go/rship/commit/759836b80884fc921aecc175979d4fd1c00b63f9))
     - Websocket logging ([`1ea4994`](https://github.com/ignition-is-go/rship/commit/1ea499477a3ec342458b36c97933ba8062041197))
     - Merge pull request #286 from ignition-is-go/feat/random-4-15-25 ([`02a77a4`](https://github.com/ignition-is-go/rship/commit/02a77a46b8b849095247ceeb7985c95c994da397))
