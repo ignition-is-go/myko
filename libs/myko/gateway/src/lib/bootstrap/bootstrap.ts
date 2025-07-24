@@ -1,16 +1,16 @@
 import {
-  MykoLogger,
-  Server,
   commandHandlers,
   commands,
   eventBus,
   getHistoryProvider,
   getHostId,
+  MykoLogger,
   onAllInit,
   queries,
   queryHandlers,
   reportHandlers,
   reports,
+  Server,
   setDefaultRepoOptions,
   setHistoryProvider,
   setServer,
@@ -22,7 +22,8 @@ import { MykoDocsService } from '@myko/core/src/lib/docs/myko.docs.service'
 import { logsPreventedEntities } from '@myko/core/src/lib/logger/registry'
 import type { WSMMessage } from '@myko/ws'
 import { DateTime } from 'luxon'
-import { Subject } from 'rxjs'
+import { groupBy } from 'ramda'
+import { bufferTime, filter, Subject } from 'rxjs'
 import { setAdapterBusses, setAdapterResult, setAuth } from '../registry'
 import { initTracing } from '../telemetry/instrumentation'
 import { handleMessage } from './message.handler'
@@ -176,12 +177,22 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
   })
 
   onAllInit(() => {
-    eventBus.subject$.subscribe((x) => {
-      if (logsPreventedEntities.has(x.itemType)) {
-        return
-      }
 
-      new MykoLogger(x.itemType).info(`${x.changeType} - ${x.item.id}`)
-    })
+    eventBus.subject$.pipe(
+
+      filter(x => logsPreventedEntities.has(x.itemType) === false),
+      bufferTime(1000)).subscribe((events) => {
+        const groupedByType = groupBy(x => `${x.changeType} - ${x.itemType}`, events);
+
+        for (const [itemType, items] of Object.entries(groupedByType)) {
+          if (!items?.length) {
+            continue
+          }
+          const logger = new MykoLogger(itemType)
+          logger.info(`${items.length}`)
+        }
+
+      })
+
   })
 }
