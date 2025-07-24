@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## v0.1.6 (2025-07-24)
 
+<csr-id-45cf20e47b3ac8b7705a951711f2151df1a11e08/>
+
 ### Chore
 
  - <csr-id-45cf20e47b3ac8b7705a951711f2151df1a11e08/> clean up rust log formatting
@@ -15,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 2 commits contributed to the release over the course of 26 calendar days.
+ - 3 commits contributed to the release over the course of 26 calendar days.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
 
@@ -26,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-rs v0.1.6, rship-entities v0.1.6, rship-sdk v0.1.19 ([`132d1a7`](https://github.com/ignition-is-go/rship/commit/132d1a7bafbdae4c4c41fefbd53d173e9313d408))
     - Clean up rust log formatting ([`45cf20e`](https://github.com/ignition-is-go/rship/commit/45cf20e47b3ac8b7705a951711f2151df1a11e08))
     - Merge remote-tracking branch 'origin/dev' into feat/cs-sdk ([`b67f872`](https://github.com/ignition-is-go/rship/commit/b67f8728313b8fe238d270a86630444ee1a45019))
 </details>
