@@ -5,7 +5,6 @@
   "license": "ISC",
   "dependencies": {
     "@myko/core": "workspace:^",
-    "@surrealdb/node": "1.0.0-beta.2",
     "@surrealdb/wasm": "^1.0.2",
     "colors": "^1.4.0",
     "flexsearch": "^0.7.43",

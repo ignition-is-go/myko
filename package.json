@@ -59,6 +59,7 @@
     "onlyBuiltDependencies": [
       "@serialport/bindings-cpp",
       "@sveltejs/kit",
+      "@tailwindcss/oxide",
       "bufferutil",
       "bun",
       "core-js",
