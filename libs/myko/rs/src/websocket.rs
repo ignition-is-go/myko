@@ -64,7 +64,7 @@ impl AutoReconnectSocket {
     }
 
     pub fn build(&self, addr: String) {
-        info!("Building Connection to {}", addr);
+        info!("Building Connection to {addr}");
 
         let lock = self.status.lock_ref();
         let s = lock.clone();
@@ -89,16 +89,16 @@ impl AutoReconnectSocket {
 
         tokio::spawn(async move {
             loop {
-                info!("Connecting to {}", addr);
+                info!("Connecting to {addr}");
 
                 let parsed = Url::parse(addr.as_str());
 
                 let mut parsed = match parsed {
                     Ok(c) => c,
                     Err(e) => {
-                        error!("Could not parse url: {:?}", e);
+                        error!("Could not parse url: {e:?}");
 
-                        let add_ws = format!("ws://{}", addr);
+                        let add_ws = format!("ws://{addr}");
 
                         match Url::parse(add_ws.as_str()) {
                             Ok(c) => c,
@@ -122,7 +122,7 @@ impl AutoReconnectSocket {
                     }
                 };
 
-                info!("Connected to {}", parsed);
+                info!("Connected to {parsed}");
 
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();
@@ -145,7 +145,7 @@ impl AutoReconnectSocket {
                         let msg = match local_send.recv().await {
                             Ok(msg) => msg,
                             Err(e) => {
-                                error!("Error receiving message to send: {:?}", e);
+                                error!("Error receiving message to send: {e:?}");
                                 continue;
                             }
                         };
@@ -154,7 +154,7 @@ impl AutoReconnectSocket {
                             Ok(_) => {}
                             Err(e) => {
                                 int_send_cancel.cancel();
-                                error!("Websocket write failed: {:?}", e);
+                                error!("Websocket write failed: {e:?}");
                             }
                         }
                     }
@@ -174,7 +174,7 @@ impl AutoReconnectSocket {
                     ) {
                         match local_recv.send(msg) {
                             Ok(_num) => {
-                                // debug!("Sent Message Downstream to {} Listeners", num);
+                                // debug!("Sent Message Downstream to {num} Listeners");
                             }
                             Err(_e) => {
                                 debug!("No Downstream Listeners");
