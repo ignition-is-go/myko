@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 2 commits contributed to the release over the course of 100 calendar days.
+ - 3 commits contributed to the release over the course of 100 calendar days.
  - 101 days passed between releases.
  - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Adjusting changelogs prior to release of myko-macros v0.1.4, myko-rs v0.1.7, rs-macros v0.1.1, rship-entities v0.1.7, rship-sdk v0.1.21 ([`b6a2609`](https://github.com/ignition-is-go/rship/commit/b6a260980b8f5467d82af3909017d93711bbf8bc))
     - Feat(asset_store: add app, and update rust to 2024 ([`4e8e887`](https://github.com/ignition-is-go/rship/commit/4e8e887b953d6938f087b56ddec461db8d2dcdbe))
     - Merge pull request #286 from ignition-is-go/feat/random-4-15-25 ([`02a77a4`](https://github.com/ignition-is-go/rship/commit/02a77a46b8b849095247ceeb7985c95c994da397))
 </details>
