@@ -3,6 +3,7 @@ resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 members = [
+  "apps/asset_store",
   "apps/link-cli",
   "apps/link-ui/src-tauri",
   "apps/linkd",

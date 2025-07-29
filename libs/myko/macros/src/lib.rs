@@ -1,13 +1,13 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 #[proc_macro_derive(Empty)]
 pub fn empty_impl(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     let name = &ast.ident;
 
-    let gen = quote! {
+    let generated = quote! {
 
         impl Empty for #name {
             fn empty(&self) -> bool {
@@ -17,7 +17,7 @@ pub fn empty_impl(input: TokenStream) -> TokenStream {
 
     };
 
-    gen.into()
+    generated.into()
 }
 
 #[proc_macro_derive(Eventable)]
@@ -30,7 +30,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
     let partial_name = format_ident!("Partial{}", name);
 
-    let gen = quote! {
+    let generated = quote! {
         impl myko_rs::item::Eventable<#name, #partial_name> for #name {
             type T = #partial_name;
 
@@ -175,7 +175,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
     };
 
-    gen.into()
+    generated.into()
 }
 
 use syn::{ItemStruct, Path};
