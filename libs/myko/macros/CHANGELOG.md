@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.4 (2025-07-28)
+
+### Commit Statistics
+
+<csr-read-only-do-not-edit/>
+
+ - 2 commits contributed to the release over the course of 100 calendar days.
+ - 101 days passed between releases.
+ - 0 commits were understood as [conventional](https://www.conventionalcommits.org).
+ - 0 issues like '(#ID)' were seen in commit messages
+
+### Commit Details
+
+<csr-read-only-do-not-edit/>
+
+<details><summary>view details</summary>
+
+ * **Uncategorized**
+    - Feat(asset_store: add app, and update rust to 2024 ([`4e8e887`](https://github.com/ignition-is-go/rship/commit/4e8e887b953d6938f087b56ddec461db8d2dcdbe))
+    - Merge pull request #286 from ignition-is-go/feat/random-4-15-25 ([`02a77a4`](https://github.com/ignition-is-go/rship/commit/02a77a46b8b849095247ceeb7985c95c994da397))
+</details>
+
 ## v0.1.3 (2025-04-18)
 
 ### Bug Fixes
@@ -15,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <csr-read-only-do-not-edit/>
 
- - 4 commits contributed to the release over the course of 28 calendar days.
+ - 5 commits contributed to the release over the course of 28 calendar days.
  - 29 days passed between releases.
  - 1 commit was understood as [conventional](https://www.conventionalcommits.org).
  - 0 issues like '(#ID)' were seen in commit messages
@@ -27,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <details><summary>view details</summary>
 
  * **Uncategorized**
+    - Release myko-macros v0.1.3, myko-rs v0.1.4, rship-sdk v0.1.11 ([`8e039ea`](https://github.com/ignition-is-go/rship/commit/8e039ea489e79ed8d5d8cf8f53f2d56ec4c1f2f6))
     - Merge remote-tracking branch 'origin/dev' into feat/history ([`c3d898c`](https://github.com/ignition-is-go/rship/commit/c3d898c1aeb6fe58edd5b9ce76b02759e94c4dc4))
     - Merge remote-tracking branch 'origin/dev' into docs ([`837f173`](https://github.com/ignition-is-go/rship/commit/837f173046b2d108d422d2a809a716b794204477))
     - Actually remove kafka from build deps for rust ([`5ebdd02`](https://github.com/ignition-is-go/rship/commit/5ebdd025742e8e0acc54eb7f90f5079e2a905fbe))
