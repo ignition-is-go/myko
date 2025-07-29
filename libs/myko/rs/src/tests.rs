@@ -4,7 +4,7 @@ mod myko_tests {
     use crate as myko_rs;
     use partially::Partial;
     use serde::{Deserialize, Serialize};
-    use tokio::sync::mpsc::Sender;
+    
 
     use crate::event::{MEvent, MEventType};
     use crate::item::Eventable;

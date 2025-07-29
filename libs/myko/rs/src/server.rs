@@ -39,7 +39,7 @@ impl Server {
         }
     }
 
-    pub async fn add_modules(mut self, mut modules: Vec<Box<dyn Module + Send>>) -> Server {
+    pub async fn add_modules(mut self, modules: Vec<Box<dyn Module + Send>>) -> Server {
         if self.startup_state != StartupState::Off {
             panic!("Cannot add modules after startup");
         }
