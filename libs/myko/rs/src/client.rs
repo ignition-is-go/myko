@@ -262,7 +262,7 @@ impl MykoClient {
                     let seq = response.sequence;
 
                     if seq == 0 {
-                        debug!("Clearing {} state", query_id.clone());
+                        debug!("Sequence Reset: Clearing {} state", query_id.clone());
                         state.clear();
                     }
 
