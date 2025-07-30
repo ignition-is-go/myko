@@ -1,5 +1,5 @@
 use futures_signals::signal::Mutable;
-use futures_util::{future::select_all, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::select_all};
 use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
@@ -122,7 +122,7 @@ impl AutoReconnectSocket {
                     }
                 };
 
-                info!("Connected to {parsed}");
+                info!("Autoreconnect socket Connected to {parsed}");
 
                 let (mut write, mut read) = ws_stream.split();
                 let interior_cancel = CancellationToken::new();
@@ -158,7 +158,7 @@ impl AutoReconnectSocket {
                             }
                         }
                     }
-                    debug!("Websocket Write Loop Exited");
+                    info!("Websocket Write Loop Exited");
                 });
 
                 let rec_read_cancel = teardown.clone();
@@ -182,7 +182,7 @@ impl AutoReconnectSocket {
                         }
                     }
 
-                    error!("Websocket Read Failed");
+                    info!("Websocket Read Failed");
                     int_read_cancel.cancel();
                 });
 
