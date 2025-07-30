@@ -1,6 +1,6 @@
 use futures_signals::signal::Mutable;
 use futures_util::{SinkExt, StreamExt, future::select_all};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
@@ -43,7 +43,8 @@ impl AutoReconnectSocket {
         match s {
             SocketConnectionStatus::Connected(current_addr, teardown)
             | SocketConnectionStatus::Connecting(current_addr, teardown) => {
-                if Some(current_addr) == addr {
+                if Some(current_addr.clone()) == addr {
+                    info!("Already connected to {current_addr}");
                     return;
                 }
 
@@ -51,12 +52,14 @@ impl AutoReconnectSocket {
 
                 self.status.set(SocketConnectionStatus::Disconnected);
                 if let Some(addr) = addr {
+                    info!("Rebuilding connection to {addr}");
                     self.build(addr);
                 }
             }
 
             SocketConnectionStatus::Disconnected => {
                 if let Some(addr) = addr {
+                    info!("Setting up connection to {addr}");
                     self.build(addr);
                 }
             }

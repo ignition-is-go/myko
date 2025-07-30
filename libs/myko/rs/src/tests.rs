@@ -2,9 +2,9 @@
 mod myko_tests {
 
     use crate as myko_rs;
+    use log::debug;
     use partially::Partial;
     use serde::{Deserialize, Serialize};
-    
 
     use crate::event::{MEvent, MEventType};
     use crate::item::Eventable;
@@ -186,7 +186,7 @@ mod myko_tests {
                     return;
                 }
 
-                println!("Processing event in Demo");
+                debug!("Processing event in Demo");
 
                 // if let Some(k) = &self.kafka {
                 //     k.append_event(&event).await;
@@ -194,7 +194,7 @@ mod myko_tests {
 
                 match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),
-                    Err(e) => println!("Failed to process event: {}, {:?}", e, event),
+                    Err(e) => log::debug!("Failed to process event: {}, {:?}", e, event),
                 }
             }
 

@@ -77,7 +77,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
                 if event.item_type() != #name_str {
                     return;
                 }
-                println!("Processing event in {}", #name_str);
+                log::debug!("Processing event in {}", #name_str);
 
                 // if persist {
                 //     match self.kafka {
@@ -90,7 +90,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
                 match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),
-                    Err(e) => println!("Failed to process event: {}, {:?}", e, event),
+                    Err(e) => log::error!("Failed to process event: {}, {:?}", e, event),
                 }
             }
 

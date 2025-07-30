@@ -2,17 +2,18 @@ use crate::{
     event::MEvent,
     item::Eventable,
     message::MykoMessage,
-    query::{wrap_query, QueryId, QueryItemType},
-    report::{wrap_report, MykoReport, ReportId},
+    query::{QueryId, QueryItemType, wrap_query},
+    report::{MykoReport, ReportId, wrap_report},
     websocket::{AutoReconnectSocket, SocketConnectionStatus},
 };
 use futures_signals::signal::{Signal, SignalExt};
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::{json, Value};
+use log::{debug, error};
+use log::{info, warn};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tokio_tungstenite::tungstenite::protocol::Message;
-
 use url::Url;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,6 +85,7 @@ impl MykoClient {
 
     pub fn set_address(&self, addr: Option<String>) {
         if addr.is_none() {
+            debug!("Setting address to None, disconnecting socket");
             self.socket.set_addr(None);
             return;
         }
@@ -95,14 +97,14 @@ impl MykoClient {
         let mut parsed = match parsed {
             Ok(c) => c,
             Err(e) => {
-                println!("Could not parse url: {:?}", e);
+                warn!("Could not parse url: {e:?} - attempting to add ws://");
 
-                let add_ws = format!("ws://{}", addr);
+                let add_ws = format!("ws://{addr}");
 
                 match Url::parse(add_ws.as_str()) {
                     Ok(c) => c,
                     Err(_e) => {
-                        println!("Setting Url to None");
+                        info!("Setting Url to None");
                         self.socket.set_addr(None);
                         return;
                     }
@@ -156,7 +158,7 @@ impl MykoClient {
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {
-                    println!("Could not parse data @ watch_report: {:?}", e);
+                    error!("Could not parse data @ watch_report: {e:?}");
                     return None;
                 }
             };
@@ -169,8 +171,6 @@ impl MykoClient {
 
                     let data = serde_json::from_value::<U>(response.response.clone())
                         .expect("could not parse report value @ watch_report ");
-
-                    // println!("Report {} had response: {}", report_id, response.response);
 
                     Some(data)
                 }
@@ -199,15 +199,15 @@ impl MykoClient {
                     ConnectionStatus::Connected(_) => {
                         match report_send_socket.outgoing.send(msg.clone()) {
                             Ok(_) => {
-                                println!("Watching report {}", report_send_report_id);
+                                debug!("Watching report {report_send_report_id}");
                             }
                             Err(e) => {
-                                println!("Could not send message to ws: {:?}", e);
+                                error!("Could not send message to ws: {e:?}");
                             }
                         }
                     }
                     ConnectionStatus::Disconnected => {
-                        println!("Report {} Disconnected", report_send_report_id);
+                        debug!("Report {report_send_report_id} Disconnected");
                     }
                 }
             }
@@ -245,12 +245,12 @@ impl MykoClient {
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {
-                    println!("Could not parse data @ watch_query: {e:?}");
+                    error!("Could not parse data @ watch_query: {e:?}");
                     return None;
                 }
             };
 
-            let vec = match data {
+            match data {
                 MykoMessage::QueryResponse(response) => {
                     if response.tx != tx {
                         return None;
@@ -262,7 +262,7 @@ impl MykoClient {
                     let seq = response.sequence;
 
                     if seq == 0 {
-                        println!("Clearing {} state", query_id.clone());
+                        debug!("Clearing {} state", query_id.clone());
                         state.clear();
                     }
 
@@ -284,9 +284,7 @@ impl MykoClient {
                     Some(state.values().cloned().collect::<Vec<T>>())
                 }
                 _ => None,
-            };
-
-            vec
+            }
         });
 
         if wrapped.is_err() {
@@ -310,15 +308,15 @@ impl MykoClient {
                     ConnectionStatus::Connected(_) => {
                         match query_send_socket.outgoing.send(msg.clone()) {
                             Ok(_) => {
-                                println!("Watching query {send_query_id}");
+                                debug!("Watching query {send_query_id}");
                             }
                             Err(e) => {
-                                println!("Could not send message to ws: {e:?}");
+                                error!("Could not send message to ws: {e:?}");
                             }
                         }
                     }
                     ConnectionStatus::Disconnected => {
-                        println!("Query {send_query_id} Disconnected");
+                        warn!("Query {send_query_id} Disconnected");
                     }
                 }
             }
