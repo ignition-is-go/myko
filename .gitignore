@@ -133,3 +133,7 @@ libs/myko/csharp/bin/*
 libs/myko/csharp/obj/*
 nupkgs
 apps/link-ui/src-tauri/gen/*
+
+# Crush
+.crush/
+
