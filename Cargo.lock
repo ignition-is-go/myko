@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -3730,7 +3730,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3772,7 +3772,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3783,7 +3783,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "link",
  "log 0.4.27",
@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "0.0.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4207,7 +4207,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "0.1.4"
+version = "3.0.0-canary.627"
 dependencies = [
  "quote",
  "syn 2.0.104",
@@ -4215,7 +4215,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "0.1.7"
+version = "3.0.0-canary.627"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4812,7 +4812,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "napi",
  "napi-build",
@@ -6036,7 +6036,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "0.1.1"
+version = "3.0.0-canary.627"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6048,7 +6048,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "0.1.7"
+version = "3.0.0-canary.627"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6068,7 +6068,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "0.1.21"
+version = "3.0.0-canary.627"
 dependencies = [
  "env_logger",
  "log 0.4.27",
@@ -6085,7 +6085,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6117,7 +6117,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "0.0.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6130,7 +6130,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -7074,7 +7074,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "0.1.0"
+version = "3.0.0-canary.627"
 dependencies = [
  "rship_sync_core",
  "tokio",
