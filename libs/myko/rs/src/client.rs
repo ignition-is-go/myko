@@ -9,14 +9,15 @@ use crate::{
 use futures_signals::signal::{Signal, SignalExt};
 use log::{debug, error};
 use log::{info, warn};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
 pub enum ConnectionStatus {
     Connected(String),
     Disconnected,
