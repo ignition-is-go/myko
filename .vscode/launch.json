@@ -5,6 +5,13 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "command": "pnpm dev",
+      "name": "Run pnpm dev",
+      "request": "launch",
+      "type": "node-terminal",
+      "cwd": "${workspaceFolder}/apps/ui"
+    },
+    {
       "type": "lldb",
       "request": "launch",
       "name": "Debug Linkd",
