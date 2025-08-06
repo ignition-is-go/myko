@@ -1,5 +1,5 @@
 use futures_signals::signal::Mutable;
-use futures_util::{future::select_all, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::select_all};
 use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio_tungstenite::connect_async;
@@ -36,170 +36,173 @@ impl AutoReconnectSocket {
     }
 
     pub fn set_addr(&self, addr: Option<String>) {
-        let lock = self.status.lock_ref();
-        let s = lock.clone();
-        drop(lock);
+        let current_status = self.status.lock_ref().clone();
 
-        match s {
-            SocketConnectionStatus::Connected(current_addr, teardown)
-            | SocketConnectionStatus::Connecting(current_addr, teardown) => {
-                if Some(current_addr) == addr {
-                    return;
-                }
-
-                teardown.cancel();
-
-                self.status.set(SocketConnectionStatus::Disconnected);
-                if let Some(addr) = addr {
-                    self.build(addr);
-                }
+        // Cancel existing connection if different address or disconnecting
+        if let SocketConnectionStatus::Connected(current_addr, teardown)
+        | SocketConnectionStatus::Connecting(current_addr, teardown) = current_status
+        {
+            if Some(current_addr.clone()) == addr {
+                info!("Already connected to {current_addr}");
+                return;
             }
+            teardown.cancel();
+            self.status.set(SocketConnectionStatus::Disconnected);
+        }
 
-            SocketConnectionStatus::Disconnected => {
-                if let Some(addr) = addr {
-                    self.build(addr);
-                }
-            }
+        // Start new connection if address provided
+        if let Some(addr) = addr {
+            info!("Setting up connection to {addr}");
+            self.build(addr);
         }
     }
 
-    pub fn build(&self, addr: String) {
-        info!("Building Connection to {}", addr);
-
-        let lock = self.status.lock_ref();
-        let s = lock.clone();
-        drop(lock);
-
-        match s {
-            SocketConnectionStatus::Connected(_, _token) => {
-                unreachable!("Should not be building when already connected");
-            }
-            SocketConnectionStatus::Connecting(_, _token) => {
-                unreachable!("Should not be building when already connected");
-            }
-            SocketConnectionStatus::Disconnected => (),
-        }
+    fn build(&self, addr: String) {
+        info!("Building Connection to {addr}");
 
         let teardown = CancellationToken::new();
-
         let send = self.outgoing.clone();
         let recv = self.incoming.clone();
-
         let status = self.status.clone();
+        let teardown_clone = teardown.clone();
 
         tokio::spawn(async move {
-            loop {
-                info!("Connecting to {}", addr);
-
-                let parsed = Url::parse(addr.as_str());
-
-                let mut parsed = match parsed {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Could not parse url: {:?}", e);
-
-                        let add_ws = format!("ws://{}", addr);
-
-                        match Url::parse(add_ws.as_str()) {
-                            Ok(c) => c,
-                            Err(_e) => {
-                                error!("Could not Parse Url: {_e} {add_ws}");
-                                return;
-                            }
-                        }
-                    }
-                };
-
-                if parsed.scheme() != "ws" {
-                    let _ = parsed.set_scheme("ws");
+            tokio::select! {
+                _ = teardown_clone.cancelled() => {
+                    debug!("Connection teardown requested");
                 }
-
-                let ws_stream = match connect_async(&parsed.to_string()).await {
-                    Ok((ws_stream, _)) => ws_stream,
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-                };
-
-                info!("Connected to {}", parsed);
-
-                let (mut write, mut read) = ws_stream.split();
-                let interior_cancel = CancellationToken::new();
-
-                let int_send_cancel = interior_cancel.clone();
-                let rec_send_cancel = teardown.clone();
-
-                if teardown.is_cancelled() {
-                    break;
-                }
-
-                let mut local_send = send.subscribe();
-                let write_handle = tokio::spawn(async move {
+                _ = async {
                     loop {
-                        if int_send_cancel.is_cancelled() || rec_send_cancel.is_cancelled() {
-                            debug!("Exiting Write Loop");
-                            break;
-                        }
+                        info!("Connecting to {addr}");
 
-                        let msg = match local_send.recv().await {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                error!("Error receiving message to send: {:?}", e);
+                        // Parse URL with fallback to ws:// scheme
+                        let url = match Self::parse_websocket_url(&addr) {
+                            Ok(url) => url,
+                            Err(_) => {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
                                 continue;
                             }
                         };
 
-                        match write.send(msg).await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                int_send_cancel.cancel();
-                                error!("Websocket write failed: {:?}", e);
+                        let ws_stream = match connect_async(&url).await {
+                            Ok((ws_stream, _)) => ws_stream,
+                            Err(_) => {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                continue;
                             }
-                        }
+                        };
+
+                        info!("Autoreconnect socket Connected to {url}");
+
+                        let (write, read) = ws_stream.split();
+
+                        // Spawn write task
+                        let write_task = Self::spawn_write_task(send.subscribe(), write, teardown.clone());
+
+                        // Spawn read task
+                        let read_task = Self::spawn_read_task(read, recv.clone(), teardown.clone());
+
+                        status.set(SocketConnectionStatus::Connected(
+                            addr.clone(),
+                            teardown.clone(),
+                        ));
+
+                        let _ = select_all(vec![write_task, read_task]).await;
+
+                        warn!("Read and/or Write Exited - Reconnecting in 1s");
+                        status.set(SocketConnectionStatus::Disconnected);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
-                    debug!("Websocket Write Loop Exited");
-                });
-
-                let rec_read_cancel = teardown.clone();
-                let int_read_cancel = interior_cancel.clone();
-
-                let local_recv = recv.clone();
-
-                let read_handle = tokio::spawn(async move {
-                    while let (Some(Ok(msg)), false, false) = (
-                        read.next().await,
-                        rec_read_cancel.is_cancelled(),
-                        int_read_cancel.is_cancelled(),
-                    ) {
-                        match local_recv.send(msg) {
-                            Ok(_num) => {
-                                // debug!("Sent Message Downstream to {} Listeners", num);
-                            }
-                            Err(_e) => {
-                                debug!("No Downstream Listeners");
-                            }
-                        }
-                    }
-
-                    error!("Websocket Read Failed");
-                    int_read_cancel.cancel();
-                });
-
-                let s = SocketConnectionStatus::Connected(addr.clone(), teardown.clone());
-
-                status.set(s);
-
-                let _ = select_all(vec![write_handle, read_handle]).await;
-
-                warn!("Read and/or Write Exited - Reconnecting in 1s");
-
-                let s = SocketConnectionStatus::Disconnected;
-
-                status.set(s);
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                } => {}
             }
         });
+    }
+
+    fn parse_websocket_url(addr: &str) -> Result<String, ()> {
+        let url = match Url::parse(addr).or_else(|_| Url::parse(&format!("ws://{addr}"))) {
+            Ok(url) => url,
+            Err(e) => {
+                error!("Could not parse URL: {e} for {addr}");
+                return Err(());
+            }
+        };
+
+        let mut url = url;
+        if url.scheme() != "ws" && url.scheme() != "wss" {
+            let _ = url.set_scheme("ws");
+        }
+
+        Ok(url.to_string())
+    }
+
+    fn spawn_write_task(
+        mut receiver: tokio::sync::broadcast::Receiver<Message>,
+        mut write: futures_util::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Message,
+        >,
+        teardown: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            debug!("Starting Write Loop");
+            loop {
+                tokio::select! {
+                    _ = teardown.cancelled() => {
+                        debug!("Write task cancelled");
+                        break;
+                    }
+                    msg_result = receiver.recv() => {
+                        let msg = match msg_result {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                error!("Error receiving message to send: {e:?}");
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = write.send(msg).await {
+                            error!("Websocket write failed: {e:?}");
+                            break;
+                        }
+                    }
+                }
+            }
+            debug!("Websocket Write Loop Exited");
+        })
+    }
+
+    fn spawn_read_task(
+        mut read: futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+        sender: tokio::sync::broadcast::Sender<Message>,
+        teardown: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            debug!("Starting Read Loop");
+            loop {
+                tokio::select! {
+                    _ = teardown.cancelled() => {
+                        debug!("Read task cancelled");
+                        break;
+                    }
+                    msg_result = read.next() => {
+                        match msg_result {
+                            Some(Ok(msg)) => {
+                                if sender.send(msg).is_err() {
+                                    debug!("No Downstream Listeners");
+                                }
+                            }
+                            Some(Err(_)) | None => break,
+                        }
+                    }
+                }
+            }
+            debug!("Websocket Read Exited");
+        })
     }
 }

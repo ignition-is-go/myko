@@ -66,6 +66,7 @@
       "electron",
       "electron-winstaller",
       "esbuild",
+      "grpc-tools",
       "msgpackr-extract",
       "protobufjs",
       "sharp",
@@ -74,5 +75,5 @@
       "workerd"
     ]
   },
-  "version": "3.0.0-canary.617"
+  "version": "3.0.0-canary.638"
 }

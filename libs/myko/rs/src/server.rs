@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
-use futures_util::{stream::StreamExt, SinkExt};
+use futures_util::{SinkExt, stream::StreamExt};
+use log::{debug, error, info};
 use tokio::{
     net::TcpListener,
     sync::{
-        broadcast,
+        Mutex, broadcast,
         mpsc::{self, Receiver},
-        Mutex,
     },
 };
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
@@ -39,7 +39,7 @@ impl Server {
         }
     }
 
-    pub async fn add_modules(mut self, mut modules: Vec<Box<dyn Module + Send>>) -> Server {
+    pub async fn add_modules(mut self, modules: Vec<Box<dyn Module + Send>>) -> Server {
         if self.startup_state != StartupState::Off {
             panic!("Cannot add modules after startup");
         }
@@ -76,11 +76,11 @@ impl Server {
         let max_port = 5255;
 
         loop {
-            let address = format!("0.0.0.0:{}", port);
+            let address = format!("0.0.0.0:{port}");
 
             match TcpListener::bind(&address).await {
                 Ok(listener) => {
-                    println!("WebSocket server listening on {}", address);
+                    info!("WebSocket server listening on {address}");
                     while let Ok((stream, _)) = listener.accept().await {
                         let r = self.modules_map.clone();
                         tokio::spawn(handle_connection(
@@ -94,10 +94,10 @@ impl Server {
                     break; // Exit loop if successfully bound
                 }
                 Err(e) => {
-                    println!("Failed to bind to port {}: {}", port, e);
+                    error!("Failed to bind to port {port}: {e}");
                     port += 1;
                     if port > max_port {
-                        eprintln!("Exceeded maximum port limit");
+                        error!("Exceeded maximum port limit");
                         return;
                     }
                 }
@@ -121,7 +121,7 @@ fn listen_kafka(
                     module.process_event(event.clone(), false).await;
                 }
                 None => {
-                    println!("No module found for event type: {}", event.item_type());
+                    error!("No module found for event type: {}", event.item_type());
                 }
             }
         }
@@ -134,7 +134,7 @@ async fn handle_connection(
     broadcast_tx: broadcast::Sender<Message>,
     mut broadcast_rx: broadcast::Receiver<Message>,
 ) {
-    println!("New WebSocket connection");
+    debug!("New WebSocket connection");
     let ws_stream = accept_async(stream)
         .await
         .expect("Error during WebSocket handshake");
@@ -145,7 +145,7 @@ async fn handle_connection(
     tokio::spawn(async move {
         while let Some(message) = to_ws_rx.recv().await {
             if (ws_write.send(message).await).is_err() {
-                println!("Failed to send message to WebSocket");
+                error!("Failed to send message to WebSocket");
                 break;
             }
         }
@@ -156,7 +156,7 @@ async fn handle_connection(
     tokio::spawn(async move {
         while let Ok(message) = broadcast_rx.recv().await {
             if (broadcast_ws_tx.send(message).await).is_err() {
-                println!("Failed to send message to WebSocket");
+                error!("Failed to send message to WebSocket");
                 break;
             }
         }
@@ -169,7 +169,7 @@ async fn handle_connection(
                     let text = match message.to_text() {
                         Ok(t) => t,
                         Err(e) => {
-                            println!("Failed to convert message into text: {}", e);
+                            error!("Failed to convert message into text: {e}");
                             continue;
                         }
                     };
@@ -253,12 +253,12 @@ async fn handle_connection(
                     //     }
                     // };
 
-                    println!("Received other message, broadcasting to all connections");
+                    debug!("Received other message, broadcasting to all connections");
                     broadcast_tx.send(message).unwrap();
                 }
             }
             Err(e) => {
-                println!("Failed to receive message from WebSocket: {}", e);
+                error!("Failed to receive message from WebSocket: {}", e);
                 break;
             }
         }

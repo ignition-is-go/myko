@@ -3,20 +3,22 @@ resolver = "2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 members = [
+  "apps/asset_store",
   "apps/link-cli",
   "apps/link-ui/src-tauri",
   "apps/linkd",
   "apps/myko/backplane",
   "libs/myko/rs",
-  "libs/link",
+  "libs/link/core",
+  "libs/link/rpc/rs",
   "libs/myko/macros",
   "apps/labs/rs-core",
   "libs/entities/rs",
   "libs/sdk/rs", 
-  "apps/execs/music-analysis", 
   "libs/sync/core",
   "libs/sync/ffi",
   "apps/sync_server",
   "libs/rs-macros",
-  "libs/opencv"
+  "libs/opencv",
+  "libs/asset-store/core",
 ]

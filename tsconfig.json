@@ -26,6 +26,7 @@
     "apps/docs.rship.io",
     "apps/adapters",
     "apps/labs",
-    "apps/ui"
+    "apps/ui",
+    "apps/link-ui"
   ]
 }
