@@ -41,7 +41,7 @@
   "rust-analyzer.check.command": "clippy",
   "git.autofetch": true,
   "[typescript]": {
-    "editor.defaultFormatter": "vscode.typescript-language-features"
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
   "editor.codeActionsOnSave": {
     "source.organizeImports": "always"
