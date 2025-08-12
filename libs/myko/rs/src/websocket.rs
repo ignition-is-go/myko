@@ -2,6 +2,7 @@ use futures_signals::signal::Mutable;
 use futures_util::{SinkExt, StreamExt, future::select_all};
 use log::{debug, error, info, warn};
 use std::time::Duration;
+use tokio::select;
 use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
 use tungstenite::Message;
@@ -107,9 +108,16 @@ impl AutoReconnectSocket {
                             teardown.clone(),
                         ));
 
-                        let _ = select_all(vec![write_task, read_task]).await;
+                        select! {
+                            _ = write_task => {
+                                warn!("Websocket Write Task Exited");
+                            }
+                            _ = read_task => {
+                                warn!("Websocket Read Task Exited");
+                            }
+                        }
 
-                        warn!("Read and/or Write Exited - Reconnecting in 1s");
+
                         status.set(SocketConnectionStatus::Disconnected);
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
@@ -135,7 +143,7 @@ impl AutoReconnectSocket {
         Ok(url.to_string())
     }
 
-    fn spawn_write_task(
+    async fn spawn_write_task(
         mut receiver: tokio::sync::broadcast::Receiver<Message>,
         mut write: futures_util::stream::SplitSink<
             tokio_tungstenite::WebSocketStream<
@@ -144,36 +152,34 @@ impl AutoReconnectSocket {
             Message,
         >,
         teardown: CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            debug!("Starting Write Loop");
-            loop {
-                tokio::select! {
-                    _ = teardown.cancelled() => {
-                        debug!("Write task cancelled");
-                        break;
-                    }
-                    msg_result = receiver.recv() => {
-                        let msg = match msg_result {
-                            Ok(msg) => msg,
-                            Err(e) => {
-                                error!("Error receiving message to send: {e:?}");
-                                continue;
-                            }
-                        };
-
-                        if let Err(e) = write.send(msg).await {
-                            error!("Websocket write failed: {e:?}");
-                            break;
+    ) {
+        debug!("Starting Write Loop");
+        loop {
+            tokio::select! {
+                _ = teardown.cancelled() => {
+                    debug!("Write task cancelled");
+                    break;
+                }
+                msg_result = receiver.recv() => {
+                    let msg = match msg_result {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            error!("Error receiving message to send: {e:?}");
+                            continue;
                         }
+                    };
+
+                    if let Err(e) = write.send(msg).await {
+                        error!("Websocket write failed: {e:?}");
+                        break;
                     }
                 }
             }
-            debug!("Websocket Write Loop Exited");
-        })
+        }
+        debug!("Websocket Write Loop Exited");
     }
 
-    fn spawn_read_task(
+    async fn spawn_read_task(
         mut read: futures_util::stream::SplitStream<
             tokio_tungstenite::WebSocketStream<
                 tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -181,28 +187,26 @@ impl AutoReconnectSocket {
         >,
         sender: tokio::sync::broadcast::Sender<Message>,
         teardown: CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            debug!("Starting Read Loop");
-            loop {
-                tokio::select! {
-                    _ = teardown.cancelled() => {
-                        debug!("Read task cancelled");
-                        break;
-                    }
-                    msg_result = read.next() => {
-                        match msg_result {
-                            Some(Ok(msg)) => {
-                                if sender.send(msg).is_err() {
-                                    debug!("No Downstream Listeners");
-                                }
+    ) {
+        debug!("Starting Read Loop");
+        loop {
+            tokio::select! {
+                _ = teardown.cancelled() => {
+                    debug!("Read task cancelled");
+                    break;
+                }
+                msg_result = read.next() => {
+                    match msg_result {
+                        Some(Ok(msg)) => {
+                            if sender.send(msg).is_err() {
+                                debug!("No Downstream Listeners");
                             }
-                            Some(Err(_)) | None => break,
                         }
+                        Some(Err(_)) | None => break,
                     }
                 }
             }
-            debug!("Websocket Read Exited");
-        })
+        }
+        debug!("Websocket Read Exited");
     }
 }
