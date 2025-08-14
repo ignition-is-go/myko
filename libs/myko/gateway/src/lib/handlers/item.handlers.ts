@@ -3,22 +3,27 @@ import {
   ChildEntitiesAllTime,
   EntitySearch,
   EntitySnapshotDifference,
+  eventBus,
+  FullChildEntities,
   getHistoryProvider,
   getHostId,
   GetItemsByTypeAndIds,
+  ImportItems,
   liveRepoName,
+  makeSet,
   MItem,
-  MykoQueryHandler,
+  MReportHandler,
+  MykoCommandHandler,
   MykoReportHandler,
   relationRegistry,
   repoName,
   reportBus,
+  unwrapItem,
   wrapItem,
   type EntitySnapshotDifferenceData,
+  type MCommandHandler,
   type MItemStub,
   type MLiveReportResult,
-  type MQueryHandler,
-  type MReportHandler,
   type MWrappedItem,
 } from '@myko/core'
 import { uniqBy } from 'ramda'
@@ -32,13 +37,15 @@ import {
   type Observable,
 } from 'rxjs'
 
-@MykoQueryHandler(GetItemsByTypeAndIds)
+@MykoReportHandler(GetItemsByTypeAndIds)
 export class GetItemByTypeAndIdHandler
-  implements MQueryHandler<GetItemsByTypeAndIds>
+  implements MReportHandler<GetItemsByTypeAndIds>
 {
   constructor() {}
-  execute(query: GetItemsByTypeAndIds): Observable<MItem[]> {
-    return repoName(query.type, query).watchIds(query.ids)
+  execute(query: GetItemsByTypeAndIds) {
+    return repoName(query.type, query)
+      .watchIds(query.ids)
+      .pipe(map((x) => x.map((item) => wrapItem(item))))
   }
 }
 
@@ -53,6 +60,35 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
       {
         query: report.filter,
       },
+    )
+  }
+}
+
+@MykoReportHandler(FullChildEntities)
+export class FullChildEntitiesHandler
+  implements MReportHandler<FullChildEntities>
+{
+  execute(report: FullChildEntities): Observable<MItemStub[]> {
+    const myChildren = reportBus.watch(
+      new ChildEntities(report.parentType, report.parentId).withContext(report),
+    )
+
+    return myChildren.pipe(
+      switchMap((children) =>
+        children.length == 0
+          ? of([] as MItemStub[])
+          : combineLatest(
+              children.map((child) =>
+                reportBus
+                  .watch(
+                    new FullChildEntities(child.itemType, child.id).withContext(
+                      report,
+                    ),
+                  )
+                  .pipe(map((x) => [...x, child])),
+              ),
+            ).pipe(map((x) => x.flat())),
+      ),
     )
   }
 }
@@ -296,5 +332,18 @@ export class EntitySnapshotDifferenceHandler
         } satisfies EntitySnapshotDifferenceData
       }),
     )
+  }
+}
+
+@MykoCommandHandler(ImportItems)
+export class ImportItemsHandler implements MCommandHandler<ImportItems> {
+  async execute(command: ImportItems) {
+    const events = command.items
+      .map((item) => unwrapItem(item))
+      .map((item) =>
+        makeSet(item, command.tx, { preventRelationshipUpdates: true }),
+      )
+
+    eventBus.publishAll(events)
   }
 }

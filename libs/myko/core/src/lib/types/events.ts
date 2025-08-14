@@ -24,6 +24,10 @@ export type IMEvent = {
   readonly sourceId?: ID
 }
 
+export type MEventOptions = {
+  preventRelationshipUpdates?: boolean
+}
+
 /**
  * Type representing an event with a specific item and change type.
  */
@@ -33,6 +37,7 @@ export type MEvent<
 > = IMEvent & {
   readonly item: T
   readonly changeType: C
+  readonly options?: MEventOptions
 }
 
 /**
@@ -44,8 +49,12 @@ export type MEvent<
 export const makeSet: <T extends MItem<IMItem>>(
   item: T,
   tx: ID,
-) => MEvent<T, MEventType.SET> = <T extends MItem>(item: T, tx: ID) =>
-  makeMykoEvent(item, MEventType.SET, tx)
+  options?: MEventOptions,
+) => MEvent<T, MEventType.SET> = <T extends MItem>(
+  item: T,
+  tx: ID,
+  options?: MEventOptions,
+) => makeMykoEvent(item, MEventType.SET, tx, undefined, undefined, options)
 
 /**
  * Creates a "DEL" event for the given item and transaction ID.
@@ -56,8 +65,12 @@ export const makeSet: <T extends MItem<IMItem>>(
 export const makeDel: <T extends MItem<IMItem>>(
   item: T,
   tx: ID,
-) => MEvent<T, MEventType.DEL> = <T extends MItem>(item: T, tx: ID) =>
-  makeMykoEvent(item, MEventType.DEL, tx)
+  options?: MEventOptions,
+) => MEvent<T, MEventType.DEL> = <T extends MItem>(
+  item: T,
+  tx: ID,
+  options?: MEventOptions,
+) => makeMykoEvent(item, MEventType.DEL, tx, undefined, undefined, options)
 
 /**
  * Creates a custom event for the given item, change type, and transaction ID.
@@ -75,6 +88,7 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
   tx: ID,
   overrideType?: string,
   sourceId?: ID,
+  options?: MEventOptions,
 ): MEvent<T, U> => {
   const metadataType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
 
@@ -90,6 +104,7 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
     createdAt: DateTime.utc().toString(),
     tx,
     sourceId,
+    options,
   }
 }
 

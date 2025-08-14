@@ -25,7 +25,8 @@ export class MQuery<T extends MItem = MItem> extends WithContext {
   wrap(): MWrappedQuery {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, this)
     const queryItemType = Reflect.getMetadata(MYKO_QUERY_ITEM_TYPE_KEY, this)
-    if (!queryId || !queryItemType) {
+    if (!queryId) {
+      console.log(Reflect.getMetadataKeys(this))
       throw new Error('Could not get query ID from Metadata')
     }
 

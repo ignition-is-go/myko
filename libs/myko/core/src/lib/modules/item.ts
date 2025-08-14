@@ -1,16 +1,17 @@
-import { MykoQuery, MykoReport } from '../decorators'
+import { MykoCommand, MykoReport } from '../decorators'
 import {
   getItemName,
+  MCommand,
   MItem,
-  MQuery,
   MReport,
   type DeepPartial,
   type ID,
   type MItemConstructor,
 } from '../types'
+import type { MWrappedItem } from '../wrappers'
 
-@MykoQuery(MItem)
-export class GetItemsByTypeAndIds extends MQuery<MItem> {
+@MykoReport()
+export class GetItemsByTypeAndIds extends MReport<MWrappedItem[]> {
   constructor(
     public type: string,
     public ids: ID[],
@@ -53,6 +54,16 @@ export class ChildEntities extends MReport<MItemStub[]> {
 }
 
 @MykoReport()
+export class FullChildEntities extends MReport<MItemStub[]> {
+  constructor(
+    readonly parentType: string,
+    readonly parentId: ID,
+  ) {
+    super()
+  }
+}
+
+@MykoReport()
 export class ChildEntitiesAllTime extends MReport<MItemStub[]> {
   constructor(
     readonly parentType: string,
@@ -73,6 +84,13 @@ export class EntitySnapshotDifference extends MReport<EntitySnapshotDifferenceDa
     readonly parentType: string,
     readonly parentId: ID,
   ) {
+    super()
+  }
+}
+
+@MykoCommand()
+export class ImportItems extends MCommand {
+  constructor(public items: MWrappedItem[]) {
     super()
   }
 }

@@ -48,6 +48,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  !e.options?.preventRelationshipUpdates &&
                   e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.foreignType,
@@ -121,6 +122,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  !e.options?.preventRelationshipUpdates &&
                   e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.localType,
@@ -147,6 +149,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  !e.options?.preventRelationshipUpdates &&
                   e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.DEL &&
                   e.itemType === relation.foreignType,
@@ -254,6 +257,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
             .pipe(
               filter(
                 (e) =>
+                  !e.options?.preventRelationshipUpdates &&
                   e.sourceId === this.getServerId() &&
                   e.changeType === MEventType.SET &&
                   dependencies.some((d) => d.foreignType === e.itemType),
