@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@myko/ws",
-  "version": "3.0.0-canary.655",
+  "version": "3.0.0-canary.656",
   "exports": "./src/index.ts",
   "license": "GPL-3.0-only"
 }
