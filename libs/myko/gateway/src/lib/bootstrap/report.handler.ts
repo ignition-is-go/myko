@@ -22,7 +22,7 @@ export const handleReport = (
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
   const report = MReport.fromWrappedReport(wrappedReport).withContext({
-    commandClientId: clientId,
+    commandClientId: wrappedReport.report.commandClientId ?? clientId,
     tx: wrappedReport.report.tx,
   })
 

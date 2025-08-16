@@ -30,7 +30,7 @@ export const handleQuery = (
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
   const query = MQuery.fromWrappedQuery(wrappedQuery).withContext({
-    commandClientId: clientId,
+    commandClientId: wrappedQuery.query.commandClientId ?? clientId,
     tx: wrappedQuery.query.tx,
   })
 

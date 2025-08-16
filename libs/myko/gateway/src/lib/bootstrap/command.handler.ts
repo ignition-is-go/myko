@@ -8,7 +8,7 @@ import {
   MykoLogger,
   noAuthCommands,
   type ID,
-  type MWrappedCommand
+  type MWrappedCommand,
 } from '@myko/core'
 import { allowedDuringWindback } from '@myko/core/src/lib/registry/windback.registry'
 import {
@@ -26,7 +26,6 @@ export const handleCommand = async (
   command: MWrappedCommand,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-
   const txid = command.command.tx
 
   const fail = () => {
@@ -36,7 +35,6 @@ export const handleCommand = async (
     })
   }
 
-
   const proceedRes = await proceed(fail, respond, clientId, command)
 
   if (!proceedRes) {
@@ -44,7 +42,7 @@ export const handleCommand = async (
   }
 
   const unwrapped = MCommand.fromWrappedCommand(command).withContext({
-    commandClientId: clientId,
+    commandClientId: command.command.commandClientId ?? clientId,
     tx: txid,
   })
   // unwrapCommand(command) as MCommand<unknown>
@@ -74,26 +72,26 @@ export const handleCommand = async (
     })
 }
 
-
-const proceed = async (fail: () => void, respond: Subject<{ clientId: ID; data: WSMMessage }>, clientId: ID, command: MWrappedCommand) => {
-
+const proceed = async (
+  fail: () => void,
+  respond: Subject<{ clientId: ID; data: WSMMessage }>,
+  clientId: ID,
+  command: MWrappedCommand,
+) => {
   const txid = command.command.tx
   const userToken = command.command.userToken
 
   const auth = getAuth()
 
-
   if (!auth) {
     return true
   }
-
 
   const pub = noAuthCommands.has(command.commandId)
 
   if (pub) {
     return true
   }
-
 
   if (!userToken) {
     fail()
@@ -113,7 +111,7 @@ const proceed = async (fail: () => void, respond: Subject<{ clientId: ID; data: 
   if (userId) {
     try {
       getHistoryProvider().recordUserTransaction(userId, txid)
-    } catch (e) { }
+    } catch (e) {}
   }
 
   const client = await liveRepo(Client).getId(clientId)
@@ -122,9 +120,7 @@ const proceed = async (fail: () => void, respond: Subject<{ clientId: ID; data: 
     respond.next({
       clientId,
 
-      data: wrapCommandErrorWS(
-        new MykoCommandError(txid, 'Client not found'),
-      ),
+      data: wrapCommandErrorWS(new MykoCommandError(txid, 'Client not found')),
     })
     return
   }

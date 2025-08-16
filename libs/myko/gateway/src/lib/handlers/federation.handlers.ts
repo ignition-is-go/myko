@@ -1,4 +1,5 @@
 import {
+  GetClientsByQuery,
   MykoCommandError,
   MykoCommandHandler,
   MykoQueryHandler,
@@ -13,8 +14,8 @@ import {
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
-import { EMPTY, Observable } from 'rxjs'
-import { PeerClientRegistry, peers } from '../registry/peer.registry'
+import { EMPTY, Observable, switchMap } from 'rxjs'
+import { peers } from '../registry/peer.registry'
 
 @MykoQueryHandler(PeerQuery)
 export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
@@ -30,7 +31,19 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
         return EMPTY
       }
 
-      return peer.watchQuery(query.query)
+      const clients = queryBus.watch(
+        new GetClientsByQuery({ serverId: getHostId() }).withContext(query),
+      )
+
+      return clients.pipe(
+        switchMap((cs) => {
+          if (cs.find((x) => x.id === query.commandClientId)) {
+            return peer.watchQuery(query.query)
+          }
+
+          return EMPTY
+        }),
+      )
     } catch (e) {
       console.warn('Cant Execute Peer Query', query)
       return EMPTY
@@ -40,11 +53,19 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
 
 @MykoCommandHandler(PeerCommand)
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
-  constructor(private peers: PeerClientRegistry) {}
+  constructor() {}
   async execute(command: PeerCommand): Promise<void> {
-    const peer = this.peers.getPeer(command.peerId)
+    const peer = peers.getPeer(command.peerId)
     if (!peer) {
       throw new MykoCommandError(command.tx, 'Peer Not Found')
+    }
+
+    const clients = await queryBus.execute(
+      new GetClientsByQuery({ serverId: getHostId() }).withContext(command),
+    )
+
+    if (!clients.find((x) => x.id === command.commandClientId)) {
+      return
     }
 
     peer.sendCommand(command.command)
@@ -60,6 +81,18 @@ export class PeerReportHandler implements MReportHandler<PeerReport<any>> {
       return EMPTY
     }
 
-    return peer.watchReport(report.report)
+    const clients = queryBus.watch(
+      new GetClientsByQuery({ serverId: getHostId() }).withContext(report),
+    )
+
+    return clients.pipe(
+      switchMap((cs) => {
+        if (cs.find((x) => x.id === report.commandClientId)) {
+          return peer.watchReport(report.report)
+        } else {
+          return EMPTY
+        }
+      }),
+    )
   }
 }
