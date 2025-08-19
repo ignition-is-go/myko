@@ -6,8 +6,15 @@
 </div>
 
 #### Status 
-[![Linux Publish (Docker, Cross-Platform)](https://github.com/ignition-is-go/rship/actions/workflows/pub-linux.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-linux.yml)     
-[![Build and Publish Windows and MacOS](https://github.com/ignition-is-go/rship/actions/workflows/pub-win-mac.yml/badge.svg?branch=dev)](https://github.com/ignition-is-go/rship/actions/workflows/pub-win-mac.yml)
+
+
+[![Asset](https://github.com/ignition-is-go/rship/actions/workflows/pub-asset.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-asset.yml) 
+[![Docker](https://github.com/ignition-is-go/rship/actions/workflows/pub-docker.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-asset.yml) 
+[![Link](https://github.com/ignition-is-go/rship/actions/workflows/pub-win-mac.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-asset.yml)
+[![JSR](https://github.com/ignition-is-go/rship/actions/workflows/pub-jsr.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-asset.yml)
+
+
+
 
 ## Realtime Reactive Event Relationships
 
