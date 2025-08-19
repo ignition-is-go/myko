@@ -30,7 +30,6 @@
 	};
 
 	const time = $derived(fromISOMemo(event.createdAt));
-	// $inspect(leftTime, 'leftTime');
 </script>
 
 <div class="event {event.changeType}" style="left: {leftPx}px;">

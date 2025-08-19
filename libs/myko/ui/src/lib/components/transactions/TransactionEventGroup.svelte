@@ -11,8 +11,6 @@
 	const onmouseleave = () => {
 		showDetail = false;
 	};
-
-	// $inspect(leftTime, 'leftTime');
 </script>
 
 <div class="event" style="left: {firstPx}px; width: {lastPx - firstPx}px;">

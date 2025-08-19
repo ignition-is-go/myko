@@ -59,7 +59,6 @@
 	};
 
 	const diff = client.watchReport(new EntitySnapshotDifference(entrypointItemType, entrypointId));
-	$inspect('diff', $diff);
 </script>
 
 <svelte:window {onkeydown} {onmousedown} {onmouseup} />
