@@ -185,6 +185,7 @@ version = "3.0.0-canary.663"
 dependencies = [
  "anyhow",
  "dotenv",
+ "percent-encoding 2.3.1",
  "rship_asset_store_core",
  "tokio",
  "tracing",
@@ -6258,6 +6259,7 @@ dependencies = [
  "log 0.4.27",
  "mime 0.3.17",
  "myko-rs",
+ "percent-encoding 2.3.1",
  "ractor",
  "reqwest 0.12.23",
  "rship-entities",
