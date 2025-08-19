@@ -55,7 +55,7 @@ impl<T: Eventable<T, PT> + PartialEq, PT: Clone> RepoStruct<T, PT> {
 
         if hash.is_none() {
             let computed_hash = md5::compute(event.item_json().to_string());
-            let hash_string = format!("{:x}", computed_hash);
+            let hash_string = format!("{computed_hash:x}");
 
             json.insert("hash".to_string(), Value::String(hash_string));
         }

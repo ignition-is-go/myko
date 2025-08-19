@@ -194,7 +194,7 @@ mod myko_tests {
 
                 match self.repo.lock().await.process(event.clone()).await {
                     Ok(_) => (),
-                    Err(e) => log::debug!("Failed to process event: {}, {:?}", e, event),
+                    Err(e) => log::debug!("Failed to process event: {e}, {event:?}"),
                 }
             }
 

@@ -1,5 +1,5 @@
 use futures_signals::signal::Mutable;
-use futures_util::{SinkExt, StreamExt, future::select_all};
+use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use std::time::Duration;
 use tokio::select;

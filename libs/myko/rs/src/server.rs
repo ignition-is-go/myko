@@ -22,7 +22,7 @@ enum StartupState {
 
 pub struct Server {
     startup_state: StartupState,
-    config: ServerConfig,
+    _config: ServerConfig,
     modules_map: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
 }
 
@@ -34,7 +34,7 @@ impl Server {
     pub fn new(config: ServerConfig) -> Server {
         Server {
             startup_state: StartupState::Off,
-            config,
+            _config: config,
             modules_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -44,7 +44,7 @@ impl Server {
             panic!("Cannot add modules after startup");
         }
 
-        let (from_kafka_tx, from_kafka_rx) = mpsc::channel::<MEvent>(100);
+        let (_from_kafka_tx, from_kafka_rx) = mpsc::channel::<MEvent>(100);
 
         // for module in modules.iter_mut() {
         //     module
@@ -258,7 +258,7 @@ async fn handle_connection(
                 }
             }
             Err(e) => {
-                error!("Failed to receive message from WebSocket: {}", e);
+                error!("Failed to receive message from WebSocket: {e}");
                 break;
             }
         }
