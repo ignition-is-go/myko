@@ -14,8 +14,6 @@
 [![JSR](https://github.com/ignition-is-go/rship/actions/workflows/pub-jsr.yml/badge.svg)](https://github.com/ignition-is-go/rship/actions/workflows/pub-asset.yml)
 
 
-
-
 ## Realtime Reactive Event Relationships
 
 [Rocketship](https://docs.rship.io) **(rship) is a centralized control platform for orchestrating reactive event relationships within networks of integrated multimedia systems.** It provides an abstract, system-agnostic language and interface which makes it straightforward and intuitive to design and visualize immersive experiences, so that users can focus on realizing their ideas rather than having to build bespoke solutions for every project. By lowering the technical burden for setting up interactive environments, rship facilitates a more flexible and powerful creative design process.
