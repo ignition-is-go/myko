@@ -4,6 +4,9 @@ version = "3.0.0-canary.663"
 edition = "2024"
 description = "myko in rust"
 license = "AGPL-3.0-or-later"
+documentation = "https://docs.rs/myko-rs"
+homepage = "https://docs.rs/myko-rs"
+repository = "https://github.com/ignition-is-go/rship"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
