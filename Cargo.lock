@@ -4907,6 +4907,7 @@ dependencies = [
 name = "opencv_napi"
 version = "3.0.0-canary.672"
 dependencies = [
+ "anyhow",
  "napi",
  "napi-build",
  "napi-derive",
