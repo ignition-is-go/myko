@@ -172,7 +172,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "tokio",
- "url 2.5.6",
+ "url 2.5.7",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -318,7 +318,7 @@ dependencies = [
  "time 0.3.41",
  "tokio",
  "tracing",
- "url 2.5.6",
+ "url 2.5.7",
  "zeroize",
 ]
 
@@ -413,7 +413,7 @@ dependencies = [
  "regex-lite",
  "sha2",
  "tracing",
- "url 2.5.6",
+ "url 2.5.7",
 ]
 
 [[package]]
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -2770,8 +2770,8 @@ dependencies = [
  "aho-corasick",
  "bstr",
  "log 0.4.27",
- "regex-automata 0.4.9",
- "regex-syntax 0.8.5",
+ "regex-automata 0.4.10",
+ "regex-syntax 0.8.6",
 ]
 
 [[package]]
@@ -3415,7 +3415,7 @@ dependencies = [
  "globset",
  "log 0.4.27",
  "memchr",
- "regex-automata 0.4.9",
+ "regex-automata 0.4.10",
  "same-file",
  "walkdir",
  "winapi-util",
@@ -3619,9 +3619,9 @@ checksum = "8eaf4bc02d17cbdd7ff4c7438cafcdf7fb9a4613313ad11b4f8fefe7d3fa0130"
 
 [[package]]
 name = "jobserver"
-version = "0.1.33"
+version = "0.1.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38f262f097c174adebe41eb73d66ae9c06b2844fb0da69969647bbddd9b0538a"
+checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
 dependencies = [
  "getrandom 0.3.3",
  "libc",
@@ -3805,7 +3805,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3840,14 +3840,14 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tungstenite 0.21.0",
- "url 2.5.6",
+ "url 2.5.7",
  "uuid",
  "warp",
 ]
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3858,7 +3858,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "link",
  "log 0.4.27",
@@ -3872,7 +3872,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3900,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4268,7 +4268,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4296,7 +4296,7 @@ dependencies = [
  "tokio-tungstenite 0.21.0",
  "tokio-util",
  "tungstenite 0.21.0",
- "url 2.5.6",
+ "url 2.5.7",
  "uuid",
 ]
 
@@ -4905,7 +4905,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "anyhow",
  "napi",
@@ -5340,7 +5340,7 @@ checksum = "3af6b589e163c5a788fab00ce0c0366f6efbb9959c2f9874b224936af7fce7e1"
 dependencies = [
  "base64 0.22.1",
  "indexmap 2.11.0",
- "quick-xml 0.38.2",
+ "quick-xml 0.38.3",
  "serde",
  "time 0.3.41",
 ]
@@ -5564,9 +5564,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.38.2"
+version = "0.38.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d200a41a7797e6461bd04e4e95c3347053a731c32c87f066f2f0dda22dbdbba8"
+checksum = "42a232e7487fc2ef313d96dde7948e7a3c05101870d8985e4fd8d26aedd27b89"
 dependencies = [
  "memchr",
 ]
@@ -5908,7 +5908,7 @@ dependencies = [
  "ryu",
  "sha1_smol",
  "socket2 0.4.10",
- "url 2.5.6",
+ "url 2.5.7",
 ]
 
 [[package]]
@@ -5970,14 +5970,14 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191"
+checksum = "23d7fd106d8c02486a8d64e778353d1cffe08ce79ac2e82f540c86d0facf6912"
 dependencies = [
  "aho-corasick",
  "memchr",
- "regex-automata 0.4.9",
- "regex-syntax 0.8.5",
+ "regex-automata 0.4.10",
+ "regex-syntax 0.8.6",
 ]
 
 [[package]]
@@ -5991,20 +5991,20 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.9"
+version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "809e8dc61f6de73b46c85f4c96486310fe304c434cfa43669d7b40f711150908"
+checksum = "6b9458fa0bfeeac22b5ca447c63aaf45f28439a709ccd244698632f9aa6394d6"
 dependencies = [
  "aho-corasick",
  "memchr",
- "regex-syntax 0.8.5",
+ "regex-syntax 0.8.6",
 ]
 
 [[package]]
 name = "regex-lite"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53a49587ad06b26609c52e423de037e7f57f20d53535d66e08c695f347df952a"
+checksum = "943f41321c63ef1c92fd763bfe054d2668f7f225a5c29f0105903dc2fc04ba30"
 
 [[package]]
 name = "regex-syntax"
@@ -6014,9 +6014,9 @@ checksum = "f162c6dd7b008981e4d40210aca20b4bd0f9b60ca9271061b07f78537722f2e1"
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
+checksum = "caf4aa5b0f434c91fe5c7f1ecb6a5ece2130b02ad2a590589dda5146df959001"
 
 [[package]]
 name = "rend"
@@ -6061,7 +6061,7 @@ dependencies = [
  "tokio-native-tls",
  "tokio-util",
  "tower-service",
- "url 2.5.6",
+ "url 2.5.7",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-streams",
@@ -6105,7 +6105,7 @@ dependencies = [
  "tower 0.5.2",
  "tower-http",
  "tower-service",
- "url 2.5.6",
+ "url 2.5.7",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-streams",
@@ -6215,7 +6215,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6227,7 +6227,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6247,7 +6247,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "env_logger",
  "log 0.4.27",
@@ -6264,7 +6264,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6298,7 +6298,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6311,7 +6311,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -6549,7 +6549,7 @@ dependencies = [
  "schemars_derive 0.8.22",
  "serde",
  "serde_json",
- "url 2.5.6",
+ "url 2.5.7",
  "uuid",
 ]
 
@@ -7283,7 +7283,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.673"
+version = "3.0.0-canary.674"
 dependencies = [
  "rship_sync_core",
  "tokio",
@@ -7403,7 +7403,7 @@ dependencies = [
  "scopeguard",
  "tao-macros",
  "unicode-segmentation",
- "url 2.5.6",
+ "url 2.5.7",
  "windows 0.61.3",
  "windows-core 0.61.2",
  "windows-version",
@@ -7435,9 +7435,9 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tauri"
-version = "2.8.2"
+version = "2.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a54629607ea3084a8b455c1ebe888cbdfc4de02fa5edb2e40db0dc97091007e3"
+checksum = "5d545ccf7b60dcd44e07c6fb5aeb09140966f0aabd5d2aa14a6821df7bc99348"
 dependencies = [
  "anyhow",
  "bytes 1.10.1",
@@ -7478,7 +7478,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tokio",
  "tray-icon",
- "url 2.5.6",
+ "url 2.5.7",
  "urlpattern",
  "webkit2gtk",
  "webview2-com",
@@ -7530,7 +7530,7 @@ dependencies = [
  "tauri-utils",
  "thiserror 2.0.16",
  "time 0.3.41",
- "url 2.5.6",
+ "url 2.5.7",
  "uuid",
  "walkdir",
 ]
@@ -7581,7 +7581,7 @@ dependencies = [
  "tauri-plugin",
  "tauri-plugin-fs",
  "thiserror 2.0.16",
- "url 2.5.6",
+ "url 2.5.7",
 ]
 
 [[package]]
@@ -7603,7 +7603,7 @@ dependencies = [
  "tauri-utils",
  "thiserror 2.0.16",
  "toml 0.9.5",
- "url 2.5.6",
+ "url 2.5.7",
 ]
 
 [[package]]
@@ -7647,7 +7647,7 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "thiserror 2.0.16",
- "url 2.5.6",
+ "url 2.5.7",
  "webkit2gtk",
  "webview2-com",
  "windows 0.61.3",
@@ -7655,9 +7655,9 @@ dependencies = [
 
 [[package]]
 name = "tauri-runtime-wry"
-version = "2.8.0"
+version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bb0f10f831f75832ac74d14d98f701868f9a8adccef2c249b466cf70b607db9"
+checksum = "c1fe9d48bd122ff002064e88cfcd7027090d789c4302714e68fcccba0f4b7807"
 dependencies = [
  "gtk",
  "http 1.3.1",
@@ -7673,7 +7673,7 @@ dependencies = [
  "tao",
  "tauri-runtime",
  "tauri-utils",
- "url 2.5.6",
+ "url 2.5.7",
  "webkit2gtk",
  "webview2-com",
  "windows 0.61.3",
@@ -7741,7 +7741,7 @@ dependencies = [
  "swift-rs",
  "thiserror 2.0.16",
  "toml 0.9.5",
- "url 2.5.6",
+ "url 2.5.7",
  "urlpattern",
  "uuid",
  "walkdir",
@@ -8455,7 +8455,7 @@ dependencies = [
  "rand 0.8.5",
  "sha1",
  "thiserror 1.0.69",
- "url 2.5.6",
+ "url 2.5.7",
  "utf-8",
 ]
 
@@ -8614,9 +8614,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.6"
+version = "2.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "137a3c834eaf7139b73688502f3f1141a0337c5d8e4d9b536f9b8c796e26a7c4"
+checksum = "08bc136a29a3d1758e07a9cca267be308aeebf5cfd5a10f3f67ab2097683ef5b"
 dependencies = [
  "form_urlencoded",
  "idna 1.1.0",
@@ -8639,7 +8639,7 @@ dependencies = [
  "regex",
  "serde",
  "unic-ucd-ident",
- "url 2.5.6",
+ "url 2.5.7",
 ]
 
 [[package]]
@@ -9702,9 +9702,9 @@ checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
 name = "wry"
-version = "0.53.1"
+version = "0.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5698e50a589268aec06d2219f48b143222f7b5ad9aa690118b8dce0a8dcac574"
+checksum = "e3b6763512fe4b51c80b3ce9b50939d682acb4de335dfabbdb20d7a2642199b7"
 dependencies = [
  "base64 0.22.1",
  "block2 0.6.1",
@@ -9735,7 +9735,7 @@ dependencies = [
  "soup3",
  "tao-macros",
  "thiserror 2.0.16",
- "url 2.5.6",
+ "url 2.5.7",
  "webkit2gtk",
  "webkit2gtk-sys",
  "webview2-com",
@@ -9817,9 +9817,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "5.9.0"
+version = "5.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bb4f9a464286d42851d18a605f7193b8febaf5b0919d71c6399b7b26e5b0aad"
+checksum = "67a073be99ace1adc48af593701c8015cd9817df372e14a1a6b0ee8f8bf043be"
 dependencies = [
  "async-broadcast",
  "async-recursion",
@@ -9836,7 +9836,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uds_windows",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "winnow 0.7.13",
  "zbus_macros",
  "zbus_names",
@@ -9845,9 +9845,9 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "5.9.0"
+version = "5.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef9859f68ee0c4ee2e8cde84737c78e3f4c54f946f2a38645d0d4c7a95327659"
+checksum = "0e80cd713a45a49859dcb648053f63265f4f2851b6420d47a958e5697c68b131"
 dependencies = [
  "proc-macro-crate 3.3.0",
  "proc-macro2",
@@ -9952,14 +9952,14 @@ dependencies = [
 
 [[package]]
 name = "zvariant"
-version = "5.6.0"
+version = "5.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d91b3680bb339216abd84714172b5138a4edac677e641ef17e1d8cb1b3ca6e6f"
+checksum = "999dd3be73c52b1fccd109a4a81e4fcd20fab1d3599c8121b38d04e1419498db"
 dependencies = [
  "endi",
  "enumflags2",
  "serde",
- "url 2.5.6",
+ "url 2.5.7",
  "winnow 0.7.13",
  "zvariant_derive",
  "zvariant_utils",
@@ -9967,9 +9967,9 @@ dependencies = [
 
 [[package]]
 name = "zvariant_derive"
-version = "5.6.0"
+version = "5.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a8c68501be459a8dbfffbe5d792acdd23b4959940fc87785fb013b32edbc208"
+checksum = "6643fd0b26a46d226bd90d3f07c1b5321fe9bb7f04673cb37ac6d6883885b68e"
 dependencies = [
  "proc-macro-crate 3.3.0",
  "proc-macro2",
@@ -9980,14 +9980,13 @@ dependencies = [
 
 [[package]]
 name = "zvariant_utils"
-version = "3.2.0"
+version = "3.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e16edfee43e5d7b553b77872d99bc36afdda75c223ca7ad5e3fbecd82ca5fc34"
+checksum = "c6949d142f89f6916deca2232cf26a8afacf2b9fdc35ce766105e104478be599"
 dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "static_assertions",
  "syn 2.0.106",
  "winnow 0.7.13",
 ]
