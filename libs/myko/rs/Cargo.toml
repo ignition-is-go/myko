@@ -1,6 +1,6 @@
 [package]
 name = "myko-rs"
-version = "3.0.0-canary.676"
+version = "3.0.0-canary.677"
 edition = "2024"
 description = "myko in rust"
 license = "AGPL-3.0-or-later"
@@ -23,7 +23,7 @@ tungstenite = "0.21.0"
 tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
 async-trait = "0.1.77"
 #rdkafka = {version = "0.36.2", features=["cmake-build"]}
-myko-macros = { version= "3.0.0-canary.676", path = "../macros" }
+myko-macros = { version= "3.0.0-canary.677", path = "../macros" }
 openssl = { version = "0.10.35", features = ["vendored"] }
 rmp = "0.8.12"
 rmp-serde = "1.1.2"
