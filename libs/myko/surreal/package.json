@@ -22,5 +22,5 @@
     "@types/ramda": "^0.29.11",
     "@types/uuid": "^9.0.8"
   },
-  "version": "3.0.0-canary.682"
+  "version": "3.0.0-canary.683"
 }
