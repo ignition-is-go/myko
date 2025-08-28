@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -2667,7 +2667,7 @@ dependencies = [
  "cfg-if 1.0.3",
  "libc",
  "r-efi",
- "wasi 0.14.2+wasi-0.2.4",
+ "wasi 0.14.3+wasi-0.2.4",
 ]
 
 [[package]]
@@ -3805,7 +3805,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3858,7 +3858,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "link",
  "log 0.4.27",
@@ -3872,7 +3872,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3900,7 +3900,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4268,7 +4268,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4905,7 +4905,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "anyhow",
  "napi",
@@ -6215,7 +6215,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6227,7 +6227,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6247,7 +6247,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "env_logger",
  "log 0.4.27",
@@ -6264,7 +6264,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6298,7 +6298,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6311,7 +6311,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -7283,7 +7283,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.685"
+version = "3.0.0-canary.686"
 dependencies = [
  "rship_sync_core",
  "tokio",
@@ -8808,11 +8808,11 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasi"
-version = "0.14.2+wasi-0.2.4"
+version = "0.14.3+wasi-0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9683f9a5a998d873c0d21fcbe3c083009670149a8fab228644b8bd36b2c48cb3"
+checksum = "6a51ae83037bdd272a9e28ce236db8c07016dd0d50c27038b3f407533c030c95"
 dependencies = [
- "wit-bindgen-rt",
+ "wit-bindgen",
 ]
 
 [[package]]
@@ -9686,13 +9686,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "wit-bindgen-rt"
-version = "0.39.0"
+name = "wit-bindgen"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
-dependencies = [
- "bitflags 2.9.3",
-]
+checksum = "052283831dbae3d879dc7f51f3d92703a316ca49f91540417d38591826127814"
 
 [[package]]
 name = "writeable"
