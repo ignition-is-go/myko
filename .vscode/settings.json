@@ -71,5 +71,6 @@
       ]
     }
   ],
-  "typescript.tsserver.experimental.enableProjectDiagnostics": true
+  "typescript.tsserver.experimental.enableProjectDiagnostics": true,
+  "dotnet.defaultSolution": "disable"
 }

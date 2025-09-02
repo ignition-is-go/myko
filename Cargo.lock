@@ -315,7 +315,7 @@ dependencies = [
  "hex",
  "http 1.3.1",
  "ring",
- "time 0.3.42",
+ "time 0.3.43",
  "tokio",
  "tracing",
  "url 2.5.7",
@@ -506,7 +506,7 @@ dependencies = [
  "ring",
  "sha2",
  "subtle",
- "time 0.3.42",
+ "time 0.3.43",
  "tracing",
  "zeroize",
 ]
@@ -694,7 +694,7 @@ dependencies = [
  "pin-utils",
  "ryu",
  "serde",
- "time 0.3.42",
+ "time 0.3.43",
  "tokio",
  "tokio-util",
 ]
@@ -927,7 +927,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "shlex",
  "syn 2.0.106",
  "which",
@@ -1348,9 +1348,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.46"
+version = "4.5.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c5e4fcf9c21d2e544ca1ee9d8552de13019a42aa7dbf32747fa7aaf1df76e57"
+checksum = "7eac00902d9d136acd712710d71823fb8ac8004ca445a89e73a41d45aa712931"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -1358,9 +1358,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.46"
+version = "4.5.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fecb53a0e6fcfb055f686001bc2e2592fa527efaf38dbe81a6a9563562e57d41"
+checksum = "2ad9bbf750e73b5884fb8a211a9424a1906c1e156724260fdae972f31d70e1d6"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1370,9 +1370,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.5.45"
+version = "4.5.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14cb31bb0a7d536caef2639baa7fad459e15c3144efefa6dbd1c84562c4739f6"
+checksum = "bbfd7eae0b0f1a6e63d4b13c9c478de77c2eb546fba158ad50b4203dc24b9f9c"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1460,12 +1460,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "convert_case"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
 dependencies = [
- "time 0.3.42",
+ "time 0.3.43",
  "version_check 0.9.5",
 ]
 
@@ -1714,6 +1723,22 @@ dependencies = [
  "quote",
  "syn 2.0.106",
 ]
+
+[[package]]
+name = "ctor"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67773048316103656a637612c4a62477603b777d91d9c62ff2290f9cde178fdb"
+dependencies = [
+ "ctor-proc-macro",
+ "dtor",
+]
+
+[[package]]
+name = "ctor-proc-macro"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
 name = "darling"
@@ -1989,6 +2014,21 @@ checksum = "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87"
 dependencies = [
  "dtoa",
 ]
+
+[[package]]
+name = "dtor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e58a0764cddb55ab28955347b45be00ade43d4d6f3ba4bf3dc354e4ec9432934"
+dependencies = [
+ "dtor-proc-macro",
+]
+
+[[package]]
+name = "dtor-proc-macro"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
 
 [[package]]
 name = "dunce"
@@ -4320,10 +4360,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55740c4ae1d8696773c78fdafd5d0e5fe9bc9f1b071c7ba493ba5c413a9184f3"
 dependencies = [
  "bitflags 2.9.4",
- "ctor",
- "napi-derive",
- "napi-sys",
+ "ctor 0.2.9",
+ "napi-derive 2.16.13",
+ "napi-sys 2.4.0",
  "once_cell",
+ "tokio",
+]
+
+[[package]]
+name = "napi"
+version = "3.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc1d56eed08a179e1c5bedb1613c58e882087cec97fcaa7788cc42366335a41d"
+dependencies = [
+ "bitflags 2.9.4",
+ "ctor 0.5.0",
+ "napi-build",
+ "napi-sys 3.0.0",
+ "nohash-hasher",
+ "rustc-hash 2.1.1",
  "tokio",
 ]
 
@@ -4341,7 +4396,21 @@ checksum = "7cbe2585d8ac223f7d34f13701434b9d5f4eb9c332cccce8dee57ea18ab8ab0c"
 dependencies = [
  "cfg-if 1.0.3",
  "convert_case 0.6.0",
- "napi-derive-backend",
+ "napi-derive-backend 1.0.75",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
+name = "napi-derive"
+version = "3.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a9ad4169931359f24cc9ad3fae4ab272f0390c59f7a764f7719b1b8a3dde1af"
+dependencies = [
+ "convert_case 0.8.0",
+ "ctor 0.5.0",
+ "napi-derive-backend 2.1.4",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -4363,10 +4432,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "napi-derive-backend"
+version = "2.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55a014314cb458d5832b4fc7d0041764ac136396447303d95e3fa0a5ea7cf5d3"
+dependencies = [
+ "convert_case 0.8.0",
+ "proc-macro2",
+ "quote",
+ "semver 1.0.26",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "napi-sys"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "427802e8ec3a734331fec1035594a210ce1ff4dc5bc1950530920ab717964ea3"
+dependencies = [
+ "libloading 0.8.8",
+]
+
+[[package]]
+name = "napi-sys"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e4e7135a8f97aa0f1509cce21a8a1f9dcec1b50d8dee006b48a5adb69a9d64d"
 dependencies = [
  "libloading 0.8.8",
 ]
@@ -4478,6 +4569,12 @@ name = "nodrop"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72ef4a56884ca558e5ddb05a1d1e7e1bfd9a68d9ed024c21704cc98872dae1bb"
+
+[[package]]
+name = "nohash-hasher"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "nom"
@@ -4914,9 +5011,9 @@ name = "opencv_napi"
 version = "3.0.0-canary.696"
 dependencies = [
  "anyhow",
- "napi",
+ "napi 3.2.4",
  "napi-build",
- "napi-derive",
+ "napi-derive 3.2.4",
  "opencv",
  "rayon",
  "serde",
@@ -5342,7 +5439,7 @@ dependencies = [
  "indexmap 2.11.0",
  "quick-xml 0.38.3",
  "serde",
- "time 0.3.42",
+ "time 0.3.43",
 ]
 
 [[package]]
@@ -6287,9 +6384,9 @@ version = "3.0.0-canary.696"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
- "napi",
+ "napi 2.16.17",
  "napi-build",
- "napi-derive",
+ "napi-derive 2.16.13",
  "rship_sync_core",
  "serde_json",
 ]
@@ -6303,8 +6400,8 @@ dependencies = [
  "chrono",
  "futures-util",
  "myko-rs",
- "napi",
- "napi-derive",
+ "napi 2.16.17",
+ "napi-derive 2.16.13",
  "serde",
  "serde_json",
  "tokio",
@@ -6352,6 +6449,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustc_version"
@@ -6841,7 +6944,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "serde_with_macros",
- "time 0.3.42",
+ "time 0.3.43",
 ]
 
 [[package]]
@@ -7514,7 +7617,7 @@ dependencies = [
  "syn 2.0.106",
  "tauri-utils",
  "thiserror 2.0.16",
- "time 0.3.42",
+ "time 0.3.43",
  "url 2.5.7",
  "uuid",
  "walkdir",
@@ -7610,7 +7713,7 @@ dependencies = [
  "tauri",
  "tauri-plugin",
  "thiserror 2.0.16",
- "time 0.3.42",
+ "time 0.3.43",
 ]
 
 [[package]]
@@ -7703,7 +7806,7 @@ dependencies = [
  "anyhow",
  "brotli",
  "cargo_metadata",
- "ctor",
+ "ctor 0.2.9",
  "dunce",
  "glob",
  "html5ever",
@@ -7837,9 +7940,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.42"
+version = "0.3.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ca967379f9d8eb8058d86ed467d81d03e81acd45757e4ca341c24affbe8e8e3"
+checksum = "83bde6f1ec10e72d583d91623c939f623002284ef622b87de38cfd546cbf2031"
 dependencies = [
  "deranged",
  "libc",
@@ -7853,15 +7956,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9108bb380861b07264b950ded55a44a14a4adc68b9f5efd85aafc3aa4d40a68"
+checksum = "40868e7c1d2f0b8d73e4a8c7f0ff63af4f6d19be117e90bd73eb1d62cf831c6b"
 
 [[package]]
 name = "time-macros"
-version = "0.2.23"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7182799245a7264ce590b349d90338f1c1affad93d2639aed5f8f69c090b334c"
+checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
 dependencies = [
  "num-conv",
  "time-core",
