@@ -1,4 +1,5 @@
 use crate::{
+    command::{CommandId, WrappedCommand, wrap_command},
     event::MEvent,
     item::Eventable,
     message::MykoMessage,
@@ -141,6 +142,149 @@ impl MykoClient {
         self.get_status().to_stream()
     }
 
+    pub fn handle_command<C, F, Fut>(&self, handler: F)
+    where
+        C: DeserializeOwned + Clone + Send + 'static,
+        F: Fn(C) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static,
+    {
+        let outgoing = self.socket.clone();
+        let mut msgs = BroadcastStream::new(self.socket.incoming.clone().subscribe()).filter_map(
+            |x| match x {
+                Ok(Message::Text(s)) => serde_json::from_str::<serde_json::Value>(&s).ok(),
+                _ => None,
+            },
+        );
+
+        tokio::spawn(async move {
+            while let Some(val) = msgs.next().await {
+                let parsed = serde_json::from_value::<MykoMessage<crate::command::WrappedCommand>>(
+                    val.clone(),
+                );
+                let Ok(MykoMessage::Command(wrapped)) = parsed else {
+                    continue;
+                };
+
+                // extract tx from wrapped.command
+                let tx = wrapped
+                    .command
+                    .get("tx")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // try to deserialize to requested command type; if it fails, it's not for this handler
+                match serde_json::from_value::<C>(wrapped.command.clone()) {
+                    Ok(cmd) => {
+                        let result = handler(cmd).await;
+                        match result {
+                            Ok(response) => {
+                                let resp = crate::command::CommandResponse {
+                                    tx: tx.clone(),
+                                    response,
+                                };
+                                let msg = MykoMessage::<()>::CommandResponse(resp);
+                                if let Ok(s) = serde_json::to_string(&msg) {
+                                    let _ = outgoing.outgoing.send(Message::Text(s));
+                                }
+                            }
+                            Err(message) => {
+                                let err = crate::command::CommandError {
+                                    tx: tx.clone(),
+                                    message,
+                                };
+                                let msg = MykoMessage::<()>::CommandError(err);
+                                if let Ok(s) = serde_json::to_string(&msg) {
+                                    let _ = outgoing.outgoing.send(Message::Text(s));
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+        });
+    }
+
+    pub async fn send_command<
+        C: Serialize + Clone + CommandId,
+        R: DeserializeOwned + Clone + 'static,
+    >(
+        &self,
+        command: &C,
+    ) -> Result<R, String> {
+        let tx = uuid::Uuid::new_v4().to_string();
+
+        let wrapped = wrap_command(tx.clone(), command).map_err(|e| e.to_string())?;
+
+        let msg = MykoMessage::<WrappedCommand>::Command(wrapped);
+
+        let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+
+        let ws_msg = Message::Text(json);
+
+        // listen for matching response/error
+        let mut stream =
+            BroadcastStream::new(self.socket.incoming.clone().subscribe()).filter_map(move |x| {
+                match x {
+                    Ok(Message::Text(content)) => {
+                        let d = serde_json::from_str::<serde_json::Value>(content.as_str());
+                        let data = match d {
+                            Ok(v) => v,
+                            Err(_) => return None,
+                        };
+                        let parsed =
+                            serde_json::from_value::<MykoMessage<()>>(data.clone()).ok()?;
+                        match parsed {
+                            MykoMessage::CommandResponse(resp) => {
+                                if resp.tx != tx {
+                                    return None;
+                                }
+                                Some(Ok(resp.response))
+                            }
+                            MykoMessage::CommandError(err) => {
+                                if err.tx != tx {
+                                    return None;
+                                }
+                                Some(Err(err.message))
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            });
+
+        // send message (on next Connected)
+        let send_socket = self.socket.clone();
+        let me = self.clone();
+
+        // ensure connection ready or wait for it
+        if let ConnectionStatus::Disconnected = self.get_connection_status().await {
+            // wait once until connected
+            let mut st = me.watch_connection_status();
+            while let Some(status) = st.next().await {
+                if let ConnectionStatus::Connected(_) = status {
+                    break;
+                }
+            }
+        }
+
+        send_socket
+            .outgoing
+            .send(ws_msg)
+            .map_err(|err| err.to_string())?;
+
+        // await first response
+        let next = stream
+            .next()
+            .await
+            .ok_or_else(|| "No response".to_string())?;
+        let value = next.map_err(|e| e)?;
+        let res: R = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        Ok(res)
+    }
+
     pub fn watch_report<T: MykoReport<U> + Clone + Serialize + ReportId, U: DeserializeOwned>(
         &self,
         report: &T,
@@ -154,8 +298,7 @@ impl MykoClient {
         let wrapped = wrap_report(tx.clone(), report);
 
         let stream = stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage<()>>(x);
-
+            let d = serde_json::from_value::<MykoMessage<Value>>(x);
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {
@@ -241,8 +384,7 @@ impl MykoClient {
         let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
 
         let stream = stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage<()>>(x);
-
+            let d = serde_json::from_value::<MykoMessage<Value>>(x);
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {

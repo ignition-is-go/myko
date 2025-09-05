@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    command::{CommandError, CommandResponse},
     event::MEvent,
     query::{QueryError, QueryResponse, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
@@ -25,4 +26,8 @@ pub enum MykoMessage<Commands> {
     Event(MEvent),
     #[serde(rename = "ws:m:command")]
     Command(Commands),
+    #[serde(rename = "ws:m:command-response")]
+    CommandResponse(CommandResponse),
+    #[serde(rename = "ws:m:command-error")]
+    CommandError(CommandError),
 }

@@ -1,6 +1,8 @@
 import { clientIdPropertyRegistry, eventBus, type ID } from '@myko/core'
 import {
+  MCOMMAND_ERROR_EVENT,
   MCOMMAND_EVENT,
+  MCOMMAND_RESPONSE_EVENT,
   MEVENT_EVENT,
   MPING_EVENT,
   MQUERY_CANCEL,
@@ -53,6 +55,14 @@ export const handleMessage =
         eventBus.publish(x.data.data)
         break
       }
+
+      case MCOMMAND_RESPONSE_EVENT:
+        // handled by ClientCommandHandler
+        break
+
+      case MCOMMAND_ERROR_EVENT:
+        // handled by ClientCommandHandler
+        break
 
       case MPING_EVENT: {
         tx.next({

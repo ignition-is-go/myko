@@ -306,3 +306,37 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     // Return the generated code
     TokenStream::from(expanded)
 }
+
+#[proc_macro_attribute]
+pub fn myko_command(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    // No attribute args for now. The struct name is the commandId.
+    let input_struct = parse_macro_input!(input as ItemStruct);
+    let struct_name = &input_struct.ident;
+
+    let expanded = quote! {
+        #input_struct
+
+        impl myko_rs::command::CommandId for &#struct_name {
+            fn command_id(&self) -> String {
+                stringify!(#struct_name).to_string()
+            }
+        }
+
+        impl myko_rs::command::CommandId for #struct_name {
+            fn command_id(&self) -> String {
+                stringify!(#struct_name).to_string()
+            }
+        }
+
+        impl #struct_name {
+            pub async fn handle<R: serde::de::DeserializeOwned + Clone + 'static>(
+                &self,
+                client: &myko_rs::client::MykoClient,
+            ) -> Result<R, String> {
+                client.send_command::<#struct_name, R>(self).await
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}

@@ -43,7 +43,7 @@ export class DeleteClientsByServerId extends MCommand {
 }
 
 @MykoCommand()
-export class ClientCommand extends MCommand {
+export class ClientCommand extends MCommand<unknown> {
   constructor(
     readonly command: MWrappedCommand,
     readonly client: Client,

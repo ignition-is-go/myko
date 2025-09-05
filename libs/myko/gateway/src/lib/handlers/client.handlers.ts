@@ -26,12 +26,12 @@ import {
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
 import { ok } from 'assert'
-import { map, type Observable } from 'rxjs'
-import { getTx, peers } from '../registry'
+import { filter, firstValueFrom, map, type Observable } from 'rxjs'
+import { getRx, getTx, peers } from '../registry'
 
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
-  async execute(command: ClientCommand): Promise<void> {
+  async execute(command: ClientCommand) {
     if (!command.client) {
       throw new MykoCommandError(command.tx, 'Client Not Found')
     }
@@ -51,6 +51,37 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       clientId: command.client.id,
       data: wrapCommandOnlyWS(command.command),
     })
+
+    const response = firstValueFrom(
+      getRx().pipe(
+        filter(
+          (x) =>
+            x.data.event === 'ws:m:command-response' &&
+            x.data.data.tx === command.tx,
+        ),
+      ),
+    )
+    const error = firstValueFrom(
+      getRx().pipe(
+        filter(
+          (x) =>
+            x.data.event === 'ws:m:command-error' &&
+            x.data.data.tx === command.tx,
+        ),
+      ),
+    )
+
+    const res = await Promise.race([response, error])
+
+    if (res.data.event === 'ws:m:command-error') {
+      throw new MykoCommandError(command.tx, res.data.data.message)
+    }
+
+    if (res.data.event === 'ws:m:command-response') {
+      return res.data.data.response
+    }
+
+    throw new MykoCommandError(command.tx, 'Unknown Error')
   }
 }
 
