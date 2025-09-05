@@ -371,16 +371,38 @@ export const toArray = <T>(m: Map<string, T>): T[] => [...m.values()]
 
 export const buildFilter =
   <T extends MItem>(query: Partial<T>): ((ent: T) => boolean) =>
-    (ent: T): boolean =>
-      objectFilter(query, ent)
+  (ent: T): boolean => {
+    try {
+      return objectFilter(query, ent)
+    } catch (e) {
+      console.error('Error building filter:', e.message, query, ent)
+      return false
+    }
+  }
 
 export const objectFilter = (query: object, ent: object): boolean => {
   return Reflect.ownKeys(query).every((key) => {
     const querySide = Reflect.get(query, key)
     const entSide = Reflect.get(ent, key)
 
-    if (typeof querySide === 'object' && typeof entSide === 'object') {
-      return objectFilter(querySide, entSide)
+    if (querySide === null) {
+      return true
+    }
+
+    if (Array.isArray(querySide) && Array.isArray(entSide)) {
+      return entSide.every((item, index) =>
+        objectFilter(querySide[index], item),
+      )
+    }
+
+    try {
+      if (typeof querySide === 'object' && typeof entSide === 'object') {
+        return objectFilter(querySide, entSide)
+      }
+    } catch (e) {
+      throw Error(
+        `Error filtering object: query: ${JSON.stringify(querySide)}: ${typeof querySide}, ent: ${JSON.stringify(entSide)}: ${typeof entSide}`,
+      )
     }
 
     return querySide === entSide
