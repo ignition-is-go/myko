@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1240,9 +1240,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.35"
+version = "1.2.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "590f9024a68a8c40351881787f1934dc11afd69090f5edb6831464694d836ea3"
+checksum = "5252b3d2648e5eedbc1a6f501e3c795e07025c1e93bbf8bbdd6eef7f447a6d54"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -2284,9 +2284,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e178e4fba8a2726903f6ba98a6d221e76f9c12c650d5dc0e6afdc50677b49650"
+checksum = "7fd99930f64d146689264c637b5af2f0233a933bef0d8570e2526bf9e083192d"
 
 [[package]]
 name = "fixedbitset"
@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3894,7 +3894,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3905,7 +3905,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "link",
  "log 0.4.28",
@@ -3919,7 +3919,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3947,7 +3947,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4315,7 +4315,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4323,7 +4323,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5008,7 +5008,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "anyhow",
  "napi 3.2.4",
@@ -6297,7 +6297,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6309,7 +6309,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6329,7 +6329,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "env_logger",
  "log 0.4.28",
@@ -6346,7 +6346,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6380,7 +6380,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6393,7 +6393,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -7371,7 +7371,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.700"
+version = "3.0.0-canary.701"
 dependencies = [
  "rship_sync_core",
  "tokio",
