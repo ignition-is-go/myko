@@ -144,7 +144,7 @@ impl MykoClient {
 
     pub fn handle_command<C, F, Fut>(&self, handler: F)
     where
-        C: DeserializeOwned + Clone + Send + 'static,
+        C: DeserializeOwned + Clone + Send + crate::command::CommandId + 'static,
         F: Fn(C) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static,
     {
@@ -166,16 +166,24 @@ impl MykoClient {
                 };
 
                 // extract tx from wrapped.command
-                let tx = wrapped
+                let tx: String = wrapped
                     .command
                     .get("tx")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                if tx.is_empty() {
+                    // malformed command without tx; ignore
+                    continue;
+                }
 
                 // try to deserialize to requested command type; if it fails, it's not for this handler
                 match serde_json::from_value::<C>(wrapped.command.clone()) {
                     Ok(cmd) => {
+                        // Ensure the commandId matches the type this handler expects
+                        if wrapped.command_id != cmd.command_id() {
+                            continue;
+                        }
                         let result = handler(cmd).await;
                         match result {
                             Ok(response) => {
