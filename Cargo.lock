@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3887,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3898,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "link",
  "log 0.4.28",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -3975,9 +3975,9 @@ checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "linux-raw-sys"
-version = "0.9.4"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
+checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
 name = "litemap"
@@ -4308,7 +4308,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4316,7 +4316,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5001,7 +5001,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "anyhow",
  "napi 3.3.0",
@@ -6290,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6302,7 +6302,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6322,7 +6322,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "env_logger",
  "log 0.4.28",
@@ -6339,7 +6339,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6373,7 +6373,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6386,7 +6386,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -6482,15 +6482,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.0.8"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11181fbabf243db407ef8df94a6ce0b2f9a733bd8be4ad02b4eda9602296cac8"
+checksum = "cd15f8a2c5551a84d56efdc1cd049089e409ac19a3072d5037a17fd70719ff3e"
 dependencies = [
  "bitflags 2.9.4",
  "errno",
  "libc",
- "linux-raw-sys 0.9.4",
- "windows-sys 0.60.2",
+ "linux-raw-sys 0.11.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -6612,11 +6612,11 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.27"
+version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f29ebaa345f945cec9fbbc532eb307f0fdad8161f281b6369539c8d84876b3d"
+checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -7364,7 +7364,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.711"
+version = "3.0.0-canary.712"
 dependencies = [
  "rship_sync_core",
  "tokio",
@@ -7840,15 +7840,15 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.21.0"
+version = "3.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15b61f8f20e3a6f7e0649d825294eaf317edce30f82cf6026e7e4cb9222a7d1e"
+checksum = "84fa4d11fadde498443cca10fd3ac23c951f0dc59e080e9f4b93d4df4e4eea53"
 dependencies = [
  "fastrand",
  "getrandom 0.3.3",
  "once_cell",
- "rustix 1.0.8",
- "windows-sys 0.60.2",
+ "rustix 1.1.2",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -8988,7 +8988,7 @@ checksum = "673a33c33048a5ade91a6b139580fa174e19fb0d23f396dca9fa15f2e1e49b35"
 dependencies = [
  "cc",
  "downcast-rs",
- "rustix 1.0.8",
+ "rustix 1.1.2",
  "scoped-tls",
  "smallvec 1.15.1",
  "wayland-sys",
@@ -9001,7 +9001,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c66a47e840dc20793f2264eb4b3e4ecb4b75d91c0dd4af04b456128e0bdd449d"
 dependencies = [
  "bitflags 2.9.4",
- "rustix 1.0.8",
+ "rustix 1.1.2",
  "wayland-backend",
  "wayland-scanner",
 ]
@@ -9910,9 +9910,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "5.10.0"
+version = "5.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67a073be99ace1adc48af593701c8015cd9817df372e14a1a6b0ee8f8bf043be"
+checksum = "2d07e46d035fb8e375b2ce63ba4e4ff90a7f73cf2ffb0138b29e1158d2eaadf7"
 dependencies = [
  "async-broadcast",
  "async-recursion",
@@ -9938,9 +9938,9 @@ dependencies = [
 
 [[package]]
 name = "zbus_macros"
-version = "5.10.0"
+version = "5.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e80cd713a45a49859dcb648053f63265f4f2851b6420d47a958e5697c68b131"
+checksum = "57e797a9c847ed3ccc5b6254e8bcce056494b375b511b3d6edcec0aeb4defaca"
 dependencies = [
  "proc-macro-crate 3.3.0",
  "proc-macro2",
