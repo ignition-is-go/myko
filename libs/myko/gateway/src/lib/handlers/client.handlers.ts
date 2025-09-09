@@ -38,11 +38,14 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
     if (command.client.serverId !== getHostId()) {
       // forward to server
-      console.log('forwarding to server')
+      console.log('forwarding to server', command.command.commandId)
       const peer = peers.getPeer(command.client.serverId)
 
       if (!peer) {
-        throw new MykoCommandError(command.tx, 'Peer Not Found')
+        throw new MykoCommandError(
+          command.tx,
+          'Peer Not Found for ' + command.command.commandId,
+        )
       }
       return peer.sendCommand(command)
     }

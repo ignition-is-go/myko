@@ -57,7 +57,10 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
   async execute(command: PeerCommand): Promise<void> {
     const peer = peers.getPeer(command.peerId)
     if (!peer) {
-      throw new MykoCommandError(command.tx, 'Peer Not Found')
+      throw new MykoCommandError(
+        command.tx,
+        'Peer Not Found for ' + command.command.getTag(),
+      )
     }
 
     const clients = await queryBus.execute(
