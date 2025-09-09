@@ -81,6 +81,8 @@ export const fireInit = (itemType: string) => {
     allInitCallbacks.forEach((cb) => cb())
     allInitCallbacks.clear()
     initWatchers.clear()
+    afterInitCallbacks.forEach((cb) => cb())
+    afterInitCallbacks.clear()
   }
 }
 
@@ -93,7 +95,12 @@ export const beforeInit: (itemType: string) => void = (itemType) => {
 }
 
 const allInitCallbacks: Set<() => void> = new Set()
+const afterInitCallbacks: Set<() => void> = new Set()
 
 export const onAllInit = (cb: () => void): void => {
   allInitCallbacks.add(cb)
+}
+
+export const afterAllInit = (cb: () => void): void => {
+  afterInitCallbacks.add(cb)
 }
