@@ -1,6 +1,6 @@
 {
   "name": "@myko/ui",
-  "version": "3.0.0-canary.718",
+  "version": "3.0.0-canary.719",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build && svelte-kit sync && svelte-package && publint",
