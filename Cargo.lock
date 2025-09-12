@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -3286,9 +3286,9 @@ dependencies = [
 
 [[package]]
 name = "iana-time-zone"
-version = "0.1.63"
+version = "0.1.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0c919e5debc312ad217002b8048a17b7d83f80703865bbfcfebb0458b0b27d8"
+checksum = "33e57f83510bb73707521ebaffa789ec8caf86f9657cad665b092b581d40e9fb"
 dependencies = [
  "android_system_properties",
  "core-foundation-sys",
@@ -3296,7 +3296,7 @@ dependencies = [
  "js-sys",
  "log 0.4.28",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.0",
 ]
 
 [[package]]
@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3887,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3898,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "link",
  "log 0.4.28",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4308,7 +4308,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4316,7 +4316,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5001,7 +5001,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "anyhow",
  "napi 3.3.0",
@@ -6290,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6302,7 +6302,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6323,7 +6323,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "env_logger",
  "log 0.4.28",
@@ -6340,7 +6340,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6374,7 +6374,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6387,7 +6387,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -7361,7 +7361,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.729"
+version = "3.0.0-canary.730"
 dependencies = [
  "rship_sync_core",
  "tokio",
@@ -9312,7 +9312,7 @@ checksum = "810ce18ed2112484b0d4e15d022e5f598113e220c53e373fb31e67e21670c1ce"
 dependencies = [
  "windows-implement 0.59.0",
  "windows-interface",
- "windows-result",
+ "windows-result 0.3.4",
  "windows-strings 0.3.1",
  "windows-targets 0.53.3",
 ]
@@ -9326,8 +9326,21 @@ dependencies = [
  "windows-implement 0.60.0",
  "windows-interface",
  "windows-link 0.1.3",
- "windows-result",
+ "windows-result 0.3.4",
  "windows-strings 0.4.2",
+]
+
+[[package]]
+name = "windows-core"
+version = "0.62.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57fe7168f7de578d2d8a05b07fd61870d2e73b4020e9f49aa00da8471723497c"
+dependencies = [
+ "windows-implement 0.60.0",
+ "windows-interface",
+ "windows-link 0.2.0",
+ "windows-result 0.4.0",
+ "windows-strings 0.5.0",
 ]
 
 [[package]]
@@ -9403,7 +9416,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b8a9ed28765efc97bbc954883f4e6796c33a06546ebafacbabee9696967499e"
 dependencies = [
  "windows-link 0.1.3",
- "windows-result",
+ "windows-result 0.3.4",
  "windows-strings 0.4.2",
 ]
 
@@ -9414,6 +9427,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f42bd332cc6c8eac5af113fc0c1fd6a8fd2aa08a0119358686e5160d0586c6"
 dependencies = [
  "windows-link 0.1.3",
+]
+
+[[package]]
+name = "windows-result"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7084dcc306f89883455a206237404d3eaf961e5bd7e0f312f7c91f57eb44167f"
+dependencies = [
+ "windows-link 0.2.0",
 ]
 
 [[package]]
@@ -9432,6 +9454,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
 dependencies = [
  "windows-link 0.1.3",
+]
+
+[[package]]
+name = "windows-strings"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7218c655a553b0bed4426cf54b20d7ba363ef543b52d515b3e48d7fd55318dda"
+dependencies = [
+ "windows-link 0.2.0",
 ]
 
 [[package]]
