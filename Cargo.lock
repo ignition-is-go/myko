@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -3845,7 +3845,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -3887,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "clap",
  "link-rpc",
@@ -3898,7 +3898,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "link",
  "log 0.4.28",
@@ -3912,7 +3912,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4308,7 +4308,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4316,7 +4316,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5001,7 +5001,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "anyhow",
  "napi 3.3.0",
@@ -6290,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6302,7 +6302,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6323,7 +6323,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "env_logger",
  "log 0.4.28",
@@ -6340,7 +6340,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6374,7 +6374,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6387,7 +6387,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -6801,10 +6801,11 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "serde"
-version = "1.0.219"
+version = "1.0.220"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
+checksum = "ceecad4c782e936ac90ecfd6b56532322e3262b14320abf30ce89a92ffdbfe22"
 dependencies = [
+ "serde_core",
  "serde_derive",
 ]
 
@@ -6831,10 +6832,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_derive"
-version = "1.0.219"
+name = "serde_core"
+version = "1.0.220"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b0276cf7f2c73365f7157c8123c21cd9a50fbbd844757af28ca1f5925fc2a00"
+checksum = "ddba47394f3b862d6ff6efdbd26ca4673e3566a307880a0ffb98f274bbe0ec32"
+dependencies = [
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.220"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60e1f3b1761e96def5ec6d04a6e7421c0404fa3cf5c0155f1e2848fae3d8cc08"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7361,7 +7371,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.734"
+version = "3.0.0-canary.735"
 dependencies = [
  "rship_sync_core",
  "tokio",
