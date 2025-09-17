@@ -25,7 +25,12 @@ export const MykoSaga = (): Function => {
     onAllInit(() => {
       exec.execute(eventBus.subject$).subscribe({
         next: (c) => commandBus.execute(c),
-        error: (e) => console.error(e.message),
+        error: (e) => {
+          import('../logger').then(({ MykoLogger }) => {
+            const logger = new MykoLogger('Saga')
+            logger.error('Error executing saga:', e)
+          })
+        },
       })
     })
   }

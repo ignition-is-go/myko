@@ -1,5 +1,7 @@
 import { v4 } from 'uuid'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
+
+// import { MykoLogger } from '../logger'
 import type {
   ContextPhantom,
   MCommand,
@@ -36,7 +38,9 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     const err = `Handler not Provided for ${commandId}. Check that your handler is imported, and that the command is decorated with @MykoCommand()`
 
     if (!handler) {
-      console.error(err, command)
+      const { MykoLogger } = await import('../logger')
+      const logger = new MykoLogger('CommandBus')
+      logger.error('Handler not provided', err)
       throw err
     }
 

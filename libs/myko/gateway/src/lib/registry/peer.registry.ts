@@ -12,7 +12,14 @@ import {
   type ID,
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
-import { Subject, filter, firstValueFrom, takeUntil } from 'rxjs'
+import {
+  Subject,
+  filter,
+  firstValueFrom,
+  map,
+  startWith,
+  takeUntil,
+} from 'rxjs'
 
 import { v4 as uuid } from 'uuid'
 import { peerBus } from '../bus/peer.bus'
@@ -47,6 +54,7 @@ export class PeerClientRegistry {
   private teardownPeerEventListener(server: Server) {
     this.unsubs.next(server.id)
     this.peerClients.delete(server.id)
+    this.clientSets.next({ serverId: server.id, client: undefined })
   }
 
   async addPeer(server: Server) {
@@ -111,6 +119,7 @@ export class PeerClientRegistry {
             this.logger.info(`Found Peer @ ${address}:${port}`)
 
             this.peerClients.set(connectedServer.id, client)
+            this.clientSets.next({ serverId: connectedServer.id, client })
 
             this.assertPeerEventListener(connectedServer)
           })
@@ -123,8 +132,21 @@ export class PeerClientRegistry {
     client.setUser(getAuth().getPeerToken())
   }
 
+  private clientSets = new Subject<{
+    serverId: ID
+    client: WSMClient | undefined
+  }>()
+
   getPeer(serverId: ID): WSMClient | undefined {
     return this.peerClients.get(serverId)
+  }
+
+  watchPeer(serverId: ID) {
+    return this.clientSets.pipe(
+      filter((x) => x.serverId === serverId),
+      map((x) => x.client),
+      startWith(this.peerClients.get(serverId)),
+    )
   }
 
   assertPeer(serverId: ID) {

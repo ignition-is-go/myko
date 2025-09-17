@@ -92,4 +92,5 @@ export class WithContext {
 export type IContext = Omit<
   WithContext,
   'withContext' | 'createdAt' | 'getTag' | 'lineage'
->
+> &
+  Partial<Pick<WithContext, 'lineage'>>

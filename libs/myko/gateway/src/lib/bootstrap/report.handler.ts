@@ -1,4 +1,10 @@
-import { MReport, reportBus, type ID, type MWrappedReport } from '@myko/core'
+import {
+  MReport,
+  MykoLogger,
+  reportBus,
+  type ID,
+  type MWrappedReport,
+} from '@myko/core'
 import {
   MREPORT_ERROR_EVENT,
   wrapReportResponseWS,
@@ -24,13 +30,17 @@ export const handleReport = (
   const report = MReport.fromWrappedReport(wrappedReport).withContext({
     commandClientId: wrappedReport.report.commandClientId ?? clientId,
     tx: wrappedReport.report.tx,
+    lineage: ['client'],
   })
 
   try {
     const response = reportBus.watch(report).pipe(
       map((r) => wrapReportResponseWS(report.tx, r)),
       catchError((e) => {
-        console.error(e.message)
+        let logger = new MykoLogger(wrappedReport.reportId)
+
+        logger.error(e.message, e, report.tx)
+
         return of({
           data: {
             message: e.message,

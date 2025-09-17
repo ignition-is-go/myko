@@ -1,7 +1,9 @@
 import {
   GetClientsByQuery,
+  MReport,
   MykoCommandError,
   MykoCommandHandler,
+  MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
   PeerCommand,
@@ -9,6 +11,7 @@ import {
   PeerReport,
   getHostId,
   queryBus,
+  reportBus,
   type MCommandHandler,
   type MLiveQueryResult,
   type MQueryHandler,
@@ -25,23 +28,14 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
         return queryBus.watch(query.query.withContext(query))
       }
 
-      const peer = peers.getPeer(query.peerId)
+      const peer = peers.watchPeer(query.peerId)
 
-      if (!peer) {
-        return EMPTY
-      }
-
-      const clients = queryBus.watch(
-        new GetClientsByQuery({ serverId: getHostId() }).withContext(query),
-      )
-
-      return clients.pipe(
-        switchMap((cs) => {
-          if (cs.find((x) => x.id === query.commandClientId)) {
-            return peer.watchQuery(query.query)
+      return peer.pipe(
+        switchMap((client) => {
+          if (!client) {
+            return EMPTY
           }
-
-          return EMPTY
+          return client.watchQuery(query.query)
         }),
       )
     } catch (e) {
@@ -76,25 +70,27 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
 }
 
 @MykoReportHandler(PeerReport)
-export class PeerReportHandler implements MReportHandler<PeerReport<any>> {
-  execute(report: PeerReport<any>): Observable<any> {
-    const peer = peers.getPeer(report.peerId)
-
-    if (!peer) {
-      return EMPTY
+export class PeerReportHandler
+  implements MReportHandler<PeerReport<MReport<unknown>>>
+{
+  execute(report: PeerReport<MReport<unknown>>): Observable<unknown> {
+    if (report.peerId === getHostId()) {
+      return reportBus.watch(report.report.withContext(report))
     }
 
-    const clients = queryBus.watch(
-      new GetClientsByQuery({ serverId: getHostId() }).withContext(report),
-    )
+    const peer = peers.watchPeer(report.peerId)
 
-    return clients.pipe(
-      switchMap((cs) => {
-        if (cs.find((x) => x.id === report.commandClientId)) {
-          return peer.watchReport(report.report)
-        } else {
+    const logger = new MykoLogger('PeerReportHandler')
+
+    return peer.pipe(
+      switchMap((peer) => {
+        if (!peer) {
+          logger.warn(
+            `Peer Not Found, returning empty stream for ${report.report.getTag()}`,
+          )
           return EMPTY
         }
+        return peer.watchReport(report.report)
       }),
     )
   }

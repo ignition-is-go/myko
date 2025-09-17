@@ -29,7 +29,9 @@ export class PeerCommand extends MCommand {
 }
 
 @MykoReport()
-export class PeerReport<T> extends MReport<MReportType<T>> {
+export class PeerReport<T extends MReport<unknown>> extends MReport<
+  MReportType<T>
+> {
   constructor(
     readonly report: T,
     readonly peerId: ID,

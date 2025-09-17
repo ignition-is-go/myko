@@ -13,8 +13,10 @@ import {
   transactionDurationHist,
 } from './meters'
 import {
+  callLineageCounts,
   callStartTimes,
   eventCounts,
+  lineageResults,
   spansByCall,
   spansByTx,
   tagCounts,
@@ -29,6 +31,10 @@ export const beginTraceTransaction = (
 ) => {
   const tag = mContext.getTag()
   const tx = mContext.tx
+
+  // console.log(tag, mContext.lineage.join('>'))
+  const t = mContext.lineage.join('>')
+  callLineageCounts.set(t, (callLineageCounts.get(t) ?? 0) + 1)
 
   const startTime = performance.now()
   callStartTimes.set(callId, startTime)
@@ -80,7 +86,6 @@ export const endTraceTransaction = (
   callStartTimes.delete(callId)
 
   const tag = mContext.getTag()
-  const tx = mContext.tx
 
   if (duration) {
     transactionDurationHist().record(duration, {
@@ -105,13 +110,17 @@ export const endTraceTransaction = (
 
 export const countResults = (
   mContext: WithContext,
-  event: 'm:query' | 'm:report',
-  callId: ID,
+  _event: 'm:query' | 'm:report',
+  _callId: ID,
 ) => {
   const tag = mContext.getTag()
   const count = tagResults.get(tag) ?? 0
   const newCount = count + 1
   tagResults.set(tag, newCount)
+
+  const lineageTag = mContext.lineage.join('>')
+
+  lineageResults.set(lineageTag, (lineageResults.get(lineageTag) ?? 0) + 1)
 }
 
 export const getAttributes = (

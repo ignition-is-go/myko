@@ -5,11 +5,18 @@ import {
   getHostId,
   isAllInit,
   makeDel,
+  MykoLogger,
   queryBus,
   type ID,
 } from '@myko/core'
+import {
+  MCOMMAND_ERROR_EVENT,
+  MCOMMAND_EVENT,
+  MCOMMAND_RESPONSE_EVENT,
+} from '@myko/ws'
 import type { ServerWebSocket } from 'bun'
 import { randomUUID } from 'crypto'
+import { filter, firstValueFrom } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 import { parse, serialize } from '../compression/client.protocols'
 import type {
@@ -28,9 +35,11 @@ export const bunAdapter: MykoWsAdapter = ({
   tx,
   serverId,
 }: MykoWsAdapterOptions): MykoWsAdapterResult => {
+  const logger = new MykoLogger('BunAdapter')
+
   const s = Bun.serve({
     port,
-    fetch(req, server) {
+    fetch: async (req, server) => {
       const url = new URL(req.url)
 
       if (url.pathname === '/server') {
@@ -41,6 +50,71 @@ export const bunAdapter: MykoWsAdapter = ({
 
       if (!isInit.done) {
         return new Response('Not Ready', { status: 500 })
+      }
+
+      if (url.pathname === '/myko/api') {
+        const clientId = randomUUID()
+
+        if (req.method === 'POST') {
+          const body = await req.text().catch((e) => {
+            logger.error(e.message, e)
+            return undefined
+          })
+
+          if (!body) {
+            return new Response('Invalid Body', { status: 400 })
+          }
+
+          const parsed = parse(clientId, body)
+
+          if (!parsed) {
+            return new Response('Invalid Body', { status: 400 })
+          }
+
+          if (parsed.event !== MCOMMAND_EVENT) {
+            return new Response('Only Commands are supported over REST', {
+              status: 400,
+            })
+          }
+
+          // we don't expect txIds over REST so we generate a new one
+          const txId: ID = randomUUID()
+
+          Reflect.set(parsed.data.command, 'tx', txId)
+
+          const successPromise = firstValueFrom(
+            tx.pipe(
+              filter((x) => x.clientId === clientId),
+              filter((x) =>
+                parsed.event === MCOMMAND_EVENT
+                  ? x.data.event === MCOMMAND_RESPONSE_EVENT &&
+                    x.data.data.tx === parsed.data.command.tx
+                  : false,
+              ),
+            ),
+          )
+          const errorPromise = firstValueFrom(
+            tx.pipe(
+              filter((x) => x.clientId === clientId),
+              filter((x) =>
+                parsed.event === MCOMMAND_EVENT
+                  ? x.data.event === MCOMMAND_ERROR_EVENT &&
+                    x.data.data.tx === parsed.data.command.tx
+                  : false,
+              ),
+            ),
+          )
+
+          rx.next({ clientId, data: parsed })
+          const response = await Promise.race([successPromise, errorPromise])
+          return new Response(JSON.stringify(response.data), {
+            status: response.data.event === MCOMMAND_ERROR_EVENT ? 400 : 200,
+            statusText:
+              response.data.event === MCOMMAND_ERROR_EVENT
+                ? response.data.data.message
+                : 'OK',
+          })
+        }
       }
 
       if (url.pathname === '/myko') {
@@ -85,10 +159,10 @@ export const bunAdapter: MykoWsAdapter = ({
           }
         }, 1000) // 25 seconds - well before typical 30s timeout
 
-          // Store the interval so we can clean it up on close
-          ; (ws as any).__keepAliveInterval = keepAliveInterval
+        // Store the interval so we can clean it up on close
+        ;(ws as any).__keepAliveInterval = keepAliveInterval
       },
-      drain(_ws) { },
+      drain(_ws) {},
       close(ws, _code, _message) {
         // Clean up keep-alive interval
         const keepAliveInterval = (ws as any).__keepAliveInterval
@@ -119,7 +193,7 @@ export const bunAdapter: MykoWsAdapter = ({
       s.publish(m.clientId, serialize(m.clientId, m.data))
     },
     error: (e) => {
-      console.error('Error in tx', e.message)
+      logger.error('Error in tx', e.message)
     },
   })
 

@@ -57,6 +57,16 @@ export const transactionTotalTime = () => {
   return _transactionTotalTime
 }
 
+let _transactionLineageGuage: Gauge | null = null
+export const transactionLineageGuage = () => {
+  if (!_transactionLineageGuage) {
+    _transactionLineageGuage = meter().createGauge(
+      'myko.gateway.client.transaction.lineage.rate',
+    )
+  }
+  return _transactionLineageGuage
+}
+
 let _eventCountGuage: Gauge | null = null
 export const eventCountGuage = () => {
   if (!_eventCountGuage) {
@@ -75,6 +85,16 @@ export const transactionResultGuage = () => {
   return _transactionResultGuage
 }
 
+let _transactionLineageResultsGuage: Gauge | null = null
+export const transactionLineageResultsGuage = () => {
+  if (!_transactionLineageResultsGuage) {
+    _transactionLineageResultsGuage = meter().createGauge(
+      'myko.gateway.client.transaction.lineage.result.total',
+    )
+  }
+  return _transactionLineageResultsGuage
+}
+
 let _serverGuage: Gauge | null = null
 export const serverGuage = () => {
   if (!_serverGuage) {
@@ -89,4 +109,12 @@ export const tracer = () => {
     _tracer = trace.getTracer('MykoGateway')
   }
   return _tracer
+}
+
+let _lagGuage: Gauge | null = null
+export const lagGuage = () => {
+  if (!_lagGuage) {
+    _lagGuage = meter().createGauge('myko.gateway.lag')
+  }
+  return _lagGuage
 }

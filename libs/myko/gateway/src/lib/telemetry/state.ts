@@ -17,3 +17,7 @@ export const transactionAttributes = new Map<
 >()
 
 export const tagResults = new Map<ID, number>()
+
+export const callLineageCounts = new Map<ID, number>()
+
+export const lineageResults = new Map<ID, number>()

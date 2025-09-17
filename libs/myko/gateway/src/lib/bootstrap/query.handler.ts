@@ -1,5 +1,6 @@
 import {
   MQuery,
+  MykoLogger,
   queryBus,
   wrapItem,
   type ID,
@@ -32,6 +33,7 @@ export const handleQuery = (
   const query = MQuery.fromWrappedQuery(wrappedQuery).withContext({
     commandClientId: wrappedQuery.query.commandClientId ?? clientId,
     tx: wrappedQuery.query.tx,
+    lineage: ['client'],
   })
 
   const tx = query.tx
@@ -79,7 +81,10 @@ export const handleQuery = (
           sequence === 0,
       ),
       catchError((e) => {
-        console.error(e.message)
+        const logger = new MykoLogger(wrappedQuery.queryId)
+
+        logger.error(e.message, e, query.tx)
+
         return of({
           data: {
             message: e.message,

@@ -7,9 +7,22 @@ import {
   ATTR_SERVICE_VERSION,
 } from '@opentelemetry/semantic-conventions'
 
-import { commandBus, eventBus, queryBus, reportBus } from '@myko/core'
+import {
+  commandBus,
+  eventBus,
+  Log,
+  ofItems,
+  queryBus,
+  reportBus,
+} from '@myko/core'
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http'
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
+
+import {
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from '@opentelemetry/sdk-logs'
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import type {
   MykoGatewayBootstrapOptions,
@@ -37,12 +50,19 @@ export const initTracing = (
   const metricExporter = new OTLPMetricExporter({
     url: `http://${opts.tracing.endpoint}/v1/metrics`,
   })
-  const sdk = new NodeSDK({
-    resource: resourceFromAttributes({
-      [ATTR_SERVICE_NAME]: opts.tracing.serviceName,
-      [ATTR_SERVICE_VERSION]: opts.tracing.serviceVersion,
-    }),
 
+  const logExporter = new OTLPLogExporter({
+    url: `http://${opts.tracing.endpoint}/v1/logs`,
+    timeoutMillis: 5000,
+  })
+
+  const resource = resourceFromAttributes({
+    [ATTR_SERVICE_NAME]: opts.tracing.serviceName,
+    [ATTR_SERVICE_VERSION]: opts.tracing.serviceVersion,
+  })
+
+  const sdk = new NodeSDK({
+    resource,
     traceExporter: traceExporter,
     metricReader: new PeriodicExportingMetricReader({
       exporter: metricExporter,
@@ -50,6 +70,13 @@ export const initTracing = (
       exportTimeoutMillis: 1000,
     }),
   })
+
+  const loggerProvider = new LoggerProvider({
+    processors: [new SimpleLogRecordProcessor(logExporter)],
+    resource,
+  })
+
+  const logger = loggerProvider.getLogger('myko-gateway')
 
   sdk.start()
 
@@ -78,6 +105,20 @@ export const initTracing = (
 
   eventBus.subject$.subscribe((x) => {
     countEvent(x)
+  })
+
+  eventBus.subject$.pipe(ofItems(Log)).subscribe((logEvent) => {
+    const log = logEvent.item
+
+    logger.emit({
+      severityText: log.level,
+      attributes: {
+        loggerName: log.loggerName,
+        data: log.data,
+        serverId: log.serverId,
+      },
+      body: log.text,
+    })
   })
 
   exportMetrics(opts)

@@ -30,6 +30,7 @@ import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions, StartupReportEntry } from './types'
 
 export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
+  const logger = new MykoLogger('Bootstrap')
   const { version } = args
 
   const startupReport: StartupReportEntry[] = []
@@ -74,7 +75,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
     rx.subscribe({
       next: handleMessage(tx),
       error: (e) => {
-        console.error('Error in rx', e)
+        logger.error('Error in rx', e)
       },
     })
 
@@ -177,12 +178,16 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
   })
 
   onAllInit(() => {
-
-    eventBus.subject$.pipe(
-
-      filter(x => logsPreventedEntities.has(x.itemType) === false),
-      bufferTime(1000)).subscribe((events) => {
-        const groupedByType = groupBy(x => `${x.changeType} - ${x.itemType}`, events);
+    eventBus.subject$
+      .pipe(
+        filter((x) => logsPreventedEntities.has(x.itemType) === false),
+        bufferTime(1000),
+      )
+      .subscribe((events) => {
+        const groupedByType = groupBy(
+          (x) => `${x.changeType} - ${x.itemType}`,
+          events,
+        )
 
         for (const [itemType, items] of Object.entries(groupedByType)) {
           if (!items?.length) {
@@ -191,8 +196,6 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
           const logger = new MykoLogger(itemType)
           logger.info(`${items.length}`)
         }
-
       })
-
   })
 }

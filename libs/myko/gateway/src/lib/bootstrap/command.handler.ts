@@ -26,7 +26,7 @@ export const handleCommand = async (
   command: MWrappedCommand,
   respond: Subject<{ clientId: ID; data: WSMMessage }>,
 ) => {
-  const txid = command.command.tx
+  const txId = command.command.tx
 
   const fail = () => {
     respond.next({
@@ -43,7 +43,8 @@ export const handleCommand = async (
 
   const unwrapped = MCommand.fromWrappedCommand(command).withContext({
     commandClientId: command.command.commandClientId ?? clientId,
-    tx: txid,
+    tx: txId,
+    lineage: ['client'],
   })
   // unwrapCommand(command) as MCommand<unknown>
   await commandBus
@@ -51,11 +52,15 @@ export const handleCommand = async (
     .then((res) => {
       respond.next({
         clientId: clientId,
-        data: wrapCommandResponseWS(txid, res),
+        data: wrapCommandResponseWS(txId, res),
       })
     })
     .catch((e) => {
-      new MykoLogger('Gateway').error(e.message, e.stack)
+      new MykoLogger(command.commandId).error(
+        e.message,
+        e.stack,
+        command.command.tx,
+      )
       if (e instanceof MykoCommandError) {
         const wrapped = wrapCommandErrorWS(e)
         respond.next({
@@ -63,7 +68,7 @@ export const handleCommand = async (
           data: wrapped,
         })
       } else {
-        const wrapped = wrapError(e, txid)
+        const wrapped = wrapError(e, txId)
         respond.next({
           clientId: clientId,
           data: wrapped,
@@ -78,7 +83,7 @@ const proceed = async (
   clientId: ID,
   command: MWrappedCommand,
 ) => {
-  const txid = command.command.tx
+  const txId = command.command.tx
   const userToken = command.command.userToken
 
   const auth = getAuth()
@@ -110,7 +115,7 @@ const proceed = async (
   const userId = await auth.getUserId(userToken)
   if (userId) {
     try {
-      getHistoryProvider().recordUserTransaction(userId, txid)
+      getHistoryProvider().recordUserTransaction(userId, txId)
     } catch (e) {}
   }
 
@@ -120,7 +125,7 @@ const proceed = async (
     respond.next({
       clientId,
 
-      data: wrapCommandErrorWS(new MykoCommandError(txid, 'Client not found')),
+      data: wrapCommandErrorWS(new MykoCommandError(txId, 'Client not found')),
     })
     return
   }
@@ -129,7 +134,7 @@ const proceed = async (
     respond.next({
       clientId,
       data: wrapCommandErrorWS(
-        new MykoCommandError(txid, 'Client is in windback mode'),
+        new MykoCommandError(txId, 'Client is in windback mode'),
       ),
     })
     return

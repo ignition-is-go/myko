@@ -375,7 +375,10 @@ export const buildFilter =
     try {
       return objectFilter(query, ent)
     } catch (e) {
-      console.error('Error building filter:', e.message, query, ent)
+      import('../logger').then(({ MykoLogger }) => {
+        const logger = new MykoLogger('AbstractRepo')
+        logger.error('Error building filter:', e)
+      })
       return false
     }
   }
