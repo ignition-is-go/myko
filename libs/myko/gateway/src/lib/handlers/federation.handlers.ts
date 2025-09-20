@@ -90,6 +90,7 @@ export class PeerReportHandler
           )
           return EMPTY
         }
+        logger.info('returning report for ' + report.report.getTag())
         return peer.watchReport(report.report)
       }),
     )
