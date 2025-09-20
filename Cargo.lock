@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1448,9 +1448,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.47"
+version = "4.5.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7eac00902d9d136acd712710d71823fb8ac8004ca445a89e73a41d45aa712931"
+checksum = "e2134bb3ea021b78629caa971416385309e0131b351b25e01dc16fb54e1b5fae"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -1458,9 +1458,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.47"
+version = "4.5.48"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ad9bbf750e73b5884fb8a211a9424a1906c1e156724260fdae972f31d70e1d6"
+checksum = "c2ba64afa3c0a6df7fa517765e31314e983f51dda798ffba27b988194fb65dc9"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1580,7 +1580,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -1846,8 +1846,18 @@ version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
 dependencies = [
- "darling_core",
- "darling_macro",
+ "darling_core 0.20.11",
+ "darling_macro 0.20.11",
+]
+
+[[package]]
+name = "darling"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
+dependencies = [
+ "darling_core 0.21.3",
+ "darling_macro 0.21.3",
 ]
 
 [[package]]
@@ -1865,12 +1875,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling_core"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "darling_macro"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
- "darling_core",
+ "darling_core 0.20.11",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
+dependencies = [
+ "darling_core 0.21.3",
  "quote",
  "syn 2.0.106",
 ]
@@ -2196,9 +2231,9 @@ dependencies = [
 
 [[package]]
 name = "embed-resource"
-version = "3.0.5"
+version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6d81016d6c977deefb2ef8d8290da019e27cc26167e102185da528e6c0ab38"
+checksum = "55a075fc573c64510038d7ee9abc7990635863992f83ebc52c8b433b8411a02e"
 dependencies = [
  "cc",
  "memchr",
@@ -3982,7 +4017,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -4024,7 +4059,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "clap",
  "link-rpc",
@@ -4035,7 +4070,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "link",
  "log 0.4.28",
@@ -4049,7 +4084,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -4078,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4446,7 +4481,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4454,7 +4489,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5151,7 +5186,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "anyhow",
  "napi 3.3.0",
@@ -5356,7 +5391,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e53059790c7b28bb3a618a75dbfa0c6e569515d0b8d3a4df94baca76d4e14b38"
 dependencies = [
- "darling",
+ "darling 0.20.11",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -6472,7 +6507,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6484,7 +6519,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6505,7 +6540,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "env_logger",
  "log 0.4.28",
@@ -6522,7 +6557,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6556,7 +6591,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6569,7 +6604,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -7113,9 +7148,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.14.0"
+version = "3.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2c45cd61fefa9db6f254525d46e392b852e0e61d9a1fd36e5bd183450a556d5"
+checksum = "c522100790450cf78eeac1507263d0a350d4d5b30df0c8e1fe051a10c22b376e"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -7133,11 +7168,11 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.14.0"
+version = "3.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de90945e6565ce0d9a25098082ed4ee4002e047cb59892c318d66821e14bb30f"
+checksum = "327ada00f7d64abaac1e55a6911e90cf665aa051b9a561c7006c157f4633135e"
 dependencies = [
- "darling",
+ "darling 0.21.3",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -7557,7 +7592,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.739"
+version = "3.0.0-canary.740"
 dependencies = [
  "rship_sync_core",
  "tokio",
