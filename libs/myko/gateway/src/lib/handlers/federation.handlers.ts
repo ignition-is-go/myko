@@ -1,5 +1,6 @@
 import {
   GetClientsByQuery,
+  getHostId,
   MReport,
   MykoCommandError,
   MykoCommandHandler,
@@ -9,7 +10,6 @@ import {
   PeerCommand,
   PeerQuery,
   PeerReport,
-  getHostId,
   queryBus,
   reportBus,
   type MCommandHandler,
@@ -17,7 +17,7 @@ import {
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
-import { EMPTY, Observable, switchMap } from 'rxjs'
+import { distinctUntilChanged, EMPTY, Observable, switchMap } from 'rxjs'
 import { peers } from '../registry/peer.registry'
 
 @MykoQueryHandler(PeerQuery)
@@ -68,7 +68,6 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
     peer.sendCommand(command.command)
   }
 }
-
 @MykoReportHandler(PeerReport)
 export class PeerReportHandler
   implements MReportHandler<PeerReport<MReport<unknown>>>
@@ -83,6 +82,7 @@ export class PeerReportHandler
     const logger = new MykoLogger('PeerReportHandler')
 
     return peer.pipe(
+      distinctUntilChanged(),
       switchMap((peer) => {
         if (!peer) {
           logger.warn(
