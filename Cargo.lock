@@ -4024,6 +4024,7 @@ dependencies = [
  "crossbeam-channel",
  "directories",
  "elevated-command",
+ "env_logger",
  "futures 0.3.31",
  "futures-signals",
  "homedir",
@@ -4047,10 +4048,14 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "tempfile",
+ "time 0.3.44",
  "tokio",
  "tokio-stream",
  "tokio-util",
  "tonic",
+ "tracing",
+ "tracing-log 0.1.4",
+ "tracing-subscriber",
  "tungstenite 0.21.0",
  "url 2.5.7",
  "uuid",
@@ -8685,6 +8690,17 @@ dependencies = [
 
 [[package]]
 name = "tracing-log"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f751112709b4e791d8ce53e32c4ed2d353565a795ce84da2285393f41557bdf2"
+dependencies = [
+ "log 0.4.28",
+ "once_cell",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-log"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
@@ -8709,7 +8725,7 @@ dependencies = [
  "thread_local",
  "tracing",
  "tracing-core",
- "tracing-log",
+ "tracing-log 0.2.0",
 ]
 
 [[package]]
