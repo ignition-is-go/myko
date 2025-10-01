@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -667,9 +667,9 @@ dependencies = [
 
 [[package]]
 name = "aws-smithy-http-client"
-version = "1.1.1"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "147e8eea63a40315d704b97bf9bc9b8c1402ae94f89d5ad6f7550d963309da1b"
+checksum = "734b4282fbb7372923ac339cc2222530f8180d9d4745e582de19a18cee409fd8"
 dependencies = [
  "aws-smithy-async",
  "aws-smithy-runtime-api",
@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1580,7 +1580,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -4017,7 +4017,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -4064,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "clap",
  "link-rpc",
@@ -4075,7 +4075,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "link",
  "log 0.4.28",
@@ -4089,7 +4089,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -4118,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4486,7 +4486,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "quote",
  "syn 2.0.106",
@@ -4494,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5191,7 +5191,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "anyhow",
  "napi 3.3.0",
@@ -6512,7 +6512,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6524,7 +6524,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -6545,7 +6545,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "env_logger",
  "log 0.4.28",
@@ -6562,7 +6562,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6596,7 +6596,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "chrono",
  "derive_more 2.0.1",
@@ -6609,7 +6609,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -6731,7 +6731,7 @@ dependencies = [
  "aws-lc-rs",
  "once_cell",
  "rustls-pki-types",
- "rustls-webpki 0.103.6",
+ "rustls-webpki 0.103.7",
  "subtle",
  "zeroize",
 ]
@@ -6790,9 +6790,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.6"
+version = "0.103.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8572f3c2cb9934231157b45499fc41e1f58c589fdfb81a844ba873265e80f8eb"
+checksum = "e10b3f4191e8a80e6b43eebabfac91e5dcecebb27a71f04e820c47ec41d314bf"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -7597,7 +7597,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.747"
+version = "3.0.0-canary.748"
 dependencies = [
  "rship_sync_core",
  "tokio",
