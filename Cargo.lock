@@ -6344,6 +6344,7 @@ dependencies = [
  "js-sys",
  "log 0.4.28",
  "mime 0.3.17",
+ "mime_guess",
  "native-tls",
  "once_cell",
  "percent-encoding 2.3.2",
