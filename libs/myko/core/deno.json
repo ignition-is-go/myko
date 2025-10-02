@@ -1,6 +1,6 @@
 {
   "name": "@myko/core",
-  "version": "3.0.0-canary.751",
+  "version": "3.0.0-alpha.16",
   "exports": "./src/index.ts",
   "$schema": "https://json.schemastore.org/package",
   "license": "GPL-3.0-only"
