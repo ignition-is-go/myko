@@ -1,4 +1,4 @@
-import { MD5 } from 'object-hash'
+import ObjectHash from 'object-hash'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { ID, PartialBy } from './base'
 
@@ -36,7 +36,7 @@ export const recalculateHash = <T extends IMItem = IMItem>(
   item: PartialBy<T, 'hash'>,
 ): T => {
   Reflect.deleteProperty(item, 'hash')
-  const hash = MD5(item)
+  const hash = ObjectHash.MD5(item)
   Reflect.set(item, 'hash', hash)
   return item as T
 }
