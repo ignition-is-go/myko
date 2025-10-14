@@ -4,9 +4,11 @@ from typing import Any, Dict
 import uuid
 from datetime import datetime, timezone
 
+
 class MEventType(Enum):
-    SET = 'SET'
-    DEL = 'DEL'
+    SET = "SET"
+    DEL = "DEL"
+
 
 class MItem:
     def __init__(self, id: str, name: str):
@@ -14,22 +16,33 @@ class MItem:
         self.name = name
         self.hash = None
 
+
 class MEvent:
-    def __init__(self, item: MItem, item_type: str, change_type: MEventType, created_at: str, tx: str):
+    def __init__(
+        self,
+        item: MItem,
+        item_type: str,
+        change_type: MEventType,
+        created_at: str,
+        tx: str,
+    ):
         self.item = item.__dict__
         self.itemType = item_type
         self.changeType = change_type.value
         self.createdAt = created_at
         self.tx = tx
 
+
 class WSMEvent:
     def __init__(self, data: MEvent):
         self.event = "ws:m:event"
         self.data = data.__dict__
 
+
 class MQuery:
     def __init__(self, id: str):
         self.id = id
+
 
 class MWrappedQuery:
     def __init__(self, query_id: str, query_item_type: str, query: MQuery, tx: str):
@@ -38,19 +51,22 @@ class MWrappedQuery:
         self.query = query.__dict__
         self.tx = tx
 
+
 class MCommand:
     def __init__(self, tx: str, created_at: str):
         self.tx = tx
         self.createdAt = created_at
 
+
 class WSMCommand:
     def __init__(self, command_id: str, client_id: str, data: MCommand):
-        self.event = 'ws:m:command'
+        self.event = "ws:m:command"
         self.data = {
-            'commandId': command_id,
-            'clientId': client_id,
-            'command': data.__dict__
+            "commandId": command_id,
+            "clientId": client_id,
+            "command": data.__dict__,
         }
+
 
 class MWrappedCommand:
     def __init__(self, command_id: str, client_id: str, data: MCommand):
@@ -76,5 +92,3 @@ class Schema:
 class SchemaProperty:
     def __init__(self, property_type: str):
         self.type = property_type
-
-

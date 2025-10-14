@@ -1,6 +1,6 @@
 import type { MEvent } from '@myko/core'
 import { randomUUID } from 'crypto'
-import postgres from 'postgres'
+import * as postgres from 'postgres'
 import { Observable } from 'rxjs'
 import { rowToEvent, type EventCols, type TXCols } from './types'
 
@@ -111,7 +111,7 @@ export const get_event_stream = (): Observable<MEvent> => {
 export const save_event = async (event: MEvent): Promise<void> => {
   await sql<EventCols[]>`
       INSERT INTO myko_events (
-        entity_id, 
+        entity_id,
         item_type,
         change_type,
         item,
@@ -119,11 +119,11 @@ export const save_event = async (event: MEvent): Promise<void> => {
         tx,
         source_id
       )  VALUES (
-        ${event.item.id}, 
-        ${event.itemType}, 
-        ${event.changeType}, 
-        ${JSON.stringify(event.item)}, 
-        ${event.createdAt}, 
+        ${event.item.id},
+        ${event.itemType},
+        ${event.changeType},
+        ${JSON.stringify(event.item)},
+        ${event.createdAt},
         ${event.tx ?? randomUUID()},
         ${event.sourceId ?? ''}
       )
@@ -141,7 +141,7 @@ export const save_event = async (event: MEvent): Promise<void> => {
 export const get_db_size = async () => {
   const result = await sql`SELECT
       pg_database.datname,
-      pg_size_pretty(pg_database_size(pg_database.datname)) 
+      pg_size_pretty(pg_database_size(pg_database.datname))
       AS size FROM pg_database;`
 
   console.log(

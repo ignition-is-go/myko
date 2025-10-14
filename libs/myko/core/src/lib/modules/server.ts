@@ -1,7 +1,7 @@
 import { MykoItem, MykoQuery, MykoReport, doc } from '../decorators'
 import { MItem, MQuery, MReport, type ID, type MEvent } from '../types'
 
-import Z from 'zod'
+import * as Z from 'zod'
 
 @MykoItem({
   doc: 'A Myko Server ',
