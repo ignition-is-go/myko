@@ -1,4 +1,4 @@
-import ObjectHash from 'object-hash'
+import * as ObjectHash from 'object-hash'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { ID, PartialBy } from './base'
 
