@@ -1,12 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@myko/ws",
-  "version": "3.0.0-canary.766",
+  "version": "3.0.0-canary.767",
   "exports": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "license": "GPL-3.0-only",
   "imports": {
-    "@myko/core": "jsr:@myko/core@3.0.0-canary.766",
+    "@myko/core": "jsr:@myko/core@3.0.0-canary.767",
     "luxon": "^3.5.0",
     "msgpackr": "^1.10.2",
     "rxjs": "^7.8.1",
@@ -15,6 +15,8 @@
     "@types/ws": "^8.5.10"
   },
   "publish": {
-    "exclude": ["!dist"]
+    "exclude": [
+      "!dist"
+    ]
   }
 }
