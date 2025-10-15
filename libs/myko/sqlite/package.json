@@ -4,7 +4,7 @@
   "types": "./src/index.ts",
   "license": "ISC",
   "dependencies": {
-    "@myko/core": "workspace:^",
+    "@myko/core": "workspace:*",
     "colors": "^1.4.0",
     "luxon": "^3.5.0",
     "object-hash": "^3.0.0",

@@ -26,8 +26,8 @@
     "svelte": "^5.0.0"
   },
   "devDependencies": {
-    "@myko/core": "workspace:^",
-    "@myko/ws": "workspace:^",
+    "@myko/core": "workspace:*",
+    "@myko/ws": "workspace:*",
     "@sveltejs/adapter-auto": "^3.0.0",
     "@sveltejs/kit": "^2.0.0",
     "@sveltejs/package": "^2.0.0",
