@@ -172,7 +172,9 @@ export const MykoItem =
 let hasShownWarning = false
 
 const showWarning = () => {
-  console.warn('New Decorator Detected: Property Decorators will be ignored')
+  if (!hasShownWarning) {
+    console.warn('New Decorator Detected: Property Decorators will be ignored')
+  }
   hasShownWarning = true
 }
 
@@ -185,11 +187,10 @@ const showWarning = () => {
 export const ownsMany = (depType: new (...args: any[]) => MItem) => {
   return (target, propertyKey: string | symbol) => {
     if (
-      !hasShownWarning &&
-      (!target ||
-        Object.keys(propertyKey as any).includes(
-          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-        ))
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
     ) {
       showWarning()
       return
@@ -217,11 +218,10 @@ export const belongsTo = (
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     if (
-      !hasShownWarning &&
-      (!target ||
-        Object.keys(propertyKey as any).includes(
-          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-        ))
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
     ) {
       showWarning()
       return
@@ -246,11 +246,10 @@ export const belongsTo = (
 export const defaultValue = (value: any): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     if (
-      !hasShownWarning &&
-      (!target ||
-        Object.keys(propertyKey as any).includes(
-          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-        ))
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
     ) {
       showWarning()
       return
@@ -276,11 +275,10 @@ export const ensureFor = (
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     if (
-      !hasShownWarning &&
-      (!target ||
-        Object.keys(propertyKey as any).includes(
-          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-        ))
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
     ) {
       showWarning()
       return
@@ -300,11 +298,10 @@ export const ensureFor = (
 export const searchable = (): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     if (
-      !hasShownWarning &&
-      (!target ||
-        Object.keys(propertyKey as any).includes(
-          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-        ))
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
     ) {
       showWarning()
       return
@@ -322,11 +319,10 @@ export const searchable = (): PropertyDecorator => {
 export const mykoClientId = (): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
     if (
-      !hasShownWarning &&
-      (!target ||
-        Object.keys(propertyKey as any).includes(
-          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-        ))
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
     ) {
       showWarning()
       return
