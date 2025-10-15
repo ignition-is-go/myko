@@ -27,20 +27,22 @@ export const docEntity =
     })
   }
 
-/**
- * Decorator that adds documentation to a class property.
- *
- * @param docString - The documentation string for the property.
- * @param typeOverride - An optional override for the property type.
- * @param deprecated - A flag indicating if the property is deprecated.
- * @returns A property decorator function.
- */
 export const doc = (
   docString?: string,
   typeOverride?: string,
   deprecated?: boolean,
 ): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+  return (target, propertyKey) => {
+  if (
+    !target ||
+    Object.keys(propertyKey as any).includes(
+      'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+    )
+  ) {
+    console.warn('New Decorator Detected: returning early')
+    return
+  }
+
     const propType =
       typeOverride ??
       (Reflect.getMetadata(

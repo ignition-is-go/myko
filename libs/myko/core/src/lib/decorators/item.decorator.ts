@@ -159,18 +159,44 @@ export const MykoItem =
     return withType
   }
 
+//
+//
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+//
+//      NOTE (TS): the following decorators are used only in bun, which still uses the old experimentalDecorator syntax for property decorators
+//
+// 			these will fail silently on the browser side, or in
+//
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+//
+let hasShownWarning = false
+
+const showWarning = () => {
+  console.warn('New Decorator Detected: Property Decorators will be ignored')
+  hasShownWarning = true
+}
+
 /**
  * Decorator that specifies that the target object owns many instances of the specified dependency type.
  *
  * @param depType The constructor function of the dependency type.
  * @returns The property decorator function.
  */
-export const ownsMany = (
-  depType: new (...args: any[]) => MItem,
-): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+export const ownsMany = (depType: new (...args: any[]) => MItem) => {
+  return (target, propertyKey: string | symbol) => {
+    if (
+      !hasShownWarning &&
+      (!target ||
+        Object.keys(propertyKey as any).includes(
+          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+        ))
+    ) {
+      showWarning()
+      return
+    }
+
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
-    doc(`Owns many ${itemType}`)(target, propertyKey)
+    doc(`Owns many ${itemType}`)(target, propertyKey as unknown as string)
 
     Reflect.defineMetadata(
       makeOwnsKey(propertyKey.toString()),
@@ -190,6 +216,16 @@ export const belongsTo = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
+    if (
+      !hasShownWarning &&
+      (!target ||
+        Object.keys(propertyKey as any).includes(
+          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+        ))
+    ) {
+      showWarning()
+      return
+    }
     const foreignItemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
 
     doc(`Belongs to ${foreignItemType}`)(target, propertyKey)
@@ -209,6 +245,17 @@ export const belongsTo = (
  */
 export const defaultValue = (value: any): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
+    if (
+      !hasShownWarning &&
+      (!target ||
+        Object.keys(propertyKey as any).includes(
+          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+        ))
+    ) {
+      showWarning()
+      return
+    }
+
     doc(`Defaults to ${value}`)(target, propertyKey)
 
     Reflect.defineMetadata(
@@ -228,6 +275,17 @@ export const ensureFor = (
   depType: new (...args: any[]) => MItem,
 ): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
+    if (
+      !hasShownWarning &&
+      (!target ||
+        Object.keys(propertyKey as any).includes(
+          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+        ))
+    ) {
+      showWarning()
+      return
+    }
+
     const foreignItemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
     doc(`Ensured for ${foreignItemType}`)(target, propertyKey)
 
@@ -241,6 +299,16 @@ export const ensureFor = (
 
 export const searchable = (): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
+    if (
+      !hasShownWarning &&
+      (!target ||
+        Object.keys(propertyKey as any).includes(
+          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+        ))
+    ) {
+      showWarning()
+      return
+    }
     doc(`Searchable`)(target, propertyKey)
 
     Reflect.defineMetadata(
@@ -253,6 +321,16 @@ export const searchable = (): PropertyDecorator => {
 
 export const mykoClientId = (): PropertyDecorator => {
   return (target: object, propertyKey: string | symbol) => {
+    if (
+      !hasShownWarning &&
+      (!target ||
+        Object.keys(propertyKey as any).includes(
+          'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+        ))
+    ) {
+      showWarning()
+      return
+    }
     doc(`Auto Client ID`)(target, propertyKey)
 
     Reflect.defineMetadata(

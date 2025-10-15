@@ -1,4 +1,4 @@
-import * as flexsearch from 'flexsearch'
+import flexsearch from 'flexsearch'
 import { uniq } from 'ramda'
 import {
   bufferTime,
