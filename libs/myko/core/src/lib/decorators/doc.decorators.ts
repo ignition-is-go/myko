@@ -31,17 +31,17 @@ export const doc = (
   docString?: string,
   typeOverride?: string,
   deprecated?: boolean,
-): PropertyDecorator => {
+) => {
   return (target, propertyKey) => {
-  if (
-    !target ||
-    Object.keys(propertyKey as any).includes(
-      'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-    )
-  ) {
-    console.warn('New Decorator Detected: returning early')
-    return
-  }
+    if (
+      !target ||
+      Object.keys(propertyKey as any).includes(
+        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
+      )
+    ) {
+      console.warn('New Decorator Detected: returning early')
+      return
+    }
 
     const propType =
       typeOverride ??
@@ -53,7 +53,7 @@ export const doc = (
         '')
 
     const autoItemType =
-      Object.getOwnPropertyDescriptors(target.constructor).name?.value || ''
+      Object.getOwnPropertyDescriptors(target.constructor)?.name?.value || ''
 
     if (!autoItemType) {
       throw new Error(

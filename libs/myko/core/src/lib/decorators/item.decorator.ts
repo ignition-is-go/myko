@@ -185,7 +185,7 @@ const showWarning = () => {
  * @returns The property decorator function.
  */
 export const ownsMany = (depType: new (...args: any[]) => MItem) => {
-  return (target, propertyKey: string | symbol) => {
+  return (target, propertyKey) => {
     if (
       !target ||
       Object.keys(propertyKey as any).includes(
@@ -213,10 +213,8 @@ export const ownsMany = (depType: new (...args: any[]) => MItem) => {
  * @returns The property decorator function.
  *
  */
-export const belongsTo = (
-  depType: new (...args: any[]) => MItem,
-): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+export const belongsTo = (depType: new (...args: any[]) => MItem) => {
+  return (target, propertyKey) => {
     if (
       !target ||
       Object.keys(propertyKey as any).includes(
@@ -243,8 +241,8 @@ export const belongsTo = (
  * @param value The default value for the property.
  * @returns The property decorator function.
  */
-export const defaultValue = (value: any): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+export const defaultValue = (value: any) => {
+  return (target, propertyKey) => {
     if (
       !target ||
       Object.keys(propertyKey as any).includes(
@@ -270,10 +268,8 @@ export const defaultValue = (value: any): PropertyDecorator => {
  * @param depType The constructor function of the dependency type.
  * @returns The property decorator function.
  */
-export const ensureFor = (
-  depType: new (...args: any[]) => MItem,
-): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+export const ensureFor = (depType: new (...args: any[]) => MItem) => {
+  return (target, propertyKey) => {
     if (
       !target ||
       Object.keys(propertyKey as any).includes(
@@ -295,8 +291,8 @@ export const ensureFor = (
   }
 }
 
-export const searchable = (): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+export const searchable = () => {
+  return (target, propertyKey) => {
     if (
       !target ||
       Object.keys(propertyKey as any).includes(
@@ -316,8 +312,8 @@ export const searchable = (): PropertyDecorator => {
   }
 }
 
-export const mykoClientId = (): PropertyDecorator => {
-  return (target: object, propertyKey: string | symbol) => {
+export const mykoClientId = () => {
+  return (target, propertyKey) => {
     if (
       !target ||
       Object.keys(propertyKey as any).includes(
