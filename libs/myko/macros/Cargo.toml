@@ -1,6 +1,6 @@
 [package]
 name = "myko-macros"
-version = "3.0.0-canary.763"
+version = "3.0.0-canary.764"
 edition = "2024"
 description = "myko macros"
 license = "AGPL-3.0-or-later"
