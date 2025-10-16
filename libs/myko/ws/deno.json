@@ -1,9 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@myko/ws",
-  "version": "3.0.0-canary.769",
-  "exports": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "version": "3.0.0-canary.768",
+  "exports": "src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
     "@myko/core": "jsr:@myko/core@3.0.0-canary.769",
@@ -11,11 +10,5 @@
     "msgpackr": "npm:msgpackr@^1.10.2",
     "rxjs": "npm:rxjs@^7.8.1",
     "uuid": "npm:uuid@^9.0.1"
-  },
-  "publish": {
-    "exclude": [
-      "!dist"
-    ]
-  },
-  "nodeModulesDir": "manual"
+  }
 }

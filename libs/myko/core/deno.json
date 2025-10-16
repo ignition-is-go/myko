@@ -1,8 +1,7 @@
 {
   "name": "@myko/core",
-  "version": "3.0.0-canary.769",
-  "exports": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "version": "3.0.0-canary.768",
+  "exports": "src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
     "colors": "npm:colors@^1.4.0",
@@ -14,11 +13,5 @@
     "rxjs": "npm:rxjs@^7.8.1",
     "uuid": "npm:uuid@^9.0.1",
     "zod": "npm:zod@^3.24.1"
-  },
-  "publish": {
-    "exclude": [
-      "!dist"
-    ]
-  },
-  "nodeModulesDir": "manual"
+  }
 }
