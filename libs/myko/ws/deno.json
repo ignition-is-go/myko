@@ -17,5 +17,11 @@
     "@myko/core": "jsr:@myko/core@3.0.0-canary.774",
     "msgpackr": "npm:msgpackr@^1.10.2"
   },
-  "nodeModulesDir": "auto"
+  "nodeModulesDir": "auto",
+  "publish": {
+    "exclude": [
+      "node_modules",
+      "package.json"
+    ]
+  }
 }

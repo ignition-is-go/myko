@@ -14,5 +14,11 @@
     "uuid": "npm:uuid@^9.0.1",
     "zod": "npm:zod@^3.24.1"
   },
-  "nodeModulesDir": "auto"
+  "nodeModulesDir": "auto",
+  "publish": {
+    "exclude": [
+      "node_modules",
+      "package.json"
+    ]
+  }
 }
