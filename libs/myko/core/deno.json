@@ -1,7 +1,7 @@
 {
   "name": "@myko/core",
   "version": "3.0.0-canary.770",
-  "exports": "src/index.ts",
+  "exports": "./src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
     "colors": "npm:colors@^1.4.0",
