@@ -1,11 +1,11 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@myko/ws",
-  "version": "3.0.0-canary.770",
+  "version": "3.0.0-canary.771",
   "exports": "./src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
-    "@myko/core": "jsr:@myko/core@3.0.0-canary.770",
+    "@myko/core": "jsr:@myko/core@3.0.0-canary.771",
     "luxon": "npm:luxon@^3.5.0",
     "msgpackr": "npm:msgpackr@^1.10.2",
     "rxjs": "npm:rxjs@^7.8.1",
