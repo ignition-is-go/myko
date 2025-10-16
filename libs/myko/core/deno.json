@@ -17,8 +17,7 @@
   "publish": {
     "exclude": [
       "node_modules",
-      "package.json",
-      "!dist"
+      "package.json"
     ]
   }
 }
