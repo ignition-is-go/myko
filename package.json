@@ -5,6 +5,7 @@
     "py": "./tools/scripts/py.sh",
     "py:publish": "./tools/scripts/py-publish.sh",
     "rust:publish": "./tools/scripts/rust-publish.sh",
+    "jsr:publish": "bun run ./tools/scripts/publish-all-jsr.ts",
     "cs:version": "./tools/scripts/cs-update-versions.sh",
     "cs:publish": "./tools/scripts/cs-publish.sh",
     "preinstall": "git submodule update --init --recursive --remote",

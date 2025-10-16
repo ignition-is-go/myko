@@ -7,16 +7,17 @@
   "license": "GPL-3.0-only",
   "imports": {
     "@myko/core": "jsr:@myko/core@3.0.0-canary.767",
-    "luxon": "^3.5.0",
-    "msgpackr": "^1.10.2",
-    "rxjs": "^7.8.1",
-    "uuid": "^9.0.1",
-    "@types/luxon": "^3.4.2",
-    "@types/ws": "^8.5.10"
+    "luxon": "npm:luxon@^3.5.0",
+    "msgpackr": "npm:msgpackr@^1.10.2",
+    "rxjs": "npm:rxjs@^7.8.1",
+    "uuid": "npm:uuid@^9.0.1",
+    "@types/luxon": "npm:@types/luxon@^3.4.2",
+    "@types/ws": "npm:@types/ws@^8.5.10"
   },
   "publish": {
     "exclude": [
       "!dist"
     ]
-  }
+  },
+  "nodeModulesDir": "auto"
 }
