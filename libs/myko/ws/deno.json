@@ -16,5 +16,6 @@
     "zod": "npm:zod@^3.24.1",
     "@myko/core": "jsr:@myko/core@3.0.0-canary.773",
     "msgpackr": "npm:msgpackr@^1.10.2"
-  }
+  },
+  "nodeModulesDir": "auto"
 }
