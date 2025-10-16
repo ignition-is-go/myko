@@ -5,10 +5,16 @@
   "exports": "./src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
-    "@myko/core": "jsr:@myko/core@3.0.0-canary.772",
+    "colors": "npm:colors@^1.4.0",
+    "flexsearch": "npm:flexsearch@^0.7",
     "luxon": "npm:luxon@^3.5.0",
-    "msgpackr": "npm:msgpackr@^1.10.2",
+    "object-hash": "npm:object-hash@^3.0.0",
+    "ramda": "npm:ramda@^0.29.1",
+    "reflect-metadata": "npm:reflect-metadata@^0.1.14",
     "rxjs": "npm:rxjs@^7.8.1",
-    "uuid": "npm:uuid@^9.0.1"
+    "uuid": "npm:uuid@^9.0.1",
+    "zod": "npm:zod@^3.24.1",
+    "@myko/core": "jsr:@myko/core@3.0.0-canary.772",
+    "msgpackr": "npm:msgpackr@^1.10.2"
   }
 }
