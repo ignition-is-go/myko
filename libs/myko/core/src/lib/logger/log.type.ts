@@ -1,11 +1,13 @@
-import { doc, MykoItem, MykoQuery, MykoReport } from '../decorators'
-import { MItem, MQuery, MReport, type ID } from '../types'
-export enum LogLevel {
-  INFO = 'INFO',
-  WARN = 'WARN',
-  ERROR = 'ERROR',
-  LOG = 'LOG',
-}
+import {
+  doc,
+  MykoCommand,
+  MykoItem,
+  MykoQuery,
+  MykoReport,
+} from '../decorators'
+import { MCommand, MItem, MQuery, MReport, type ID } from '../types'
+import type { LogLevel } from './logLevel.type'
+
 @MykoItem({
   preventLogs: true,
 })
@@ -34,6 +36,23 @@ export class GetLogs extends MQuery<Log> {
 @MykoReport()
 export class Loggers extends MReport<string[]> {
   constructor() {
+    super()
+  }
+}
+
+@MykoReport()
+export class ServerLogLevel extends MReport<LogLevel> {
+  constructor(readonly serverId: ID) {
+    super()
+  }
+}
+
+@MykoCommand()
+export class SetLogLevel extends MCommand {
+  constructor(
+    readonly serverId: ID,
+    readonly level: LogLevel,
+  ) {
     super()
   }
 }

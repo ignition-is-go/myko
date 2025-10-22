@@ -1,4 +1,5 @@
-import { BehaviorSubject, shareReplay } from 'rxjs'
+import { BehaviorSubject, Observable, shareReplay } from 'rxjs'
+import { LogLevel } from './logLevel.type'
 
 const names = new Map<string, {}>()
 
@@ -14,17 +15,28 @@ export const addName = (name: string) => {
 }
 
 export class Cell<T> {
-  constructor(public value: T) {}
+  #subj: BehaviorSubject<T>
+
+  constructor(public value: T) {
+    this.#subj = new BehaviorSubject<T>(this.value)
+  }
 
   set(value: T) {
     this.value = value
+    this.#subj.next(value)
   }
 
   get() {
     return this.value
+  }
+
+  stream(): Observable<T> {
+    return this.#subj.asObservable()
   }
 }
 
 export const longestName = new Cell<number>(0)
 
 export const logsPreventedEntities = new Set<string>()
+
+export const logFilter = new Cell<LogLevel>(LogLevel.INFO)

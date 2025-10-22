@@ -3,8 +3,9 @@ import { v4 } from 'uuid'
 import { eventBus } from '../busses'
 import { getHostId } from '../registry'
 import type { ID } from '../types'
-import { Log, LogLevel } from './log.type'
-import { addName, longestName } from './registry'
+import { Log } from './log.type'
+import { levelShouldPrint, LogLevel } from './logLevel.type'
+import { addName, logFilter, longestName } from './registry'
 
 export class MykoLogger {
   constructor(private name: string = '') {
@@ -29,9 +30,11 @@ export class MykoLogger {
   }
 
   error(message: string, data?: any, tx?: ID) {
-    console.error(this.fmt(LogLevel.ERROR, message))
-    if (data) {
-      console.error(data)
+    if (levelShouldPrint(LogLevel.ERROR, logFilter.get())) {
+      console.error(this.fmt(LogLevel.ERROR, message))
+      if (data) {
+        console.error(data)
+      }
     }
     const log = new Log({
       data,
@@ -47,8 +50,9 @@ export class MykoLogger {
   }
 
   warn(message: string, data?: any, tx?: ID) {
-    console.warn(this.fmt(LogLevel.WARN, message))
-
+    if (levelShouldPrint(LogLevel.WARN, logFilter.get())) {
+      console.warn(this.fmt(LogLevel.WARN, message))
+    }
     const log = new Log({
       data,
       id: v4(),
@@ -63,12 +67,31 @@ export class MykoLogger {
   }
 
   info(message: string, data?: any, tx?: ID) {
-    console.info(this.fmt(LogLevel.INFO, message))
-
+    if (levelShouldPrint(LogLevel.INFO, logFilter.get())) {
+      console.info(this.fmt(LogLevel.INFO, message))
+    }
     const log = new Log({
       data,
       id: v4(),
       level: LogLevel.INFO,
+      text: message,
+      serverId: getHostId(),
+      timestamp: DateTime.utc().toISO(),
+      loggerName: this.name,
+    })
+
+    eventBus.publishSet(log, tx ?? v4())
+  }
+
+  debug(message: string, data?: any, tx?: ID) {
+    if (levelShouldPrint(LogLevel.DEBUG, logFilter.get())) {
+      console.debug(this.fmt(LogLevel.DEBUG, message))
+    }
+
+    const log = new Log({
+      data,
+      id: v4(),
+      level: LogLevel.DEBUG,
       text: message,
       serverId: getHostId(),
       timestamp: DateTime.utc().toISO(),

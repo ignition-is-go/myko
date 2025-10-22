@@ -1,5 +1,12 @@
 <script lang="ts">
-	import { PeerAlive, type Server } from '@myko/core';
+	import {
+		LOG_RANK,
+		LogLevel,
+		PeerAlive,
+		ServerLogLevel,
+		SetLogLevel,
+		type Server
+	} from '@myko/core';
 	import { DateTime } from 'luxon';
 	import { Observable, interval, switchMap } from 'rxjs';
 	import { onDestroy } from 'svelte';
@@ -33,6 +40,8 @@
 	onDestroy(() => {
 		clearInterval(startedInterbal);
 	});
+
+	const currentLogLevel = $derived(client.watchReport(new ServerLogLevel(server.id)));
 </script>
 
 <div class="server flex gap-5">
@@ -42,6 +51,18 @@
 		<span class="id">ID: {server.id}</span>
 		<span class="started">Started: {started}</span>
 		<span>Ping {isClientServer ? '' : 'to connected'}: {ping}</span>
+		<select
+			aria-label="Log Level"
+			class="select"
+			onchange={(e) => {
+				console.log(e.currentTarget.value);
+				client.sendCommand(new SetLogLevel(server.id, e.currentTarget.value as LogLevel));
+			}}
+		>
+			{#each LOG_RANK as rank}
+				<option selected={rank === $currentLogLevel} value={rank}>{rank}</option>
+			{/each}
+		</select>
 	</div>
 </div>
 
