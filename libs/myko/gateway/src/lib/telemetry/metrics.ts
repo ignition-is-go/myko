@@ -1,8 +1,9 @@
-import { getHostId } from '@myko/core'
+import { getAllRepos, getHostId } from '@myko/core'
 import { DateTime } from 'luxon'
 import type { MykoGatewayBootstrapOptions } from '../bootstrap'
 import {
   eventCountGuage,
+  itemCountsGuage,
   lagGuage,
   serverGuage,
   transactioncountGuage,
@@ -23,7 +24,7 @@ import {
 export const exportMetrics = (args: MykoGatewayBootstrapOptions) => {
   let lastTime = performance.now()
 
-  setInterval(() => {
+  setInterval(async () => {
     for (const [key, value] of tagCounts.entries()) {
       transactioncountGuage().record(value, {
         tag: key,
@@ -87,5 +88,18 @@ export const exportMetrics = (args: MykoGatewayBootstrapOptions) => {
     lagGuage().record(diff, {
       hostId: getHostId(),
     })
+
+    const repos = getAllRepos()
+
+    for (const repo of repos) {
+      const name = repo.entity
+
+      const count = await repo.getItemCount()
+
+      itemCountsGuage().record(count, {
+        hostId: getHostId(),
+        tag: name,
+      })
+    }
   }, 1000)
 }

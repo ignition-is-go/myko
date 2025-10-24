@@ -118,3 +118,11 @@ export const lagGuage = () => {
   }
   return _lagGuage
 }
+
+let _itemCountsGuage: Gauge | null = null
+export const itemCountsGuage = () => {
+  if (!_itemCountsGuage) {
+    _itemCountsGuage = meter().createGauge('myko.gateway.item.counts')
+  }
+  return _itemCountsGuage
+}

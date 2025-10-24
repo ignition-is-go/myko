@@ -24,6 +24,8 @@ let defaultOpts: {
   repoOverrides?: RepoOverrideData[]
 } = {}
 
+export const getAllRepos = () => Array.from(repos.values())
+
 const needsPersister: string[] = []
 
 export const setDefaultRepoOptions = (args: {

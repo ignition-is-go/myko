@@ -1,6 +1,5 @@
 import { DateTime } from 'luxon'
 import { v4 } from 'uuid'
-import { eventBus } from '../busses'
 import { getHostId } from '../registry'
 import type { ID } from '../types'
 import { Log } from './log.type'
@@ -46,7 +45,7 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx ?? v4())
+    // eventBus.publishSet(log, tx ?? v4())
   }
 
   warn(message: string, data?: any, tx?: ID) {
@@ -63,7 +62,7 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx ?? v4())
+    // eventBus.publishSet(log, tx ?? v4())
   }
 
   info(message: string, data?: any, tx?: ID) {
@@ -80,7 +79,7 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx ?? v4())
+    // eventBus.publishSet(log, tx ?? v4())
   }
 
   debug(message: string, data?: any, tx?: ID) {
@@ -98,6 +97,6 @@ export class MykoLogger {
       loggerName: this.name,
     })
 
-    eventBus.publishSet(log, tx ?? v4())
+    // eventBus.publishSet(log, tx ?? v4())
   }
 }

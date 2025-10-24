@@ -5,9 +5,8 @@ import {
   MREPORT_EVENT,
   type WSMMessage,
 } from '@myko/ws'
-import { context, trace } from '@opentelemetry/api'
 import {
-  tracer,
+  // tracer,
   // tracer,
   transactionDurationGauge,
   transactionDurationHist,
@@ -42,32 +41,30 @@ export const beginTraceTransaction = (
   const existingTx = spansByTx.get(tx)
 
   if (existingTx) {
-    let ctx = trace.setSpan(context.active(), existingTx)
-
-    const childSpan = tracer().startSpan(
-      tag,
-      {
-        attributes: {
-          event,
-          tag,
-          hostId: getHostId(),
-          lineage: mContext.lineage,
-        },
-      },
-      ctx,
-    )
-
-    spansByCall.set(callId, childSpan)
+    // let ctx = trace.setSpan(context.active(), existingTx)
+    // const childSpan = tracer().startSpan(
+    //   tag,
+    //   {
+    //     attributes: {
+    //       event,
+    //       tag,
+    //       hostId: getHostId(),
+    //       lineage: mContext.lineage,
+    //     },
+    //   },
+    //   ctx,
+    // )
+    // spansByCall.set(callId, childSpan)
   } else {
-    const span = tracer().startSpan(`Entry: ${tag}`, {
-      attributes: {
-        event,
-        tag,
-        hostId: getHostId(),
-      },
-    })
-    spansByTx.set(tx, span)
-    spansByCall.set(callId, span)
+    // const span = tracer().startSpan(`Entry: ${tag}`, {
+    //   attributes: {
+    //     event,
+    //     tag,
+    //     hostId: getHostId(),
+    //   },
+    // })
+    // spansByTx.set(tx, span)
+    // spansByCall.set(callId, span)
   }
 
   const count = tagCounts.get(tag) ?? 0
@@ -119,7 +116,6 @@ export const countResults = (
   tagResults.set(tag, newCount)
 
   const lineageTag = mContext.lineage.join('>')
-
   lineageResults.set(lineageTag, (lineageResults.get(lineageTag) ?? 0) + 1)
 }
 

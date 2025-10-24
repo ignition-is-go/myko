@@ -67,7 +67,7 @@ export abstract class Repo<T extends MItem> {
   private search: flexsearch.Document<T>
   private searchObs: Subject<flexsearch.Document<T>>
   constructor(
-    protected entity: string,
+    readonly entity: string,
     protected readonly options: RepoOptions<T>,
   ) {
     this.subject = new Subject()
@@ -365,6 +365,8 @@ export abstract class Repo<T extends MItem> {
   abstract getFilter(filterFunc: (ent: T) => boolean): Promise<T[]>
 
   abstract save(event: MEvent<T>): Promise<MEvent<T>>
+
+  abstract getItemCount(): Promise<number>
 }
 
 export const toArray = <T>(m: Map<string, T>): T[] => [...m.values()]

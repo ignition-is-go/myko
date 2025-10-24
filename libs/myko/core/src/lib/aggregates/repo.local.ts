@@ -101,4 +101,8 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
     const arr = toArray(this.store.getFilter(filterFunc))
     return arr
   }
+
+  async getItemCount(): Promise<number> {
+    return this.store.size
+  }
 }
