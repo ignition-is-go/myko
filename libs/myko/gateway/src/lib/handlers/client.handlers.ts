@@ -12,10 +12,6 @@ import {
   liveRepo,
   makeDel,
   makeSet,
-  type MCommandHandler,
-  type MLiveReportResult,
-  type MQueryHandler,
-  type MReportHandler,
   MykoCommandError,
   MykoCommandHandler,
   MykoQueryHandler,
@@ -23,10 +19,14 @@ import {
   queryBus,
   SetClientWindbackTime,
   WindbackStatus,
+  type MCommandHandler,
+  type MLiveReportResult,
+  type MQueryHandler,
+  type MReportHandler,
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
 import { ok } from 'assert'
-import { filter, firstValueFrom, map, type Observable } from 'rxjs'
+import { filter, firstValueFrom, map, takeUntil, type Observable } from 'rxjs'
 import { getRx, getTx, peers } from '../registry'
 
 @MykoCommandHandler(ClientCommand)
@@ -55,26 +55,32 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       data: wrapCommandOnlyWS(command.command),
     })
 
-    const response = firstValueFrom(
-      getRx().pipe(
-        filter(
-          (x) =>
-            x.data.event === 'ws:m:command-response' &&
-            x.data.data.tx === command.tx,
-        ),
-      ),
-    )
-    const error = firstValueFrom(
-      getRx().pipe(
-        filter(
-          (x) =>
-            x.data.event === 'ws:m:command-error' &&
-            x.data.data.tx === command.tx,
-        ),
-      ),
-    )
+    const disconnect$ = liveRepo(Client)
+      .watchId(command.client.id)
+      .pipe(
+        map((x) => !!x),
+        filter((x) => !x),
+      )
 
-    const res = await Promise.race([response, error])
+    const innerWrappedCommand = command.command
+    const effectiveCommand = innerWrappedCommand.command
+
+    const res = await firstValueFrom(
+      getRx().pipe(
+        filter((x) => x.clientId === command.client.id),
+        filter(
+          (x) =>
+            (x.data.event === 'ws:m:command-response' ||
+              x.data.event === 'ws:m:command-error') &&
+            x.data.data.tx === effectiveCommand.tx,
+        ),
+        takeUntil(disconnect$),
+      ),
+    ).catch(() => undefined as any)
+
+    if (!res) {
+      throw new MykoCommandError(command.tx, 'Client Disconnected')
+    }
 
     if (res.data.event === 'ws:m:command-error') {
       throw new MykoCommandError(command.tx, res.data.data.message)
