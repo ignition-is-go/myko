@@ -20,7 +20,7 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
   private readonly store: Store<T>
 
   constructor(
-    protected entity: string,
+    readonly entity: string,
     protected readonly options: RepoOptions<T>,
   ) {
     super(entity, options)
