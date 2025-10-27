@@ -5,7 +5,7 @@ import type { HistoryProvider } from './abstract.history'
 
 export class HistoryRepo<T extends MItem> implements IRepo<T> {
   constructor(
-    protected entity: string,
+    readonly entity: string,
     private history: HistoryProvider,
     private windbackTime: string,
   ) {}
@@ -69,5 +69,13 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
 
   getSearch(_query: string): Promise<T[]> {
     return firstValueFrom(this.watchSearch(_query))
+  }
+
+  async getItemCount(): Promise<number> {
+    const res = await this.history.getAllItemsAsOfTime(
+      this.entity,
+      this.windbackTime,
+    )
+    return res.length
   }
 }

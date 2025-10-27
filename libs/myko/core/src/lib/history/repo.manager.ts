@@ -196,4 +196,8 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
       },
     )
   }
+
+  getItemCount(): Promise<number> {
+    return this.baseRepo.getItemCount()
+  }
 }
