@@ -17,18 +17,26 @@ export class KafkaTopicConsumer {
     onMessage: (buf: Message, percent) => void,
     private onCaughtUp?: () => void,
   ) {
-    this.cons = kafka.consumer({ ...config, groupId: crypto.randomUUID() })
+    this.cons = kafka.consumer({
+      ...config,
+      groupId: config.groupId ?? crypto.randomUUID(),
+    })
 
     const admin = kafka.admin()
 
-    admin.fetchTopicOffsets(makeSafeTopic(topic)).then((offsets) => {
-      const high = offsets[0].high
+    admin
+      .fetchTopicOffsets(makeSafeTopic(topic))
+      .then((offsets) => {
+        const high = offsets[0].high
 
-      if (high === '0') {
-        this.caughtUp = true
-        this.onCaughtUp?.()
-      }
-    })
+        if (high === '0') {
+          this.caughtUp = true
+          this.onCaughtUp?.()
+        }
+      })
+      .finally(() => {
+        void admin.disconnect()
+      })
 
     this.cons.on('consumer.end_batch_process', (e) => {
       this.hasSeenData = true

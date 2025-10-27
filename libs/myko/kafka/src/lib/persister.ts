@@ -153,19 +153,23 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
 
     const admin = kafka.admin()
 
-    await admin.createTopics({
-      topics: [
-        {
-          topic: makeSafeTopic(entity),
-          numPartitions: 1,
-          replicationFactor: 3,
-          configEntries: [
-            { name: 'retention.ms', value: '-1' },
-            { name: 'cleanup.policy', value: 'compact' },
-          ],
-        },
-      ],
-    })
+    try {
+      await admin.createTopics({
+        topics: [
+          {
+            topic: makeSafeTopic(entity),
+            numPartitions: 1,
+            replicationFactor: 3,
+            configEntries: [
+              { name: 'retention.ms', value: '-1' },
+              { name: 'cleanup.policy', value: 'compact' },
+            ],
+          },
+        ],
+      })
+    } finally {
+      await admin.disconnect()
+    }
 
     this.cons = new KafkaTopicConsumer(
       kafka,

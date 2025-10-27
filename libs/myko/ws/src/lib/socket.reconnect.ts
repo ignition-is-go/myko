@@ -35,6 +35,7 @@ export class ReconnectSocket {
     this.socket.binaryType = 'arraybuffer'
 
     this.socket.onopen = () => {
+      this.attempts = 0
       this.opts.onConnected(url)
     }
 
@@ -64,6 +65,10 @@ export class ReconnectSocket {
 
     this.socket.onmessage = (event) => {
       this.opts.onMessage(event)
+    }
+
+    this.socket.onerror = (err) => {
+      this.opts.onError(err)
     }
   }
 
