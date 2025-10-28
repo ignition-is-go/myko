@@ -99,4 +99,25 @@ export class MykoLogger {
 
     // eventBus.publishSet(log, tx ?? v4())
   }
+
+  verbose(message: string, data?: any, tx?: ID) {
+    if (levelShouldPrint(LogLevel.VERBOSE, logFilter.get())) {
+      console.log(this.fmt(LogLevel.VERBOSE, message))
+      if (data) {
+        console.dir(data)
+      }
+    }
+
+    const log = new Log({
+      data,
+      id: v4(),
+      level: LogLevel.VERBOSE,
+      text: message,
+      serverId: getHostId(),
+      timestamp: DateTime.utc().toISO(),
+      loggerName: this.name,
+    })
+
+    // eventBus.publishSet(log, tx ?? v4())
+  }
 }
