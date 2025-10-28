@@ -14,6 +14,7 @@ import {
   makeSet,
   MykoCommandError,
   MykoCommandHandler,
+  MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
   queryBus,
@@ -26,33 +27,133 @@ import {
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
 import { ok } from 'assert'
-import { filter, firstValueFrom, map, takeUntil, type Observable } from 'rxjs'
+import {
+  filter,
+  firstValueFrom,
+  map,
+  takeUntil,
+  tap,
+  timeout,
+  TimeoutError,
+  type Observable,
+} from 'rxjs'
 import { getRx, getTx, peers } from '../registry'
+import { clientCommandMonitor as ccm } from '../telemetry/client_command.monitor'
+
+const inflightByClient = new Map<string, number>()
+const getMaxInflightPerClient = (() => {
+  let cached: number | undefined
+  return () => {
+    try {
+      if (cached !== undefined) return cached
+      const v = process?.env?.['MYKO_CCMD_MAX_INFLIGHT_PER_CLIENT']
+      const n = Number(v)
+      cached = Number.isFinite(n) && n > 0 ? n : undefined
+      return cached
+    } catch {
+      return undefined
+    }
+  }
+})()
+
+const CCMD_LOGGER = new MykoLogger('ClientCommandHandler')
 
 @MykoCommandHandler(ClientCommand)
 export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
   async execute(command: ClientCommand) {
+    const logger = CCMD_LOGGER
+    const startAt = Date.now()
+
+    const CCMD_TIMEOUT_MS = (() => {
+      try {
+        const v = process?.env?.['MYKO_CCMD_TIMEOUT_MS']
+        const n = Number(v)
+        return Number.isFinite(n) && n > 0 ? n : undefined
+      } catch {
+        return undefined
+      }
+    })()
+    const innerWrappedCommand = command.command
+    const effectiveCommand = innerWrappedCommand.command
+
+    logger.verbose('Begin client command', {
+      tag: innerWrappedCommand.commandId,
+      tx: effectiveCommand.tx,
+      clientId: command.client?.id,
+      serverId: command.client?.serverId,
+    })
+
     if (!command.client) {
       throw new MykoCommandError(command.tx, 'Client Not Found')
     }
 
     if (command.client.serverId !== getHostId()) {
       // forward to server
-      console.log('forwarding to server', command.command.commandId)
+      logger.verbose('Forwarding to peer', {
+        tag: innerWrappedCommand.commandId,
+        tx: effectiveCommand.tx,
+        fromServerId: getHostId(),
+        toServerId: command.client.serverId,
+      })
       const peer = peers.getPeer(command.client.serverId)
 
       if (!peer) {
+        logger.error('Peer Not Found', {
+          tag: innerWrappedCommand.commandId,
+          tx: effectiveCommand.tx,
+          peerServerId: command.client.serverId,
+        })
         throw new MykoCommandError(
           command.tx,
           'Peer Not Found for ' + command.command.commandId,
         )
       }
+      ccm.forward(
+        innerWrappedCommand.commandId,
+        effectiveCommand.tx,
+        getHostId(),
+        command.client.serverId,
+      )
       return peer.sendCommand(command)
+    }
+
+    logger.verbose('Dispatch to client', {
+      tag: innerWrappedCommand.commandId,
+      tx: effectiveCommand.tx,
+      clientId: command.client.id,
+    })
+    ccm.begin(
+      innerWrappedCommand.commandId,
+      effectiveCommand.tx,
+      command.client.id,
+    )
+    // Per-client in-flight gating
+    const _maxInflight = getMaxInflightPerClient()
+    const _clientId = command.client.id
+    if (_maxInflight && typeof _clientId === 'string') {
+      const _curr = inflightByClient.get(_clientId) ?? 0
+      if (_curr >= _maxInflight) {
+        ccm.err(effectiveCommand.tx, 'Backpressure')
+        throw new MykoCommandError(
+          command.tx,
+          'Client Backpressure: too many in-flight',
+        )
+      }
+      inflightByClient.set(_clientId, _curr + 1)
+    }
+    const _decInflight = () => {
+      const _c = inflightByClient.get(_clientId) ?? 0
+      inflightByClient.set(_clientId, Math.max(0, _c - 1))
     }
 
     getTx().next({
       clientId: command.client.id,
       data: wrapCommandOnlyWS(command.command),
+    })
+    logger.verbose('client-command:dispatched-to-client', {
+      tag: innerWrappedCommand.commandId,
+      tx: effectiveCommand.tx,
+      clientId: command.client.id,
     })
 
     const disconnect$ = liveRepo(Client)
@@ -60,36 +161,124 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       .pipe(
         map((x) => !!x),
         filter((x) => !x),
+        tap(() => {
+          ccm.disconnected(effectiveCommand.tx)
+          logger.verbose('client-command:client-disconnected', {
+            tag: innerWrappedCommand.commandId,
+            tx: effectiveCommand.tx,
+            clientId: command.client.id,
+          })
+        }),
       )
 
-    const innerWrappedCommand = command.command
-    const effectiveCommand = innerWrappedCommand.command
-
-    const res = await firstValueFrom(
-      getRx().pipe(
-        filter((x) => x.clientId === command.client.id),
-        filter(
-          (x) =>
-            (x.data.event === 'ws:m:command-response' ||
-              x.data.event === 'ws:m:command-error') &&
-            x.data.data.tx === effectiveCommand.tx,
-        ),
-        takeUntil(disconnect$),
+    const disconnectLogged$ = disconnect$.pipe(
+      tap(() =>
+        logger.verbose('Client disconnected before response', {
+          tag: innerWrappedCommand.commandId,
+          tx: effectiveCommand.tx,
+          clientId: command.client.id,
+        }),
       ),
-    ).catch(() => undefined as any)
+    )
+
+    let warnTimer: any
+    const waitWarnMs = 5000
+    warnTimer = setTimeout(() => {
+      logger.verbose(`Waiting >${waitWarnMs}ms for client response`, {
+        tag: innerWrappedCommand.commandId,
+        tx: effectiveCommand.tx,
+        clientId: command.client.id,
+      })
+    }, waitWarnMs)
+
+    let response$ = getRx().pipe(
+      filter((x) => x.clientId === command.client.id),
+      filter(
+        (x) =>
+          (x.data.event === 'ws:m:command-response' ||
+            x.data.event === 'ws:m:command-error') &&
+          x.data.data.tx === effectiveCommand.tx,
+      ),
+      tap((x) =>
+        logger.verbose('client-command:response-event', {
+          tag: innerWrappedCommand.commandId,
+          tx: effectiveCommand.tx,
+          clientId: command.client.id,
+          event: x.data.event,
+        }),
+      ),
+      takeUntil(disconnect$),
+    )
+    if (CCMD_TIMEOUT_MS) {
+      response$ = response$.pipe(timeout(CCMD_TIMEOUT_MS))
+    }
+    let timedOut = false
+    const res = await firstValueFrom(response$)
+      .then((val) => {
+        if (warnTimer) clearTimeout(warnTimer)
+        logger.verbose('Observed client response event', {
+          tag: innerWrappedCommand.commandId,
+          tx: effectiveCommand.tx,
+          clientId: command.client.id,
+          event: val?.data?.event,
+        })
+        return val
+      })
+      .catch((e) => {
+        if (warnTimer) clearTimeout(warnTimer)
+        if (e instanceof TimeoutError) {
+          timedOut = true
+          ccm.timeout(effectiveCommand.tx)
+        } else {
+          logger.error('Error awaiting client response', {
+            tag: innerWrappedCommand.commandId,
+            tx: effectiveCommand.tx,
+            clientId: command.client.id,
+            error: (e as Error)?.message,
+          })
+        }
+        return undefined as any
+      })
 
     if (!res) {
-      throw new MykoCommandError(command.tx, 'Client Disconnected')
+      logger.error('No response from client', {
+        tag: innerWrappedCommand.commandId,
+        tx: effectiveCommand.tx,
+        clientId: command.client.id,
+      })
+      _decInflight()
+      throw new MykoCommandError(
+        command.tx,
+        timedOut ? 'Client Timed Out' : 'Client Disconnected',
+      )
     }
 
     if (res.data.event === 'ws:m:command-error') {
+      logger.error('Client responded with command error', {
+        tag: innerWrappedCommand.commandId,
+        tx: effectiveCommand.tx,
+        clientId: command.client.id,
+        message: res.data.data.message,
+      })
+      ccm.err(effectiveCommand.tx, res.data.data.message)
+      _decInflight()
       throw new MykoCommandError(command.tx, res.data.data.message)
     }
 
     if (res.data.event === 'ws:m:command-response') {
+      const durationMs = Date.now() - startAt
+      logger.verbose('Completed client command', {
+        tag: innerWrappedCommand.commandId,
+        tx: effectiveCommand.tx,
+        clientId: command.client.id,
+        durationMs,
+      })
+      ccm.ok(effectiveCommand.tx)
+      _decInflight()
       return res.data.data.response
     }
 
+    _decInflight()
     throw new MykoCommandError(command.tx, 'Unknown Error')
   }
 }

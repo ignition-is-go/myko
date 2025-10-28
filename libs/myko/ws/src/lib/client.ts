@@ -41,6 +41,7 @@ import {
   type WSPingEvent,
 } from './types'
 import {
+  wrapCommandResponseWS,
   wrapCommandWS,
   wrapEventWS,
   wrapQueryCancel,
@@ -531,6 +532,8 @@ export class WSMClient {
       case MCOMMAND_EVENT:
         const cmd = unwrapCommand(message.data)
         this.commandSubject.next(cmd)
+
+        this.send(wrapCommandResponseWS(cmd.tx, cmd))
         break
 
       case MQUERY_EVENT:
