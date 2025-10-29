@@ -6,6 +6,9 @@
 - `tools/` centralizes automation (`tools/scripts/*.sh`, `*.ts`) and scaffolding (`tools/scaffold`). Reuse these instead of handcrafting release steps.
 - Assets and documentation live in `assets/` and `apps/docs.rship.io`. Tests co-locate with code (`*.test.ts`, `tests/`, or `__tests__`) to keep modules self-describing.
 
+## Vixi Virtual Cam UI
+- Never ever touch anything related to the Vixi Virtual Cam UI. Leave its files, configuration, and build steps completely untouched.
+
 ## Build, Test, and Development Commands
 - `pnpm install` installs JS/TS workspaces; run after syncing submodules via `pnpm run sync`.
 - `pnpm run gen` refreshes generated indexes and entity code; re-run after adding packages or schema types.
