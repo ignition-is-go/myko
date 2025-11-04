@@ -22,13 +22,22 @@ pub struct MEvent {
     #[serde(rename = "itemType")]
     item_type: String,
 
-    #[serde(rename = "createdAt")]
+    #[serde(rename = "createdAt", default = "utc_now_iso")]
     created_at: String,
 
+    #[serde(default = "generate_random_uuid")]
     tx: String,
 
     #[serde(rename = "sourceId")]
     source_id: Option<String>,
+}
+
+fn generate_random_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn utc_now_iso() -> String {
+    Utc::now().to_rfc3339()
 }
 
 impl MEvent {
@@ -55,7 +64,7 @@ impl MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type,
             item_type: item.entity_name().to_string(),
-            created_at: Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            created_at: Utc::now().to_rfc3339(),
             tx,
             source_id: None,
         }

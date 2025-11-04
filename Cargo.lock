@@ -1086,6 +1086,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bon"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97493a391b4b18ee918675fb8663e53646fd09321c58b46afa04e8ce2499c869"
+dependencies = [
+ "bon-macros",
+ "rustversion",
+]
+
+[[package]]
+name = "bon-macros"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a2af3eac944c12cdf4423eab70d310da0a8e5851a18ffb192c0a5e3f7ae1663"
+dependencies = [
+ "darling 0.20.11",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.108",
+]
+
+[[package]]
 name = "borsh"
 version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4463,6 +4486,8 @@ dependencies = [
  "myko-macros",
  "openssl",
  "partially",
+ "ractor 0.15.9",
+ "rdkafka",
  "rmp",
  "rmp-serde",
  "serde",
@@ -5890,6 +5915,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ractor"
+version = "0.15.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9500e0be6f12a0539cb1154d654ef2e888bf8529164e54aff4a097baad5bb001"
+dependencies = [
+ "bon",
+ "dashmap",
+ "futures 0.3.31",
+ "js-sys",
+ "once_cell",
+ "strum",
+ "tokio",
+ "tokio_with_wasm",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-time",
+]
+
+[[package]]
 name = "radium"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6163,6 +6208,7 @@ version = "4.9.0+2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5230dca48bc354d718269f3e4353280e188b610f7af7e2fcf54b7a79d5802872"
 dependencies = [
+ "cmake",
  "libc",
  "libz-sys",
  "num_enum",
@@ -6504,7 +6550,6 @@ name = "rship-entities"
 version = "3.0.0-canary.784"
 dependencies = [
  "async-stream",
- "async-trait",
  "js-sys",
  "log 0.4.28",
  "myko-macros",
@@ -6557,7 +6602,7 @@ dependencies = [
  "mime 0.3.17",
  "myko-rs",
  "percent-encoding 2.3.2",
- "ractor",
+ "ractor 0.12.4",
  "reqwest 0.12.24",
  "rship-entities",
  "serde",
@@ -7173,6 +7218,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.108",
+]
+
+[[package]]
+name = "server_rs"
+version = "0.1.0"
+dependencies = [
+ "dotenv",
+ "env_logger",
+ "myko-rs",
+ "rship-entities",
+ "tokio",
 ]
 
 [[package]]
@@ -8420,6 +8476,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio_with_wasm"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dfba9b946459940fb564dcf576631074cdfb0bfe4c962acd4c31f0dca7897e6"
+dependencies = [
+ "js-sys",
+ "tokio",
+ "tokio_with_wasm_proc",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "tokio_with_wasm_proc"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37e04c1865c281139e5ccf633cb9f76ffdaabeebfe53b703984cf82878e2aabb"
+dependencies = [
+ "quote",
+ "syn 2.0.108",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9279,6 +9359,16 @@ name = "web-sys"
 version = "0.3.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9367c417a924a74cae129e6a2ae3b47fabb1f8995595ab474029da749a8be120"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

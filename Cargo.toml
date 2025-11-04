@@ -20,5 +20,5 @@ members = [
   "apps/sync_server",
   "libs/rs-macros",
   "libs/opencv",
-  "libs/asset-store/core",
+  "libs/asset-store/core", "apps/server_rs",
 ]

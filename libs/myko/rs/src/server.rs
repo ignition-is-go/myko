@@ -1,29 +1,19 @@
-use std::{collections::HashMap, sync::Arc};
+use log::error;
+use ractor::Actor;
 
-use futures_util::{SinkExt, stream::StreamExt};
-use log::{debug, error, info};
-use tokio::{
-    net::TcpListener,
-    sync::{
-        Mutex, broadcast,
-        mpsc::{self, Receiver},
+use crate::{
+    actors::{
+        common::REPO_MANAGER_NAME,
+        kafka_common::KafkaSharedConfig,
+        repo_manager::init_all,
+        websocket_server::{WebSocketServer, WebSocketServerArgs},
     },
+    entities::client::Client,
+    item::Eventable,
 };
-use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
-
-use crate::{event::MEvent, module::Module};
-
-#[derive(PartialEq)]
-enum StartupState {
-    Off,
-    HasModules,
-    Bound,
-}
 
 pub struct Server {
-    startup_state: StartupState,
-    _config: ServerConfig,
-    modules_map: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
+    config: ServerConfig,
 }
 
 pub struct ServerConfig {
@@ -32,235 +22,35 @@ pub struct ServerConfig {
 
 impl Server {
     pub fn new(config: ServerConfig) -> Server {
-        Server {
-            startup_state: StartupState::Off,
-            _config: config,
-            modules_map: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Server { config: config }
     }
 
-    pub async fn add_modules(mut self, modules: Vec<Box<dyn Module + Send>>) -> Server {
-        if self.startup_state != StartupState::Off {
-            panic!("Cannot add modules after startup");
+    pub async fn start(&self) {
+        let _ = Client::register().await;
+
+        let manager = ractor::registry::where_is(String::from(REPO_MANAGER_NAME));
+
+        if manager.is_none() {
+            error!("Repo manager not found - likely no modules have been registered");
+            return;
         }
 
-        let (_from_kafka_tx, from_kafka_rx) = mpsc::channel::<MEvent>(100);
+        let _ = init_all(KafkaSharedConfig {
+            bootstrap_servers: self.config.kafka_brokers,
+        })
+        .await;
 
-        // for module in modules.iter_mut() {
-        //     module
-        //         .start_kafka(self.config.kafka_brokers, from_kafka_tx.clone())
-        //         .await;
-        // }
-
-        self.modules_map = Arc::new(Mutex::new(
-            modules.into_iter().map(|m| (m.entity_name(), m)).collect(),
-        ));
-
-        self.startup_state = StartupState::HasModules;
-
-        listen_kafka(from_kafka_rx, self.modules_map.clone());
-
-        self
-    }
-
-    pub async fn start(mut self) {
-        if self.startup_state != StartupState::HasModules
-            || self.modules_map.lock().await.is_empty()
-        {
-            panic!("Cannot start without modules");
-        }
-
-        let (broadcast_tx, _) = tokio::sync::broadcast::channel::<Message>(100);
-
-        let mut port = 5156;
-        let max_port = 5255;
-
-        loop {
-            let address = format!("0.0.0.0:{port}");
-
-            match TcpListener::bind(&address).await {
-                Ok(listener) => {
-                    info!("WebSocket server listening on {address}");
-                    while let Ok((stream, _)) = listener.accept().await {
-                        let r = self.modules_map.clone();
-                        tokio::spawn(handle_connection(
-                            stream,
-                            r,
-                            broadcast_tx.clone(),
-                            broadcast_tx.subscribe(),
-                        ));
-                    }
-                    self.startup_state = StartupState::Bound;
-                    break; // Exit loop if successfully bound
-                }
-                Err(e) => {
-                    error!("Failed to bind to port {port}: {e}");
-                    port += 1;
-                    if port > max_port {
-                        error!("Exceeded maximum port limit");
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn listen_kafka(
-    mut from_kafka_rx: Receiver<MEvent>,
-    modules: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
-) {
-    tokio::spawn(async move {
-        while let Some(event) = from_kafka_rx.recv().await {
-            let mut modules = modules.lock().await;
-
-            let module = modules.get_mut(&event.item_type());
-
-            match module {
-                Some(module) => {
-                    module.process_event(event.clone(), false).await;
-                }
-                None => {
-                    error!("No module found for event type: {}", event.item_type());
-                }
-            }
-        }
-    });
-}
-
-async fn handle_connection(
-    stream: tokio::net::TcpStream,
-    modules: Arc<Mutex<HashMap<String, Box<dyn Module + Send>>>>,
-    broadcast_tx: broadcast::Sender<Message>,
-    mut broadcast_rx: broadcast::Receiver<Message>,
-) {
-    debug!("New WebSocket connection");
-    let ws_stream = accept_async(stream)
+        let (_, join_handle) = Actor::spawn(
+            None,
+            WebSocketServer,
+            WebSocketServerArgs {
+                min_port: 5155,
+                max_port: 5158,
+            },
+        )
         .await
-        .expect("Error during WebSocket handshake");
-    let (mut ws_write, mut ws_read) = ws_stream.split();
+        .expect("Could not start socket server");
 
-    let (to_ws_tx, mut to_ws_rx) = mpsc::channel::<Message>(100);
-
-    tokio::spawn(async move {
-        while let Some(message) = to_ws_rx.recv().await {
-            if (ws_write.send(message).await).is_err() {
-                error!("Failed to send message to WebSocket");
-                break;
-            }
-        }
-    });
-
-    let broadcast_ws_tx = to_ws_tx.clone();
-
-    tokio::spawn(async move {
-        while let Ok(message) = broadcast_rx.recv().await {
-            if (broadcast_ws_tx.send(message).await).is_err() {
-                error!("Failed to send message to WebSocket");
-                break;
-            }
-        }
-    });
-
-    while let Some(message) = ws_read.next().await {
-        match message {
-            Ok(message) => {
-                if message.is_text() {
-                    let text = match message.to_text() {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("Failed to convert message into text: {e}");
-                            continue;
-                        }
-                    };
-
-                    match MEvent::from_str_trim(text) {
-                        Ok(event) => {
-                            let mut modules = modules.lock().await;
-
-                            let module = modules.get_mut(&event.item_type());
-
-                            match module {
-                                Some(module) => {
-                                    module.process_event(event.clone(), true).await;
-                                }
-                                None => {
-                                    println!(
-                                        "No module found for event type: {}",
-                                        event.item_type()
-                                    );
-                                }
-                            }
-
-                            continue;
-                            // todo!("Process Event to all modules, and continue");
-                        }
-                        Err(_e) => {}
-                    };
-
-                    // match Query::from_str_trim(text) {
-                    //     Ok(query) => {
-                    //         println!("Received query: {:?}", query);
-
-                    //         let mut modules = modules.lock().await;
-
-                    //         let item_type = match query.clone() {
-                    //             Query::Watch(q) => q.item_type.clone(),
-                    //             Query::WatchId(q) => q.item_type.clone(),
-                    //         };
-
-                    //         let module = modules.get_mut(&item_type);
-
-                    //         if module.is_none() {
-                    //             println!("No module found for item type: {}", item_type);
-                    //             continue;
-                    //         }
-
-                    //         let module = module.unwrap();
-
-                    //         if let Some(mut rx) = module.handle_query(query.clone()).await {
-                    //             let tx_clone = to_ws_tx.clone();
-
-                    //             tokio::spawn(async move {
-                    //                 while let Some(response) = rx.recv().await {
-                    //                     let response_str = match response.to_string() {
-                    //                         Ok(s) => s,
-                    //                         Err(e) => {
-                    //                             println!(
-                    //                                 "Failed to convert response to string: {}",
-                    //                                 e
-                    //                             );
-                    //                             continue;
-                    //                         }
-                    //                     };
-
-                    //                     if (tx_clone
-                    //                         .clone()
-                    //                         .send(Message::from(response_str))
-                    //                         .await)
-                    //                         .is_err()
-                    //                     {
-                    //                         break;
-                    //                     }
-                    //                 }
-                    //             });
-                    //         };
-
-                    //         continue;
-                    //     }
-                    //     Err(_e) => {
-                    //         println!("Failed to parse query: {}", _e);
-                    //     }
-                    // };
-
-                    debug!("Received other message, broadcasting to all connections");
-                    broadcast_tx.send(message).unwrap();
-                }
-            }
-            Err(e) => {
-                error!("Failed to receive message from WebSocket: {e}");
-                break;
-            }
-        }
+        let _ = join_handle.await;
     }
 }
