@@ -4477,6 +4477,7 @@ dependencies = [
 name = "myko-rs"
 version = "3.0.0-canary.784"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "futures-signals",
@@ -7224,6 +7225,7 @@ dependencies = [
 name = "server_rs"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dotenv",
  "env_logger",
  "myko-rs",

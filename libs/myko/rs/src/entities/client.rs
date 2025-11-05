@@ -1,10 +1,7 @@
-use crate::{
-    actors::repo::{Repo, RepoArgs},
-    item::Eventable,
-};
+use crate::{actors::repo_manager::RepoManagerMsg, item::Eventable, server::MykoServer};
 use partially::Partial;
-use ractor::Actor;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -31,15 +28,14 @@ impl Eventable<Client, PartialClient> for Client {
         "Client".into()
     }
 
-    async fn register() -> Result<(), ractor::ActorProcessingErr> {
-        Actor::spawn(
-            None,
-            Repo,
-            RepoArgs {
-                entity_name: Self::entity_name_static().into(),
-            },
-        )
-        .await?;
+    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+        server
+            .server
+            .send_message(crate::actors::server::ServerMsg::RepoManagerMsg(
+                RepoManagerMsg::RegisterRepo(Self::entity_name_static().into()),
+            ))
+            .map_err(anyhow::Error::msg)?;
+
         Ok(())
     }
 }

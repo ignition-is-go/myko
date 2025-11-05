@@ -1,56 +1,44 @@
-use log::error;
-use ractor::Actor;
+use crate::actors::server::{Server, ServerArgs, ServerMsg};
+use anyhow::bail;
+use ractor::{Actor, ActorRef};
+use std::sync::Arc;
+use tokio::sync::Notify;
 
-use crate::{
-    actors::{
-        common::REPO_MANAGER_NAME,
-        kafka_common::KafkaSharedConfig,
-        repo_manager::init_all,
-        websocket_server::{WebSocketServer, WebSocketServerArgs},
-    },
-    entities::client::Client,
-    item::Eventable,
-};
-
-pub struct Server {
-    config: ServerConfig,
+pub struct MykoServer {
+    pub(crate) server: ActorRef<ServerMsg>,
+    notify_end: Arc<Notify>,
 }
 
-pub struct ServerConfig {
-    pub kafka_brokers: &'static [&'static str],
-}
+impl MykoServer {
+    pub async fn init(args: MykoServerArgs) -> Result<Arc<MykoServer>, anyhow::Error> {
+        let notify = Arc::new(Notify::new());
+        match Actor::spawn(None, Server, args).await {
+            Err(err) => {
+                bail!("Failed to start MykoServer: {}", err);
+            }
 
-impl Server {
-    pub fn new(config: ServerConfig) -> Server {
-        Server { config: config }
-    }
+            Ok((server, server_handle)) => {
+                let n_clone = notify.clone();
+                tokio::spawn(async move {
+                    let _ = server_handle.await;
+                    n_clone.notify_waiters();
+                });
 
-    pub async fn start(&self) {
-        let _ = Client::register().await;
-
-        let manager = ractor::registry::where_is(String::from(REPO_MANAGER_NAME));
-
-        if manager.is_none() {
-            error!("Repo manager not found - likely no modules have been registered");
-            return;
+                Ok(Arc::new(MykoServer {
+                    server,
+                    notify_end: notify.clone(),
+                }))
+            }
         }
+    }
 
-        let _ = init_all(KafkaSharedConfig {
-            bootstrap_servers: self.config.kafka_brokers,
-        })
-        .await;
+    pub async fn start(&self) -> Result<(), anyhow::Error> {
+        self.server.send_message(ServerMsg::InitAllModules)?;
 
-        let (_, join_handle) = Actor::spawn(
-            None,
-            WebSocketServer,
-            WebSocketServerArgs {
-                min_port: 5155,
-                max_port: 5158,
-            },
-        )
-        .await
-        .expect("Could not start socket server");
+        self.notify_end.notified().await;
 
-        let _ = join_handle.await;
+        Ok(())
     }
 }
+
+pub type MykoServerArgs = ServerArgs;

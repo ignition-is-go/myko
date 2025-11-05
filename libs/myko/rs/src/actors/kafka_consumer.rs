@@ -6,6 +6,8 @@ use log::{debug, error};
 use ractor::{Actor, ActorRef};
 use rdkafka::{
     ClientConfig, Message,
+    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
+    config::FromClientConfig,
     consumer::{Consumer, StreamConsumer},
     util::Timeout,
 };
@@ -49,10 +51,46 @@ impl Actor for KafkaConsumer {
         {
             Ok(consumer) => consumer,
             Err(err) => {
-                error!("Failed to create Kafka consumer: {}", err);
-                return Err(ractor::ActorProcessingErr::from(String::from(
-                    "Could not create Kafka consumer",
-                )));
+                panic!("{}: Failed to create Kafka consumer: {}", topic, err);
+            }
+        };
+
+        let admin_client = match AdminClient::from_config(ClientConfig::new().set(
+            "bootstrap.servers",
+            shared_conf.bootstrap_servers.join(", "),
+        )) {
+            Ok(admin_client) => admin_client,
+            Err(err) => {
+                panic!("{}: Failed to create Kafka admin client: {}", topic, err);
+            }
+        };
+
+        match admin_client
+            .create_topics(
+                &[NewTopic {
+                    num_partitions: 1,
+                    replication: TopicReplication::Fixed(3),
+                    config: vec![("retention.ms", "-1"), ("cleanup.policy", "compact")],
+                    name: &topic.clone(),
+                }],
+                &AdminOptions::new(),
+            )
+            .await
+        {
+            Ok(_) => {
+                debug!("{}: Created Kafka topic", topic);
+            }
+            Err(err) => {
+                panic!("{}: Failed to create Kafka topic: {}", topic, err);
+            }
+        };
+
+        match consumer.subscribe(&[&topic.clone()]) {
+            Ok(_) => {
+                debug!("{}: Consumer Subscribed", topic);
+            }
+            Err(err) => {
+                panic!("{}: Failed to subscribe: {}", topic, err);
             }
         };
 
@@ -60,25 +98,10 @@ impl Actor for KafkaConsumer {
             consumer.fetch_watermarks(&topic, 0, Timeout::After(Duration::from_secs(5)));
 
         if let Err(err) = watermarks {
-            error!("Failed to fetch watermarks for topic {}: {}", topic, err);
-            return Err(ractor::ActorProcessingErr::from(String::from(
-                "Could not fetch watermarks",
-            )));
+            panic!("{}: failed to fetch watermarks: {}", topic, err);
         }
 
         let (_, high_water) = watermarks.expect("it has the watermarks");
-
-        match consumer.subscribe(&[&topic.clone()]) {
-            Ok(_) => {
-                debug!("Consumer Subscribed to topic {}", topic);
-            }
-            Err(err) => {
-                error!("Failed to subscribe to topic: {}", err);
-                return Err(ractor::ActorProcessingErr::from(String::from(
-                    "Could not subscribe to topic",
-                )));
-            }
-        };
 
         let repo_ref_clone = repo_ref.clone();
 
@@ -133,7 +156,7 @@ impl Actor for KafkaConsumer {
         });
 
         if high_water == 0 {
-            debug!("High water is 0, caught up immediately");
+            debug!("{}: High water is 0, caught up immediately", topic);
             match repo_ref_clone.send_message(RepoMsg::PersisterCaughtUp) {
                 Ok(_) => {}
                 Err(err) => error!("Error sending caught up message: {}", err),

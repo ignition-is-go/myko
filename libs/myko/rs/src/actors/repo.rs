@@ -1,24 +1,24 @@
-use std::{collections::HashMap, sync::Arc};
-
-use log::{debug, error, info};
-use ractor::{Actor, ActorProcessingErr};
-use serde_json::Value;
-
 use crate::{
     actors::{
         kafka_common::KafkaSharedConfig,
         kafka_consumer::{KafkaConsumer, KafkaConsumerArgs},
-        repo_manager::{RepoManagerMsg, assert_repo_manager},
+        repo_manager::RepoManagerMsg,
+        server::ServerMsg,
     },
     event::MEvent,
     item::BaseItem,
 };
+use log::{debug, error};
+use ractor::{Actor, ActorProcessingErr, ActorRef};
+use serde_json::Value;
+use std::{collections::HashMap, sync::Arc};
+
 pub struct Repo;
 
-#[derive(Default)]
 pub struct RepoState {
     store: HashMap<Arc<str>, Value>,
     entity_name: Arc<str>,
+    server: ActorRef<ServerMsg>,
 }
 
 pub enum RepoMsg {
@@ -29,6 +29,7 @@ pub enum RepoMsg {
 
 pub struct RepoArgs {
     pub entity_name: Arc<str>,
+    pub server: ActorRef<ServerMsg>,
 }
 
 impl Actor for Repo {
@@ -40,21 +41,20 @@ impl Actor for Repo {
 
     async fn pre_start(
         &self,
-        myself: ractor::ActorRef<Self::Msg>,
+        _myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let RepoArgs { entity_name } = args;
-        let manager = assert_repo_manager().await;
+        let RepoArgs {
+            entity_name,
+            server,
+        } = args;
 
-        info!("Initializing: {}", entity_name);
-        manager.send_message(RepoManagerMsg::RegisterRepo(
-            entity_name.clone(),
-            myself.clone(),
-        ))?;
+        debug!("Creating Repo: {}", entity_name);
 
         Ok(RepoState {
             entity_name: entity_name,
-            ..Default::default()
+            server,
+            store: HashMap::new(),
         })
     }
 
@@ -92,6 +92,7 @@ impl Actor for Repo {
             }
             RepoMsg::Init(conf) => {
                 let entity_name = state.entity_name.clone();
+                debug!("{}: Init", entity_name);
 
                 Actor::spawn(
                     None,
@@ -112,9 +113,9 @@ impl Actor for Repo {
                     state.entity_name,
                     state.store.len()
                 );
-                match assert_repo_manager().await.send_message(
-                    RepoManagerMsg::NotifyRepoInitComplete(state.entity_name.clone()),
-                ) {
+                match state.server.send_message(ServerMsg::RepoManagerMsg(
+                    RepoManagerMsg::RepoInitComplete(state.entity_name.clone()),
+                )) {
                     Ok(_) => Ok(()),
                     Err(err) => {
                         error!("Failed to notify repo manager: {}", err);

@@ -1,11 +1,7 @@
+use crate::{actors::repo_manager::RepoManagerMsg, event::MEvent, server::MykoServer};
 use partially::Partial;
-use ractor::Actor;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-
-use crate::{
-    actors::repo::{Repo, RepoArgs},
-    event::MEvent,
-};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,18 +30,14 @@ pub trait Eventable<T, PT: Clone>:
     fn hash(&self) -> String;
     fn entity_name(&self) -> String;
     fn entity_name_static() -> String;
-    fn register() -> impl std::future::Future<Output = Result<(), ractor::ActorProcessingErr>> + Send
-    {
-        async {
-            Actor::spawn(
-                None,
-                Repo,
-                RepoArgs {
-                    entity_name: Self::entity_name_static().into(),
-                },
-            )
-            .await?;
-            Ok(())
-        }
+    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+        server
+            .server
+            .send_message(crate::actors::server::ServerMsg::RepoManagerMsg(
+                RepoManagerMsg::RegisterRepo(Self::entity_name_static().into()),
+            ))
+            .map_err(anyhow::Error::msg)?;
+
+        Ok(())
     }
 }

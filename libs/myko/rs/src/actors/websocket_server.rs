@@ -4,22 +4,33 @@ use log::{debug, error, info, warn};
 use ractor::{Actor, ActorRef};
 use tokio::net::TcpListener;
 
-use crate::{actors::websocket_connection::WebSocketConnectionMsg, message::MykoMessage};
+use crate::{
+    actors::{
+        message_handler::MessageHandlerMsg,
+        websocket_connection::{
+            WebSocketConnection, WebSocketConnectionArgs, WebSocketConnectionMsg,
+        },
+    },
+    message::MykoMessage,
+};
 
 pub struct WebSocketServer;
 
 pub enum WebSocketServerMsg {
     SendToClient(MykoMessage<()>),
+    Start,
 }
 
-#[derive(Default)]
 pub struct WebSocketServerState {
     _connections: HashMap<Arc<str>, ActorRef<WebSocketConnectionMsg>>,
+    config: WebSocketServerArgs,
 }
 
+#[derive(Clone)]
 pub struct WebSocketServerArgs {
     pub min_port: u16,
     pub max_port: u16,
+    pub message_handler: ActorRef<MessageHandlerMsg>,
 }
 
 impl Actor for WebSocketServer {
@@ -34,32 +45,67 @@ impl Actor for WebSocketServer {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let WebSocketServerArgs { min_port, max_port } = args;
+        Ok(WebSocketServerState {
+            config: args,
+            _connections: HashMap::new(),
+        })
+    }
 
-        let mut port = min_port;
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ractor::ActorProcessingErr> {
+        match message {
+            WebSocketServerMsg::SendToClient(_msg) => Ok(()),
+            WebSocketServerMsg::Start => {
+                let WebSocketServerArgs {
+                    min_port,
+                    max_port,
+                    message_handler,
+                } = state.config.clone();
 
-        loop {
-            let address = format!("0.0.0.0:{port}");
-            debug!("Trying to bind to {address}");
+                let mut port = min_port;
 
-            match TcpListener::bind(&address).await {
-                Ok(listener) => {
-                    info!("WebSocket server listening on {address}");
-                    while let Ok((_stream, _)) = listener.accept().await {}
-                    break; // Exit loop if successfully bound
-                }
-                Err(e) => {
-                    warn!("Failed to bind to port {port}: {e}");
-                    port += 1;
-                    if port > max_port {
-                        error!("Exceeded maximum port limit");
-                        return Err(ractor::ActorProcessingErr::from(String::from(
-                            "Max port limit exceeded",
-                        )));
+                loop {
+                    let address = format!("0.0.0.0:{port}");
+                    debug!("Trying to bind to {address}");
+
+                    let msg_handler_clone = message_handler.clone();
+
+                    match TcpListener::bind(&address).await {
+                        Ok(listener) => {
+                            info!("WebSocket server listening on {address}/myko");
+                            while let Ok((stream, _)) = listener.accept().await {
+                                debug!("Accepted connection");
+                                let _ = Actor::spawn(
+                                    None,
+                                    WebSocketConnection,
+                                    WebSocketConnectionArgs {
+                                        stream,
+                                        message_handler: msg_handler_clone.clone(),
+                                    },
+                                )
+                                .await;
+                            }
+
+                            break; // Exit loop if successfully bound
+                        }
+                        Err(e) => {
+                            warn!("Failed to bind to port {port}: {e}");
+                            port += 1;
+                            if port > max_port {
+                                error!("Exceeded maximum port limit");
+                                return Err(ractor::ActorProcessingErr::from(String::from(
+                                    "Max port limit exceeded",
+                                )));
+                            }
+                        }
                     }
                 }
+                Ok(())
             }
         }
-        Ok(WebSocketServerState::default())
     }
 }
