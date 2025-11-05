@@ -14,22 +14,22 @@ pub enum MEventType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MEvent {
-    item: Value,
+    pub item: Value,
 
     #[serde(rename = "changeType")]
-    change_type: MEventType,
+    pub change_type: MEventType,
 
     #[serde(rename = "itemType")]
-    item_type: String,
+    pub item_type: String,
 
     #[serde(rename = "createdAt", default = "utc_now_iso")]
-    created_at: String,
+    pub created_at: String,
 
     #[serde(default = "generate_random_uuid")]
-    tx: String,
+    pub tx: String,
 
     #[serde(rename = "sourceId")]
-    source_id: Option<String>,
+    pub source_id: Option<String>,
 }
 
 fn generate_random_uuid() -> String {

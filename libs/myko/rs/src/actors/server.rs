@@ -1,29 +1,38 @@
-use std::ops::Range;
-
+use crate::{
+    actors::{
+        kafka_common::KafkaSharedConfig,
+        message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
+        repo_manager::{RepoManager, RepoManagerArgs, RepoManagerMsg},
+        websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
+    },
+    event::MEvent,
+};
+use chrono::Utc;
 use log::{error, info};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-
-use crate::actors::{
-    kafka_common::KafkaSharedConfig,
-    message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
-    repo_manager::{RepoManager, RepoManagerArgs, RepoManagerMsg},
-    websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
-};
+use std::sync::Arc;
+use uuid::Uuid;
 
 pub struct Server;
+
+pub struct ServerCtx {
+    pub host_id: Uuid,
+}
 
 pub struct ServerState {
     repo_manager: ActorRef<RepoManagerMsg>,
     web_socket_server: ActorRef<WebSocketServerMsg>,
     message_handler: ActorRef<MessageHandlerMsg>,
-    kafka_config: KafkaSharedConfig,
+    ctx: Arc<ServerCtx>,
+    args: ServerArgs,
 }
 
 pub struct ServerArgs {
     pub bind_addr: &'static str,
     pub bind_path: &'static str,
-    pub bind_port: Range<u16>,
+    pub bind_port: u16,
     pub kafka_config: KafkaSharedConfig,
+    pub public_host_address: &'static str,
 }
 
 pub enum ServerMsg {
@@ -45,11 +54,16 @@ impl Actor for Server {
         myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
+        let ctx = Arc::new(ServerCtx {
+            host_id: Uuid::new_v4(),
+        });
+
         let repo_manager = match Actor::spawn(
             None,
             RepoManager,
             RepoManagerArgs {
                 server: myself.clone(),
+                ctx: ctx.clone(),
             },
         )
         .await
@@ -81,8 +95,7 @@ impl Actor for Server {
             None,
             WebSocketServer,
             WebSocketServerArgs {
-                min_port: args.bind_port.start,
-                max_port: args.bind_port.end,
+                port: args.bind_port,
                 message_handler: message_handler.clone(),
             },
         )
@@ -99,7 +112,8 @@ impl Actor for Server {
             repo_manager,
             web_socket_server,
             message_handler,
-            kafka_config: args.kafka_config,
+            ctx,
+            args,
         })
     }
 
@@ -131,12 +145,30 @@ impl Actor for Server {
             ServerMsg::InitAllModules => {
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(RepoManagerMsg::InitAll(state.kafka_config.clone()))
+                    .send_message(RepoManagerMsg::InitAll(state.args.kafka_config.clone()))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 };
             }
             ServerMsg::AllInitComplete => {
+                if let Err(err) = state
+                    .repo_manager
+                    .send_message(RepoManagerMsg::ProcessEvent(MEvent::from_item(
+                        &crate::entities::server::Server {
+                            id: state.ctx.host_id.to_string(),
+                            address: state.args.public_host_address.to_string(),
+                            hash: uuid::Uuid::new_v4().to_string(),
+                            port: state.args.bind_port,
+                            started_at: Utc::now().to_rfc3339(),
+                            version: env!("CARGO_PKG_VERSION").to_string(),
+                        },
+                        crate::event::MEventType::SET,
+                        uuid::Uuid::new_v4().to_string(),
+                    )))
+                {
+                    error!("Failed to send message to RepoManager: {}", err);
+                }
+
                 if let Err(err) = state
                     .web_socket_server
                     .send_message(WebSocketServerMsg::Start)

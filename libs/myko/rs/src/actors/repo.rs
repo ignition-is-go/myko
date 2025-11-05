@@ -3,7 +3,7 @@ use crate::{
         kafka_common::KafkaSharedConfig,
         kafka_consumer::{KafkaConsumer, KafkaConsumerArgs},
         repo_manager::RepoManagerMsg,
-        server::ServerMsg,
+        server::{ServerCtx, ServerMsg},
     },
     event::MEvent,
     item::BaseItem,
@@ -19,6 +19,7 @@ pub struct RepoState {
     store: HashMap<Arc<str>, Value>,
     entity_name: Arc<str>,
     server: ActorRef<ServerMsg>,
+    ctx: Arc<ServerCtx>,
 }
 
 pub enum RepoMsg {
@@ -30,6 +31,7 @@ pub enum RepoMsg {
 pub struct RepoArgs {
     pub entity_name: Arc<str>,
     pub server: ActorRef<ServerMsg>,
+    pub ctx: Arc<ServerCtx>,
 }
 
 impl Actor for Repo {
@@ -47,6 +49,7 @@ impl Actor for Repo {
         let RepoArgs {
             entity_name,
             server,
+            ctx,
         } = args;
 
         debug!("Creating Repo: {}", entity_name);
@@ -55,6 +58,7 @@ impl Actor for Repo {
             entity_name: entity_name,
             server,
             store: HashMap::new(),
+            ctx,
         })
     }
 
@@ -101,6 +105,7 @@ impl Actor for Repo {
                         topic: entity_name.clone(),
                         shared_conf: conf,
                         repo_ref: myself.clone(),
+                        ctx: state.ctx.clone(),
                     },
                 )
                 .await?;

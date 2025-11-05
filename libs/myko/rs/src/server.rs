@@ -1,4 +1,7 @@
-use crate::actors::server::{Server, ServerArgs, ServerMsg};
+use crate::{
+    actors::server::{Server, ServerArgs, ServerMsg},
+    item::Eventable,
+};
 use anyhow::bail;
 use ractor::{Actor, ActorRef};
 use std::sync::Arc;
@@ -24,10 +27,15 @@ impl MykoServer {
                     n_clone.notify_waiters();
                 });
 
-                Ok(Arc::new(MykoServer {
+                let server = Arc::new(MykoServer {
                     server,
                     notify_end: notify.clone(),
-                }))
+                });
+
+                crate::entities::server::Server::register(&server)?;
+                crate::entities::client::Client::register(&server)?;
+
+                Ok(server)
             }
         }
     }

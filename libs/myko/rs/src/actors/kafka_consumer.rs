@@ -1,5 +1,5 @@
 use crate::{
-    actors::{kafka_common::KafkaSharedConfig, repo::RepoMsg},
+    actors::{kafka_common::KafkaSharedConfig, repo::RepoMsg, server::ServerCtx},
     event::MEvent,
 };
 use log::{debug, error};
@@ -23,6 +23,7 @@ pub struct KafkaConsumerArgs {
     pub topic: Arc<str>,
     pub shared_conf: KafkaSharedConfig,
     pub repo_ref: ActorRef<RepoMsg>,
+    pub ctx: Arc<ServerCtx>,
 }
 
 impl Actor for KafkaConsumer {
@@ -40,6 +41,7 @@ impl Actor for KafkaConsumer {
             topic,
             shared_conf,
             repo_ref,
+            ctx,
         } = args;
 
         let consumer: StreamConsumer = match ClientConfig::new()
@@ -105,6 +107,8 @@ impl Actor for KafkaConsumer {
 
         let repo_ref_clone = repo_ref.clone();
 
+        let host_id_string = ctx.host_id.to_string();
+
         tokio::spawn(async move {
             loop {
                 match consumer.recv().await {
@@ -130,12 +134,21 @@ impl Actor for KafkaConsumer {
 
                         match event {
                             Ok(event) => {
-                                match repo_ref.send_message(RepoMsg::ProcessEvent(event)) {
-                                    Ok(_) => {}
-                                    Err(err) => {
-                                        error!("Error sending event message: {}", err);
-                                    }
-                                };
+                                let my_event = event
+                                    .source_id
+                                    .clone()
+                                    .map_or(false, |id| id == host_id_string);
+
+                                if !my_event {
+                                    match repo_ref.send_message(RepoMsg::ProcessEvent(event)) {
+                                        Ok(_) => {}
+                                        Err(err) => {
+                                            error!("Error sending event message: {}", err);
+                                        }
+                                    };
+                                } else {
+                                    debug!("Skipped procesing event from this server");
+                                }
                             }
                             Err(err) => {
                                 error!("Invalid message received: {}", err);

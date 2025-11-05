@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use ractor::{Actor, ActorRef};
 use tokio::net::TcpListener;
 
@@ -28,8 +28,7 @@ pub struct WebSocketServerState {
 
 #[derive(Clone)]
 pub struct WebSocketServerArgs {
-    pub min_port: u16,
-    pub max_port: u16,
+    pub port: u16,
     pub message_handler: ActorRef<MessageHandlerMsg>,
 }
 
@@ -61,47 +60,33 @@ impl Actor for WebSocketServer {
             WebSocketServerMsg::SendToClient(_msg) => Ok(()),
             WebSocketServerMsg::Start => {
                 let WebSocketServerArgs {
-                    min_port,
-                    max_port,
+                    port,
                     message_handler,
                 } = state.config.clone();
 
-                let mut port = min_port;
+                let address = format!("0.0.0.0:{port}");
+                debug!("Trying to bind to {address}");
 
-                loop {
-                    let address = format!("0.0.0.0:{port}");
-                    debug!("Trying to bind to {address}");
+                let msg_handler_clone = message_handler.clone();
 
-                    let msg_handler_clone = message_handler.clone();
-
-                    match TcpListener::bind(&address).await {
-                        Ok(listener) => {
-                            info!("WebSocket server listening on {address}/myko");
-                            while let Ok((stream, _)) = listener.accept().await {
-                                debug!("Accepted connection");
-                                let _ = Actor::spawn(
-                                    None,
-                                    WebSocketConnection,
-                                    WebSocketConnectionArgs {
-                                        stream,
-                                        message_handler: msg_handler_clone.clone(),
-                                    },
-                                )
-                                .await;
-                            }
-
-                            break; // Exit loop if successfully bound
+                match TcpListener::bind(&address).await {
+                    Ok(listener) => {
+                        info!("WebSocket server listening on {address}/myko");
+                        while let Ok((stream, _)) = listener.accept().await {
+                            debug!("Accepted connection");
+                            let _ = Actor::spawn(
+                                None,
+                                WebSocketConnection,
+                                WebSocketConnectionArgs {
+                                    stream,
+                                    message_handler: msg_handler_clone.clone(),
+                                },
+                            )
+                            .await;
                         }
-                        Err(e) => {
-                            warn!("Failed to bind to port {port}: {e}");
-                            port += 1;
-                            if port > max_port {
-                                error!("Exceeded maximum port limit");
-                                return Err(ractor::ActorProcessingErr::from(String::from(
-                                    "Max port limit exceeded",
-                                )));
-                            }
-                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to bind to port {port}: {e}");
                     }
                 }
                 Ok(())

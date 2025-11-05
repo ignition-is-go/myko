@@ -2,7 +2,7 @@ use crate::{
     actors::{
         kafka_common::KafkaSharedConfig,
         repo::{Repo, RepoArgs, RepoMsg},
-        server::ServerMsg,
+        server::{ServerCtx, ServerMsg},
     },
     event::MEvent,
 };
@@ -19,6 +19,7 @@ pub struct RepoManagerState {
     repos: HashMap<Arc<str>, ActorRef<RepoMsg>>,
     left_to_init: HashSet<Arc<str>>,
     server: ActorRef<ServerMsg>,
+    ctx: Arc<ServerCtx>,
 }
 
 pub enum RepoManagerMsg {
@@ -30,6 +31,7 @@ pub enum RepoManagerMsg {
 
 pub struct RepoManagerArgs {
     pub server: ActorRef<ServerMsg>,
+    pub ctx: Arc<ServerCtx>,
 }
 
 impl Actor for RepoManager {
@@ -49,6 +51,7 @@ impl Actor for RepoManager {
             left_to_init: HashSet::new(),
             repos: HashMap::new(),
             server: args.server,
+            ctx: args.ctx,
         })
     }
 
@@ -74,6 +77,7 @@ impl Actor for RepoManager {
                     RepoArgs {
                         server: state.server.clone(),
                         entity_name: entity_name.clone(),
+                        ctx: state.ctx.clone(),
                     },
                 )
                 .await
