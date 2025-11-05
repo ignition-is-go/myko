@@ -48,7 +48,7 @@ impl Actor for MessageHandler {
                     MykoMessage::Event(event) => {
                         match state
                             .repo_manager
-                            .send_message(RepoManagerMsg::ProcessEvent(event))
+                            .send_message(RepoManagerMsg::ProcessEvent(event, true))
                         {
                             Ok(_) => Ok(()),
                             Err(err) => {

@@ -1,6 +1,6 @@
 use crate::{
     actors::{
-        kafka_common::KafkaSharedConfig,
+        kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
         repo_manager::{RepoManager, RepoManagerArgs, RepoManagerMsg},
         websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
@@ -151,20 +151,25 @@ impl Actor for Server {
                 };
             }
             ServerMsg::AllInitComplete => {
+                let s = crate::entities::server::Server {
+                    id: state.ctx.host_id.to_string(),
+                    address: state.args.public_host_address.to_string(),
+                    hash: uuid::Uuid::new_v4().to_string(),
+                    port: state.args.bind_port,
+                    started_at: Utc::now().to_rfc3339(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                };
+
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(RepoManagerMsg::ProcessEvent(MEvent::from_item(
-                        &crate::entities::server::Server {
-                            id: state.ctx.host_id.to_string(),
-                            address: state.args.public_host_address.to_string(),
-                            hash: uuid::Uuid::new_v4().to_string(),
-                            port: state.args.bind_port,
-                            started_at: Utc::now().to_rfc3339(),
-                            version: env!("CARGO_PKG_VERSION").to_string(),
-                        },
-                        crate::event::MEventType::SET,
-                        uuid::Uuid::new_v4().to_string(),
-                    )))
+                    .send_message(RepoManagerMsg::ProcessEvent(
+                        MEvent::from_item(
+                            &s,
+                            crate::event::MEventType::SET,
+                            uuid::Uuid::new_v4().to_string(),
+                        ),
+                        true,
+                    ))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 }

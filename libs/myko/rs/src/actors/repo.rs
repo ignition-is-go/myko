@@ -1,7 +1,10 @@
 use crate::{
     actors::{
-        kafka_common::KafkaSharedConfig,
-        kafka_consumer::{KafkaConsumer, KafkaConsumerArgs},
+        kafka::{
+            common::KafkaSharedConfig,
+            consumer::{KafkaConsumer, KafkaConsumerArgs},
+            producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
+        },
         repo_manager::RepoManagerMsg,
         server::{ServerCtx, ServerMsg},
     },
@@ -10,6 +13,7 @@ use crate::{
 };
 use log::{debug, error};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
+use rdkafka::types::RDKafkaApiKey;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
@@ -20,10 +24,11 @@ pub struct RepoState {
     entity_name: Arc<str>,
     server: ActorRef<ServerMsg>,
     ctx: Arc<ServerCtx>,
+    kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
 }
 
 pub enum RepoMsg {
-    ProcessEvent(MEvent),
+    ProcessEvent(MEvent, bool), // bool for persist
     Init(KafkaSharedConfig),
     PersisterCaughtUp,
 }
@@ -59,6 +64,7 @@ impl Actor for Repo {
             server,
             store: HashMap::new(),
             ctx,
+            kafka_producer: None,
         })
     }
 
@@ -69,17 +75,37 @@ impl Actor for Repo {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            RepoMsg::ProcessEvent(event) => {
-                let item_json = event.item_json();
-                let change_type = event.change_type();
-
-                let base_item: BaseItem = match event.try_into() {
+            RepoMsg::ProcessEvent(event, persist) => {
+                let base_item: BaseItem = match event.clone().try_into() {
                     Ok(base_item) => base_item,
                     Err(err) => {
                         error!("Failed to convert event to BaseItem: {}", err);
                         return Err(ActorProcessingErr::from(err));
                     }
                 };
+
+                if let Some(kafka_producer) = &state.kafka_producer {
+                    let key = base_item.id.to_string();
+
+                    if persist {
+                        let mut event = event.clone();
+                        event.source_id = Some(state.ctx.host_id.to_string());
+
+                        let produce_res = kafka_producer.send_message(
+                            KafkaProducerMsg::ProduceEvent(ProduceEventData { event: event, key }),
+                        );
+
+                        match produce_res {
+                            Ok(_) => (),
+                            Err(err) => {
+                                error!("Failed to produce event: {}", err);
+                            }
+                        }
+                    }
+                }
+
+                let item_json = event.item_json();
+                let change_type = event.change_type();
 
                 let id: Arc<str> = base_item.id.into();
 
@@ -109,6 +135,20 @@ impl Actor for Repo {
                     },
                 )
                 .await?;
+
+                let (producer_ref, _producer_handle) = Actor::spawn(
+                    None,
+                    KafkaProducer,
+                    KafkaProducerArgs {
+                        ctx: state.ctx.clone(),
+                        repo_ref: myself.clone(),
+                        shared_conf: conf,
+                        topic: entity_name.clone(),
+                    },
+                )
+                .await?;
+
+                state.kafka_producer = Some(producer_ref);
 
                 Ok(())
             }

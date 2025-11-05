@@ -1,5 +1,5 @@
 use crate::{
-    actors::{kafka_common::KafkaSharedConfig, repo::RepoMsg, server::ServerCtx},
+    actors::{kafka::common::KafkaSharedConfig, repo::RepoMsg, server::ServerCtx},
     event::MEvent,
 };
 use log::{debug, error};
@@ -140,14 +140,17 @@ impl Actor for KafkaConsumer {
                                     .map_or(false, |id| id == host_id_string);
 
                                 if !my_event {
-                                    match repo_ref.send_message(RepoMsg::ProcessEvent(event)) {
+                                    match repo_ref.send_message(RepoMsg::ProcessEvent(event, false))
+                                    {
                                         Ok(_) => {}
                                         Err(err) => {
                                             error!("Error sending event message: {}", err);
                                         }
                                     };
                                 } else {
-                                    debug!("Skipped procesing event from this server");
+                                    // debug!(
+                                    //     "Not Processing Events from this server - already processed"
+                                    // )
                                 }
                             }
                             Err(err) => {

@@ -1,6 +1,6 @@
 use crate::{
     actors::{
-        kafka_common::KafkaSharedConfig,
+        kafka::common::KafkaSharedConfig,
         repo::{Repo, RepoArgs, RepoMsg},
         server::{ServerCtx, ServerMsg},
     },
@@ -26,7 +26,7 @@ pub enum RepoManagerMsg {
     RegisterRepo(Arc<str>),
     InitAll(KafkaSharedConfig),
     RepoInitComplete(Arc<str>),
-    ProcessEvent(MEvent),
+    ProcessEvent(MEvent, bool), //bool for persist
 }
 
 pub struct RepoManagerArgs {
@@ -93,14 +93,14 @@ impl Actor for RepoManager {
                 info!("Registered repository: {}", entity_name);
                 Ok(())
             }
-            RepoManagerMsg::ProcessEvent(event) => {
+            RepoManagerMsg::ProcessEvent(event, persist) => {
                 let entity_type: Arc<str> = event.item_type().into();
 
                 let repo_ref = state.repos.get(&entity_type);
 
                 match repo_ref {
                     Some(repo) => {
-                        repo.send_message(RepoMsg::ProcessEvent(event))?;
+                        repo.send_message(RepoMsg::ProcessEvent(event, persist))?;
                     }
                     None => {
                         warn!("No repository found for event type: {}", event.item_type());

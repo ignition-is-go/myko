@@ -1,5 +1,4 @@
-pub mod kafka_common;
-pub mod kafka_consumer;
+pub mod kafka;
 pub mod message_handler;
 pub mod repo;
 pub mod repo_manager;
