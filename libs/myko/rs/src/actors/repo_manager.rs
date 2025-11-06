@@ -25,7 +25,7 @@ pub struct RepoManagerState {
 }
 
 pub enum RepoManagerMsg {
-    RegisterRepo(Arc<str>, Box<dyn MykoEntityController>, TypeId),
+    RegisterRepo(Arc<str>, Box<dyn MykoEntityController>),
     InitAll(KafkaSharedConfig),
     RepoInitComplete(Arc<str>),
     ProcessEvent(MEvent, bool), //bool for persist
@@ -64,7 +64,7 @@ impl Actor for RepoManager {
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
-            RepoManagerMsg::RegisterRepo(entity_name, store, type_id) => {
+            RepoManagerMsg::RegisterRepo(entity_name, store) => {
                 debug!("Registering repository: {}", entity_name);
 
                 state.left_to_init.insert(entity_name.clone());
@@ -81,7 +81,6 @@ impl Actor for RepoManager {
                         entity_name: entity_name.clone(),
                         ctx: state.ctx.clone(),
                         store,
-                        type_id,
                     },
                 )
                 .await
@@ -97,22 +96,7 @@ impl Actor for RepoManager {
                 info!("Registered repository: {}", entity_name);
                 Ok(())
             }
-            RepoManagerMsg::ProcessEvent(event, persist) => {
-                let entity_type: Arc<str> = event.item_type().into();
 
-                let repo_ref = state.repos.get(&entity_type);
-
-                match repo_ref {
-                    Some(repo) => {
-                        repo.send_message(RepoMsg::ProcessEvent(event, persist))?;
-                    }
-                    None => {
-                        warn!("No repository found for event type: {}", event.item_type());
-                    }
-                }
-
-                Ok(())
-            }
             RepoManagerMsg::RepoInitComplete(entity_name) => {
                 state.left_to_init.remove(&entity_name);
                 let left_to_init = state.left_to_init.len();
@@ -144,6 +128,22 @@ impl Actor for RepoManager {
                 for (_, repo_ref) in &state.repos {
                     let _ = repo_ref.send_message(RepoMsg::Init(config.clone()));
                 }
+                Ok(())
+            }
+            RepoManagerMsg::ProcessEvent(event, persist) => {
+                let entity_type: Arc<str> = event.item_type().into();
+
+                let repo_ref = state.repos.get(&entity_type);
+
+                match repo_ref {
+                    Some(repo) => {
+                        repo.send_message(RepoMsg::ProcessEvent(event, persist))?;
+                    }
+                    None => {
+                        warn!("No repository found for event type: {}", event.item_type());
+                    }
+                }
+
                 Ok(())
             }
         }

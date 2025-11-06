@@ -1,39 +1,41 @@
-use log::debug;
-use ractor::Actor;
-use serde_json::Value;
-use std::{any::Any, marker::PhantomData, sync::Arc};
+use log::{debug, error};
+use ractor::{Actor, ActorRef};
+use std::{
+    any::Any,
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use crate::{
-    entities::server::Server,
-    event::MEventType,
-    item::Eventable,
-    query::{self, MykoQuery},
+    actors::{
+        query::{
+            common::ProcessUpdateData,
+            query_manager::QueryClosureType,
+            query_runner::{QueryRunner, QueryRunnerArgs, QueryRunnerMsg},
+        },
+        server::MykoServerCtx,
+    },
+    common::any_parser::MykoAnyParser,
 };
 
 pub struct QueryHandler;
 
 pub struct QueryHandlerArgs {
     pub query_id: Arc<str>,
+    pub closure: QueryClosureType,
+    pub ctx: Arc<MykoServerCtx>,
 }
 
 pub struct QueryHandlerState {
-    pub query_id: Arc<str>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ProcessUpdateData {
-    Set(Arc<dyn Any + Send + Sync>),
-    Del(Arc<str>),
+    query_id: Arc<str>,
+    closure: QueryClosureType,
+    runners: HashMap<Arc<str>, ActorRef<QueryRunnerMsg>>,
+    ctx: Arc<MykoServerCtx>,
 }
 
 pub enum QueryHandlerMsg {
     ProcessUpdate(ProcessUpdateData),
-}
-
-impl QueryHandler {
-    pub fn new(args: QueryHandlerArgs) -> Self {
-        QueryHandler
-    }
+    StartQuery(Arc<dyn Any + Send + Sync>),
 }
 
 impl Actor for QueryHandler {
@@ -52,21 +54,58 @@ impl Actor for QueryHandler {
 
         Ok(QueryHandlerState {
             query_id: args.query_id,
+            closure: args.closure,
+            runners: HashMap::new(),
+            ctx: args.ctx,
         })
     }
-}
 
-trait QueryProcessor {
-    fn process_query(&self, query_json: Value) -> Result<(), anyhow::Error>;
-}
+    async fn handle(
+        &self,
+        myself: ractor::ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ractor::ActorProcessingErr> {
+        match message {
+            QueryHandlerMsg::StartQuery(query) => {
+                debug!("Starting query {}", state.query_id);
 
-struct MykoQueryProcessor<T> {
-    phantom: PhantomData<T>,
-}
+                let tx: Arc<str> = "tx-id".into();
 
-impl<T: MykoQuery> QueryProcessor for MykoQueryProcessor<T> {
-    fn process_query(&self, query_json: Value) -> Result<(), anyhow::Error> {
-        let query: T = serde_json::from_value(query_json)?;
+                match Actor::spawn(
+                    None,
+                    QueryRunner,
+                    QueryRunnerArgs {
+                        // TODO: this real
+                        initial_state: HashMap::new(),
+                        query,
+                        tx: tx.clone(),
+                        closure: state.closure.clone(),
+                        ctx: state.ctx.clone(),
+                    },
+                )
+                .await
+                {
+                    Ok((runner, runner_handle)) => {
+                        state.runners.insert(tx, runner);
+                    }
+                    Err(err) => {
+                        error!("Failed to spawn query runner: {}", err);
+                    }
+                };
+                //
+            }
+            QueryHandlerMsg::ProcessUpdate(data) => {
+                debug!("Processing update in {} runners", state.runners.len());
+                for runner in state.runners.values() {
+                    if let Err(err) =
+                        runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))
+                    {
+                        error!("Failed to send update to runner: {}", err);
+                    };
+                }
+            }
+        }
 
         Ok(())
     }

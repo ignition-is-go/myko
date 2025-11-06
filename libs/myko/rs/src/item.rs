@@ -42,7 +42,6 @@ pub trait Eventable:
                 RepoManagerMsg::RegisterRepo(
                     Self::entity_name_static().into(),
                     Box::new(EntityController::<Self>::new()),
-                    TypeId::of::<Self>(),
                 ),
             ))
             .map_err(anyhow::Error::msg)?;

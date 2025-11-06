@@ -1,3 +1,4 @@
+use chrono::ParseResult;
 use log::{debug, error};
 use serde::{Deserialize, Serialize, de::DeserializeOwned, ser::Error};
 use serde_json::Value;
@@ -9,12 +10,19 @@ use crate::{
         server::MykoServerCtx,
     },
     client::MykoClient,
+    common::any_parser::{CapturedTypeParser, MykoAnyParser},
     item::{Eventable, WrappedItem},
     server::MykoServer,
 };
 
 pub trait MykoQuery:
-    Serialize + DeserializeOwned + QueryId + QueryItemType + QueryClosure<<Self as MykoQuery>::Item>
+    Serialize
+    + DeserializeOwned
+    + Send
+    + Sync
+    + QueryId
+    + QueryItemType
+    + QueryClosure<<Self as MykoQuery>::Item>
 {
     type Item: Eventable;
 
@@ -34,6 +42,8 @@ pub trait MykoQuery:
             },
         );
 
+        let parser = Arc::new(CapturedTypeParser::<Self>::new());
+
         match server
             .server
             .send_message(crate::actors::server::ServerMsg::QueryManagerMsg(
@@ -41,6 +51,7 @@ pub trait MykoQuery:
                     query_id: Self::query_id_static(),
                     query_item_type: Self::query_item_type_static(),
                     closure,
+                    parser,
                 }),
             )) {
             Ok(_) => {}
@@ -107,8 +118,8 @@ impl QueryResponse {
 #[serde(rename_all = "camelCase")]
 pub struct WrappedQuery {
     pub query: Value,
-    pub query_id: String,
-    pub query_item_type: String,
+    pub query_id: Arc<str>,
+    pub query_item_type: Arc<str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,8 +157,8 @@ pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
 
     Ok(WrappedQuery {
         query: json,
-        query_id: query.query_id().to_string(),
-        query_item_type: query.query_item_type().to_string(),
+        query_id: query.query_id(),
+        query_item_type: query.query_item_type(),
     })
 }
 

@@ -1,6 +1,7 @@
 pub mod actors;
 pub mod client;
 pub mod command;
+pub mod common;
 pub mod entities;
 pub mod event;
 pub mod item;

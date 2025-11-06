@@ -2,7 +2,12 @@ use log::{error, info};
 use ractor::{Actor, ActorRef};
 
 use crate::{
-    actors::repo_manager::RepoManagerMsg, item::Eventable, message::MykoMessage,
+    actors::{
+        query::query_manager::{self, QueryManagerMsg},
+        repo_manager::RepoManagerMsg,
+    },
+    item::Eventable,
+    message::MykoMessage,
     query::QueryClosure,
 };
 
@@ -10,10 +15,12 @@ pub struct MessageHandler;
 
 pub struct MessageHandlerArgs {
     pub repo_manager: ActorRef<RepoManagerMsg>,
+    pub query_manager: ActorRef<QueryManagerMsg>,
 }
 
 pub struct MessageHandlerState {
     repo_manager: ActorRef<RepoManagerMsg>,
+    query_manager: ActorRef<QueryManagerMsg>,
 }
 
 pub enum MessageHandlerMsg {
@@ -34,6 +41,7 @@ impl Actor for MessageHandler {
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         Ok(MessageHandlerState {
             repo_manager: args.repo_manager,
+            query_manager: args.query_manager,
         })
     }
 
@@ -62,6 +70,13 @@ impl Actor for MessageHandler {
                     }
                     MykoMessage::Query(query) => {
                         info!("Received query: {:?}", query);
+
+                        if let Err(err) = state
+                            .query_manager
+                            .send_message(QueryManagerMsg::StartQuery(query))
+                        {
+                            error!("Failed to forward message to QueryManager: {}", err);
+                        }
 
                         Ok(())
                     }

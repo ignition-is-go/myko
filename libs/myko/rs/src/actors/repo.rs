@@ -5,7 +5,7 @@ use crate::{
             consumer::{KafkaConsumer, KafkaConsumerArgs},
             producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
         },
-        query::query_manager::QueryManagerMsg,
+        query::{common::ProcessUpdateData, query_manager::QueryManagerMsg},
         repo_manager::RepoManagerMsg,
         server::{MykoServerCtx, ServerMsg},
     },
@@ -37,7 +37,6 @@ pub struct RepoArgs {
     pub server: ActorRef<ServerMsg>,
     pub ctx: Arc<MykoServerCtx>,
     pub store: Box<dyn MykoEntityController>,
-    pub type_id: TypeId,
 }
 
 impl Actor for Repo {
@@ -57,7 +56,6 @@ impl Actor for Repo {
             server,
             ctx,
             store,
-            type_id,
         } = args;
 
         debug!("Creating Repo: {}", entity_name);
@@ -163,24 +161,27 @@ impl Actor for Repo {
                 match change_type {
                     crate::event::MEventType::DEL => {
                         state.entity_controller.del(&key);
-                        state.server.send_message(ServerMsg::QueryManagerMsg(
+
+                        if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
                             QueryManagerMsg::ProcessUpdate(
-                                super::query::query_handler::ProcessUpdateData::Del(key.clone()),
+                                ProcessUpdateData::Del(key.clone()),
                                 state.entity_name.clone(),
                             ),
-                        ));
+                        )) {
+                            error!("Failed to send message to query manager: {}", err);
+                        };
                     }
                     crate::event::MEventType::SET => {
                         match state.entity_controller.set(key, item_json) {
                             Ok(item) => {
-                                state.server.send_message(ServerMsg::QueryManagerMsg(
-                                    QueryManagerMsg::ProcessUpdate(
-                                        super::query::query_handler::ProcessUpdateData::Set(
-                                            item.clone(),
-                                        ),
+                                if let Err(err) = state.server.send_message(
+                                    ServerMsg::QueryManagerMsg(QueryManagerMsg::ProcessUpdate(
+                                        ProcessUpdateData::Set(item.clone()),
                                         state.entity_name.clone(),
-                                    ),
-                                ));
+                                    )),
+                                ) {
+                                    error!("Failed to send message to query manager: {}", err);
+                                };
                             }
                             Err(err) => {
                                 error!("Failed to insert item: {}", err);

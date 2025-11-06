@@ -78,11 +78,29 @@ impl Actor for Server {
             }
         };
 
+        let query_manager = match Actor::spawn(
+            None,
+            QueryManager,
+            QueryManagerArgs {
+                ctx: ctx.clone(),
+                server: myself.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn QueryManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
         let message_handler = match Actor::spawn(
             None,
             MessageHandler,
             MessageHandlerArgs {
                 repo_manager: repo_manager.clone(),
+                query_manager: query_manager.clone(),
             },
         )
         .await
@@ -107,23 +125,6 @@ impl Actor for Server {
             Ok((a, _h)) => a,
             Err(err) => {
                 error!("Failed to spawn WebSocketServer actor: {}", err);
-                return Err(err.into());
-            }
-        };
-
-        let query_manager = match Actor::spawn(
-            None,
-            QueryManager,
-            QueryManagerArgs {
-                ctx: ctx.clone(),
-                server: myself.clone(),
-            },
-        )
-        .await
-        {
-            Ok((a, _h)) => a,
-            Err(err) => {
-                error!("Failed to spawn QueryManager actor: {}", err);
                 return Err(err.into());
             }
         };
