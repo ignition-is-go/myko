@@ -2,10 +2,11 @@ use crate::{
     actors::{
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
+        query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
         repo_manager::{RepoManager, RepoManagerArgs, RepoManagerMsg},
         websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
     },
-    event::MEvent,
+    event::{MEvent, MEventType},
 };
 use chrono::Utc;
 use log::{error, info};
@@ -15,7 +16,7 @@ use uuid::Uuid;
 
 pub struct Server;
 
-pub struct ServerCtx {
+pub struct MykoServerCtx {
     pub host_id: Uuid,
 }
 
@@ -23,7 +24,8 @@ pub struct ServerState {
     repo_manager: ActorRef<RepoManagerMsg>,
     web_socket_server: ActorRef<WebSocketServerMsg>,
     message_handler: ActorRef<MessageHandlerMsg>,
-    ctx: Arc<ServerCtx>,
+    query_manager: ActorRef<QueryManagerMsg>,
+    ctx: Arc<MykoServerCtx>,
     args: ServerArgs,
 }
 
@@ -42,6 +44,7 @@ pub enum ServerMsg {
     RepoManagerMsg(RepoManagerMsg),
     WebSocketServerMsg(WebSocketServerMsg),
     MessageHandlerMsg(MessageHandlerMsg),
+    QueryManagerMsg(QueryManagerMsg),
 }
 
 impl Actor for Server {
@@ -54,7 +57,7 @@ impl Actor for Server {
         myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let ctx = Arc::new(ServerCtx {
+        let ctx = Arc::new(MykoServerCtx {
             host_id: Uuid::new_v4(),
         });
 
@@ -108,10 +111,28 @@ impl Actor for Server {
             }
         };
 
+        let query_manager = match Actor::spawn(
+            None,
+            QueryManager,
+            QueryManagerArgs {
+                ctx: ctx.clone(),
+                server: myself.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn QueryManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
         Ok(ServerState {
             repo_manager,
             web_socket_server,
             message_handler,
+            query_manager,
             ctx,
             args,
         })
@@ -139,6 +160,11 @@ impl Actor for Server {
                     error!("Failed to send message to WebSocketServer: {}", err);
                 };
             }
+            ServerMsg::QueryManagerMsg(msg) => {
+                if let Err(err) = state.query_manager.send_message(msg) {
+                    error!("Failed to send message to QueryManager: {}", err);
+                };
+            }
             ServerMsg::Start => {
                 info!("Starting Server!");
             }
@@ -160,16 +186,11 @@ impl Actor for Server {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 };
 
+                let event = MEvent::from_item(&s, MEventType::SET, Uuid::new_v4().to_string());
+
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(RepoManagerMsg::ProcessEvent(
-                        MEvent::from_item(
-                            &s,
-                            crate::event::MEventType::SET,
-                            uuid::Uuid::new_v4().to_string(),
-                        ),
-                        true,
-                    ))
+                    .send_message(RepoManagerMsg::ProcessEvent(event, true))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 }

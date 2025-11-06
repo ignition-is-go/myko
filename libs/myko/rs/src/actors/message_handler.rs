@@ -1,7 +1,10 @@
-use log::error;
+use log::{error, info};
 use ractor::{Actor, ActorRef};
 
-use crate::{actors::repo_manager::RepoManagerMsg, message::MykoMessage};
+use crate::{
+    actors::repo_manager::RepoManagerMsg, item::Eventable, message::MykoMessage,
+    query::QueryClosure,
+};
 
 pub struct MessageHandler;
 
@@ -56,6 +59,11 @@ impl Actor for MessageHandler {
                                 Ok(())
                             }
                         }
+                    }
+                    MykoMessage::Query(query) => {
+                        info!("Received query: {:?}", query);
+
+                        Ok(())
                     }
                     _ => {
                         error!("Unknown message type: {:?}", myko_message);

@@ -369,17 +369,11 @@ impl MykoClient {
     }
 
     pub fn watch_query<
-        T: Clone
-            + DeserializeOwned
-            + Eventable<T, PT>
-            + PartialEq
-            + DeserializeOwned
-            + std::fmt::Debug,
-        PT: Clone,
+        T: Eventable + std::fmt::Debug,
         Q: QueryId + QueryItemType + Serialize + Clone,
     >(
         &self,
-        query: Q,
+        query: &Q,
     ) -> impl tokio_stream::Stream<Item = Vec<T>> {
         let stream = self.get_messages();
 

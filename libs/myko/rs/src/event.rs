@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{io::Cursor, sync::Arc};
 
 use crate::{item::Eventable, utils::remove_whitespace};
 use chrono::Utc;
@@ -55,11 +55,7 @@ impl MEvent {
         self.item.clone()
     }
 
-    pub fn from_item<T, PT: Clone>(
-        item: &impl Eventable<T, PT>,
-        change_type: MEventType,
-        tx: String,
-    ) -> MEvent {
+    pub fn from_item(item: &impl Eventable, change_type: MEventType, tx: String) -> MEvent {
         MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type,
@@ -76,5 +72,13 @@ impl MEvent {
 
     pub fn item_type(&self) -> String {
         self.item_type.to_string()
+    }
+
+    pub fn item_id(&self) -> Option<Arc<str>> {
+        self.item
+            .as_object()
+            .and_then(|obj| obj.get("id"))
+            .and_then(|id| id.as_str())
+            .map(|s| Arc::from(s))
     }
 }

@@ -2,13 +2,15 @@ use crate::{
     actors::{
         kafka::common::KafkaSharedConfig,
         repo::{Repo, RepoArgs, RepoMsg},
-        server::{ServerCtx, ServerMsg},
+        server::{MykoServerCtx, ServerMsg},
     },
     event::MEvent,
+    item::MykoEntityController,
 };
 use log::{debug, error, info, warn};
 use ractor::{Actor, ActorRef};
 use std::{
+    any::TypeId,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -19,11 +21,11 @@ pub struct RepoManagerState {
     repos: HashMap<Arc<str>, ActorRef<RepoMsg>>,
     left_to_init: HashSet<Arc<str>>,
     server: ActorRef<ServerMsg>,
-    ctx: Arc<ServerCtx>,
+    ctx: Arc<MykoServerCtx>,
 }
 
 pub enum RepoManagerMsg {
-    RegisterRepo(Arc<str>),
+    RegisterRepo(Arc<str>, Box<dyn MykoEntityController>, TypeId),
     InitAll(KafkaSharedConfig),
     RepoInitComplete(Arc<str>),
     ProcessEvent(MEvent, bool), //bool for persist
@@ -31,7 +33,7 @@ pub enum RepoManagerMsg {
 
 pub struct RepoManagerArgs {
     pub server: ActorRef<ServerMsg>,
-    pub ctx: Arc<ServerCtx>,
+    pub ctx: Arc<MykoServerCtx>,
 }
 
 impl Actor for RepoManager {
@@ -62,7 +64,7 @@ impl Actor for RepoManager {
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
-            RepoManagerMsg::RegisterRepo(entity_name) => {
+            RepoManagerMsg::RegisterRepo(entity_name, store, type_id) => {
                 debug!("Registering repository: {}", entity_name);
 
                 state.left_to_init.insert(entity_name.clone());
@@ -78,6 +80,8 @@ impl Actor for RepoManager {
                         server: state.server.clone(),
                         entity_name: entity_name.clone(),
                         ctx: state.ctx.clone(),
+                        store,
+                        type_id,
                     },
                 )
                 .await

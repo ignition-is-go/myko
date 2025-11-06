@@ -1,12 +1,55 @@
-use serde::{ser::Error, Deserialize, Serialize};
+use log::{debug, error};
+use serde::{Deserialize, Serialize, de::DeserializeOwned, ser::Error};
 use serde_json::Value;
+use std::{any::Any, sync::Arc};
 
-use crate::{client::MykoClient, item::WrappedItem};
+use crate::{
+    actors::{
+        query::query_manager::{QueryManagerMsg, RegisterQueryData},
+        server::MykoServerCtx,
+    },
+    client::MykoClient,
+    item::{Eventable, WrappedItem},
+    server::MykoServer,
+};
 
-pub trait MykoQuery {
-    type Item;
+pub trait MykoQuery:
+    Serialize + DeserializeOwned + QueryId + QueryItemType + QueryClosure<<Self as MykoQuery>::Item>
+{
+    type Item: Eventable;
 
     fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = Vec<Self::Item>>;
+
+    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+        let closure = Arc::new(
+            |item: Arc<dyn Any>, ctx: Arc<MykoServerCtx>, query: Arc<dyn Any>| -> bool {
+                let item = item.downcast_ref::<Self::Item>();
+                let query = query.downcast_ref::<Arc<Self>>();
+
+                if let (Some(item), Some(query)) = (item, query) {
+                    <Self as QueryClosure<Self::Item>>::test_entity(item, ctx, query.clone())
+                } else {
+                    false
+                }
+            },
+        );
+
+        match server
+            .server
+            .send_message(crate::actors::server::ServerMsg::QueryManagerMsg(
+                QueryManagerMsg::RegisterQuery(RegisterQueryData {
+                    query_id: Self::query_id_static(),
+                    query_item_type: Self::query_item_type_static(),
+                    closure,
+                }),
+            )) {
+            Ok(_) => {}
+            Err(err) => {
+                error!("Failed to register query: {}", err);
+            }
+        };
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,11 +101,6 @@ impl QueryResponse {
     pub fn get_tx(&self) -> String {
         self.tx.clone()
     }
-
-    // #[wasm_bindgen(getter, js_name = "result")]
-    // pub fn get_item(&self) -> String {
-    //     json!(self.result.clone()).to_string()
-    // }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,17 +118,19 @@ pub struct QueryError {
     pub message: String,
 }
 
-pub trait QueryId {
-    fn query_id(&self) -> String;
+pub trait QueryId: Any {
+    fn query_id(&self) -> Arc<str>;
+    fn query_id_static() -> Arc<str>;
 }
 
-pub trait QueryItemType {
-    fn query_item_type(&self) -> String;
+pub trait QueryItemType: Any {
+    fn query_item_type(&self) -> Arc<str>;
+    fn query_item_type_static() -> Arc<str>;
 }
 
 pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
     tx: String,
-    query: Q,
+    query: &Q,
 ) -> Result<WrappedQuery, serde_json::Error> {
     let mut json = serde_json::to_value(query.clone())?;
 
@@ -106,15 +146,11 @@ pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
 
     Ok(WrappedQuery {
         query: json,
-        query_id: query.query_id(),
-        query_item_type: query.query_item_type(),
+        query_id: query.query_id().to_string(),
+        query_item_type: query.query_item_type().to_string(),
     })
 }
 
-pub trait QueryHandler<Q: MykoQuery> {
-    fn handle_query(
-        &self,
-        query: Q,
-        tx: String,
-    ) -> impl tokio_stream::Stream<Item = QueryResult<Q::Item>>;
+pub trait QueryClosure<T: Eventable> {
+    fn test_entity(item: &T, ctx: Arc<MykoServerCtx>, query: Arc<Self>) -> bool;
 }

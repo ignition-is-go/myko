@@ -5,26 +5,25 @@ use crate::{
             consumer::{KafkaConsumer, KafkaConsumerArgs},
             producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
         },
+        query::query_manager::QueryManagerMsg,
         repo_manager::RepoManagerMsg,
-        server::{ServerCtx, ServerMsg},
+        server::{MykoServerCtx, ServerMsg},
     },
     event::MEvent,
-    item::BaseItem,
+    item::MykoEntityController,
 };
 use log::{debug, error};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use rdkafka::types::RDKafkaApiKey;
-use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{any::TypeId, sync::Arc};
 
 pub struct Repo;
 
 pub struct RepoState {
-    store: HashMap<Arc<str>, Value>,
     entity_name: Arc<str>,
     server: ActorRef<ServerMsg>,
-    ctx: Arc<ServerCtx>,
+    ctx: Arc<MykoServerCtx>,
     kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
+    entity_controller: Box<dyn MykoEntityController>,
 }
 
 pub enum RepoMsg {
@@ -36,7 +35,9 @@ pub enum RepoMsg {
 pub struct RepoArgs {
     pub entity_name: Arc<str>,
     pub server: ActorRef<ServerMsg>,
-    pub ctx: Arc<ServerCtx>,
+    pub ctx: Arc<MykoServerCtx>,
+    pub store: Box<dyn MykoEntityController>,
+    pub type_id: TypeId,
 }
 
 impl Actor for Repo {
@@ -55,6 +56,8 @@ impl Actor for Repo {
             entity_name,
             server,
             ctx,
+            store,
+            type_id,
         } = args;
 
         debug!("Creating Repo: {}", entity_name);
@@ -62,7 +65,7 @@ impl Actor for Repo {
         Ok(RepoState {
             entity_name: entity_name,
             server,
-            store: HashMap::new(),
+            entity_controller: store,
             ctx,
             kafka_producer: None,
         })
@@ -75,51 +78,6 @@ impl Actor for Repo {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            RepoMsg::ProcessEvent(event, persist) => {
-                let base_item: BaseItem = match event.clone().try_into() {
-                    Ok(base_item) => base_item,
-                    Err(err) => {
-                        error!("Failed to convert event to BaseItem: {}", err);
-                        return Err(ActorProcessingErr::from(err));
-                    }
-                };
-
-                if let Some(kafka_producer) = &state.kafka_producer {
-                    let key = base_item.id.to_string();
-
-                    if persist {
-                        let mut event = event.clone();
-                        event.source_id = Some(state.ctx.host_id.to_string());
-
-                        let produce_res = kafka_producer.send_message(
-                            KafkaProducerMsg::ProduceEvent(ProduceEventData { event: event, key }),
-                        );
-
-                        match produce_res {
-                            Ok(_) => (),
-                            Err(err) => {
-                                error!("Failed to produce event: {}", err);
-                            }
-                        }
-                    }
-                }
-
-                let item_json = event.item_json();
-                let change_type = event.change_type();
-
-                let id: Arc<str> = base_item.id.into();
-
-                match change_type {
-                    crate::event::MEventType::DEL => {
-                        state.store.remove(&id);
-                    }
-                    _ => {
-                        state.store.insert(id, item_json);
-                    }
-                }
-
-                Ok(())
-            }
             RepoMsg::Init(conf) => {
                 let entity_name = state.entity_name.clone();
                 debug!("{}: Init", entity_name);
@@ -140,8 +98,6 @@ impl Actor for Repo {
                     None,
                     KafkaProducer,
                     KafkaProducerArgs {
-                        ctx: state.ctx.clone(),
-                        repo_ref: myself.clone(),
                         shared_conf: conf,
                         topic: entity_name.clone(),
                     },
@@ -156,7 +112,7 @@ impl Actor for Repo {
                 debug!(
                     "{} Init Complete: {} entities",
                     state.entity_name,
-                    state.store.len()
+                    state.entity_controller.len()
                 );
                 match state.server.send_message(ServerMsg::RepoManagerMsg(
                     RepoManagerMsg::RepoInitComplete(state.entity_name.clone()),
@@ -169,6 +125,71 @@ impl Actor for Repo {
                         )))
                     }
                 }
+            }
+            RepoMsg::ProcessEvent(event, persist) => {
+                let key = event.item_id();
+
+                if key.is_none() {
+                    error!("Event item ID is missing");
+                    return Ok(());
+                }
+
+                let key = key.expect("None should be handled");
+
+                if let Some(kafka_producer) = &state.kafka_producer {
+                    if persist {
+                        let mut event = event.clone();
+                        event.source_id = Some(state.ctx.host_id.to_string());
+
+                        let produce_res = kafka_producer.send_message(
+                            KafkaProducerMsg::ProduceEvent(ProduceEventData {
+                                event: event,
+                                key: key.clone(),
+                            }),
+                        );
+
+                        match produce_res {
+                            Ok(_) => (),
+                            Err(err) => {
+                                error!("Failed to produce event: {}", err);
+                            }
+                        }
+                    }
+                }
+
+                let item_json = event.item_json();
+                let change_type = event.change_type();
+
+                match change_type {
+                    crate::event::MEventType::DEL => {
+                        state.entity_controller.del(&key);
+                        state.server.send_message(ServerMsg::QueryManagerMsg(
+                            QueryManagerMsg::ProcessUpdate(
+                                super::query::query_handler::ProcessUpdateData::Del(key.clone()),
+                                state.entity_name.clone(),
+                            ),
+                        ));
+                    }
+                    crate::event::MEventType::SET => {
+                        match state.entity_controller.set(key, item_json) {
+                            Ok(item) => {
+                                state.server.send_message(ServerMsg::QueryManagerMsg(
+                                    QueryManagerMsg::ProcessUpdate(
+                                        super::query::query_handler::ProcessUpdateData::Set(
+                                            item.clone(),
+                                        ),
+                                        state.entity_name.clone(),
+                                    ),
+                                ));
+                            }
+                            Err(err) => {
+                                error!("Failed to insert item: {}", err);
+                            }
+                        };
+                    }
+                }
+
+                Ok(())
             }
         }
     }

@@ -1,5 +1,5 @@
 use crate::{
-    actors::{kafka::common::KafkaSharedConfig, repo::RepoMsg, server::ServerCtx},
+    actors::{kafka::common::KafkaSharedConfig, repo::RepoMsg, server::MykoServerCtx},
     event::MEvent,
 };
 use log::{debug, error};
@@ -23,7 +23,7 @@ pub struct KafkaConsumerArgs {
     pub topic: Arc<str>,
     pub shared_conf: KafkaSharedConfig,
     pub repo_ref: ActorRef<RepoMsg>,
-    pub ctx: Arc<ServerCtx>,
+    pub ctx: Arc<MykoServerCtx>,
 }
 
 impl Actor for KafkaConsumer {

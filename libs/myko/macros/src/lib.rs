@@ -27,13 +27,14 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
     let name_str = name.to_string();
 
-    let partial_name = format_ident!("Partial{}", name);
+    // let partial_name = format_ident!("Partial{}", name);
 
     let generated = quote! {
-        impl myko_rs::item::Eventable<#name, #partial_name> for #name {
+        impl myko_rs::item::Eventable for #name {
 
             fn id(&self) -> String {
                 self.id.clone()
+
             }
 
             fn hash(&self) -> String {
@@ -69,6 +70,7 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
+        // Impl MykoQuery
         impl myko_rs::query::MykoQuery for #struct_name {
             type Item = #query_item_type;
             fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = Vec<Self::Item>> {
@@ -76,69 +78,37 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
-        // both as ref
-        impl myko_rs::query::QueryId for &#struct_name {
-            fn query_id(&self) -> String {
-                stringify!(#struct_name).to_string()
-            }
-        }
-
-        // and as value
+        // Impl QueryId
         impl myko_rs::query::QueryId for #struct_name {
-            fn query_id(&self) -> String {
-                stringify!(#struct_name).to_string()
+            fn query_id(&self) -> std::sync::Arc<str> {
+                Self::query_id_static()
+            }
+
+            fn query_id_static() -> std::sync::Arc<str> {
+                stringify!(#struct_name).into()
             }
         }
 
-        // as ref
-        impl myko_rs::query::QueryItemType for &#struct_name {
-            fn query_item_type(&self) -> String {
-                stringify!(#query_item_type).to_string()
-            }
-        }
-
-        // and as value
+        // Impl QueryItemType
         impl myko_rs::query::QueryItemType for #struct_name {
-            fn query_item_type(&self) -> String {
-                stringify!(#query_item_type).to_string()
+            fn query_item_type(&self) -> std::sync::Arc<str> {
+                Self::query_item_type_static()
+            }
+
+            fn query_item_type_static() -> std::sync::Arc<str> {
+                stringify!(#query_item_type).into()
+            }
+        }
+
+        impl From<myko_rs::query::WrappedQuery> for #struct_name {
+            fn from(wrapped_query: myko_rs::query::WrappedQuery) -> Self {
+                serde_json::from_value::<Self>(wrapped_query.query).expect("Failed to deserialize query")
             }
         }
 
     };
 
     // Return the generated code
-    TokenStream::from(expanded)
-}
-
-#[proc_macro_attribute]
-pub fn myko_query_handler(attr: TokenStream, input: TokenStream) -> TokenStream {
-    // attr is a function name that will be called to handle the query
-    let query_handler: Path = parse_macro_input!(attr as Path);
-
-    // Parse the input struct
-
-    let input_struct = parse_macro_input!(input as ItemStruct);
-
-    let struct_name = &input_struct.ident;
-
-    // Generate the implementation
-
-    let expanded = quote! {
-        #input_struct
-
-        impl myko_rs::query::QueryHandler<#struct_name> for #struct_name {
-            fn handle_query(
-                &self,
-                query: #struct_name,
-                tx: String,
-            ) -> impl tokio_stream::Stream<Item = myko_rs::query::QueryResult<<#struct_name as myko_rs::query::MykoQuery>::Item>> {
-                #query_handler(query, tx)
-            }
-        }
-    };
-
-    // Return the generated code
-
     TokenStream::from(expanded)
 }
 

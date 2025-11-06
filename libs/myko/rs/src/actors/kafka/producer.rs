@@ -1,8 +1,4 @@
-use crate::{
-    actors::{kafka::common::KafkaSharedConfig, repo::RepoMsg, server::ServerCtx},
-    event::MEvent,
-    item::BaseItem,
-};
+use crate::{actors::kafka::common::KafkaSharedConfig, event::MEvent};
 use log::{debug, error};
 use ractor::{Actor, ActorRef};
 use rdkafka::{
@@ -18,7 +14,7 @@ pub struct KafkaProducer;
 
 pub struct ProduceEventData {
     pub event: MEvent,
-    pub key: String,
+    pub key: Arc<str>,
 }
 
 pub enum KafkaProducerMsg {
@@ -28,14 +24,11 @@ pub enum KafkaProducerMsg {
 pub struct KafkaProducerState {
     producer: FutureProducer,
     topic: Arc<str>,
-    ctx: Arc<ServerCtx>,
 }
 
 pub struct KafkaProducerArgs {
     pub topic: Arc<str>,
     pub shared_conf: KafkaSharedConfig,
-    pub repo_ref: ActorRef<RepoMsg>,
-    pub ctx: Arc<ServerCtx>,
 }
 
 impl Actor for KafkaProducer {
@@ -49,17 +42,10 @@ impl Actor for KafkaProducer {
         _myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let KafkaProducerArgs {
-            topic,
-            shared_conf,
-            repo_ref,
-            ctx,
-        } = args;
+        let KafkaProducerArgs { topic, shared_conf } = args;
 
         let producer: FutureProducer = match ClientConfig::new()
-            .set("group.id", uuid::Uuid::new_v4().to_string())
             .set("bootstrap.servers", shared_conf.bootstrap_servers.join(","))
-            .set("auto.offset.reset", "earliest")
             .set("allow.auto.create.topics", "true")
             .create()
         {
@@ -99,16 +85,12 @@ impl Actor for KafkaProducer {
             }
         };
 
-        Ok(KafkaProducerState {
-            producer,
-            topic,
-            ctx,
-        })
+        Ok(KafkaProducerState { producer, topic })
     }
 
     async fn handle(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {

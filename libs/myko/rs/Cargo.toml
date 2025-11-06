@@ -12,7 +12,7 @@ repository = "https://github.com/ignition-is-go/rship"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 uuid = { version = "1.0", features = ["serde", "v4", "js"] }
 partially = { version = "0.2.1", features = ["derive"] }

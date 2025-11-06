@@ -1,6 +1,7 @@
 use crate::{
     actors::server::{Server, ServerArgs, ServerMsg},
     item::Eventable,
+    query::MykoQuery,
 };
 use anyhow::bail;
 use ractor::{Actor, ActorRef};
@@ -33,7 +34,11 @@ impl MykoServer {
                 });
 
                 crate::entities::server::Server::register(&server)?;
+                crate::entities::server::GetConnectedServer::register(&server)?;
+                crate::entities::server::GetPeerServers::register(&server)?;
+
                 crate::entities::client::Client::register(&server)?;
+                crate::entities::client::GetClientsByServerId::register(&server)?;
 
                 Ok(server)
             }

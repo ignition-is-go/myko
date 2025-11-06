@@ -1,9 +1,14 @@
-use crate::{actors::repo_manager::RepoManagerMsg, item::Eventable, server::MykoServer};
-use partially::Partial;
-use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::sync::Arc;
 
-#[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug)]
+use crate::item::Eventable;
+use crate::query::QueryClosure;
+use crate::{self as myko_rs, actors::server::MykoServerCtx};
+use myko_macros::{Eventable, myko_query};
+use partially::Partial;
+use serde::{Deserialize, Serialize};
+
+#[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug, Eventable)]
 #[serde(rename_all = "camelCase")]
 #[partially(derive(Clone, Serialize, Deserialize, Default))]
 pub struct Server {
@@ -15,31 +20,24 @@ pub struct Server {
     pub started_at: String, // ISO DateTime
 }
 
-impl Eventable<Server, PartialServer> for Server {
-    fn id(&self) -> String {
-        self.id.clone()
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[myko_query(Server)]
+pub struct GetConnectedServer {}
+
+impl QueryClosure<Server> for GetConnectedServer {
+    fn test_entity(item: &Server, ctx: Arc<MykoServerCtx>, query: Arc<Self>) -> bool {
+        item.id == ctx.host_id.to_string()
     }
+}
 
-    fn hash(&self) -> String {
-        self.hash.clone()
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[myko_query(Server)]
+pub struct GetPeerServers {}
 
-    fn entity_name(&self) -> String {
-        Self::entity_name_static()
-    }
-
-    fn entity_name_static() -> String {
-        "Server".into()
-    }
-
-    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
-        server
-            .server
-            .send_message(crate::actors::server::ServerMsg::RepoManagerMsg(
-                RepoManagerMsg::RegisterRepo(Self::entity_name_static().into()),
-            ))
-            .map_err(anyhow::Error::msg)?;
-
-        Ok(())
+impl QueryClosure<Server> for GetPeerServers {
+    fn test_entity(item: &Server, ctx: Arc<MykoServerCtx>, query: Arc<Self>) -> bool {
+        item.id != ctx.host_id.to_string()
     }
 }
