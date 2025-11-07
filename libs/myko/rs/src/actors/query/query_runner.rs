@@ -69,6 +69,8 @@ impl Actor for QueryRunner {
         );
         match message {
             QueryRunnerMsg::ProcessUpdate(data) => {
+                let _tx = state.tx.clone();
+
                 match data {
                     ProcessUpdateData::Del(id) => {
                         // somehow emit changes here

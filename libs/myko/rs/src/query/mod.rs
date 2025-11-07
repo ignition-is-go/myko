@@ -6,7 +6,7 @@ use crate::{
     prelude::AnyItem,
     server::{MykoServer, MykoServerCtx},
 };
-use log::{debug, error};
+use log::error;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, sync::Arc};
 
@@ -77,7 +77,7 @@ pub trait Query:
             let item = item_ref.downcast::<Self::Item>();
             let query = query_ref.downcast::<Self>();
 
-            if let Err(_) = query {
+            if query.is_err() {
                 error!(
                     "Query did not correctly downcast in closure: {}",
                     Self::query_id_static()
@@ -87,7 +87,7 @@ pub trait Query:
 
             let query = query.expect("Query downcast should be valid");
 
-            if let Err(_) = item {
+            if item.is_err() {
                 error!(
                     "Item did not downcast: {} in {}",
                     Self::query_item_type_static(),

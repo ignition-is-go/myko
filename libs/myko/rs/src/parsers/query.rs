@@ -16,6 +16,12 @@ pub struct CapturedQueryParser<T> {
     phantom: std::marker::PhantomData<T>,
 }
 
+impl<T: Query + Send + Sync> Default for CapturedQueryParser<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Query + Send + Sync> CapturedQueryParser<T> {
     pub fn new() -> Self {
         Self {

@@ -114,6 +114,8 @@ impl Actor for QueryHandler {
                 //
             }
             QueryHandlerMsg::ProcessUpdate(data) => {
+                let _query_id = state.query_id.clone();
+
                 for runner in state.runners.values() {
                     if let Err(err) =
                         runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))

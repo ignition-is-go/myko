@@ -29,7 +29,7 @@ pub trait Eventable:
             ))
             .map_err(anyhow::Error::msg)?;
 
-        Self::register_auto(&server)?;
+        Self::register_auto(server)?;
 
         Ok(())
     }

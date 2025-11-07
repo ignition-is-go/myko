@@ -65,7 +65,7 @@ impl Actor for EventHandler {
         debug!("Creating Repo: {}", entity_name);
 
         Ok(EventHandlerState {
-            entity_name: entity_name,
+            entity_name,
             server,
             ctx,
             parser,
@@ -141,14 +141,14 @@ impl Actor for EventHandler {
                     }
                 };
 
-                if let Some(kafka_producer) = &state.kafka_producer {
-                    if let PersistEvent::Persist = data.persist {
+                if let Some(kafka_producer) = &state.kafka_producer
+                    && let PersistEvent::Persist = data.persist {
                         let mut event = data.event.clone();
                         event.source_id = Some(state.ctx.host_id.to_string());
 
                         let produce_res = kafka_producer.send_message(
                             KafkaProducerMsg::ProduceEvent(ProduceEventData {
-                                event: event,
+                                event,
                                 key: item.id().clone(),
                             }),
                         );
@@ -160,7 +160,6 @@ impl Actor for EventHandler {
                             }
                         }
                     }
-                }
 
                 match change_type {
                     crate::event::MEventType::DEL => {

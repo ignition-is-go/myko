@@ -1,6 +1,5 @@
 use crate::{
     actors::server::{Server, ServerArgs, ServerMsg},
-    entities::client::GetClientsByServerId,
     item::Eventable,
     query::Query,
 };

@@ -173,7 +173,7 @@ impl Actor for Server {
             ServerMsg::InitAllModules => {
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(EventManagerMsg::InitAll(state.args.kafka_config.clone()))
+                    .send_message(EventManagerMsg::InitAll(state.args.kafka_config))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 };

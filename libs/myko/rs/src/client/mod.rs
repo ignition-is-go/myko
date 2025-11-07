@@ -289,7 +289,7 @@ impl MykoClient {
             .next()
             .await
             .ok_or_else(|| "No response".to_string())?;
-        let value = next.map_err(|e| e)?;
+        let value = next?;
         let res: R = serde_json::from_value(value).map_err(|e| e.to_string())?;
         Ok(res)
     }

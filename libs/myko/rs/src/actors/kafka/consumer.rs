@@ -144,7 +144,7 @@ impl Actor for KafkaConsumer {
                                 let my_event = event
                                     .source_id
                                     .clone()
-                                    .map_or(false, |id| id == host_id_string);
+                                    .is_some_and(|id| id == host_id_string);
 
                                 if !my_event {
                                     match repo_ref.send_message(EventHandlerMessage::ProcessEvent(

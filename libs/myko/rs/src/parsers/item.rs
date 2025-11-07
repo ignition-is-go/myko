@@ -13,6 +13,12 @@ pub struct CapturedItemParser<T> {
     phantom: std::marker::PhantomData<T>,
 }
 
+impl<T> Default for CapturedItemParser<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> CapturedItemParser<T> {
     pub fn new() -> Self {
         Self {
