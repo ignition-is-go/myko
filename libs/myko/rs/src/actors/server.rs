@@ -1,12 +1,13 @@
 use crate::{
     actors::{
+        event::event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
         query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
-        repo_manager::{RepoManager, RepoManagerArgs, RepoManagerMsg},
-        websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
+        ws::websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
     },
     event::{MEvent, MEventType},
+    server::MykoServerCtx,
 };
 use chrono::Utc;
 use log::{error, info};
@@ -16,12 +17,8 @@ use uuid::Uuid;
 
 pub struct Server;
 
-pub struct MykoServerCtx {
-    pub host_id: Uuid,
-}
-
 pub struct ServerState {
-    repo_manager: ActorRef<RepoManagerMsg>,
+    repo_manager: ActorRef<EventManagerMsg>,
     web_socket_server: ActorRef<WebSocketServerMsg>,
     message_handler: ActorRef<MessageHandlerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
@@ -41,7 +38,7 @@ pub enum ServerMsg {
     Start,
     InitAllModules,
     AllInitComplete,
-    RepoManagerMsg(RepoManagerMsg),
+    RepoManagerMsg(EventManagerMsg),
     WebSocketServerMsg(WebSocketServerMsg),
     MessageHandlerMsg(MessageHandlerMsg),
     QueryManagerMsg(QueryManagerMsg),
@@ -63,8 +60,8 @@ impl Actor for Server {
 
         let repo_manager = match Actor::spawn(
             None,
-            RepoManager,
-            RepoManagerArgs {
+            EventManager,
+            EventManagerArgs {
                 server: myself.clone(),
                 ctx: ctx.clone(),
             },
@@ -172,16 +169,16 @@ impl Actor for Server {
             ServerMsg::InitAllModules => {
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(RepoManagerMsg::InitAll(state.args.kafka_config.clone()))
+                    .send_message(EventManagerMsg::InitAll(state.args.kafka_config.clone()))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 };
             }
             ServerMsg::AllInitComplete => {
                 let s = crate::entities::server::Server {
-                    id: state.ctx.host_id.to_string(),
+                    id: state.ctx.host_id.to_string().into(),
                     address: state.args.public_host_address.to_string(),
-                    hash: uuid::Uuid::new_v4().to_string(),
+                    hash: uuid::Uuid::new_v4().to_string().into(),
                     port: state.args.bind_port,
                     started_at: Utc::now().to_rfc3339(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
@@ -191,7 +188,7 @@ impl Actor for Server {
 
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(RepoManagerMsg::ProcessEvent(event, true))
+                    .send_message(EventManagerMsg::ProcessEvent(event, true))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 }

@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use crate::{
     actors::{
         message_handler::MessageHandlerMsg,
-        websocket_connection::{
+        ws::websocket_connection::{
             WebSocketConnection, WebSocketConnectionArgs, WebSocketConnectionMsg,
         },
     },

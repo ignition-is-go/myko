@@ -2,24 +2,19 @@ use log::{error, info};
 use ractor::{Actor, ActorRef};
 
 use crate::{
-    actors::{
-        query::query_manager::{self, QueryManagerMsg},
-        repo_manager::RepoManagerMsg,
-    },
-    item::Eventable,
+    actors::{event::event_manager::EventManagerMsg, query::query_manager::QueryManagerMsg},
     message::MykoMessage,
-    query::QueryClosure,
 };
 
 pub struct MessageHandler;
 
 pub struct MessageHandlerArgs {
-    pub repo_manager: ActorRef<RepoManagerMsg>,
+    pub repo_manager: ActorRef<EventManagerMsg>,
     pub query_manager: ActorRef<QueryManagerMsg>,
 }
 
 pub struct MessageHandlerState {
-    repo_manager: ActorRef<RepoManagerMsg>,
+    repo_manager: ActorRef<EventManagerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
 }
 
@@ -59,7 +54,7 @@ impl Actor for MessageHandler {
                     MykoMessage::Event(event) => {
                         match state
                             .repo_manager
-                            .send_message(RepoManagerMsg::ProcessEvent(event, true))
+                            .send_message(EventManagerMsg::ProcessEvent(event, true))
                         {
                             Ok(_) => Ok(()),
                             Err(err) => {

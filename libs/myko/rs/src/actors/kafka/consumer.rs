@@ -1,6 +1,7 @@
 use crate::{
-    actors::{kafka::common::KafkaSharedConfig, repo::RepoMsg, server::MykoServerCtx},
+    actors::{event::event_handler::EventHandlerMessage, kafka::common::KafkaSharedConfig},
     event::MEvent,
+    server::MykoServerCtx,
 };
 use log::{debug, error};
 use ractor::{Actor, ActorRef};
@@ -22,7 +23,7 @@ pub struct KafkaConsumerState {}
 pub struct KafkaConsumerArgs {
     pub topic: Arc<str>,
     pub shared_conf: KafkaSharedConfig,
-    pub repo_ref: ActorRef<RepoMsg>,
+    pub repo_ref: ActorRef<EventHandlerMessage>,
     pub ctx: Arc<MykoServerCtx>,
 }
 
@@ -140,8 +141,9 @@ impl Actor for KafkaConsumer {
                                     .map_or(false, |id| id == host_id_string);
 
                                 if !my_event {
-                                    match repo_ref.send_message(RepoMsg::ProcessEvent(event, false))
-                                    {
+                                    match repo_ref.send_message(EventHandlerMessage::ProcessEvent(
+                                        event, false,
+                                    )) {
                                         Ok(_) => {}
                                         Err(err) => {
                                             error!("Error sending event message: {}", err);
@@ -160,7 +162,7 @@ impl Actor for KafkaConsumer {
 
                         let caught_up = offset == high_water - 1 || high_water == 0;
                         if caught_up {
-                            match repo_ref.send_message(RepoMsg::PersisterCaughtUp) {
+                            match repo_ref.send_message(EventHandlerMessage::PersisterCaughtUp) {
                                 Ok(_) => {}
                                 Err(err) => error!("Error sending caught up message: {}", err),
                             };
@@ -173,7 +175,7 @@ impl Actor for KafkaConsumer {
 
         if high_water == 0 {
             debug!("{}: High water is 0, caught up immediately", topic);
-            match repo_ref_clone.send_message(RepoMsg::PersisterCaughtUp) {
+            match repo_ref_clone.send_message(EventHandlerMessage::PersisterCaughtUp) {
                 Ok(_) => {}
                 Err(err) => error!("Error sending caught up message: {}", err),
             };

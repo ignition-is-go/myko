@@ -375,6 +375,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "autosocket"
+version = "0.1.0"
+dependencies = [
+ "futures-signals",
+ "futures-util",
+ "log 0.4.28",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.21.0",
+ "tokio-util",
+ "tungstenite 0.21.0",
+ "url 2.5.7",
+]
+
+[[package]]
 name = "aws-config"
 version = "1.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4479,6 +4494,7 @@ version = "3.0.0-canary.784"
 dependencies = [
  "anyhow",
  "async-trait",
+ "autosocket",
  "chrono",
  "futures-signals",
  "futures-util",
@@ -7229,7 +7245,6 @@ dependencies = [
  "dotenv",
  "env_logger",
  "myko-rs",
- "rship-entities",
  "tokio",
 ]
 

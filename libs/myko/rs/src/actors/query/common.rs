@@ -1,10 +1,10 @@
-use std::{any::Any, sync::Arc};
-
+use crate::parsers::item::AnyItem;
 use serde_json::Value;
+use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ProcessUpdateData {
-    Set(Arc<dyn Any + Send + Sync>),
+    Set(Arc<dyn AnyItem>),
     Del(Arc<str>),
 }
 

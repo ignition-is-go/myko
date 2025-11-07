@@ -1,0 +1,33 @@
+use crate::{
+    actors::event::event_manager::EventManagerMsg,
+    parsers::item::{CapturedItemParser, MykoItemParser},
+    prelude::AnyItem,
+    server::MykoServer,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::{any::Any, sync::Arc};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WrappedItem<T> {
+    pub item: T,
+    pub item_type: String,
+}
+
+pub trait Eventable: AnyItem + Serialize + DeserializeOwned + Clone + Sized + Any {
+    fn hash(&self) -> Arc<str>;
+    fn entity_name(&self) -> String;
+    fn entity_name_static() -> String;
+    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+        let parser: Arc<dyn MykoItemParser> = Arc::new(CapturedItemParser::<Self>::new());
+
+        server
+            .server
+            .send_message(crate::actors::server::ServerMsg::RepoManagerMsg(
+                EventManagerMsg::RegisterRepo(Self::entity_name_static().into(), parser),
+            ))
+            .map_err(anyhow::Error::msg)?;
+
+        Ok(())
+    }
+}

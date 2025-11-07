@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
-use syn::{DeriveInput, parse_macro_input};
+use quote::quote;
+use syn::{DeriveInput, Field, FieldsNamed, parse_macro_input};
 
 #[proc_macro_derive(Empty)]
 pub fn empty_impl(input: TokenStream) -> TokenStream {
@@ -32,12 +32,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
     let generated = quote! {
         impl myko_rs::item::Eventable for #name {
 
-            fn id(&self) -> String {
-                self.id.clone()
-
-            }
-
-            fn hash(&self) -> String {
+            fn hash(&self) -> std::sync::Arc<str> {
                 self.hash.clone()
             }
 
@@ -47,6 +42,14 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
             fn entity_name_static() -> String {
                 #name_str.to_string()
+            }
+        }
+
+        impl myko_rs::prelude::AnyItem for #name {}
+
+        impl myko_rs::prelude::WithId for #name {
+            fn id(&self) -> std::sync::Arc<str> {
+                self.id.clone()
             }
         }
 
@@ -63,34 +66,65 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let query_item_type: Path = parse_macro_input!(attr as Path);
 
     // Parse the input struct
-    let input_struct = parse_macro_input!(input as ItemStruct);
+    let mut input_struct = parse_macro_input!(input as ItemStruct);
     let struct_name = &input_struct.ident;
+
+    if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+        let tx = quote! { tx };
+        let arc_str = quote! { std::sync::Arc<str> };
+        let pub_viz = quote! { pub };
+
+        let created_at = quote! { created_at };
+
+        let tx_field: Field = syn::parse_quote! {
+            #pub_viz #tx: #arc_str
+        };
+
+        let created_at_field: Field = syn::parse_quote! {
+            #pub_viz #created_at: #arc_str
+        };
+
+        named.push(tx_field);
+        named.push(created_at_field);
+    };
 
     // Generate the implementation
     let expanded = quote! {
         #input_struct
 
         // Impl MykoQuery
-        impl myko_rs::query::MykoQuery for #struct_name {
-            type Item = #query_item_type;
-            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = Vec<Self::Item>> {
+        impl myko_rs::prelude::Query for #struct_name {
+            fn watch(&self, client: &myko_rs::prelude::MykoClient) -> impl tokio_stream::Stream<Item = Vec<<Self as myko_rs::prelude::QueryItemType>::Item>> {
                 client.watch_query(self)
             }
         }
 
+        impl myko_rs::prelude::WithTransaction for #struct_name {
+            fn tx_id(&self) -> std::sync::Arc<str> {
+                self.tx.clone()
+            }
+        }
+
         // Impl QueryId
-        impl myko_rs::query::QueryId for #struct_name {
+        impl myko_rs::prelude::QueryId for #struct_name {
             fn query_id(&self) -> std::sync::Arc<str> {
-                Self::query_id_static()
+                stringify!(#struct_name).into()
             }
 
+        }
+
+        impl myko_rs::prelude::AnyQuery for #struct_name {}
+
+        impl myko_rs::prelude::QueryIdStatic for #struct_name {
             fn query_id_static() -> std::sync::Arc<str> {
                 stringify!(#struct_name).into()
             }
         }
 
         // Impl QueryItemType
-        impl myko_rs::query::QueryItemType for #struct_name {
+        impl myko_rs::prelude::QueryItemType for #struct_name {
+            type Item = #query_item_type;
+
             fn query_item_type(&self) -> std::sync::Arc<str> {
                 Self::query_item_type_static()
             }
@@ -100,8 +134,8 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
-        impl From<myko_rs::query::WrappedQuery> for #struct_name {
-            fn from(wrapped_query: myko_rs::query::WrappedQuery) -> Self {
+        impl From<myko_rs::prelude::WrappedQuery> for #struct_name {
+            fn from(wrapped_query: myko_rs::prelude::WrappedQuery) -> Self {
                 serde_json::from_value::<Self>(wrapped_query.query).expect("Failed to deserialize query")
             }
         }
@@ -124,25 +158,25 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
-        impl myko_rs::report::MykoReport<#report_item_type> for &#struct_name {
+        impl myko_rs::prelude::MykoReport<#report_item_type> for &#struct_name {
             fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
                 client.watch_report::<&#struct_name, #report_item_type>(self)
             }
         }
 
-        impl myko_rs::report::MykoReport<#report_item_type> for #struct_name {
+        impl myko_rs::prelude::MykoReport<#report_item_type> for #struct_name {
             fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
                 client.watch_report::<#struct_name, #report_item_type>(self)
             }
         }
 
-        impl myko_rs::report::ReportId for &#struct_name {
+        impl myko_rs::prelude::ReportId for &#struct_name {
             fn report_id(&self) -> String {
                 stringify!(#struct_name).to_string()
             }
         }
 
-        impl myko_rs::report::ReportId for #struct_name {
+        impl myko_rs::prelude::ReportId for #struct_name {
             fn report_id(&self) -> String {
                 stringify!(#struct_name).to_string()
             }
@@ -177,7 +211,7 @@ pub fn myko_command(_attr: TokenStream, input: TokenStream) -> TokenStream {
         impl #struct_name {
             pub async fn handle<R: serde::de::DeserializeOwned + Clone + 'static>(
                 &self,
-                client: &myko_rs::client::MykoClient,
+                client: &myko_rs::prelude::MykoClient,
             ) -> Result<R, String> {
                 client.send_command::<#struct_name, R>(self).await
             }

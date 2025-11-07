@@ -14,11 +14,11 @@ members = [
   "libs/myko/macros",
   "apps/labs/rs-core",
   "libs/entities/rs",
-  "libs/sdk/rs", 
+  "libs/sdk/rs",
   "libs/sync/core",
   "libs/sync/ffi",
   "apps/sync_server",
   "libs/rs-macros",
   "libs/opencv",
-  "libs/asset-store/core", "apps/server_rs",
+  "libs/asset-store/core", "apps/server_rs", "libs/autosocket",
 ]

@@ -1,47 +1,47 @@
 use crate::{
     actors::{
+        event::event_handler::{EventHandler, EventHandlerArgs, EventHandlerMessage},
         kafka::common::KafkaSharedConfig,
-        repo::{Repo, RepoArgs, RepoMsg},
-        server::{MykoServerCtx, ServerMsg},
+        server::ServerMsg,
     },
     event::MEvent,
-    item::MykoEntityController,
+    parsers::item::MykoItemParser,
+    server::MykoServerCtx,
 };
 use log::{debug, error, info, warn};
 use ractor::{Actor, ActorRef};
 use std::{
-    any::TypeId,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
 
-pub struct RepoManager;
+pub struct EventManager;
 
-pub struct RepoManagerState {
-    repos: HashMap<Arc<str>, ActorRef<RepoMsg>>,
+pub struct EventManagerState {
+    handlers: HashMap<Arc<str>, ActorRef<EventHandlerMessage>>,
     left_to_init: HashSet<Arc<str>>,
     server: ActorRef<ServerMsg>,
     ctx: Arc<MykoServerCtx>,
 }
 
-pub enum RepoManagerMsg {
-    RegisterRepo(Arc<str>, Box<dyn MykoEntityController>),
+pub enum EventManagerMsg {
+    RegisterRepo(Arc<str>, Arc<dyn MykoItemParser>),
     InitAll(KafkaSharedConfig),
     RepoInitComplete(Arc<str>),
     ProcessEvent(MEvent, bool), //bool for persist
 }
 
-pub struct RepoManagerArgs {
+pub struct EventManagerArgs {
     pub server: ActorRef<ServerMsg>,
     pub ctx: Arc<MykoServerCtx>,
 }
 
-impl Actor for RepoManager {
-    type Msg = RepoManagerMsg;
+impl Actor for EventManager {
+    type Msg = EventManagerMsg;
 
-    type State = RepoManagerState;
+    type State = EventManagerState;
 
-    type Arguments = RepoManagerArgs;
+    type Arguments = EventManagerArgs;
 
     async fn pre_start(
         &self,
@@ -49,9 +49,9 @@ impl Actor for RepoManager {
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         debug!("Creating RepoManager");
-        Ok(RepoManagerState {
+        Ok(EventManagerState {
             left_to_init: HashSet::new(),
-            repos: HashMap::new(),
+            handlers: HashMap::new(),
             server: args.server,
             ctx: args.ctx,
         })
@@ -64,43 +64,43 @@ impl Actor for RepoManager {
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
-            RepoManagerMsg::RegisterRepo(entity_name, store) => {
+            EventManagerMsg::RegisterRepo(entity_name, parser) => {
                 debug!("Registering repository: {}", entity_name);
 
                 state.left_to_init.insert(entity_name.clone());
-                if state.repos.contains_key(&entity_name) {
+                if state.handlers.contains_key(&entity_name) {
                     error!("Entity already exists");
                     return Ok(());
                 }
 
-                let (repo_ref, _repo_handle) = match Actor::spawn(
+                let (handler_ref, _) = match Actor::spawn(
                     None,
-                    Repo,
-                    RepoArgs {
+                    EventHandler,
+                    EventHandlerArgs {
                         server: state.server.clone(),
                         entity_name: entity_name.clone(),
                         ctx: state.ctx.clone(),
-                        store,
+                        parser,
                     },
                 )
                 .await
                 {
-                    Ok((repo_ref, repo_handle)) => (repo_ref, repo_handle),
+                    Ok((handler_ref, handler_handle)) => (handler_ref, handler_handle),
                     Err(err) => {
                         error!("Failed to spawn repository: {}", err);
                         return Err(err.into());
                     }
                 };
 
-                state.repos.insert(entity_name.clone(), repo_ref);
+                state.handlers.insert(entity_name.clone(), handler_ref);
                 info!("Registered repository: {}", entity_name);
                 Ok(())
             }
 
-            RepoManagerMsg::RepoInitComplete(entity_name) => {
+            EventManagerMsg::RepoInitComplete(entity_name) => {
                 state.left_to_init.remove(&entity_name);
                 let left_to_init = state.left_to_init.len();
-                let total_repos = state.repos.len();
+                let total_repos = state.handlers.len();
                 let total_init = total_repos - left_to_init;
                 info!(
                     "Repository init complete: ({}/{}) {} [{}]",
@@ -123,21 +123,21 @@ impl Actor for RepoManager {
                 };
                 Ok(())
             }
-            RepoManagerMsg::InitAll(config) => {
-                info!("Initializing all repositories: {}", state.repos.len());
-                for (_, repo_ref) in &state.repos {
-                    let _ = repo_ref.send_message(RepoMsg::Init(config.clone()));
+            EventManagerMsg::InitAll(config) => {
+                info!("Initializing all repositories: {}", state.handlers.len());
+                for (_, handler) in &state.handlers {
+                    let _ = handler.send_message(EventHandlerMessage::Init(config.clone()));
                 }
                 Ok(())
             }
-            RepoManagerMsg::ProcessEvent(event, persist) => {
+            EventManagerMsg::ProcessEvent(event, persist) => {
                 let entity_type: Arc<str> = event.item_type().into();
 
-                let repo_ref = state.repos.get(&entity_type);
+                let handler = state.handlers.get(&entity_type);
 
-                match repo_ref {
-                    Some(repo) => {
-                        repo.send_message(RepoMsg::ProcessEvent(event, persist))?;
+                match handler {
+                    Some(handler) => {
+                        handler.send_message(EventHandlerMessage::ProcessEvent(event, persist))?;
                     }
                     None => {
                         warn!("No repository found for event type: {}", event.item_type());

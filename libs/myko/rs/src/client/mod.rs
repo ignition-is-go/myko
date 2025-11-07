@@ -1,12 +1,13 @@
 use crate::{
+    api::query::wrap_query,
     command::{CommandId, WrappedCommand, wrap_command},
     event::MEvent,
     item::Eventable,
     message::MykoMessage,
-    query::{QueryId, QueryItemType, wrap_query},
+    query::{QueryId, QueryItemType},
     report::{MykoReport, ReportId, wrap_report},
-    websocket::{AutoReconnectSocket, SocketConnectionStatus},
 };
+use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
 use futures_signals::signal::{Signal, SignalExt};
 use log::{debug, error};
 use log::{info, warn};
@@ -418,7 +419,7 @@ impl MykoClient {
 
                     for up in upserts.iter() {
                         let _len = state.len();
-                        state.insert(up.id().clone(), up.clone());
+                        state.insert(up.id().clone().to_string(), up.clone());
                     }
 
                     for del in deletes.iter() {

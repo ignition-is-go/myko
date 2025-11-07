@@ -1,10 +1,9 @@
-use std::{io::Cursor, sync::Arc};
-
 use crate::{item::Eventable, utils::remove_whitespace};
 use chrono::Utc;
 use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Cursor;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MEventType {
@@ -72,13 +71,5 @@ impl MEvent {
 
     pub fn item_type(&self) -> String {
         self.item_type.to_string()
-    }
-
-    pub fn item_id(&self) -> Option<Arc<str>> {
-        self.item
-            .as_object()
-            .and_then(|obj| obj.get("id"))
-            .and_then(|id| id.as_str())
-            .map(|s| Arc::from(s))
     }
 }

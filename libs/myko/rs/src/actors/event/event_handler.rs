@@ -1,71 +1,75 @@
 use crate::{
     actors::{
+        event::event_manager::EventManagerMsg,
         kafka::{
             common::KafkaSharedConfig,
             consumer::{KafkaConsumer, KafkaConsumerArgs},
             producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
         },
         query::{common::ProcessUpdateData, query_manager::QueryManagerMsg},
-        repo_manager::RepoManagerMsg,
-        server::{MykoServerCtx, ServerMsg},
+        server::ServerMsg,
     },
     event::MEvent,
-    item::MykoEntityController,
+    parsers::item::MykoItemParser,
+    prelude::AnyItem,
+    server::MykoServerCtx,
 };
 use log::{debug, error};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use std::{any::TypeId, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-pub struct Repo;
+pub struct EventHandler;
 
-pub struct RepoState {
+pub struct EventHandlerState {
     entity_name: Arc<str>,
     server: ActorRef<ServerMsg>,
     ctx: Arc<MykoServerCtx>,
     kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
-    entity_controller: Box<dyn MykoEntityController>,
+    parser: Arc<dyn MykoItemParser>,
+    state: HashMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
-pub enum RepoMsg {
+pub enum EventHandlerMessage {
     ProcessEvent(MEvent, bool), // bool for persist
     Init(KafkaSharedConfig),
     PersisterCaughtUp,
 }
 
-pub struct RepoArgs {
+pub struct EventHandlerArgs {
     pub entity_name: Arc<str>,
     pub server: ActorRef<ServerMsg>,
     pub ctx: Arc<MykoServerCtx>,
-    pub store: Box<dyn MykoEntityController>,
+    pub parser: Arc<dyn MykoItemParser>,
 }
 
-impl Actor for Repo {
-    type Msg = RepoMsg;
+impl Actor for EventHandler {
+    type Msg = EventHandlerMessage;
 
-    type State = RepoState;
+    type State = EventHandlerState;
 
-    type Arguments = RepoArgs;
+    type Arguments = EventHandlerArgs;
 
     async fn pre_start(
         &self,
         _myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let RepoArgs {
+        let EventHandlerArgs {
             entity_name,
             server,
             ctx,
-            store,
+            parser,
         } = args;
 
         debug!("Creating Repo: {}", entity_name);
 
-        Ok(RepoState {
+        Ok(EventHandlerState {
             entity_name: entity_name,
             server,
-            entity_controller: store,
             ctx,
+            parser,
             kafka_producer: None,
+            state: HashMap::new(),
         })
     }
 
@@ -76,7 +80,7 @@ impl Actor for Repo {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            RepoMsg::Init(conf) => {
+            EventHandlerMessage::Init(conf) => {
                 let entity_name = state.entity_name.clone();
                 debug!("{}: Init", entity_name);
 
@@ -106,14 +110,14 @@ impl Actor for Repo {
 
                 Ok(())
             }
-            RepoMsg::PersisterCaughtUp => {
+            EventHandlerMessage::PersisterCaughtUp => {
                 debug!(
                     "{} Init Complete: {} entities",
                     state.entity_name,
-                    state.entity_controller.len()
+                    state.state.len()
                 );
                 match state.server.send_message(ServerMsg::RepoManagerMsg(
-                    RepoManagerMsg::RepoInitComplete(state.entity_name.clone()),
+                    EventManagerMsg::RepoInitComplete(state.entity_name.clone()),
                 )) {
                     Ok(_) => Ok(()),
                     Err(err) => {
@@ -124,15 +128,17 @@ impl Actor for Repo {
                     }
                 }
             }
-            RepoMsg::ProcessEvent(event, persist) => {
-                let key = event.item_id();
+            EventHandlerMessage::ProcessEvent(event, persist) => {
+                let item_json = event.item_json();
+                let change_type = event.change_type();
 
-                if key.is_none() {
-                    error!("Event item ID is missing");
-                    return Ok(());
-                }
-
-                let key = key.expect("None should be handled");
+                let item = match state.parser.parse(item_json) {
+                    Ok(item) => item,
+                    Err(err) => {
+                        error!("Failed to parse item: {}", err);
+                        return Ok(());
+                    }
+                };
 
                 if let Some(kafka_producer) = &state.kafka_producer {
                     if persist {
@@ -142,7 +148,7 @@ impl Actor for Repo {
                         let produce_res = kafka_producer.send_message(
                             KafkaProducerMsg::ProduceEvent(ProduceEventData {
                                 event: event,
-                                key: key.clone(),
+                                key: item.id().clone(),
                             }),
                         );
 
@@ -155,16 +161,13 @@ impl Actor for Repo {
                     }
                 }
 
-                let item_json = event.item_json();
-                let change_type = event.change_type();
-
                 match change_type {
                     crate::event::MEventType::DEL => {
-                        state.entity_controller.del(&key);
+                        state.state.remove(&item.id());
 
                         if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
                             QueryManagerMsg::ProcessUpdate(
-                                ProcessUpdateData::Del(key.clone()),
+                                ProcessUpdateData::Del(item.id().clone()),
                                 state.entity_name.clone(),
                             ),
                         )) {
@@ -172,20 +175,15 @@ impl Actor for Repo {
                         };
                     }
                     crate::event::MEventType::SET => {
-                        match state.entity_controller.set(key, item_json) {
-                            Ok(item) => {
-                                if let Err(err) = state.server.send_message(
-                                    ServerMsg::QueryManagerMsg(QueryManagerMsg::ProcessUpdate(
-                                        ProcessUpdateData::Set(item.clone()),
-                                        state.entity_name.clone(),
-                                    )),
-                                ) {
-                                    error!("Failed to send message to query manager: {}", err);
-                                };
-                            }
-                            Err(err) => {
-                                error!("Failed to insert item: {}", err);
-                            }
+                        state.state.insert(item.id(), item.clone());
+
+                        if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
+                            QueryManagerMsg::ProcessUpdate(
+                                ProcessUpdateData::Set(item.clone()),
+                                state.entity_name.clone(),
+                            ),
+                        )) {
+                            error!("Failed to send message to query manager: {}", err);
                         };
                     }
                 }

@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use log::{debug, error, warn};
 use ractor::{Actor, ActorRef};
@@ -6,20 +6,21 @@ use ractor::{Actor, ActorRef};
 use crate::{
     actors::{
         query::{
-            common::{ProcessUpdateData, StartQueryData},
+            common::ProcessUpdateData,
             query_handler::{QueryHandler, QueryHandlerArgs, QueryHandlerMsg},
         },
-        server::{MykoServerCtx, ServerMsg},
+        server::ServerMsg,
     },
-    common::any_parser::MykoAnyParser,
-    query::WrappedQuery,
+    api::query::WrappedQuery,
+    parsers::query::MykoQueryParser,
+    query::QueryHandlerContextAny,
+    server::MykoServerCtx,
     utils::assert_default_for_key,
 };
 
 pub struct QueryManager;
 
-pub type QueryClosureType =
-    Arc<dyn Fn(Arc<dyn Any>, Arc<MykoServerCtx>, Arc<dyn Any>) -> bool + Send + Sync>;
+pub type QueryClosureType = Arc<dyn Fn(QueryHandlerContextAny) -> bool + Send + Sync>;
 
 pub struct QueryManagerArgs {
     pub ctx: Arc<MykoServerCtx>,
@@ -32,14 +33,14 @@ pub struct QueryManagerState {
     // by query_item_type and then query_id
     handlers: HashMap<Arc<str>, HashMap<Arc<str>, ActorRef<QueryHandlerMsg>>>,
     // by query_id
-    parsers: HashMap<Arc<str>, Arc<dyn MykoAnyParser>>,
+    parsers: HashMap<Arc<str>, Arc<dyn MykoQueryParser>>,
 }
 
 pub struct RegisterQueryData {
     pub query_id: Arc<str>,
     pub query_item_type: Arc<str>,
     pub closure: QueryClosureType,
-    pub parser: Arc<dyn MykoAnyParser>,
+    pub parser: Arc<dyn MykoQueryParser>,
 }
 
 pub enum QueryManagerMsg {
@@ -68,7 +69,7 @@ impl Actor for QueryManager {
 
     async fn handle(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
@@ -87,6 +88,7 @@ impl Actor for QueryManager {
                         query_id: data.query_id.clone(),
                         closure: data.closure,
                         ctx: state.ctx.clone(),
+                        server: state.server.clone(),
                     },
                 )
                 .await

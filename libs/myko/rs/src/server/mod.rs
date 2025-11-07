@@ -1,12 +1,13 @@
 use crate::{
     actors::server::{Server, ServerArgs, ServerMsg},
     item::Eventable,
-    query::MykoQuery,
+    query::Query,
 };
 use anyhow::bail;
 use ractor::{Actor, ActorRef};
 use std::sync::Arc;
 use tokio::sync::Notify;
+use uuid::Uuid;
 
 pub struct MykoServer {
     pub(crate) server: ActorRef<ServerMsg>,
@@ -55,3 +56,7 @@ impl MykoServer {
 }
 
 pub type MykoServerArgs = ServerArgs;
+
+pub struct MykoServerCtx {
+    pub host_id: Uuid,
+}

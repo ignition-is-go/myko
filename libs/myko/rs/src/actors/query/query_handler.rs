@@ -1,11 +1,3 @@
-use log::{debug, error};
-use ractor::{Actor, ActorRef};
-use std::{
-    any::Any,
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
-
 use crate::{
     actors::{
         query::{
@@ -13,10 +5,14 @@ use crate::{
             query_manager::QueryClosureType,
             query_runner::{QueryRunner, QueryRunnerArgs, QueryRunnerMsg},
         },
-        server::MykoServerCtx,
+        server::ServerMsg,
     },
-    common::any_parser::MykoAnyParser,
+    parsers::query::AnyQuery,
+    server::MykoServerCtx,
 };
+use log::{debug, error};
+use ractor::{Actor, ActorRef};
+use std::{collections::HashMap, sync::Arc};
 
 pub struct QueryHandler;
 
@@ -24,6 +20,7 @@ pub struct QueryHandlerArgs {
     pub query_id: Arc<str>,
     pub closure: QueryClosureType,
     pub ctx: Arc<MykoServerCtx>,
+    pub server: ActorRef<ServerMsg>,
 }
 
 pub struct QueryHandlerState {
@@ -35,7 +32,7 @@ pub struct QueryHandlerState {
 
 pub enum QueryHandlerMsg {
     ProcessUpdate(ProcessUpdateData),
-    StartQuery(Arc<dyn Any + Send + Sync>),
+    StartQuery(Arc<dyn AnyQuery>),
 }
 
 impl Actor for QueryHandler {
@@ -47,7 +44,7 @@ impl Actor for QueryHandler {
 
     async fn pre_start(
         &self,
-        myself: ractor::ActorRef<Self::Msg>,
+        _myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         debug!("Creating Handler for query {}", args.query_id);
@@ -62,7 +59,7 @@ impl Actor for QueryHandler {
 
     async fn handle(
         &self,
-        myself: ractor::ActorRef<Self::Msg>,
+        _myself: ractor::ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
@@ -70,13 +67,13 @@ impl Actor for QueryHandler {
             QueryHandlerMsg::StartQuery(query) => {
                 debug!("Starting query {}", state.query_id);
 
-                let tx: Arc<str> = "tx-id".into();
+                let tx: Arc<str> = query.tx_id();
 
                 match Actor::spawn(
                     None,
                     QueryRunner,
                     QueryRunnerArgs {
-                        // TODO: this real
+                        // TODO: make this real
                         initial_state: HashMap::new(),
                         query,
                         tx: tx.clone(),
@@ -86,7 +83,7 @@ impl Actor for QueryHandler {
                 )
                 .await
                 {
-                    Ok((runner, runner_handle)) => {
+                    Ok((runner, _runner_handle)) => {
                         state.runners.insert(tx, runner);
                     }
                     Err(err) => {
@@ -96,7 +93,9 @@ impl Actor for QueryHandler {
                 //
             }
             QueryHandlerMsg::ProcessUpdate(data) => {
-                debug!("Processing update in {} runners", state.runners.len());
+                if state.runners.len() > 0 {
+                    debug!("Processing update in {} runners", state.runners.len());
+                }
                 for runner in state.runners.values() {
                     if let Err(err) =
                         runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))
