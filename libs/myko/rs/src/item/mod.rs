@@ -15,7 +15,6 @@ pub struct WrappedItem<T> {
 }
 
 pub trait Eventable: AnyItem + Serialize + DeserializeOwned + Clone + Sized + Any {
-    fn hash(&self) -> Arc<str>;
     fn entity_name(&self) -> String;
     fn entity_name_static() -> String;
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {

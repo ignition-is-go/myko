@@ -20,22 +20,44 @@ pub fn empty_impl(input: TokenStream) -> TokenStream {
     generated.into()
 }
 
-#[proc_macro_derive(Eventable)]
-pub fn eventable_impl(input: TokenStream) -> TokenStream {
-    let ast = parse_macro_input!(input as DeriveInput);
-    let name = &ast.ident;
+#[proc_macro_attribute]
+pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let mut input_struct = parse_macro_input!(input as ItemStruct);
+    let name = &input_struct.ident;
 
     let name_str = name.to_string();
 
-    // let partial_name = format_ident!("Partial{}", name);
+    if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+        let id = quote! { id };
+        let arc_str = quote! { std::sync::Arc<str> };
+        let pub_viz = quote! { pub };
 
-    let generated = quote! {
+        let hash = quote! { hash };
+
+        let id_field: Field = syn::parse_quote! {
+            #pub_viz #id: #arc_str
+        };
+
+        let hash_field: Field = syn::parse_quote! {
+            #pub_viz #hash: #arc_str
+        };
+
+        named.push(id_field);
+        named.push(hash_field);
+    };
+
+    let derives = quote! {
+        #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug)]
+        #[serde(rename_all = "camelCase")]
+        #[partially(derive(Clone, Serialize, Deserialize, Default))]
+    };
+
+    let expanded = quote! {
+
+        #derives
+        #input_struct
+
         impl myko_rs::item::Eventable for #name {
-
-            fn hash(&self) -> std::sync::Arc<str> {
-                self.hash.clone()
-            }
-
             fn entity_name(&self) -> String {
                 #name_str.to_string()
             }
@@ -55,7 +77,7 @@ pub fn eventable_impl(input: TokenStream) -> TokenStream {
 
     };
 
-    generated.into()
+    expanded.into()
 }
 
 use syn::{ItemStruct, Path};
@@ -88,8 +110,14 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
         named.push(created_at_field);
     };
 
+    let derives = quote! {
+         #[derive(Clone, Debug, Serialize, Deserialize)]
+         #[serde(rename_all = "camelCase")]
+    };
+
     // Generate the implementation
     let expanded = quote! {
+        #derives
         #input_struct
 
         // Impl MykoQuery

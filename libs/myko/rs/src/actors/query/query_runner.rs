@@ -1,7 +1,7 @@
 use crate::{
     actors::query::{common::ProcessUpdateData, query_manager::QueryClosureType},
     prelude::{AnyItem, AnyQuery},
-    query::QueryHandlerContextAny,
+    query::QueryHandlerCtxAny,
     server::MykoServerCtx,
 };
 use log::debug;
@@ -68,7 +68,7 @@ impl Actor for QueryRunner {
                     ProcessUpdateData::Set(item) => {
                         let closure = state.closure.clone();
 
-                        let matches = closure(QueryHandlerContextAny {
+                        let matches = closure(QueryHandlerCtxAny {
                             ctx: state.ctx.clone(),
                             item: item.clone(),
                             query: state.query.clone(),

@@ -35,16 +35,16 @@ pub trait QueryItemType {
 ///
 /// any deduplication of changes to this query are handled upstream in the handler logic
 pub trait QueryHandler: QueryItemType + Sized {
-    fn test_entity(ctx: QueryHandlerContext<Self>) -> bool;
+    fn test_entity(ctx: QueryHandlerCtx<Self>) -> bool;
 }
 
-pub struct QueryHandlerContext<TQuery: QueryItemType> {
+pub struct QueryHandlerCtx<TQuery: QueryItemType> {
     pub item: Arc<TQuery::Item>,
     pub query: Arc<TQuery>,
     pub server_ctx: Arc<MykoServerCtx>,
 }
 
-pub struct QueryHandlerContextAny {
+pub struct QueryHandlerCtxAny {
     pub item: Arc<dyn AnyItem>,
     pub query: Arc<dyn AnyQuery>,
     pub ctx: Arc<MykoServerCtx>,
@@ -69,22 +69,32 @@ pub trait Query:
     ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>>;
 
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
-        let closure = Arc::new(|ctx: QueryHandlerContextAny| -> bool {
-            let item_ref: Arc<dyn Any + Send + Sync + 'static> = ctx.item;
-            let query_ref: Arc<dyn Any + Send + Sync + 'static> = ctx.query;
+        let closure = Arc::new(|ctx: QueryHandlerCtxAny| -> bool {
+            let item_ref: Arc<dyn Any> = ctx.item;
+            let query_ref: Arc<dyn Any> = ctx.query;
 
             let item = item_ref.downcast_ref::<Arc<Self::Item>>();
             let query = query_ref.downcast_ref::<Arc<Self>>();
 
-            if let (Some(item), Some(query)) = (item, query) {
-                <Self as QueryHandler>::test_entity(QueryHandlerContext::<Self> {
-                    server_ctx: ctx.ctx,
-                    item: item.clone(),
-                    query: query.clone(),
-                })
-            } else {
-                false
+            if item.is_none() {
+                error!("Item did not downcast");
+                return false;
             }
+
+            let item = item.expect("Item downcast should be valid");
+
+            if query.is_none() {
+                error!("Query did not correctly downcast");
+                return false;
+            }
+
+            let query = query.expect("Query downcast should be valid");
+
+            <Self as QueryHandler>::test_entity(QueryHandlerCtx::<Self> {
+                server_ctx: ctx.ctx,
+                item: item.clone(),
+                query: query.clone(),
+            })
         });
 
         let parser: Arc<dyn MykoQueryParser> = Arc::new(CapturedQueryParser::<Self>::new());

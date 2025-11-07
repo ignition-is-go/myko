@@ -13,14 +13,14 @@ use crate::{
     },
     api::query::WrappedQuery,
     parsers::query::MykoQueryParser,
-    query::QueryHandlerContextAny,
+    query::QueryHandlerCtxAny,
     server::MykoServerCtx,
     utils::assert_default_for_key,
 };
 
 pub struct QueryManager;
 
-pub type QueryClosureType = Arc<dyn Fn(QueryHandlerContextAny) -> bool + Send + Sync>;
+pub type QueryClosureType = Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync>;
 
 pub struct QueryManagerArgs {
     pub ctx: Arc<MykoServerCtx>,
