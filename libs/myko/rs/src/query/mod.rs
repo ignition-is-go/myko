@@ -6,7 +6,7 @@ use crate::{
     prelude::AnyItem,
     server::{MykoServer, MykoServerCtx},
 };
-use log::error;
+use log::{debug, error};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, sync::Arc};
 
@@ -19,7 +19,7 @@ pub trait QueryIdStatic {
 }
 
 pub trait QueryItemType {
-    type Item;
+    type Item: Send + Sync;
     fn query_item_type(&self) -> Arc<str>;
     fn query_item_type_static() -> Arc<str>;
 }
@@ -44,6 +44,7 @@ pub struct QueryHandlerCtx<TQuery: QueryItemType> {
     pub server_ctx: Arc<MykoServerCtx>,
 }
 
+#[derive(Debug)]
 pub struct QueryHandlerCtxAny {
     pub item: Arc<dyn AnyItem>,
     pub query: Arc<dyn AnyQuery>,
@@ -70,25 +71,32 @@ pub trait Query:
 
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
         let closure = Arc::new(|ctx: QueryHandlerCtxAny| -> bool {
-            let item_ref: Arc<dyn Any> = ctx.item;
-            let query_ref: Arc<dyn Any> = ctx.query;
+            let item_ref: Arc<dyn Any + Send + Sync> = ctx.item;
+            let query_ref: Arc<dyn Any + Send + Sync> = ctx.query;
 
-            let item = item_ref.downcast_ref::<Arc<Self::Item>>();
-            let query = query_ref.downcast_ref::<Arc<Self>>();
+            let item = item_ref.downcast::<Self::Item>();
+            let query = query_ref.downcast::<Self>();
 
-            if item.is_none() {
-                error!("Item did not downcast");
-                return false;
-            }
-
-            let item = item.expect("Item downcast should be valid");
-
-            if query.is_none() {
-                error!("Query did not correctly downcast");
+            if let Err(_) = query {
+                error!(
+                    "Query did not correctly downcast in closure: {}",
+                    Self::query_id_static()
+                );
                 return false;
             }
 
             let query = query.expect("Query downcast should be valid");
+
+            if let Err(_) = item {
+                error!(
+                    "Item did not downcast: {} in {}",
+                    Self::query_item_type_static(),
+                    Self::query_id_static(),
+                );
+                return false;
+            }
+
+            let item = item.expect("Item downcast should be valid");
 
             <Self as QueryHandler>::test_entity(QueryHandlerCtx::<Self> {
                 server_ctx: ctx.ctx,
@@ -114,6 +122,7 @@ pub trait Query:
                 error!("Failed to register query: {}", err);
             }
         };
+
         Ok(())
     }
 }

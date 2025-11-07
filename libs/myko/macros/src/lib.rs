@@ -1,6 +1,53 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{DeriveInput, Field, FieldsNamed, parse_macro_input};
+
+use quote::{format_ident, quote};
+use syn::{Data, DeriveInput, Field, Fields, FieldsNamed, parse_macro_input};
+
+#[proc_macro_derive(PartialMatches)]
+pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    // Extract the base struct name (remove "Partial" prefix)
+    let base_name = if let Some(stripped) = name.to_string().strip_prefix("Partial") {
+        syn::Ident::new(stripped, name.span())
+    } else {
+        panic!("PartialMatches can only be derived on structs with 'Partial' prefix");
+    };
+
+    let fields = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(fields) => &fields.named,
+            _ => panic!("PartialMatches only works on structs with named fields"),
+        },
+        _ => panic!("PartialMatches only works on structs"),
+    };
+
+    // Generate match checks for each field
+    let field_checks = fields.iter().map(|f| {
+        let field_name = &f.ident;
+        quote! {
+            if let Some(ref value) = self.#field_name {
+                if value != &item.#field_name {
+                    return false;
+                }
+            }
+        }
+    });
+
+    let expanded = quote! {
+        impl #name {
+            pub fn matches(&self, item: &#base_name) -> bool {
+                #(#field_checks)*
+                true
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+// impl_partial_matches!(PartialItem, Item, [id, name, active, score]);
 
 #[proc_macro_derive(Empty)]
 pub fn empty_impl(input: TokenStream) -> TokenStream {
@@ -20,6 +67,22 @@ pub fn empty_impl(input: TokenStream) -> TokenStream {
     generated.into()
 }
 
+/// implements a number of traits automatically, as well as adds
+///
+/// `pub id: Arc<str>`
+///
+/// `pub hash: Arc<str>`
+///
+///	Derives:
+///
+/// `Partial, PartialEq, Clone, Serialize, Deserialize, Debug`
+///
+/// Derives for Partial:
+///
+/// `Clone, Serialize, Deserialize, Default`
+///
+/// all fields added manually must implement at least `Clone, Serialize, Deserialize`
+///
 #[proc_macro_attribute]
 pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let mut input_struct = parse_macro_input!(input as ItemStruct);
@@ -38,9 +101,13 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
             #pub_viz #id: #arc_str
         };
 
-        let hash_field: Field = syn::parse_quote! {
+        let mut hash_field: Field = syn::parse_quote! {
             #pub_viz #hash: #arc_str
         };
+
+        hash_field.attrs.push(syn::parse_quote! {
+            #[serde(default)]
+        });
 
         named.push(id_field);
         named.push(hash_field);
@@ -49,10 +116,61 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let derives = quote! {
         #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug)]
         #[serde(rename_all = "camelCase")]
-        #[partially(derive(Clone, Serialize, Deserialize, Default))]
+        #[partially(derive(Clone, Serialize, Deserialize, Debug, Default, myko_macros::PartialMatches))]
+    };
+
+    let get_all_query_ident = format_ident!("GetAll{}s", name_str);
+
+    let get_all_query = quote! {
+
+        #[myko_macros::myko_query(#name)]
+        pub struct #get_all_query_ident {}
+
+
+        impl myko_rs::prelude::QueryHandler for #get_all_query_ident {
+            fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
+                true
+            }
+        }
+
+    };
+
+    let get_by_ids_query_ident = format_ident!("Get{}sByIds", name_str);
+
+    let get_by_ids_query = quote! {
+        #[myko_macros::myko_query(#name)]
+        pub struct #get_by_ids_query_ident {
+            pub ids: Vec<std::sync::Arc<str>>,
+        }
+
+
+        impl myko_rs::prelude::QueryHandler for #get_by_ids_query_ident {
+            fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
+                ctx.query.ids.contains(&ctx.item.id)
+            }
+        }
+    };
+
+    let get_by_partial_ident = format_ident!("Get{}sByQuery", name_str);
+    let partial_ident = format_ident!("Partial{}", name_str);
+
+    let get_by_partial_query = quote! {
+        #[myko_macros::myko_query(#name)]
+         struct #get_by_partial_ident {
+             pub partial: #partial_ident
+         }
+
+         impl myko_rs::prelude::QueryHandler for #get_by_partial_ident {
+             fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
+                 ctx.query.partial.matches(&ctx.item)
+             }
+         }
+
     };
 
     let expanded = quote! {
+
+        use myko_rs::prelude::Query;
 
         #derives
         #input_struct
@@ -75,6 +193,22 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
+
+        #get_all_query
+
+        #get_by_ids_query
+
+        #get_by_partial_query
+
+        impl myko_rs::prelude::MykoAutoQueries for #name {
+                fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
+
+                        #get_all_query_ident::register(&server)?;
+                        #get_by_ids_query_ident::register(&server)?;
+                        #get_by_partial_ident::register(&server)?;
+                     Ok(())
+                }
+        }
     };
 
     expanded.into()

@@ -6566,6 +6566,7 @@ dependencies = [
 name = "rship-entities"
 version = "3.0.0-canary.784"
 dependencies = [
+ "anyhow",
  "async-stream",
  "js-sys",
  "log 0.4.28",
@@ -7245,6 +7246,7 @@ dependencies = [
  "dotenv",
  "env_logger",
  "myko-rs",
+ "rship-entities",
  "tokio",
 ]
 

@@ -19,3 +19,23 @@ impl QueryHandler for GetClientsByServerId {
         ctx.item.server_id == ctx.query.server_id
     }
 }
+
+// fn test() {
+//     let a = vec![1, 2, 3];
+
+//     let c = Client {
+//         id: "1".into(),
+//         hash: "h".into(),
+//         server_id: "1".into(),
+//     };
+
+//     let pc = PartialClient {
+//         ..Default::default()
+//     };
+
+//     let ac = Arc::new(c);
+
+//     let m: bool = pc.matches(&ac);
+
+//     // let b = pc.
+// }

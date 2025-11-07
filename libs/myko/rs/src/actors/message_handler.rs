@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::{debug, error, info};
 use ractor::{Actor, ActorRef};
 
 use crate::{
@@ -57,28 +57,20 @@ impl Actor for MessageHandler {
                 let myko_message = serde_json::from_str::<MykoMessage<()>>(&m).unwrap();
                 match myko_message {
                     MykoMessage::Event(event) => {
-                        match state
+                        state
                             .event_manager
                             .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
                                 event,
                                 persist: PersistEvent::Persist,
-                            })) {
-                            Ok(_) => Ok(()),
-                            Err(err) => {
-                                error!("Failed to forward message to RepoManager: {}", err);
-                                Ok(())
-                            }
-                        }
+                            }))?;
+                        Ok(())
                     }
                     MykoMessage::Query(query) => {
-                        info!("Received query: {:?}", query);
+                        debug!("Received query: {:?}", query);
 
-                        if let Err(err) = state
+                        state
                             .query_manager
-                            .send_message(QueryManagerMsg::StartQuery(query))
-                        {
-                            error!("Failed to forward message to QueryManager: {}", err);
-                        }
+                            .send_message(QueryManagerMsg::StartQuery(query))?;
 
                         Ok(())
                     }

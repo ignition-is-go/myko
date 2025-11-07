@@ -1,5 +1,6 @@
 use crate::{
     actors::server::{Server, ServerArgs, ServerMsg},
+    entities::client::GetClientsByServerId,
     item::Eventable,
     query::Query,
 };
@@ -57,6 +58,7 @@ impl MykoServer {
 
 pub type MykoServerArgs = ServerArgs;
 
+#[derive(Debug)]
 pub struct MykoServerCtx {
     pub host_id: Uuid,
 }

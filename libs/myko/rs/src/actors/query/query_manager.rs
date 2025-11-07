@@ -167,6 +167,14 @@ impl Actor for QueryManager {
 
                 match item_handlers {
                     Some(handlers) => {
+                        // if handlers.iter().len() > 0 {
+                        //     debug!(
+                        //         "Processing update for item type {:?} in {} handlers",
+                        //         item_type,
+                        //         handlers.iter().len()
+                        //     );
+                        // }
+
                         for (key, handler) in handlers.iter() {
                             match handler
                                 .send_message(QueryHandlerMsg::ProcessUpdate(update_data.clone()))

@@ -14,7 +14,9 @@ pub struct WrappedItem<T> {
     pub item_type: String,
 }
 
-pub trait Eventable: AnyItem + Serialize + DeserializeOwned + Clone + Sized + Any {
+pub trait Eventable:
+    AnyItem + MykoAutoQueries + Serialize + DeserializeOwned + Clone + Sized + Any
+{
     fn entity_name(&self) -> String;
     fn entity_name_static() -> String;
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
@@ -27,6 +29,12 @@ pub trait Eventable: AnyItem + Serialize + DeserializeOwned + Clone + Sized + An
             ))
             .map_err(anyhow::Error::msg)?;
 
+        Self::register_auto(&server)?;
+
         Ok(())
     }
+}
+
+pub trait MykoAutoQueries: AnyItem + Serialize + DeserializeOwned + Clone + Sized + Any {
+    fn register_auto(server: &Arc<MykoServer>) -> Result<(), anyhow::Error>;
 }

@@ -73,8 +73,6 @@ impl Actor for QueryHandler {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             QueryHandlerMsg::StartQuery(query) => {
-                debug!("Starting query {}", state.query_id);
-
                 let handler = ractor::call!(
                     state.event_manager.clone(),
                     EventManagerMsg::GetEventHandler,
@@ -116,9 +114,6 @@ impl Actor for QueryHandler {
                 //
             }
             QueryHandlerMsg::ProcessUpdate(data) => {
-                if state.runners.len() > 0 {
-                    debug!("Processing update in {} runners", state.runners.len());
-                }
                 for runner in state.runners.values() {
                     if let Err(err) =
                         runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))
