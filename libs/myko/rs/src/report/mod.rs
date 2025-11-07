@@ -1,5 +1,6 @@
-use serde::{ser::Error, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
+use ts_rs::TS;
 
 use crate::client::MykoClient;
 
@@ -7,7 +8,7 @@ pub trait MykoReport<T> {
     fn watch(&self, client: &MykoClient) -> impl tokio_stream::Stream<Item = T>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportResponse {
     pub response: Value,
@@ -21,14 +22,14 @@ impl ReportResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WrappedReport {
     pub report: Value,
     pub report_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportError {
     pub tx: String,

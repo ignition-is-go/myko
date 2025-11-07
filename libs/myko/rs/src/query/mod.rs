@@ -10,6 +10,12 @@ use log::error;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{any::Any, sync::Arc};
 
+inventory::collect!(QueryRegistration);
+
+pub struct QueryRegistration {
+    pub query_id: Arc<str>,
+}
+
 pub trait QueryId {
     fn query_id(&self) -> Arc<str>;
 }

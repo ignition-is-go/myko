@@ -47,26 +47,6 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-// impl_partial_matches!(PartialItem, Item, [id, name, active, score]);
-
-#[proc_macro_derive(Empty)]
-pub fn empty_impl(input: TokenStream) -> TokenStream {
-    let ast = parse_macro_input!(input as DeriveInput);
-    let name = &ast.ident;
-
-    let generated = quote! {
-
-        impl Empty for #name {
-            fn empty(&self) -> bool {
-                false
-            }
-        }
-
-    };
-
-    generated.into()
-}
-
 /// implements a number of traits automatically, as well as adds
 ///
 /// `pub id: Arc<str>`
@@ -114,9 +94,10 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let derives = quote! {
-        #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug)]
+        #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug, ts_rs::TS)]
+        #[ts(export)]
         #[serde(rename_all = "camelCase")]
-        #[partially(derive(Clone, Serialize, Deserialize, Debug, Default, myko_macros::PartialMatches))]
+        #[partially(derive(Clone, Serialize, Deserialize, Debug, Default, myko_macros::PartialMatches, ts_rs::TS))]
     };
 
     let get_all_query_ident = format_ident!("GetAll{}s", name_str);
@@ -168,12 +149,23 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
     };
 
+    // let item_registration = quote! {
+    //     myko_rs::prelude::ItemRegistration {
+    //         entity_type: #name_str,
+    //     }
+    // };
+
     let expanded = quote! {
 
         use myko_rs::prelude::Query;
 
         #derives
         #input_struct
+
+
+        // inventory::submit! {
+        //     #item_registration
+        // }
 
         impl myko_rs::item::Eventable for #name {
             fn entity_name(&self) -> String {
@@ -193,7 +185,6 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
-
         #get_all_query
 
         #get_by_ids_query
@@ -209,6 +200,7 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
                      Ok(())
                 }
         }
+
     };
 
     expanded.into()
@@ -245,7 +237,8 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let derives = quote! {
-         #[derive(Clone, Debug, Serialize, Deserialize)]
+         #[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+         #[ts(export)]
          #[serde(rename_all = "camelCase")]
     };
 

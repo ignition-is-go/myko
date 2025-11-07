@@ -36,3 +36,5 @@ log = "0.4"
 ractor = "0.15.9"
 anyhow = "1.0.100"
 autosocket = { version = "0.1.0", path = "../../autosocket" }
+ts-rs = { version = "11.1.0", features = ["serde-json-impl"] }
+inventory = "0.3.21"

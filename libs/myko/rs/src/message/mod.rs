@@ -7,7 +7,8 @@ use crate::{
     report::{ReportError, ReportResponse, WrappedReport},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(tag = "event", content = "data")]
 pub enum MykoMessage<Commands> {
     #[serde(rename = "ws:m:query")]

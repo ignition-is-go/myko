@@ -29,7 +29,6 @@ pub struct QueryHandlerArgs {
 
 pub struct QueryHandlerState {
     query_item_type: Arc<str>,
-    query_id: Arc<str>,
     closure: QueryClosureType,
     runners: HashMap<Arc<str>, ActorRef<QueryRunnerMsg>>,
     ctx: Arc<MykoServerCtx>,
@@ -56,7 +55,6 @@ impl Actor for QueryHandler {
         debug!("Creating Handler for query {}", args.query_id);
 
         Ok(QueryHandlerState {
-            query_id: args.query_id,
             closure: args.closure,
             runners: HashMap::new(),
             ctx: args.ctx,
@@ -114,8 +112,6 @@ impl Actor for QueryHandler {
                 //
             }
             QueryHandlerMsg::ProcessUpdate(data) => {
-                let _query_id = state.query_id.clone();
-
                 for runner in state.runners.values() {
                     if let Err(err) =
                         runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))

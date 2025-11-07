@@ -4,30 +4,29 @@ use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Cursor;
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub enum MEventType {
     SET,
     DEL,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct MEvent {
     pub item: Value,
 
-    #[serde(rename = "changeType")]
     pub change_type: MEventType,
 
-    #[serde(rename = "itemType")]
     pub item_type: String,
 
-    #[serde(rename = "createdAt", default = "utc_now_iso")]
+    #[serde(default = "utc_now_iso")]
     pub created_at: String,
 
     #[serde(default = "generate_random_uuid")]
     pub tx: String,
 
-    #[serde(rename = "sourceId")]
     pub source_id: Option<String>,
 }
 

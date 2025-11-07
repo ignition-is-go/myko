@@ -6,8 +6,15 @@ use crate::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{any::Any, sync::Arc};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+inventory::collect!(ItemRegistration);
+
+pub struct ItemRegistration {
+    pub entity_type: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WrappedItem<T> {
     pub item: T,

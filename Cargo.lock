@@ -3680,6 +3680,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc61209c082fbeb19919bee74b176221b27223e27b65d781eb91af24eb1fb46e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "io-kit-sys"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4498,6 +4507,7 @@ dependencies = [
  "chrono",
  "futures-signals",
  "futures-util",
+ "inventory",
  "log 0.4.28",
  "md5",
  "myko-macros",
@@ -4513,6 +4523,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite 0.21.0",
  "tokio-util",
+ "ts-rs",
  "tungstenite 0.21.0",
  "url 2.5.7",
  "uuid",
@@ -6580,6 +6591,7 @@ dependencies = [
  "specta",
  "tokio",
  "tokio-stream",
+ "ts-rs",
  "uuid",
 ]
 
@@ -8835,6 +8847,8 @@ checksum = "4994acea2522cd2b3b85c1d9529a55991e3ad5e25cdcd3de9d505972c4379424"
 dependencies = [
  "bytes 1.10.1",
  "chrono",
+ "ordered-float",
+ "serde_json",
  "thiserror 2.0.17",
  "ts-rs-macros",
  "uuid",

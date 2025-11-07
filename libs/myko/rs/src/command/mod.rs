@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
+use ts_rs::TS;
 
 use crate::client::MykoClient;
 
@@ -8,7 +9,7 @@ pub trait MykoCommand<T> {
     fn handle(&self, client: &MykoClient) -> impl std::future::Future<Output = Result<T, String>>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandResponse {
     pub response: Value,
@@ -28,7 +29,7 @@ pub struct WrappedCommand {
     pub command_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandError {
     pub tx: String,

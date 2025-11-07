@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize, de::Error};
 use serde_json::Value;
+use ts_rs::TS;
 
 use crate::{
     item::WrappedItem,
     query::{QueryId, QueryItemType},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
     pub deletes: Vec<String>,
@@ -59,7 +60,7 @@ impl QueryResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WrappedQuery {
     pub query: Value,
@@ -67,7 +68,7 @@ pub struct WrappedQuery {
     pub query_item_type: Arc<str>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryError {
     pub tx: String,
