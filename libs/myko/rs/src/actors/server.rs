@@ -1,6 +1,9 @@
 use crate::{
     actors::{
-        event::event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
+        event::{
+            common::{PersistEvent, ProcessEventData},
+            event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
+        },
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
         query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
@@ -58,7 +61,7 @@ impl Actor for Server {
             host_id: Uuid::new_v4(),
         });
 
-        let repo_manager = match Actor::spawn(
+        let event_manager = match Actor::spawn(
             None,
             EventManager,
             EventManagerArgs {
@@ -96,7 +99,7 @@ impl Actor for Server {
             None,
             MessageHandler,
             MessageHandlerArgs {
-                repo_manager: repo_manager.clone(),
+                event_manager: event_manager.clone(),
                 query_manager: query_manager.clone(),
             },
         )
@@ -127,7 +130,7 @@ impl Actor for Server {
         };
 
         Ok(ServerState {
-            repo_manager,
+            repo_manager: event_manager,
             web_socket_server,
             message_handler,
             query_manager,
@@ -188,7 +191,10 @@ impl Actor for Server {
 
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(EventManagerMsg::ProcessEvent(event, true))
+                    .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
+                        event,
+                        persist: PersistEvent::Persist,
+                    }))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 }

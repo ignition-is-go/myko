@@ -1,6 +1,7 @@
+use super::common::ProcessEventData;
 use crate::{
     actors::{
-        event::event_manager::EventManagerMsg,
+        event::{common::PersistEvent, event_manager::EventManagerMsg},
         kafka::{
             common::KafkaSharedConfig,
             consumer::{KafkaConsumer, KafkaConsumerArgs},
@@ -9,7 +10,6 @@ use crate::{
         query::{common::ProcessUpdateData, query_manager::QueryManagerMsg},
         server::ServerMsg,
     },
-    event::MEvent,
     parsers::item::MykoItemParser,
     prelude::AnyItem,
     server::MykoServerCtx,
@@ -30,7 +30,7 @@ pub struct EventHandlerState {
 }
 
 pub enum EventHandlerMessage {
-    ProcessEvent(MEvent, bool), // bool for persist
+    ProcessEvent(ProcessEventData), // bool for persist
     Init(KafkaSharedConfig),
     PersisterCaughtUp,
 }
@@ -128,9 +128,9 @@ impl Actor for EventHandler {
                     }
                 }
             }
-            EventHandlerMessage::ProcessEvent(event, persist) => {
-                let item_json = event.item_json();
-                let change_type = event.change_type();
+            EventHandlerMessage::ProcessEvent(data) => {
+                let item_json = data.event.item_json();
+                let change_type = data.event.change_type();
 
                 let item = match state.parser.parse(item_json) {
                     Ok(item) => item,
@@ -141,8 +141,8 @@ impl Actor for EventHandler {
                 };
 
                 if let Some(kafka_producer) = &state.kafka_producer {
-                    if persist {
-                        let mut event = event.clone();
+                    if let PersistEvent::Persist = data.persist {
+                        let mut event = data.event.clone();
                         event.source_id = Some(state.ctx.host_id.to_string());
 
                         let produce_res = kafka_producer.send_message(

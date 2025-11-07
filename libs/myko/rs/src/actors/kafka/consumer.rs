@@ -1,5 +1,11 @@
 use crate::{
-    actors::{event::event_handler::EventHandlerMessage, kafka::common::KafkaSharedConfig},
+    actors::{
+        event::{
+            common::{PersistEvent, ProcessEventData},
+            event_handler::EventHandlerMessage,
+        },
+        kafka::common::KafkaSharedConfig,
+    },
     event::MEvent,
     server::MykoServerCtx,
 };
@@ -142,7 +148,10 @@ impl Actor for KafkaConsumer {
 
                                 if !my_event {
                                     match repo_ref.send_message(EventHandlerMessage::ProcessEvent(
-                                        event, false,
+                                        ProcessEventData {
+                                            event,
+                                            persist: PersistEvent::NoPersist,
+                                        },
                                     )) {
                                         Ok(_) => {}
                                         Err(err) => {

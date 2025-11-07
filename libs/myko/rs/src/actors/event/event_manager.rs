@@ -1,10 +1,10 @@
+use super::common::ProcessEventData;
 use crate::{
     actors::{
         event::event_handler::{EventHandler, EventHandlerArgs, EventHandlerMessage},
         kafka::common::KafkaSharedConfig,
         server::ServerMsg,
     },
-    event::MEvent,
     parsers::item::MykoItemParser,
     server::MykoServerCtx,
 };
@@ -28,7 +28,7 @@ pub enum EventManagerMsg {
     RegisterRepo(Arc<str>, Arc<dyn MykoItemParser>),
     InitAll(KafkaSharedConfig),
     RepoInitComplete(Arc<str>),
-    ProcessEvent(MEvent, bool), //bool for persist
+    ProcessEvent(ProcessEventData), //bool for persist
 }
 
 pub struct EventManagerArgs {
@@ -130,17 +130,20 @@ impl Actor for EventManager {
                 }
                 Ok(())
             }
-            EventManagerMsg::ProcessEvent(event, persist) => {
-                let entity_type: Arc<str> = event.item_type().into();
+            EventManagerMsg::ProcessEvent(data) => {
+                let entity_type: Arc<str> = data.event.item_type().into();
 
                 let handler = state.handlers.get(&entity_type);
 
                 match handler {
                     Some(handler) => {
-                        handler.send_message(EventHandlerMessage::ProcessEvent(event, persist))?;
+                        handler.send_message(EventHandlerMessage::ProcessEvent(data))?;
                     }
                     None => {
-                        warn!("No repository found for event type: {}", event.item_type());
+                        warn!(
+                            "No repository found for event type: {}",
+                            data.event.item_type()
+                        );
                     }
                 }
 

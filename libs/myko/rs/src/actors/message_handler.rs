@@ -2,19 +2,24 @@ use log::{error, info};
 use ractor::{Actor, ActorRef};
 
 use crate::{
-    actors::{event::event_manager::EventManagerMsg, query::query_manager::QueryManagerMsg},
+    actors::{
+        event::{common::ProcessEventData, event_manager::EventManagerMsg},
+        query::query_manager::QueryManagerMsg,
+    },
     message::MykoMessage,
 };
+
+use super::event::common::PersistEvent;
 
 pub struct MessageHandler;
 
 pub struct MessageHandlerArgs {
-    pub repo_manager: ActorRef<EventManagerMsg>,
+    pub event_manager: ActorRef<EventManagerMsg>,
     pub query_manager: ActorRef<QueryManagerMsg>,
 }
 
 pub struct MessageHandlerState {
-    repo_manager: ActorRef<EventManagerMsg>,
+    event_manager: ActorRef<EventManagerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
 }
 
@@ -35,7 +40,7 @@ impl Actor for MessageHandler {
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         Ok(MessageHandlerState {
-            repo_manager: args.repo_manager,
+            event_manager: args.event_manager,
             query_manager: args.query_manager,
         })
     }
@@ -53,9 +58,11 @@ impl Actor for MessageHandler {
                 match myko_message {
                     MykoMessage::Event(event) => {
                         match state
-                            .repo_manager
-                            .send_message(EventManagerMsg::ProcessEvent(event, true))
-                        {
+                            .event_manager
+                            .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
+                                event,
+                                persist: PersistEvent::Persist,
+                            })) {
                             Ok(_) => Ok(()),
                             Err(err) => {
                                 error!("Failed to forward message to RepoManager: {}", err);
