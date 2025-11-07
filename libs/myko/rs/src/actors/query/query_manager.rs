@@ -5,6 +5,7 @@ use ractor::{Actor, ActorRef};
 
 use crate::{
     actors::{
+        event::event_manager::EventManagerMsg,
         query::{
             common::ProcessUpdateData,
             query_handler::{QueryHandler, QueryHandlerArgs, QueryHandlerMsg},
@@ -25,6 +26,7 @@ pub type QueryClosureType = Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync
 pub struct QueryManagerArgs {
     pub ctx: Arc<MykoServerCtx>,
     pub server: ActorRef<ServerMsg>,
+    pub event_manager: ActorRef<EventManagerMsg>,
 }
 
 pub struct QueryManagerState {
@@ -34,6 +36,7 @@ pub struct QueryManagerState {
     handlers: HashMap<Arc<str>, HashMap<Arc<str>, ActorRef<QueryHandlerMsg>>>,
     // by query_id
     parsers: HashMap<Arc<str>, Arc<dyn MykoQueryParser>>,
+    event_manager: ActorRef<EventManagerMsg>,
 }
 
 pub struct RegisterQueryData {
@@ -64,6 +67,7 @@ impl Actor for QueryManager {
             server: args.server,
             handlers: HashMap::new(),
             parsers: HashMap::new(),
+            event_manager: args.event_manager,
         })
     }
 
@@ -89,6 +93,8 @@ impl Actor for QueryManager {
                         closure: data.closure,
                         ctx: state.ctx.clone(),
                         server: state.server.clone(),
+                        event_manager: state.event_manager.clone(),
+                        query_item_type: data.query_item_type.clone(),
                     },
                 )
                 .await

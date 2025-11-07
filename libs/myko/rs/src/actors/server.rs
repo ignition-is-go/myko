@@ -84,6 +84,7 @@ impl Actor for Server {
             QueryManagerArgs {
                 ctx: ctx.clone(),
                 server: myself.clone(),
+                event_manager: event_manager.clone(),
             },
         )
         .await

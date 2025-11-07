@@ -9,7 +9,7 @@ use crate::{
     server::MykoServerCtx,
 };
 use log::{debug, error, info, warn};
-use ractor::{Actor, ActorRef};
+use ractor::{Actor, ActorRef, RpcReplyPort};
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -29,6 +29,7 @@ pub enum EventManagerMsg {
     InitAll(KafkaSharedConfig),
     RepoInitComplete(Arc<str>),
     ProcessEvent(ProcessEventData), //bool for persist
+    GetEventHandler(Arc<str>, RpcReplyPort<ActorRef<EventHandlerMessage>>),
 }
 
 pub struct EventManagerArgs {
@@ -147,6 +148,17 @@ impl Actor for EventManager {
                     }
                 }
 
+                Ok(())
+            }
+            EventManagerMsg::GetEventHandler(entity_name, reply) => {
+                let handler = state
+                    .handlers
+                    .get(&entity_name)
+                    .ok_or(anyhow::Error::msg("Handler not found"))?;
+
+                if let Err(err) = reply.send(handler.clone()) {
+                    error!("Failed to reply with Event Handler: {}", err)
+                };
                 Ok(())
             }
         }

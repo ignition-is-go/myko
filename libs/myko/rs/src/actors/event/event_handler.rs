@@ -15,7 +15,7 @@ use crate::{
     server::MykoServerCtx,
 };
 use log::{debug, error};
-use ractor::{Actor, ActorProcessingErr, ActorRef};
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::{collections::HashMap, sync::Arc};
 
 pub struct EventHandler;
@@ -26,13 +26,14 @@ pub struct EventHandlerState {
     ctx: Arc<MykoServerCtx>,
     kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
     parser: Arc<dyn MykoItemParser>,
-    state: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+    store: HashMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
 pub enum EventHandlerMessage {
     ProcessEvent(ProcessEventData), // bool for persist
     Init(KafkaSharedConfig),
     PersisterCaughtUp,
+    GetState(RpcReplyPort<HashMap<Arc<str>, Arc<dyn AnyItem>>>),
 }
 
 pub struct EventHandlerArgs {
@@ -69,7 +70,7 @@ impl Actor for EventHandler {
             ctx,
             parser,
             kafka_producer: None,
-            state: HashMap::new(),
+            store: HashMap::new(),
         })
     }
 
@@ -114,7 +115,7 @@ impl Actor for EventHandler {
                 debug!(
                     "{} Init Complete: {} entities",
                     state.entity_name,
-                    state.state.len()
+                    state.store.len()
                 );
                 match state.server.send_message(ServerMsg::RepoManagerMsg(
                     EventManagerMsg::RepoInitComplete(state.entity_name.clone()),
@@ -163,7 +164,7 @@ impl Actor for EventHandler {
 
                 match change_type {
                     crate::event::MEventType::DEL => {
-                        state.state.remove(&item.id());
+                        state.store.remove(&item.id());
 
                         if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
                             QueryManagerMsg::ProcessUpdate(
@@ -175,7 +176,7 @@ impl Actor for EventHandler {
                         };
                     }
                     crate::event::MEventType::SET => {
-                        state.state.insert(item.id(), item.clone());
+                        state.store.insert(item.id(), item.clone());
 
                         if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
                             QueryManagerMsg::ProcessUpdate(
@@ -188,6 +189,12 @@ impl Actor for EventHandler {
                     }
                 }
 
+                Ok(())
+            }
+            EventHandlerMessage::GetState(reply) => {
+                if let Err(err) = reply.send(state.store.clone()) {
+                    error!("Unable to reply with store state: {}", err);
+                };
                 Ok(())
             }
         }
