@@ -10,5 +10,6 @@ pub use crate::{
     query::{Query, QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType},
     report::{MykoReport, ReportId},
     server::MykoServer,
+    type_gen::generate_item_types,
 };
 pub use myko_macros::*;

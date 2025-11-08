@@ -14,3 +14,6 @@ pub mod server;
 pub mod utils;
 //
 pub mod prelude;
+pub mod type_gen;
+pub use inventory::submit;
+pub use ts_rs::TS;

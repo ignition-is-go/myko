@@ -94,10 +94,10 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let derives = quote! {
-        #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug, ts_rs::TS)]
+        #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug, myko_rs::TS)]
         #[ts(export)]
         #[serde(rename_all = "camelCase")]
-        #[partially(derive(Clone, Serialize, Deserialize, Debug, Default, myko_macros::PartialMatches, ts_rs::TS))]
+        #[partially(derive(Clone, Serialize, Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS))]
     };
 
     let get_all_query_ident = format_ident!("GetAll{}s", name_str);
@@ -149,11 +149,12 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
     };
 
-    // let item_registration = quote! {
-    //     myko_rs::prelude::ItemRegistration {
-    //         entity_type: #name_str,
-    //     }
-    // };
+    let item_registration = quote! {
+        myko_rs::prelude::ItemRegistration {
+            entity_type: #name_str,
+            crate_name: module_path!(),
+        }
+    };
 
     let expanded = quote! {
 
@@ -163,9 +164,9 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
         #input_struct
 
 
-        // inventory::submit! {
-        //     #item_registration
-        // }
+        myko_rs::submit! {
+            #item_registration
+        }
 
         impl myko_rs::item::Eventable for #name {
             fn entity_name(&self) -> String {
@@ -237,7 +238,7 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     let derives = quote! {
-         #[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
+         #[derive(Clone, Debug, Serialize, Deserialize, myko_rs::TS)]
          #[ts(export)]
          #[serde(rename_all = "camelCase")]
     };

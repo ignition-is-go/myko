@@ -12,6 +12,7 @@ inventory::collect!(ItemRegistration);
 
 pub struct ItemRegistration {
     pub entity_type: &'static str,
+    pub crate_name: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
