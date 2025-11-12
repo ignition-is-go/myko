@@ -7,7 +7,10 @@ pub use crate::{
         item::{AnyItem, CapturedItemParser},
         query::AnyQuery,
     },
-    query::{Query, QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType},
+    query::{
+        Query, QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType,
+        QueryRegistration,
+    },
     report::{MykoReport, ReportId},
     server::MykoServer,
     type_gen::generate_item_types,

@@ -12,8 +12,11 @@ use std::{any::Any, sync::Arc};
 
 inventory::collect!(QueryRegistration);
 
+#[derive(Debug)]
 pub struct QueryRegistration {
-    pub query_id: Arc<str>,
+    pub query_id: &'static str,
+    pub query_item_type: &'static str,
+    pub crate_name: &'static str,
 }
 
 pub trait QueryId {

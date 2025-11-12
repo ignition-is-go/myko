@@ -243,10 +243,23 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
          #[serde(rename_all = "camelCase")]
     };
 
+    let query_registration = quote! {
+        myko_rs::prelude::QueryRegistration {
+            query_id: stringify!(#struct_name),
+            query_item_type: stringify!(#query_item_type),
+            crate_name: module_path!(),
+        }
+    };
+
     // Generate the implementation
     let expanded = quote! {
         #derives
         #input_struct
+
+
+        myko_rs::submit! {
+            #query_registration
+        }
 
         // Impl MykoQuery
         impl myko_rs::prelude::Query for #struct_name {
@@ -295,6 +308,8 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
                 serde_json::from_value::<Self>(wrapped_query.query).expect("Failed to deserialize query")
             }
         }
+
+
 
     };
 
