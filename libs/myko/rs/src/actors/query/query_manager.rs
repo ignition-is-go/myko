@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
-use log::{debug, error, warn};
-use ractor::{Actor, ActorRef};
+use futures_signals::signal_map::MutableSignalMap;
+use log::{debug, error, trace, warn};
+use ractor::{Actor, ActorRef, RpcReplyPort};
 
 use crate::{
     actors::{
@@ -14,6 +15,7 @@ use crate::{
     },
     api::query::WrappedQuery,
     parsers::query::MykoQueryParser,
+    prelude::AnyItem,
     query::QueryHandlerCtxAny,
     server::MykoServerCtx,
     utils::assert_default_for_key,
@@ -49,7 +51,10 @@ pub struct RegisterQueryData {
 pub enum QueryManagerMsg {
     RegisterQuery(RegisterQueryData),
     ProcessUpdate(ProcessUpdateData, Arc<str>),
-    StartQuery(WrappedQuery),
+    StartQuery(
+        WrappedQuery,
+        RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
+    ),
 }
 
 impl Actor for QueryManager {
@@ -115,8 +120,8 @@ impl Actor for QueryManager {
                 };
                 Ok(())
             }
-            QueryManagerMsg::StartQuery(data) => {
-                debug!("Starting query with ID {}", data.query_id);
+            QueryManagerMsg::StartQuery(data, reply) => {
+                trace!("Starting query with ID {}", data.query_id);
 
                 let handler = state
                     .handlers
@@ -155,7 +160,9 @@ impl Actor for QueryManager {
 
                 let parsed_query = parsed_query.unwrap();
 
-                if let Err(err) = handler.send_message(QueryHandlerMsg::StartQuery(parsed_query)) {
+                if let Err(err) =
+                    handler.send_message(QueryHandlerMsg::StartQuery(parsed_query, reply))
+                {
                     error!("Failed to start query: {}", err);
                 };
 

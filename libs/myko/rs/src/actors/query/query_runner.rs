@@ -4,14 +4,21 @@ use crate::{
     query::QueryHandlerCtxAny,
     server::MykoServerCtx,
 };
-use log::debug;
-use ractor::Actor;
-use std::{collections::HashMap, sync::Arc};
+use futures_signals::{
+    signal_map::{MutableBTreeMap, MutableSignalMap},
+    signal_vec::{MutableSignalVec, MutableVec},
+};
+use log::{debug, trace};
+use ractor::{Actor, RpcReplyPort};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 pub struct QueryRunner;
 
 pub struct QueryRunnerArgs {
-    pub initial_state: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+    pub initial_state: BTreeMap<Arc<str>, Arc<dyn AnyItem>>,
     pub query: Arc<dyn AnyQuery>,
     pub closure: QueryClosureType,
     pub tx: Arc<str>,
@@ -19,7 +26,7 @@ pub struct QueryRunnerArgs {
 }
 
 pub struct QueryRunnerState {
-    state: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+    state: MutableBTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>,
     tx: Arc<str>,
     closure: QueryClosureType,
     ctx: Arc<MykoServerCtx>,
@@ -29,6 +36,7 @@ pub struct QueryRunnerState {
 #[derive(Debug)]
 pub enum QueryRunnerMsg {
     ProcessUpdate(ProcessUpdateData),
+    GetState(RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>),
 }
 
 impl Actor for QueryRunner {
@@ -46,9 +54,10 @@ impl Actor for QueryRunner {
         //     args.query.query_id(),
         //     args.initial_state,
         // );
+        let sig = MutableBTreeMap::with_values(args.initial_state.clone());
 
         Ok(QueryRunnerState {
-            state: args.initial_state,
+            state: sig,
             tx: args.tx,
             closure: args.closure,
             ctx: args.ctx,
@@ -62,7 +71,7 @@ impl Actor for QueryRunner {
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
-        debug!(
+        trace!(
             "Runner Processing message: {}: {:?}",
             state.query.query_id(),
             message
@@ -74,15 +83,15 @@ impl Actor for QueryRunner {
                 match data {
                     ProcessUpdateData::Del(id) => {
                         // somehow emit changes here
-                        state.state.remove(&id);
-                        debug!(
+                        state.state.lock_mut().remove(&id);
+                        trace!(
                             "Runner [{}] Removed item with id: {} - Deleted",
                             state.query.query_id(),
                             id
                         );
                     }
                     ProcessUpdateData::Set(item) => {
-                        debug!(
+                        trace!(
                             "Runner [{}] Setting item with id: {}",
                             state.query.query_id(),
                             item.id()
@@ -95,15 +104,18 @@ impl Actor for QueryRunner {
                         });
 
                         if matches {
-                            state.state.insert(item.id(), item.clone());
-                            debug!(
+                            state
+                                .state
+                                .lock_mut()
+                                .insert_cloned(item.id(), item.clone());
+                            trace!(
                                 "Runner [{}] Inserted item with id: {}",
                                 state.query.query_id(),
                                 item.id()
                             );
                         } else {
-                            state.state.remove(&item.id());
-                            debug!(
+                            state.state.lock_mut().remove(&item.id());
+                            trace!(
                                 "Runner [{}] Removed item with id: {} - No Longer Matches",
                                 state.query.query_id(),
                                 item.id()
@@ -111,6 +123,9 @@ impl Actor for QueryRunner {
                         }
                     }
                 }
+            }
+            QueryRunnerMsg::GetState(reply) => {
+                reply.send(state.state.signal_map_cloned())?;
             }
         }
         Ok(())

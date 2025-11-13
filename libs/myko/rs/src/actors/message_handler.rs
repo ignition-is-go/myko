@@ -1,4 +1,5 @@
-use log::{debug, error};
+use futures_signals::signal_map::SignalMapExt;
+use log::{debug, error, trace};
 use ractor::{Actor, ActorRef};
 
 use crate::{
@@ -66,11 +67,15 @@ impl Actor for MessageHandler {
                         Ok(())
                     }
                     MykoMessage::Query(query) => {
-                        debug!("Received query: {:?}", query);
+                        trace!("Received query: {:?}", query);
 
-                        state
-                            .query_manager
-                            .send_message(QueryManagerMsg::StartQuery(query))?;
+                        let sig =
+                            ractor::call!(state.query_manager, QueryManagerMsg::StartQuery, query)?;
+
+                        tokio::spawn(sig.for_each(|v| {
+                            debug!("Map Diff in MessageHandler: {:?}", v);
+                            async {}
+                        }));
 
                         Ok(())
                     }

@@ -16,7 +16,10 @@ use crate::{
 };
 use log::{debug, error};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 pub struct EventHandler;
 
@@ -26,14 +29,14 @@ pub struct EventHandlerState {
     ctx: Arc<MykoServerCtx>,
     kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
     parser: Arc<dyn MykoItemParser>,
-    store: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+    store: BTreeMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
 pub enum EventHandlerMessage {
     ProcessEvent(ProcessEventData), // bool for persist
     Init(KafkaSharedConfig),
     PersisterCaughtUp,
-    GetState(RpcReplyPort<HashMap<Arc<str>, Arc<dyn AnyItem>>>),
+    GetState(RpcReplyPort<BTreeMap<Arc<str>, Arc<dyn AnyItem>>>),
 }
 
 pub struct EventHandlerArgs {
@@ -70,7 +73,7 @@ impl Actor for EventHandler {
             ctx,
             parser,
             kafka_producer: None,
-            store: HashMap::new(),
+            store: BTreeMap::new(),
         })
     }
 
@@ -142,24 +145,25 @@ impl Actor for EventHandler {
                 };
 
                 if let Some(kafka_producer) = &state.kafka_producer
-                    && let PersistEvent::Persist = data.persist {
-                        let mut event = data.event.clone();
-                        event.source_id = Some(state.ctx.host_id.to_string());
+                    && let PersistEvent::Persist = data.persist
+                {
+                    let mut event = data.event.clone();
+                    event.source_id = Some(state.ctx.host_id.to_string());
 
-                        let produce_res = kafka_producer.send_message(
-                            KafkaProducerMsg::ProduceEvent(ProduceEventData {
-                                event,
-                                key: item.id().clone(),
-                            }),
-                        );
+                    let produce_res = kafka_producer.send_message(KafkaProducerMsg::ProduceEvent(
+                        ProduceEventData {
+                            event,
+                            key: item.id().clone(),
+                        },
+                    ));
 
-                        match produce_res {
-                            Ok(_) => (),
-                            Err(err) => {
-                                error!("Failed to produce event: {}", err);
-                            }
+                    match produce_res {
+                        Ok(_) => (),
+                        Err(err) => {
+                            error!("Failed to produce event: {}", err);
                         }
                     }
+                }
 
                 match change_type {
                     crate::event::MEventType::DEL => {

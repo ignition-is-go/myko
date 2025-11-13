@@ -9,12 +9,18 @@ use crate::{
         server::ServerMsg,
     },
     parsers::query::AnyQuery,
+    prelude::AnyItem,
     query::QueryHandlerCtxAny,
     server::MykoServerCtx,
 };
+use futures_signals::{
+    signal::{Mutable, ReadOnlyMutable},
+    signal_map::{MutableSignalMap, SignalMap},
+};
 use log::{debug, error};
-use ractor::{Actor, ActorRef};
-use std::{collections::HashMap, sync::Arc};
+use ractor::{Actor, ActorRef, RpcReplyPort};
+use rxrust::prelude::{Observer, observable::Observable};
+use std::{any::Any, collections::HashMap, sync::Arc};
 
 pub struct QueryHandler;
 
@@ -37,7 +43,10 @@ pub struct QueryHandlerState {
 
 pub enum QueryHandlerMsg {
     ProcessUpdate(ProcessUpdateData),
-    StartQuery(Arc<dyn AnyQuery>),
+    StartQuery(
+        Arc<dyn AnyQuery>,
+        RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
+    ),
 }
 
 impl Actor for QueryHandler {
@@ -70,7 +79,7 @@ impl Actor for QueryHandler {
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
-            QueryHandlerMsg::StartQuery(query) => {
+            QueryHandlerMsg::StartQuery(query, reply) => {
                 let handler = ractor::call!(
                     state.event_manager.clone(),
                     EventManagerMsg::GetEventHandler,
@@ -103,7 +112,11 @@ impl Actor for QueryHandler {
                 .await
                 {
                     Ok((runner, _runner_handle)) => {
-                        state.runners.insert(tx, runner);
+                        state.runners.insert(tx, runner.clone());
+
+                        let response_signal = ractor::call!(runner, QueryRunnerMsg::GetState)?;
+
+                        reply.send(response_signal)?;
                     }
                     Err(err) => {
                         error!("Failed to spawn query runner: {}", err);
