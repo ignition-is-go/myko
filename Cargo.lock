@@ -1667,20 +1667,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core"
-version = "3.0.0-canary.784"
-dependencies = [
- "async-trait",
- "myko-macros",
- "myko-rs",
- "partially",
- "rship-entities",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6878,6 +6864,7 @@ dependencies = [
  "env_logger",
  "log 0.4.28",
  "myko-rs",
+ "ordered-float",
  "rs-macros",
  "rship-entities",
  "schemars 1.0.4",
@@ -6940,6 +6927,7 @@ name = "rship_sync_core"
 version = "3.0.0-canary.784"
 dependencies = [
  "anyhow",
+ "autosocket",
  "cargo-util",
  "chrono",
  "futures-util",

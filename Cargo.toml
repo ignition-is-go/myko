@@ -12,7 +12,6 @@ members = [
   "libs/link/core",
   "libs/link/rpc/rs",
   "libs/myko/macros",
-  "apps/labs/rs-core",
   "libs/entities/rs",
   "libs/sdk/rs",
   "libs/sync/core",
