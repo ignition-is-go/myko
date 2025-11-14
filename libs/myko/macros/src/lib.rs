@@ -137,7 +137,7 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let get_by_partial_query = quote! {
         #[myko_macros::myko_query(#name)]
-         struct #get_by_partial_ident {
+         pub struct #get_by_partial_ident {
              pub partial: #partial_ident
          }
 
@@ -186,6 +186,12 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
 
+        impl myko_rs::prelude::ToValue for #name {
+            fn to_value(&self) -> serde_json::Value {
+                serde_json::to_value(self).expect("Failed to serialize")
+            }
+        }
+
         #get_all_query
 
         #get_by_ids_query
@@ -217,6 +223,11 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     // Parse the input struct
     let mut input_struct = parse_macro_input!(input as ItemStruct);
     let struct_name = &input_struct.ident;
+
+    let args_struct_name = format_ident!("{}Args", struct_name);
+
+    let mut args_struct = input_struct.clone();
+    args_struct.ident = args_struct_name.clone();
 
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
         let tx = quote! { tx };
@@ -251,10 +262,32 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
+    let pairs = args_struct
+        .fields
+        .iter()
+        .map(|f| {
+            let f_name = f.ident.as_ref().expect("must be field struct");
+            quote! {#f_name: args.#f_name,}
+        })
+        .collect::<Vec<_>>();
+
     // Generate the implementation
     let expanded = quote! {
         #derives
         #input_struct
+        #args_struct
+
+        impl #struct_name {
+            pub fn new(args: #args_struct_name) -> Self {
+                let tx: std::sync::Arc<str> = myko_rs::prelude::Uuid::new_v4().to_string().into();
+                let created_at: std::sync::Arc<str> = myko_rs::prelude::Utc::now().to_rfc3339().into();
+                Self {
+                    tx,
+                    created_at,
+                    #(#pairs)*
+                }
+            }
+        }
 
 
         myko_rs::submit! {

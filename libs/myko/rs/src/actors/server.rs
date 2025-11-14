@@ -102,6 +102,7 @@ impl Actor for Server {
             MessageHandlerArgs {
                 event_manager: event_manager.clone(),
                 query_manager: query_manager.clone(),
+                server: myself.clone(),
             },
         )
         .await

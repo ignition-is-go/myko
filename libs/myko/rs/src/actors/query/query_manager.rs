@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_signals::signal_map::MutableSignalMap;
-use log::{debug, error, trace, warn};
+use log::{error, trace, warn};
 use ractor::{Actor, ActorRef, RpcReplyPort};
 
 use crate::{

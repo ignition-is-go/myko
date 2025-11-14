@@ -16,10 +16,7 @@ use crate::{
 };
 use log::{debug, error};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 pub struct EventHandler;
 
@@ -136,10 +133,13 @@ impl Actor for EventHandler {
                 let item_json = data.event.item_json();
                 let change_type = data.event.change_type();
 
-                let item = match state.parser.parse(item_json) {
+                let item = match state.parser.parse(item_json.clone()) {
                     Ok(item) => item,
                     Err(err) => {
-                        error!("Failed to parse item: {}", err);
+                        error!(
+                            "{}: Failed to parse item: {} \n {:?}",
+                            state.entity_name, err, item_json
+                        );
                         return Ok(());
                     }
                 };

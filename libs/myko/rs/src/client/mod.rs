@@ -378,13 +378,13 @@ impl MykoClient {
     ) -> impl tokio_stream::Stream<Item = Vec<T>> {
         let stream = self.get_messages();
 
-        let tx = uuid::Uuid::new_v4().to_string();
+        let tx: Arc<str> = uuid::Uuid::new_v4().to_string().into();
 
         let query_id = query.query_id();
         let wrapped = wrap_query(tx.clone(), query);
 
         let send_query_id = query_id.clone();
-        let state: Arc<std::sync::Mutex<HashMap<String, T>>> = Arc::default();
+        let state: Arc<std::sync::Mutex<HashMap<Arc<str>, T>>> = Arc::default();
 
         let stream = stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage<Value>>(x);
@@ -419,7 +419,7 @@ impl MykoClient {
 
                     for up in upserts.iter() {
                         let _len = state.len();
-                        state.insert(up.id().clone().to_string(), up.clone());
+                        state.insert(up.id().clone(), up.clone());
                     }
 
                     for del in deletes.iter() {

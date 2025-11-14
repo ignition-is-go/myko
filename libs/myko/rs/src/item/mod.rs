@@ -19,7 +19,7 @@ pub struct ItemRegistration {
 #[serde(rename_all = "camelCase")]
 pub struct WrappedItem<T> {
     pub item: T,
-    pub item_type: String,
+    pub item_type: Arc<str>,
 }
 
 pub trait Eventable:

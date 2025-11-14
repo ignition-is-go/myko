@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use log::{debug, info, warn};
-use ractor::{Actor, ActorRef};
+use ractor::{Actor, ActorRef, cast};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -16,8 +16,13 @@ use crate::{
 
 pub struct WebSocketServer;
 
+pub struct SendToClientData {
+    pub client_id: Arc<str>,
+    pub message: MykoMessage<()>,
+}
+
 pub enum WebSocketServerMsg {
-    SendToClient(MykoMessage<()>),
+    SendToClient(SendToClientData),
     Start,
 }
 
@@ -57,7 +62,18 @@ impl Actor for WebSocketServer {
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
-            WebSocketServerMsg::SendToClient(_msg) => Ok(()),
+            WebSocketServerMsg::SendToClient(SendToClientData { client_id, message }) => {
+                let client =
+                    state
+                        ._connections
+                        .get(&client_id)
+                        .ok_or(ractor::ActorProcessingErr::from(String::from(
+                            "client not found",
+                        )))?;
+
+                cast!(client, WebSocketConnectionMsg::Transmit(message))?;
+                Ok(())
+            }
             WebSocketServerMsg::Start => {
                 let WebSocketServerArgs {
                     port,

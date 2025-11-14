@@ -4,16 +4,10 @@ use crate::{
     query::QueryHandlerCtxAny,
     server::MykoServerCtx,
 };
-use futures_signals::{
-    signal_map::{MutableBTreeMap, MutableSignalMap},
-    signal_vec::{MutableSignalVec, MutableVec},
-};
-use log::{debug, trace};
+use futures_signals::signal_map::{MutableBTreeMap, MutableSignalMap};
+use log::trace;
 use ractor::{Actor, RpcReplyPort};
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 pub struct QueryRunner;
 

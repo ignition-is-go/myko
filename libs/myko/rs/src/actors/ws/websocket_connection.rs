@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use futures_util::{StreamExt, stream::SplitSink};
 use log::{debug, error};
 use ractor::{Actor, ActorRef};
@@ -7,8 +9,12 @@ use tungstenite::{
     Message,
     handshake::server::{Request, Response},
 };
+use uuid::Uuid;
 
-use crate::{actors::message_handler::MessageHandlerMsg, message::MykoMessage};
+use crate::{
+    actors::message_handler::{MessageHandlerMsg, ProcessTextData},
+    message::MykoMessage,
+};
 
 pub struct WebSocketConnection;
 
@@ -18,6 +24,7 @@ pub enum WebSocketConnectionMsg {
 
 pub struct WebSocketConnectionState {
     pub tx: SplitSink<WebSocketStream<TcpStream>, Message>,
+    pub client_id: Arc<str>,
 }
 
 pub struct WebSocketConnectionArgs {
@@ -67,6 +74,10 @@ impl Actor for WebSocketConnection {
             }
         };
 
+        let client_id: Arc<str> = Uuid::new_v4().to_string().into();
+
+        let task_client_id = client_id.clone();
+
         tokio::spawn(async move {
             while let Some(message) = rx.next().await {
                 let message = match message {
@@ -85,7 +96,12 @@ impl Actor for WebSocketConnection {
                     }
                 };
 
-                match message_handler.send_message(MessageHandlerMsg::ProcessText(text)) {
+                match message_handler.send_message(MessageHandlerMsg::ProcessText(
+                    ProcessTextData {
+                        text,
+                        client_id: task_client_id.clone(),
+                    },
+                )) {
                     Ok(_) => (),
                     Err(err) => {
                         log::error!("Failed to send message to message handler: {}", err);
@@ -95,6 +111,6 @@ impl Actor for WebSocketConnection {
             error!("Websocket Disconnected")
         });
 
-        Ok(WebSocketConnectionState { tx })
+        Ok(WebSocketConnectionState { tx, client_id })
     }
 }

@@ -13,14 +13,10 @@ use crate::{
     query::QueryHandlerCtxAny,
     server::MykoServerCtx,
 };
-use futures_signals::{
-    signal::{Mutable, ReadOnlyMutable},
-    signal_map::{MutableSignalMap, SignalMap},
-};
+use futures_signals::signal_map::MutableSignalMap;
 use log::{debug, error};
 use ractor::{Actor, ActorRef, RpcReplyPort};
-use rxrust::prelude::{Observer, observable::Observable};
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 pub struct QueryHandler;
 

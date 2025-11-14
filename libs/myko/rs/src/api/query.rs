@@ -12,13 +12,13 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
-    pub deletes: Vec<String>,
+    pub deletes: Vec<Arc<str>>,
 
     pub upserts: Vec<WrappedItem<Value>>,
 
     pub sequence: u64,
 
-    pub tx: String,
+    pub tx: Arc<str>,
 }
 
 pub struct QueryResult<T> {
@@ -40,7 +40,7 @@ impl<T> QueryResult<T> {
 }
 
 impl QueryResponse {
-    pub fn new(tx: String, _result: Vec<Value>) -> QueryResponse {
+    pub fn new(tx: Arc<str>, _result: Vec<Value>) -> QueryResponse {
         QueryResponse {
             sequence: 0,
             upserts: vec![],
@@ -55,7 +55,7 @@ impl QueryResponse {
 }
 
 impl QueryResponse {
-    pub fn get_tx(&self) -> String {
+    pub fn get_tx(&self) -> Arc<str> {
         self.tx.clone()
     }
 }
@@ -76,7 +76,7 @@ pub struct QueryError {
 }
 
 pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
-    tx: String,
+    tx: Arc<str>,
     query: &Q,
 ) -> Result<WrappedQuery, serde_json::Error> {
     let mut json = serde_json::to_value(query.clone())?;
@@ -89,7 +89,7 @@ pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
 
     let obj = obj_mut.unwrap();
 
-    obj.insert("tx".to_string(), tx.into());
+    obj.insert("tx".to_string(), tx.to_string().into());
 
     Ok(WrappedQuery {
         query: json,
