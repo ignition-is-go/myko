@@ -7,11 +7,5 @@
     "msgpackr": "^1.10.2",
     "rxjs": "^7.8.1"
   },
-  "devDependencies": {
-    "vitest": "^0.32.4"
-  },
-  "scripts": {
-    "test": "vitest --run"
-  },
-  "version": "3.0.0-canary.783"
+  "version": "3.0.0-canary.790"
 }
