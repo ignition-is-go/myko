@@ -11,6 +11,7 @@ Rocketship (rship) is a centralized control platform for orchestrating reactive 
 ## Development Commands
 
 ### JavaScript/TypeScript
+
 ```bash
 pnpm install                          # Install dependencies
 pnpm dev --filter @rship/server       # Run server in watch mode (MYKO_PORT=5155)
@@ -22,15 +23,18 @@ pnpm format:all                       # Format all code with prettier
 ```
 
 ### Rust
+
 ```bash
 cargo build --release                 # Build release
 cargo test                            # Run all tests
 cargo test -- --nocapture             # Run tests with output
 cargo test <test_name>                # Run single test
 cargo clippy -- -D warnings           # Lint with clippy
+cargo fmt                             # Format Rust code
 ```
 
 ### Python
+
 ```bash
 uv pip install -e .                   # Install package in editable mode
 pytest                                # Run all tests
@@ -38,6 +42,7 @@ pytest -k <test_name>                 # Run single test
 ```
 
 ### Multi-language Publishing
+
 ```bash
 pnpm jsr:publish                      # Publish TypeScript to JSR
 pnpm py:publish                       # Publish Python packages
@@ -46,6 +51,7 @@ pnpm cs:publish                       # Publish C# packages
 ```
 
 ### Versioning
+
 ```bash
 pnpm versionstamp                     # Generate version metadata
 pnpm versionwrite                     # Update versions across packages
@@ -64,7 +70,6 @@ Event-sourcing CQRS framework powering rship's reactive architecture:
   - `MCommand`: Command specifications (intent)
   - `MQuery`: State snapshots
   - `MSaga`: Observable-based event processors
-  
 - **@myko/ws**: Real-time bidirectional WebSocket with MessagePack encoding
 - **@myko/gateway**: Server bootstrap, Auth0 integration, OpenTelemetry tracing
 - **@myko/kafka**: Kafka-based event persistence
@@ -92,6 +97,7 @@ Multi-language executor development kit:
 - **Rust, Python, C#, Swift**: Multi-language support for executor development
 
 Executors use the SDK to:
+
 1. Connect to rship server via WebSocket
 2. Declare Instances, Targets, Emitters, Actions
 3. Push Pulses (real-time data from Emitters)
@@ -130,6 +136,7 @@ Persistence (Kafka Event Log)
 ```
 
 **WebSocket Message Types**:
+
 1. **Commands**: `MWrappedCommand` with transaction ID
 2. **Events**: SET (create/update) or DEL (delete) with timestamp
 3. **Pulses**: Real-time emitter data (not persisted)
@@ -142,16 +149,22 @@ Persistence (Kafka Event Log)
 - **server**: Main Bun-based server
   - Entry: `/apps/server/src/main.ts`
   - Bootstraps Myko gateway, loads entity handlers, sets up persistence
-  - Environment variables: `KAFKA_BROKERS`, `MYKO_HOST_ADDRESS`, `RSHIP_CLUSTER_SECRET`, `AUTH_0_DOMAIN`, `MYKO_PORT`
-  
+  - Required environment variables:
+    - `KAFKA_BROKERS` - Comma-separated Kafka broker addresses
+    - `MYKO_HOST_ADDRESS` - Server host address
+    - `RSHIP_CLUSTER_SECRET` - Cluster authentication secret
+    - `AUTH_0_DOMAIN` - Auth0 domain for authentication
+    - `MYKO_PORT` - Server port (typically 5155 for dev)
+  - Optional: `MYKO_TRACING_ENDPOINT` - OpenTelemetry tracing endpoint
 - **ui**: Svelte 5 + SvelteKit web UI
   - Real-time editor, 3D visualization (Threlte + Three.js)
   - Schema-based forms, Auth0 authentication
   - Cross-platform: Web, iOS/Android via Capacitor
-  
-- **execs**: Executor implementations
-  - Ableton, Pixera, Disguise, Dirigera, Ventuz, Viewpoint, Protocol Router, etc.
-  - Each integrates a specific external system with rship
+- **execs**: Executor implementations (each integrates an external system)
+  - TypeScript: ableton-cli, protocol-router, viewpoint, ventuz, noise
+  - Python: demo-py, music-analysis
+  - C#: disguise, pixera, dirigera
+  - visionOS (Swift), touch-host (TouchDesigner)
 
 ### Multi-Language Type Sharing
 
@@ -164,6 +177,7 @@ Persistence (Kafka Event Log)
 ### Commits
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
 - `feat(scope): description` - New features
 - `fix(scope): description` - Bug fixes
 - `chore(scope): description` - Maintenance tasks
@@ -173,6 +187,7 @@ Commits drive release notes and CI workflows.
 ### Comments
 
 TODO & NOTE comments should include author's initials:
+
 ```typescript
 // TODO(ts): need to implement
 // NOTE(ts): informational message
@@ -183,7 +198,7 @@ TODO & NOTE comments should include author's initials:
 - **JS/TS**: Use `prettier` with `prettier-plugin-organize-imports`
 - **Rust**: Use `rustfmt`
 - Lines under 120 characters
-- Comments explain *why*, not *what*
+- Comments explain _why_, not _what_
 
 ### Naming Conventions
 
@@ -218,6 +233,7 @@ TODO & NOTE comments should include author's initials:
 ### Event Sourcing + CQRS
 
 All state changes flow through immutable events:
+
 1. UI/Executor sends Command
 2. Entity handler validates and generates Events
 3. Events persisted to Kafka
@@ -246,8 +262,8 @@ Executors are bridges to external software. State remains in the external system
 - **Package Manager**: pnpm with workspaces
 - **Monorepo**: All packages in `/apps/` and `/libs/` defined in `pnpm-workspace.yaml`
 - **Type Safety**: Extensive use of TypeScript with strict null checks
-- **Real-time Performance**: See CRUSH.md for optimization guidelines (lock-free structures, channel sizing, serialization)
-- **Submodules**: Unreal integration is a git submodule (`libs/unreal/rship-unreal`)
+- **Real-time Performance**: See CRUSH.md for Rust optimization guidelines (actor patterns, lock-free structures, channel sizing, serialization)
+- **Submodules**: TouchDesigner and Unreal integrations are git submodules (auto-updated via preinstall hook)
 
 ## Environment Setup
 
@@ -256,3 +272,27 @@ Executors are bridges to external software. State remains in the external system
 3. Development requires Bun runtime for server
 4. Rust toolchain for native modules
 5. Python with `uv` for Python packages
+
+## Debugging & Development Workflow
+
+### Running Specific Packages
+
+```bash
+pnpm dev --filter @rship/server        # Run server with hot reload
+pnpm dev --filter @rship/ui            # Run UI dev server
+pnpm build --filter @rship/sdk         # Build specific package
+```
+
+### Working with Executors
+
+1. Start rship server first (`pnpm dev --filter @rship/server`)
+2. Run executor (varies by language - see executor's README)
+3. Executor connects via WebSocket to publish Targets/Emitters/Actions
+4. Use UI to create Bindings between Emitters and Actions
+
+### Common Issues
+
+- **Kafka connection errors**: Ensure `KAFKA_BROKERS` is set and Kafka is running
+- **WebSocket connection fails**: Check `MYKO_PORT` and `MYKO_HOST_ADDRESS` match between server and clients
+- **Type generation out of sync**: Run `pnpm versionstamp` to regenerate types
+- **Submodule not initialized**: Run `git submodule update --init --recursive --remote`
