@@ -157,13 +157,14 @@ export const bunAdapter: MykoWsAdapter = ({
             console.warn(`Failed to ping client ${ws.data.clientId}:`, error)
             clearInterval(keepAliveInterval)
           }
-        }, 1000) // 25 seconds - well before typical 30s timeout
-
+        }, 1000)
         // Store the interval so we can clean it up on close
         ;(ws as any).__keepAliveInterval = keepAliveInterval
       },
       drain(_ws) {},
       close(ws, _code, _message) {
+        logger.warn(`Client ${ws.data.clientId} closed, ${_message}, ${_code}`)
+
         // Clean up keep-alive interval
         const keepAliveInterval = (ws as any).__keepAliveInterval
         if (keepAliveInterval) {
