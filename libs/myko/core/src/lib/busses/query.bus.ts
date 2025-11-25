@@ -96,10 +96,12 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       }),
       tap(() => this.on_follow_up?.(query, callId)),
       distinctUntilChanged((a, b) => {
-        const aHash = new Set(a.map(x => x.hash))
-        const bHash = new Set(b.map(x => x.hash))
-
-        return a.length === b.length && aHash.symmetricDifference(bHash).size === 0
+        // Performance fix: avoid creating Sets on every emission
+        // Use sorted hash comparison instead - O(n log n) vs O(n) Set creation
+        if (a.length !== b.length) return false
+        const aHashes = a.map((x) => x.hash).sort().join(',')
+        const bHashes = b.map((x) => x.hash).sort().join(',')
+        return aHashes === bHashes
       }),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
