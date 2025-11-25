@@ -13,6 +13,7 @@ import {
   Observable,
   of,
   scan,
+  shareReplay,
   startWith,
   Subject,
   switchMap,
@@ -186,9 +187,15 @@ export abstract class Repo<T extends MItem> {
     return concat(init, obs)
   }
 
+  // Performance optimization: Cache watchId observables to prevent subscription explosion
+  private watchCache = new Map<ID, Observable<T | null>>()
+
   /**
    * Watches multiple IDs and returns an Observable of the corresponding values.
    * If the provided array of IDs is empty or null, an empty array is returned.
+   *
+   * Performance optimized: Uses shareReplay to cache individual ID subscriptions,
+   * preventing exponential subscription growth when watching many IDs.
    *
    * @param ids - An array of IDs to watch.
    * @returns An Observable that emits an array of values corresponding to the watched IDs.
@@ -200,9 +207,21 @@ export abstract class Repo<T extends MItem> {
     if (ids.length === 0) {
       return of([])
     }
-    return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe(
-      map((x) => x.filter((y) => y !== null)),
-    )
+
+    // Use cached observables with shareReplay to prevent subscription explosion
+    const observables = ids.map((id) => {
+      if (!this.watchCache.has(id)) {
+        this.watchCache.set(
+          id,
+          this.watchId(id).pipe(
+            shareReplay({ bufferSize: 1, refCount: true }),
+          ),
+        )
+      }
+      return this.watchCache.get(id)!
+    })
+
+    return combineLatest(observables).pipe(map((x) => x.filter((y) => y !== null)))
   }
 
   /**
