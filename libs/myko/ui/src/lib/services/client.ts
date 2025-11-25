@@ -5,6 +5,8 @@ const disconnectHandlers: (() => void)[] = [];
 const onStartConnectHandlers: (() => void)[] = [];
 
 const isHttps = window?.location.protocol === 'https:';
+// Force secure WebSocket for remote servers (nyc.rship.io)
+const isRemoteServer = window?.location.hostname === 'localhost' || window?.location.hostname === '127.0.0.1';
 
 export const client = new WSM.WSMClient(
 	(url) => {
@@ -24,7 +26,7 @@ export const client = new WSM.WSMClient(
 		}
 	},
 	{
-		secure: isHttps,
+		secure: isHttps || isRemoteServer, // Use wss:// for remote connections from localhost
 		disableMsgPack: true,
 		preventThrowing: true
 	}
