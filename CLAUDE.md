@@ -296,3 +296,109 @@ pnpm build --filter @rship/sdk         # Build specific package
 - **WebSocket connection fails**: Check `MYKO_PORT` and `MYKO_HOST_ADDRESS` match between server and clients
 - **Type generation out of sync**: Run `pnpm versionstamp` to regenerate types
 - **Submodule not initialized**: Run `git submodule update --init --recursive --remote`
+
+## Code Integration Guidelines
+
+These guidelines capture lessons learned from previous code contributions to help Claude Code produce changes that align with project standards.
+
+### 1. Respect Explicit Opt-In Patterns
+
+**Pattern**: This project uses environment variable guards for diagnostic/monitoring features even when they only produce debug logs.
+
+**Example**:
+
+```typescript
+// Preferred: Explicit opt-in with env guard
+if (process.env['MEMORY_MONITOR'] !== 'true') {
+  return
+}
+setInterval(() => {
+  logger.debug('Memory stats...')
+}, 5000)
+
+// Don't: Remove guards and rely solely on log level
+// Even though debug logs won't show at INFO level, the interval still runs
+// and collects data unnecessarily
+```
+
+**Rationale**: Environment guards prevent performance overhead (intervals, data collection) even when logs won't be displayed. This is intentional design, not cruft to remove.
+
+### 2. Commit Organization
+
+**Pattern**: Separate critical bug fixes from nice-to-have improvements.
+
+**Example**:
+
+```
+Commit 1: fix: myko gateway memory leaks
+  - Core subscription cleanup (takeUntil + finalize)
+  - Client disconnect handling
+  - Repo caching for watchId/clientDisconnect
+  - Log cleanup sagas
+
+Commit 2: fix(server): better debug logging control
+  - Migrate console.log to MykoLogger
+  - Add MYKO_INITIAL_LOG_LEVEL support
+  - Consolidate diagnostic output format
+```
+
+**Rationale**: Makes it easier to cherry-pick critical fixes, revert non-essential changes, and understand git history. Bug fixes should be complete and include all related changes in one commit.
+
+### 3. Code Formatting
+
+**Pattern**: Let automated formatters (prettier, rustfmt) handle formatting. Don't try to match formatting manually in edits.
+
+**Why**: The user will run formatters anyway. Focus on logical correctness, not whitespace alignment. Mismatched formatting creates noisy diffs and merge conflicts.
+
+### 4. Comprehensive Issue Resolution
+
+**Pattern**: When fixing systemic issues (memory leaks, race conditions, etc.), address all instances across the codebase in a single commit.
+
+**Example**: For the memory leak fix, included:
+
+- All scene engine methods (6 methods fixed)
+- Repo-level caching (watchId)
+- Bootstrap-level caching (clientDisconnect)
+- Related cleanup sagas (LinkLog, ExecLog)
+- Diagnostic tools for future debugging
+
+**Rationale**: Partial fixes leave technical debt and make it harder to verify the issue is fully resolved. Group related changes together so the entire fix can be reviewed, tested, and potentially reverted as a unit.
+
+### 5. Import Cleanup
+
+**Pattern**: Remove unused imports as part of the change that makes them unused, not as a separate "cleanup" commit.
+
+**Example**:
+
+```typescript
+// When replacing takeWhile with takeUntil:
+import {
+  takeUntil,  // Added
+- takeWhile,  // Removed in same commit
+  tap,
+} from 'rxjs'
+```
+
+**Rationale**: Keeps commits atomic and prevents dead code from accumulating between commits.
+
+### 6. Prefer Existing Patterns
+
+**Pattern**: Before suggesting architectural changes, check if the project already has established patterns for similar functionality.
+
+**Example**: The project already had:
+
+- MykoLogger for structured logging
+- Environment variable guards for diagnostic features
+- Debug log level for non-production diagnostics
+
+Don't suggest inventing new patterns when existing ones work fine.
+
+### 7. Performance-Conscious Defaults
+
+**Pattern**: This project prioritizes runtime performance over convenience. Diagnostic features should be:
+
+- Opt-in via environment variables
+- Use debug/verbose log levels (not info)
+- Minimal overhead when disabled
+
+**Why**: Rship handles real-time multimedia control with high message throughput. Even "cheap" operations like collecting memory stats every 5 seconds add up at scale.
