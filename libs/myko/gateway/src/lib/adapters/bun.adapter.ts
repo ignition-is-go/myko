@@ -188,9 +188,73 @@ export const bunAdapter: MykoWsAdapter = ({
     },
   })
 
+  /**
+   * Performance: Message batching for WebSocket
+   *
+   * High event throughput can generate 1000s of messages/sec per client.
+   * Batching reduces syscall overhead and improves network efficiency.
+   *
+   * Strategy:
+   * - Queue messages for each client
+   * - Flush every 16ms (60fps) or when queue reaches 100 messages
+   * - Preserves message order within each client
+   * - Independent batches per client (no head-of-line blocking)
+   */
+
+  const messageQueues = new Map<ID, any[]>()
+  const flushTimeouts = new Map<ID, ReturnType<typeof setTimeout>>()
+
+  const BATCH_INTERVAL_MS = 16 // ~60fps
+  const MAX_BATCH_SIZE = 100 // Flush if queue exceeds this
+
+  const flushQueue = (clientId: ID) => {
+    const queue = messageQueues.get(clientId)
+    if (!queue || queue.length === 0) return
+
+    // Send all messages in batch as array
+    const batch = queue.splice(0, queue.length)
+
+    // For now, send individually (future: send as single array message)
+    // TODO: Update client protocol to handle batched messages
+    batch.forEach((msg) => {
+      s.publish(clientId, serialize(clientId, msg))
+    })
+
+    // Clear flush timeout
+    const timeoutId = flushTimeouts.get(clientId)
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+      flushTimeouts.delete(clientId)
+    }
+  }
+
+  const queueMessage = (clientId: ID, data: any) => {
+    // Get or create queue for this client
+    if (!messageQueues.has(clientId)) {
+      messageQueues.set(clientId, [])
+    }
+
+    const queue = messageQueues.get(clientId)!
+    queue.push(data)
+
+    // Flush immediately if batch size exceeded
+    if (queue.length >= MAX_BATCH_SIZE) {
+      flushQueue(clientId)
+      return
+    }
+
+    // Schedule flush if not already scheduled
+    if (!flushTimeouts.has(clientId)) {
+      const timeoutId = setTimeout(() => {
+        flushQueue(clientId)
+      }, BATCH_INTERVAL_MS)
+      flushTimeouts.set(clientId, timeoutId)
+    }
+  }
+
   tx.subscribe({
     next: (m) => {
-      s.publish(m.clientId, serialize(m.clientId, m.data))
+      queueMessage(m.clientId, m.data)
     },
     error: (e) => {
       logger.error('Error in tx', e.message)
