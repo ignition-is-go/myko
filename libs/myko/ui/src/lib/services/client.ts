@@ -1,12 +1,17 @@
 import * as WSM from '@myko/ws';
+import { env } from '$env/dynamic/public';
 
 const connectHandlers: ((str: string) => void)[] = [];
 const disconnectHandlers: (() => void)[] = [];
 const onStartConnectHandlers: (() => void)[] = [];
 
 const isHttps = window?.location.protocol === 'https:';
-// Force secure WebSocket for remote servers (nyc.rship.io)
-const isRemoteServer = window?.location.hostname === 'localhost' || window?.location.hostname === '127.0.0.1';
+
+// Check if environment explicitly sets secure WebSocket preference
+// Default: Use secure WebSocket if page is HTTPS, or if explicitly enabled in env
+const shouldUseSecure = env.PUBLIC_USE_SECURE_WEBSOCKET !== undefined
+	? env.PUBLIC_USE_SECURE_WEBSOCKET === 'true'
+	: isHttps;
 
 export const client = new WSM.WSMClient(
 	(url) => {
@@ -26,7 +31,7 @@ export const client = new WSM.WSMClient(
 		}
 	},
 	{
-		secure: isHttps || isRemoteServer, // Use wss:// for remote connections from localhost
+		secure: shouldUseSecure,
 		disableMsgPack: true,
 		preventThrowing: true
 	}
