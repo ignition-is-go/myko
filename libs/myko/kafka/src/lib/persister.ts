@@ -6,7 +6,7 @@ import {
   type MEvent,
   type PersisterOutputEvent,
 } from '@myko/core'
-import { unpack as decode } from 'msgpackr'
+import { pack as encode, unpack as decode } from 'msgpackr'
 
 import {
   Kafka,
@@ -91,7 +91,9 @@ abstract class KafkaPersister<T extends MItem> extends Persister<T> {
   }
 
   protected encodeMsg(event: MEvent<T>): Buffer {
-    return Buffer.from(JSON.stringify(event))
+    // Performance fix: Use msgpackr for both encoding and decoding
+    // MessagePack is 3-5x more efficient than JSON for binary encoding
+    return Buffer.from(encode(event))
   }
 
   protected onMessage(message: Message, percentLoaded: number) {
