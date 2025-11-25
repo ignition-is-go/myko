@@ -13,6 +13,7 @@ import {
   Observable,
   of,
   scan,
+  shareReplay,
   startWith,
   Subject,
   switchMap,
@@ -163,27 +164,42 @@ export abstract class Repo<T extends MItem> {
     }
   }
 
+  private watchIdCache = new Map<ID, Observable<T | null>>()
+
   /**
    * Watches for changes to an item with the specified ID.
    * @param id The ID of the item to watch.
    * @returns An Observable that emits the item when it changes, or null if it is deleted.
    */
   watchId(id: ID): Observable<T | null> {
-    const init = this.getId(id)
+    // Cache and share watchId observables to prevent redundant subscriptions
+    if (!this.watchIdCache.has(id)) {
+      const init = this.getId(id)
 
-    const obs = this.subject.pipe(
-      filter((e) => e.item.id === id),
-      map((event) => {
-        switch (event.changeType) {
-          case MEventType.SET:
-            return unwrapItem(event) as T
-          case MEventType.DEL:
-            return null
-        }
-      }),
-    )
+      const obs = this.subject.pipe(
+        filter((e) => e.item.id === id),
+        map((event) => {
+          switch (event.changeType) {
+            case MEventType.SET:
+              return unwrapItem(event) as T
+            case MEventType.DEL:
+              return null
+          }
+        }),
+      )
 
-    return concat(init, obs)
+      const shared = concat(init, obs).pipe(
+        shareReplay({ bufferSize: 1, refCount: true }),
+        finalize(() => {
+          // Clean up cache when refCount hits zero
+          this.watchIdCache.delete(id)
+        }),
+      )
+
+      this.watchIdCache.set(id, shared)
+    }
+
+    return this.watchIdCache.get(id)!
   }
 
   /**

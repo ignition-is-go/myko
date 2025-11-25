@@ -3,6 +3,7 @@ import {
   Client,
   ClientCommand,
   ClientStatus,
+  ContextPhantom,
   DeleteClientsByServerId,
   eventBus,
   GetClientsByIds,
@@ -12,13 +13,21 @@ import {
   liveRepo,
   makeDel,
   makeSet,
+  MCommand,
+  MEventType,
+  MItem,
+  MSagaHandler,
   MykoCommandError,
   MykoCommandHandler,
   MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
+  MykoSaga,
+  ofItems,
+  ofType,
   queryBus,
   SetClientWindbackTime,
+  Stream,
   WindbackStatus,
   type MCommandHandler,
   type MLiveReportResult,
@@ -28,9 +37,13 @@ import {
 import { wrapCommandOnlyWS } from '@myko/ws'
 import { ok } from 'assert'
 import {
+  EMPTY,
   filter,
   firstValueFrom,
   map,
+  shareReplay,
+  switchMap,
+  take,
   takeUntil,
   tap,
   timeout,
@@ -161,6 +174,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       .pipe(
         map((x) => !!x),
         filter((x) => !x),
+        take(1), // Complete after first disconnect to prevent subscription leak
         tap(() => {
           ccm.disconnected(effectiveCommand.tx)
           logger.verbose('client-command:client-disconnected', {
@@ -169,6 +183,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
             clientId: command.client.id,
           })
         }),
+        shareReplay(1), // Share subscription across takeUntil usages
       )
 
     const disconnectLogged$ = disconnect$.pipe(
@@ -382,5 +397,19 @@ export class WindbackStatusHandler implements MReportHandler<WindbackStatus> {
           return client?.windback
         }),
       )
+  }
+}
+
+// Clean up inflight tracking when clients disconnect to prevent memory leak
+@MykoSaga()
+export class ClientInflightCleanupSaga implements MSagaHandler {
+  execute(stream: Stream<MItem>): Observable<MCommand & ContextPhantom> {
+    return stream.pipe(
+      ofItems(Client),
+      ofType(MEventType.DEL),
+      tap((e) => inflightByClient.delete(e.item.id)),
+      filter((_) => false),
+      switchMap(() => EMPTY),
+    )
   }
 }
