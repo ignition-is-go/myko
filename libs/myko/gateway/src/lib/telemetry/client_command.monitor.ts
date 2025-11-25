@@ -25,7 +25,7 @@
  * You can call ccm.start() to force start, otherwise it auto-starts if MYKO_CCMD_MONITOR is enabled.
  */
 
-import type { ID } from '@myko/core'
+import { MykoLogger, type ID } from '@myko/core'
 
 type TxMeta = {
   tag: string
@@ -121,6 +121,7 @@ class ClientCommandMonitor {
   private intervalMs: number
   private topN: number
   private enableTags: boolean
+  private logger = new MykoLogger('CCMD')
 
   private tick: ReturnType<typeof setInterval> | null = null
 
@@ -329,8 +330,7 @@ class ClientCommandMonitor {
     this.periodHist = makeHist()
 
     // Compute throughput per sec for this period
-    const perSec = (n: number) =>
-      (n / (this.intervalMs / 1000)).toFixed(1)
+    const perSec = (n: number) => (n / (this.intervalMs / 1000)).toFixed(1)
 
     const p50 = approxPercentile(h, 0.5)
     const p95 = approxPercentile(h, 0.95)
@@ -338,12 +338,10 @@ class ClientCommandMonitor {
     const avg = h.count ? h.sum / h.count : null
 
     // Single compact line
-    const head = `[CCMD] ${safeNowIso()}`
     const totalsStr = `dispatched=${p.dispatched} ok=${p.ok} err=${p.err} timeout=${p.timeout} disc=${p.disconnected} fwd=${p.forwarded} orphan=${p.orphanEnd}`
     const rateStr = `rate/s=${perSec(p.dispatched)} pend=${pend} maxPend=${this.totals.everPendingMax}`
     const latStr = `lat(ms): avg=${fmtMs(avg)} p50=${fmtMs(p50)} p95=${fmtMs(p95)} p99=${fmtMs(p99)}`
-    // eslint-disable-next-line no-console
-    console.log(`${head} ${totalsStr} | ${rateStr} | ${latStr}`)
+    this.logger.debug(`${totalsStr} | ${rateStr} | ${latStr}`)
 
     // Optional per-tag breakdown (top N)
     if (this.enableTags && this.tagPeriod.size > 0) {
@@ -366,10 +364,9 @@ class ClientCommandMonitor {
       const top = entries.slice(0, this.topN)
       if (top.length > 0) {
         const parts = top.map((e) => {
-          return `${e.tag}{d=${e.d},ok=${e.ok},err=${e.err},to=${e.to},dc=${e.dc},avg=${e.avg ?? '-' }ms}`
+          return `${e.tag}{d=${e.d},ok=${e.ok},err=${e.err},to=${e.to},dc=${e.dc},avg=${e.avg ?? '-'}ms}`
         })
-        // eslint-disable-next-line no-console
-        console.log(`[CCMD] top=${parts.join(' | ')}`)
+        this.logger.debug(`top=${parts.join(' | ')}`)
       }
       this.tagPeriod.clear()
     }
@@ -382,7 +379,8 @@ const monitor = new ClientCommandMonitor()
 export const clientCommandMonitor = {
   start: () => monitor.start(),
   stop: () => monitor.stop(),
-  begin: (tag: string, tx: ID, clientId?: ID) => monitor.begin(tag, tx, clientId),
+  begin: (tag: string, tx: ID, clientId?: ID) =>
+    monitor.begin(tag, tx, clientId),
   ok: (tx: ID) => monitor.ok(tx),
   err: (tx: ID, message?: string) => monitor.err(tx, message),
   timeout: (tx: ID) => monitor.timeout(tx),
