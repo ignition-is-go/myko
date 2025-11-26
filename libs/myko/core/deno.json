@@ -19,5 +19,6 @@
       "node_modules",
       "package.json"
     ]
-  }
+  },
+  "nodeModulesDir": "auto"
 }
