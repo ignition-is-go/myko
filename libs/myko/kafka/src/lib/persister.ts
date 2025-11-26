@@ -161,7 +161,7 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
           {
             topic: makeSafeTopic(entity),
             numPartitions: 1,
-            replicationFactor: 3,
+            replicationFactor: 1,
             configEntries: [
               { name: 'retention.ms', value: '-1' },
               { name: 'cleanup.policy', value: 'compact' },
@@ -169,6 +169,9 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
           },
         ],
       })
+    } catch (e) {
+      // Topic may already exist or we may not have permissions - that's OK
+      this.logger.warn(entity, 'KafkaPersister', `Topic creation skipped: ${e.message}`)
     } finally {
       await admin.disconnect()
     }
