@@ -21,9 +21,7 @@
     "@types/uuid": "^9.0.8"
   },
   "scripts": {
-    "build": "tsc",
-    "jsr-publish": " jsr publish --allow-dirty --token $JSR_TOKEN --allow-slow-types",
-    "jsr-publish:dry": " jsr publish --allow-dirty --allow-slow-types --dry-run"
+    "build": "echo 'Skipping tsc - JSR publishes TS source directly'"
   },
   "version": "3.0.0-canary.794"
 }
