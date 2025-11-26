@@ -57,6 +57,9 @@
     "svelte-preprocess"
   ],
   "pnpm": {
+    "overrides": {
+      "@types/three": "^0.181.0"
+    },
     "onlyBuiltDependencies": [
       "@serialport/bindings-cpp",
       "@sveltejs/kit",
