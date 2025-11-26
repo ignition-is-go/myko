@@ -21,7 +21,7 @@
     "@types/uuid": "^9.0.8"
   },
   "scripts": {
-    "build": "echo 'Skipping tsc - JSR publishes TS source directly'"
+    "build": "tsc --noEmit"
   },
   "version": "3.0.0-canary.795"
 }
