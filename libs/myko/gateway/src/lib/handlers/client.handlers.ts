@@ -27,9 +27,9 @@ import {
   ofType,
   queryBus,
   SetClientWindbackTime,
-  Stream,
   WindbackStatus,
   type MCommandHandler,
+  type MEventStream,
   type MLiveReportResult,
   type MQueryHandler,
   type MReportHandler,
@@ -403,7 +403,7 @@ export class WindbackStatusHandler implements MReportHandler<WindbackStatus> {
 // Clean up inflight tracking when clients disconnect to prevent memory leak
 @MykoSaga()
 export class ClientInflightCleanupSaga implements MSagaHandler {
-  execute(stream: Stream<MItem>): Observable<MCommand & ContextPhantom> {
+  execute(stream: MEventStream<MItem>): Observable<MCommand & ContextPhantom> {
     return stream.pipe(
       ofItems(Client),
       ofType(MEventType.DEL),
