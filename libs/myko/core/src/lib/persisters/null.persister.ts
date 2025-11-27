@@ -5,7 +5,10 @@ export class NullPersister<T extends MItem> extends Persister<T> {
   constructor() {
     super()
 
-    this.load$.complete()
+    // Defer completion to the next tick to allow all repos to register first
+    // This prevents race conditions where onAllInit callbacks try to access
+    // repos that haven't been created yet
+    queueMicrotask(() => this.load$.complete())
   }
 
   persist(event: MEvent<T>) {

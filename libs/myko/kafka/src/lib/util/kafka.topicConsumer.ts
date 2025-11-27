@@ -17,9 +17,12 @@ export class KafkaTopicConsumer {
     onMessage: (buf: Message, percent) => void,
     private onCaughtUp?: () => void,
   ) {
+    // Each consumer needs a unique groupId to avoid rebalancing storms
+    // when 90+ entity consumers connect simultaneously
+    const baseGroupId = config.groupId ?? crypto.randomUUID()
     this.cons = kafka.consumer({
       ...config,
-      groupId: config.groupId ?? crypto.randomUUID(),
+      groupId: `${baseGroupId}-${makeSafeTopic(topic)}`,
     })
 
     const admin = kafka.admin()
@@ -27,12 +30,28 @@ export class KafkaTopicConsumer {
     admin
       .fetchTopicOffsets(makeSafeTopic(topic))
       .then((offsets) => {
-        const high = offsets[0].high
+        // Handle empty offsets (new topic with no partitions yet) or high === '0' (empty topic)
+        const high = offsets?.[0]?.high
 
-        if (high === '0') {
+        if (!high || high === '0') {
           this.caughtUp = true
           this.onCaughtUp?.()
+        } else {
+          // Topic has data - set a timeout fallback in case consumer doesn't catch up normally
+          // This handles edge cases like decode errors, network issues, or batch timing problems
+          setTimeout(() => {
+            if (!this.caughtUp) {
+              console.warn(`[KafkaTopicConsumer] ${topic}: Timeout waiting for catch-up (high=${high}), forcing completion`)
+              this.caughtUp = true
+              this.onCaughtUp?.()
+            }
+          }, 10000) // 10 second timeout
         }
+      })
+      .catch(() => {
+        // Topic doesn't exist yet or other error - treat as empty/caught up
+        this.caughtUp = true
+        this.onCaughtUp?.()
       })
       .finally(() => {
         void admin.disconnect()
