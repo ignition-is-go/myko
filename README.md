@@ -259,6 +259,10 @@ The position of a binding node the scene's node graph editor
 	w: number
 	
 	h: number
+	
+	structuredColumn: number
+	
+	structuredSlot: number
 }
 ``` 
 
@@ -1361,7 +1365,7 @@ An individual pane within a window group layout
 	
 	sessionId: object
 	
-	// Defaults to overview
+	// Defaults to visualizer
 	activeView: object
 	
 	// Defaults to [object Object]
@@ -2666,6 +2670,9 @@ A group of windows that track the same session
 	
 	// Defaults to 
 	selectedBundles: array
+	
+	// Defaults to 
+	selectedScreens: array
 	
 	// Defaults to null
 	paneLayout: object
@@ -8101,6 +8108,21 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## MoveBindingNodeStructured
+
+```ts
+{
+	commandId: 'MoveBindingNodeStructured'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+		$commandResult: Number
+	}
+}
+``` 
+
 ## SetBindingNodeValue
 
 ```ts
@@ -11578,6 +11600,20 @@ Returns: [WindowGroup[]](#windowgroup)
 ```ts
 {
 	commandId: 'SetSelectedBundles'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## SetSelectedScreens
+
+```ts
+{
+	commandId: 'SetSelectedScreens'
 	{
 		tx: String
 		commandClientId: String

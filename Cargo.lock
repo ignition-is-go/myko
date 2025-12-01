@@ -6602,6 +6602,7 @@ dependencies = [
  "napi-derive 2.16.13",
  "rship_sync_core",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
