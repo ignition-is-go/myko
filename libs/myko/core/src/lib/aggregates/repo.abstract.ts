@@ -330,9 +330,9 @@ export abstract class Repo<T extends MItem> {
       switchMap((ids) =>
         ids.length === 0
           ? of([])
-          : combineLatest(ids.map((id) => this.watchId(id.toString()).pipe())),
+          // Use watchIds for cached subscriptions - prevents subscription explosion
+          : this.watchIds(ids.map((id) => id.toString())),
       ),
-      map((x) => x.filter((x) => x !== null)),
       map((x) => x.filter(filterFunc)),
     )
   }

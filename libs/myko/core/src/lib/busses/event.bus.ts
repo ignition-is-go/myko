@@ -98,12 +98,13 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
           }
 
           const allParents = await getParentsFilter(() => true)
-          const allChildrenIds = allParents.flatMap(
-            (parent) => parent[relation.localKey],
+          // Use Set for O(1) lookup instead of O(n) includes() - avoids O(n²) orphan check
+          const allChildrenIds = new Set(
+            allParents.flatMap((parent) => parent[relation.localKey]),
           )
 
           const orphans = await getChildrenFilter(
-            (child) => !allChildrenIds.includes(child.id),
+            (child) => !allChildrenIds.has(child.id),
           )
 
           if (orphans.length > 0) {
