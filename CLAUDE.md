@@ -159,6 +159,66 @@ Persistence (Kafka Event Log)
 - **Protocol Buffers**: Language-agnostic schemas for RPC (Link layer)
 - **NAPI-RS**: Rust native modules with auto-generated TypeScript bindings (Asset Store, Sync)
 
+## Development Principles
+
+### Production Software Mindset
+
+This is production software used in live entertainment, broadcast, and installation contexts. Every change must consider:
+
+- **Multi-developer maintenance**: Code will be read and modified by many engineers. Prioritize clarity over cleverness. Use descriptive names, add comments for non-obvious logic, and follow established patterns in the codebase.
+- **Modular architecture**: Features should be self-contained with clear boundaries. Avoid tight coupling between modules. New functionality should extend existing abstractions rather than create parallel systems.
+- **Backward compatibility**: Changes to entities, handlers, or SDK APIs may affect existing projects and executors. Consider migration paths and deprecation strategies.
+- **Error resilience**: Production deployments cannot crash. Handle edge cases, validate inputs at system boundaries, and provide meaningful error messages.
+
+### Distributed Architecture Awareness
+
+Rship is inherently distributed. Always consider:
+
+- **Sessions**: Users work within sessions that scope their project context. UI state, entity queries, and commands operate within session boundaries. Don't assume single-user or single-session.
+- **Window Groups**: The UI supports multiple synchronized windows (e.g., control room + stage view). State must stay consistent across window group members. Consider what happens when the same data is viewed/edited from multiple windows.
+- **Multi-client reality**: Multiple executors, multiple UI clients, and multiple users may connect simultaneously. Entity state can change at any time from any client. Design for eventual consistency and handle concurrent modifications gracefully.
+- **Connection lifecycle**: Clients connect, disconnect, and reconnect. Executors may go offline. UI must handle these states and recover gracefully. Never assume persistent connections.
+
+### Thoroughness Requirements
+
+When investigating or fixing issues:
+
+- **Find all instances**: A bug in one place often exists in similar code elsewhere. Search the codebase for related patterns. If fixing a binding handler issue, check all binding handlers. If fixing a UI component pattern, check all components using that pattern.
+- **Trace the full path**: Follow data from origin to destination. For UI issues, trace from user action → component → service → command → handler → event → query → UI update. For executor issues, trace pulse → binding → action → executor.
+- **Check all entity types**: If a change affects how entities work, verify it against all relevant entity types (Target, Binding, Scene, Calendar, etc.).
+- **Verify across platforms**: UI runs on web, iOS, Android (Capacitor), and desktop (Tauri). Executors run on various OS. Consider platform-specific behavior.
+
+### Complete Feature Implementation
+
+Features must be fully realized, not rushed to completion:
+
+- **Plan the full user flow**: Before implementing, map out the complete user journey. What initiates the action? What feedback does the user see? How do they know it succeeded or failed? What happens on error? How do they undo or modify?
+- **Design before coding**: For significant features, document the approach. What entities are involved? What commands/events? What UI components? What edge cases? Get alignment before writing code.
+- **Build all implications**: A feature isn't done when the "happy path" works. Consider:
+  - Empty states (no data yet)
+  - Loading states (data fetching)
+  - Error states (operation failed)
+  - Edge cases (unusual inputs, race conditions)
+  - Permissions (who can do this?)
+  - Persistence (does state survive refresh/reconnect?)
+  - Undo/redo (can the user reverse this?)
+- **Test the integration**: Features must work within the larger system. Test with real executors, multiple clients, and realistic data volumes.
+- **Don't cut corners to finish**: If a feature is taking longer than expected, communicate and adjust scope rather than shipping incomplete work. Half-implemented features create technical debt and user confusion.
+
+### UI Development Guidelines
+
+When building or modifying UI:
+
+- **Consider the full interaction model**:
+  - Keyboard navigation and shortcuts
+  - Touch/mobile interactions (if applicable)
+  - Accessibility (screen readers, color contrast)
+  - Responsive behavior across screen sizes
+- **Handle real-time updates**: Data changes from other clients. Subscriptions must handle updates, deletions, and additions. Don't assume data is static.
+- **Manage loading and error states**: Every async operation needs loading indication and error handling. Users should never see a frozen UI or wonder if their action worked.
+- **Follow existing component patterns**: Check how similar features are implemented. Use existing design system components. Maintain visual and behavioral consistency.
+- **Consider window group context**: Some UI may appear in multiple windows. State should be consistent. Consider which window should handle which interactions.
+
 ## Code Style
 
 ### Commits
