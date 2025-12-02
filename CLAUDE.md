@@ -170,6 +170,36 @@ This is production software used in live entertainment, broadcast, and installat
 - **Backward compatibility**: Changes to entities, handlers, or SDK APIs may affect existing projects and executors. Consider migration paths and deprecation strategies.
 - **Error resilience**: Production deployments cannot crash. Handle edge cases, validate inputs at system boundaries, and provide meaningful error messages.
 
+### Use Current APIs and Documentation
+
+**CRITICAL**: Always verify you're using current framework APIs. Training data may be outdated. Before implementing:
+
+1. **Check official documentation** for the current version of any framework or library
+2. **Search the existing codebase** to see how similar functionality is already implemented
+3. **Verify version compatibility** - check `package.json` or `Cargo.toml` for actual versions in use
+
+**Framework-specific guidance for this project:**
+
+- **Svelte 5** (not Svelte 4): Uses runes (`$state`, `$derived`, `$effect`), not reactive statements (`$:`). Components use `<script>` not `<script lang="ts">` with stores. Check existing components in `apps/ui/src/lib/` for patterns.
+- **SvelteKit 2**: File-based routing in `src/routes/`. Uses `+page.svelte`, `+layout.svelte`, `+server.ts` conventions. Load functions in `+page.ts` or `+layout.ts`.
+- **Tauri 2** (not Tauri 1): Different plugin system, command structure, and IPC. Uses `@tauri-apps/api` v2 imports. Check `apps/ui-desktop/src-tauri/` for current patterns.
+- **Threlte 8**: Three.js integration for Svelte 5. Different component API from earlier versions.
+- **RxJS 7**: Used extensively for reactive streams. Check `@myko/` packages for observable patterns.
+
+**When uncertain about an API:**
+- Search the codebase for existing usage: `grep -r "functionName" --include="*.ts"`
+- Check the package version: `cat package.json | grep "package-name"`
+- Consult current docs (use web search if needed)
+- Ask the user if multiple approaches seem valid
+
+**Common outdated patterns to avoid:**
+- Svelte 4 reactive statements (`$:`) → Use Svelte 5 runes (`$derived`, `$effect`)
+- Svelte stores (`writable`, `readable`) → Use Svelte 5 `$state` in `.svelte.ts` files
+- `on:click` → Use `onclick` (Svelte 5 event handlers)
+- `export let prop` → Use `let { prop } = $props()` (Svelte 5)
+- Tauri 1.x `invoke` patterns → Use Tauri 2 command bindings
+- `createEventDispatcher` → Use callback props or `$host()` in Svelte 5
+
 ### Distributed Architecture Awareness
 
 Rship is inherently distributed. Always consider:
