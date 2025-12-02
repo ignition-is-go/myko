@@ -8,6 +8,117 @@ Rocketship (rship) is a centralized control platform for orchestrating reactive 
 
 **Core Concept**: External software **Services** run **Executors** that connect to the rship server via WebSocket. Executors publish **Targets** (interactable entities) with **Emitters** (state observers) and **Actions** (commands). **Bindings** define reactive relationships between Emitters and Actions, organized into **Scenes** and **Calendars**.
 
+## Platform Philosophy
+
+### Core Tenets
+
+Rship represents a paradigm shift from imperative ("do this, then that") to declarative ("when this, then that") control programming. The platform is built on three pillars:
+
+1. **Events**: All control data flows through real-time, schema-defined event streams
+2. **Reactivity**: Relationships are programmed declaratively, enabling complex behavior and real-time adaptability
+3. **Time**: Temporal relationships enable precise event synchronization from micro to macro time scales
+
+### Technology Should...
+
+- Expand possibility, not inhibit process
+- Serve creative purpose, not justify its own existence
+- Adapt to creative intent, not dictate limitations
+- Encourage idea development, not just facilitate implementation
+
+### User Personas
+
+When building features, consider these distinct user needs:
+
+**Artists/Performers**: "I want technology to augment creativity, not be an obstacle. I need a responsive environment that reacts to my performance without worrying about breaking control flow. If I look at the interface, I want visualizations of how the system works, not technical details."
+
+**Creative Directors/Producers**: "I want to know where the show lives, what it looks/feels like, and how parts relate. I need high-level creative control without technical complexity—visualizations, dashboards, and design-driven tools."
+
+**Technical Directors/Engineers**: "I need to know everything is working and have deep control when it's not. I want monitoring dashboards, system topology, asset management, and troubleshooting tools. I balance creative needs with technical realities."
+
+### Platform Hierarchy
+
+Understand these organizational levels:
+
+- **Organizations**: Top-level entities, often tied to hardware/compute ownership
+- **Contexts**: Broad production processes (previz, rehearsal, touring) tied to a server cluster
+- **Projects**: Encapsulate scenes, bindings, event tracks, variables, sessions within a context
+- **Sessions**: Instance activation and assignment within a project
+- **Scenes**: Container for bindings and node graphs
+
+**Critical constraint**: An instance can only be assigned to one project at a time to prevent conflicting state management.
+
+## UX Design Principles
+
+### Progressive Information Density
+
+Information reveals itself based on context and user needs. Design UI with these layers:
+
+1. **At-A-Glance**: Visualizations, live status, active states, "what's happening now"
+2. **Creating/Editing**: Working with entities, parameters, temporal/logical behavior, "how things work"
+3. **Debugging**: Network traffic, logs, event traces, performance profiling, "why things happened"
+4. **Development**: Tools for executor developers to help themselves
+
+### UX Modes
+
+Design UI to support these distinct operational modes:
+
+**Compose Mode** (Planning/Designing):
+- Feels like sketching, wireframing, drafting
+- Low stakes, freely exploring ideas
+- Infinite canvas, visual placement, frames, placeholders
+- Maximum previsualization and simulation
+
+**Refine Mode** (Editing/Finetuning):
+- Major structure exists, now polish
+- Data visualization, smoothing, tweening, ranging
+- Instant feedback loop for edits
+- High information density acceptable (tables, lists)
+- Entity cross-relations visible to prevent unwanted consequences
+
+**Operate Mode** (Live/Show):
+- Show is live, mostly observing and monitoring
+- UI elements are bigger, less dense for fast readability
+- Manual cues and realtime parameter editing
+- Emergency countermeasures accessible
+
+### View Organization
+
+The UI organizes around what users are trying to accomplish:
+
+- **Workspaces**: Saved pane layouts shared among teams
+- **Panes**: Flexible containers with tabs (like IDE or terminal multiplexer)
+- **Binary tree splitting**: Ctrl+P splits pane opposite to aspect ratio
+- **Focus follows cursor**
+- **Projects tied to windows, sessions can differ between panes**
+
+### Command Palette
+
+Users access most UI commands through the command palette. It also detects natural language for AI-assisted operations:
+
+- "Give me a view to the right with a scene list and target list"
+- "Bind all of these physical light intensity emitters to all of these virtual light intensity actions"
+- "Visualize this event relationship"
+
+### Reactivity/Determinism Awareness
+
+Users must understand event relationships and system behavior:
+
+- What bindings are active in which scenes?
+- What events could lead to scene activation?
+- **Guardrails**: Warn users entering "undefined behavior territory"
+- **Scene arming/disarming**: Control when reactive scenes can activate
+- **Locking**: Protect entities from accidental changes
+- **Flagging**: Mark entities for warnings if affected by edits
+
+### Don't Make Users Think
+
+Surface relevant information automatically:
+
+- What do action/emitter fields mean? (semantic info, units, descriptions)
+- What does this entity belong/relate to?
+- Use consistent terminology across all contexts
+- Visual feedback for all state changes (UI-only, server response, other users)
+
 ## Development Commands
 
 ### JavaScript/TypeScript
