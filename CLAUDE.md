@@ -281,6 +281,43 @@ This is production software used in live entertainment, broadcast, and installat
 - **Backward compatibility**: Changes to entities, handlers, or SDK APIs may affect existing projects and executors. Consider migration paths and deprecation strategies.
 - **Error resilience**: Production deployments cannot crash. Handle edge cases, validate inputs at system boundaries, and provide meaningful error messages.
 
+### Design for Massive Scale
+
+**CRITICAL**: Rship is global infrastructure for controlling distributed multimedia systems. Every feature must be built with massive scale in mind from day one:
+
+**Scale targets to always consider:**
+- **Thousands of nodes** in a single scene graph
+- **Thousands of machines** connected simultaneously
+- **Thousands of lights/fixtures** being controlled in real-time
+- **Hundreds of executors** pushing pulses concurrently
+- **Dozens of UI clients** viewing/editing the same project
+- **Millions of events** flowing through the system per hour
+
+**What this means for implementation:**
+
+- **UI rendering**: Use virtualization for lists and grids. Never render thousands of DOM elements. Implement windowing, pagination, or canvas-based rendering for large datasets.
+- **Data structures**: Choose O(1) or O(log n) operations over O(n). Use Maps/Sets instead of array searches. Consider spatial indexing (R-trees, quadtrees) for spatial queries.
+- **Network efficiency**: Batch updates where possible. Use delta/diff protocols instead of full state sync. Implement pagination for queries. Consider WebSocket message coalescing.
+- **Memory management**: Stream large datasets instead of loading entirely into memory. Implement proper cleanup and disposal. Watch for memory leaks in subscriptions and event listeners.
+- **Database queries**: Always consider query performance at scale. Add appropriate indexes. Avoid N+1 query patterns. Use projections to fetch only needed fields.
+- **Real-time updates**: Design subscriptions to handle high-frequency updates without overwhelming the UI. Implement throttling/debouncing. Consider update batching.
+- **Scene graphs**: Node operations must scale. Avoid full graph traversals. Use incremental updates. Consider graph partitioning for very large scenes.
+
+**Questions to ask before implementing:**
+1. What happens when there are 10,000 items instead of 10?
+2. What happens when 100 clients are connected instead of 1?
+3. What happens when updates arrive at 1000/sec instead of 1/sec?
+4. Will this cause memory to grow unbounded over time?
+5. Does this require loading all data before showing anything?
+
+**Anti-patterns to avoid:**
+- Loading all entities into memory at startup
+- Rendering all items in a list regardless of viewport
+- Full state synchronization on every change
+- Unthrottled real-time updates to UI
+- Recursive operations without depth limits
+- Storing unbounded history/logs in memory
+
 ### Use Current APIs and Documentation
 
 **CRITICAL**: Always verify you're using current framework APIs. Training data may be outdated. Before implementing:
