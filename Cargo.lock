@@ -2299,6 +2299,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "display-core",
+ "env_logger",
  "log 0.4.28",
  "serde",
  "serde_json",
