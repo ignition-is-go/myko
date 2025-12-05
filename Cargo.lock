@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1666,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -1927,9 +1927,9 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb230974aaf0aca4d71665bed0aca156cf43b764fcb9583b69c6c3e686f35e72"
+checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
 dependencies = [
  "ctor-proc-macro",
  "dtor",
@@ -2614,9 +2614,9 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
 name = "flate2"
-version = "1.1.5"
+version = "1.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
+checksum = "a2152dbcb980c05735e2a651d96011320a949eb31a0c8b38b72645ce97dec676"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
@@ -3047,9 +3047,9 @@ dependencies = [
 
 [[package]]
 name = "gif"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f954a9e9159ec994f73a30a12b96a702dde78f5547bcb561174597924f7d4162"
+checksum = "f5df2ba84018d80c213569363bdcd0c64e6933c67fe4c1d60ecf822971a3c35e"
 dependencies = [
  "color_quant",
  "weezl",
@@ -3821,7 +3821,7 @@ dependencies = [
  "byteorder-lite",
  "color_quant",
  "exr",
- "gif 0.14.0",
+ "gif 0.14.1",
  "image-webp",
  "moxcms",
  "num-traits",
@@ -4293,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -4340,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "clap",
  "link-rpc",
@@ -4351,7 +4351,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "link",
  "log 0.4.29",
@@ -4365,7 +4365,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -4394,7 +4394,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4685,9 +4685,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.1.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d83b0086dc8ecf3ce9ae2874b2d1290252e2a30720bea58a5c6639b0092873"
+checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
 dependencies = [
  "libc",
  "log 0.4.29",
@@ -4790,7 +4790,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "quote",
  "syn 2.0.111",
@@ -4798,7 +4798,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4849,7 +4849,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3af30fe8e799dda3a555c496c59e960e4cff1e931b63acbaf3a3b25d9fad22b6"
 dependencies = [
  "bitflags 2.10.0",
- "ctor 0.6.2",
+ "ctor 0.6.3",
  "futures 0.3.31",
  "napi-build",
  "napi-sys 3.2.1",
@@ -4885,7 +4885,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47cffa09ea668c4cc5d7b1198780882e28780ed1804a903b80680725426223d9"
 dependencies = [
  "convert_case 0.10.0",
- "ctor 0.6.2",
+ "ctor 0.6.3",
  "napi-derive-backend 4.0.0",
  "proc-macro2",
  "quote",
@@ -5090,7 +5090,7 @@ dependencies = [
  "kqueue",
  "libc",
  "log 0.4.29",
- "mio 1.1.0",
+ "mio 1.1.1",
  "notify-types",
  "walkdir",
  "windows-sys 0.52.0",
@@ -5561,7 +5561,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "anyhow",
  "napi 3.6.1",
@@ -6139,7 +6139,7 @@ version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219cb19e96be00ab2e37d6e299658a0cfa83e52429179969b0f0121b4ac46983"
 dependencies = [
- "toml_edit 0.23.7",
+ "toml_edit 0.23.8",
 ]
 
 [[package]]
@@ -6275,9 +6275,9 @@ dependencies = [
 
 [[package]]
 name = "pxfm"
-version = "0.1.26"
+version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3502d6155304a4173a5f2c34b52b7ed0dd085890326cb50fd625fdf39e86b3b"
+checksum = "7186d3822593aa4393561d186d1393b3923e9d6163d3fbfd6e825e3e6cf3e6a8"
 dependencies = [
  "num-traits",
 ]
@@ -7001,7 +7001,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7013,7 +7013,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -7034,7 +7034,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "env_logger",
  "log 0.4.29",
@@ -7051,7 +7051,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7089,7 +7089,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "chrono",
  "derive_more 2.1.0",
@@ -7102,7 +7102,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -8098,7 +8098,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.797"
+version = "3.0.0-canary.798"
 dependencies = [
  "rship_sync_core",
  "tokio",
@@ -8767,7 +8767,7 @@ checksum = "ff360e02eab121e0bc37a2d3b4d4dc622e6eda3a8e5253d5435ecf5bd4c68408"
 dependencies = [
  "bytes 1.11.0",
  "libc",
- "mio 1.1.0",
+ "mio 1.1.1",
  "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
@@ -9036,9 +9036,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.23.7"
+version = "0.23.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6485ef6d0d9b5d0ec17244ff7eb05310113c3f316f2d14200d4de56b3cb98f8d"
+checksum = "5a9b7ac41d92f2d2803f233e297127bac397df7b337e0460a1cc39d6c006dee4"
 dependencies = [
  "indexmap 2.12.1",
  "toml_datetime 0.7.3",
