@@ -118,6 +118,12 @@ export const bunAdapter: MykoWsAdapter = ({
       }
 
       if (url.pathname === '/myko') {
+        const isInit = isAllInit()
+
+        if (!isInit.done) {
+          return new Response('Not Ready', { status: 503 })
+        }
+
         const clientId = randomUUID()
 
         if (
