@@ -396,6 +396,7 @@ When building or modifying UI:
 - **Manage loading and error states**: Every async operation needs loading indication and error handling. Users should never see a frozen UI or wonder if their action worked.
 - **Follow existing component patterns**: Check how similar features are implemented. Use existing design system components. Maintain visual and behavioral consistency.
 - **Consider window group context**: Some UI may appear in multiple windows. State should be consistent. Consider which window should handle which interactions.
+- **Form element styling**: When using select/dropdown elements, always ensure adequate padding-right for the caret/arrow indicator. Never let the caret overlap with the text content. Use `min-width` to ensure options are readable.
 
 ## Code Style
 
