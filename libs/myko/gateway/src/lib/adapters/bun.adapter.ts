@@ -34,11 +34,27 @@ export const bunAdapter: MykoWsAdapter = ({
   rx,
   tx,
   serverId,
+  tls,
 }: MykoWsAdapterOptions): MykoWsAdapterResult => {
   const logger = new MykoLogger('BunAdapter')
 
+  // Build TLS config if provided
+  const tlsConfig = tls
+    ? {
+        key: Bun.file(tls.key),
+        cert: Bun.file(tls.cert),
+        ...(tls.ca && { ca: Bun.file(tls.ca) }),
+        ...(tls.passphrase && { passphrase: tls.passphrase }),
+      }
+    : undefined
+
+  if (tls) {
+    logger.info(`TLS enabled on port ${port}`)
+  }
+
   const s = Bun.serve({
     port,
+    tls: tlsConfig,
     fetch: async (req, server) => {
       const url = new URL(req.url)
 

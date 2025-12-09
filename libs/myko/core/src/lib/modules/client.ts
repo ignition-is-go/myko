@@ -16,7 +16,7 @@ import { Server } from './server'
 })
 export class Client extends MItem<Client> {
   @belongsTo(Server)
-  readonly serverId: string
+  readonly serverId!: string
 
   readonly windback?: string
 }

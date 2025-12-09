@@ -13,7 +13,7 @@ export class MQuery<T extends MItem = MItem> extends WithContext {
   /**
    * The result of the query.
    */
-  $queryResult: T[]
+  $queryResult!: T[]
 
   /**
    * Creates a new instance of the MQuery class.

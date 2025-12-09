@@ -57,14 +57,14 @@ export class WithContext {
    */
   readonly tx: string
 
-  readonly commandClientId: string
+  readonly commandClientId!: string
 
   /**
    * The timestamp when the command was created.
    */
   readonly createdAt: string
 
-  readonly lineage: string[]
+  readonly lineage!: string[]
 
   constructor() {
     this.tx = uuid()

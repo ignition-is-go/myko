@@ -8,13 +8,13 @@ import * as Z from 'zod'
 })
 export class Server extends MItem<Server> {
   @doc()
-  version: string
+  version!: string
   @doc('xxx.xxx.xxx.xxx, where it can be reached publically')
-  address: string
+  address!: string
   @doc('The port the server is listening on')
-  port: number
+  port!: number
   @doc('ISO DateTime string')
-  startedAt: string // ISO DateTime
+  startedAt!: string // ISO DateTime
 }
 
 export const serverSchema = Z.object({

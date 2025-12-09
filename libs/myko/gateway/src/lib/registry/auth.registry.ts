@@ -2,11 +2,7 @@ import type { MykoAuthService } from '../auth/types'
 
 let auth: MykoAuthService | null = null
 
-export const getAuth = (): MykoAuthService => {
-  if (!auth) {
-    throw new Error('Auth service not initialized')
-  }
-
+export const getAuth = (): MykoAuthService | null => {
   return auth
 }
 

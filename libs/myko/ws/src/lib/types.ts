@@ -20,6 +20,7 @@ export const MREPORT_RESPONSE_EVENT = 'ws:m:report-response'
 export const MREPORT_ERROR_EVENT = 'ws:m:report-error'
 export const MREPORT_CANCEL = 'ws:m:report-cancel'
 export const MPING_EVENT = 'ws:m:ping'
+export const MBATCH_EVENT = 'ws:m:batch'
 
 export const MYKO_WS_PORT = 5155
 
@@ -117,6 +118,12 @@ export type WSMCommandError = {
   event: typeof MCOMMAND_ERROR_EVENT
 }
 
+// BATCH - for bundling multiple messages in a single frame
+export type WSMBatch = {
+  event: typeof MBATCH_EVENT
+  data: WSMMessage[]
+}
+
 export type WSMMessage =
   | WSMQuery
   | WSMCommand
@@ -131,3 +138,4 @@ export type WSMMessage =
   | WSMReportCancel
   | WSMReportError
   | WSPingEvent
+  | WSMBatch

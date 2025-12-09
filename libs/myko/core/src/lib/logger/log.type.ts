@@ -13,17 +13,17 @@ import type { LogLevel } from './logLevel.type'
 })
 export class Log extends MItem<Log> {
   @doc()
-  text: string
+  text!: string
   @doc()
-  level: LogLevel
+  level!: LogLevel
   @doc()
   data: any
   @doc()
-  timestamp: string // ISO8601
+  timestamp!: string // ISO8601
   @doc()
-  serverId: ID
+  serverId!: ID
   @doc()
-  loggerName: string
+  loggerName!: string
 }
 
 @MykoQuery(Log)

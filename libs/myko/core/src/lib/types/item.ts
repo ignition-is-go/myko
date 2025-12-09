@@ -5,6 +5,8 @@ import type { ID, PartialBy } from './base'
 export type IMItem = {
   id: ID
   hash: string
+  // Allow dynamic property access for relationship handling
+  [key: string]: unknown
 }
 
 export type MItemConstructor<T extends IMItem> = (new (

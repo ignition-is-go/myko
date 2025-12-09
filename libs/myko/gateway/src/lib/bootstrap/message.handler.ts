@@ -1,5 +1,6 @@
 import { clientIdPropertyRegistry, eventBus, type ID } from '@myko/core'
 import {
+  MBATCH_EVENT,
   MCOMMAND_ERROR_EVENT,
   MCOMMAND_EVENT,
   MCOMMAND_RESPONSE_EVENT,
@@ -73,6 +74,16 @@ export const handleMessage =
             data: x.data.data,
           },
         })
+        break
+      }
+
+      case MBATCH_EVENT: {
+        // Process each message in the batch (skip nested batches to prevent recursion)
+        const handler = handleMessage(tx)
+        for (const msg of x.data.data) {
+          if (msg.event === MBATCH_EVENT) continue
+          await handler({ clientId: x.clientId, data: msg })
+        }
         break
       }
 

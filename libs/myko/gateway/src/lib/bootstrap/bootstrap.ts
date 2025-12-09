@@ -86,6 +86,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
       rx,
       tx,
       serverId,
+      tls: args.ws.tls,
     })
 
     setAdapterResult(res)
@@ -98,7 +99,8 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
       version: args.version,
     })
 
-    const lines = [`Listening: ${host}:${port}`]
+    const protocol = args.ws.tls ? 'wss' : 'ws'
+    const lines = [`Listening: ${protocol}://${host}:${port}`]
 
     startupReport.push({
       lines,

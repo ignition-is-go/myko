@@ -316,7 +316,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
   const result: any[] = []
 
-  function helper(current, index) {
+  function helper(current: Record<string, MItem>, index: number) {
     if (index === arrays.length) {
       result.push(current)
     } else {

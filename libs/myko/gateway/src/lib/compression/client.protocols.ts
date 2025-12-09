@@ -59,9 +59,7 @@ export const parse = (clientId: ID, data: any): WSMMessage => {
     clientProtocols.set(clientId, MykoProtocol.JSON)
   }
 
-  const result = decoders[detectedProtocol](data)
-  console.log('[PARSE]', detectedProtocol, 'event:', result?.event, 'itemType:', result?.data?.itemType)
-  return result
+  return decoders[detectedProtocol](data)
 }
 
 export const serialize = (clientId: ID, data: WSMMessage) => {

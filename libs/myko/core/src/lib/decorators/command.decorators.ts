@@ -45,7 +45,7 @@ export const MykoCommand: (opts?: {
       }
 
       const paramtypes =
-        Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
+        Reflect.getMetadata('design:paramtypes', original)?.map((x: { name: string }) => x.name) ??
         []
 
       addCommandDoc(

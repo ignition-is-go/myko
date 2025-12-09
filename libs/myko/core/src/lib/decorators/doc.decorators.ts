@@ -31,7 +31,7 @@ export const doc = (
   docString?: string,
   typeOverride?: string,
   deprecated?: boolean,
-) => {
+): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
