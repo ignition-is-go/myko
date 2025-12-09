@@ -79,5 +79,11 @@
       "workerd"
     ]
   },
-  "version": "3.0.0-canary.790"
+  "version": "3.0.0-canary.790",
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "msgpackr": "^1.11.0",
+    "socket.io-client": "^4.8.1",
+    "ws": "^8.18.3"
+  }
 }

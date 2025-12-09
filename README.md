@@ -140,6 +140,75 @@ An Asset Stub for future use
 }
 ``` 
 
+## AuditLog
+
+An audit log entry recording a security or compliance event
+### Queries
+
+- [GetAuditLogs](#getauditlogs)
+- [GetAuditLogsByOrganization](#getauditlogsbyorganization)
+- [GetAuditLogsByUser](#getauditlogsbyuser)
+- [GetAuditLogsByTarget](#getauditlogsbytarget)
+- [SearchAuditLogs](#searchauditlogs)
+
+```ts
+{
+	// Action that was performed
+	action: object
+	
+	// Severity level: info, warning, error, critical
+	severity: object
+	
+	// User who performed the action (null for system actions)
+	actorUserId: object
+	
+	// Actor display name (cached for historical reference)
+	actorName: string
+	
+	// Actor email (cached)
+	actorEmail: string
+	
+	// Organization context where action occurred
+	organizationId: object
+	
+	// Type of target entity
+	targetType: string
+	
+	// ID of target entity
+	targetId: object
+	
+	// Target entity name (cached)
+	targetName: string
+	
+	// When the action occurred
+	timestamp: string
+	
+	// IP address of actor
+	ipAddress: string
+	
+	// User agent string
+	userAgent: string
+	
+	// Human-readable description of what happened
+	description: string
+	
+	// Additional structured data about the event
+	metadata: object
+	
+	// Previous state (for update actions)
+	previousState: object
+	
+	// New state (for update actions)
+	newState: object
+	
+	// Whether action succeeded
+	success: boolean
+	
+	// Error message if action failed
+	errorMessage: string
+}
+``` 
+
 ## Binding
 
 > WARNING: deprecated
@@ -446,6 +515,70 @@ A Myko Client connected to a Server
 }
 ``` 
 
+## ColorProfile
+
+
+### Queries
+
+- [GetColorProfiles](#getcolorprofiles)
+- [GetColorProfilesByQuery](#getcolorprofilesbyquery)
+- [GetColorProfilesByIds](#getcolorprofilesbyids)
+
+```ts
+{
+	// Belongs to Project
+	projectId: object
+	
+	// Belongs to Camera
+	cameraId: object
+}
+``` 
+
+## Composition
+
+
+### Queries
+
+- [GetCompositions](#getcompositions)
+- [GetCompositionsByProjectId](#getcompositionsbyprojectid)
+- [GetCompositionById](#getcompositionbyid)
+- [GetCompositionsByIds](#getcompositionsbyids)
+
+```ts
+{
+	// Composition name
+	name: string
+	
+	// Composition description
+	description: string
+	
+	// Belongs to Project
+	projectId: object
+	
+	// Internal track for storing layers
+	// Belongs to Track
+	trackId: object
+	
+	// Output width in pixels
+	width: number
+	
+	// Output height in pixels
+	height: number
+	
+	// Background color (hex)
+	backgroundColor: string
+	
+	// Composition enabled/disabled
+	enabled: boolean
+	
+	// Order for stacking compositions
+	order: number
+	
+	// Is this the main/default composition
+	isMain: boolean
+}
+``` 
+
 ## Constraint
 
 In progress, subject to change. The intention with the start and end time is to allow for times of day throughout a series of days, but probably needs to be reworked
@@ -587,6 +720,92 @@ A data transfer between a binding and a payload
 }
 ``` 
 
+## DeviceOwnership
+
+Ownership record for a device, supporting claiming and sharing
+### Queries
+
+- [GetDeviceOwnership](#getdeviceownership)
+- [GetDeviceOwnershipByMachine](#getdeviceownershipbymachine)
+- [GetDeviceOwnershipsByOrganization](#getdeviceownershipsbyorganization)
+- [GetDeviceOwnershipsByUser](#getdeviceownershipsbyuser)
+- [GetUnclaimedDevices](#getunclaimeddevices)
+- [GetPendingClaims](#getpendingclaims)
+
+```ts
+{
+	// Machine ID this ownership record is for
+	machineId: object
+	
+	// Organization that owns this device
+	organizationId: object
+	
+	// Primary owner user ID
+	ownerUserId: object
+	
+	// Ownership status: unclaimed, pending, claimed, shared, transferred
+	status: object
+	
+	// Claim code for device registration (one-time use)
+	claimCode: string
+	
+	// When the claim code expires
+	claimCodeExpiresAt: string
+	
+	// User who submitted the claim (for pending status)
+	claimantUserId: object
+	
+	// When the claim was submitted
+	claimSubmittedAt: string
+	
+	// User ID ownership is being transferred to
+	transferToUserId: object
+	
+	// When transfer was initiated
+	transferInitiatedAt: string
+	
+	// When ownership was established
+	claimedAt: string
+	
+	// Notes about this device
+	notes: string
+}
+``` 
+
+## DeviceShare
+
+A share granting a user access to a device
+### Queries
+
+- [GetDeviceShares](#getdeviceshares)
+- [GetDeviceSharesByMachine](#getdevicesharesbymachine)
+- [GetDeviceSharesByUser](#getdevicesharesbyuser)
+
+```ts
+{
+	// Machine ID being shared
+	machineId: object
+	
+	// User ID receiving shared access
+	sharedWithUserId: object
+	
+	// Permission level: view, control, manage
+	shareLevel: object
+	
+	// User ID who created the share
+	sharedByUserId: object
+	
+	// When the share was created
+	sharedAt: string
+	
+	// Optional expiration for temporary shares
+	expiresAt: string
+	
+	// Note about why device was shared
+	note: string
+}
+``` 
+
 ## Directory
 
 
@@ -594,6 +813,23 @@ A data transfer between a binding and a payload
 
 - [GetDirectories](#getdirectories)
 - [GetDirectoriesByIds](#getdirectoriesbyids)
+
+```ts
+{
+	
+}
+``` 
+
+## DMXUniverse
+
+
+### Queries
+
+- [GetDMXUniverses](#getdmxuniverses)
+- [GetDMXUniversesByQuery](#getdmxuniversesbyquery)
+- [GetDMXUniversesByIds](#getdmxuniversesbyids)
+- [GetDMXUniversesByProjectId](#getdmxuniversesbyprojectid)
+- [GetDMXUniverseByNumber](#getdmxuniversebynumber)
 
 ```ts
 {
@@ -779,6 +1015,58 @@ An Event Track Playback in a Session
 }
 ``` 
 
+## FixtureCalibration
+
+
+### Queries
+
+- [GetFixtureCalibrations](#getfixturecalibrations)
+- [GetFixtureCalibrationsByQuery](#getfixturecalibrationsbyquery)
+- [GetFixtureCalibrationsByIds](#getfixturecalibrationsbyids)
+
+```ts
+{
+	// Belongs to Project
+	projectId: object
+	
+	// Belongs to FixtureType
+	fixtureTypeId: object
+}
+``` 
+
+## FixtureGroup
+
+
+### Queries
+
+- [GetFixtureGroups](#getfixturegroups)
+- [GetFixtureGroupsByQuery](#getfixturegroupsbyquery)
+- [GetFixtureGroupsByIds](#getfixturegroupsbyids)
+- [GetFixtureGroupsByProjectId](#getfixturegroupsbyprojectid)
+- [GetFixtureGroupsByFixtureId](#getfixturegroupsbyfixtureid)
+
+```ts
+{
+	
+}
+``` 
+
+## FixturePreset
+
+
+### Queries
+
+- [GetFixturePresets](#getfixturepresets)
+- [GetFixturePresetsByQuery](#getfixturepresetsbyquery)
+- [GetFixturePresetsByIds](#getfixturepresetsbyids)
+- [GetFixturePresetsByProjectId](#getfixturepresetsbyprojectid)
+
+```ts
+{
+	
+}
+``` 
+
 ## FixtureType
 
 
@@ -892,6 +1180,57 @@ An Instance assignment by cluster in a Session
 }
 ``` 
 
+## Invite
+
+An invitation for a user to join an organization or resource
+### Queries
+
+- [GetInvites](#getinvites)
+- [GetInviteByCode](#getinvitebycode)
+- [GetInvitesByEntity](#getinvitesbyentity)
+- [GetInvitesByEmail](#getinvitesbyemail)
+- [GetPendingInvitesByOrganization](#getpendinginvitesbyorganization)
+
+```ts
+{
+	// Type of invitation: organization, project, network
+	inviteType: object
+	
+	// ID of the entity being invited to
+	entityId: object
+	
+	// Email address of invited user
+	email: string
+	
+	// Role to grant upon acceptance
+	roleType: object
+	
+	// Invite status: pending, accepted, declined, expired, revoked
+	status: object
+	
+	// User ID who created the invite
+	invitedByUserId: object
+	
+	// When the invite was created
+	createdAt: string
+	
+	// When the invite expires
+	expiresAt: string
+	
+	// Unique invite code/token
+	inviteCode: string
+	
+	// Personal message included with invite
+	message: string
+	
+	// When the invite was accepted/declined
+	resolvedAt: string
+	
+	// User ID who accepted the invite (created or existing)
+	acceptedByUserId: object
+}
+``` 
+
 ## Keyframe
 
 A keyframe on an Event Track
@@ -967,6 +1306,50 @@ A keyframe on an Event Track
 	duration: number
 	
 	// Layer color for UI
+	color: string
+}
+``` 
+
+## LayerGroup
+
+
+### Queries
+
+- [GetLayerGroups](#getlayergroups)
+- [GetLayerGroupsByCompositionId](#getlayergroupsbycompositionid)
+- [GetLayerGroupById](#getlayergroupbyid)
+- [GetLayerGroupsByIds](#getlayergroupsbyids)
+
+```ts
+{
+	// Layer group name
+	name: string
+	
+	// Layer group description
+	description: string
+	
+	// Belongs to Composition
+	compositionId: object
+	
+	// Ordered list of child layer IDs
+	layerIds: array
+	
+	// Order in the composition stack (higher = on top)
+	order: number
+	
+	// Group opacity (0-1)
+	opacity: number
+	
+	// Blend mode for the group output
+	blendMode: object
+	
+	// Group enabled/disabled
+	enabled: boolean
+	
+	// UI collapsed state
+	collapsed: boolean
+	
+	// Group color for UI
 	color: string
 }
 ``` 
@@ -1192,12 +1575,15 @@ A keyframe on an Event Track
 
 ## Machine
 
-A Machine that hosts and instance
+A Machine that hosts an instance or acts as a network bridge device
 ### Queries
 
 - [GetMachines](#getmachines)
 - [GetMachinesByQuery](#getmachinesbyquery)
 - [GetMachinesByIds](#getmachinesbyids)
+- [GetMachineById](#getmachinebyid)
+- [GetMachineByJnOtpAccountName](#getmachinebyjnotpaccountname)
+- [GetMachineBySerialNumber](#getmachinebyserialnumber)
 
 ```ts
 {
@@ -1212,6 +1598,42 @@ A Machine that hosts and instance
 	
 	// Auto Client ID
 	clientId: object
+	
+	// Product type: rshipLink, theBRIDGE, desktop, server
+	productType: object
+	
+	// Hardware model ID for bridge devices
+	modelId: string
+	
+	// Device serial number
+	serialNumber: string
+	
+	// WAN MAC address
+	wanMacAddress: string
+	
+	// Serial communication type for hardware devices
+	serialCommunicationType: object
+	
+	// Daemon/agent version
+	daemonVersion: string
+	
+	// VPN provider status array
+	vpnProviders: array
+	
+	// Machine capabilities
+	capabilities: object
+	
+	// Original JN device ID for migration reference
+	jnDeviceId: string
+	
+	// JN OTP account name for legacy auth
+	jnOtpAccountName: string
+	
+	// JN OTP secret (encrypted) for legacy auth
+	jnOtpSecret: string
+	
+	// Whether migration to native rship auth is complete
+	migrationComplete: boolean
 }
 ``` 
 
@@ -1279,6 +1701,27 @@ Connection Status of a machine
 	
 	// Mapping order (for multiple mappings on same screens)
 	order: number
+	
+	// Linked physical display ID (from Tauri display enumeration)
+	physicalDisplayId: string
+	
+	// NVIDIA display ID for NVIDIA-specific operations
+	nvidiaDisplayId: string
+	
+	// Physical display name (cached for display when disconnected)
+	physicalDisplayName: string
+	
+	// Physical display connection type (cached)
+	physicalDisplayConnection: string
+	
+	// Link/sync status
+	linkStatus: object
+	
+	// Last sync error message
+	lastSyncError: string
+	
+	// Last sync timestamp
+	lastSyncAt: number
 }
 ``` 
 
@@ -1316,6 +1759,150 @@ Connection Status of a machine
 	
 	// Belongs to Project
 	projectId: object
+}
+``` 
+
+## Network
+
+A VPN network that machines can join for secure connectivity
+### Queries
+
+- [GetNetworks](#getnetworks)
+- [GetNetworkById](#getnetworkbyid)
+- [GetNetworksByOrganization](#getnetworksbyorganization)
+- [GetNetworkByVpnId](#getnetworkbyvpnid)
+
+```ts
+{
+	// Human-readable name for the network
+	name: string
+	
+	// Optional description
+	description: string
+	
+	// Organization that owns this network
+	organizationId: object
+	
+	// VPN provider: zerotier, tailscale, or netbird
+	vpnProvider: object
+	
+	// VPN network identifier (e.g., ZeroTier network ID)
+	vpnNetworkId: string
+	
+	// Control plane URL for self-hosted providers
+	vpnControlUrl: string
+	
+	// Bridge network CIDR (e.g., "192.168.0.0/24")
+	bridgeNetwork: string
+	
+	// Devices auto-join this network on registration
+	autoJoin: boolean
+	
+	// New devices require manual approval
+	requireApproval: boolean
+	
+	// Original JN network ID for migration reference
+	jnNetworkId: string
+}
+``` 
+
+## NetworkMember
+
+A machine membership in a VPN network
+### Queries
+
+- [GetNetworkMembers](#getnetworkmembers)
+- [GetNetworkMembersByNetwork](#getnetworkmembersbynetwork)
+- [GetNetworkMembersByMachine](#getnetworkmembersbymachine)
+- [GetNetworkMember](#getnetworkmember)
+
+```ts
+{
+	// Network this membership belongs to
+	networkId: object
+	
+	// Machine that is a member of the network
+	machineId: object
+	
+	// Current membership status
+	status: object
+	
+	// VPN-assigned IP address(es)
+	vpnAddresses: array
+	
+	// Hostname on the VPN network
+	vpnHostname: string
+	
+	// When the machine joined the network
+	joinedAt: string
+	
+	// Last time machine was seen on the network
+	lastSeenAt: string
+	
+	// Error message if status is error
+	errorMessage: string
+}
+``` 
+
+## Organization
+
+An organization that owns users, devices, and networks
+### Queries
+
+- [GetOrganizations](#getorganizations)
+- [GetOrganizationById](#getorganizationbyid)
+- [GetOrganizationBySlug](#getorganizationbyslug)
+- [GetOrganizationsByUser](#getorganizationsbyuser)
+
+```ts
+{
+	// Organization display name
+	name: string
+	
+	// URL-friendly slug (unique)
+	slug: string
+	
+	// Optional description
+	description: string
+	
+	// Organization logo URL
+	logoUrl: string
+	
+	// Primary contact email
+	contactEmail: string
+	
+	// Subscription tier: free, starter, professional, enterprise
+	subscriptionTier: object
+	
+	// Stripe customer ID for billing
+	stripeCustomerId: string
+	
+	// Subscription status: active, past_due, canceled, trialing
+	subscriptionStatus: string
+	
+	// Maximum number of users allowed
+	maxUsers: number
+	
+	// Maximum number of devices allowed
+	maxDevices: number
+	
+	// Maximum number of networks allowed
+	maxNetworks: number
+	
+	// Require approval for new members
+	requireMemberApproval: boolean
+	
+	// Allow public device claiming
+	allowPublicClaiming: boolean
+	
+	// Default role for new members
+	defaultMemberRole: string
+	
+	// Organization creation timestamp
+	createdAt: string
+	
+	// ID of user who created the organization
+	createdBy: object
 }
 ``` 
 
@@ -1541,6 +2128,56 @@ A Scene's timing in a Playlist
 }
 ``` 
 
+## Port
+
+A network interface/port on a machine
+### Queries
+
+- [GetPorts](#getports)
+- [GetPortsByMachine](#getportsbymachine)
+- [GetPortById](#getportbyid)
+- [GetPortsByNetwork](#getportsbynetwork)
+
+```ts
+{
+	// Machine this port belongs to
+	machineId: object
+	
+	// Port index (0-based)
+	index: number
+	
+	// Human-readable port name
+	name: string
+	
+	// OS interface name (e.g., eth0, en0)
+	interfaceName: string
+	
+	// Type of interface
+	interfaceType: object
+	
+	// MAC address of the interface
+	macAddress: string
+	
+	// Current IP address
+	ipAddress: string
+	
+	// Link speed in Mbps
+	linkSpeed: number
+	
+	// Network this port is bridged to
+	bridgedNetworkId: object
+	
+	// Status of the bridge configuration
+	bridgeStatus: object
+	
+	// Error message if bridgeStatus is error
+	bridgeError: string
+	
+	// Original JN port ID for migration reference
+	jnPortId: string
+}
+``` 
+
 ## Project
 
 A Project - the scope of most data in Rocketship
@@ -1554,6 +2191,71 @@ A Project - the scope of most data in Rocketship
 	name: string
 	
 	description: string
+}
+``` 
+
+## Prop
+
+
+### Queries
+
+- [GetProps](#getprops)
+- [GetPropsByQuery](#getpropsbyquery)
+- [GetPropsByProjectId](#getpropsbyprojectid)
+- [GetPropsByIds](#getpropsbyids)
+
+```ts
+{
+	// Prop name
+	name: string
+	
+	// Prop description
+	description: string
+	
+	// Belongs to Project
+	projectId: object
+	
+	// X coordinate in meters
+	x: number
+	
+	// Y coordinate in meters
+	y: number
+	
+	// Z coordinate in meters
+	z: number
+	
+	// Rotation around X axis in degrees
+	rotX: number
+	
+	// Rotation around Y axis in degrees
+	rotY: number
+	
+	// Rotation around Z axis in degrees
+	rotZ: number
+	
+	// Scale factor for X axis
+	scaleX: number
+	
+	// Scale factor for Y axis
+	scaleY: number
+	
+	// Scale factor for Z axis
+	scaleZ: number
+	
+	// URL to imported 3D geometry in Asset Store
+	geometryUrl: string
+	
+	// Original source format of the geometry
+	sourceFormat: string
+	
+	// Render mode: imported, procedural, or hybrid
+	renderMode: object
+	
+	// Color tint for the prop (hex)
+	color: string
+	
+	// Whether the prop is visible in the visualizer
+	visible: boolean
 }
 ``` 
 
@@ -1854,6 +2556,46 @@ A Rive animation project imported into rship
 }
 ``` 
 
+## Role
+
+A permission role granting a user access to a specific entity
+### Queries
+
+- [GetRoles](#getroles)
+- [GetRoleById](#getrolebyid)
+- [GetRolesByUser](#getrolesbyuser)
+- [GetRolesByEntity](#getrolesbyentity)
+- [GetUserRoleForEntity](#getuserroleforentity)
+- [GetRolesByOrganization](#getrolesbyorganization)
+
+```ts
+{
+	// User who has this role
+	userId: object
+	
+	// Type of entity: organization, network, machine, project, scene, calendar
+	entityType: object
+	
+	// ID of the entity this role grants access to
+	entityId: object
+	
+	// Permission level: viewer, manager, owner
+	roleType: object
+	
+	// When this role was granted
+	grantedAt: string
+	
+	// User who granted this role
+	grantedBy: object
+	
+	// Optional expiration timestamp for temporary access
+	expiresAt: string
+	
+	// Optional note about why this role was granted
+	note: string
+}
+``` 
+
 ## Scene
 
 A Scene that can be instantiated on a Calendar. Holds programmed data for Targets, Bindings between Emitters and Actions, and Event Tracks
@@ -1989,6 +2731,36 @@ A Scene that can be instantiated on a Calendar. Holds programmed data for Target
 	
 	// Screen order in project
 	order: number
+	
+	// Linked physical display ID (from Tauri display enumeration)
+	physicalDisplayId: string
+	
+	// NVIDIA display ID for NVIDIA-specific operations
+	nvidiaDisplayId: string
+	
+	// Physical display name (cached for display when disconnected)
+	physicalDisplayName: string
+	
+	// Physical display connection type (cached)
+	physicalDisplayConnection: string
+	
+	// Link/sync status
+	linkStatus: object
+	
+	// Last sync error message
+	lastSyncError: string
+	
+	// Last sync timestamp
+	lastSyncAt: number
+	
+	// Set as primary display when syncing
+	setPrimary: boolean
+	
+	// Position X in desktop coordinate space (for physical display)
+	desktopX: number
+	
+	// Position Y in desktop coordinate space (for physical display)
+	desktopY: number
 	
 	// Content stream ID (for video texture)
 	streamId: object
@@ -2331,15 +3103,74 @@ A Target's status for an instance
 
 ## User
 
-A User. Currently has no fields
+A user account with profile information and organization membership
 ### Queries
 
 - [GetUsers](#getusers)
 - [GetUsersByIds](#getusersbyids)
+- [GetUserById](#getuserbyid)
+- [GetUserByAuth0Id](#getuserbyauth0id)
+- [GetUserByEmail](#getuserbyemail)
+- [GetUsersByOrganization](#getusersbyorganization)
 
 ```ts
 {
+	// Auth0 user ID (sub claim)
+	auth0Id: string
 	
+	// Primary email address
+	email: string
+	
+	// Whether email is verified
+	emailVerified: boolean
+	
+	// Display name
+	name: string
+	
+	// First name
+	firstName: string
+	
+	// Last name
+	lastName: string
+	
+	// Avatar/profile picture URL
+	avatarUrl: string
+	
+	// User bio or description
+	bio: string
+	
+	// Phone number
+	phone: string
+	
+	// Primary organization ID (default context)
+	primaryOrganizationId: object
+	
+	// Account status: active, suspended, pending, deactivated
+	status: object
+	
+	// Last login timestamp
+	lastLoginAt: string
+	
+	// Account creation timestamp
+	createdAt: string
+	
+	// Preferred timezone (IANA)
+	timezone: string
+	
+	// Preferred locale/language
+	locale: string
+	
+	// UI theme preference
+	theme: string
+	
+	// API key for programmatic access (hashed)
+	apiKeyHash: string
+	
+	// API key prefix for identification
+	apiKeyPrefix: string
+	
+	// When API key was last used
+	apiKeyLastUsed: string
 }
 ``` 
 
@@ -3205,6 +4036,164 @@ Returns: [Alert[]](#alert)
 		tx: String
 		commandClientId: Array
 		createdAt: Object
+	}
+}
+``` 
+
+## GetAuditLogs
+
+Returns: [AuditLog[]](#auditlog)
+```ts
+{
+	queryId: 'GetAuditLogs' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetAuditLogsByOrganization
+
+Returns: [AuditLog[]](#auditlog)
+```ts
+{
+	queryId: 'GetAuditLogsByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetAuditLogsByUser
+
+Returns: [AuditLog[]](#auditlog)
+```ts
+{
+	queryId: 'GetAuditLogsByUser' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetAuditLogsByTarget
+
+Returns: [AuditLog[]](#auditlog)
+```ts
+{
+	queryId: 'GetAuditLogsByTarget' 
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SearchAuditLogs
+
+Returns: [AuditLog[]](#auditlog)
+```ts
+{
+	queryId: 'SearchAuditLogs' 
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## GetTracks
+
+Returns: [Track[]](#track)
+```ts
+{
+	queryId: 'GetTracks' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetTracksByProjectId
+
+Returns: [Track[]](#track)
+```ts
+{
+	queryId: 'GetTracksByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetTrackById
+
+Returns: [Track[]](#track)
+```ts
+{
+	queryId: 'GetTrackById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetCompositions
+
+Returns: [Composition[]](#composition)
+```ts
+{
+	queryId: 'GetCompositions' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetCompositionsByProjectId
+
+Returns: [Composition[]](#composition)
+```ts
+{
+	queryId: 'GetCompositionsByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetCompositionById
+
+Returns: [Composition[]](#composition)
+```ts
+{
+	queryId: 'GetCompositionById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetCompositionsByIds
+
+Returns: [Composition[]](#composition)
+```ts
+{
+	queryId: 'GetCompositionsByIds' 
+	{
+		tx: String
+		commandClientId: Array
 	}
 }
 ``` 
@@ -4179,6 +5168,44 @@ Returns: [ClusterTargetAssign[]](#clustertargetassign)
 }
 ``` 
 
+## GetColorProfiles
+
+Returns: [ColorProfile[]](#colorprofile)
+```ts
+{
+	queryId: 'GetColorProfiles' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetColorProfilesByQuery
+
+Returns: [ColorProfile[]](#colorprofile)
+```ts
+{
+	queryId: 'GetColorProfilesByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetColorProfilesByIds
+
+Returns: [ColorProfile[]](#colorprofile)
+```ts
+{
+	queryId: 'GetColorProfilesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
 ## GetConstraints
 
 Returns: [Constraint[]](#constraint)
@@ -4420,6 +5447,120 @@ Returns: [DataTransfer[]](#datatransfer)
 }
 ``` 
 
+## GetDeviceOwnership
+
+Returns: [DeviceOwnership[]](#deviceownership)
+```ts
+{
+	queryId: 'GetDeviceOwnership' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDeviceOwnershipByMachine
+
+Returns: [DeviceOwnership[]](#deviceownership)
+```ts
+{
+	queryId: 'GetDeviceOwnershipByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceOwnershipsByOrganization
+
+Returns: [DeviceOwnership[]](#deviceownership)
+```ts
+{
+	queryId: 'GetDeviceOwnershipsByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceOwnershipsByUser
+
+Returns: [DeviceOwnership[]](#deviceownership)
+```ts
+{
+	queryId: 'GetDeviceOwnershipsByUser' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetUnclaimedDevices
+
+Returns: [DeviceOwnership[]](#deviceownership)
+```ts
+{
+	queryId: 'GetUnclaimedDevices' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetPendingClaims
+
+Returns: [DeviceOwnership[]](#deviceownership)
+```ts
+{
+	queryId: 'GetPendingClaims' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceShares
+
+Returns: [DeviceShare[]](#deviceshare)
+```ts
+{
+	queryId: 'GetDeviceShares' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDeviceSharesByMachine
+
+Returns: [DeviceShare[]](#deviceshare)
+```ts
+{
+	queryId: 'GetDeviceSharesByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceSharesByUser
+
+Returns: [DeviceShare[]](#deviceshare)
+```ts
+{
+	queryId: 'GetDeviceSharesByUser' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetDirectories
 
 Returns: [Directory[]](#directory)
@@ -4517,6 +5658,45 @@ Returns: [Machine[]](#machine)
 	{
 		tx: String
 		commandClientId: Array
+	}
+}
+``` 
+
+## GetMachineById
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachineById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachineByJnOtpAccountName
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachineByJnOtpAccountName' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetMachineBySerialNumber
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachineBySerialNumber' 
+	{
+		tx: String
+		commandClientId: String
 	}
 }
 ``` 
@@ -4673,6 +5853,71 @@ Returns: [FileTransfer[]](#filetransfer)
 }
 ``` 
 
+## GetDMXUniverses
+
+Returns: [DMXUniverse[]](#dmxuniverse)
+```ts
+{
+	queryId: 'GetDMXUniverses' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDMXUniversesByQuery
+
+Returns: [DMXUniverse[]](#dmxuniverse)
+```ts
+{
+	queryId: 'GetDMXUniversesByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDMXUniversesByIds
+
+Returns: [DMXUniverse[]](#dmxuniverse)
+```ts
+{
+	queryId: 'GetDMXUniversesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetDMXUniversesByProjectId
+
+Returns: [DMXUniverse[]](#dmxuniverse)
+```ts
+{
+	queryId: 'GetDMXUniversesByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDMXUniverseByNumber
+
+Returns: [DMXUniverse[]](#dmxuniverse)
+```ts
+{
+	queryId: 'GetDMXUniverseByNumber' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Number
+	}
+}
+``` 
+
 ## GetFixtures
 
 Returns: [Fixture[]](#fixture)
@@ -4775,6 +6020,159 @@ Returns: [FixtureType[]](#fixturetype)
 }
 ``` 
 
+## GetFixtureCalibrations
+
+Returns: [FixtureCalibration[]](#fixturecalibration)
+```ts
+{
+	queryId: 'GetFixtureCalibrations' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFixtureCalibrationsByQuery
+
+Returns: [FixtureCalibration[]](#fixturecalibration)
+```ts
+{
+	queryId: 'GetFixtureCalibrationsByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFixtureCalibrationsByIds
+
+Returns: [FixtureCalibration[]](#fixturecalibration)
+```ts
+{
+	queryId: 'GetFixtureCalibrationsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFixtureGroups
+
+Returns: [FixtureGroup[]](#fixturegroup)
+```ts
+{
+	queryId: 'GetFixtureGroups' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFixtureGroupsByQuery
+
+Returns: [FixtureGroup[]](#fixturegroup)
+```ts
+{
+	queryId: 'GetFixtureGroupsByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFixtureGroupsByIds
+
+Returns: [FixtureGroup[]](#fixturegroup)
+```ts
+{
+	queryId: 'GetFixtureGroupsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFixtureGroupsByProjectId
+
+Returns: [FixtureGroup[]](#fixturegroup)
+```ts
+{
+	queryId: 'GetFixtureGroupsByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFixtureGroupsByFixtureId
+
+Returns: [FixtureGroup[]](#fixturegroup)
+```ts
+{
+	queryId: 'GetFixtureGroupsByFixtureId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFixturePresets
+
+Returns: [FixturePreset[]](#fixturepreset)
+```ts
+{
+	queryId: 'GetFixturePresets' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFixturePresetsByQuery
+
+Returns: [FixturePreset[]](#fixturepreset)
+```ts
+{
+	queryId: 'GetFixturePresetsByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFixturePresetsByIds
+
+Returns: [FixturePreset[]](#fixturepreset)
+```ts
+{
+	queryId: 'GetFixturePresetsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFixturePresetsByProjectId
+
+Returns: [FixturePreset[]](#fixturepreset)
+```ts
+{
+	queryId: 'GetFixturePresetsByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetInstanceAssigns
 
 Returns: [InstanceAssign[]](#instanceassign)
@@ -4806,6 +6204,71 @@ Returns: [InstanceAssign[]](#instanceassign)
 ```ts
 {
 	queryId: 'GetInstanceAssignsByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetInvites
+
+Returns: [Invite[]](#invite)
+```ts
+{
+	queryId: 'GetInvites' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetInviteByCode
+
+Returns: [Invite[]](#invite)
+```ts
+{
+	queryId: 'GetInviteByCode' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetInvitesByEntity
+
+Returns: [Invite[]](#invite)
+```ts
+{
+	queryId: 'GetInvitesByEntity' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetInvitesByEmail
+
+Returns: [Invite[]](#invite)
+```ts
+{
+	queryId: 'GetInvitesByEmail' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetPendingInvitesByOrganization
+
+Returns: [Invite[]](#invite)
+```ts
+{
+	queryId: 'GetPendingInvitesByOrganization' 
 	{
 		tx: String
 		commandClientId: Object
@@ -4885,44 +6348,6 @@ Returns: [Keyframe[]](#keyframe)
 	{
 		tx: String
 		commandClientId: Array
-	}
-}
-``` 
-
-## GetTracks
-
-Returns: [Track[]](#track)
-```ts
-{
-	queryId: 'GetTracks' 
-	{
-		tx: String
-	}
-}
-``` 
-
-## GetTracksByProjectId
-
-Returns: [Track[]](#track)
-```ts
-{
-	queryId: 'GetTracksByProjectId' 
-	{
-		tx: String
-		commandClientId: Object
-	}
-}
-``` 
-
-## GetTrackById
-
-Returns: [Track[]](#track)
-```ts
-{
-	queryId: 'GetTrackById' 
-	{
-		tx: String
-		commandClientId: Object
 	}
 }
 ``` 
@@ -5025,6 +6450,57 @@ Returns: [Layer[]](#layer)
 	{
 		tx: String
 		commandClientId: Object
+	}
+}
+``` 
+
+## GetLayerGroups
+
+Returns: [LayerGroup[]](#layergroup)
+```ts
+{
+	queryId: 'GetLayerGroups' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetLayerGroupsByCompositionId
+
+Returns: [LayerGroup[]](#layergroup)
+```ts
+{
+	queryId: 'GetLayerGroupsByCompositionId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetLayerGroupById
+
+Returns: [LayerGroup[]](#layergroup)
+```ts
+{
+	queryId: 'GetLayerGroupById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetLayerGroupsByIds
+
+Returns: [LayerGroup[]](#layergroup)
+```ts
+{
+	queryId: 'GetLayerGroupsByIds' 
+	{
+		tx: String
+		commandClientId: Array
 	}
 }
 ``` 
@@ -5346,6 +6822,160 @@ Returns: [Measurement[]](#measurement)
 }
 ``` 
 
+## GetNetworks
+
+Returns: [Network[]](#network)
+```ts
+{
+	queryId: 'GetNetworks' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNetworkById
+
+Returns: [Network[]](#network)
+```ts
+{
+	queryId: 'GetNetworkById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworksByOrganization
+
+Returns: [Network[]](#network)
+```ts
+{
+	queryId: 'GetNetworksByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkByVpnId
+
+Returns: [Network[]](#network)
+```ts
+{
+	queryId: 'GetNetworkByVpnId' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetNetworkMembers
+
+Returns: [NetworkMember[]](#networkmember)
+```ts
+{
+	queryId: 'GetNetworkMembers' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNetworkMembersByNetwork
+
+Returns: [NetworkMember[]](#networkmember)
+```ts
+{
+	queryId: 'GetNetworkMembersByNetwork' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkMembersByMachine
+
+Returns: [NetworkMember[]](#networkmember)
+```ts
+{
+	queryId: 'GetNetworkMembersByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkMember
+
+Returns: [NetworkMember[]](#networkmember)
+```ts
+{
+	queryId: 'GetNetworkMember' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetOrganizations
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizations' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetOrganizationById
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizationById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetOrganizationBySlug
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizationBySlug' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetOrganizationsByUser
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizationsByUser' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetOverviewNodes
 
 Returns: [OverviewNode[]](#overviewnode)
@@ -5409,6 +7039,58 @@ Returns: [User[]](#user)
 }
 ``` 
 
+## GetUserById
+
+Returns: [User[]](#user)
+```ts
+{
+	queryId: 'GetUserById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetUserByAuth0Id
+
+Returns: [User[]](#user)
+```ts
+{
+	queryId: 'GetUserByAuth0Id' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetUserByEmail
+
+Returns: [User[]](#user)
+```ts
+{
+	queryId: 'GetUserByEmail' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetUsersByOrganization
+
+Returns: [User[]](#user)
+```ts
+{
+	queryId: 'GetUsersByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetPanes
 
 Returns: [Pane[]](#pane)
@@ -5453,6 +7135,57 @@ Returns: [Pane[]](#pane)
 ```ts
 {
 	queryId: 'GetPanesByOwnerId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetPorts
+
+Returns: [Port[]](#port)
+```ts
+{
+	queryId: 'GetPorts' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetPortsByMachine
+
+Returns: [Port[]](#port)
+```ts
+{
+	queryId: 'GetPortsByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetPortById
+
+Returns: [Port[]](#port)
+```ts
+{
+	queryId: 'GetPortById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetPortsByNetwork
+
+Returns: [Port[]](#port)
+```ts
+{
+	queryId: 'GetPortsByNetwork' 
 	{
 		tx: String
 		commandClientId: Object
@@ -5625,6 +7358,57 @@ Returns: [PlaylistItem[]](#playlistitem)
 }
 ``` 
 
+## GetProps
+
+Returns: [Prop[]](#prop)
+```ts
+{
+	queryId: 'GetProps' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetPropsByQuery
+
+Returns: [Prop[]](#prop)
+```ts
+{
+	queryId: 'GetPropsByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetPropsByProjectId
+
+Returns: [Prop[]](#prop)
+```ts
+{
+	queryId: 'GetPropsByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetPropsByIds
+
+Returns: [Prop[]](#prop)
+```ts
+{
+	queryId: 'GetPropsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
 ## GetPulsesByIds
 
 Returns: [Pulse[]](#pulse)
@@ -5686,6 +7470,86 @@ Returns: [ResolutionStrategy[]](#resolutionstrategy)
 	{
 		tx: String
 		commandClientId: Array
+	}
+}
+``` 
+
+## GetRoles
+
+Returns: [Role[]](#role)
+```ts
+{
+	queryId: 'GetRoles' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetRoleById
+
+Returns: [Role[]](#role)
+```ts
+{
+	queryId: 'GetRoleById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRolesByUser
+
+Returns: [Role[]](#role)
+```ts
+{
+	queryId: 'GetRolesByUser' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRolesByEntity
+
+Returns: [Role[]](#role)
+```ts
+{
+	queryId: 'GetRolesByEntity' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetUserRoleForEntity
+
+Returns: [Role[]](#role)
+```ts
+{
+	queryId: 'GetUserRoleForEntity' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## GetRolesByOrganization
+
+Returns: [Role[]](#role)
+```ts
+{
+	queryId: 'GetRolesByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
 	}
 }
 ``` 
@@ -6960,6 +8824,33 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## EmergencyStopAll
+
+```ts
+{
+	commandId: 'EmergencyStopAll'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ActivateSafeState
+
+```ts
+{
+	commandId: 'ActivateSafeState'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
 ## SetInstancesOfflineByClient
 
 ```ts
@@ -6995,6 +8886,186 @@ Returns: [WindowGroup[]](#windowgroup)
 		tx: String
 		commandClientId: String
 		createdAt: Array
+	}
+}
+``` 
+
+## CreateAuditLog
+
+```ts
+{
+	commandId: 'CreateAuditLog'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## CreateTrack
+
+```ts
+{
+	commandId: 'CreateTrack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## DeleteTrack
+
+```ts
+{
+	commandId: 'DeleteTrack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateTrack
+
+```ts
+{
+	commandId: 'UpdateTrack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetTrackTimecode
+
+```ts
+{
+	commandId: 'SetTrackTimecode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## PlayTrack
+
+```ts
+{
+	commandId: 'PlayTrack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## PauseTrack
+
+```ts
+{
+	commandId: 'PauseTrack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## StopTrack
+
+```ts
+{
+	commandId: 'StopTrack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CreateComposition
+
+```ts
+{
+	commandId: 'CreateComposition'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## DeleteComposition
+
+```ts
+{
+	commandId: 'DeleteComposition'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateComposition
+
+```ts
+{
+	commandId: 'UpdateComposition'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetCompositionOrder
+
+```ts
+{
+	commandId: 'SetCompositionOrder'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## SetCompositionEnabled
+
+```ts
+{
+	commandId: 'SetCompositionEnabled'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
 	}
 }
 ``` 
@@ -8387,6 +10458,106 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## CreateColorProfile
+
+```ts
+{
+	commandId: 'CreateColorProfile'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+		userToken: String
+		projectId: Object
+	}
+}
+``` 
+
+## DeleteColorProfile
+
+```ts
+{
+	commandId: 'DeleteColorProfile'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RenameColorProfile
+
+```ts
+{
+	commandId: 'RenameColorProfile'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## SetColorProfileWhiteBalance
+
+```ts
+{
+	commandId: 'SetColorProfileWhiteBalance'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetColorProfileColorChecker
+
+```ts
+{
+	commandId: 'SetColorProfileColorChecker'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetColorProfileExposure
+
+```ts
+{
+	commandId: 'SetColorProfileExposure'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetColorProfileCamera
+
+```ts
+{
+	commandId: 'SetColorProfileCamera'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
 ## CreateConstraint
 
 ```ts
@@ -8801,6 +10972,177 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## RegisterDevice
+
+```ts
+{
+	commandId: 'RegisterDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## GenerateClaimCode
+
+```ts
+{
+	commandId: 'GenerateClaimCode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## ClaimDevice
+
+```ts
+{
+	commandId: 'ClaimDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## ApproveDeviceClaim
+
+```ts
+{
+	commandId: 'ApproveDeviceClaim'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RejectDeviceClaim
+
+```ts
+{
+	commandId: 'RejectDeviceClaim'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+	}
+}
+``` 
+
+## TransferDeviceOwnership
+
+```ts
+{
+	commandId: 'TransferDeviceOwnership'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## AcceptDeviceTransfer
+
+```ts
+{
+	commandId: 'AcceptDeviceTransfer'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CancelDeviceTransfer
+
+```ts
+{
+	commandId: 'CancelDeviceTransfer'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ShareDevice
+
+```ts
+{
+	commandId: 'ShareDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
+		machineId: Object
+	}
+}
+``` 
+
+## UpdateDeviceShare
+
+```ts
+{
+	commandId: 'UpdateDeviceShare'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RevokeDeviceShare
+
+```ts
+{
+	commandId: 'RevokeDeviceShare'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UnclaimDevice
+
+```ts
+{
+	commandId: 'UnclaimDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
 ## CreateEventTrackLayer
 
 ```ts
@@ -8863,6 +11205,117 @@ Returns: [WindowGroup[]](#windowgroup)
 	{
 		tx: String
 		commandClientId: String
+	}
+}
+``` 
+
+## UpdateMachineVpnStatus
+
+```ts
+{
+	commandId: 'UpdateMachineVpnStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Array
+	}
+}
+``` 
+
+## UpdateMachineWanMac
+
+```ts
+{
+	commandId: 'UpdateMachineWanMac'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## UpdateMachineDaemonVersion
+
+```ts
+{
+	commandId: 'UpdateMachineDaemonVersion'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## UpdateMachineHostname
+
+```ts
+{
+	commandId: 'UpdateMachineHostname'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## SetMachineJnAuth
+
+```ts
+{
+	commandId: 'SetMachineJnAuth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: String
+	}
+}
+``` 
+
+## ClearMachineJnAuth
+
+```ts
+{
+	commandId: 'ClearMachineJnAuth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+	}
+}
+``` 
+
+## CompleteMachineMigration
+
+```ts
+{
+	commandId: 'CompleteMachineMigration'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+	}
+}
+``` 
+
+## CreateMachine
+
+```ts
+{
+	commandId: 'CreateMachine'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
 	}
 }
 ``` 
@@ -8994,6 +11447,63 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## CreateDMXUniverse
+
+```ts
+{
+	commandId: 'CreateDMXUniverse'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+		$commandResult: Number
+		userToken: Object
+	}
+}
+``` 
+
+## DeleteDMXUniverse
+
+```ts
+{
+	commandId: 'DeleteDMXUniverse'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateDMXUniverse
+
+```ts
+{
+	commandId: 'UpdateDMXUniverse'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetDMXUniverseOutput
+
+```ts
+{
+	commandId: 'SetDMXUniverseOutput'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
 ## CreateFixture
 
 ```ts
@@ -9084,6 +11594,15 @@ Returns: [WindowGroup[]](#windowgroup)
 		hasGobo: String
 		hasPanTilt: Number
 		hasZoom: Number
+		gdtfUrl: String
+		geometryUrl: Number
+		weight: Number
+		power: Number
+		iesProfileUrl: Number
+		lumens: Number
+		colorTemperature: Array
+		cri: Array
+		maxPan: Array
 	}
 }
 ``` 
@@ -9106,6 +11625,294 @@ Returns: [WindowGroup[]](#windowgroup)
 ```ts
 {
 	commandId: 'UpdateFixtureType'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CreateFixtureCalibration
+
+```ts
+{
+	commandId: 'CreateFixtureCalibration'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+		userToken: Object
+	}
+}
+``` 
+
+## DeleteFixtureCalibration
+
+```ts
+{
+	commandId: 'DeleteFixtureCalibration'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RenameFixtureCalibration
+
+```ts
+{
+	commandId: 'RenameFixtureCalibration'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## SetFixtureCalibrationDimmerCurve
+
+```ts
+{
+	commandId: 'SetFixtureCalibrationDimmerCurve'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+		$commandResult: Number
+	}
+}
+``` 
+
+## SetFixtureCalibrationDimmerCurvePreset
+
+```ts
+{
+	commandId: 'SetFixtureCalibrationDimmerCurvePreset'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetFixtureCalibrationColorCalibrations
+
+```ts
+{
+	commandId: 'SetFixtureCalibrationColorCalibrations'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+		$commandResult: Number
+	}
+}
+``` 
+
+## SetFixtureCalibrationBeamProfile
+
+```ts
+{
+	commandId: 'SetFixtureCalibrationBeamProfile'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+		$commandResult: Number
+		userToken: Number
+	}
+}
+``` 
+
+## SetFixtureCalibrationReference
+
+```ts
+{
+	commandId: 'SetFixtureCalibrationReference'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+	}
+}
+``` 
+
+## CreateFixtureGroup
+
+```ts
+{
+	commandId: 'CreateFixtureGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## DeleteFixtureGroup
+
+```ts
+{
+	commandId: 'DeleteFixtureGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateFixtureGroup
+
+```ts
+{
+	commandId: 'UpdateFixtureGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## AddFixturesToGroup
+
+```ts
+{
+	commandId: 'AddFixturesToGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## RemoveFixturesFromGroup
+
+```ts
+{
+	commandId: 'RemoveFixturesFromGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## SetFixtureGroupMaster
+
+```ts
+{
+	commandId: 'SetFixtureGroupMaster'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## CreateFixturePreset
+
+```ts
+{
+	commandId: 'CreateFixturePreset'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+		$commandResult: Array
+		userToken: Object
+	}
+}
+``` 
+
+## DeleteFixturePreset
+
+```ts
+{
+	commandId: 'DeleteFixturePreset'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateFixturePreset
+
+```ts
+{
+	commandId: 'UpdateFixturePreset'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetFixturePresetValues
+
+```ts
+{
+	commandId: 'SetFixturePresetValues'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## UpdateFixturePresetValue
+
+```ts
+{
+	commandId: 'UpdateFixturePresetValue'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## RemoveFixtureFromPreset
+
+```ts
+{
+	commandId: 'RemoveFixtureFromPreset'
 	{
 		tx: String
 		commandClientId: String
@@ -9167,6 +11974,77 @@ Returns: [WindowGroup[]](#windowgroup)
 		commandClientId: String
 		createdAt: Object
 		lineage: Object
+	}
+}
+``` 
+
+## CreateInvite
+
+```ts
+{
+	commandId: 'CreateInvite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+		userToken: Object
+		inviteType: Object
+		entityId: Object
+	}
+}
+``` 
+
+## AcceptInvite
+
+```ts
+{
+	commandId: 'AcceptInvite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+	}
+}
+``` 
+
+## DeclineInvite
+
+```ts
+{
+	commandId: 'DeclineInvite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+	}
+}
+``` 
+
+## RevokeInvite
+
+```ts
+{
+	commandId: 'RevokeInvite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ResendInvite
+
+```ts
+{
+	commandId: 'ResendInvite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
 	}
 }
 ``` 
@@ -9286,101 +12164,6 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
-## CreateTrack
-
-```ts
-{
-	commandId: 'CreateTrack'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-		lineage: String
-		$commandResult: Object
-	}
-}
-``` 
-
-## DeleteTrack
-
-```ts
-{
-	commandId: 'DeleteTrack'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-	}
-}
-``` 
-
-## UpdateTrack
-
-```ts
-{
-	commandId: 'UpdateTrack'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-		lineage: Object
-	}
-}
-``` 
-
-## SetTrackTimecode
-
-```ts
-{
-	commandId: 'SetTrackTimecode'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-		lineage: Number
-	}
-}
-``` 
-
-## PlayTrack
-
-```ts
-{
-	commandId: 'PlayTrack'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-	}
-}
-``` 
-
-## PauseTrack
-
-```ts
-{
-	commandId: 'PauseTrack'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-	}
-}
-``` 
-
-## StopTrack
-
-```ts
-{
-	commandId: 'StopTrack'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: Object
-	}
-}
-``` 
-
 ## CreateMapping
 
 ```ts
@@ -9469,6 +12252,51 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## LinkMappingToDisplay
+
+```ts
+{
+	commandId: 'LinkMappingToDisplay'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+		userToken: String
+		id: String
+	}
+}
+``` 
+
+## UnlinkMapping
+
+```ts
+{
+	commandId: 'UnlinkMapping'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ReportMappingSyncStatus
+
+```ts
+{
+	commandId: 'ReportMappingSyncStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+	}
+}
+``` 
+
 ## CreateLayer
 
 ```ts
@@ -9536,6 +12364,189 @@ Returns: [WindowGroup[]](#windowgroup)
 		commandClientId: String
 		createdAt: Object
 		lineage: Number
+	}
+}
+``` 
+
+## SetLayerEnabled
+
+```ts
+{
+	commandId: 'SetLayerEnabled'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## SetLayerBlendMode
+
+```ts
+{
+	commandId: 'SetLayerBlendMode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetLayerSolo
+
+```ts
+{
+	commandId: 'SetLayerSolo'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## CreateLayerGroup
+
+```ts
+{
+	commandId: 'CreateLayerGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## DeleteLayerGroup
+
+```ts
+{
+	commandId: 'DeleteLayerGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateLayerGroup
+
+```ts
+{
+	commandId: 'UpdateLayerGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## AddLayerToGroup
+
+```ts
+{
+	commandId: 'AddLayerToGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Number
+	}
+}
+``` 
+
+## RemoveLayerFromGroup
+
+```ts
+{
+	commandId: 'RemoveLayerFromGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## ReorderLayersInGroup
+
+```ts
+{
+	commandId: 'ReorderLayersInGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## SetLayerGroupOrder
+
+```ts
+{
+	commandId: 'SetLayerGroupOrder'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## SetLayerGroupOpacity
+
+```ts
+{
+	commandId: 'SetLayerGroupOpacity'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## SetLayerGroupEnabled
+
+```ts
+{
+	commandId: 'SetLayerGroupEnabled'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## SetLayerGroupCollapsed
+
+```ts
+{
+	commandId: 'SetLayerGroupCollapsed'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
 	}
 }
 ``` 
@@ -9817,6 +12828,177 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## CreateNetwork
+
+```ts
+{
+	commandId: 'CreateNetwork'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+		$commandResult: String
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateNetwork
+
+```ts
+{
+	commandId: 'UpdateNetwork'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNetwork
+
+```ts
+{
+	commandId: 'DeleteNetwork'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## JoinNetwork
+
+```ts
+{
+	commandId: 'JoinNetwork'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## LeaveNetwork
+
+```ts
+{
+	commandId: 'LeaveNetwork'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## ApproveNetworkMember
+
+```ts
+{
+	commandId: 'ApproveNetworkMember'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateNetworkMemberStatus
+
+```ts
+{
+	commandId: 'UpdateNetworkMemberStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Array
+		userToken: String
+	}
+}
+``` 
+
+## UpdateNetworkMemberLastSeen
+
+```ts
+{
+	commandId: 'UpdateNetworkMemberLastSeen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CreateOrganization
+
+```ts
+{
+	commandId: 'CreateOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateOrganization
+
+```ts
+{
+	commandId: 'UpdateOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteOrganization
+
+```ts
+{
+	commandId: 'DeleteOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateOrganizationSubscription
+
+```ts
+{
+	commandId: 'UpdateOrganizationSubscription'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
 ## AssertOverviewNodes
 
 ```ts
@@ -9863,6 +13045,115 @@ Returns: [WindowGroup[]](#windowgroup)
 ```ts
 {
 	commandId: 'AssertUser'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CreateUser
+
+```ts
+{
+	commandId: 'CreateUser'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateUserProfile
+
+```ts
+{
+	commandId: 'UpdateUserProfile'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SetUserPrimaryOrganization
+
+```ts
+{
+	commandId: 'SetUserPrimaryOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateUserStatus
+
+```ts
+{
+	commandId: 'UpdateUserStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RecordUserLogin
+
+```ts
+{
+	commandId: 'RecordUserLogin'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## GenerateUserApiKey
+
+```ts
+{
+	commandId: 'GenerateUserApiKey'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RevokeUserApiKey
+
+```ts
+{
+	commandId: 'RevokeUserApiKey'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## DeleteUser
+
+```ts
+{
+	commandId: 'DeleteUser'
 	{
 		tx: String
 		commandClientId: String
@@ -10008,6 +13299,91 @@ Returns: [WindowGroup[]](#windowgroup)
 		tx: String
 		commandClientId: String
 		createdAt: Object
+	}
+}
+``` 
+
+## CreatePort
+
+```ts
+{
+	commandId: 'CreatePort'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+		$commandResult: String
+		userToken: Object
+	}
+}
+``` 
+
+## UpdatePort
+
+```ts
+{
+	commandId: 'UpdatePort'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeletePort
+
+```ts
+{
+	commandId: 'DeletePort'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ConfigurePortBridge
+
+```ts
+{
+	commandId: 'ConfigurePortBridge'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DisablePortBridge
+
+```ts
+{
+	commandId: 'DisablePortBridge'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdatePortBridgeStatus
+
+```ts
+{
+	commandId: 'UpdatePortBridgeStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
 	}
 }
 ``` 
@@ -10221,6 +13597,135 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## CreateProp
+
+```ts
+{
+	commandId: 'CreateProp'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Number
+		userToken: Number
+		projectId: Number
+		name: Number
+		x: Number
+		y: Number
+		z: String
+		rotX: String
+		rotY: Object
+		rotZ: String
+	}
+}
+``` 
+
+## DeleteProp
+
+```ts
+{
+	commandId: 'DeleteProp'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RenameProp
+
+```ts
+{
+	commandId: 'RenameProp'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## SetPropPosition
+
+```ts
+{
+	commandId: 'SetPropPosition'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+		$commandResult: Number
+		userToken: Number
+		id: Number
+		x: Number
+		y: Number
+	}
+}
+``` 
+
+## SetPropScale
+
+```ts
+{
+	commandId: 'SetPropScale'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+		$commandResult: Number
+		userToken: Number
+	}
+}
+``` 
+
+## SetPropGeometry
+
+```ts
+{
+	commandId: 'SetPropGeometry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## SetPropVisibility
+
+```ts
+{
+	commandId: 'SetPropVisibility'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## SetPropColor
+
+```ts
+{
+	commandId: 'SetPropColor'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
 ## CreateResolutionStrategy
 
 ```ts
@@ -10246,6 +13751,81 @@ Returns: [WindowGroup[]](#windowgroup)
 		createdAt: Object
 		lineage: String
 		$commandResult: Object
+	}
+}
+``` 
+
+## GrantRole
+
+```ts
+{
+	commandId: 'GrantRole'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
+		userId: Object
+	}
+}
+``` 
+
+## UpdateRole
+
+```ts
+{
+	commandId: 'UpdateRole'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## RevokeRole
+
+```ts
+{
+	commandId: 'RevokeRole'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RevokeAllRolesForEntity
+
+```ts
+{
+	commandId: 'RevokeAllRolesForEntity'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## TransferOwnership
+
+```ts
+{
+	commandId: 'TransferOwnership'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
 	}
 }
 ``` 
@@ -10403,6 +13983,80 @@ Returns: [WindowGroup[]](#windowgroup)
 		createdAt: Object
 		lineage: String
 		$commandResult: Object
+	}
+}
+``` 
+
+## LinkScreenToDisplay
+
+```ts
+{
+	commandId: 'LinkScreenToDisplay'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+		userToken: String
+		id: String
+		physicalDisplayId: Boolean
+	}
+}
+``` 
+
+## UnlinkScreen
+
+```ts
+{
+	commandId: 'UnlinkScreen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RequestScreenSync
+
+```ts
+{
+	commandId: 'RequestScreenSync'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ReportScreenSyncResult
+
+```ts
+{
+	commandId: 'ReportScreenSyncResult'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+		$commandResult: String
+	}
+}
+``` 
+
+## GenerateScreensFromDisplays
+
+```ts
+{
+	commandId: 'GenerateScreensFromDisplays'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+		$commandResult: Boolean
 	}
 }
 ``` 

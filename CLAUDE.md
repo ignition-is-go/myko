@@ -467,6 +467,114 @@ All state changes flow through immutable events:
 
 Heavy use of Observables for real-time data flow. Entity handlers and UI components subscribe to event streams.
 
+### RxJS + Svelte 5 Anti-Patterns (CRITICAL)
+
+These patterns cause infinite loops, memory leaks, and frozen UIs. **Never do these:**
+
+#### 1. Never Create Observables Inside `$derived`
+```typescript
+// BAD: Creates new Observable on every evaluation → infinite loop
+const targets = $derived(
+  $currentSession
+    ? client.watchQuery(new GetTargets($currentSession.id)).pipe(startWith([]))
+    : of([])
+)
+
+// GOOD: Use switchMap to react to changes
+const targets = currentSession.pipe(
+  filter((session) => !!session),
+  distinctUntilChanged((a, b) => a?.id === b?.id),
+  switchMap((session) =>
+    client.watchQuery(new GetTargets(session!.id)).pipe(
+      startWith([]),
+      catchError((err) => {
+        console.warn('Failed to fetch targets:', err)
+        return of([])
+      })
+    )
+  ),
+  shareReplay(1)
+)
+```
+
+#### 2. Always Return Cleanup in `$effect` with Subscriptions
+```typescript
+// BAD: Subscriptions accumulate on every effect re-run
+$effect(() => {
+  observable1.subscribe((v) => (state1 = v))
+  observable2.subscribe((v) => (state2 = v))
+})
+
+// GOOD: Store and cleanup subscriptions
+$effect(() => {
+  const subs = [
+    observable1.subscribe((v) => (state1 = v)),
+    observable2.subscribe((v) => (state2 = v)),
+  ]
+  return () => subs.forEach((sub) => sub.unsubscribe())
+})
+```
+
+#### 3. Always Add `catchError` to `watchQuery` Calls
+```typescript
+// BAD: Query failure hangs UI forever (combineLatest stops emitting)
+const data$ = client.watchQuery(new GetData()).pipe(startWith([]))
+
+// GOOD: Graceful error handling with fallback
+const data$ = client.watchQuery(new GetData()).pipe(
+  startWith([]),
+  catchError((err) => {
+    console.warn('Query failed:', err)
+    return of([])
+  })
+)
+```
+
+#### 4. Clean Up Document/Window Event Listeners
+```typescript
+// BAD: Listeners persist after component unmount
+document.addEventListener('pointermove', handler)
+document.addEventListener('pointerup', handler)
+// ... no cleanup
+
+// GOOD: Track and remove in cleanup
+return () => {
+  document.removeEventListener('pointermove', handler)
+  document.removeEventListener('pointerup', handler)
+}
+```
+
+#### 5. Use `startWith` Inside `switchMap`, Not After
+```typescript
+// BAD: Race condition - startWith emits before switchMap resolves
+sessionId$.pipe(
+  switchMap((id) => client.watchQuery(new GetData(id)))
+).pipe(startWith([]))  // WRONG PLACEMENT
+
+// GOOD: startWith inside switchMap for each source
+sessionId$.pipe(
+  switchMap((id) =>
+    client.watchQuery(new GetData(id)).pipe(
+      startWith([]),  // CORRECT: Inside switchMap
+      catchError(() => of([]))
+    )
+  )
+)
+```
+
+#### 6. Use O(1) Lookups, Not O(n) Array Searches
+```typescript
+// BAD: O(n) lookup in render loop or $derived
+const item = items.find((i) => i.id === selectedId)
+const isSelected = selectedIds.includes(item.id)
+
+// GOOD: Pre-compute Map/Set for O(1)
+const itemsById = new Map(items.map((i) => [i.id, i]))
+const selectedSet = new Set(selectedIds)
+const item = itemsById.get(selectedId)
+const isSelected = selectedSet.has(item.id)
+```
+
 ### Hash-Based Versioning
 
 `MItem` uses MD5 content hashing for optimistic concurrency control and conflict detection.
