@@ -402,3 +402,21 @@ Don't suggest inventing new patterns when existing ones work fine.
 - Minimal overhead when disabled
 
 **Why**: Rship handles real-time multimedia control with high message throughput. Even "cheap" operations like collecting memory stats every 5 seconds add up at scale.
+
+### 8. URL Path Design for Reverse Proxies
+
+**Pattern**: Use query parameters instead of path segments for dynamic identifiers that may contain special characters (especially `/` or `%2F`).
+
+**Example**:
+
+```rust
+// Preferred: Query parameter approach
+GET /asset?key=folder%2Fsubfolder%2Ffile.png
+GET /thumbnail?key=textures%2Fwood.jpg
+
+// Avoid: Path segment approach
+GET /assets/folder%2Fsubfolder%2Ffile.png/download
+GET /thumbnails/textures%2Fwood.jpg
+```
+
+**Why**: Reverse proxies like Traefik often decode `%2F` to `/` in path segments before forwarding requests, breaking routes that expect encoded slashes. Query parameters are not decoded by proxies and reach the backend intact. This affects any identifier that could contain forward slashes (file paths, S3 object keys, etc.).
