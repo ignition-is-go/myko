@@ -401,7 +401,22 @@ export const buildFilter =
     }
   }
 
-export const objectFilter = (query: object, ent: object): boolean => {
+export const objectFilter = (
+  query: object,
+  ent: object,
+  visited: WeakSet<object> = new WeakSet(),
+): boolean => {
+  // Prevent infinite recursion from circular references
+  if (visited.has(query) || visited.has(ent)) {
+    return true
+  }
+  if (query && typeof query === 'object') {
+    visited.add(query)
+  }
+  if (ent && typeof ent === 'object') {
+    visited.add(ent)
+  }
+
   return Reflect.ownKeys(query).every((key) => {
     const querySide = Reflect.get(query, key)
     const entSide = Reflect.get(ent, key)
@@ -412,13 +427,13 @@ export const objectFilter = (query: object, ent: object): boolean => {
 
     if (Array.isArray(querySide) && Array.isArray(entSide)) {
       return entSide.every((item, index) =>
-        objectFilter(querySide[index], item),
+        objectFilter(querySide[index], item, visited),
       )
     }
 
     try {
       if (typeof querySide === 'object' && typeof entSide === 'object') {
-        return objectFilter(querySide, entSide)
+        return objectFilter(querySide, entSide, visited)
       }
     } catch (e) {
       throw Error(
