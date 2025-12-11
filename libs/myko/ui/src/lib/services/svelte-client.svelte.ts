@@ -9,6 +9,7 @@
 import {
 	ConnectionStatus,
 	MykoClient,
+	type CommandReturn,
 	type QueryDiff,
 	type QueryItem,
 	type QueryReturn,
@@ -258,6 +259,25 @@ export class SvelteMykoClient {
 				}
 			}
 		};
+	}
+
+	/**
+	 * Send a command and wait for the response.
+	 *
+	 * @example
+	 * ```svelte
+	 * <script>
+	 *   async function deleteMachine(id: string) {
+	 *     const result = await myko.sendCommand(commands.DeleteMachine({ machineId: id }))
+	 *     console.log('Deleted:', result)
+	 *   }
+	 * </script>
+	 * ```
+	 */
+	sendCommand<C extends CommandReturn<unknown>>(
+		commandFactory: C
+	): Promise<C extends CommandReturn<infer R> ? R : unknown> {
+		return this.client.sendCommand(commandFactory);
 	}
 
 	/** Access the underlying MykoClient for advanced use cases */
