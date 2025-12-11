@@ -149,6 +149,34 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         }
     };
 
+    // Generate Get{Entity}ById report that returns Option<Entity>
+    let get_by_id_report_ident = format_ident!("Get{}ById", name_str);
+    let get_by_id_report_args_ident = format_ident!("Get{}ByIdArgs", name_str);
+    let get_by_ids_args_ident = format_ident!("{}Args", get_by_ids_query_ident);
+
+    let get_by_id_report = quote! {
+        #[myko_macros::myko_report(Option<#name>)]
+        pub struct #get_by_id_report_ident {
+            pub id: std::sync::Arc<str>,
+        }
+
+        impl myko_rs::prelude::ReportHandler for #get_by_id_report_ident {
+            type Output = Option<#name>;
+
+            fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
+                use futures::StreamExt;
+
+                let args: #get_by_id_report_args_ident = ctx.args().expect("Failed to parse get by id report args");
+                let id = args.id;
+
+                let query = #get_by_ids_query_ident::new(#get_by_ids_args_ident { ids: vec![id] });
+                let stream = ctx.query(query);
+
+                Box::pin(stream.map(|items| items.into_iter().next()))
+            }
+        }
+    };
+
     let item_registration = quote! {
         myko_rs::prelude::ItemRegistration {
             entity_type: #name_str,
@@ -204,6 +232,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         #count_report
 
+        #get_by_id_report
+
         impl myko_rs::prelude::MykoAutoQueries for #name {
                 fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
 
@@ -219,6 +249,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                         use myko_rs::prelude::Report;
                         #count_all_report_ident::register(&server)?;
                         #count_report_ident::register(&server)?;
+                        #get_by_id_report_ident::register(&server)?;
                      Ok(())
                 }
         }
