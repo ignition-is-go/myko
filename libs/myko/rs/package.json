@@ -1,0 +1,16 @@
+{
+  "name": "@myko/rs",
+  "version": "3.0.0-canary.809",
+  "type": "module",
+  "main": "./bindings/index.ts",
+  "types": "./bindings/index.ts",
+  "exports": {
+    ".": "./bindings/index.ts"
+  },
+  "scripts": {
+    "gen": "cargo test --lib"
+  },
+  "files": [
+    "bindings"
+  ]
+}

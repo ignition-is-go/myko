@@ -18,7 +18,8 @@ use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase", tag = "type", content = "data")]
 pub enum ConnectionStatus {
     Connected(String),
@@ -57,6 +58,22 @@ impl MykoClient {
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
         let myko_msg = MykoMessage::<()>::Event(event);
+
+        let val = json!(myko_msg);
+
+        let str = serde_json::to_string(&val).expect("Could not serialize message");
+
+        let msg = Message::Text(str);
+
+        self.socket
+            .outgoing
+            .send(msg)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    pub fn send_query(&self, query: crate::api::query::WrappedQuery) -> Result<(), String> {
+        let myko_msg = MykoMessage::<()>::Query(query);
 
         let val = json!(myko_msg);
 
@@ -469,5 +486,134 @@ impl MykoClient {
         });
 
         stream
+    }
+
+    // =========================================================================
+    // FFI-friendly APIs for language bindings (callback-based, JSON in/out)
+    // =========================================================================
+
+    /// Watch connection status changes with a callback.
+    /// Callback receives JSON: `{"type":"Connected","data":"ws://..."}` or `{"type":"Disconnected"}`
+    pub fn watch_connection_status_callback<F>(&self, callback: F)
+    where
+        F: Fn(String) + Send + Sync + 'static,
+    {
+        let client = self.clone();
+        tokio::spawn(async move {
+            let mut stream = client.watch_connection_status();
+            while let Some(status) = stream.next().await {
+                if let Ok(json) = serde_json::to_string(&status) {
+                    callback(json);
+                }
+            }
+        });
+    }
+
+    /// Watch a query with a callback that receives the current state as Vec<Value>.
+    ///
+    /// - `query`: WrappedQuery with tx and createdAt already set.
+    /// - `callback`: Called with current items whenever state changes.
+    ///
+    /// Returns a cancel function that stops the query when called.
+    pub fn watch_query_callback<F>(
+        &self,
+        query: crate::api::query::WrappedQuery,
+        callback: F,
+    ) -> impl Fn() + Send + Sync
+    where
+        F: Fn(Vec<Value>) + Send + Sync + 'static,
+    {
+        let client = self.clone();
+        let callback = Arc::new(callback);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+
+        // Extract tx from the query
+        let tx: Arc<str> = query
+            .query
+            .get("tx")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into();
+
+        tokio::spawn(async move {
+            // State for accumulating query results
+            let state: Arc<std::sync::Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
+
+            // Get message stream
+            let mut stream = client.get_messages();
+
+            // Wait for connection and send query
+            loop {
+                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                let status = client.get_connection_status().await;
+                if let ConnectionStatus::Connected(_) = status {
+                    if let Err(e) = client.send_query(query.clone()) {
+                        error!("Failed to send query: {}", e);
+                    }
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+
+            // Process responses
+            while let Some(msg) = stream.next().await {
+                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+
+                let Ok(myko_msg) = serde_json::from_value::<MykoMessage<Value>>(msg) else {
+                    continue;
+                };
+
+                if let MykoMessage::QueryResponse(response) = myko_msg {
+                    if response.tx != tx {
+                        continue;
+                    }
+
+                    let mut state = state.lock().expect("Cannot lock state");
+
+                    // Reset on sequence 0
+                    if response.sequence == 0 {
+                        state.clear();
+                    }
+
+                    // Apply upserts
+                    for wrapped_item in response.upserts {
+                        if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
+                            state.insert(id.into(), wrapped_item.item);
+                        }
+                    }
+
+                    // Apply deletes
+                    for id in response.deletes {
+                        state.remove(&id);
+                    }
+
+                    // Send current state
+                    let items: Vec<Value> = state.values().cloned().collect();
+                    callback(items);
+                }
+            }
+        });
+
+        // Return cancel function
+        move || {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Send an event using JSON input.
+    /// Returns error message if failed, empty string on success.
+    pub async fn send_event_json(&self, event_json: String) -> String {
+        match serde_json::from_str::<MEvent>(&event_json) {
+            Ok(event) => match self.send_event(event).await {
+                Ok(()) => String::new(),
+                Err(e) => e,
+            },
+            Err(e) => e.to_string(),
+        }
     }
 }
