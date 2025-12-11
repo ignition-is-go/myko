@@ -41,3 +41,10 @@ autosocket = { version = "0.1.0", path = "../../autosocket" }
 ts-rs = { version = "11.1.0", features = ["serde-json-impl"] }
 inventory = "0.3.21"
 dprint-plugin-typescript = "0.95.12"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "gateway"
+harness = false
