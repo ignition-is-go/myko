@@ -130,17 +130,23 @@ impl Actor for EventHandler {
                 }
             }
             EventHandlerMessage::ProcessEvent(data) => {
-                let item_json = data.event.item_json();
                 let change_type = data.event.change_type();
 
-                let item = match state.parser.parse(item_json.clone()) {
-                    Ok(item) => item,
-                    Err(err) => {
-                        error!(
-                            "{}: Failed to parse item: {} \n {:?}",
-                            state.entity_name, err, item_json
-                        );
-                        return Ok(());
+                // Use pre-parsed item if available (local events), otherwise parse from JSON
+                let item = match data.parsed_item {
+                    Some(item) => item,
+                    None => {
+                        let item_json = data.event.item_json();
+                        match state.parser.parse(item_json.clone()) {
+                            Ok(item) => item,
+                            Err(err) => {
+                                error!(
+                                    "{}: Failed to parse item: {} \n {:?}",
+                                    state.entity_name, err, item_json
+                                );
+                                return Ok(());
+                            }
+                        }
                     }
                 };
 

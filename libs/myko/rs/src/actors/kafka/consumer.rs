@@ -151,6 +151,7 @@ impl Actor for KafkaConsumer {
                                         ProcessEventData {
                                             event,
                                             persist: PersistEvent::NoPersist,
+                                            parsed_item: None, // Kafka events need parsing
                                         },
                                     )) {
                                         Ok(_) => {}

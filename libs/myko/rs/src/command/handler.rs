@@ -87,14 +87,17 @@ impl CommandContext {
     }
 
     /// Emit a SET event for an item
-    pub fn emit_set<T: Eventable + Serialize>(&self, item: &T) -> Result<(), CommandError> {
+    pub fn emit_set<T: Eventable + Serialize + Clone>(&self, item: &T) -> Result<(), CommandError> {
         let event = MEvent::from_item(item, crate::event::MEventType::SET, self.tx.to_string());
+        // Clone and wrap item to avoid deserializing it again in EventHandler
+        let parsed_item: Arc<dyn crate::prelude::AnyItem> = Arc::new(item.clone());
 
         self.event_manager
             .send_message(crate::actors::event::event_manager::EventManagerMsg::ProcessEvent(
                 crate::actors::event::common::ProcessEventData {
                     event,
                     persist: crate::actors::event::common::PersistEvent::Persist,
+                    parsed_item: Some(parsed_item),
                 },
             ))
             .map_err(|e| CommandError {
@@ -106,14 +109,17 @@ impl CommandContext {
     }
 
     /// Emit a DEL event for an item
-    pub fn emit_del<T: Eventable + Serialize>(&self, item: &T) -> Result<(), CommandError> {
+    pub fn emit_del<T: Eventable + Serialize + Clone>(&self, item: &T) -> Result<(), CommandError> {
         let event = MEvent::from_item(item, crate::event::MEventType::DEL, self.tx.to_string());
+        // Clone and wrap item to avoid deserializing it again in EventHandler
+        let parsed_item: Arc<dyn crate::prelude::AnyItem> = Arc::new(item.clone());
 
         self.event_manager
             .send_message(crate::actors::event::event_manager::EventManagerMsg::ProcessEvent(
                 crate::actors::event::common::ProcessEventData {
                     event,
                     persist: crate::actors::event::common::PersistEvent::Persist,
+                    parsed_item: Some(parsed_item),
                 },
             ))
             .map_err(|e| CommandError {

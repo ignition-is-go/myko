@@ -93,6 +93,7 @@ impl Actor for MessageHandler {
                             .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
                                 event,
                                 persist: PersistEvent::Persist,
+                                parsed_item: None, // External events need parsing
                             }))?;
                         Ok(())
                     }

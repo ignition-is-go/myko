@@ -252,6 +252,7 @@ impl Actor for Server {
                     .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
                         event,
                         persist: PersistEvent::Persist,
+                        parsed_item: None, // Server startup event, needs parsing
                     }))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
