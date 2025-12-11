@@ -74,6 +74,16 @@ Event-sourcing CQRS framework powering rship's reactive architecture:
 - **@myko/gateway**: Server bootstrap, Auth0 integration, OpenTelemetry tracing
 - **@myko/kafka**: Kafka-based event persistence
 - **@myko/sqlite / @myko/postgres / @myko/surreal**: Storage backends
+- **@myko/rs**: Rust client library with FFI-friendly callback APIs for language bindings
+  - `MykoClient`: WebSocket client with connection management
+  - `watch_query_callback`: Query state management (upserts/deletes)
+  - `watch_connection_status_callback`: Connection status streaming
+  - Types exported via `ts-rs` for TypeScript consumption
+- **@myko/ts**: NAPI-based TypeScript client wrapping @myko/rs
+  - Thin wrapper (~95 lines Rust, ~75 lines TypeScript)
+  - RxJS Observable APIs over native callbacks
+  - Build: `pnpm build --filter @myko/ts`
+  - Type generation: `pnpm --filter @myko/rs gen` (runs `cargo test --lib`)
 
 **Pattern**: Commands → Events → State Updates → Queries
 
@@ -169,8 +179,11 @@ Persistence (Kafka Event Log)
 ### Multi-Language Type Sharing
 
 - **Rust → TypeScript**: `ts-rs` derive macros generate TypeScript types from Rust structs
+  - Types generated via `cargo test --lib` (ts-rs uses test harness for codegen)
+  - Output to `bindings/` directory, re-exported via `bindings/index.ts`
+  - Run `pnpm --filter @myko/rs gen` to regenerate types
 - **Protocol Buffers**: Language-agnostic schemas for RPC (Link layer)
-- **NAPI-RS**: Rust native modules with auto-generated TypeScript bindings (Asset Store, Sync)
+- **NAPI-RS**: Rust native modules with auto-generated TypeScript bindings (Asset Store, Sync, @myko/ts)
 
 ## Code Style
 
