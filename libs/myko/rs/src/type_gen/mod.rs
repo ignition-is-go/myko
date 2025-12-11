@@ -5,7 +5,7 @@ use dprint_plugin_typescript::{
     configuration::{ConfigurationBuilder, TrailingCommas},
 };
 
-use crate::{item::ItemRegistration, message::MessageEventRegistration, query::QueryRegistration, report::ReportRegistration};
+use crate::{command::CommandRegistration, item::ItemRegistration, message::MessageEventRegistration, query::QueryRegistration, report::ReportRegistration};
 
 /// Collect all .ts files in the bindings directory (excluding index.ts, .d.ts files, and subdirectories)
 fn collect_binding_types(directory_path: &str) -> Vec<String> {
@@ -98,6 +98,8 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
 
     let report_return_type = "export type ReportReturn<U> = { report: Record<string, unknown>; reportId: string; $res?: () => U }".to_string();
 
+    let command_return_type = "export type CommandReturn<U> = { command: Record<string, unknown>; commandId: string; $res?: () => U }".to_string();
+
     let items =
         inventory::iter::<ItemRegistration>().filter(|x| x.crate_name.contains(&crate_name));
 
@@ -106,6 +108,9 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
 
     let reports =
         inventory::iter::<ReportRegistration>().filter(|x| x.crate_name.contains(&crate_name));
+
+    let commands =
+        inventory::iter::<CommandRegistration>().filter(|x| x.crate_name.contains(&crate_name));
 
     let item_imports = items
         .clone()
@@ -125,11 +130,28 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .collect::<Vec<String>>()
         .join(";");
 
+    let command_imports = commands
+        .clone()
+        .map(|i| gen_import(i.command_id))
+        .collect::<Vec<String>>()
+        .join(";");
+
     // Import output types for reports, filtered by crate and deduplicated
     let report_output_imports = reports
         .clone()
         .filter(|r| r.output_type_crate.contains(&crate_name))
         .map(|i| i.output_type)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .map(gen_type_import)
+        .collect::<Vec<String>>()
+        .join(";");
+
+    // Import result types for commands, filtered by crate and deduplicated
+    let command_result_imports = commands
+        .clone()
+        .filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()")
+        .map(|i| i.result_type)
         .collect::<HashSet<_>>()
         .into_iter()
         .map(gen_type_import)
@@ -154,11 +176,19 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .collect::<Vec<String>>()
         .join(",\n");
 
+    let command_ctors = commands
+        .clone()
+        .map(|i| generate_command_constructor(i.command_id, i.result_type))
+        .collect::<Vec<String>>()
+        .join(",\n");
+
     let item_ctor_obj = ["export const items = {", &item_ctors, "}"].join("");
 
     let query_ctor_obj = ["export const queries = {", &query_ctors, "}"].join("");
 
     let report_ctor_obj = ["export const reports = {", &report_ctors, "}"].join("");
+
+    let command_ctor_obj = ["export const commands = {", &command_ctors, "}"].join("");
 
     // Message event constants - generated from inventory
     let message_event_entries = inventory::iter::<MessageEventRegistration>()
@@ -184,16 +214,20 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];
         binding_exports,
         subdir_exports,
         "".to_string(),
-        "// Entity and query utilities".to_string(),
+        "// Entity, query, report, and command utilities".to_string(),
         item_imports,
         query_imports,
         report_imports,
+        command_imports,
         report_output_imports,
+        command_result_imports,
         query_return_type,
         report_return_type,
+        command_return_type,
         item_ctor_obj,
         query_ctor_obj,
         report_ctor_obj,
+        command_ctor_obj,
         message_events.to_string(),
     ]
     .join("\n");
@@ -263,6 +297,34 @@ fn generate_report_constructor(report_id: &str, output_type: &str) -> String {
                     .join(",")
                 ),
                 output_type
+            )
+        )
+    )
+}
+
+fn generate_command_constructor(command_id: &str, result_type: &str) -> String {
+    // Handle () result type by using void in TypeScript
+    let ts_result_type = if result_type == "()" {
+        "void"
+    } else {
+        result_type
+    };
+
+    format!(
+        "{}: {}\n",
+        command_id,
+        func_obj(
+            &format!("args: Omit<{}, 'tx' | 'createdAt'>", command_id),
+            &format!(
+                "({}) as unknown as CommandReturn<{}>",
+                scope(
+                    &[
+                        kv("command", "args"),
+                        kv("commandId", &format!("\"{}\"", command_id)),
+                    ]
+                    .join(",")
+                ),
+                ts_result_type
             )
         )
     )

@@ -73,10 +73,42 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     report::myko_report_impl(report_output_type, input).into()
 }
 
+/// Generates a command with handler struct and registration.
+///
+/// # Usage
+///
+/// ```ignore
+/// // With return type:
+/// #[myko_command(CreateMachineResult)]
+/// pub struct CreateMachine {
+///     pub name: String,
+/// }
+///
+/// // Without return type (returns ()):
+/// #[myko_command]
+/// pub struct DeleteMachine {
+///     pub machine_id: String,
+/// }
+///
+/// // User must implement the handler execute method:
+/// impl CreateMachineHandler {
+///     async fn execute(
+///         cmd: CreateMachine,
+///         ctx: CommandContext,
+///     ) -> Result<CreateMachineResult, CommandError> {
+///         // Handler logic
+///     }
+/// }
+/// ```
 #[proc_macro_attribute]
-pub fn myko_command(_attr: TokenStream, input: TokenStream) -> TokenStream {
+pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let result_type = if attr.is_empty() {
+        None
+    } else {
+        Some(parse_macro_input!(attr as syn::Path))
+    };
     let input = parse_macro_input!(input as syn::ItemStruct);
-    command::myko_command_impl(input).into()
+    command::myko_command_impl(result_type, input).into()
 }
 
 /// Derive macro that extracts serde rename values from enum variants
