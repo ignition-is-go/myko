@@ -1,6 +1,5 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use futures_signals::signal_map::MapDiff;
 use ractor::ActorRef;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -21,7 +20,6 @@ use crate::{
     query::{Query, QueryIdStatic, QueryItemType},
     report::{Report, ReportIdStatic, ReportOutputType, WrappedReport},
     server::MykoServerCtx,
-    utils::signal_stream::SignalMapStream,
 };
 
 /// Context provided to command handlers for accessing dependencies.
@@ -154,8 +152,8 @@ impl CommandContext {
 
     /// Execute a query and return the first result.
     ///
-    /// This starts a query subscription and waits for the first batch of results,
-    /// then returns the first item if any exist.
+    /// This performs a one-shot query that returns current state without
+    /// creating a subscription. Returns the first matching item if any exist.
     pub async fn query_one<Q>(&self, query: &Q) -> Result<Option<Q::Item>, CommandError>
     where
         Q: Query + QueryIdStatic + QueryItemType + Serialize,
@@ -172,45 +170,24 @@ impl CommandContext {
             query_item_type: Q::query_item_type_static(),
         };
 
-        // Start the query and get the signal map
-        let signal_map = ractor::call!(self.query_manager, QueryManagerMsg::StartQuery, wrapped)
-            .map_err(|e| CommandError {
+        // Use QuerySnapshot for one-shot query (no subscription)
+        let snapshot =
+            ractor::call!(self.query_manager, QueryManagerMsg::QuerySnapshot, wrapped)
+                .map_err(|e| CommandError {
+                    tx: self.tx.to_string(),
+                    message: format!("Failed to query snapshot: {}", e),
+                })?;
+
+        // Return the first item if any exist
+        if let Some((_, item)) = snapshot.into_iter().next() {
+            let value = item.to_value();
+            let parsed: Q::Item = serde_json::from_value(value).map_err(|e| CommandError {
                 tx: self.tx.to_string(),
-                message: format!("Failed to start query: {}", e),
+                message: format!("Failed to parse query result: {}", e),
             })?;
-
-        // Get the first diff from the signal map using SignalMapStream
-        let mut stream = SignalMapStream::new(signal_map);
-
-        // Poll for the first Replace event which contains initial state
-        let first_diff = futures::future::poll_fn(|cx| {
-            use futures::Stream;
-            Pin::new(&mut stream).poll_next(cx)
-        })
-        .await;
-
-        match first_diff {
-            Some(MapDiff::Replace { entries }) => {
-                if let Some((_, item)) = entries.into_iter().next() {
-                    let value = item.to_value();
-                    let parsed: Q::Item = serde_json::from_value(value).map_err(|e| CommandError {
-                        tx: self.tx.to_string(),
-                        message: format!("Failed to parse query result: {}", e),
-                    })?;
-                    Ok(Some(parsed))
-                } else {
-                    Ok(None)
-                }
-            }
-            Some(MapDiff::Insert { value, .. }) => {
-                let parsed: Q::Item =
-                    serde_json::from_value(value.to_value()).map_err(|e| CommandError {
-                        tx: self.tx.to_string(),
-                        message: format!("Failed to parse query result: {}", e),
-                    })?;
-                Ok(Some(parsed))
-            }
-            _ => Ok(None),
+            Ok(Some(parsed))
+        } else {
+            Ok(None)
         }
     }
 

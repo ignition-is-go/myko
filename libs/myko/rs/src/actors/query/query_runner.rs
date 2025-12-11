@@ -31,6 +31,8 @@ pub struct QueryRunnerState {
 pub enum QueryRunnerMsg {
     ProcessUpdate(ProcessUpdateData),
     GetState(RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>),
+    /// Get a snapshot of current entries (for one-shot queries)
+    GetSnapshot(RpcReplyPort<BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>),
 }
 
 impl Actor for QueryRunner {
@@ -120,6 +122,10 @@ impl Actor for QueryRunner {
             }
             QueryRunnerMsg::GetState(reply) => {
                 reply.send(state.state.signal_map_cloned())?;
+            }
+            QueryRunnerMsg::GetSnapshot(reply) => {
+                let snapshot = state.state.lock_ref().clone();
+                reply.send(snapshot)?;
             }
         }
         Ok(())

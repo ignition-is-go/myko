@@ -43,6 +43,11 @@ pub enum QueryHandlerMsg {
         Arc<dyn AnyQuery>,
         RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
+    /// One-shot query that returns current state without creating a subscription
+    QuerySnapshot(
+        Arc<dyn AnyQuery>,
+        RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
+    ),
 }
 
 impl Actor for QueryHandler {
@@ -128,6 +133,26 @@ impl Actor for QueryHandler {
                         error!("Failed to send update to runner: {}", err);
                     };
                 }
+            }
+            QueryHandlerMsg::QuerySnapshot(query, reply) => {
+                // One-shot query: get current state, filter, and return immediately
+                let handler = ractor::call!(
+                    state.event_manager.clone(),
+                    EventManagerMsg::GetEventHandler,
+                    state.query_item_type.clone()
+                )?;
+
+                let mut snapshot = ractor::call!(handler, EventHandlerMessage::GetState)?;
+
+                snapshot.retain(|_k, v| {
+                    state.closure.clone()(QueryHandlerCtxAny {
+                        ctx: state.ctx.clone(),
+                        item: v.clone(),
+                        query: query.clone(),
+                    })
+                });
+
+                reply.send(snapshot)?;
             }
         }
 

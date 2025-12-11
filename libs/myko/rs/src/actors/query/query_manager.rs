@@ -55,6 +55,11 @@ pub enum QueryManagerMsg {
         WrappedQuery,
         RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
+    /// One-shot query that returns current state without creating a subscription
+    QuerySnapshot(
+        WrappedQuery,
+        RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
+    ),
 }
 
 impl Actor for QueryManager {
@@ -202,6 +207,53 @@ impl Actor for QueryManager {
                         warn!("No Query handlers registered for item type {:?}", item_type);
                     }
                 }
+
+                Ok(())
+            }
+            QueryManagerMsg::QuerySnapshot(data, reply) => {
+                trace!("Query snapshot with ID {}", data.query_id);
+
+                let handler = state
+                    .handlers
+                    .get(&data.query_item_type)
+                    .and_then(|m| m.get(&data.query_id));
+
+                let parser = state.parsers.get(&data.query_id);
+
+                if parser.is_none() {
+                    error!(
+                        "No parser found for query ID {}: {:?}",
+                        data.query_id,
+                        state.parsers.keys()
+                    );
+                    return Ok(());
+                }
+
+                if handler.is_none() {
+                    error!(
+                        "No handler found for query ID {}: {:?}",
+                        data.query_id, state.handlers
+                    );
+                    return Ok(());
+                }
+
+                let parser = parser.unwrap();
+                let handler = handler.unwrap();
+
+                let parsed_query = parser.parse(data.query);
+
+                if let Err(err) = parsed_query {
+                    error!("Failed to parse query: {}", err);
+                    return Ok(());
+                }
+
+                let parsed_query = parsed_query.unwrap();
+
+                if let Err(err) =
+                    handler.send_message(QueryHandlerMsg::QuerySnapshot(parsed_query, reply))
+                {
+                    error!("Failed to get query snapshot: {}", err);
+                };
 
                 Ok(())
             }
