@@ -50,4 +50,6 @@ members = [
   "apps/execs/crestron",
   "apps/execs/yamaha",
   "apps/execs/digico",
+  "apps/execs/extron",
+  "apps/execs/amx",
 ]
