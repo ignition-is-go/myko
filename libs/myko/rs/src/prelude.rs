@@ -1,6 +1,7 @@
 pub use crate::{
     api::query::WrappedQuery,
     client::MykoClient,
+    command::{CommandContext, CommandError, CommandHandler, CommandHandlerRegistration},
     common::{to_value::ToValue, with_id::WithId, with_transaction::WithTransaction},
     item::{ItemRegistration, MykoAutoQueries, MykoAutoReports},
     parsers::{

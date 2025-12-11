@@ -1,8 +1,25 @@
+mod handler;
+
 use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
 use ts_rs::TS;
 
 use crate::client::MykoClient;
+
+pub use handler::{
+    BoxFuture, CommandContext, CommandHandler, CommandHandlerFactory, CommandHandlerRegistration,
+};
+
+// Registration for type generation (separate from handler registration)
+inventory::collect!(CommandRegistration);
+
+#[derive(Debug)]
+pub struct CommandRegistration {
+    pub command_id: &'static str,
+    pub result_type: &'static str,
+    pub result_type_crate: &'static str,
+    pub crate_name: &'static str,
+}
 
 // A command that can be sent; implementors provide a response type via the macro.
 pub trait MykoCommand<T> {
