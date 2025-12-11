@@ -62,6 +62,21 @@ type ReportResponseMessage = Extract<
   MykoMessage<unknown>,
   { event: typeof MykoEvent.ReportResponse }
 >
+type CommandResponseMessage = Extract<
+  MykoMessage<unknown>,
+  { event: typeof MykoEvent.CommandResponse }
+>
+type CommandErrorMessage = Extract<
+  MykoMessage<unknown>,
+  { event: typeof MykoEvent.CommandError }
+>
+
+/** Command factory type for type-safe commands */
+export type CommandReturn<T> = {
+  command: Record<string, unknown>
+  commandId: string
+  $res?: () => T
+}
 
 /**
  * MykoClient - Pure TypeScript reactive client for Myko servers
@@ -75,6 +90,8 @@ export class MykoClient {
   private connectionStatusSubject = new ReplaySubject<ConnectionStatus>(1)
   private queryResponses = new Subject<QueryResponseMessage>()
   private reportResponses = new Subject<ReportResponseMessage>()
+  private commandResponses = new Subject<CommandResponseMessage>()
+  private commandErrors = new Subject<CommandErrorMessage>()
 
   // Track active subscriptions for reconnection (by tx)
   private activeQueries = new Map<string, WrappedQuery>()
@@ -303,6 +320,54 @@ export class MykoClient {
     this.send({ event: MykoEvent.Event, data: event })
   }
 
+  /**
+   * Send a command to the server and wait for a response.
+   *
+   * @param commandFactory Command from commands.* (e.g., commands.DeleteMachine({ machineId: '...' }))
+   * @returns Promise that resolves with the command result or rejects with an error
+   */
+  sendCommand<C extends CommandReturn<unknown>>(
+    commandFactory: C,
+  ): Promise<C extends CommandReturn<infer R> ? R : unknown> {
+    type Result = C extends CommandReturn<infer R> ? R : unknown
+
+    const tx = uuid()
+
+    const wrappedCommand = {
+      command: {
+        ...commandFactory.command,
+        tx,
+        createdAt: new Date().toISOString(),
+      },
+      commandId: commandFactory.commandId,
+    }
+
+    return new Promise<Result>((resolve, reject) => {
+      // Set up response/error listeners
+      const responseSub = this.commandResponses
+        .pipe(filter((r) => r.data.tx === tx))
+        .subscribe((r) => {
+          cleanup()
+          resolve(r.data.response as Result)
+        })
+
+      const errorSub = this.commandErrors
+        .pipe(filter((r) => r.data.tx === tx))
+        .subscribe((r) => {
+          cleanup()
+          reject(new Error(r.data.message))
+        })
+
+      const cleanup = () => {
+        responseSub.unsubscribe()
+        errorSub.unsubscribe()
+      }
+
+      // Send the command
+      this.send({ event: MykoEvent.Command, data: wrappedCommand })
+    })
+  }
+
   /** Disconnect from the server */
   disconnect(): void {
     this.shouldReconnect = false
@@ -379,6 +444,12 @@ export class MykoClient {
           break
         case MykoEvent.ReportResponse:
           this.reportResponses.next(message)
+          break
+        case MykoEvent.CommandResponse:
+          this.commandResponses.next(message as CommandResponseMessage)
+          break
+        case MykoEvent.CommandError:
+          this.commandErrors.next(message as CommandErrorMessage)
           break
       }
     } catch {
