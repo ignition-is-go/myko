@@ -81,8 +81,11 @@
   },
   "version": "3.0.0-canary.790",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
     "@types/ws": "^8.18.1",
+    "html2canvas": "^1.4.1",
     "msgpackr": "^1.11.0",
+    "openai": "^4.104.0",
     "socket.io-client": "^4.8.1",
     "ws": "^8.18.3"
   }
