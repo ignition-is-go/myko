@@ -1,7 +1,6 @@
-use std::{future::Future, pin::Pin, sync::Arc, task::Poll};
+use std::{future::Future, pin::Pin, sync::Arc};
 
-use futures::Stream;
-use futures_signals::signal_map::{MapDiff, SignalMap};
+use futures_signals::signal_map::MapDiff;
 use ractor::ActorRef;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -22,23 +21,8 @@ use crate::{
     query::{Query, QueryIdStatic, QueryItemType},
     report::{Report, ReportIdStatic, ReportOutputType, WrappedReport},
     server::MykoServerCtx,
+    utils::signal_stream::SignalMapStream,
 };
-
-/// Wrapper to convert a SignalMap into a Stream of MapDiff
-struct SignalMapStream<S> {
-    signal: S,
-}
-
-impl<S: SignalMap + Unpin> Stream for SignalMapStream<S> {
-    type Item = MapDiff<S::Key, S::Value>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.signal).poll_map_change(cx)
-    }
-}
 
 /// Context provided to command handlers for accessing dependencies.
 ///
@@ -196,7 +180,7 @@ impl CommandContext {
             })?;
 
         // Get the first diff from the signal map using SignalMapStream
-        let mut stream = SignalMapStream { signal: signal_map };
+        let mut stream = SignalMapStream::new(signal_map);
 
         // Poll for the first Replace event which contains initial state
         let first_diff = futures::future::poll_fn(|cx| {

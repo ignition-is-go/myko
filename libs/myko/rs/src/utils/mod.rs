@@ -1,3 +1,5 @@
+pub mod signal_stream;
+
 use std::collections::HashMap;
 use std::hash::Hash;
 

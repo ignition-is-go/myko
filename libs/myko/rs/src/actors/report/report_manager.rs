@@ -1,7 +1,7 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc, task::Poll};
+use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use futures::{Stream, StreamExt};
-use futures_signals::signal_map::{MapDiff, SignalMap};
+use futures_signals::signal_map::MapDiff;
 use log::{debug, error, trace};
 use ractor::{Actor, ActorRef};
 use serde_json::Value;
@@ -13,23 +13,8 @@ use crate::{
     prelude::AnyItem,
     report::{ReportContext, ReportRunnerHandle, WrappedReport},
     server::MykoServerCtx,
+    utils::signal_stream::SignalMapStream,
 };
-
-/// Wrapper to convert a SignalMap into a Stream of MapDiff
-struct SignalMapStream<S> {
-    signal: S,
-}
-
-impl<S: SignalMap + Unpin> Stream for SignalMapStream<S> {
-    type Item = MapDiff<S::Key, S::Value>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.signal).poll_map_change(cx)
-    }
-}
 
 use super::report_runner::{ReportRunner, ReportRunnerArgs, ReportRunnerMsg};
 
@@ -224,7 +209,7 @@ impl Actor for ReportManager {
                         Ok(signal_map) => {
                             // Convert MutableSignalMap to a stream of MapDiff events
                             // and accumulate into a BTreeMap
-                            let mut stream = SignalMapStream { signal: signal_map };
+                            let mut stream = SignalMapStream::new(signal_map);
                             let mut accumulated: BTreeMap<Arc<str>, Arc<dyn AnyItem>> =
                                 BTreeMap::new();
 

@@ -8,9 +8,8 @@
 //! - Event throughput under load
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use futures::Stream;
 use futures::StreamExt;
-use futures_signals::signal_map::{MapDiff, SignalMap};
+use futures_signals::signal_map::MapDiff;
 use myko_rs::{
     actors::{
         event::{
@@ -29,29 +28,11 @@ use myko_rs::{
     prelude::AnyItem,
     query::Query,
     server::{ManagerRefs, MykoServer, MykoServerArgs},
+    utils::signal_stream::SignalMapStream,
 };
-use std::{pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
-
-// =============================================================================
-// SignalMap to Stream adapter
-// =============================================================================
-
-struct SignalMapStream<S> {
-    signal: S,
-}
-
-impl<S: SignalMap + Unpin> Stream for SignalMapStream<S> {
-    type Item = MapDiff<S::Key, S::Value>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.signal).poll_map_change(cx)
-    }
-}
 
 // =============================================================================
 // Benchmark Harness (simplified using MykoServer)
@@ -133,7 +114,7 @@ impl BenchHarness {
         let signal = ractor::call!(self.managers.query_manager, QueryManagerMsg::StartQuery, query)
             .expect("Failed to start query");
 
-        let mut stream = SignalMapStream { signal };
+        let mut stream = SignalMapStream::new(signal);
         if let Some(diff) = stream.next().await {
             if let MapDiff::Replace { entries } = diff {
                 return entries.len();
