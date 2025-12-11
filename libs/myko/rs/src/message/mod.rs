@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::query::{QueryError, QueryResponse, WrappedQuery},
-    command::{CommandError, CommandResponse},
+    command::{CommandError, CommandResponse, WrappedCommand},
     event::MEvent,
     report::{ReportError, ReportResponse, WrappedReport},
 };
@@ -26,7 +26,7 @@ inventory::collect!(MessageEventRegistration);
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, myko_macros::MessageEvents)]
 #[ts(export)]
 #[serde(tag = "event", content = "data")]
-pub enum MykoMessage<Commands> {
+pub enum MykoMessage {
     #[serde(rename = "ws:m:query")]
     Query(WrappedQuery),
     #[serde(rename = "ws:m:query-response")]
@@ -46,7 +46,7 @@ pub enum MykoMessage<Commands> {
     #[serde(rename = "ws:m:event")]
     Event(MEvent),
     #[serde(rename = "ws:m:command")]
-    Command(Commands),
+    Command(WrappedCommand),
     #[serde(rename = "ws:m:command-response")]
     CommandResponse(CommandResponse),
     #[serde(rename = "ws:m:command-error")]

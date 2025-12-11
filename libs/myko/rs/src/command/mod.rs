@@ -39,8 +39,9 @@ impl CommandResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct WrappedCommand {
     pub command: Value,
     pub command_id: String,

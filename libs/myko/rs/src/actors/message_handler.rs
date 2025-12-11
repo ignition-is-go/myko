@@ -76,8 +76,7 @@ impl Actor for MessageHandler {
         match message {
             MessageHandlerMsg::ProcessText(ProcessTextData { client_id, text }) => {
                 debug!("Processing text message from {}: {}", client_id, &text[..text.len().min(200)]);
-                // Use Value for Command variant to allow any JSON, we'll re-parse commands later
-                let myko_message = match serde_json::from_str::<MykoMessage<serde_json::Value>>(&text) {
+                let myko_message = match serde_json::from_str::<MykoMessage>(&text) {
                     Ok(msg) => {
                         debug!("Parsed message type: {:?}", std::mem::discriminant(&msg));
                         msg
@@ -258,26 +257,8 @@ impl Actor for MessageHandler {
                         // TODO: Implement report cancellation in ReportManager
                         Ok(())
                     }
-                    MykoMessage::Command(_) => {
-                        debug!("Received Command message, re-parsing...");
-                        // The Command variant with () doesn't have the data, we need to re-parse
-                        // the original text as MykoMessage<WrappedCommand>
-                        let command_message: MykoMessage<crate::command::WrappedCommand> =
-                            match serde_json::from_str(&text) {
-                                Ok(msg) => msg,
-                                Err(e) => {
-                                    error!("Failed to parse command message: {}", e);
-                                    return Ok(());
-                                }
-                            };
-
-                        let wrapped_command = match command_message {
-                            MykoMessage::Command(cmd) => cmd,
-                            _ => {
-                                error!("Unexpected message type after re-parse");
-                                return Ok(());
-                            }
-                        };
+                    MykoMessage::Command(wrapped_command) => {
+                        debug!("Received Command message: {}", wrapped_command.command_id);
 
                         let tx: String = wrapped_command
                             .command

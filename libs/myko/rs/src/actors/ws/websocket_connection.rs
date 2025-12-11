@@ -22,7 +22,7 @@ use crate::{
 pub struct WebSocketConnection;
 
 pub enum WebSocketConnectionMsg {
-    Transmit(MykoMessage<()>),
+    Transmit(MykoMessage),
 }
 
 pub struct WebSocketConnectionState {

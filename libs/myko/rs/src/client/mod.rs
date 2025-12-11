@@ -1,6 +1,6 @@
 use crate::{
     api::query::wrap_query,
-    command::{CommandId, WrappedCommand, wrap_command},
+    command::{CommandId, wrap_command},
     event::MEvent,
     item::Eventable,
     message::MykoMessage,
@@ -57,7 +57,7 @@ impl MykoClient {
     }
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
-        let myko_msg = MykoMessage::<()>::Event(event);
+        let myko_msg = MykoMessage::Event(event);
 
         let val = json!(myko_msg);
 
@@ -73,7 +73,7 @@ impl MykoClient {
     }
 
     pub fn send_query(&self, query: crate::api::query::WrappedQuery) -> Result<(), String> {
-        let myko_msg = MykoMessage::<()>::Query(query);
+        let myko_msg = MykoMessage::Query(query);
 
         let val = json!(myko_msg);
 
@@ -176,7 +176,7 @@ impl MykoClient {
 
         tokio::spawn(async move {
             while let Some(val) = msgs.next().await {
-                let parsed = serde_json::from_value::<MykoMessage<crate::command::WrappedCommand>>(
+                let parsed = serde_json::from_value::<MykoMessage>(
                     val.clone(),
                 );
                 let Ok(MykoMessage::Command(wrapped)) = parsed else {
@@ -209,7 +209,7 @@ impl MykoClient {
                                     tx: tx.clone(),
                                     response,
                                 };
-                                let msg = MykoMessage::<()>::CommandResponse(resp);
+                                let msg = MykoMessage::CommandResponse(resp);
                                 if let Ok(s) = serde_json::to_string(&msg) {
                                     let _ = outgoing.outgoing.send(Message::Text(s));
                                 }
@@ -219,7 +219,7 @@ impl MykoClient {
                                     tx: tx.clone(),
                                     message,
                                 };
-                                let msg = MykoMessage::<()>::CommandError(err);
+                                let msg = MykoMessage::CommandError(err);
                                 if let Ok(s) = serde_json::to_string(&msg) {
                                     let _ = outgoing.outgoing.send(Message::Text(s));
                                 }
@@ -243,7 +243,7 @@ impl MykoClient {
 
         let wrapped = wrap_command(tx.clone(), command).map_err(|e| e.to_string())?;
 
-        let msg = MykoMessage::<WrappedCommand>::Command(wrapped);
+        let msg = MykoMessage::Command(wrapped);
 
         let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
 
@@ -260,7 +260,7 @@ impl MykoClient {
                             Err(_) => return None,
                         };
                         let parsed =
-                            serde_json::from_value::<MykoMessage<()>>(data.clone()).ok()?;
+                            serde_json::from_value::<MykoMessage>(data.clone()).ok()?;
                         match parsed {
                             MykoMessage::CommandResponse(resp) => {
                                 if resp.tx != tx {
@@ -324,7 +324,7 @@ impl MykoClient {
         let wrapped = wrap_report(tx.clone(), report);
 
         let stream = stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage<Value>>(x);
+            let d = serde_json::from_value::<MykoMessage>(x);
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {
@@ -354,7 +354,7 @@ impl MykoClient {
         }
 
         let wrapped = wrapped.unwrap();
-        let msg = MykoMessage::<()>::Report(wrapped);
+        let msg = MykoMessage::Report(wrapped);
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
 
@@ -404,7 +404,7 @@ impl MykoClient {
         let state: Arc<std::sync::Mutex<HashMap<Arc<str>, T>>> = Arc::default();
 
         let stream = stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage<Value>>(x);
+            let d = serde_json::from_value::<MykoMessage>(x);
             let data = match d {
                 Ok(d) => d,
                 Err(e) => {
@@ -457,7 +457,7 @@ impl MykoClient {
 
         let wrapped = wrapped.unwrap();
 
-        let msg = MykoMessage::<()>::Query(wrapped);
+        let msg = MykoMessage::Query(wrapped);
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
 
@@ -564,7 +564,7 @@ impl MykoClient {
                     break;
                 }
 
-                let Ok(myko_msg) = serde_json::from_value::<MykoMessage<Value>>(msg) else {
+                let Ok(myko_msg) = serde_json::from_value::<MykoMessage>(msg) else {
                     continue;
                 };
 
@@ -657,7 +657,7 @@ impl MykoClient {
                 }
                 let status = client.get_connection_status().await;
                 if let ConnectionStatus::Connected(_) = status {
-                    let msg = MykoMessage::<()>::Report(report.clone());
+                    let msg = MykoMessage::Report(report.clone());
                     let msg_str = serde_json::to_string(&msg).expect("Could not serialize report");
                     let msg = Message::Text(msg_str);
                     if let Err(e) = client.socket.outgoing.send(msg) {
@@ -676,7 +676,7 @@ impl MykoClient {
                     break;
                 }
 
-                let Ok(myko_msg) = serde_json::from_value::<MykoMessage<Value>>(msg) else {
+                let Ok(myko_msg) = serde_json::from_value::<MykoMessage>(msg) else {
                     continue;
                 };
 

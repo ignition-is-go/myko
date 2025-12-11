@@ -18,7 +18,7 @@ pub struct WebSocketServer;
 
 pub struct SendToClientData {
     pub client_id: Arc<str>,
-    pub message: MykoMessage<()>,
+    pub message: MykoMessage,
 }
 
 pub enum WebSocketServerMsg {
