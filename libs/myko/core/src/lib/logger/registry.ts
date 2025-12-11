@@ -39,4 +39,31 @@ export const longestName = new Cell<number>(0)
 
 export const logsPreventedEntities = new Set<string>()
 
-export const logFilter = new Cell<LogLevel>(LogLevel.INFO)
+const getDefaultLogLevel = (): LogLevel => {
+  const envLevel =
+    (typeof process !== 'undefined' &&
+      process.env?.['MYKO_INITIAL_LOG_LEVEL']) ||
+    undefined
+  if (!envLevel) return LogLevel.INFO
+
+  const normalized = envLevel.toUpperCase()
+  switch (normalized) {
+    case 'ERROR':
+      return LogLevel.ERROR
+    case 'WARN':
+      return LogLevel.WARN
+    case 'INFO':
+      return LogLevel.INFO
+    case 'DEBUG':
+      return LogLevel.DEBUG
+    case 'VERBOSE':
+      return LogLevel.VERBOSE
+    default:
+      console.warn(
+        `Invalid MYKO_INITIAL_LOG_LEVEL="${envLevel}", defaulting to INFO. Valid values: ERROR, WARN, INFO, DEBUG, VERBOSE`,
+      )
+      return LogLevel.INFO
+  }
+}
+
+export const logFilter = new Cell<LogLevel>(getDefaultLogLevel())

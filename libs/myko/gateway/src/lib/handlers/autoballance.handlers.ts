@@ -13,15 +13,15 @@ import {
   onAllInit,
   ReballanceItem,
   type MCommandHandler,
+  type MEventStream,
   type MSagaHandler,
-  type Stream,
 } from '@myko/core'
 import { from, merge, mergeMap, of, switchMap } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
 @MykoSaga()
 export class AutoBallanceSaga implements MSagaHandler {
-  execute(stream: Stream<MItem>) {
+  execute(stream: MEventStream<MItem>) {
     return stream.pipe(
       mergeMap((event) => {
         const localReballance = autoballanceRegistry.get(event.itemType)
