@@ -1,5 +1,6 @@
 use crate::{
     actors::{
+        command::command_manager::{CommandManager, CommandManagerArgs, CommandManagerMsg},
         event::{
             common::{PersistEvent, ProcessEventData},
             event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
@@ -27,6 +28,7 @@ pub struct ServerState {
     message_handler: ActorRef<MessageHandlerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
     report_manager: ActorRef<ReportManagerMsg>,
+    command_manager: ActorRef<CommandManagerMsg>,
     ctx: Arc<MykoServerCtx>,
     args: ServerArgs,
 }
@@ -48,6 +50,7 @@ pub enum ServerMsg {
     MessageHandlerMsg(MessageHandlerMsg),
     QueryManagerMsg(QueryManagerMsg),
     ReportManagerMsg(ReportManagerMsg),
+    CommandManagerMsg(CommandManagerMsg),
 }
 
 impl Actor for Server {
@@ -116,6 +119,25 @@ impl Actor for Server {
             }
         };
 
+        let command_manager = match Actor::spawn(
+            None,
+            CommandManager,
+            CommandManagerArgs {
+                ctx: ctx.clone(),
+                event_manager: event_manager.clone(),
+                query_manager: query_manager.clone(),
+                report_manager: report_manager.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn CommandManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
         let message_handler = match Actor::spawn(
             None,
             MessageHandler,
@@ -123,6 +145,7 @@ impl Actor for Server {
                 event_manager: event_manager.clone(),
                 query_manager: query_manager.clone(),
                 report_manager: report_manager.clone(),
+                command_manager: command_manager.clone(),
                 server: myself.clone(),
             },
         )
@@ -158,6 +181,7 @@ impl Actor for Server {
             message_handler,
             query_manager,
             report_manager,
+            command_manager,
             ctx,
             args,
         })
@@ -193,6 +217,11 @@ impl Actor for Server {
             ServerMsg::ReportManagerMsg(msg) => {
                 if let Err(err) = state.report_manager.send_message(msg) {
                     error!("Failed to send message to ReportManager: {}", err);
+                };
+            }
+            ServerMsg::CommandManagerMsg(msg) => {
+                if let Err(err) = state.command_manager.send_message(msg) {
+                    error!("Failed to send message to CommandManager: {}", err);
                 };
             }
             ServerMsg::Start => {
