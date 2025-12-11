@@ -57,4 +57,5 @@ members = [
   "apps/execs/pangolin",
   "apps/execs/ndi",
   "apps/execs/dante",
+  "apps/execs/nmos",
 ]
