@@ -43,4 +43,8 @@ members = [
   "apps/execs/visca",
   "apps/execs/freed",
   "apps/execs/brompton",
+  "apps/execs/qsys",
+  "apps/execs/natnet",
+  "apps/execs/reaper",
+  "apps/execs/novastar",
 ]
