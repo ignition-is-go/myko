@@ -4,5 +4,6 @@ pub mod kafka;
 pub mod message_handler;
 pub mod query;
 pub mod report;
+pub mod saga;
 pub mod server;
 pub mod ws;
