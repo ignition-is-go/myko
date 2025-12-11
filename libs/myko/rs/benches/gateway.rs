@@ -8,6 +8,7 @@
 //! - Event throughput under load
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use futures::stream;
 use futures::StreamExt;
 use futures_signals::signal_map::MapDiff;
 use myko_rs::{
@@ -27,6 +28,7 @@ use myko_rs::{
     item::Eventable,
     prelude::AnyItem,
     query::Query,
+    saga::SagaStreamExt,
     server::{ManagerRefs, MykoServer, MykoServerArgs},
     utils::signal_stream::SignalMapStream,
 };
@@ -308,10 +310,203 @@ fn latency_benchmarks(c: &mut Criterion) {
     group.finish();
 }
 
+// =============================================================================
+// Saga Stream Operator Benchmarks
+// =============================================================================
+
+fn saga_stream_benchmarks(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+
+    let mut group = c.benchmark_group("saga_stream");
+    group.sample_size(100);
+
+    // Helper to create test events
+    fn make_events(count: usize) -> Vec<MEvent> {
+        (0..count)
+            .map(|i| {
+                let item = BenchItem {
+                    id: format!("item-{}", i).into(),
+                    hash: format!("hash-{}", i).into(),
+                    name: format!("Item {}", i),
+                    category: if i % 2 == 0 { "cat-a" } else { "cat-b" }.to_string(),
+                    value: i as i64,
+                };
+                MEvent::from_item(
+                    &item,
+                    if i % 3 == 0 {
+                        MEventType::DEL
+                    } else {
+                        MEventType::SET
+                    },
+                    format!("tx-{}", i),
+                )
+            })
+            .collect()
+    }
+
+    for size in [100, 1_000, 10_000].iter() {
+        group.throughput(Throughput::Elements(*size as u64));
+
+        // Benchmark of_item_type filter
+        let events = make_events(*size);
+        group.bench_with_input(
+            BenchmarkId::new("of_item_type", size),
+            size,
+            |b, _size| {
+                b.to_async(Runtime::new().unwrap()).iter(|| {
+                    let events = events.clone();
+                    async move {
+                        let filtered: Vec<_> = stream::iter(events)
+                            .of_item_type("BenchItem")
+                            .collect()
+                            .await;
+                        black_box(filtered.len())
+                    }
+                });
+            },
+        );
+
+        // Benchmark of_change_type filter
+        let events = make_events(*size);
+        group.bench_with_input(
+            BenchmarkId::new("of_change_type", size),
+            size,
+            |b, _size| {
+                b.to_async(Runtime::new().unwrap()).iter(|| {
+                    let events = events.clone();
+                    async move {
+                        let filtered: Vec<_> = stream::iter(events)
+                            .of_change_type(MEventType::SET)
+                            .collect()
+                            .await;
+                        black_box(filtered.len())
+                    }
+                });
+            },
+        );
+
+        // Benchmark chained filters (common saga pattern)
+        let events = make_events(*size);
+        group.bench_with_input(
+            BenchmarkId::new("chained_filters", size),
+            size,
+            |b, _size| {
+                b.to_async(Runtime::new().unwrap()).iter(|| {
+                    let events = events.clone();
+                    async move {
+                        let filtered: Vec<_> = stream::iter(events)
+                            .of_item_type("BenchItem")
+                            .of_change_type(MEventType::SET)
+                            .collect()
+                            .await;
+                        black_box(filtered.len())
+                    }
+                });
+            },
+        );
+
+        // Benchmark pairwise operator
+        let events = make_events(*size);
+        group.bench_with_input(BenchmarkId::new("pairwise", size), size, |b, _size| {
+            b.to_async(Runtime::new().unwrap()).iter(|| {
+                let events = events.clone();
+                async move {
+                    let pairs: Vec<_> = stream::iter(events).pairwise().collect().await;
+                    black_box(pairs.len())
+                }
+            });
+        });
+
+        // Benchmark accumulate (scan) operator
+        let events = make_events(*size);
+        group.bench_with_input(BenchmarkId::new("accumulate", size), size, |b, _size| {
+            b.to_async(Runtime::new().unwrap()).iter(|| {
+                let events = events.clone();
+                async move {
+                    let counts: Vec<_> = stream::iter(events)
+                        .accumulate(0i64, |acc, event| {
+                            // Simulate state accumulation
+                            *acc + event.item_json().get("value").and_then(|v| v.as_i64()).unwrap_or(0)
+                        })
+                        .collect()
+                        .await;
+                    black_box(counts.last().copied())
+                }
+            });
+        });
+
+        // Benchmark full saga pipeline (typical use case)
+        let events = make_events(*size);
+        group.bench_with_input(
+            BenchmarkId::new("full_pipeline", size),
+            size,
+            |b, _size| {
+                b.to_async(Runtime::new().unwrap()).iter(|| {
+                    let events = events.clone();
+                    async move {
+                        let result: Vec<_> = stream::iter(events)
+                            .of_item_type("BenchItem")
+                            .of_change_type(MEventType::SET)
+                            .pairwise()
+                            .collect()
+                            .await;
+                        black_box(result.len())
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+
+    // Separate benchmark for saga event broadcast overhead
+    let mut group = c.benchmark_group("saga_broadcast");
+    group.sample_size(50);
+
+    for batch_size in [10, 100, 1000].iter() {
+        group.throughput(Throughput::Elements(*batch_size as u64));
+
+        let harness = rt.block_on(BenchHarness::new());
+        let harness = Arc::new(harness);
+
+        // Measure overhead of event broadcast through SagaManager
+        let h = harness.clone();
+        group.bench_with_input(
+            BenchmarkId::new("emit_with_saga", batch_size),
+            batch_size,
+            move |b, batch_size| {
+                let harness = h.clone();
+                let items: Vec<BenchItem> = (0..*batch_size)
+                    .map(|i| BenchItem {
+                        id: format!("saga-{}", i).into(),
+                        hash: Uuid::new_v4().to_string().into(),
+                        name: format!("Item {}", i),
+                        category: "saga-test".to_string(),
+                        value: i as i64,
+                    })
+                    .collect();
+
+                b.to_async(Runtime::new().unwrap()).iter(|| {
+                    let harness = harness.clone();
+                    let items = items.clone();
+                    async move {
+                        for item in items {
+                            harness.emit_set(&item).await;
+                        }
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     query_benchmarks,
     event_throughput_benchmarks,
-    latency_benchmarks
+    latency_benchmarks,
+    saga_stream_benchmarks
 );
 criterion_main!(benches);
