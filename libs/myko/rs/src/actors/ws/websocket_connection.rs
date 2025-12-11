@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures_util::{StreamExt, stream::SplitSink};
-use log::{debug, error};
+use log::{debug, error, trace};
 use ractor::{Actor, ActorRef};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, accept_hdr_async};
@@ -141,7 +141,7 @@ impl Actor for WebSocketConnection {
                     ractor::ActorProcessingErr::from(format!("Failed to serialize message: {}", e))
                 })?;
 
-                debug!("Sending message to client {}: {}", state.client_id, &json[..json.len().min(100)]);
+                trace!("Sending message to client {}: {}", state.client_id, &json[..json.len().min(100)]);
 
                 state
                     .tx

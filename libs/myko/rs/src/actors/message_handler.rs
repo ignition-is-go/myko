@@ -3,15 +3,17 @@ use crate::{
     actors::{
         event::{common::ProcessEventData, event_manager::EventManagerMsg},
         query::query_manager::QueryManagerMsg,
+        report::report_manager::ReportManagerMsg,
         server::ServerMsg,
         ws::websocket_server::{SendToClientData, WebSocketServerMsg},
     },
     api::query::QueryResponse,
     item::WrappedItem,
     message::MykoMessage,
+    report::ReportResponse,
 };
 use futures_signals::signal_map::SignalMapExt;
-use log::{debug, error, trace};
+use log::{error, trace};
 use ractor::{Actor, ActorRef, cast};
 use std::sync::Arc;
 
@@ -20,12 +22,14 @@ pub struct MessageHandler;
 pub struct MessageHandlerArgs {
     pub event_manager: ActorRef<EventManagerMsg>,
     pub query_manager: ActorRef<QueryManagerMsg>,
+    pub report_manager: ActorRef<ReportManagerMsg>,
     pub server: ActorRef<ServerMsg>,
 }
 
 pub struct MessageHandlerState {
     event_manager: ActorRef<EventManagerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
+    report_manager: ActorRef<ReportManagerMsg>,
     server: ActorRef<ServerMsg>,
 }
 
@@ -53,6 +57,7 @@ impl Actor for MessageHandler {
         Ok(MessageHandlerState {
             event_manager: args.event_manager,
             query_manager: args.query_manager,
+            report_manager: args.report_manager,
             server: args.server,
         })
     }
@@ -95,7 +100,7 @@ impl Actor for MessageHandler {
                         let server_ref = state.server.clone();
 
                         tokio::spawn(sig.for_each(move |v| {
-                            debug!("Map Diff in MessageHandler: {:?}", v);
+                            trace!("Map Diff in MessageHandler: {:?}", v);
 
                             let update: QueryResponse = match v {
                                 futures_signals::signal_map::MapDiff::Replace { entries } => {
@@ -176,6 +181,55 @@ impl Actor for MessageHandler {
 
                             async {}
                         }));
+
+                        Ok(())
+                    }
+                    MykoMessage::Report(report) => {
+                        trace!("Received report: {:?}", report);
+                        let tx: Arc<str> = report
+                            .report
+                            .get("tx")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .into();
+
+                        // Create channel for report outputs
+                        let (output_tx, mut output_rx) =
+                            tokio::sync::mpsc::channel::<serde_json::Value>(16);
+
+                        // Start the report
+                        if let Err(e) = state.report_manager.send_message(
+                            ReportManagerMsg::StartReport(report, output_tx),
+                        ) {
+                            error!("Failed to start report: {}", e);
+                            return Ok(());
+                        }
+
+                        let server_ref = state.server.clone();
+                        let client_id = client_id.clone();
+
+                        // Spawn task to forward report outputs to client
+                        tokio::spawn(async move {
+                            while let Some(value) = output_rx.recv().await {
+                                let response = ReportResponse {
+                                    response: value,
+                                    tx: tx.to_string(),
+                                };
+
+                                if let Err(e) = cast!(
+                                    server_ref,
+                                    ServerMsg::WebSocketServerMsg(WebSocketServerMsg::SendToClient(
+                                        SendToClientData {
+                                            client_id: client_id.clone(),
+                                            message: MykoMessage::ReportResponse(response),
+                                        }
+                                    ))
+                                ) {
+                                    error!("Failed to send report response: {}", e);
+                                    break;
+                                }
+                            }
+                        });
 
                         Ok(())
                     }
