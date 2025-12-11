@@ -3,6 +3,7 @@ use crate::{
     actors::{
         event::event_handler::{EventHandler, EventHandlerArgs, EventHandlerMessage},
         kafka::common::KafkaSharedConfig,
+        saga::SagaManagerMsg,
         server::ServerMsg,
     },
     parsers::item::MykoItemParser,
@@ -22,6 +23,8 @@ pub struct EventManagerState {
     left_to_init: HashSet<Arc<str>>,
     server: ActorRef<ServerMsg>,
     ctx: Arc<MykoServerCtx>,
+    /// Optional reference to SagaManager for event broadcast
+    saga_manager: Option<ActorRef<SagaManagerMsg>>,
 }
 
 pub enum EventManagerMsg {
@@ -31,6 +34,8 @@ pub enum EventManagerMsg {
     RepoInitComplete(Arc<str>),
     ProcessEvent(ProcessEventData), //bool for persist
     GetEventHandler(Arc<str>, RpcReplyPort<ActorRef<EventHandlerMessage>>),
+    /// Set the SagaManager reference for event broadcasting
+    SetSagaManager(ActorRef<SagaManagerMsg>),
 }
 
 pub struct EventManagerArgs {
@@ -56,6 +61,7 @@ impl Actor for EventManager {
             handlers: HashMap::new(),
             server: args.server,
             ctx: args.ctx,
+            saga_manager: None,
         })
     }
 
@@ -135,6 +141,14 @@ impl Actor for EventManager {
             EventManagerMsg::ProcessEvent(data) => {
                 let entity_type: Arc<str> = data.event.item_type().into();
 
+                // Broadcast event to SagaManager if configured
+                if let Some(saga_manager) = &state.saga_manager
+                    && let Err(e) = saga_manager
+                        .send_message(SagaManagerMsg::BroadcastEvent(data.event.clone()))
+                {
+                    error!("Failed to broadcast event to SagaManager: {}", e);
+                }
+
                 let handler = state.handlers.get(&entity_type);
 
                 match handler {
@@ -160,6 +174,11 @@ impl Actor for EventManager {
                 if let Err(err) = reply.send(handler.clone()) {
                     error!("Failed to reply with Event Handler: {}", err)
                 };
+                Ok(())
+            }
+            EventManagerMsg::SetSagaManager(saga_manager) => {
+                info!("EventManager: SagaManager reference set");
+                state.saga_manager = Some(saga_manager);
                 Ok(())
             }
         }

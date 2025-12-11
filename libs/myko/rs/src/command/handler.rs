@@ -44,6 +44,7 @@ pub struct CommandContext {
 
 impl CommandContext {
     /// Create a new CommandContext
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client_id: Arc<str>,
         tx: Arc<str>,
@@ -129,7 +130,7 @@ impl CommandContext {
         child_lineage.push(command.command_id());
 
         // Execute via command manager
-        let result = ractor::call!(
+        ractor::call!(
             self.command_manager,
             CommandManagerMsg::ExecuteNested,
             wrapped,
@@ -140,9 +141,7 @@ impl CommandContext {
         .map_err(|e| CommandError {
             tx: self.tx.to_string(),
             message: format!("Failed to call command manager: {}", e),
-        })?;
-
-        result
+        })?
     }
 
     /// Get the server context

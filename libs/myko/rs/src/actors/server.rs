@@ -9,9 +9,11 @@ use crate::{
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
         query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
         report::report_manager::{ReportManager, ReportManagerArgs, ReportManagerMsg},
+        saga::{SagaManager, SagaManagerArgs, SagaManagerMsg},
         ws::websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
     },
     event::{MEvent, MEventType},
+    saga::SagaContext,
     server::MykoServerCtx,
 };
 use chrono::Utc;
@@ -29,6 +31,7 @@ pub struct ServerState {
     query_manager: ActorRef<QueryManagerMsg>,
     report_manager: ActorRef<ReportManagerMsg>,
     command_manager: ActorRef<CommandManagerMsg>,
+    saga_manager: ActorRef<SagaManagerMsg>,
     ctx: Arc<MykoServerCtx>,
     args: ServerArgs,
 }
@@ -53,6 +56,7 @@ pub enum ServerMsg {
     ReportManagerMsg(ReportManagerMsg),
     CommandManagerMsg(CommandManagerMsg),
     /// Get direct references to manager actors (useful for benchmarking/testing)
+    #[allow(clippy::type_complexity)]
     GetManagers(
         ractor::RpcReplyPort<(
             ActorRef<EventManagerMsg>,
@@ -148,6 +152,36 @@ impl Actor for Server {
             }
         };
 
+        // Create SagaContext for saga handlers
+        let saga_ctx = Arc::new(SagaContext::new(
+            ctx.clone(),
+            event_manager.clone(),
+            command_manager.clone(),
+            query_manager.clone(),
+        ));
+
+        let saga_manager = match Actor::spawn(
+            None,
+            SagaManager,
+            SagaManagerArgs {
+                ctx: saga_ctx,
+                command_manager: command_manager.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn SagaManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
+        // Wire SagaManager to EventManager for event broadcasting
+        if let Err(err) = event_manager.send_message(EventManagerMsg::SetSagaManager(saga_manager.clone())) {
+            error!("Failed to set SagaManager in EventManager: {}", err);
+        }
+
         let message_handler = match Actor::spawn(
             None,
             MessageHandler,
@@ -192,6 +226,7 @@ impl Actor for Server {
             query_manager,
             report_manager,
             command_manager,
+            saga_manager,
             ctx,
             args,
         })
@@ -266,6 +301,11 @@ impl Actor for Server {
                     }))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
+                }
+
+                // Start all registered sagas
+                if let Err(err) = state.saga_manager.send_message(SagaManagerMsg::StartAll) {
+                    error!("Failed to start SagaManager: {}", err);
                 }
 
                 if let Err(err) = state
