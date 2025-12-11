@@ -23,6 +23,13 @@ pub struct SendToClientData {
 
 pub enum WebSocketServerMsg {
     SendToClient(SendToClientData),
+    RegisterClient {
+        client_id: Arc<str>,
+        client: ActorRef<WebSocketConnectionMsg>,
+    },
+    UnregisterClient {
+        client_id: Arc<str>,
+    },
     Start,
 }
 
@@ -63,15 +70,23 @@ impl Actor for WebSocketServer {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             WebSocketServerMsg::SendToClient(SendToClientData { client_id, message }) => {
-                let client =
-                    state
-                        ._connections
-                        .get(&client_id)
-                        .ok_or(ractor::ActorProcessingErr::from(String::from(
-                            "client not found",
-                        )))?;
-
-                cast!(client, WebSocketConnectionMsg::Transmit(message))?;
+                if let Some(client) = state._connections.get(&client_id) {
+                    if let Err(e) = cast!(client, WebSocketConnectionMsg::Transmit(message)) {
+                        warn!("Failed to send to client {}: {}", client_id, e);
+                    }
+                } else {
+                    warn!("Client {} not found in connections", client_id);
+                }
+                Ok(())
+            }
+            WebSocketServerMsg::RegisterClient { client_id, client } => {
+                debug!("Registering client {}", client_id);
+                state._connections.insert(client_id, client);
+                Ok(())
+            }
+            WebSocketServerMsg::UnregisterClient { client_id } => {
+                debug!("Unregistering client {}", client_id);
+                state._connections.remove(&client_id);
                 Ok(())
             }
             WebSocketServerMsg::Start => {
@@ -84,27 +99,32 @@ impl Actor for WebSocketServer {
                 debug!("Trying to bind to {address}");
 
                 let msg_handler_clone = message_handler.clone();
+                let ws_server = _myself.clone();
 
-                match TcpListener::bind(&address).await {
-                    Ok(listener) => {
-                        info!("WebSocket server listening on {address}/myko");
-                        while let Ok((stream, _)) = listener.accept().await {
-                            debug!("Accepted connection");
-                            let _ = Actor::spawn(
-                                None,
-                                WebSocketConnection,
-                                WebSocketConnectionArgs {
-                                    stream,
-                                    message_handler: msg_handler_clone.clone(),
-                                },
-                            )
-                            .await;
+                // Spawn the accept loop in a separate task so the actor can process other messages
+                tokio::spawn(async move {
+                    match TcpListener::bind(&address).await {
+                        Ok(listener) => {
+                            info!("WebSocket server listening on {address}/myko");
+                            while let Ok((stream, _)) = listener.accept().await {
+                                debug!("Accepted connection");
+                                let _ = Actor::spawn(
+                                    None,
+                                    WebSocketConnection,
+                                    WebSocketConnectionArgs {
+                                        stream,
+                                        message_handler: msg_handler_clone.clone(),
+                                        websocket_server: ws_server.clone(),
+                                    },
+                                )
+                                .await;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to bind to port {port}: {e}");
                         }
                     }
-                    Err(e) => {
-                        warn!("Failed to bind to port {port}: {e}");
-                    }
-                }
+                });
                 Ok(())
             }
         }

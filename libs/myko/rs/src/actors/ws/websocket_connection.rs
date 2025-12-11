@@ -12,7 +12,10 @@ use tungstenite::{
 use uuid::Uuid;
 
 use crate::{
-    actors::message_handler::{MessageHandlerMsg, ProcessTextData},
+    actors::{
+        message_handler::{MessageHandlerMsg, ProcessTextData},
+        ws::websocket_server::WebSocketServerMsg,
+    },
     message::MykoMessage,
 };
 
@@ -30,6 +33,7 @@ pub struct WebSocketConnectionState {
 pub struct WebSocketConnectionArgs {
     pub stream: TcpStream,
     pub message_handler: ActorRef<MessageHandlerMsg>,
+    pub websocket_server: ActorRef<WebSocketServerMsg>,
 }
 
 impl Actor for WebSocketConnection {
@@ -41,7 +45,7 @@ impl Actor for WebSocketConnection {
 
     async fn pre_start(
         &self,
-        _myself: ractor::ActorRef<Self::Msg>,
+        myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         debug!("WebSocketConnection started");
@@ -49,6 +53,7 @@ impl Actor for WebSocketConnection {
         let WebSocketConnectionArgs {
             stream,
             message_handler,
+            websocket_server,
         } = args;
 
         let (tx, mut rx) = match accept_hdr_async(stream, |req: &Request, response: Response| {
@@ -75,6 +80,14 @@ impl Actor for WebSocketConnection {
         };
 
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
+
+        // Register this connection with the WebSocket server
+        if let Err(e) = websocket_server.send_message(WebSocketServerMsg::RegisterClient {
+            client_id: client_id.clone(),
+            client: myself,
+        }) {
+            error!("Failed to register client with server: {}", e);
+        }
 
         let task_client_id = client_id.clone();
 
@@ -112,5 +125,34 @@ impl Actor for WebSocketConnection {
         });
 
         Ok(WebSocketConnectionState { tx, client_id })
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ractor::ActorProcessingErr> {
+        use futures_util::SinkExt;
+
+        match message {
+            WebSocketConnectionMsg::Transmit(msg) => {
+                let json = serde_json::to_string(&msg).map_err(|e| {
+                    ractor::ActorProcessingErr::from(format!("Failed to serialize message: {}", e))
+                })?;
+
+                debug!("Sending message to client {}: {}", state.client_id, &json[..json.len().min(100)]);
+
+                state
+                    .tx
+                    .send(Message::Text(json))
+                    .await
+                    .map_err(|e| {
+                        ractor::ActorProcessingErr::from(format!("Failed to send message: {}", e))
+                    })?;
+            }
+        }
+
+        Ok(())
     }
 }

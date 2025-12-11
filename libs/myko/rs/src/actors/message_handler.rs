@@ -80,6 +80,12 @@ impl Actor for MessageHandler {
                     MykoMessage::Query(query) => {
                         trace!("Received query: {:?}", query);
                         let item_type_clone = query.query_item_type.clone();
+                        let tx: Arc<str> = query
+                            .query
+                            .get("tx")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .into();
 
                         let sig =
                             ractor::call!(state.query_manager, QueryManagerMsg::StartQuery, query)?;
@@ -112,7 +118,7 @@ impl Actor for MessageHandler {
                                         sequence,
                                         deletes: vec![],
                                         upserts,
-                                        tx: "faketx".into(),
+                                        tx: tx.clone(),
                                     }
                                 }
                                 futures_signals::signal_map::MapDiff::Insert { key: _, value }
@@ -127,7 +133,7 @@ impl Actor for MessageHandler {
                                     QueryResponse {
                                         deletes: vec![],
                                         upserts,
-                                        tx: "faketx".into(),
+                                        tx: tx.clone(),
                                         sequence,
                                     }
                                 }
@@ -140,7 +146,7 @@ impl Actor for MessageHandler {
                                     QueryResponse {
                                         deletes,
                                         upserts: vec![],
-                                        tx: "faketx".into(),
+                                        tx: tx.clone(),
                                         sequence,
                                     }
                                 }
@@ -150,7 +156,7 @@ impl Actor for MessageHandler {
                                     QueryResponse {
                                         deletes: vec![],
                                         upserts: vec![],
-                                        tx: "faketx".into(),
+                                        tx: tx.clone(),
                                         sequence,
                                     }
                                 }
