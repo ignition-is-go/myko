@@ -5150,6 +5150,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "myko-ts"
+version = "3.0.0-canary.809"
+dependencies = [
+ "chrono",
+ "futures-signals",
+ "myko-rs",
+ "napi 2.16.17",
+ "napi-build",
+ "napi-derive 2.16.13",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "uuid",
+]
+
+[[package]]
 name = "nano-get"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
