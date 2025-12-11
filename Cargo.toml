@@ -41,4 +41,6 @@ members = [
   "apps/execs/vmix",
   "apps/execs/resolume",
   "apps/execs/visca",
+  "apps/execs/freed",
+  "apps/execs/brompton",
 ]
