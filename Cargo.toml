@@ -55,4 +55,5 @@ members = [
   "apps/execs/brightsign",
   "apps/execs/weather",
   "apps/execs/pangolin",
+  "apps/execs/ndi",
 ]
