@@ -21,7 +21,7 @@ import {
   Observable,
   ReplaySubject,
   scan,
-  share,
+  shareReplay,
   Subject,
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
@@ -36,8 +36,22 @@ export enum ConnectionStatus {
 /** Extract result type from a query factory */
 export type QueryResult<Q> = Q extends QueryReturn<infer R> ? R : unknown[]
 
+/** Extract item type from a query factory (unwrapped from array) */
+export type QueryItem<Q> =
+  Q extends QueryReturn<infer R> ? (R extends (infer I)[] ? I : R) : unknown
+
 /** Extract result type from a report factory */
 export type ReportResult<R> = R extends ReportReturn<infer T> ? T : unknown
+
+/** Diff event for incremental query updates */
+export type QueryDiff<T> = {
+  /** Sequence number (0 = initial state, reset map) */
+  sequence: bigint
+  /** IDs of deleted items */
+  deletes: string[]
+  /** New or updated items */
+  upserts: T[]
+}
 
 // Message type aliases from MykoMessage discriminated union
 type QueryResponseMessage = Extract<
@@ -62,15 +76,33 @@ export class MykoClient {
   private queryResponses = new Subject<QueryResponseMessage>()
   private reportResponses = new Subject<ReportResponseMessage>()
 
-  // Track active subscriptions for reconnection
+  // Track active subscriptions for reconnection (by tx)
   private activeQueries = new Map<string, WrappedQuery>()
   private activeReports = new Map<string, WrappedReport>()
+
+  // Shared report observables for deduplication (by cache key)
+  private sharedReports = new Map<string, Observable<unknown>>()
 
   // Message queue for when not connected
   private messageQueue: MykoMessage<unknown>[] = []
 
   constructor() {
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
+  }
+
+  /** Create a stable cache key from a query/report factory */
+  private getCacheKey(
+    type: 'query' | 'report',
+    factory: {
+      query?: Record<string, unknown>
+      report?: Record<string, unknown>
+      queryId?: string
+      reportId?: string
+    },
+  ): string {
+    const id = type === 'query' ? factory.queryId : factory.reportId
+    const args = type === 'query' ? factory.query : factory.report
+    return `${type}:${id}:${JSON.stringify(args)}`
   }
 
   /** Set server address (e.g., 'ws://localhost:5155/myko') */
@@ -165,7 +197,7 @@ export class MykoClient {
 
       map((items) => [...items.values()].map((w) => w.item) as QueryResult<Q>),
 
-      share({ connector: () => new ReplaySubject(1) }),
+      shareReplay({ bufferSize: 1, refCount: true }),
 
       finalize(() => {
         this.activeQueries.delete(tx)
@@ -175,12 +207,66 @@ export class MykoClient {
   }
 
   /**
-   * Watch a report and receive live updates
+   * Watch a query and receive raw diff events for incremental updates.
+   * Use this with SvelteMap or similar reactive Map implementations.
+   *
+   * Note: For query deduplication, use SvelteMykoClient.query() which
+   * shares the underlying SvelteMap across multiple consumers.
+   *
+   * @param queryFactory Query from queries.* (e.g., queries.GetAllServers({}))
+   */
+  watchQueryDiff<Q extends QueryReturn<unknown>>(
+    queryFactory: Q,
+  ): Observable<QueryDiff<QueryItem<Q>>> {
+    const tx = uuid()
+
+    const wrappedQuery: WrappedQuery = {
+      query: { ...queryFactory.query, tx, createdAt: new Date().toISOString() },
+      queryId: queryFactory.queryId,
+      queryItemType: queryFactory.queryItemType,
+    }
+
+    // Track for reconnection
+    this.activeQueries.set(tx, wrappedQuery)
+
+    // Send immediately if connected
+    this.send({ event: MykoEvent.Query, data: wrappedQuery })
+
+    return this.queryResponses.pipe(
+      filter((r) => r.data.tx === tx),
+
+      map((r) => ({
+        sequence: BigInt(r.data.sequence),
+        deletes: r.data.deletes,
+        upserts: r.data.upserts.map((w) => w.item) as QueryItem<Q>[],
+      })),
+
+      finalize(() => {
+        this.activeQueries.delete(tx)
+        this.send({ event: MykoEvent.QueryCancel, data: { tx } })
+      }),
+    )
+  }
+
+  /**
+   * Watch a report and receive live updates.
+   *
+   * Multiple calls with the same report args will share a single subscription,
+   * and the subscription is only cancelled when the last subscriber unsubscribes.
+   *
    * @param reportFactory Report from reports.* (e.g., reports.CountAllTargets({}))
    */
   watchReport<R extends ReportReturn<unknown>>(
     reportFactory: R,
   ): Observable<ReportResult<R>> {
+    const cacheKey = this.getCacheKey('report', reportFactory)
+
+    // Return existing shared observable if available
+    const existing = this.sharedReports.get(cacheKey)
+    if (existing) {
+      return existing as Observable<ReportResult<R>>
+    }
+
     const tx = uuid()
 
     const wrappedReport: WrappedReport = {
@@ -194,18 +280,22 @@ export class MykoClient {
     // Send immediately if connected
     this.send({ event: MykoEvent.Report, data: wrappedReport })
 
-    return this.reportResponses.pipe(
+    const shared$ = this.reportResponses.pipe(
       filter((r) => r.data.tx === tx),
 
       map((r) => r.data.response as ReportResult<R>),
 
-      share({ connector: () => new ReplaySubject(1) }),
-
       finalize(() => {
+        this.sharedReports.delete(cacheKey)
         this.activeReports.delete(tx)
         this.send({ event: MykoEvent.ReportCancel, data: { tx } })
       }),
+
+      shareReplay({ bufferSize: 1, refCount: true }),
     )
+
+    this.sharedReports.set(cacheKey, shared$)
+    return shared$
   }
 
   /** Send an event to the server */

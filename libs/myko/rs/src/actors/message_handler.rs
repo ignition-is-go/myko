@@ -70,8 +70,13 @@ impl Actor for MessageHandler {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             MessageHandlerMsg::ProcessText(ProcessTextData { client_id, text }) => {
-                let m = text;
-                let myko_message = serde_json::from_str::<MykoMessage<()>>(&m).unwrap();
+                let myko_message = match serde_json::from_str::<MykoMessage<()>>(&text) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        trace!("Failed to parse message: {} (text: {:?})", e, text);
+                        return Ok(());
+                    }
+                };
                 match myko_message {
                     MykoMessage::Event(event) => {
                         state
@@ -233,8 +238,18 @@ impl Actor for MessageHandler {
 
                         Ok(())
                     }
+                    MykoMessage::QueryCancel(cancel) => {
+                        trace!("Query cancelled: {}", cancel.tx);
+                        // TODO: Implement query cancellation in QueryManager
+                        Ok(())
+                    }
+                    MykoMessage::ReportCancel(cancel) => {
+                        trace!("Report cancelled: {}", cancel.tx);
+                        // TODO: Implement report cancellation in ReportManager
+                        Ok(())
+                    }
                     _ => {
-                        error!("Unknown message type: {:?}", myko_message);
+                        trace!("Unhandled message type: {:?}", myko_message);
                         Ok(())
                     }
                 }
