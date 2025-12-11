@@ -1,6 +1,7 @@
 use super::event::common::PersistEvent;
 use crate::{
     actors::{
+        command::command_manager::CommandManagerMsg,
         event::{common::ProcessEventData, event_manager::EventManagerMsg},
         query::query_manager::QueryManagerMsg,
         report::report_manager::ReportManagerMsg,
@@ -8,12 +9,13 @@ use crate::{
         ws::websocket_server::{SendToClientData, WebSocketServerMsg},
     },
     api::query::QueryResponse,
+    command::{CommandError, CommandResponse},
     item::WrappedItem,
     message::MykoMessage,
     report::ReportResponse,
 };
 use futures_signals::signal_map::SignalMapExt;
-use log::{error, trace};
+use log::{debug, error, trace};
 use ractor::{Actor, ActorRef, cast};
 use std::sync::Arc;
 
@@ -23,6 +25,7 @@ pub struct MessageHandlerArgs {
     pub event_manager: ActorRef<EventManagerMsg>,
     pub query_manager: ActorRef<QueryManagerMsg>,
     pub report_manager: ActorRef<ReportManagerMsg>,
+    pub command_manager: ActorRef<CommandManagerMsg>,
     pub server: ActorRef<ServerMsg>,
 }
 
@@ -30,6 +33,7 @@ pub struct MessageHandlerState {
     event_manager: ActorRef<EventManagerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
     report_manager: ActorRef<ReportManagerMsg>,
+    command_manager: ActorRef<CommandManagerMsg>,
     server: ActorRef<ServerMsg>,
 }
 
@@ -58,6 +62,7 @@ impl Actor for MessageHandler {
             event_manager: args.event_manager,
             query_manager: args.query_manager,
             report_manager: args.report_manager,
+            command_manager: args.command_manager,
             server: args.server,
         })
     }
@@ -70,10 +75,15 @@ impl Actor for MessageHandler {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             MessageHandlerMsg::ProcessText(ProcessTextData { client_id, text }) => {
-                let myko_message = match serde_json::from_str::<MykoMessage<()>>(&text) {
-                    Ok(msg) => msg,
+                debug!("Processing text message from {}: {}", client_id, &text[..text.len().min(200)]);
+                // Use Value for Command variant to allow any JSON, we'll re-parse commands later
+                let myko_message = match serde_json::from_str::<MykoMessage<serde_json::Value>>(&text) {
+                    Ok(msg) => {
+                        debug!("Parsed message type: {:?}", std::mem::discriminant(&msg));
+                        msg
+                    }
                     Err(e) => {
-                        trace!("Failed to parse message: {} (text: {:?})", e, text);
+                        debug!("Failed to parse message: {} (text: {:?})", e, text);
                         return Ok(());
                     }
                 };
@@ -246,6 +256,83 @@ impl Actor for MessageHandler {
                     MykoMessage::ReportCancel(cancel) => {
                         trace!("Report cancelled: {}", cancel.tx);
                         // TODO: Implement report cancellation in ReportManager
+                        Ok(())
+                    }
+                    MykoMessage::Command(_) => {
+                        debug!("Received Command message, re-parsing...");
+                        // The Command variant with () doesn't have the data, we need to re-parse
+                        // the original text as MykoMessage<WrappedCommand>
+                        let command_message: MykoMessage<crate::command::WrappedCommand> =
+                            match serde_json::from_str(&text) {
+                                Ok(msg) => msg,
+                                Err(e) => {
+                                    error!("Failed to parse command message: {}", e);
+                                    return Ok(());
+                                }
+                            };
+
+                        let wrapped_command = match command_message {
+                            MykoMessage::Command(cmd) => cmd,
+                            _ => {
+                                error!("Unexpected message type after re-parse");
+                                return Ok(());
+                            }
+                        };
+
+                        let tx: String = wrapped_command
+                            .command
+                            .get("tx")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+                        trace!("Received command: {} with tx {}", wrapped_command.command_id, tx);
+
+                        let command_manager = state.command_manager.clone();
+                        let server_ref = state.server.clone();
+                        let client_id_clone = client_id.clone();
+
+                        // Execute command asynchronously and send response
+                        tokio::spawn(async move {
+                            let result = ractor::call!(
+                                command_manager,
+                                CommandManagerMsg::Execute,
+                                wrapped_command,
+                                client_id_clone.clone()
+                            );
+
+                            let response_message = match result {
+                                Ok(Ok(response)) => {
+                                    MykoMessage::CommandResponse(CommandResponse {
+                                        response,
+                                        tx: tx.clone(),
+                                    })
+                                }
+                                Ok(Err(cmd_error)) => {
+                                    MykoMessage::CommandError(cmd_error)
+                                }
+                                Err(e) => {
+                                    error!("Failed to execute command: {}", e);
+                                    MykoMessage::CommandError(CommandError {
+                                        tx: tx.clone(),
+                                        message: format!("Internal error: {}", e),
+                                    })
+                                }
+                            };
+
+                            if let Err(e) = ractor::cast!(
+                                server_ref,
+                                ServerMsg::WebSocketServerMsg(WebSocketServerMsg::SendToClient(
+                                    SendToClientData {
+                                        client_id: client_id_clone,
+                                        message: response_message,
+                                    }
+                                ))
+                            ) {
+                                error!("Failed to send command response: {}", e);
+                            }
+                        });
+
                         Ok(())
                     }
                     _ => {
