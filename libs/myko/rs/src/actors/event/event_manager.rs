@@ -127,7 +127,7 @@ impl Actor for EventManager {
             EventManagerMsg::InitAll(config) => {
                 info!("Initializing all repositories: {}", state.handlers.len());
                 for handler in state.handlers.values() {
-                    let _ = handler.send_message(EventHandlerMessage::Init(config));
+                    let _ = handler.send_message(EventHandlerMessage::Init(config.clone()));
                 }
                 Ok(())
             }

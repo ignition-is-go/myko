@@ -90,7 +90,7 @@ impl Actor for EventHandler {
                     KafkaConsumer,
                     KafkaConsumerArgs {
                         topic: entity_name.clone(),
-                        shared_conf: conf,
+                        shared_conf: conf.clone(),
                         repo_ref: myself.clone(),
                         ctx: state.ctx.clone(),
                     },

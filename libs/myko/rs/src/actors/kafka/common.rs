@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct KafkaSharedConfig {
-    pub bootstrap_servers: &'static [&'static str],
+    pub bootstrap_servers: Vec<String>,
 }

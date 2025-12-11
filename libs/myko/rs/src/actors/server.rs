@@ -30,11 +30,11 @@ pub struct ServerState {
 }
 
 pub struct ServerArgs {
-    pub bind_addr: &'static str,
-    pub bind_path: &'static str,
+    pub bind_addr: String,
+    pub bind_path: String,
     pub bind_port: u16,
     pub kafka_config: KafkaSharedConfig,
-    pub public_host_address: &'static str,
+    pub public_host_address: String,
 }
 
 pub enum ServerMsg {
@@ -174,7 +174,7 @@ impl Actor for Server {
             ServerMsg::InitAllModules => {
                 if let Err(err) = state
                     .repo_manager
-                    .send_message(EventManagerMsg::InitAll(state.args.kafka_config))
+                    .send_message(EventManagerMsg::InitAll(state.args.kafka_config.clone()))
                 {
                     error!("Failed to send message to RepoManager: {}", err);
                 };
