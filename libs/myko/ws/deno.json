@@ -15,6 +15,7 @@
     "uuid": "npm:uuid@^9.0.1",
     "zod": "npm:zod@^3.24.1",
     "@myko/core": "jsr:@myko/core@3.0.0-canary.809",
+    "@myko/rs": "jsr:@myko/rs@3.0.0-canary.809",
     "msgpackr": "npm:msgpackr@^1.10.2"
   },
   "publish": {

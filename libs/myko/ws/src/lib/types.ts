@@ -1,11 +1,32 @@
-import {
-  type ID,
-  type MEvent,
-  type MWrappedCommand,
-  type MWrappedItem,
-  type MWrappedQuery,
-  type MWrappedReport,
+import type {
+  ID,
+  MEvent,
+  MWrappedCommand,
+  MWrappedQuery,
+  MWrappedReport,
 } from '@myko/core'
+import type {
+  CommandError,
+  CommandResponse,
+  QueryError,
+  QueryResponse,
+  ReportError,
+  ReportResponse,
+} from '@myko/rs'
+
+// Re-export Rust-generated types for convenience
+export type {
+  CommandError,
+  CommandResponse,
+  MykoMessage,
+  QueryError,
+  QueryResponse,
+  ReportError,
+  ReportResponse,
+  MEvent as RsMEvent,
+  WrappedQuery,
+  WrappedReport,
+} from '@myko/rs'
 
 export const MEVENT_EVENT = 'ws:m:event'
 export const MCOMMAND_EVENT = 'ws:m:command'
@@ -43,12 +64,8 @@ export type WSMQuery = {
   data: MWrappedQuery
 }
 
-export type WSMQueryResponseData = {
-  sequence: number
-  upserts: MWrappedItem[]
-  deletes: ID[]
-  tx: ID
-}
+// Aligned with Rust QueryResponse - note sequence is bigint in Rust but number here for compatibility
+export type WSMQueryResponseData = QueryResponse
 
 export type WSMQueryResponse = {
   event: typeof MQUERY_RESPONSE_EVENT
@@ -57,10 +74,7 @@ export type WSMQueryResponse = {
 
 export type WSMQueryError = {
   event: typeof MQUERY_ERROR_EVENT
-  data: {
-    tx: ID
-    message: string
-  }
+  data: QueryError
 }
 
 export type WSMQueryCancel = {
@@ -76,18 +90,12 @@ export type WSMReport = {
 
 export type WSMReportError = {
   event: typeof MREPORT_ERROR_EVENT
-  data: {
-    tx: ID
-    message: string
-  }
+  data: ReportError
 }
 
 export type WSMReportResponse = {
   event: typeof MREPORT_RESPONSE_EVENT
-  data: {
-    tx: ID
-    response: unknown
-  }
+  data: ReportResponse
 }
 
 export type WSMReportCancel = {
@@ -102,18 +110,12 @@ export type WSMCommand = {
 }
 
 export type WSMCommandResponse = {
-  data: {
-    tx: ID
-    response: unknown
-  }
+  data: CommandResponse
   event: typeof MCOMMAND_RESPONSE_EVENT
 }
 
 export type WSMCommandError = {
-  data: {
-    tx: ID
-    message: string
-  }
+  data: CommandError
   event: typeof MCOMMAND_ERROR_EVENT
 }
 
