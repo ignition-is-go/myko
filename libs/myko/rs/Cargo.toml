@@ -42,9 +42,14 @@ ts-rs = { version = "11.1.0", features = ["serde-json-impl"] }
 inventory = "0.3.21"
 dprint-plugin-typescript = "0.95.12"
 
+[features]
+default = []
+bench = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 
 [[bench]]
 name = "gateway"
 harness = false
+required-features = ["bench"]

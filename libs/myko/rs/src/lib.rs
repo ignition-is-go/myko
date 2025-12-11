@@ -15,6 +15,9 @@ pub mod utils;
 //
 pub mod prelude;
 pub mod type_gen;
+
+#[cfg(feature = "bench")]
+pub mod bench_entities;
 pub use inventory::submit;
 pub use ts_rs::TS;
 

@@ -1,13 +1,12 @@
 //! Gateway benchmarks for myko-rs
 //!
-//! Run with: cargo bench --package myko-rs
+//! Run with: cargo bench --package myko-rs --features bench
 //!
 //! Benchmarks:
 //! - Query performance over large entity lists
 //! - Command-to-query-update latency
 //! - Event throughput under load
 
-use chrono::Utc;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use futures::Stream;
 use futures::StreamExt;
@@ -20,27 +19,21 @@ use myko_rs::{
             event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
         },
         kafka::common::KafkaSharedConfig,
-        query::query_manager::{
-            QueryClosureType, QueryManager, QueryManagerArgs, QueryManagerMsg, RegisterQueryData,
-        },
+        query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
         report::report_manager::{ReportManager, ReportManagerArgs},
         server::{Server, ServerArgs, ServerMsg},
     },
     api::query::WrappedQuery,
-    event::{MEvent, MEventType},
-    parsers::{
-        item::{AnyItem, CapturedItemParser, MykoItemParser},
-        query::{AnyQuery, MykoQueryParser},
+    bench_entities::{
+        BenchItem, GetAllBenchItems, GetAllBenchItemsArgs, GetBenchItemsByCategory,
+        GetBenchItemsByCategoryArgs,
     },
-    prelude::{ToValue, WithId, WithTransaction},
-    query::{QueryHandlerCtxAny, QueryId},
+    event::{MEvent, MEventType},
+    item::Eventable,
     server::MykoServerCtx,
 };
-use partially::Partial;
 use ractor::{Actor, ActorRef};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
-use std::{any::Any, pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{pin::Pin, sync::Arc, task::Poll, time::Duration};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
@@ -60,118 +53,6 @@ impl<S: SignalMap + Unpin> Stream for SignalMapStream<S> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.signal).poll_map_change(cx)
-    }
-}
-
-// =============================================================================
-// Test Entity - Simple benchmarkable item
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, Partial, PartialEq)]
-#[partially(derive(Debug, Clone, Serialize, Deserialize, Default))]
-pub struct BenchItem {
-    pub id: Arc<str>,
-    pub hash: Arc<str>,
-    pub name: String,
-    pub category: String,
-    pub value: i64,
-}
-
-impl BenchItem {
-    fn entity_name() -> &'static str {
-        "BenchItem"
-    }
-}
-
-impl WithId for BenchItem {
-    fn id(&self) -> Arc<str> {
-        self.id.clone()
-    }
-}
-
-impl ToValue for BenchItem {
-    fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).unwrap()
-    }
-}
-
-impl AnyItem for BenchItem {}
-
-/// Create an MEvent for BenchItem without requiring Eventable trait
-fn create_bench_event(item: &BenchItem, change_type: MEventType) -> MEvent {
-    MEvent {
-        item: serde_json::to_value(item).unwrap(),
-        change_type,
-        item_type: BenchItem::entity_name().to_string(),
-        created_at: Utc::now().to_rfc3339(),
-        tx: Uuid::new_v4().to_string(),
-        source_id: None,
-    }
-}
-
-// =============================================================================
-// Test Queries
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetAllBenchItems {
-    pub tx: String,
-}
-
-impl WithTransaction for GetAllBenchItems {
-    fn tx_id(&self) -> Arc<str> {
-        self.tx.clone().into()
-    }
-}
-
-impl QueryId for GetAllBenchItems {
-    fn query_id(&self) -> Arc<str> {
-        "GetAllBenchItems".into()
-    }
-}
-
-impl AnyQuery for GetAllBenchItems {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetBenchItemsByCategory {
-    pub tx: String,
-    pub category: String,
-}
-
-impl WithTransaction for GetBenchItemsByCategory {
-    fn tx_id(&self) -> Arc<str> {
-        self.tx.clone().into()
-    }
-}
-
-impl QueryId for GetBenchItemsByCategory {
-    fn query_id(&self) -> Arc<str> {
-        "GetBenchItemsByCategory".into()
-    }
-}
-
-impl AnyQuery for GetBenchItemsByCategory {}
-
-// =============================================================================
-// Simple Query Parser (bypasses full Query trait requirements)
-// =============================================================================
-
-struct SimpleQueryParser<T> {
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T> SimpleQueryParser<T> {
-    fn new() -> Self {
-        Self {
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<T: DeserializeOwned + AnyQuery> MykoQueryParser for SimpleQueryParser<T> {
-    fn parse(&self, value: Value) -> Result<Arc<dyn AnyQuery>, anyhow::Error> {
-        let item = serde_json::from_value::<T>(value)?;
-        Ok(Arc::new(item))
     }
 }
 
@@ -225,12 +106,6 @@ impl BenchHarness {
         .await
         .expect("Failed to spawn event manager");
 
-        // Register BenchItem entity
-        let parser: Arc<dyn MykoItemParser> = Arc::new(CapturedItemParser::<BenchItem>::new());
-        event_manager
-            .send_message(EventManagerMsg::RegisterRepo("BenchItem".into(), parser))
-            .expect("Failed to register");
-
         // Spawn query manager
         let (query_manager, _) = Actor::spawn(
             None,
@@ -243,44 +118,6 @@ impl BenchHarness {
         )
         .await
         .expect("Failed to spawn query manager");
-
-        // Register GetAllBenchItems query
-        let get_all_closure: QueryClosureType = Arc::new(|_ctx: QueryHandlerCtxAny| true);
-        let get_all_parser: Arc<dyn MykoQueryParser> =
-            Arc::new(SimpleQueryParser::<GetAllBenchItems>::new());
-        query_manager
-            .send_message(QueryManagerMsg::RegisterQuery(RegisterQueryData {
-                query_id: "GetAllBenchItems".into(),
-                query_item_type: "BenchItem".into(),
-                closure: get_all_closure,
-                parser: get_all_parser,
-            }))
-            .expect("Failed to register query");
-
-        // Register GetBenchItemsByCategory query
-        let get_by_category_closure: QueryClosureType = Arc::new(|ctx: QueryHandlerCtxAny| {
-            // Cast to Any for downcast
-            let item_any: Arc<dyn Any + Send + Sync> = ctx.item;
-            let query_any: Arc<dyn Any + Send + Sync> = ctx.query;
-
-            let item = item_any.downcast::<BenchItem>();
-            let query = query_any.downcast::<GetBenchItemsByCategory>();
-
-            match (item, query) {
-                (Ok(item), Ok(query)) => item.category == query.category,
-                _ => false,
-            }
-        });
-        let get_by_category_parser: Arc<dyn MykoQueryParser> =
-            Arc::new(SimpleQueryParser::<GetBenchItemsByCategory>::new());
-        query_manager
-            .send_message(QueryManagerMsg::RegisterQuery(RegisterQueryData {
-                query_id: "GetBenchItemsByCategory".into(),
-                query_item_type: "BenchItem".into(),
-                closure: get_by_category_closure,
-                parser: get_by_category_parser,
-            }))
-            .expect("Failed to register query");
 
         // Spawn report manager
         let (report_manager, _) = Actor::spawn(
@@ -308,6 +145,11 @@ impl BenchHarness {
         .await
         .expect("Failed to spawn command manager");
 
+        // Register BenchItem entity and its queries using the macro-generated register methods
+        BenchItem::register_with_managers(&event_manager, &query_manager)
+            .await
+            .expect("Failed to register BenchItem");
+
         // Small delay to let actors initialize
         tokio::time::sleep(Duration::from_millis(10)).await;
 
@@ -332,26 +174,19 @@ impl BenchHarness {
                 value: i as i64,
             };
 
-            let event = create_bench_event(&item, MEventType::SET);
-            let parsed_item: Arc<dyn AnyItem> = Arc::new(item);
-
-            self.event_manager
-                .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
-                    event,
-                    persist: PersistEvent::NoPersist,
-                    parsed_item: Some(parsed_item),
-                }))
-                .expect("Failed to send event");
+            self.emit_set(&item).await;
         }
 
         // Let events propagate
         tokio::time::sleep(Duration::from_millis(50 + (count as u64 / 100))).await;
     }
 
-    /// Emit a single SET event
+    /// Emit a single SET event using the macro-generated MEvent::from_item
     async fn emit_set(&self, item: &BenchItem) {
-        let event = create_bench_event(item, MEventType::SET);
-        let parsed_item: Arc<dyn AnyItem> = Arc::new(item.clone());
+        let event = MEvent::from_item(item, MEventType::SET, Uuid::new_v4().to_string());
+
+        // Use the optimized path with pre-parsed item
+        let parsed_item: Arc<dyn myko_rs::parsers::item::AnyItem> = Arc::new(item.clone());
 
         self.event_manager
             .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
@@ -374,6 +209,67 @@ impl BenchHarness {
             }
         }
         0
+    }
+}
+
+/// Helper trait for registering entities without a full MykoServer
+trait RegisterWithManagers: Eventable {
+    async fn register_with_managers(
+        event_manager: &ActorRef<EventManagerMsg>,
+        query_manager: &ActorRef<QueryManagerMsg>,
+    ) -> Result<(), anyhow::Error>;
+}
+
+impl RegisterWithManagers for BenchItem {
+    async fn register_with_managers(
+        event_manager: &ActorRef<EventManagerMsg>,
+        query_manager: &ActorRef<QueryManagerMsg>,
+    ) -> Result<(), anyhow::Error> {
+        use myko_rs::actors::query::query_manager::RegisterQueryData;
+        use myko_rs::parsers::item::{CapturedItemParser, MykoItemParser};
+        use myko_rs::parsers::query::{CapturedQueryParser, MykoQueryParser};
+        use myko_rs::query::QueryHandlerCtxAny;
+
+        // Register entity parser
+        let parser: Arc<dyn MykoItemParser> = Arc::new(CapturedItemParser::<BenchItem>::new());
+        event_manager.send_message(EventManagerMsg::RegisterRepo("BenchItem".into(), parser))?;
+
+        // Register GetAllBenchItems query
+        let closure: Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync> =
+            Arc::new(|_ctx| true);
+        let parser: Arc<dyn MykoQueryParser> =
+            Arc::new(CapturedQueryParser::<GetAllBenchItems>::new());
+        query_manager.send_message(QueryManagerMsg::RegisterQuery(RegisterQueryData {
+            query_id: "GetAllBenchItems".into(),
+            query_item_type: "BenchItem".into(),
+            closure,
+            parser,
+        }))?;
+
+        // Register GetBenchItemsByCategory query
+        use std::any::Any;
+        let closure: Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync> = Arc::new(|ctx| {
+            let item_any: Arc<dyn Any + Send + Sync> = ctx.item;
+            let query_any: Arc<dyn Any + Send + Sync> = ctx.query;
+
+            let item = item_any.downcast::<BenchItem>();
+            let query = query_any.downcast::<GetBenchItemsByCategory>();
+
+            match (item, query) {
+                (Ok(item), Ok(query)) => item.category == query.category,
+                _ => false,
+            }
+        });
+        let parser: Arc<dyn MykoQueryParser> =
+            Arc::new(CapturedQueryParser::<GetBenchItemsByCategory>::new());
+        query_manager.send_message(QueryManagerMsg::RegisterQuery(RegisterQueryData {
+            query_id: "GetBenchItemsByCategory".into(),
+            query_item_type: "BenchItem".into(),
+            closure,
+            parser,
+        }))?;
+
+        Ok(())
     }
 }
 
@@ -404,9 +300,7 @@ fn query_benchmarks(c: &mut Criterion) {
             b.to_async(Runtime::new().unwrap()).iter(|| {
                 let harness = harness.clone();
                 async move {
-                    let query = GetAllBenchItems {
-                        tx: Uuid::new_v4().to_string(),
-                    };
+                    let query = GetAllBenchItems::new(GetAllBenchItemsArgs {});
                     let wrapped = WrappedQuery {
                         query: serde_json::to_value(&query).unwrap(),
                         query_id: "GetAllBenchItems".into(),
@@ -434,10 +328,9 @@ fn query_benchmarks(c: &mut Criterion) {
                 b.to_async(Runtime::new().unwrap()).iter(|| {
                     let harness = harness.clone();
                     async move {
-                        let query = GetBenchItemsByCategory {
-                            tx: Uuid::new_v4().to_string(),
+                        let query = GetBenchItemsByCategory::new(GetBenchItemsByCategoryArgs {
                             category: "cat-a".to_string(),
-                        };
+                        });
                         let wrapped = WrappedQuery {
                             query: serde_json::to_value(&query).unwrap(),
                             query_id: "GetBenchItemsByCategory".into(),
@@ -549,9 +442,7 @@ fn latency_benchmarks(c: &mut Criterion) {
         b.to_async(Runtime::new().unwrap()).iter(|| {
             let harness = harness.clone();
             async move {
-                let query = GetAllBenchItems {
-                    tx: Uuid::new_v4().to_string(),
-                };
+                let query = GetAllBenchItems::new(GetAllBenchItemsArgs {});
                 let wrapped = WrappedQuery {
                     query: serde_json::to_value(&query).unwrap(),
                     query_id: "GetAllBenchItems".into(),
