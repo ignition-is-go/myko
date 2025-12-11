@@ -149,6 +149,69 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
     };
 
+    // Generate per-entity count result type (e.g., TargetCount, InstanceCount)
+    // This avoids the shared CountResult type which causes duplicate imports in TypeScript
+    let count_result_ident = format_ident!("{}Count", name_str);
+
+    let count_result_type = quote! {
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+        #[serde(rename_all = "camelCase")]
+        #[ts(export)]
+        pub struct #count_result_ident {
+            pub count: usize,
+        }
+    };
+
+    // Generate CountAll report
+    let count_all_report_ident = format_ident!("CountAll{}s", name_str);
+    let get_all_args_ident = format_ident!("{}Args", get_all_query_ident);
+
+    let count_all_report = quote! {
+        #[myko_macros::myko_report(#count_result_ident)]
+        pub struct #count_all_report_ident {}
+
+        impl myko_rs::prelude::ReportHandler for #count_all_report_ident {
+            type Output = #count_result_ident;
+
+            fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
+                use futures::StreamExt;
+
+                let query = #get_all_query_ident::new(#get_all_args_ident {});
+                let stream = ctx.query(query);
+
+                Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
+            }
+        }
+    };
+
+    // Generate Count report with partial filter
+    let count_report_ident = format_ident!("Count{}s", name_str);
+    let count_report_args_ident = format_ident!("Count{}sArgs", name_str);
+    let get_by_partial_args_ident = format_ident!("{}Args", get_by_partial_ident);
+
+    let count_report = quote! {
+        #[myko_macros::myko_report(#count_result_ident)]
+        pub struct #count_report_ident {
+            pub partial: #partial_ident,
+        }
+
+        impl myko_rs::prelude::ReportHandler for #count_report_ident {
+            type Output = #count_result_ident;
+
+            fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
+                use futures::StreamExt;
+
+                let args: #count_report_args_ident = ctx.args().expect("Failed to parse count report args");
+                let partial = args.partial;
+
+                let query = #get_by_partial_ident::new(#get_by_partial_args_ident { partial });
+                let stream = ctx.query(query);
+
+                Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
+            }
+        }
+    };
+
     let item_registration = quote! {
         myko_rs::prelude::ItemRegistration {
             entity_type: #name_str,
@@ -198,12 +261,27 @@ pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 
         #get_by_partial_query
 
+        #count_result_type
+
+        #count_all_report
+
+        #count_report
+
         impl myko_rs::prelude::MykoAutoQueries for #name {
                 fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
 
                         #get_all_query_ident::register(&server)?;
                         #get_by_ids_query_ident::register(&server)?;
                         #get_by_partial_ident::register(&server)?;
+                     Ok(())
+                }
+        }
+
+        impl myko_rs::prelude::MykoAutoReports for #name {
+                fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
+                        use myko_rs::prelude::Report;
+                        #count_all_report_ident::register(&server)?;
+                        #count_report_ident::register(&server)?;
                      Ok(())
                 }
         }
@@ -228,6 +306,12 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut args_struct = input_struct.clone();
     args_struct.ident = args_struct_name.clone();
+    // Apply derives directly to args_struct
+    args_struct.attrs = vec![
+        syn::parse_quote!(#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]),
+        syn::parse_quote!(#[ts(export)]),
+        syn::parse_quote!(#[serde(rename_all = "camelCase")]),
+    ];
 
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
         let tx = quote! { tx };
@@ -275,6 +359,7 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let expanded = quote! {
         #derives
         #input_struct
+
         #args_struct
 
         impl #struct_name {
@@ -351,38 +436,153 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+/// Generates a reactive report that can depend on queries and other reports.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[myko_report(Vec<Target>)]
+/// pub struct GetParentTargets {
+///     pub target_id: String,
+///     pub depth: u32,
+/// }
+///
+/// // You must implement the compute method:
+/// impl GetParentTargets {
+///     pub fn compute(
+///         report: std::sync::Arc<Self>,
+///         ctx: myko_rs::prelude::ReportContext,
+///     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Vec<Target>> + Send>> {
+///         // Use ctx.query() and ctx.report() for reactive dependencies
+///         Box::pin(async_stream::stream! {
+///             // ... your reactive logic
+///         })
+///     }
+/// }
+/// ```
 pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let report_item_type: Path = parse_macro_input!(attr as Path);
+    let report_output_type: Path = parse_macro_input!(attr as Path);
 
     // Parse the input struct
-    let input_struct = parse_macro_input!(input as ItemStruct);
+    let mut input_struct = parse_macro_input!(input as ItemStruct);
     let struct_name = &input_struct.ident;
+
+    let args_struct_name = format_ident!("{}Args", struct_name);
+
+    let mut args_struct = input_struct.clone();
+    args_struct.ident = args_struct_name.clone();
+    // Apply derives directly to args_struct
+    args_struct.attrs = vec![
+        syn::parse_quote!(#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]),
+        syn::parse_quote!(#[ts(export)]),
+        syn::parse_quote!(#[serde(rename_all = "camelCase")]),
+    ];
+
+    // Add tx field for tracking
+    if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+        let tx = quote! { tx };
+        let arc_str = quote! { std::sync::Arc<str> };
+        let pub_viz = quote! { pub };
+
+        let tx_field: Field = syn::parse_quote! {
+            #pub_viz #tx: #arc_str
+        };
+
+        named.push(tx_field);
+    };
+
+    let derives = quote! {
+         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+         #[ts(export)]
+         #[serde(rename_all = "camelCase")]
+    };
+
+    // Extract just the type name (last segment) from the path for registration
+    let output_type_name = report_output_type
+        .segments
+        .last()
+        .map(|seg| &seg.ident)
+        .expect("Output type path must have at least one segment");
+
+    let report_registration = quote! {
+        myko_rs::prelude::ReportRegistration {
+            report_id: stringify!(#struct_name),
+            output_type: stringify!(#output_type_name),
+            crate_name: module_path!(),
+            // Output type crate: use module_path!() since the output type is defined
+            // in the same crate as the report (either explicitly or via generated types)
+            output_type_crate: module_path!(),
+        }
+    };
+
+    let pairs = args_struct
+        .fields
+        .iter()
+        .map(|f| {
+            let f_name = f.ident.as_ref().expect("must be field struct");
+            quote! {#f_name: args.#f_name,}
+        })
+        .collect::<Vec<_>>();
 
     // Generate the implementation
     let expanded = quote! {
+        #derives
         #input_struct
+        #args_struct
 
-        impl myko_rs::prelude::MykoReport<#report_item_type> for &#struct_name {
-            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
-                client.watch_report::<&#struct_name, #report_item_type>(self)
+        impl #struct_name {
+            pub fn new(args: #args_struct_name) -> Self {
+                let tx: std::sync::Arc<str> = myko_rs::prelude::Uuid::new_v4().to_string().into();
+                Self {
+                    tx,
+                    #(#pairs)*
+                }
             }
         }
 
-        impl myko_rs::prelude::MykoReport<#report_item_type> for #struct_name {
-            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_item_type> {
-                client.watch_report::<#struct_name, #report_item_type>(self)
-            }
+        myko_rs::submit! {
+            #report_registration
         }
 
-        impl myko_rs::prelude::ReportId for &#struct_name {
-            fn report_id(&self) -> String {
-                stringify!(#struct_name).to_string()
+        // Client-side watch (legacy compatibility)
+        impl myko_rs::prelude::MykoReport<#report_output_type> for #struct_name {
+            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_output_type> {
+                client.watch_report::<#struct_name, #report_output_type>(self)
             }
         }
 
         impl myko_rs::prelude::ReportId for #struct_name {
             fn report_id(&self) -> String {
                 stringify!(#struct_name).to_string()
+            }
+        }
+
+        impl myko_rs::prelude::WithTransaction for #struct_name {
+            fn tx_id(&self) -> std::sync::Arc<str> {
+                self.tx.clone()
+            }
+        }
+
+        impl myko_rs::prelude::ReportIdStatic for #struct_name {
+            fn report_id_static() -> &'static str {
+                stringify!(#struct_name)
+            }
+        }
+
+        impl myko_rs::prelude::ReportOutputType for #struct_name {
+            type Output = #report_output_type;
+        }
+
+        impl From<myko_rs::prelude::WrappedReport> for #struct_name {
+            fn from(wrapped_report: myko_rs::prelude::WrappedReport) -> Self {
+                serde_json::from_value::<Self>(wrapped_report.report).expect("Failed to deserialize report")
+            }
+        }
+
+        // Report trait impl - requires ReportHandler to be implemented by the user
+        impl myko_rs::prelude::Report for #struct_name {
+            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_output_type> {
+                client.watch_report::<Self, #report_output_type>(self)
             }
         }
     };
