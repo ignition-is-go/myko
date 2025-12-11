@@ -1,5 +1,6 @@
 import {
   Client,
+  commandBus,
   eventBus,
   GetClientsByIds,
   getHostId,
@@ -130,6 +131,83 @@ export const bunAdapter: MykoWsAdapter = ({
                 ? response.data.data.message
                 : 'OK',
           })
+        }
+      }
+
+      // Feedback frustration endpoint - accepts anonymous feedback
+      if (url.pathname === '/api/feedback/frustration' && req.method === 'POST') {
+        try {
+          const body = await req.json().catch(() => null)
+
+          if (!body || typeof body.rawText !== 'string' || typeof body.route !== 'string') {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: 'Missing required fields: rawText and route are required',
+              }),
+              {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' },
+              }
+            )
+          }
+
+          // Dynamically import to avoid circular dependencies
+          const { CreateFeedbackEvent } = await import('@rship/entities-core')
+
+          const txId = randomUUID()
+          const correlationId = randomUUID()
+
+          // Build the command with server-side enrichment
+          const command = new CreateFeedbackEvent(body.rawText, body.route, {
+            userId: body.userId,
+            anonymousId: body.anonymousId || randomUUID(),
+            userContext: body.userContext,
+            screenshotUrl: body.screenshotUrl,
+            metadata: body.metadata,
+            browserInfo: body.browserInfo || req.headers.get('user-agent') || undefined,
+            environment: body.environment,
+            viewport: body.viewport,
+            featureFlags: body.featureFlags,
+            recentErrors: body.recentErrors,
+            performanceMetrics: body.performanceMetrics,
+            projectId: body.projectId,
+            sessionId: body.sessionId,
+            // Server-side enrichment
+            serverTimestamp: new Date().toISOString(),
+            serverVersion: process.env['SERVER_VERSION'] || 'unknown',
+            correlationId,
+          })
+
+          command.tx = txId
+
+          // Execute the command
+          const feedbackId = await commandBus.execute(command)
+
+          return new Response(
+            JSON.stringify({
+              success: true,
+              feedbackId,
+              correlationId,
+              message: 'Thank you for your feedback. We take every report seriously.',
+            }),
+            {
+              status: 201,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+        } catch (error) {
+          logger.error('Failed to process feedback', error)
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: 'Failed to process feedback. Please try again.',
+            }),
+            {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
         }
       }
 

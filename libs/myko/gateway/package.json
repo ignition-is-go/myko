@@ -4,6 +4,7 @@
   "dependencies": {
     "@myko/core": "workspace:*",
     "@myko/ws": "workspace:*",
+    "@rship/entities-core": "workspace:*",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/api-logs": "^0.205.0",
     "@opentelemetry/auto-instrumentations-node": "^0.57.0",
