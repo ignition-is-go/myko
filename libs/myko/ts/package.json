@@ -1,0 +1,45 @@
+{
+  "name": "@myko/ts",
+  "version": "3.0.0-canary.809",
+  "description": "TypeScript bindings for the Myko Rust client via NAPI",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "napi": {
+    "name": "myko-ts",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl"
+      ]
+    }
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "prebuild": "cd ../rs && cargo test --lib",
+    "build": "napi build --platform --release && tsc",
+    "build:debug": "napi build --platform && tsc",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "echo 'no tests yet'",
+    "universal": "napi universal",
+    "version": "napi version"
+  },
+  "dependencies": {
+    "@myko/rs": "workspace:*",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "typescript": "^5.3.3"
+  },
+  "files": [
+    "dist",
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
+  "engines": {
+    "node": ">= 18"
+  }
+}
