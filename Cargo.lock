@@ -5218,6 +5218,7 @@ dependencies = [
  "myko-macros",
  "openssl",
  "partially",
+ "pin-project-lite",
  "ractor 0.15.9",
  "rdkafka",
  "rmp",
