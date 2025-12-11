@@ -26,7 +26,8 @@ pub struct EventManagerState {
 
 pub enum EventManagerMsg {
     RegisterRepo(Arc<str>, Arc<dyn MykoItemParser>),
-    InitAll(KafkaSharedConfig),
+    /// Initialize all repositories. When kafka_config is None, runs in-memory only.
+    InitAll(Option<KafkaSharedConfig>),
     RepoInitComplete(Arc<str>),
     ProcessEvent(ProcessEventData), //bool for persist
     GetEventHandler(Arc<str>, RpcReplyPort<ActorRef<EventHandlerMessage>>),

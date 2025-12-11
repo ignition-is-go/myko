@@ -37,7 +37,8 @@ pub struct ServerArgs {
     pub bind_addr: String,
     pub bind_path: String,
     pub bind_port: u16,
-    pub kafka_config: KafkaSharedConfig,
+    /// Kafka configuration. When None, the server runs in-memory only (useful for testing/benchmarks).
+    pub kafka_config: Option<KafkaSharedConfig>,
     pub public_host_address: String,
 }
 
@@ -51,6 +52,15 @@ pub enum ServerMsg {
     QueryManagerMsg(QueryManagerMsg),
     ReportManagerMsg(ReportManagerMsg),
     CommandManagerMsg(CommandManagerMsg),
+    /// Get direct references to manager actors (useful for benchmarking/testing)
+    GetManagers(
+        ractor::RpcReplyPort<(
+            ActorRef<EventManagerMsg>,
+            ActorRef<QueryManagerMsg>,
+            ActorRef<ReportManagerMsg>,
+            ActorRef<CommandManagerMsg>,
+        )>,
+    ),
 }
 
 impl Actor for Server {
@@ -263,6 +273,16 @@ impl Actor for Server {
                     .send_message(WebSocketServerMsg::Start)
                 {
                     error!("Failed to send message to WebSocketServer: {}", err);
+                }
+            }
+            ServerMsg::GetManagers(reply) => {
+                if let Err(err) = reply.send((
+                    state.repo_manager.clone(),
+                    state.query_manager.clone(),
+                    state.report_manager.clone(),
+                    state.command_manager.clone(),
+                )) {
+                    error!("Failed to reply with manager refs: {:?}", err);
                 }
             }
         };

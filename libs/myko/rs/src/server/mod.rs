@@ -1,5 +1,11 @@
 use crate::{
-    actors::server::{Server, ServerArgs, ServerMsg},
+    actors::{
+        command::command_manager::CommandManagerMsg,
+        event::event_manager::EventManagerMsg,
+        query::query_manager::QueryManagerMsg,
+        report::report_manager::ReportManagerMsg,
+        server::{Server, ServerArgs, ServerMsg},
+    },
     item::Eventable,
     query::Query,
 };
@@ -8,6 +14,14 @@ use ractor::{Actor, ActorRef};
 use std::sync::Arc;
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+/// References to the internal manager actors (useful for benchmarking/testing)
+pub struct ManagerRefs {
+    pub event_manager: ActorRef<EventManagerMsg>,
+    pub query_manager: ActorRef<QueryManagerMsg>,
+    pub report_manager: ActorRef<ReportManagerMsg>,
+    pub command_manager: ActorRef<CommandManagerMsg>,
+}
 
 pub struct MykoServer {
     pub(crate) server: ActorRef<ServerMsg>,
@@ -51,6 +65,28 @@ impl MykoServer {
 
         self.notify_end.notified().await;
 
+        Ok(())
+    }
+
+    /// Get direct references to the internal manager actors.
+    /// Useful for benchmarking and testing where you need direct actor access.
+    pub async fn get_managers(&self) -> Result<ManagerRefs, anyhow::Error> {
+        let (event_manager, query_manager, report_manager, command_manager) =
+            ractor::call!(self.server, ServerMsg::GetManagers)?;
+
+        Ok(ManagerRefs {
+            event_manager,
+            query_manager,
+            report_manager,
+            command_manager,
+        })
+    }
+
+    /// Initialize all modules without blocking.
+    /// For in-memory mode (kafka_config: None), this signals caught up immediately.
+    /// For Kafka mode, this starts consumers and waits for them to catch up.
+    pub fn init_modules(&self) -> Result<(), anyhow::Error> {
+        self.server.send_message(ServerMsg::InitAllModules)?;
         Ok(())
     }
 }

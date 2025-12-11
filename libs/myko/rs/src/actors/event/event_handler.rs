@@ -31,7 +31,8 @@ pub struct EventHandlerState {
 
 pub enum EventHandlerMessage {
     ProcessEvent(ProcessEventData), // bool for persist
-    Init(KafkaSharedConfig),
+    /// Initialize the handler. When kafka_config is None, runs in-memory only and signals caught up immediately.
+    Init(Option<KafkaSharedConfig>),
     PersisterCaughtUp,
     GetState(RpcReplyPort<BTreeMap<Arc<str>, Arc<dyn AnyItem>>>),
 }
@@ -85,29 +86,39 @@ impl Actor for EventHandler {
                 let entity_name = state.entity_name.clone();
                 debug!("{}: Init", entity_name);
 
-                Actor::spawn(
-                    None,
-                    KafkaConsumer,
-                    KafkaConsumerArgs {
-                        topic: entity_name.clone(),
-                        shared_conf: conf.clone(),
-                        repo_ref: myself.clone(),
-                        ctx: state.ctx.clone(),
-                    },
-                )
-                .await?;
+                match conf {
+                    Some(conf) => {
+                        // With Kafka: spawn consumer and producer
+                        Actor::spawn(
+                            None,
+                            KafkaConsumer,
+                            KafkaConsumerArgs {
+                                topic: entity_name.clone(),
+                                shared_conf: conf.clone(),
+                                repo_ref: myself.clone(),
+                                ctx: state.ctx.clone(),
+                            },
+                        )
+                        .await?;
 
-                let (producer_ref, _producer_handle) = Actor::spawn(
-                    None,
-                    KafkaProducer,
-                    KafkaProducerArgs {
-                        shared_conf: conf,
-                        topic: entity_name.clone(),
-                    },
-                )
-                .await?;
+                        let (producer_ref, _producer_handle) = Actor::spawn(
+                            None,
+                            KafkaProducer,
+                            KafkaProducerArgs {
+                                shared_conf: conf,
+                                topic: entity_name.clone(),
+                            },
+                        )
+                        .await?;
 
-                state.kafka_producer = Some(producer_ref);
+                        state.kafka_producer = Some(producer_ref);
+                    }
+                    None => {
+                        // In-memory mode: signal caught up immediately
+                        debug!("{}: In-memory mode, signaling caught up", entity_name);
+                        myself.send_message(EventHandlerMessage::PersisterCaughtUp)?;
+                    }
+                }
 
                 Ok(())
             }

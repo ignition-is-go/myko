@@ -13,15 +13,11 @@ use futures::StreamExt;
 use futures_signals::signal_map::{MapDiff, SignalMap};
 use myko_rs::{
     actors::{
-        command::command_manager::{CommandManager, CommandManagerArgs, CommandManagerMsg},
         event::{
             common::{PersistEvent, ProcessEventData},
-            event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
+            event_manager::EventManagerMsg,
         },
-        kafka::common::KafkaSharedConfig,
-        query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
-        report::report_manager::{ReportManager, ReportManagerArgs},
-        server::{Server, ServerArgs, ServerMsg},
+        query::query_manager::QueryManagerMsg,
     },
     api::query::WrappedQuery,
     bench_entities::{
@@ -30,15 +26,16 @@ use myko_rs::{
     },
     event::{MEvent, MEventType},
     item::Eventable,
-    server::MykoServerCtx,
+    prelude::AnyItem,
+    query::Query,
+    server::{ManagerRefs, MykoServer, MykoServerArgs},
 };
-use ractor::{Actor, ActorRef};
 use std::{pin::Pin, sync::Arc, task::Poll, time::Duration};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 // =============================================================================
-// SignalMap to Stream adapter (copied from internal code)
+// SignalMap to Stream adapter
 // =============================================================================
 
 struct SignalMapStream<S> {
@@ -57,109 +54,42 @@ impl<S: SignalMap + Unpin> Stream for SignalMapStream<S> {
 }
 
 // =============================================================================
-// Benchmark Harness
+// Benchmark Harness (simplified using MykoServer)
 // =============================================================================
 
 struct BenchHarness {
     #[allow(dead_code)]
-    server: ActorRef<ServerMsg>,
-    event_manager: ActorRef<EventManagerMsg>,
-    query_manager: ActorRef<QueryManagerMsg>,
-    #[allow(dead_code)]
-    command_manager: ActorRef<CommandManagerMsg>,
-    #[allow(dead_code)]
-    ctx: Arc<MykoServerCtx>,
+    server: Arc<MykoServer>,
+    managers: ManagerRefs,
 }
 
 impl BenchHarness {
     async fn new() -> Self {
-        let ctx = Arc::new(MykoServerCtx {
-            host_id: Uuid::new_v4(),
-        });
-
-        // Spawn a minimal server for message routing
-        let (server, _) = Actor::spawn(
-            None,
-            Server,
-            ServerArgs {
-                bind_addr: "127.0.0.1".to_string(),
-                bind_path: "/".to_string(),
-                bind_port: 0,
-                kafka_config: KafkaSharedConfig {
-                    bootstrap_servers: vec![],
-                },
-                public_host_address: "127.0.0.1".to_string(),
-            },
-        )
+        // Create server with no Kafka (in-memory mode)
+        let server = MykoServer::init(MykoServerArgs {
+            bind_addr: "127.0.0.1".to_string(),
+            bind_path: "/".to_string(),
+            bind_port: 0, // Don't actually bind
+            kafka_config: None, // In-memory mode
+            public_host_address: "127.0.0.1".to_string(),
+        })
         .await
-        .expect("Failed to spawn server");
+        .expect("Failed to create MykoServer");
 
-        // Spawn event manager
-        let (event_manager, _) = Actor::spawn(
-            None,
-            EventManager,
-            EventManagerArgs {
-                server: server.clone(),
-                ctx: ctx.clone(),
-            },
-        )
-        .await
-        .expect("Failed to spawn event manager");
+        // Register benchmark entities
+        BenchItem::register(&server).expect("Failed to register BenchItem");
+        GetBenchItemsByCategory::register(&server).expect("Failed to register GetBenchItemsByCategory");
 
-        // Spawn query manager
-        let (query_manager, _) = Actor::spawn(
-            None,
-            QueryManager,
-            QueryManagerArgs {
-                ctx: ctx.clone(),
-                server: server.clone(),
-                event_manager: event_manager.clone(),
-            },
-        )
-        .await
-        .expect("Failed to spawn query manager");
+        // Get manager refs for direct access
+        let managers = server.get_managers().await.expect("Failed to get managers");
 
-        // Spawn report manager
-        let (report_manager, _) = Actor::spawn(
-            None,
-            ReportManager,
-            ReportManagerArgs {
-                ctx: ctx.clone(),
-                query_manager: query_manager.clone(),
-            },
-        )
-        .await
-        .expect("Failed to spawn report manager");
-
-        // Spawn command manager
-        let (command_manager, _) = Actor::spawn(
-            None,
-            CommandManager,
-            CommandManagerArgs {
-                ctx: ctx.clone(),
-                event_manager: event_manager.clone(),
-                query_manager: query_manager.clone(),
-                report_manager: report_manager.clone(),
-            },
-        )
-        .await
-        .expect("Failed to spawn command manager");
-
-        // Register BenchItem entity and its queries using the macro-generated register methods
-        BenchItem::register_with_managers(&event_manager, &query_manager)
-            .await
-            .expect("Failed to register BenchItem");
+        // Initialize (in-memory mode signals caught up immediately)
+        server.init_modules().expect("Failed to init");
 
         // Small delay to let actors initialize
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-        Self {
-            server,
-            event_manager,
-            query_manager,
-            command_manager,
-            ctx,
-        }
+        Self { server, managers }
     }
 
     /// Populate with N items across categories
@@ -181,14 +111,15 @@ impl BenchHarness {
         tokio::time::sleep(Duration::from_millis(50 + (count as u64 / 100))).await;
     }
 
-    /// Emit a single SET event using the macro-generated MEvent::from_item
+    /// Emit a single SET event
     async fn emit_set(&self, item: &BenchItem) {
         let event = MEvent::from_item(item, MEventType::SET, Uuid::new_v4().to_string());
 
         // Use the optimized path with pre-parsed item
-        let parsed_item: Arc<dyn myko_rs::parsers::item::AnyItem> = Arc::new(item.clone());
+        let parsed_item: Arc<dyn AnyItem> = Arc::new(item.clone());
 
-        self.event_manager
+        self.managers
+            .event_manager
             .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
                 event,
                 persist: PersistEvent::NoPersist,
@@ -199,7 +130,7 @@ impl BenchHarness {
 
     /// Start a query and get initial result count
     async fn start_query(&self, query: WrappedQuery) -> usize {
-        let signal = ractor::call!(self.query_manager, QueryManagerMsg::StartQuery, query)
+        let signal = ractor::call!(self.managers.query_manager, QueryManagerMsg::StartQuery, query)
             .expect("Failed to start query");
 
         let mut stream = SignalMapStream { signal };
@@ -209,67 +140,6 @@ impl BenchHarness {
             }
         }
         0
-    }
-}
-
-/// Helper trait for registering entities without a full MykoServer
-trait RegisterWithManagers: Eventable {
-    async fn register_with_managers(
-        event_manager: &ActorRef<EventManagerMsg>,
-        query_manager: &ActorRef<QueryManagerMsg>,
-    ) -> Result<(), anyhow::Error>;
-}
-
-impl RegisterWithManagers for BenchItem {
-    async fn register_with_managers(
-        event_manager: &ActorRef<EventManagerMsg>,
-        query_manager: &ActorRef<QueryManagerMsg>,
-    ) -> Result<(), anyhow::Error> {
-        use myko_rs::actors::query::query_manager::RegisterQueryData;
-        use myko_rs::parsers::item::{CapturedItemParser, MykoItemParser};
-        use myko_rs::parsers::query::{CapturedQueryParser, MykoQueryParser};
-        use myko_rs::query::QueryHandlerCtxAny;
-
-        // Register entity parser
-        let parser: Arc<dyn MykoItemParser> = Arc::new(CapturedItemParser::<BenchItem>::new());
-        event_manager.send_message(EventManagerMsg::RegisterRepo("BenchItem".into(), parser))?;
-
-        // Register GetAllBenchItems query
-        let closure: Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync> =
-            Arc::new(|_ctx| true);
-        let parser: Arc<dyn MykoQueryParser> =
-            Arc::new(CapturedQueryParser::<GetAllBenchItems>::new());
-        query_manager.send_message(QueryManagerMsg::RegisterQuery(RegisterQueryData {
-            query_id: "GetAllBenchItems".into(),
-            query_item_type: "BenchItem".into(),
-            closure,
-            parser,
-        }))?;
-
-        // Register GetBenchItemsByCategory query
-        use std::any::Any;
-        let closure: Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync> = Arc::new(|ctx| {
-            let item_any: Arc<dyn Any + Send + Sync> = ctx.item;
-            let query_any: Arc<dyn Any + Send + Sync> = ctx.query;
-
-            let item = item_any.downcast::<BenchItem>();
-            let query = query_any.downcast::<GetBenchItemsByCategory>();
-
-            match (item, query) {
-                (Ok(item), Ok(query)) => item.category == query.category,
-                _ => false,
-            }
-        });
-        let parser: Arc<dyn MykoQueryParser> =
-            Arc::new(CapturedQueryParser::<GetBenchItemsByCategory>::new());
-        query_manager.send_message(QueryManagerMsg::RegisterQuery(RegisterQueryData {
-            query_id: "GetBenchItemsByCategory".into(),
-            query_item_type: "BenchItem".into(),
-            closure,
-            parser,
-        }))?;
-
-        Ok(())
     }
 }
 
@@ -397,17 +267,15 @@ fn latency_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("latency");
     group.sample_size(100);
 
-    // Pre-setup for latency benchmark - measure event emission time
+    // Pre-setup for latency benchmark
     let harness = rt.block_on(async {
         let harness = BenchHarness::new().await;
-        harness
-            .populate(100, &["cat-a", "cat-b", "cat-c"])
-            .await;
+        harness.populate(100, &["cat-a", "cat-b", "cat-c"]).await;
         harness
     });
     let harness = Arc::new(harness);
 
-    // Measure event emission latency (send_message is sync, but we measure the full path)
+    // Measure event emission latency
     let h = harness.clone();
     group.bench_function("event_emit", move |b| {
         let harness = h.clone();
@@ -426,12 +294,10 @@ fn latency_benchmarks(c: &mut Criterion) {
         });
     });
 
-    // Measure query start latency (creating subscription)
+    // Measure query start latency
     let harness = rt.block_on(async {
         let harness = BenchHarness::new().await;
-        harness
-            .populate(100, &["cat-a", "cat-b", "cat-c"])
-            .await;
+        harness.populate(100, &["cat-a", "cat-b", "cat-c"]).await;
         harness
     });
     let harness = Arc::new(harness);
@@ -448,9 +314,12 @@ fn latency_benchmarks(c: &mut Criterion) {
                     query_id: "GetAllBenchItems".into(),
                     query_item_type: "BenchItem".into(),
                 };
-                let _signal =
-                    ractor::call!(harness.query_manager, QueryManagerMsg::StartQuery, wrapped)
-                        .expect("Failed to start query");
+                let _signal = ractor::call!(
+                    harness.managers.query_manager,
+                    QueryManagerMsg::StartQuery,
+                    wrapped
+                )
+                .expect("Failed to start query");
             }
         });
     });
