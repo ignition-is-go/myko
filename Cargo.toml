@@ -47,4 +47,5 @@ members = [
   "apps/execs/natnet",
   "apps/execs/reaper",
   "apps/execs/novastar",
+  "apps/execs/crestron",
 ]
