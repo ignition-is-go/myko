@@ -17,3 +17,14 @@ pub mod prelude;
 pub mod type_gen;
 pub use inventory::submit;
 pub use ts_rs::TS;
+
+/// Helper macro for submitting message event registrations
+#[macro_export]
+macro_rules! submit_message_event {
+    ($variant:ident, $event:expr) => {
+        inventory::submit!($crate::message::MessageEventRegistration {
+            variant_name: stringify!($variant),
+            event_value: $event,
+        });
+    };
+}

@@ -20,5 +20,4 @@ members = [
   "libs/rs-macros",
   "libs/opencv",
   "libs/asset-store/core", "apps/server_rs", "libs/autosocket",
-  "libs/myko/ts"
 ]

@@ -591,6 +591,63 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+/// Derive macro that extracts serde rename values from enum variants
+/// and generates MessageEventRegistration inventory submissions.
+///
+/// # Usage
+/// ```ignore
+/// #[derive(MessageEvents)]
+/// #[serde(tag = "event", content = "data")]
+/// pub enum MykoMessage<Commands> {
+///     #[serde(rename = "ws:m:query")]
+///     Query(WrappedQuery),
+///     // ...
+/// }
+/// ```
+#[proc_macro_derive(MessageEvents)]
+pub fn derive_message_events(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let variants = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => panic!("MessageEvents can only be derived on enums"),
+    };
+
+    let registrations = variants.iter().filter_map(|variant| {
+        let variant_name = &variant.ident;
+        let variant_name_str = variant_name.to_string();
+
+        // Find the #[serde(rename = "...")] attribute
+        for attr in &variant.attrs {
+            if attr.path().is_ident("serde") {
+                if let Ok(nested) = attr.parse_args::<syn::Meta>() {
+                    if let syn::Meta::NameValue(nv) = nested {
+                        if nv.path.is_ident("rename") {
+                            if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) = &nv.value {
+                                let event_value = lit_str.value();
+                                // Use inventory directly since we can't reference myko_rs from within myko_rs
+                                return Some(quote! {
+                                    inventory::submit!(crate::message::MessageEventRegistration {
+                                        variant_name: #variant_name_str,
+                                        event_value: #event_value,
+                                    });
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    let expanded = quote! {
+        #(#registrations)*
+    };
+
+    TokenStream::from(expanded)
+}
+
 #[proc_macro_attribute]
 pub fn myko_command(_attr: TokenStream, input: TokenStream) -> TokenStream {
     // No attribute args for now. The struct name is the commandId.
