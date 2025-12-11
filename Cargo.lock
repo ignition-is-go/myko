@@ -5121,10 +5121,12 @@ name = "myko-rs"
 version = "3.0.0-canary.809"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "autosocket",
  "chrono",
  "dprint-plugin-typescript",
+ "futures 0.3.31",
  "futures-signals",
  "futures-util",
  "inventory",
@@ -7428,6 +7430,7 @@ version = "3.0.0-canary.809"
 dependencies = [
  "anyhow",
  "async-stream",
+ "futures 0.3.31",
  "js-sys",
  "log 0.4.29",
  "myko-macros",

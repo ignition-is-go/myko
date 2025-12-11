@@ -7,6 +7,7 @@ use crate::{
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
         query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
+        report::report_manager::{ReportManager, ReportManagerArgs, ReportManagerMsg},
         ws::websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
     },
     event::{MEvent, MEventType},
@@ -25,6 +26,7 @@ pub struct ServerState {
     web_socket_server: ActorRef<WebSocketServerMsg>,
     message_handler: ActorRef<MessageHandlerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
+    report_manager: ActorRef<ReportManagerMsg>,
     ctx: Arc<MykoServerCtx>,
     args: ServerArgs,
 }
@@ -45,6 +47,7 @@ pub enum ServerMsg {
     WebSocketServerMsg(WebSocketServerMsg),
     MessageHandlerMsg(MessageHandlerMsg),
     QueryManagerMsg(QueryManagerMsg),
+    ReportManagerMsg(ReportManagerMsg),
 }
 
 impl Actor for Server {
@@ -96,12 +99,30 @@ impl Actor for Server {
             }
         };
 
+        let report_manager = match Actor::spawn(
+            None,
+            ReportManager,
+            ReportManagerArgs {
+                ctx: ctx.clone(),
+                query_manager: query_manager.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn ReportManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
         let message_handler = match Actor::spawn(
             None,
             MessageHandler,
             MessageHandlerArgs {
                 event_manager: event_manager.clone(),
                 query_manager: query_manager.clone(),
+                report_manager: report_manager.clone(),
                 server: myself.clone(),
             },
         )
@@ -136,6 +157,7 @@ impl Actor for Server {
             web_socket_server,
             message_handler,
             query_manager,
+            report_manager,
             ctx,
             args,
         })
@@ -166,6 +188,11 @@ impl Actor for Server {
             ServerMsg::QueryManagerMsg(msg) => {
                 if let Err(err) = state.query_manager.send_message(msg) {
                     error!("Failed to send message to QueryManager: {}", err);
+                };
+            }
+            ServerMsg::ReportManagerMsg(msg) => {
+                if let Err(err) = state.report_manager.send_message(msg) {
+                    error!("Failed to send message to ReportManager: {}", err);
                 };
             }
             ServerMsg::Start => {
