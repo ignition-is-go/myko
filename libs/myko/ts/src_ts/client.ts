@@ -4,15 +4,15 @@
  * This replaces the NAPI-based Rust client for browser compatibility.
  */
 
-import type {
-  MEvent,
-  QueryResponse,
-  QueryReturn,
-  ReportResponse,
-  ReportReturn,
-  WrappedItem,
-  WrappedQuery,
-  WrappedReport,
+import {
+  MykoEvent,
+  type MEvent,
+  type MykoMessage,
+  type QueryReturn,
+  type ReportReturn,
+  type WrappedItem,
+  type WrappedQuery,
+  type WrappedReport,
 } from '@myko/rs'
 import {
   filter,
@@ -25,30 +25,6 @@ import {
   Subject,
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
-
-// WebSocket message types
-const MQUERY_EVENT = 'ws:m:query'
-const MQUERY_RESPONSE_EVENT = 'ws:m:query-response'
-const MQUERY_CANCEL = 'ws:m:query-cancel'
-const MREPORT_EVENT = 'ws:m:report'
-const MREPORT_RESPONSE_EVENT = 'ws:m:report-response'
-const MREPORT_CANCEL = 'ws:m:report-cancel'
-const MEVENT_EVENT = 'ws:m:event'
-
-type WSMQueryResponse = {
-  event: typeof MQUERY_RESPONSE_EVENT
-  data: QueryResponse
-}
-
-type WSMReportResponse = {
-  event: typeof MREPORT_RESPONSE_EVENT
-  data: ReportResponse
-}
-
-type WSMessage =
-  | WSMQueryResponse
-  | WSMReportResponse
-  | { event: string; data: unknown }
 
 /** Connection status enum */
 export enum ConnectionStatus {
@@ -63,6 +39,16 @@ export type QueryResult<Q> = Q extends QueryReturn<infer R> ? R : unknown[]
 /** Extract result type from a report factory */
 export type ReportResult<R> = R extends ReportReturn<infer T> ? T : unknown
 
+// Message type aliases from MykoMessage discriminated union
+type QueryResponseMessage = Extract<
+  MykoMessage<unknown>,
+  { event: typeof MykoEvent.QueryResponse }
+>
+type ReportResponseMessage = Extract<
+  MykoMessage<unknown>,
+  { event: typeof MykoEvent.ReportResponse }
+>
+
 /**
  * MykoClient - Pure TypeScript reactive client for Myko servers
  */
@@ -73,15 +59,15 @@ export class MykoClient {
   private shouldReconnect = true
 
   private connectionStatusSubject = new ReplaySubject<ConnectionStatus>(1)
-  private queryResponses = new Subject<WSMQueryResponse>()
-  private reportResponses = new Subject<WSMReportResponse>()
+  private queryResponses = new Subject<QueryResponseMessage>()
+  private reportResponses = new Subject<ReportResponseMessage>()
 
   // Track active subscriptions for reconnection
   private activeQueries = new Map<string, WrappedQuery>()
   private activeReports = new Map<string, WrappedReport>()
 
   // Message queue for when not connected
-  private messageQueue: unknown[] = []
+  private messageQueue: MykoMessage<unknown>[] = []
 
   constructor() {
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
@@ -150,7 +136,7 @@ export class MykoClient {
     this.activeQueries.set(tx, wrappedQuery)
 
     // Send immediately if connected
-    this.send({ event: MQUERY_EVENT, data: wrappedQuery })
+    this.send({ event: MykoEvent.Query, data: wrappedQuery })
 
     return this.queryResponses.pipe(
       filter((r) => r.data.tx === tx),
@@ -183,7 +169,7 @@ export class MykoClient {
 
       finalize(() => {
         this.activeQueries.delete(tx)
-        this.send({ event: MQUERY_CANCEL, tx })
+        this.send({ event: MykoEvent.QueryCancel, data: { tx } })
       }),
     )
   }
@@ -206,7 +192,7 @@ export class MykoClient {
     this.activeReports.set(tx, wrappedReport)
 
     // Send immediately if connected
-    this.send({ event: MREPORT_EVENT, data: wrappedReport })
+    this.send({ event: MykoEvent.Report, data: wrappedReport })
 
     return this.reportResponses.pipe(
       filter((r) => r.data.tx === tx),
@@ -217,14 +203,14 @@ export class MykoClient {
 
       finalize(() => {
         this.activeReports.delete(tx)
-        this.send({ event: MREPORT_CANCEL, tx })
+        this.send({ event: MykoEvent.ReportCancel, data: { tx } })
       }),
     )
   }
 
   /** Send an event to the server */
   sendEvent(event: MEvent): void {
-    this.send({ event: MEVENT_EVENT, data: event })
+    this.send({ event: MykoEvent.Event, data: event })
   }
 
   /** Disconnect from the server */
@@ -295,14 +281,14 @@ export class MykoClient {
     if (typeof data !== 'string') return
 
     try {
-      const message = JSON.parse(data) as WSMessage
+      const message = JSON.parse(data) as MykoMessage<unknown>
 
       switch (message.event) {
-        case MQUERY_RESPONSE_EVENT:
-          this.queryResponses.next(message as WSMQueryResponse)
+        case MykoEvent.QueryResponse:
+          this.queryResponses.next(message)
           break
-        case MREPORT_RESPONSE_EVENT:
-          this.reportResponses.next(message as WSMReportResponse)
+        case MykoEvent.ReportResponse:
+          this.reportResponses.next(message)
           break
       }
     } catch {
@@ -310,7 +296,7 @@ export class MykoClient {
     }
   }
 
-  private send(message: unknown): void {
+  private send(message: MykoMessage<unknown>): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
     } else {
@@ -329,12 +315,12 @@ export class MykoClient {
   private resendSubscriptions(): void {
     // Resend all active queries
     for (const wrappedQuery of this.activeQueries.values()) {
-      this.send({ event: MQUERY_EVENT, data: wrappedQuery })
+      this.send({ event: MykoEvent.Query, data: wrappedQuery })
     }
 
     // Resend all active reports
     for (const wrappedReport of this.activeReports.values()) {
-      this.send({ event: MREPORT_EVENT, data: wrappedReport })
+      this.send({ event: MykoEvent.Report, data: wrappedReport })
     }
   }
 }
