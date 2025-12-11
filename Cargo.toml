@@ -48,4 +48,6 @@ members = [
   "apps/execs/reaper",
   "apps/execs/novastar",
   "apps/execs/crestron",
+  "apps/execs/yamaha",
+  "apps/execs/digico",
 ]
