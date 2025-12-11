@@ -84,7 +84,7 @@ impl Actor for MessageHandler {
                         let sig =
                             ractor::call!(state.query_manager, QueryManagerMsg::StartQuery, query)?;
 
-                        let mut sequence = 0 as u64;
+                        let mut sequence = 0_u64;
 
                         let server_ref = state.server.clone();
 
@@ -101,22 +101,22 @@ impl Actor for MessageHandler {
                                         .iter()
                                         .cloned()
                                         .map(|item| {
-                                            let wrapped = WrappedItem {
+
+                                            WrappedItem {
                                                 item,
                                                 item_type: item_type_clone.clone(),
-                                            };
-                                            wrapped
+                                            }
                                         })
                                         .collect::<Vec<_>>();
                                     QueryResponse {
-                                        sequence: sequence.clone(),
+                                        sequence,
                                         deletes: vec![],
                                         upserts,
                                         tx: "faketx".into(),
                                     }
                                 }
-                                futures_signals::signal_map::MapDiff::Insert { key, value }
-                                | futures_signals::signal_map::MapDiff::Update { key, value } => {
+                                futures_signals::signal_map::MapDiff::Insert { key: _, value }
+                                | futures_signals::signal_map::MapDiff::Update { key: _, value } => {
                                     let upserts = vec![WrappedItem {
                                         item: value.to_value(),
                                         item_type: item_type_clone.clone(),
@@ -128,7 +128,7 @@ impl Actor for MessageHandler {
                                         deletes: vec![],
                                         upserts,
                                         tx: "faketx".into(),
-                                        sequence: sequence.clone(),
+                                        sequence,
                                     }
                                 }
 
@@ -141,7 +141,7 @@ impl Actor for MessageHandler {
                                         deletes,
                                         upserts: vec![],
                                         tx: "faketx".into(),
-                                        sequence: sequence.clone(),
+                                        sequence,
                                     }
                                 }
                                 futures_signals::signal_map::MapDiff::Clear {} => {
@@ -151,7 +151,7 @@ impl Actor for MessageHandler {
                                         deletes: vec![],
                                         upserts: vec![],
                                         tx: "faketx".into(),
-                                        sequence: sequence.clone(),
+                                        sequence,
                                     }
                                 }
                             };

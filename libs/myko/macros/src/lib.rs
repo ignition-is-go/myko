@@ -53,7 +53,7 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 ///
 /// `pub hash: Arc<str>`
 ///
-///	Derives:
+/// Derives:
 ///
 /// `Partial, PartialEq, Clone, Serialize, Deserialize, Debug`
 ///
