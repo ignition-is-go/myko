@@ -7,6 +7,7 @@ mod message_events;
 mod partial_matches;
 mod query;
 mod report;
+mod saga;
 
 #[proc_macro_derive(PartialMatches)]
 pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
@@ -128,4 +129,42 @@ pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn derive_message_events(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
     message_events::derive_message_events_impl(input).into()
+}
+
+/// Generates a saga with registration for runtime discovery.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[myko_saga]
+/// pub struct CleanupSaga;
+///
+/// impl myko_rs::saga::Saga for CleanupSaga {
+///     type State = ();
+///
+///     fn name() -> &'static str {
+///         "CleanupSaga"
+///     }
+///
+///     fn build(
+///         events: myko_rs::saga::EventStream,
+///         ctx: std::sync::Arc<myko_rs::saga::SagaContext>,
+///     ) -> myko_rs::saga::CommandStream {
+///         use myko_rs::saga::SagaStreamExt;
+///         use futures::StreamExt;
+///
+///         Box::pin(events
+///             .of_item_type("LogEntry")
+///             .of_change_type(myko_rs::event::MEventType::SET)
+///             .filter_map(|event| async move {
+///                 // Saga logic here
+///                 None
+///             }))
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn myko_saga(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    saga::myko_saga_impl(input).into()
 }
