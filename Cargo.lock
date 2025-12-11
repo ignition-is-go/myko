@@ -7414,6 +7414,7 @@ version = "3.0.0-canary.809"
 dependencies = [
  "anyhow",
  "async-stream",
+ "async-trait",
  "futures 0.3.31",
  "js-sys",
  "log 0.4.29",
