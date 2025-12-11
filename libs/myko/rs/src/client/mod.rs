@@ -616,4 +616,83 @@ impl MykoClient {
             Err(e) => e.to_string(),
         }
     }
+
+    /// Watch a report with a callback that receives the report result as Value.
+    ///
+    /// - `report`: WrappedReport with tx already set.
+    /// - `callback`: Called with report result whenever it updates.
+    ///
+    /// Returns a cancel function that stops the report when called.
+    pub fn watch_report_callback<F>(
+        &self,
+        report: crate::report::WrappedReport,
+        callback: F,
+    ) -> impl Fn() + Send + Sync
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        let client = self.clone();
+        let callback = Arc::new(callback);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_clone = cancelled.clone();
+
+        // Extract tx from the report
+        let tx: Arc<str> = report
+            .report
+            .get("tx")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into();
+
+        let report_id = report.report_id.clone();
+
+        tokio::spawn(async move {
+            // Get message stream
+            let mut stream = client.get_messages();
+
+            // Wait for connection and send report
+            loop {
+                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                let status = client.get_connection_status().await;
+                if let ConnectionStatus::Connected(_) = status {
+                    let msg = MykoMessage::<()>::Report(report.clone());
+                    let msg_str = serde_json::to_string(&msg).expect("Could not serialize report");
+                    let msg = Message::Text(msg_str);
+                    if let Err(e) = client.socket.outgoing.send(msg) {
+                        error!("Failed to send report: {}", e);
+                    } else {
+                        debug!("Watching report {}", report_id);
+                    }
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+
+            // Process responses
+            while let Some(msg) = stream.next().await {
+                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+
+                let Ok(myko_msg) = serde_json::from_value::<MykoMessage<Value>>(msg) else {
+                    continue;
+                };
+
+                if let MykoMessage::ReportResponse(response) = myko_msg {
+                    if response.tx != *tx {
+                        continue;
+                    }
+
+                    callback(response.response);
+                }
+            }
+        });
+
+        // Return cancel function
+        move || {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }

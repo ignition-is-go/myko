@@ -5,7 +5,7 @@
  * All business logic lives in the Rust client (myko-rs).
  */
 
-import type { ConnectionStatus, QueryReturn } from '@myko/rs'
+import type { ConnectionStatus, QueryReturn, ReportReturn } from '@myko/rs'
 import { Observable, ReplaySubject, share } from 'rxjs'
 import { MykoClient as NativeMykoClient } from '../index'
 
@@ -14,6 +14,9 @@ export * from '@myko/rs'
 
 /** Extract result type from a query factory */
 type QueryResult<Q> = Q extends QueryReturn<infer R> ? R : unknown[]
+
+/** Extract result type from a report factory */
+type ReportResult<R> = R extends ReportReturn<infer T> ? T : unknown
 
 /**
  * MykoClient - Reactive client for Myko servers
@@ -78,5 +81,28 @@ export class MykoClient {
     if (result) {
       throw new Error(result)
     }
+  }
+
+  /**
+   * Watch a report and receive live updates
+   * @param reportFactory Report from reports.* (e.g., reports.CountAllTargets({}))
+   */
+  watchReport<R extends ReportReturn<unknown>>(
+    reportFactory: R,
+  ): Observable<ReportResult<R>> {
+    const reportJson = JSON.stringify(reportFactory)
+
+    return new Observable<ReportResult<R>>((subscriber) => {
+      this.client.watchReport(
+        reportJson,
+        (err: Error | null, resultJson: string) => {
+          if (err) {
+            subscriber.error(err)
+          } else {
+            subscriber.next(JSON.parse(resultJson) as ReportResult<R>)
+          }
+        },
+      )
+    }).pipe(share({ connector: () => new ReplaySubject(1) }))
   }
 }

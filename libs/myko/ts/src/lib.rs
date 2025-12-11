@@ -6,6 +6,7 @@
 
 use myko_rs::api::query::WrappedQuery;
 use myko_rs::client::MykoClient;
+use myko_rs::report::WrappedReport;
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::{bindgen_prelude::*, JsFunction, Result};
 use serde_json::Value;
@@ -95,6 +96,38 @@ impl JsMykoClient {
     #[napi]
     pub async fn send_event(&self, event_json: String) -> String {
         self.client.send_event_json(event_json).await
+    }
+
+    /// Watch a report and receive updates via callback.
+    ///
+    /// - `report_json`: JSON with `report`, `reportId`. tx added here.
+    /// - `callback`: Receives JSON value of report result on each update.
+    #[napi(ts_args_type = "reportJson: string, callback: (err: null | Error, resultJson: string) => void")]
+    pub fn watch_report(&self, report_json: String, callback: JsFunction) -> Result<()> {
+        let tsfn: ThreadsafeFunction<String, ErrorStrategy::CalleeHandled> =
+            callback.create_threadsafe_function(0, |ctx| Ok(vec![ctx.value]))?;
+
+        // Parse and add tx at the NAPI boundary
+        let mut report_value: Value = serde_json::from_str(&report_json)
+            .map_err(|e| Error::from_reason(format!("Failed to parse report: {}", e)))?;
+
+        let tx = uuid::Uuid::new_v4().to_string();
+
+        if let Some(report_obj) = report_value.get_mut("report").and_then(|r| r.as_object_mut()) {
+            report_obj.insert("tx".to_string(), Value::String(tx));
+        }
+
+        let wrapped: WrappedReport = serde_json::from_value(report_value)
+            .map_err(|e| Error::from_reason(format!("Failed to parse wrapped report: {}", e)))?;
+
+        // Call Rust client - it returns Value, we serialize to JSON here
+        let _ = self.client.watch_report_callback(wrapped, move |result| {
+            if let Ok(json) = serde_json::to_string(&result) {
+                tsfn.call(Ok(json), ThreadsafeFunctionCallMode::Blocking);
+            }
+        });
+
+        Ok(())
     }
 }
 
