@@ -8112,6 +8112,7 @@ dependencies = [
  "anyhow",
  "dotenv",
  "env_logger",
+ "log 0.4.29",
  "myko-rs",
  "rship-entities",
  "tokio",
