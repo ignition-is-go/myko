@@ -56,4 +56,5 @@ members = [
   "apps/execs/weather",
   "apps/execs/pangolin",
   "apps/execs/ndi",
+  "apps/execs/dante",
 ]
