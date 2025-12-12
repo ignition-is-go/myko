@@ -2,18 +2,18 @@
 //!
 //! The SagaManager:
 //! - Discovers registered sagas via inventory
-//! - Spawns a SagaRunner for each saga
-//! - Broadcasts events to all saga runners
-//! - Manages saga lifecycle
+//! - Spawns a SagaRunner for each saga (runners subscribe to EventBus directly)
+//! - Manages saga lifecycle (start/stop)
+//!
+//! Note: Event broadcasting is handled by EventBus for high throughput.
 
 use std::sync::Arc;
 
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 
 use crate::{
     actors::command::command_manager::CommandManagerMsg,
-    event::MEvent,
     saga::{SagaContext, SagaRegistration},
 };
 
@@ -23,13 +23,12 @@ use super::saga_runner::{SagaRunner, SagaRunnerArgs, SagaRunnerMsg};
 pub struct SagaManager;
 
 /// Messages for SagaManager actor.
+/// Note: Events are broadcast via EventBus, not through this actor.
 pub enum SagaManagerMsg {
     /// Start all registered sagas (called after AllInitComplete)
     StartAll,
     /// Stop all sagas
     StopAll,
-    /// Broadcast an event to all saga runners
-    BroadcastEvent(MEvent),
 }
 
 /// State for SagaManager actor.
@@ -132,29 +131,6 @@ impl Actor for SagaManager {
 
                 state.saga_runners.clear();
                 state.started = false;
-
-                Ok(())
-            }
-
-            SagaManagerMsg::BroadcastEvent(event) => {
-                if !state.started {
-                    // Sagas not started yet, ignore events
-                    return Ok(());
-                }
-
-                debug!(
-                    "Broadcasting event to {} saga runners: {} {:?}",
-                    state.saga_runners.len(),
-                    event.item_type(),
-                    event.change_type()
-                );
-
-                // Broadcast event to all saga runners
-                for runner in &state.saga_runners {
-                    if let Err(e) = runner.send_message(SagaRunnerMsg::Event(event.clone())) {
-                        error!("Failed to send event to saga runner: {}", e);
-                    }
-                }
 
                 Ok(())
             }

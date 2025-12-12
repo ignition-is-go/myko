@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::{
     actors::{
         command::command_manager::CommandManagerMsg,
-        event::event_manager::EventManagerMsg,
+        event::{event_manager::EventManagerMsg, EventBus},
         query::query_manager::QueryManagerMsg,
     },
     command::{CommandError, CommandId, WrappedCommand},
@@ -38,6 +38,7 @@ impl std::error::Error for SagaError {}
 /// - Execute commands
 /// - Query current state
 /// - Access server context (host_id, etc.)
+/// - Subscribe to events via the event bus
 #[derive(Clone)]
 pub struct SagaContext {
     /// Server context with host ID
@@ -51,6 +52,9 @@ pub struct SagaContext {
 
     /// Reference to the query manager actor
     pub query_manager: ActorRef<QueryManagerMsg>,
+
+    /// Shared event bus for high-throughput event distribution
+    pub event_bus: EventBus,
 }
 
 impl SagaContext {
@@ -60,12 +64,14 @@ impl SagaContext {
         event_manager: ActorRef<EventManagerMsg>,
         command_manager: ActorRef<CommandManagerMsg>,
         query_manager: ActorRef<QueryManagerMsg>,
+        event_bus: EventBus,
     ) -> Self {
         Self {
             server_ctx,
             event_manager,
             command_manager,
             query_manager,
+            event_bus,
         }
     }
 

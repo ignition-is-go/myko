@@ -1,9 +1,9 @@
-use super::common::ProcessEventData;
+use super::{common::ProcessEventData, EventBus};
 use crate::{
     actors::{
         event::event_handler::{EventHandler, EventHandlerArgs, EventHandlerMessage},
         kafka::common::KafkaSharedConfig,
-        saga::SagaManagerMsg,
+        query::query_manager::QueryManagerMsg,
         server::ServerMsg,
     },
     parsers::item::MykoItemParser,
@@ -22,9 +22,13 @@ pub struct EventManagerState {
     handlers: HashMap<Arc<str>, ActorRef<EventHandlerMessage>>,
     left_to_init: HashSet<Arc<str>>,
     server: ActorRef<ServerMsg>,
+    /// Direct reference to QueryManager for EventHandlers
+    query_manager: ActorRef<QueryManagerMsg>,
+    /// Reference back to ourselves for EventHandlers to report init completion
+    myself: ActorRef<EventManagerMsg>,
     ctx: Arc<MykoServerCtx>,
-    /// Optional reference to SagaManager for event broadcast
-    saga_manager: Option<ActorRef<SagaManagerMsg>>,
+    /// Event bus for high-throughput broadcast to sagas (optional for backwards compat)
+    event_bus: Option<EventBus>,
 }
 
 pub enum EventManagerMsg {
@@ -34,12 +38,14 @@ pub enum EventManagerMsg {
     RepoInitComplete(Arc<str>),
     ProcessEvent(ProcessEventData), //bool for persist
     GetEventHandler(Arc<str>, RpcReplyPort<ActorRef<EventHandlerMessage>>),
-    /// Set the SagaManager reference for event broadcasting
-    SetSagaManager(ActorRef<SagaManagerMsg>),
+    /// Set the EventBus for high-throughput event broadcasting to sagas
+    SetEventBus(EventBus),
 }
 
 pub struct EventManagerArgs {
     pub server: ActorRef<ServerMsg>,
+    /// Direct reference to QueryManager for EventHandlers
+    pub query_manager: ActorRef<QueryManagerMsg>,
     pub ctx: Arc<MykoServerCtx>,
 }
 
@@ -52,7 +58,7 @@ impl Actor for EventManager {
 
     async fn pre_start(
         &self,
-        _myself: ractor::ActorRef<Self::Msg>,
+        myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         debug!("Creating RepoManager");
@@ -60,8 +66,10 @@ impl Actor for EventManager {
             left_to_init: HashSet::new(),
             handlers: HashMap::new(),
             server: args.server,
+            query_manager: args.query_manager,
+            myself,
             ctx: args.ctx,
-            saga_manager: None,
+            event_bus: None,
         })
     }
 
@@ -85,8 +93,10 @@ impl Actor for EventManager {
                     None,
                     EventHandler,
                     EventHandlerArgs {
-                        server: state.server.clone(),
                         entity_name: entity_name.clone(),
+                        // Direct references - bypasses Server routing
+                        event_manager: state.myself.clone(),
+                        query_manager: state.query_manager.clone(),
                         ctx: state.ctx.clone(),
                         parser,
                     },
@@ -141,12 +151,9 @@ impl Actor for EventManager {
             EventManagerMsg::ProcessEvent(data) => {
                 let entity_type: Arc<str> = data.event.item_type().into();
 
-                // Broadcast event to SagaManager if configured
-                if let Some(saga_manager) = &state.saga_manager
-                    && let Err(e) = saga_manager
-                        .send_message(SagaManagerMsg::BroadcastEvent(data.event.clone()))
-                {
-                    error!("Failed to broadcast event to SagaManager: {}", e);
+                // Publish event to EventBus for saga subscribers (high-throughput path)
+                if let Some(event_bus) = &state.event_bus {
+                    event_bus.publish(data.event.clone());
                 }
 
                 let handler = state.handlers.get(&entity_type);
@@ -176,9 +183,9 @@ impl Actor for EventManager {
                 };
                 Ok(())
             }
-            EventManagerMsg::SetSagaManager(saga_manager) => {
-                info!("EventManager: SagaManager reference set");
-                state.saga_manager = Some(saga_manager);
+            EventManagerMsg::SetEventBus(event_bus) => {
+                info!("EventManager: EventBus configured for saga broadcast");
+                state.event_bus = Some(event_bus);
                 Ok(())
             }
         }

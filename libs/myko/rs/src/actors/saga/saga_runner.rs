@@ -1,8 +1,8 @@
 //! Saga runner actor that processes events through a saga's pipeline.
 //!
 //! Each saga gets its own SagaRunner actor that:
-//! - Receives events from SagaManager
-//! - Processes them through the saga's stream pipeline
+//! - Subscribes to the EventBus for high-throughput event reception
+//! - Processes events through the saga's stream pipeline
 //! - Forwards resulting commands to CommandManager
 
 use std::sync::Arc;
@@ -10,11 +10,9 @@ use std::sync::Arc;
 use futures::StreamExt;
 use log::{debug, error, info};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use tokio::sync::mpsc;
 
 use crate::{
     actors::command::command_manager::CommandManagerMsg,
-    event::MEvent,
     saga::{AnySaga, SagaContext},
 };
 
@@ -23,18 +21,15 @@ pub struct SagaRunner;
 
 /// Messages for SagaRunner actor.
 pub enum SagaRunnerMsg {
-    /// Process an event through the saga pipeline
-    Event(MEvent),
-    /// Stop the saga runner
+    /// Stop the saga runner (events come via EventBus subscription, not messages)
     Stop,
 }
 
 /// State for SagaRunner actor.
 pub struct SagaRunnerState {
     saga_name: &'static str,
-    event_tx: mpsc::UnboundedSender<MEvent>,
-    // The stream processing task handle
-    _task_handle: tokio::task::JoinHandle<()>,
+    // Task handle for the combined event+command pipeline
+    _pipeline_task_handle: tokio::task::JoinHandle<()>,
 }
 
 /// Arguments for spawning a SagaRunner.
@@ -57,19 +52,16 @@ impl Actor for SagaRunner {
         let saga_name = args.saga.name();
         info!("Starting saga runner: {}", saga_name);
 
-        // Create a channel for events
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<MEvent>();
+        // Subscribe to EventBus and convert directly to a stream (no intermediate channel)
+        let event_stream = args.ctx.event_bus.subscribe().into_stream();
 
-        // Convert receiver to a stream
-        let event_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx);
-
-        // Build the saga's event processing pipeline
+        // Build the saga's event processing pipeline directly from the EventBus stream
         let command_stream = args.saga.build_boxed(Box::pin(event_stream), args.ctx.clone());
 
-        // Spawn a task to process commands from the pipeline
+        // Spawn a single task to process the entire pipeline
         let command_manager = args.command_manager.clone();
         let saga_name_for_task = saga_name;
-        let task_handle = tokio::spawn(async move {
+        let pipeline_task_handle = tokio::spawn(async move {
             futures::pin_mut!(command_stream);
 
             while let Some(command) = command_stream.next().await {
@@ -103,13 +95,12 @@ impl Actor for SagaRunner {
                 }
             }
 
-            info!("Saga {} command stream ended", saga_name_for_task);
+            info!("Saga {} pipeline ended", saga_name_for_task);
         });
 
         Ok(SagaRunnerState {
             saga_name,
-            event_tx,
-            _task_handle: task_handle,
+            _pipeline_task_handle: pipeline_task_handle,
         })
     }
 
@@ -120,13 +111,6 @@ impl Actor for SagaRunner {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            SagaRunnerMsg::Event(event) => {
-                // Forward event to the saga's processing stream
-                if let Err(e) = state.event_tx.send(event) {
-                    error!("Saga {} failed to forward event: {}", state.saga_name, e);
-                }
-                Ok(())
-            }
             SagaRunnerMsg::Stop => {
                 info!("Stopping saga runner: {}", state.saga_name);
                 myself.stop(Some("Stop requested".to_string()));

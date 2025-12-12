@@ -8,7 +8,6 @@ use crate::{
             producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
         },
         query::{common::ProcessUpdateData, query_manager::QueryManagerMsg},
-        server::ServerMsg,
     },
     parsers::item::MykoItemParser,
     prelude::AnyItem,
@@ -22,7 +21,10 @@ pub struct EventHandler;
 
 pub struct EventHandlerState {
     entity_name: Arc<str>,
-    server: ActorRef<ServerMsg>,
+    /// Direct reference to EventManager for init callbacks
+    event_manager: ActorRef<EventManagerMsg>,
+    /// Direct reference to QueryManager for update routing (bypasses Server bottleneck)
+    query_manager: ActorRef<QueryManagerMsg>,
     ctx: Arc<MykoServerCtx>,
     kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
     parser: Arc<dyn MykoItemParser>,
@@ -39,7 +41,10 @@ pub enum EventHandlerMessage {
 
 pub struct EventHandlerArgs {
     pub entity_name: Arc<str>,
-    pub server: ActorRef<ServerMsg>,
+    /// Direct reference to EventManager for init callbacks
+    pub event_manager: ActorRef<EventManagerMsg>,
+    /// Direct reference to QueryManager for update routing
+    pub query_manager: ActorRef<QueryManagerMsg>,
     pub ctx: Arc<MykoServerCtx>,
     pub parser: Arc<dyn MykoItemParser>,
 }
@@ -58,7 +63,8 @@ impl Actor for EventHandler {
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         let EventHandlerArgs {
             entity_name,
-            server,
+            event_manager,
+            query_manager,
             ctx,
             parser,
         } = args;
@@ -67,7 +73,8 @@ impl Actor for EventHandler {
 
         Ok(EventHandlerState {
             entity_name,
-            server,
+            event_manager,
+            query_manager,
             ctx,
             parser,
             kafka_producer: None,
@@ -128,9 +135,10 @@ impl Actor for EventHandler {
                     state.entity_name,
                     state.store.len()
                 );
-                match state.server.send_message(ServerMsg::RepoManagerMsg(
+                // Direct send to EventManager (bypasses Server actor)
+                match state.event_manager.send_message(
                     EventManagerMsg::RepoInitComplete(state.entity_name.clone()),
-                )) {
+                ) {
                     Ok(_) => Ok(()),
                     Err(err) => {
                         error!("Failed to notify repo manager: {}", err);
@@ -186,24 +194,26 @@ impl Actor for EventHandler {
                     crate::event::MEventType::DEL => {
                         state.store.remove(&item.id());
 
-                        if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
+                        // Direct send to QueryManager (bypasses Server actor)
+                        if let Err(err) = state.query_manager.send_message(
                             QueryManagerMsg::ProcessUpdate(
                                 ProcessUpdateData::Del(item.id().clone()),
                                 state.entity_name.clone(),
                             ),
-                        )) {
+                        ) {
                             error!("Failed to send message to query manager: {}", err);
                         };
                     }
                     crate::event::MEventType::SET => {
                         state.store.insert(item.id(), item.clone());
 
-                        if let Err(err) = state.server.send_message(ServerMsg::QueryManagerMsg(
+                        // Direct send to QueryManager (bypasses Server actor)
+                        if let Err(err) = state.query_manager.send_message(
                             QueryManagerMsg::ProcessUpdate(
                                 ProcessUpdateData::Set(item.clone()),
                                 state.entity_name.clone(),
                             ),
-                        )) {
+                        ) {
                             error!("Failed to send message to query manager: {}", err);
                         };
                     }
