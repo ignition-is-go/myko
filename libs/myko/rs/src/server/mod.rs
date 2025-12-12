@@ -66,7 +66,6 @@ impl MykoServer {
                 crate::entities::server::GetPeerServers::register(&server)?;
 
                 crate::entities::client::Client::register(&server)?;
-                crate::entities::client::GetClientsByServerId::register(&server)?;
 
                 Ok(server)
             }
