@@ -58,4 +58,7 @@ members = [
   "apps/execs/ndi",
   "apps/execs/dante",
   "apps/execs/nmos",
+  "apps/execs/network-discovery",
+  # Node Agent
+  "apps/node-agent",
 ]
