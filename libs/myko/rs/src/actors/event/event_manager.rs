@@ -1,3 +1,19 @@
+//! Central event coordinator for the Myko actor system.
+//!
+//! The [`EventManager`] is responsible for:
+//! - Managing [`EventHandler`] actors, one per entity type
+//! - Routing incoming events to the appropriate handler
+//! - Tracking initialization progress across all entity types
+//! - Broadcasting events to the [`EventBus`] for saga subscribers
+//! - Providing internal query interface for [`RelationshipManager`](crate::actors::relationship::RelationshipManager)
+//!
+//! # Performance Note
+//!
+//! The EventManager implements the "direct actor reference" optimization pattern.
+//! Rather than routing all messages through the Server actor (creating a bottleneck),
+//! EventHandlers hold direct references to QueryManager for update notifications.
+//! See `libs/myko/rs/OPTIMIZATION.md` for details.
+
 use super::{common::ProcessEventData, EventBus};
 use crate::{
     actors::{
@@ -16,48 +32,97 @@ use std::{
     sync::Arc,
 };
 
+/// Central coordinator for entity event handling.
+///
+/// EventManager is spawned once per server and manages the lifecycle of all
+/// [`EventHandler`] actors. It handles:
+///
+/// - **Registration**: Spawns EventHandlers when entity types are registered via
+///   [`RegisterRepo`](EventManagerMsg::RegisterRepo)
+/// - **Routing**: Dispatches events to the correct handler based on `item_type`
+/// - **Initialization**: Tracks which handlers have caught up with Kafka and signals
+///   when all are ready
+/// - **Internal queries**: Provides query interface used by RelationshipManager
+///   for cascade operations
 pub struct EventManager;
 
+/// Internal state for the EventManager actor.
 pub struct EventManagerState {
+    /// Map of entity type name → EventHandler actor reference
     handlers: HashMap<Arc<str>, ActorRef<EventHandlerMessage>>,
+    /// Entity types that haven't finished Kafka catchup yet
     left_to_init: HashSet<Arc<str>>,
+    /// Reference to Server for signaling AllInitComplete
     server: ActorRef<ServerMsg>,
-    /// Direct reference to QueryManager for EventHandlers
+    /// Direct reference to QueryManager for EventHandlers (bypasses Server routing)
     query_manager: ActorRef<QueryManagerMsg>,
     /// Reference back to ourselves for EventHandlers to report init completion
     myself: ActorRef<EventManagerMsg>,
+    /// Server context with host ID and config
     ctx: Arc<MykoServerCtx>,
     /// Event bus for high-throughput broadcast to sagas (optional for backwards compat)
     event_bus: Option<EventBus>,
 }
 
+/// Messages handled by the EventManager actor.
 pub enum EventManagerMsg {
+    /// Register a new entity type with its parser.
+    /// Spawns an [`EventHandler`] actor for this type.
     RegisterRepo(Arc<str>, Arc<dyn MykoItemParser>),
-    /// Initialize all repositories. When kafka_config is None, runs in-memory only.
+
+    /// Initialize all registered handlers.
+    /// When `kafka_config` is `Some`, handlers spawn Kafka consumers to replay history.
+    /// When `None`, handlers run in-memory only and signal ready immediately.
     InitAll(Option<KafkaSharedConfig>),
+
+    /// Notification from an EventHandler that it has caught up with Kafka.
+    /// Once all handlers report, EventManager sends `AllInitComplete` to Server.
     RepoInitComplete(Arc<str>),
-    ProcessEvent(ProcessEventData), //bool for persist
+
+    /// Process an incoming event (SET or DEL).
+    /// Routes to appropriate EventHandler and publishes to EventBus.
+    ProcessEvent(ProcessEventData),
+
+    /// Get an EventHandler actor reference by entity type name.
+    /// Used by CommandManager to look up handlers for commands.
     GetEventHandler(Arc<str>, RpcReplyPort<ActorRef<EventHandlerMessage>>),
-    /// Set the EventBus for high-throughput event broadcasting to sagas
+
+    /// Configure the EventBus for high-throughput event broadcasting to sagas.
+    /// Must be called before events are processed if saga support is needed.
     SetEventBus(EventBus),
-    /// Get counts for all entity types
+
+    /// Get entity counts for all registered types. Used for diagnostics.
     GetAllCounts(RpcReplyPort<Vec<(Arc<str>, usize)>>),
 
-    // Internal query messages for RelationshipManager (tuple variants for ractor::call!)
-    /// Query items of a specific entity type by field value (entity_type, field, value, reply)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Internal query messages for RelationshipManager cascade operations.
+    // These use tuple variants for compatibility with ractor::call!() macro.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Query items by field equality. (entity_type, field_name, value, reply)
+    /// Used by RelationshipManager to find children by foreign key.
     QueryByField(Arc<str>, String, String, RpcReplyPort<Vec<serde_json::Value>>),
-    /// Query items where an array field contains a value (entity_type, field, value, reply)
+
+    /// Query items where array field contains value. (entity_type, field_name, value, reply)
+    /// Used by RelationshipManager to find parents that own a child.
     QueryArrayContains(Arc<str>, String, String, RpcReplyPort<Vec<serde_json::Value>>),
-    /// Get items by IDs from a specific entity type (entity_type, ids, reply)
+
+    /// Get items by their IDs. (entity_type, ids, reply)
+    /// Used by RelationshipManager to fetch items for cascade deletion.
     GetByIds(Arc<str>, Vec<Arc<str>>, RpcReplyPort<Vec<serde_json::Value>>),
-    /// Get all items of a specific entity type (entity_type, reply)
+
+    /// Get all items of an entity type. (entity_type, reply)
+    /// Used by RelationshipManager for orphan cleanup on startup.
     GetAllItems(Arc<str>, RpcReplyPort<Vec<serde_json::Value>>),
 }
 
+/// Arguments for spawning the EventManager actor.
 pub struct EventManagerArgs {
+    /// Reference to Server actor for lifecycle notifications
     pub server: ActorRef<ServerMsg>,
-    /// Direct reference to QueryManager for EventHandlers
+    /// Direct reference to QueryManager for EventHandlers (performance optimization)
     pub query_manager: ActorRef<QueryManagerMsg>,
+    /// Server context with host ID and configuration
     pub ctx: Arc<MykoServerCtx>,
 }
 

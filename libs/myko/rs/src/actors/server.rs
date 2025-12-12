@@ -1,3 +1,43 @@
+//! Server actor - the root coordinator for a Myko server instance.
+//!
+//! The [`Server`] actor is responsible for:
+//! - Spawning and wiring all manager actors during startup
+//! - Coordinating the initialization sequence
+//! - Managing server lifecycle events (start, init, shutdown)
+//!
+//! # Actor Hierarchy
+//!
+//! ```text
+//! Server (lifecycle coordinator)
+//!    ├── WebSocketServer (accepts connections)
+//!    ├── QueryManager (reactive query execution)
+//!    ├── EventManager (event routing + persistence)
+//!    │      └── EventHandler (per entity type)
+//!    ├── ReportManager (computed reports)
+//!    ├── CommandManager (command execution)
+//!    ├── SagaManager (event stream processors)
+//!    ├── RelationshipManager (cascade operations)
+//!    └── MessageHandler (WebSocket message routing)
+//! ```
+//!
+//! # Startup Sequence
+//!
+//! 1. **`pre_start`**: Spawn all actors with direct references (no Server routing)
+//! 2. **`Start`**: Log startup message
+//! 3. **`InitAllModules`**: Trigger Kafka consumers to replay history
+//! 4. **`AllInitComplete`** (from EventManager when all handlers ready):
+//!    - Clean up stale Server records with same address:port
+//!    - Publish this server's `Server` entity
+//!    - Establish relationships (orphan cleanup, ensure-for)
+//!    - Start all registered sagas
+//!    - Start WebSocket server to accept connections
+//!
+//! # Performance Note
+//!
+//! The Server actor is **lifecycle-only** - it does not route messages between
+//! other actors. All managers hold direct [`ActorRef`] to each other, eliminating
+//! the Server as a bottleneck. See `libs/myko/rs/OPTIMIZATION.md` for details.
+
 use crate::{
     actors::{
         command::command_manager::{CommandManager, CommandManagerArgs, CommandManagerMsg},
@@ -26,36 +66,70 @@ use ractor::{Actor, ActorProcessingErr, ActorRef};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Root coordinator actor for a Myko server instance.
+///
+/// This is the top-level actor that bootstraps all other actors and manages
+/// the server lifecycle. It is intentionally minimal to avoid being a bottleneck.
 pub struct Server;
 
+/// Internal state for the Server actor.
+///
+/// Holds references to all spawned child actors.
 pub struct ServerState {
+    /// EventManager for event routing and persistence
     repo_manager: ActorRef<EventManagerMsg>,
+    /// WebSocket server for accepting client connections
     web_socket_server: ActorRef<WebSocketServerMsg>,
+    /// MessageHandler for routing WebSocket messages to appropriate managers
     message_handler: ActorRef<MessageHandlerMsg>,
+    /// QueryManager for reactive query execution
     query_manager: ActorRef<QueryManagerMsg>,
+    /// ReportManager for computed reports
     report_manager: ActorRef<ReportManagerMsg>,
+    /// CommandManager for command execution
     command_manager: ActorRef<CommandManagerMsg>,
+    /// SagaManager for event stream processors
     saga_manager: ActorRef<SagaManagerMsg>,
+    /// RelationshipManager for cascade operations
     relationship_manager: ActorRef<RelationshipManagerMsg>,
+    /// Server context with host ID
     ctx: Arc<MykoServerCtx>,
+    /// Original arguments for reference during lifecycle events
     args: ServerArgs,
 }
 
+/// Arguments for spawning the Server actor.
 pub struct ServerArgs {
+    /// Address to bind to (e.g., "0.0.0.0")
     pub bind_addr: String,
+    /// Path for WebSocket endpoint (e.g., "/myko")
     pub bind_path: String,
+    /// Port to listen on
     pub bind_port: u16,
-    /// Kafka configuration. When None, the server runs in-memory only (useful for testing/benchmarks).
+    /// Kafka configuration. When `None`, runs in-memory only (useful for testing/benchmarks).
     pub kafka_config: Option<KafkaSharedConfig>,
+    /// Public address for this server (used in Server entity and peer discovery)
     pub public_host_address: String,
 }
 
-/// Server messages - lifecycle only (routing eliminated for performance)
+/// Server messages - lifecycle only.
+///
+/// **Note**: Message routing between actors has been eliminated for performance.
+/// All managers hold direct [`ActorRef`] to each other.
 pub enum ServerMsg {
+    /// Start the server (currently just logs startup)
     Start,
+
+    /// Initialize all modules - triggers Kafka consumers to replay history
     InitAllModules,
+
+    /// All EventHandlers have caught up with Kafka.
+    /// Triggers: stale server cleanup, Server entity publish, relationship establishment,
+    /// saga startup, and WebSocket server start.
     AllInitComplete,
-    /// Get direct references to manager actors (useful for benchmarking/testing)
+
+    /// Get direct references to manager actors.
+    /// Useful for benchmarking and testing.
     #[allow(clippy::type_complexity)]
     GetManagers(
         ractor::RpcReplyPort<(

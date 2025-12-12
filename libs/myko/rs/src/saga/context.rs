@@ -1,4 +1,27 @@
 //! Saga context for accessing server resources during event processing.
+//!
+//! The [`SagaContext`] provides sagas with access to:
+//! - **Command execution**: Run commands from within a saga via [`SagaContext::execute_command`]
+//! - **Event bus**: Subscribe to or publish events
+//! - **Server identity**: Access the host ID for filtering events
+//!
+//! # Example
+//!
+//! ```ignore
+//! async fn handle_event(event: MEvent, ctx: &SagaContext) -> Option<WrappedCommand> {
+//!     // Check if this event originated from our server
+//!     if event.source_id.as_deref() != Some(&ctx.host_id().to_string()) {
+//!         return None;
+//!     }
+//!
+//!     // Execute a command in response
+//!     ctx.execute_command(&NotifyStatusChange { id: event.item_id() })
+//!         .await
+//!         .ok();
+//!
+//!     None
+//! }
+//! ```
 
 use std::sync::Arc;
 
@@ -17,10 +40,17 @@ use crate::{
     server::MykoServerCtx,
 };
 
-/// Error type for saga operations
+/// Error type for saga operations.
+///
+/// Wraps errors that occur during saga execution, including:
+/// - Command serialization failures
+/// - Command execution failures
+/// - Actor communication errors
 #[derive(Debug, Clone)]
 pub struct SagaError {
+    /// Identifier of the saga that encountered the error
     pub saga_id: String,
+    /// Human-readable error message
     pub message: String,
 }
 

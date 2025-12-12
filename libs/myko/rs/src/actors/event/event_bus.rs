@@ -1,7 +1,30 @@
 //! Shared event broadcast channel for high-throughput event distribution.
 //!
 //! This module provides a lock-free broadcast channel for distributing events
-//! to multiple subscribers (saga runners, etc.) concurrently.
+//! to multiple subscribers (sagas, relationship manager, etc.) concurrently.
+//!
+//! # Architecture
+//!
+//! The [`EventBus`] decouples event producers from consumers:
+//!
+//! ```text
+//! EventManager ──► EventBus ──┬──► SagaRunner 1
+//!                             ├──► SagaRunner 2
+//!                             └──► RelationshipManager
+//! ```
+//!
+//! # Performance
+//!
+//! - **Lock-free**: Uses `tokio::sync::broadcast` for concurrent access without locks
+//! - **Arc sharing**: Events are wrapped in `Arc` and cloned by reference
+//! - **Skip on empty**: Publishing is no-op when no subscribers exist
+//! - **Lag handling**: Slow subscribers are skipped rather than blocking producers
+//!
+//! # Capacity
+//!
+//! Default capacity is 16384 events. When the buffer is full, new events
+//! overwrite old ones. Subscribers that fall behind will receive a `Lagged`
+//! error and can choose to skip missed events.
 
 use std::pin::Pin;
 use std::sync::Arc;

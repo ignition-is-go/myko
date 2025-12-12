@@ -1,3 +1,28 @@
+//! Per-entity-type event handler actor.
+//!
+//! Each [`EventHandler`] is responsible for a single entity type and:
+//! - Maintains in-memory state of all entities of that type
+//! - Persists events to Kafka (when configured)
+//! - Parses incoming JSON into strongly-typed items
+//! - Notifies [`QueryManager`](crate::actors::query::query_manager::QueryManager) of updates
+//! - Provides internal query interface for [`RelationshipManager`](crate::actors::relationship::RelationshipManager)
+//!
+//! # Initialization
+//!
+//! When [`Init`](EventHandlerMessage::Init) is called:
+//!
+//! 1. **With Kafka**: Spawns a [`KafkaConsumer`](crate::actors::kafka::consumer::KafkaConsumer)
+//!    and [`KafkaProducer`](crate::actors::kafka::producer::KafkaProducer). The consumer replays
+//!    all events from the topic to rebuild in-memory state.
+//!
+//! 2. **In-memory only**: Immediately signals [`PersisterCaughtUp`](EventHandlerMessage::PersisterCaughtUp)
+//!    since there's no history to replay.
+//!
+//! # Performance
+//!
+//! EventHandler sends updates directly to QueryManager (bypassing Server) for lower latency.
+//! This is part of the "direct actor reference" optimization pattern.
+
 use super::common::ProcessEventData;
 use crate::{
     actors::{
@@ -17,56 +42,102 @@ use log::{debug, error, trace};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Actor that handles events for a single entity type.
+///
+/// One EventHandler exists per registered entity type (e.g., `Target`, `Scene`, `Binding`).
+/// It maintains the authoritative in-memory state for that type and handles persistence.
 pub struct EventHandler;
 
+/// Internal state for an EventHandler actor.
 pub struct EventHandlerState {
+    /// Name of the entity type this handler manages (e.g., "Target")
     entity_name: Arc<str>,
-    /// Direct reference to EventManager for init callbacks
+    /// Direct reference to EventManager for reporting init completion
     event_manager: ActorRef<EventManagerMsg>,
     /// Direct reference to QueryManager for update routing (bypasses Server bottleneck)
     query_manager: ActorRef<QueryManagerMsg>,
+    /// Server context with host ID
     ctx: Arc<MykoServerCtx>,
+    /// Kafka producer for persisting events (None in in-memory mode)
     kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
+    /// Parser for converting JSON to strongly-typed items
     parser: Arc<dyn MykoItemParser>,
+    /// In-memory store of all items, keyed by ID
     store: BTreeMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
+/// Messages handled by the EventHandler actor.
 pub enum EventHandlerMessage {
-    ProcessEvent(ProcessEventData), // bool for persist
-    /// Initialize the handler. When kafka_config is None, runs in-memory only and signals caught up immediately.
+    /// Process an incoming event (SET or DEL).
+    /// Updates in-memory store, persists to Kafka if configured, notifies QueryManager.
+    ProcessEvent(ProcessEventData),
+
+    /// Initialize the handler with optional Kafka configuration.
+    /// - `Some(config)`: Spawn Kafka consumer/producer, replay history
+    /// - `None`: In-memory only, signal ready immediately
     Init(Option<KafkaSharedConfig>),
+
+    /// Notification from KafkaConsumer that it has caught up with the topic.
+    /// Triggers [`RepoInitComplete`](crate::actors::event::event_manager::EventManagerMsg::RepoInitComplete)
+    /// notification to EventManager.
     PersisterCaughtUp,
+
+    /// Get the full in-memory state for this entity type.
+    /// Used for debugging and diagnostics.
     GetState(RpcReplyPort<BTreeMap<Arc<str>, Arc<dyn AnyItem>>>),
 
-    // Internal query messages for RelationshipManager
-    /// Query items by field value (field name is JSON camelCase)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Internal query messages for RelationshipManager cascade operations.
+    // Field names are JSON camelCase (e.g., "scopeId" not "scope_id").
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Query items by field equality. Used by RelationshipManager to find
+    /// children with a specific foreign key value.
     QueryByField {
+        /// JSON field name (camelCase)
         field: String,
+        /// Value to match against
         value: String,
+        /// Reply channel for matching items
         reply: RpcReplyPort<Vec<serde_json::Value>>,
     },
-    /// Query items where an array field contains a specific value
+
+    /// Query items where an array field contains a specific value.
+    /// Used by RelationshipManager to find parents that own a specific child.
     QueryArrayContains {
+        /// JSON field name (camelCase) pointing to an array
         field: String,
+        /// Value to search for in the array
         value: String,
+        /// Reply channel for matching items
         reply: RpcReplyPort<Vec<serde_json::Value>>,
     },
-    /// Get items by their IDs
+
+    /// Get items by their IDs.
+    /// Used by RelationshipManager for batch fetches during cascade operations.
     GetByIds {
+        /// List of item IDs to fetch
         ids: Vec<Arc<str>>,
+        /// Reply channel for found items
         reply: RpcReplyPort<Vec<serde_json::Value>>,
     },
-    /// Get all items as JSON values
+
+    /// Get all items of this entity type as JSON.
+    /// Used by RelationshipManager for orphan cleanup on startup.
     GetAllItems(RpcReplyPort<Vec<serde_json::Value>>),
 }
 
+/// Arguments for spawning an EventHandler actor.
 pub struct EventHandlerArgs {
+    /// Name of the entity type to handle
     pub entity_name: Arc<str>,
     /// Direct reference to EventManager for init callbacks
     pub event_manager: ActorRef<EventManagerMsg>,
-    /// Direct reference to QueryManager for update routing
+    /// Direct reference to QueryManager for update routing (performance optimization)
     pub query_manager: ActorRef<QueryManagerMsg>,
+    /// Server context with host ID and configuration
     pub ctx: Arc<MykoServerCtx>,
+    /// Parser for converting JSON to strongly-typed items
     pub parser: Arc<dyn MykoItemParser>,
 }
 

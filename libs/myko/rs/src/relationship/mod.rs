@@ -1,9 +1,63 @@
-//! Entity Relationship System
+//! Entity Relationship System for automatic cascade operations.
 //!
-//! Provides relationship cascades for Myko entities:
-//! - `BelongsTo`: Child has FK to parent. Parent DEL → cascade delete children
-//! - `OwnsMany`: Parent has array of child IDs. Parent DEL → delete children. Child DEL → update parent
-//! - `EnsureFor`: Auto-create entity for each dependency combination
+//! This module defines the relationship types that can be declared on entity fields
+//! using the `#[belongs_to]`, `#[owns_many]`, and `#[ensure_for]` attribute macros.
+//! Relationships are registered at compile time via [`inventory`] and processed
+//! by the [`RelationshipManager`](crate::actors::relationship::RelationshipManager).
+//!
+//! # Relationship Types
+//!
+//! | Type | Direction | On Parent DEL | On Child DEL |
+//! |------|-----------|---------------|--------------|
+//! | [`BelongsTo`](Relation::BelongsTo) | Child → Parent (FK) | Delete children | N/A |
+//! | [`OwnsMany`](Relation::OwnsMany) | Parent → Children (array) | Delete children | Update parent array |
+//! | [`EnsureFor`](Relation::EnsureFor) | Entity × Dependencies | N/A | N/A (on SET: ensure exists) |
+//!
+//! # Usage
+//!
+//! Relationships are declared using attribute macros on `#[myko_item]` entities:
+//!
+//! ```rust,ignore
+//! use myko_rs::prelude::*;
+//!
+//! // BelongsTo: Binding has FK to Scene
+//! #[myko_item]
+//! pub struct Binding {
+//!     #[belongs_to(Scene)]
+//!     pub scope_id: Arc<str>,
+//! }
+//!
+//! // OwnsMany: Scene owns array of BindingNode IDs
+//! #[myko_item]
+//! pub struct Scene {
+//!     pub name: String,
+//!     #[owns_many(BindingNode)]
+//!     pub node_ids: Vec<Arc<str>>,
+//! }
+//!
+//! // EnsureFor: Create one BundleStatus per Session×Bundle combination
+//! #[myko_item]
+//! #[ensure_for(Session, Bundle)]
+//! pub struct BundleStatus {
+//!     pub session_id: Arc<str>,
+//!     pub bundle_id: Arc<str>,
+//!     #[default_value(false)]
+//!     pub armed: bool,
+//! }
+//! ```
+//!
+//! # Registration
+//!
+//! The `#[myko_item]` macro automatically generates [`RelationRegistration`] entries
+//! that are collected via [`inventory`]. Use [`iter_relations`] to enumerate all
+//! registered relationships at runtime.
+//!
+//! # Orphan Cleanup
+//!
+//! On server startup, the [`RelationshipManager`](crate::actors::relationship::RelationshipManager)
+//! performs orphan cleanup:
+//! - **BelongsTo**: Delete children whose FK points to a non-existent parent
+//! - **OwnsMany**: Delete children not referenced in any parent's array
 
 use serde_json::Value;
 

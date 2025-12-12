@@ -1,9 +1,83 @@
-//! RelationshipManager actor for handling relationship cascades.
+//! RelationshipManager actor for handling entity relationship cascades.
 //!
-//! Subscribes to events and processes cascades based on registered relationships:
-//! - BelongsTo: When parent is deleted, cascade delete all children
-//! - OwnsMany: When parent is deleted, delete owned children; when child is deleted, update parent arrays
-//! - EnsureFor: When dependency entities are created, ensure derived entities exist
+//! This actor subscribes to the [`EventBus`](crate::actors::event::EventBus) and processes
+//! cascade operations based on relationships registered via the `#[belongs_to]`, `#[owns_many]`,
+//! and `#[ensure_for]` attribute macros.
+//!
+//! # Relationship Types
+//!
+//! ## BelongsTo (Foreign Key)
+//!
+//! A child entity has a foreign key pointing to a parent. When the parent is deleted,
+//! all children with matching foreign keys are cascade-deleted.
+//!
+//! ```rust,ignore
+//! #[myko_item]
+//! pub struct Binding {
+//!     #[belongs_to(Scene)]  // Binding.scope_id → Scene.id
+//!     pub scope_id: Arc<str>,
+//! }
+//! ```
+//!
+//! **Cascade behavior:**
+//! - `Scene` deleted → all `Binding` where `scope_id == scene.id` are deleted
+//! - Orphan cleanup on startup: delete `Binding` where `scope_id` points to non-existent `Scene`
+//!
+//! ## OwnsMany (Parent has array of child IDs)
+//!
+//! A parent entity owns an array of child IDs. Deleting the parent deletes all children.
+//! Deleting a child removes its ID from the parent's array.
+//!
+//! ```rust,ignore
+//! #[myko_item]
+//! pub struct Scene {
+//!     #[owns_many(BindingNode)]  // Scene.node_ids[] → BindingNode.id
+//!     pub node_ids: Vec<Arc<str>>,
+//! }
+//! ```
+//!
+//! **Cascade behavior:**
+//! - `Scene` deleted → all `BindingNode` in `node_ids` are deleted
+//! - `BindingNode` deleted → its ID is removed from parent `Scene.node_ids`
+//! - Orphan cleanup on startup: delete `BindingNode` not in any `Scene.node_ids`
+//!
+//! ## EnsureFor (Auto-create for combinations)
+//!
+//! Automatically create one entity for each combination of dependency entities.
+//! Used for cross-product derived entities like "one status per session per bundle".
+//!
+//! ```rust,ignore
+//! #[myko_item]
+//! #[ensure_for(Session, Bundle)]
+//! pub struct BundleStatus {
+//!     pub session_id: Arc<str>,
+//!     pub bundle_id: Arc<str>,
+//!     #[default_value(false)]
+//!     pub armed: bool,
+//! }
+//! ```
+//!
+//! **Cascade behavior:**
+//! - New `Session` or `Bundle` created → `BundleStatus` entities created for all combinations
+//! - On startup: create missing `BundleStatus` for all `Session × Bundle` combinations
+//!
+//! # Lifecycle
+//!
+//! 1. **Startup**: `RelationshipManager` is spawned and subscribes to `EventBus`
+//! 2. **Kafka catchup**: Wait for all events to be replayed from Kafka
+//! 3. **EstablishRelations**: Clean up orphans and initialize EnsureFor entities
+//! 4. **Runtime**: Process events and apply cascade logic
+//!
+//! # Event Filtering
+//!
+//! The manager only processes events that:
+//! - Originate from this server (`source_id == host_id`)
+//! - Don't have `prevent_relationship_updates` option set (prevents infinite loops)
+//!
+//! # Transaction Propagation
+//!
+//! All cascaded events share the same transaction ID (`tx`) as the triggering event,
+//! enabling traceability of related changes.
 
 use crate::{
     actors::event::{
@@ -23,9 +97,20 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Actor that handles entity relationship cascades.
+///
+/// The RelationshipManager discovers relationships via [`inventory`] at startup,
+/// builds lookup indexes for efficient cascade processing, and subscribes to
+/// the [`EventBus`](crate::actors::event::EventBus) to receive events.
+///
+/// See the [module documentation](self) for details on relationship types and behavior.
 pub struct RelationshipManager;
 
-/// State for the RelationshipManager actor
+/// Internal state for the RelationshipManager actor.
+///
+/// Contains lookup indexes built from [`RelationRegistration`] entries discovered
+/// via [`inventory`]. These indexes enable O(1) lookup of which cascades to apply
+/// for any given event.
 pub struct RelationshipManagerState {
     ctx: Arc<MykoServerCtx>,
     event_manager: ActorRef<EventManagerMsg>,
@@ -75,17 +160,34 @@ struct EnsureForLookup {
     make_default: fn() -> Value,
 }
 
+/// Messages for the RelationshipManager actor.
 pub enum RelationshipManagerMsg {
-    /// Process an event for potential cascades
+    /// Process an event for potential relationship cascades.
+    ///
+    /// The manager will check if the event triggers any BelongsTo, OwnsMany,
+    /// or EnsureFor cascades based on the event's item type and change type.
+    ///
+    /// Events are filtered by:
+    /// - `source_id`: Only events from this server are processed
+    /// - `prevent_relationship_updates`: Events with this flag are skipped
     ProcessEvent(MEvent),
 
-    /// Establish all relations on startup (after Kafka catchup)
-    /// This handles orphan cleanup and EnsureFor initialization
+    /// Establish all relations on startup (called after Kafka catchup).
+    ///
+    /// This performs:
+    /// 1. **BelongsTo orphan cleanup**: Delete children pointing to non-existent parents
+    /// 2. **OwnsMany orphan cleanup**: Delete children not referenced by any parent
+    /// 3. **EnsureFor initialization**: Create missing entities for all dependency combinations
+    ///
+    /// The reply port signals completion so the server can proceed with WebSocket setup.
     EstablishRelations(RpcReplyPort<()>),
 }
 
+/// Arguments for spawning the RelationshipManager actor.
 pub struct RelationshipManagerArgs {
+    /// Server context containing host ID for event filtering.
     pub ctx: Arc<MykoServerCtx>,
+    /// Reference to EventManager for publishing cascade events and querying entities.
     pub event_manager: ActorRef<EventManagerMsg>,
 }
 
