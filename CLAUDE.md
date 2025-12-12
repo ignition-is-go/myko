@@ -271,11 +271,14 @@ Heavy use of Observables for real-time data flow. Entity handlers and UI compone
 
 Asset Store and @myko/rs use `ractor` for concurrent processing with supervision trees. Key actors in @myko/rs:
 - `EventManager` / `EventHandler` - Event persistence and dispatch
-- `QueryManager` / `QueryRunner` - Reactive query execution
+- `QueryManager` / `QueryHandler` / `QueryRunner` - Reactive query execution
 - `ReportManager` / `ReportRunner` - Computed report handling
 - `CommandManager` - Command routing and execution
 - `WebSocketServer` / `WebSocketConnection` - Client connections
 - `KafkaProducer` / `KafkaConsumer` - Optional Kafka integration
+- `SagaManager` / `SagaRunner` - Event stream processors
+- `RelationshipManager` - Cascade operations (belongs-to, owns-many, ensure-for)
+- `PeerManager` - Peer discovery and federation
 
 ### Stateless Executors
 
@@ -839,12 +842,17 @@ getPeerToken() -> string
   - Stream operators: `of_item_type()`, `of_change_type()`, `pairwise()`, `scan()`
   - SagaContext with command execution access
   - Inventory-based saga registration
+- **Peer discovery and federation**: Multi-server clustering
+  - PeerManager actor with entity-based discovery via GetPeerServers
+  - ForwardQuery/ForwardCommand/ForwardReport for cross-server proxying
+  - Peer health tracking (latency, last_seen)
+  - Automatic connection/reconnection to discovered peers
 
 **Not Yet Implemented**:
 - Full-text search (tantivy integration)
 - Windback/snapshots
 - Authentication (Auth0/JWT validation)
-- Peer discovery and federation (PeerQuery/PeerCommand/PeerReport)
+- Event replication (ServerEventLog subscription for peer event sync)
 - RebalanceItem command
 - Most rship domain entities (need to be defined with `#[myko_item]`)
 
@@ -859,12 +867,12 @@ getPeerToken() -> string
 6. ✅ Kafka integration (optional)
 7. ✅ Relationship Cascades (belongs-to, owns-many, ensure-for)
 8. ✅ Saga pattern (stateful stream processors with EventBus)
-9. 📐 Full-text Search integration (tantivy) - DESIGNED
-10. 📐 Context propagation (tx, clientId, lineage, hostId) - DESIGNED
-11. 📐 Authentication (async-oidc-jwt-validator + peerSecret) - DESIGNED
-12. 📐 Windback/Snapshots (version-control approach) - DESIGNED
-13. 📐 Peer Discovery (entity-based via GetPeerServers) - DESIGNED
-14. 📐 Federation Handlers (PeerQuery/PeerCommand/PeerReport) - DESIGNED
+9. ✅ Peer Discovery (entity-based via GetPeerServers)
+10. ✅ Federation Handlers (ForwardQuery/ForwardCommand/ForwardReport)
+11. 📐 Full-text Search integration (tantivy) - DESIGNED
+12. 📐 Context propagation (tx, clientId, lineage, hostId) - DESIGNED
+13. 📐 Authentication (async-oidc-jwt-validator + peerSecret) - DESIGNED
+14. 📐 Windback/Snapshots (version-control approach) - DESIGNED
 15. 📐 Event Replication (ServerEventLog subscription) - DESIGNED
 
 **Application Layer** (separate from framework, e.g. rship):
@@ -1817,8 +1825,8 @@ pub struct PeerManager {
     /// Active peer connections
     peers: HashMap<Uuid, PeerConnection>,
 
-    /// Addresses we're trying to connect to (prevents duplicates)
-    connecting: HashSet<String>,
+    /// Server IDs we're currently connecting to (prevents duplicate connection attempts)
+    connecting: HashSet<Uuid>,
 
     /// Authentication service for peer tokens
     auth: Arc<dyn AuthService>,
@@ -2138,7 +2146,7 @@ impl<T: Item> Repository<T> {
 | Entity-based discovery | No external service discovery needed; servers self-announce via Server entities |
 | PeerManager actor | Centralizes peer connection lifecycle; easy to query peer state |
 | ServerEventLog streaming | Real-time event replication without polling |
-| Address deduplication | Prevents multiple connections to same server during startup race |
+| Server ID deduplication | Prevents duplicate connections to same server during startup race (keyed by ID, not address) |
 | Peer token auth | Cluster traffic uses shared secret, not JWT |
 | Delete stale on startup | Handles server restarts with same address:port |
 | from_peer event option | Prevents cascade loops; relationship handlers skip peer events |
