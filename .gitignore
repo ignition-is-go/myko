@@ -137,3 +137,6 @@ apps/link-ui/src-tauri/gen/*
 # Crush
 .crush/
 
+
+# Claude Code local settings
+.claude/settings.local.json
