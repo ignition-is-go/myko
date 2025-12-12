@@ -35,6 +35,8 @@ export type CommandError = {
 export type ReactiveQuery<T extends { id: string }> = {
 	/** Reactive map of items by ID */
 	readonly items: SvelteMap<string, T>;
+	/** Whether the query has received its first response */
+	readonly resolved: boolean;
 	/** Release this consumer's reference (unsubscribes when last consumer releases) */
 	release: () => void;
 };
@@ -50,6 +52,7 @@ export type ReactiveReport<T> = {
 /** Internal state for a shared query */
 type SharedQuery<T extends { id: string }> = {
 	items: SvelteMap<string, T>;
+	getResolved: () => boolean;
 	subscription: Subscription;
 	refCount: number;
 };
@@ -174,6 +177,7 @@ export class SvelteMykoClient {
 		if (!shared) {
 			// Create new shared query
 			const items = new SvelteMap<string, Item>();
+			let resolved = $state(false);
 
 			const subscription = this.client.watchQueryDiff(queryFactory).subscribe({
 				next: (diff: QueryDiff<Item>) => {
@@ -186,10 +190,11 @@ export class SvelteMykoClient {
 					for (const item of diff.upserts) {
 						items.set(item.id, item);
 					}
+					resolved = true;
 				}
 			});
 
-			shared = { items, subscription, refCount: 0 };
+			shared = { items, getResolved: () => resolved, subscription, refCount: 0 };
 			this.sharedQueries.set(cacheKey, shared as SharedQuery<{ id: string }>);
 		}
 
@@ -197,9 +202,13 @@ export class SvelteMykoClient {
 		shared.refCount++;
 
 		let released = false;
+		const getResolved = shared.getResolved;
 
 		return {
 			items: shared.items,
+			get resolved() {
+				return getResolved();
+			},
 			release: () => {
 				if (released) return;
 				released = true;
