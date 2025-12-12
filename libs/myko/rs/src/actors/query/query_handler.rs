@@ -50,6 +50,8 @@ pub enum QueryHandlerMsg {
         Arc<dyn AnyQuery>,
         RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
+    /// Cancel a query subscription by transaction ID
+    CancelQuery(Arc<str>),
 }
 
 impl Actor for QueryHandler {
@@ -164,6 +166,13 @@ impl Actor for QueryHandler {
                 });
 
                 reply.send(snapshot)?;
+            }
+            QueryHandlerMsg::CancelQuery(tx) => {
+                // Remove and stop the runner for this tx if we own it
+                if let Some(runner) = state.runners.remove(&tx) {
+                    debug!("Cancelling query runner for tx {}", tx);
+                    runner.stop(Some("Query cancelled by client".to_string()));
+                }
             }
         }
 

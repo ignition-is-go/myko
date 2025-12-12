@@ -254,13 +254,21 @@ impl Actor for MessageHandler {
                         Ok(())
                     }
                     MykoMessage::QueryCancel(cancel) => {
-                        trace!("Query cancelled: {}", cancel.tx);
-                        // TODO: Implement query cancellation in QueryManager
+                        debug!("Query cancel requested: {}", cancel.tx);
+                        if let Err(e) = state.query_manager.send_message(
+                            QueryManagerMsg::CancelQuery(cancel.tx.into())
+                        ) {
+                            error!("Failed to send cancel to QueryManager: {}", e);
+                        }
                         Ok(())
                     }
                     MykoMessage::ReportCancel(cancel) => {
-                        trace!("Report cancelled: {}", cancel.tx);
-                        // TODO: Implement report cancellation in ReportManager
+                        debug!("Report cancel requested: {}", cancel.tx);
+                        if let Err(e) = state.report_manager.send_message(
+                            ReportManagerMsg::StopReport(cancel.tx.into())
+                        ) {
+                            error!("Failed to send cancel to ReportManager: {}", e);
+                        }
                         Ok(())
                     }
                     MykoMessage::Command(wrapped_command) => {

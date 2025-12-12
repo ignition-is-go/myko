@@ -62,6 +62,8 @@ pub enum QueryManagerMsg {
         WrappedQuery,
         RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
+    /// Cancel an active query subscription by transaction ID
+    CancelQuery(Arc<str>),
     /// Set EventManager reference (breaks circular dependency at startup)
     SetEventManager(ActorRef<EventManagerMsg>),
 }
@@ -286,6 +288,18 @@ impl Actor for QueryManager {
                     error!("Failed to get query snapshot: {}", err);
                 };
 
+                Ok(())
+            }
+            QueryManagerMsg::CancelQuery(tx) => {
+                trace!("Cancelling query with tx {}", tx);
+                // Broadcast cancel to all handlers - they check if they own this tx
+                for handlers in state.handlers.values() {
+                    for handler in handlers.values() {
+                        if let Err(err) = handler.send_message(QueryHandlerMsg::CancelQuery(tx.clone())) {
+                            error!("Failed to send cancel to handler: {}", err);
+                        }
+                    }
+                }
                 Ok(())
             }
             QueryManagerMsg::SetEventManager(event_manager) => {
