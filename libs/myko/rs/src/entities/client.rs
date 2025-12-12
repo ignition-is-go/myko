@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 #[myko_item]
 pub struct Client {
-    server_id: Arc<str>,
+    pub server_id: Arc<str>,
 }
 
 #[myko_query(Client)]

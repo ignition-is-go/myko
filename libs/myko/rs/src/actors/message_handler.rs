@@ -9,6 +9,8 @@ use crate::{
     },
     api::query::QueryResponse,
     command::{CommandError, CommandResponse},
+    entities::client::Client,
+    event::{MEvent, MEventType},
     item::WrappedItem,
     message::MykoMessage,
     report::ReportResponse,
@@ -16,7 +18,7 @@ use crate::{
 use futures_signals::signal_map::SignalMapExt;
 use log::{debug, error, trace};
 use ractor::{Actor, ActorRef, cast};
-use std::sync::Arc;
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 pub struct MessageHandler;
 
@@ -36,6 +38,16 @@ pub struct MessageHandlerState {
     command_manager: ActorRef<CommandManagerMsg>,
     /// Direct reference to WebSocketServer (bypasses Server routing)
     ws_server: ActorRef<WebSocketServerMsg>,
+    /// Track active subscriptions per client for cleanup on disconnect
+    /// Maps client_id -> set of (subscription_type, tx)
+    client_subscriptions: HashMap<Arc<str>, HashSet<(SubscriptionType, Arc<str>)>>,
+}
+
+/// Type of subscription for tracking
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubscriptionType {
+    Query,
+    Report,
 }
 
 pub struct ProcessTextData {
@@ -45,6 +57,16 @@ pub struct ProcessTextData {
 
 pub enum MessageHandlerMsg {
     ProcessText(ProcessTextData),
+    /// Client connected - publish Client entity
+    ClientConnected {
+        client_id: Arc<str>,
+        server_id: Arc<str>,
+    },
+    /// Client disconnected - cancel all their subscriptions and delete Client entity
+    ClientDisconnected {
+        client_id: Arc<str>,
+        server_id: Arc<str>,
+    },
 }
 
 impl Actor for MessageHandler {
@@ -65,6 +87,7 @@ impl Actor for MessageHandler {
             report_manager: args.report_manager,
             command_manager: args.command_manager,
             ws_server: args.ws_server,
+            client_subscriptions: HashMap::new(),
         })
     }
 
@@ -107,6 +130,12 @@ impl Actor for MessageHandler {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .into();
+
+                        // Track subscription for cleanup on disconnect
+                        state.client_subscriptions
+                            .entry(client_id.clone())
+                            .or_default()
+                            .insert((SubscriptionType::Query, tx.clone()));
 
                         let sig =
                             ractor::call!(state.query_manager, QueryManagerMsg::StartQuery, query)?;
@@ -210,6 +239,12 @@ impl Actor for MessageHandler {
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .into();
+
+                        // Track subscription for cleanup on disconnect
+                        state.client_subscriptions
+                            .entry(client_id.clone())
+                            .or_default()
+                            .insert((SubscriptionType::Report, tx.clone()));
 
                         // Create channel for report outputs
                         let (output_tx, mut output_rx) =
@@ -337,6 +372,76 @@ impl Actor for MessageHandler {
                         Ok(())
                     }
                 }
+            }
+            MessageHandlerMsg::ClientConnected { client_id, server_id } => {
+                debug!("Client connected: {}", client_id);
+
+                // Publish Client entity
+                let client = Client {
+                    id: client_id.clone(),
+                    hash: uuid::Uuid::new_v4().to_string().into(),
+                    server_id,
+                };
+
+                let event = MEvent::from_item(&client, MEventType::SET, uuid::Uuid::new_v4().to_string());
+
+                if let Err(e) = state.event_manager.send_message(
+                    EventManagerMsg::ProcessEvent(ProcessEventData {
+                        event,
+                        persist: PersistEvent::NoPersist, // Client entities are ephemeral
+                        parsed_item: Some(Arc::new(client)),
+                    })
+                ) {
+                    error!("Failed to publish Client entity: {}", e);
+                }
+
+                Ok(())
+            }
+            MessageHandlerMsg::ClientDisconnected { client_id, server_id } => {
+                debug!("Client disconnected: {}, cancelling subscriptions", client_id);
+
+                // Cancel all subscriptions for this client
+                if let Some(subscriptions) = state.client_subscriptions.remove(&client_id) {
+                    for (sub_type, tx) in subscriptions {
+                        match sub_type {
+                            SubscriptionType::Query => {
+                                if let Err(e) = state.query_manager.send_message(
+                                    QueryManagerMsg::CancelQuery(tx.clone())
+                                ) {
+                                    error!("Failed to cancel query {}: {}", tx, e);
+                                }
+                            }
+                            SubscriptionType::Report => {
+                                if let Err(e) = state.report_manager.send_message(
+                                    ReportManagerMsg::StopReport(tx.clone())
+                                ) {
+                                    error!("Failed to cancel report {}: {}", tx, e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Delete Client entity
+                let client = Client {
+                    id: client_id.clone(),
+                    hash: "".into(), // Hash doesn't matter for DEL
+                    server_id,
+                };
+
+                let event = MEvent::from_item(&client, MEventType::DEL, uuid::Uuid::new_v4().to_string());
+
+                if let Err(e) = state.event_manager.send_message(
+                    EventManagerMsg::ProcessEvent(ProcessEventData {
+                        event,
+                        persist: PersistEvent::NoPersist,
+                        parsed_item: Some(Arc::new(client)),
+                    })
+                ) {
+                    error!("Failed to delete Client entity: {}", e);
+                }
+
+                Ok(())
             }
         }
     }

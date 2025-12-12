@@ -39,11 +39,13 @@ pub enum WebSocketServerMsg {
 pub struct WebSocketServerState {
     _connections: HashMap<Arc<str>, ActorRef<WebSocketConnectionMsg>>,
     port: u16,
+    server_id: Arc<str>,
 }
 
 #[derive(Clone)]
 pub struct WebSocketServerArgs {
     pub port: u16,
+    pub server_id: Arc<str>,
 }
 
 impl Actor for WebSocketServer {
@@ -60,6 +62,7 @@ impl Actor for WebSocketServer {
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         Ok(WebSocketServerState {
             port: args.port,
+            server_id: args.server_id,
             _connections: HashMap::new(),
         })
     }
@@ -93,6 +96,7 @@ impl Actor for WebSocketServer {
             }
             WebSocketServerMsg::Start { message_handler } => {
                 let port = state.port;
+                let server_id = state.server_id.clone();
                 let address = format!("0.0.0.0:{port}");
                 debug!("Trying to bind to {address}");
 
@@ -113,6 +117,7 @@ impl Actor for WebSocketServer {
                                         stream,
                                         message_handler: msg_handler_clone.clone(),
                                         websocket_server: ws_server.clone(),
+                                        server_id: server_id.clone(),
                                     },
                                 )
                                 .await;

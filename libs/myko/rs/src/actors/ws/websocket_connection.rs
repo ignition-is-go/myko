@@ -28,12 +28,16 @@ pub enum WebSocketConnectionMsg {
 pub struct WebSocketConnectionState {
     pub tx: SplitSink<WebSocketStream<TcpStream>, Message>,
     pub client_id: Arc<str>,
+    pub server_id: Arc<str>,
+    pub message_handler: ActorRef<MessageHandlerMsg>,
+    pub websocket_server: ActorRef<WebSocketServerMsg>,
 }
 
 pub struct WebSocketConnectionArgs {
     pub stream: TcpStream,
     pub message_handler: ActorRef<MessageHandlerMsg>,
     pub websocket_server: ActorRef<WebSocketServerMsg>,
+    pub server_id: Arc<str>,
 }
 
 impl Actor for WebSocketConnection {
@@ -54,6 +58,7 @@ impl Actor for WebSocketConnection {
             stream,
             message_handler,
             websocket_server,
+            server_id,
         } = args;
 
         let (tx, mut rx) = match accept_hdr_async(stream, |req: &Request, response: Response| {
@@ -81,6 +86,9 @@ impl Actor for WebSocketConnection {
 
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
 
+        // Clone myself for the spawned task before moving to RegisterClient
+        let task_myself = myself.clone();
+
         // Register this connection with the WebSocket server
         if let Err(e) = websocket_server.send_message(WebSocketServerMsg::RegisterClient {
             client_id: client_id.clone(),
@@ -89,7 +97,16 @@ impl Actor for WebSocketConnection {
             error!("Failed to register client with server: {}", e);
         }
 
+        // Notify MessageHandler of new client connection
+        if let Err(e) = message_handler.send_message(MessageHandlerMsg::ClientConnected {
+            client_id: client_id.clone(),
+            server_id: server_id.clone(),
+        }) {
+            error!("Failed to notify MessageHandler of client connection: {}", e);
+        }
+
         let task_client_id = client_id.clone();
+        let task_message_handler = message_handler.clone();
 
         tokio::spawn(async move {
             while let Some(message) = rx.next().await {
@@ -109,7 +126,7 @@ impl Actor for WebSocketConnection {
                     }
                 };
 
-                match message_handler.send_message(MessageHandlerMsg::ProcessText(
+                match task_message_handler.send_message(MessageHandlerMsg::ProcessText(
                     ProcessTextData {
                         text,
                         client_id: task_client_id.clone(),
@@ -121,10 +138,17 @@ impl Actor for WebSocketConnection {
                     }
                 }
             }
-            error!("Websocket Disconnected")
+            debug!("Websocket reader loop ended for client, stopping actor");
+            task_myself.stop(Some("WebSocket connection closed".to_string()));
         });
 
-        Ok(WebSocketConnectionState { tx, client_id })
+        Ok(WebSocketConnectionState {
+            tx,
+            client_id,
+            server_id,
+            message_handler,
+            websocket_server,
+        })
     }
 
     async fn handle(
@@ -151,6 +175,31 @@ impl Actor for WebSocketConnection {
                         ractor::ActorProcessingErr::from(format!("Failed to send message: {}", e))
                     })?;
             }
+        }
+
+        Ok(())
+    }
+
+    async fn post_stop(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        state: &mut Self::State,
+    ) -> Result<(), ractor::ActorProcessingErr> {
+        debug!("WebSocketConnection stopping for client {}", state.client_id);
+
+        // Unregister from WebSocket server
+        if let Err(e) = state.websocket_server.send_message(WebSocketServerMsg::UnregisterClient {
+            client_id: state.client_id.clone(),
+        }) {
+            error!("Failed to unregister client from server: {}", e);
+        }
+
+        // Notify MessageHandler of client disconnection (cancels subscriptions, deletes Client entity)
+        if let Err(e) = state.message_handler.send_message(MessageHandlerMsg::ClientDisconnected {
+            client_id: state.client_id.clone(),
+            server_id: state.server_id.clone(),
+        }) {
+            error!("Failed to notify MessageHandler of client disconnection: {}", e);
         }
 
         Ok(())
