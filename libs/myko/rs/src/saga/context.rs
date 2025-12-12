@@ -131,7 +131,7 @@ impl SagaContext {
 
         let wrapped = WrappedCommand {
             command: command_value,
-            command_id: cmd.command_id(),
+            command_id: cmd.command_id().to_string(),
         };
 
         let client_id: Arc<str> = format!("saga-{}", self.host_id()).into();

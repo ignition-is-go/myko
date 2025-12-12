@@ -6,6 +6,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::event::MEvent;
 use crate::query::Query;
 use crate::report::ReportIdStatic;
 use crate::server::MykoServerCtx;
@@ -64,9 +65,10 @@ impl ReportContext {
         Q: Query + Serialize + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
     {
+        use crate::query::QueryItemType;
         let runner = self.runner.clone();
         let query_id = query.query_id();
-        let query_item_type = query.query_item_type();
+        let query_item_type = QueryItemType::query_item_type(&query);
         let query_value = serde_json::to_value(&query).expect("Query should serialize");
 
         let (tx, mut rx) = mpsc::channel::<Vec<Value>>(16);
@@ -135,6 +137,36 @@ impl ReportContext {
                 }
             }
         })
+    }
+
+    /// Subscribe to the event stream.
+    ///
+    /// Returns a stream of all events published to the EventBus.
+    /// This is useful for reports that need to react to events directly,
+    /// such as `ServerEventLog` which streams events originating from this server.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl ReportHandler for ServerEventLog {
+    ///     type Output = MEvent;
+    ///
+    ///     fn compute(ctx: ReportContext) -> Pin<Box<dyn Stream<Item = Self::Output> + Send>> {
+    ///         let host_id = ctx.server_ctx.host_id.to_string();
+    ///         Box::pin(ctx.events().filter(move |e| {
+    ///             futures::future::ready(e.source_id.as_deref() == Some(&host_id))
+    ///         }))
+    ///     }
+    /// }
+    /// ```
+    pub fn events(&self) -> Pin<Box<dyn Stream<Item = MEvent> + Send>> {
+        if let Some(event_bus) = self.server_ctx.event_bus.get() {
+            Box::pin(event_bus.subscribe().into_stream())
+        } else {
+            // EventBus not yet initialized - return empty stream
+            log::warn!("ReportContext::events() called but EventBus not initialized");
+            Box::pin(futures::stream::empty())
+        }
     }
 }
 

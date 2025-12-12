@@ -25,7 +25,7 @@ use crate::{
     parsers::item::MykoItemParser,
     server::MykoServerCtx,
 };
-use log::{debug, error, info, warn};
+use log::{error, info, trace, warn};
 use ractor::{Actor, ActorRef, RpcReplyPort};
 use std::{
     collections::{HashMap, HashSet},
@@ -138,7 +138,6 @@ impl Actor for EventManager {
         myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        debug!("Creating RepoManager");
         Ok(EventManagerState {
             left_to_init: HashSet::new(),
             handlers: HashMap::new(),
@@ -158,7 +157,7 @@ impl Actor for EventManager {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             EventManagerMsg::RegisterRepo(entity_name, parser) => {
-                debug!("Registering repository: {}", entity_name);
+                trace!("Registering repository: {}", entity_name);
 
                 state.left_to_init.insert(entity_name.clone());
                 if state.handlers.contains_key(&entity_name) {
@@ -188,7 +187,6 @@ impl Actor for EventManager {
                 };
 
                 state.handlers.insert(entity_name.clone(), handler_ref);
-                info!("Registered repository: {}", entity_name);
                 Ok(())
             }
 
@@ -225,8 +223,14 @@ impl Actor for EventManager {
                 }
                 Ok(())
             }
-            EventManagerMsg::ProcessEvent(data) => {
+            EventManagerMsg::ProcessEvent(mut data) => {
                 let entity_type: Arc<str> = data.event.item_type().into();
+
+                // Set source_id to host_id if not already set (local events)
+                // Peer-replicated events will already have source_id set
+                if data.event.source_id.is_none() {
+                    data.event.source_id = Some(state.ctx.host_id.to_string());
+                }
 
                 // Publish event to EventBus for saga subscribers (high-throughput path)
                 if let Some(event_bus) = &state.event_bus {

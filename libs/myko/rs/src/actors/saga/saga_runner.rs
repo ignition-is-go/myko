@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use log::{debug, error, info};
+use log::{debug, error, trace};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 
 use crate::{
@@ -50,7 +50,7 @@ impl Actor for SagaRunner {
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
         let saga_name = args.saga.name();
-        info!("Starting saga runner: {}", saga_name);
+        trace!("Starting saga runner: {}", saga_name);
 
         // Subscribe to EventBus and convert directly to a stream (no intermediate channel)
         let event_stream = args.ctx.event_bus.subscribe().into_stream();
@@ -65,7 +65,7 @@ impl Actor for SagaRunner {
             futures::pin_mut!(command_stream);
 
             while let Some(command) = command_stream.next().await {
-                debug!("Saga {} emitting command: {}", saga_name_for_task, command.command_id);
+                trace!("Saga {} emitting command: {}", saga_name_for_task, command.command_id);
 
                 // Create a synthetic client ID for saga-originated commands
                 let client_id: Arc<str> = format!("saga-{}", saga_name_for_task).into();
@@ -78,7 +78,7 @@ impl Actor for SagaRunner {
                     client_id
                 ) {
                     Ok(Ok(_value)) => {
-                        debug!("Saga {} command executed successfully", saga_name_for_task);
+                        trace!("Saga {} command executed successfully", saga_name_for_task);
                     }
                     Ok(Err(cmd_err)) => {
                         error!(
@@ -95,7 +95,7 @@ impl Actor for SagaRunner {
                 }
             }
 
-            info!("Saga {} pipeline ended", saga_name_for_task);
+            debug!("Saga {} pipeline ended", saga_name_for_task);
         });
 
         Ok(SagaRunnerState {
@@ -112,7 +112,7 @@ impl Actor for SagaRunner {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             SagaRunnerMsg::Stop => {
-                info!("Stopping saga runner: {}", state.saga_name);
+                trace!("Stopping saga runner: {}", state.saga_name);
                 myself.stop(Some("Stop requested".to_string()));
                 Ok(())
             }
@@ -124,7 +124,7 @@ impl Actor for SagaRunner {
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        info!("Saga runner stopped: {}", state.saga_name);
+        trace!("Saga runner stopped: {}", state.saga_name);
         // Task will be aborted when the sender is dropped
         Ok(())
     }

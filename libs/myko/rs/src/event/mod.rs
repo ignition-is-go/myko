@@ -21,6 +21,10 @@ pub struct EventOptions {
     /// Used to prevent infinite loops during cascade processing.
     #[serde(default)]
     pub prevent_relationship_updates: bool,
+    /// When true, this event was replicated from a peer server.
+    /// Used to prevent re-broadcasting to peers and avoid cascade loops.
+    #[serde(default)]
+    pub from_peer: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -104,6 +108,14 @@ impl MEvent {
         self.options
             .as_ref()
             .map(|o| o.prevent_relationship_updates)
+            .unwrap_or(false)
+    }
+
+    /// Check if this event was replicated from a peer server
+    pub fn is_from_peer(&self) -> bool {
+        self.options
+            .as_ref()
+            .and_then(|o| o.from_peer)
             .unwrap_or(false)
     }
 

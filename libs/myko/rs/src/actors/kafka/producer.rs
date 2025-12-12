@@ -1,5 +1,5 @@
 use crate::{actors::kafka::common::KafkaSharedConfig, event::MEvent};
-use log::{debug, error,  trace};
+use log::{error, trace};
 use ractor::{Actor, ActorRef};
 use rdkafka::{
     ClientConfig,
@@ -78,7 +78,7 @@ impl Actor for KafkaProducer {
             .await
         {
             Ok(_) => {
-                debug!("{}: Created Kafka topic", topic);
+                trace!("{}: Created Kafka topic", topic);
             }
             Err(err) => {
                 panic!("{}: Failed to create Kafka topic: {}", topic, err);

@@ -2,6 +2,7 @@ pub mod command;
 pub mod event;
 pub mod kafka;
 pub mod message_handler;
+pub mod peer;
 pub mod query;
 pub mod relationship;
 pub mod report;

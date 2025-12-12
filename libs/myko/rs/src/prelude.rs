@@ -1,7 +1,7 @@
 pub use crate::{
     api::query::WrappedQuery,
     client::MykoClient,
-    command::{CommandContext, CommandError, CommandHandler, CommandHandlerRegistration},
+    command::{AnyCommand, CommandContext, CommandError, CommandHandler, CommandHandlerRegistration},
     common::{to_value::ToValue, with_id::WithId, with_transaction::WithTransaction},
     item::{ItemRegistration, MykoAutoQueries, MykoAutoReports},
     parsers::{
@@ -13,11 +13,12 @@ pub use crate::{
         QueryRegistration,
     },
     report::{
-        CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId, ReportIdStatic,
-        ReportOutputType, ReportRegistration, WrappedReport,
+        AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
+        ReportIdStatic, ReportOutputType, ReportRegistration, WrappedReport,
     },
-    server::MykoServer,
+    server::{MykoServer, MykoServerArgs},
     type_gen::{generate_item_types, export_registered_ts_types, TsExportRegistration},
+    utils::downcast_item,
 };
 pub use chrono::Utc;
 pub use myko_macros::*;

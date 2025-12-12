@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use log::{debug, info, trace, warn};
-use ractor::{Actor, ActorRef, cast};
+use log::{debug, error, info, trace, warn};
+use ractor::{Actor, ActorRef, RpcReplyPort, cast};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -31,8 +31,10 @@ pub enum WebSocketServerMsg {
         client_id: Arc<str>,
     },
     /// Start accepting connections. MessageHandler passed here to break circular dependency.
+    /// Replies with Ok(()) when the listener is bound and ready, or Err(String) on failure.
     Start {
         message_handler: ActorRef<MessageHandlerMsg>,
+        reply: RpcReplyPort<Result<(), String>>,
     },
 }
 
@@ -96,20 +98,30 @@ impl Actor for WebSocketServer {
                 state._connections.remove(&client_id);
                 Ok(())
             }
-            WebSocketServerMsg::Start { message_handler } => {
+            WebSocketServerMsg::Start {
+                message_handler,
+                reply,
+            } => {
                 let port = state.port;
                 let server_id = state.server_id.clone();
                 let address = format!("0.0.0.0:{port}");
                 debug!("Trying to bind to {address}");
 
-                let msg_handler_clone = message_handler.clone();
-                let ws_server = _myself.clone();
+                // Bind the listener first, then signal ready
+                match TcpListener::bind(&address).await {
+                    Ok(listener) => {
+                        info!("WebSocket server listening on {address}/myko");
 
-                // Spawn the accept loop in a separate task so the actor can process other messages
-                tokio::spawn(async move {
-                    match TcpListener::bind(&address).await {
-                        Ok(listener) => {
-                            info!("WebSocket server listening on {address}/myko");
+                        // Signal that we're ready to accept connections
+                        if let Err(e) = reply.send(Ok(())) {
+                            error!("Failed to send WebSocket ready signal: {:?}", e);
+                        }
+
+                        let msg_handler_clone = message_handler.clone();
+                        let ws_server = _myself.clone();
+
+                        // Spawn the accept loop in a separate task
+                        tokio::spawn(async move {
                             while let Ok((stream, _)) = listener.accept().await {
                                 debug!("Accepted connection");
                                 let _ = Actor::spawn(
@@ -124,12 +136,13 @@ impl Actor for WebSocketServer {
                                 )
                                 .await;
                             }
-                        }
-                        Err(e) => {
-                            warn!("Failed to bind to port {port}: {e}");
-                        }
+                        });
                     }
-                });
+                    Err(e) => {
+                        warn!("Failed to bind to port {port}: {e}");
+                        let _ = reply.send(Err(format!("Failed to bind: {e}")));
+                    }
+                }
                 Ok(())
             }
         }

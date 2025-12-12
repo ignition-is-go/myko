@@ -38,7 +38,7 @@ use crate::{
     prelude::AnyItem,
     server::MykoServerCtx,
 };
-use log::{debug, error, trace};
+use log::{error, trace};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -161,7 +161,7 @@ impl Actor for EventHandler {
             parser,
         } = args;
 
-        debug!("Creating Repo: {}", entity_name);
+        trace!("Creating Repo: {}", entity_name);
 
         Ok(EventHandlerState {
             entity_name,
@@ -183,7 +183,7 @@ impl Actor for EventHandler {
         match message {
             EventHandlerMessage::Init(conf) => {
                 let entity_name = state.entity_name.clone();
-                debug!("{}: Init", entity_name);
+                trace!("{}: Init", entity_name);
 
                 match conf {
                     Some(conf) => {
@@ -214,7 +214,6 @@ impl Actor for EventHandler {
                     }
                     None => {
                         // In-memory mode: signal caught up immediately
-                        debug!("{}: In-memory mode, signaling caught up", entity_name);
                         myself.send_message(EventHandlerMessage::PersisterCaughtUp)?;
                     }
                 }
@@ -222,7 +221,7 @@ impl Actor for EventHandler {
                 Ok(())
             }
             EventHandlerMessage::PersisterCaughtUp => {
-                debug!(
+                trace!(
                     "{} Init Complete: {} entities",
                     state.entity_name,
                     state.store.len()

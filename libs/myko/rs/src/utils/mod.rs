@@ -1,9 +1,27 @@
 pub mod signal_stream;
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::Arc;
 
+use crate::parsers::item::AnyItem;
 use serde_json::Value;
+
+/// Downcast an `Arc<dyn AnyItem>` to a concrete type.
+/// Returns `Some(T)` if the downcast succeeds, `None` otherwise.
+///
+/// # Example
+/// ```ignore
+/// let item: Arc<dyn AnyItem> = ...;
+/// if let Some(server) = downcast_item::<Server>(&item) {
+///     println!("Server: {}", server.id);
+/// }
+/// ```
+pub fn downcast_item<T: Clone + 'static>(item: &Arc<dyn AnyItem>) -> Option<T> {
+    // AnyItem: Any, so we can use downcast_ref on the trait object
+    (item.as_ref() as &dyn Any).downcast_ref::<T>().cloned()
+}
 
 pub fn mask_filter(filter: &Value, candidate: &Value) -> bool {
     match (filter, candidate) {

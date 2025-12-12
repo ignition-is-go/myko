@@ -9,8 +9,7 @@ use crate::{
 };
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
 use futures_signals::signal::{Signal, SignalExt};
-use log::{debug, error};
-use log::{info, warn};
+use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
@@ -88,6 +87,39 @@ impl MykoClient {
             .map_err(|err| err.to_string())
     }
 
+    /// Send a raw wrapped command (for federation forwarding)
+    pub fn send_command_raw(
+        &self,
+        command: crate::command::WrappedCommand,
+    ) -> Result<(), String> {
+        let myko_msg = MykoMessage::Command(command);
+
+        let str = serde_json::to_string(&myko_msg).map_err(|e| e.to_string())?;
+
+        let msg = Message::Text(str);
+
+        self.socket
+            .outgoing
+            .send(msg)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
+    /// Send a raw wrapped report (for federation forwarding)
+    pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
+        let myko_msg = MykoMessage::Report(report);
+
+        let str = serde_json::to_string(&myko_msg).map_err(|e| e.to_string())?;
+
+        let msg = Message::Text(str);
+
+        self.socket
+            .outgoing
+            .send(msg)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    }
+
     pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> {
         let stream = BroadcastStream::new(self.socket.incoming.clone().subscribe());
 
@@ -147,6 +179,20 @@ impl MykoClient {
         self.socket.set_addr(Some(parsed.to_string()));
     }
 
+    /// Disconnect the client and stop any reconnection attempts.
+    /// This will cancel all reconnection attempts and fire the disconnected event.
+    pub fn disconnect(&self) {
+        debug!("Disconnecting MykoClient");
+        self.socket.close();
+    }
+
+    /// Close the client and stop any reconnection attempts.
+    /// Alias for disconnect() - useful for peer connections that should not reconnect.
+    pub fn close(&self) {
+        debug!("Closing MykoClient");
+        self.socket.close();
+    }
+
     pub async fn get_connection_status(&self) -> ConnectionStatus {
         self.get_status()
             .to_stream()
@@ -199,7 +245,7 @@ impl MykoClient {
                 match serde_json::from_value::<C>(wrapped.command.clone()) {
                     Ok(cmd) => {
                         // Ensure the commandId matches the type this handler expects
-                        if wrapped.command_id != cmd.command_id() {
+                        if *wrapped.command_id != *cmd.command_id() {
                             continue;
                         }
                         let result = handler(cmd).await;
@@ -425,7 +471,7 @@ impl MykoClient {
                     let seq = response.sequence;
 
                     if seq == 0 {
-                        debug!("Sequence Reset: Clearing {} state", query_id.clone());
+                        trace!("Sequence reset: Clearing {} state", query_id.clone());
                         state.clear();
                     }
 

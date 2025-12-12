@@ -127,7 +127,7 @@ impl CommandContext {
 
         // Build child lineage
         let mut child_lineage = self.lineage.clone();
-        child_lineage.push(command.command_id());
+        child_lineage.push(command.command_id().to_string());
 
         // Execute via command manager
         ractor::call!(
@@ -169,9 +169,9 @@ impl CommandContext {
             query_item_type: Q::query_item_type_static(),
         };
 
-        // Use QuerySnapshot for one-shot query (no subscription)
+        // Use WrappedQuerySnapshot for one-shot query (no subscription)
         let snapshot =
-            ractor::call!(self.query_manager, QueryManagerMsg::QuerySnapshot, wrapped)
+            ractor::call!(self.query_manager, QueryManagerMsg::WrappedQuerySnapshot, wrapped)
                 .map_err(|e| CommandError {
                     tx: self.tx.to_string(),
                     message: format!("Failed to query snapshot: {}", e),

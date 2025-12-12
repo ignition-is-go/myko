@@ -89,7 +89,7 @@ use crate::{
     relationship::{Relation, RelationRegistration},
     server::MykoServerCtx,
 };
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use serde_json::Value;
 use std::{
@@ -202,7 +202,7 @@ impl Actor for RelationshipManager {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        info!("RelationshipManager: Initializing");
+        trace!("RelationshipManager: Initializing");
 
         // Build lookup indexes from inventory registrations
         let mut belongs_to_by_foreign: HashMap<&'static str, Vec<BelongsToLookup>> = HashMap::new();
@@ -298,8 +298,8 @@ impl Actor for RelationshipManager {
         let relation_count = belongs_to_by_foreign.len()
             + owns_many_by_local.len()
             + ensure_for_by_dependency.len();
-        info!(
-            "RelationshipManager: Initialized with {} relation types",
+        debug!(
+            "RelationshipManager: {} relation types",
             relation_count
         );
 
@@ -365,7 +365,7 @@ impl Actor for RelationshipManager {
                 Ok(())
             }
             RelationshipManagerMsg::EstablishRelations(reply) => {
-                info!("RelationshipManager: Establishing relations on startup");
+                trace!("RelationshipManager: Establishing relations on startup");
 
                 // 1. Orphan cleanup for BelongsTo relationships (child points to non-existent parent)
                 self.cleanup_belongs_to_orphans(state).await?;
@@ -376,7 +376,7 @@ impl Actor for RelationshipManager {
                 // 3. EnsureFor initialization
                 self.initialize_ensure_for(state).await?;
 
-                info!("RelationshipManager: Relations established");
+                trace!("RelationshipManager: Relations established");
                 if let Err(err) = reply.send(()) {
                     error!(
                         "RelationshipManager: Failed to reply establish complete: {}",
@@ -943,6 +943,7 @@ impl RelationshipManager {
             source_id: Some(state.ctx.host_id.to_string()),
             options: Some(EventOptions {
                 prevent_relationship_updates: true,
+                ..Default::default()
             }),
         };
 
@@ -976,6 +977,7 @@ impl RelationshipManager {
             source_id: Some(state.ctx.host_id.to_string()),
             options: Some(EventOptions {
                 prevent_relationship_updates: true,
+                ..Default::default()
             }),
         };
 

@@ -1,7 +1,6 @@
+
 use crate::prelude::*;
 use crate::{self as myko_rs};
-use partially::Partial;
-use serde::{Deserialize, Serialize};
 
 #[myko_item]
 pub struct Server {
@@ -16,7 +15,9 @@ pub struct GetConnectedServer {}
 
 impl QueryHandler for GetConnectedServer {
     fn test_entity(ctx: QueryHandlerCtx<Self>) -> bool {
-        ctx.item.id.to_string() == ctx.server_ctx.host_id.to_string()
+        let item_id = ctx.item.id.to_string();
+        let host_id = ctx.server_ctx.host_id.to_string();
+        item_id == host_id
     }
 }
 
@@ -25,6 +26,8 @@ pub struct GetPeerServers {}
 
 impl QueryHandler for GetPeerServers {
     fn test_entity(ctx: QueryHandlerCtx<Self>) -> bool {
-        ctx.item.id.to_string() != ctx.server_ctx.host_id.to_string()
+        let item_id = ctx.item.id.to_string();
+        let host_id = ctx.server_ctx.host_id.to_string();
+        item_id != host_id
     }
 }

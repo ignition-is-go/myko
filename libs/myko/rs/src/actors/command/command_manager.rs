@@ -63,17 +63,15 @@ impl Actor for CommandManager {
         myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        debug!("CommandManager starting");
-
         // Collect all registered handlers from inventory
         let mut handlers: HashMap<&'static str, Box<dyn CommandHandler>> = HashMap::new();
         for registration in inventory::iter::<CommandHandlerRegistration> {
-            debug!("Registering command handler: {}", registration.command_id);
+            trace!("Registering command handler: {}", registration.command_id);
             let handler = (registration.factory)();
             handlers.insert(registration.command_id, handler);
         }
 
-        debug!("CommandManager registered {} handlers", handlers.len());
+        debug!("CommandManager: {} handlers", handlers.len());
 
         Ok(CommandManagerState {
             ctx: args.ctx,

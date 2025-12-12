@@ -48,6 +48,7 @@ use crate::{
         },
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
+        peer::{PeerManager, PeerManagerArgs, PeerManagerMsg},
         query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
         relationship::{RelationshipManager, RelationshipManagerArgs, RelationshipManagerMsg},
         report::report_manager::{ReportManager, ReportManagerArgs, ReportManagerMsg},
@@ -61,7 +62,7 @@ use crate::{
     server::MykoServerCtx,
 };
 use chrono::Utc;
-use log::{error, info};
+use log::{error, info, trace};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -92,6 +93,8 @@ pub struct ServerState {
     saga_manager: ActorRef<SagaManagerMsg>,
     /// RelationshipManager for cascade operations
     relationship_manager: ActorRef<RelationshipManagerMsg>,
+    /// PeerManager for peer discovery and federation
+    peer_manager: ActorRef<PeerManagerMsg>,
     /// Server context with host ID
     ctx: Arc<MykoServerCtx>,
     /// Original arguments for reference during lifecycle events
@@ -99,6 +102,7 @@ pub struct ServerState {
 }
 
 /// Arguments for spawning the Server actor.
+#[derive(Debug, Clone)]
 pub struct ServerArgs {
     /// Address to bind to (e.g., "0.0.0.0")
     pub bind_addr: String,
@@ -153,6 +157,7 @@ impl Actor for Server {
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         let ctx = Arc::new(MykoServerCtx {
             host_id: Uuid::new_v4(),
+            event_bus: std::sync::OnceLock::new(),
         });
 
         // Spawn order optimized for direct references (no Server routing):
@@ -262,6 +267,9 @@ impl Actor for Server {
         // Create EventBus for high-throughput event distribution to sagas
         let event_bus = EventBus::new();
 
+        // Store EventBus in server context for reports (e.g., ServerEventLog)
+        let _ = ctx.event_bus.set(event_bus.clone());
+
         // Create SagaContext for saga handlers
         let saga_ctx = Arc::new(SagaContext::new(
             ctx.clone(),
@@ -343,6 +351,27 @@ impl Actor for Server {
             }
         };
 
+        // PeerManager for peer discovery and federation
+        let peer_manager = match Actor::spawn(
+            None,
+            PeerManager,
+            PeerManagerArgs {
+                ctx: ctx.clone(),
+                host_address: args.public_host_address.clone(),
+                host_port: args.bind_port,
+                query_manager: query_manager.clone(),
+                command_manager: command_manager.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn PeerManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
         Ok(ServerState {
             repo_manager: event_manager,
             web_socket_server,
@@ -352,6 +381,7 @@ impl Actor for Server {
             command_manager,
             saga_manager,
             relationship_manager,
+            peer_manager,
             ctx,
             args,
         })
@@ -366,9 +396,7 @@ impl Actor for Server {
         // NOTE: Server actor is now lifecycle-only. Routing eliminated for performance.
         // All managers communicate directly via ActorRef.
         match message {
-            ServerMsg::Start => {
-                info!("Starting Server!");
-            }
+            ServerMsg::Start => {}
             ServerMsg::InitAllModules => {
                 if let Err(err) = state
                     .repo_manager
@@ -378,6 +406,45 @@ impl Actor for Server {
                 };
             }
             ServerMsg::AllInitComplete => {
+                // Establish relationships (orphan cleanup, ensure-for initialization)
+                if let Err(err) = ractor::call!(
+                    state.relationship_manager,
+                    RelationshipManagerMsg::EstablishRelations
+                ) {
+                    error!("Failed to establish relationships: {}", err);
+                }
+
+                // Start all registered sagas
+                if let Err(err) = state.saga_manager.send_message(SagaManagerMsg::StartAll) {
+                    error!("Failed to start SagaManager: {}", err);
+                }
+
+                // Start WebSocket server FIRST and wait for it to be ready
+                // This ensures we can accept connections before advertising ourselves
+                let (tx, rx) = ractor::concurrency::oneshot();
+                if let Err(err) = state
+                    .web_socket_server
+                    .send_message(WebSocketServerMsg::Start {
+                        message_handler: state.message_handler.clone(),
+                        reply: tx.into(),
+                    })
+                {
+                    error!("Failed to send Start to WebSocketServer: {}", err);
+                    return Ok(());
+                }
+
+                match rx.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        error!("WebSocket server failed to start: {}", e);
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        error!("Failed to receive WebSocket ready signal: {:?}", err);
+                        return Ok(());
+                    }
+                }
+
                 // Clean up stale servers with the same address and port
                 let query = GetServersByQuery {
                     partial: PartialServer {
@@ -397,10 +464,10 @@ impl Actor for Server {
                     }
                 };
 
-                match ractor::call!(state.query_manager, QueryManagerMsg::QuerySnapshot, wrapped) {
+                match ractor::call!(state.query_manager, QueryManagerMsg::WrappedQuerySnapshot, wrapped) {
                     Ok(stale_servers) => {
                         for (id, server) in stale_servers {
-                            info!("Cleaning up stale server: {}", id);
+                            trace!("Cleaning up stale server: {}", id);
                             let event = MEvent {
                                 item: server.to_value(),
                                 change_type: MEventType::DEL,
@@ -426,6 +493,7 @@ impl Actor for Server {
                     }
                 }
 
+                // NOW publish our Server entity - WebSocket is ready to accept connections
                 let s = crate::entities::server::Server {
                     id: state.ctx.host_id.to_string().into(),
                     address: state.args.public_host_address.to_string(),
@@ -434,6 +502,8 @@ impl Actor for Server {
                     started_at: Utc::now().to_rfc3339(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 };
+
+                info!("Server {} listening on {}:{}", s.id, s.address, s.port);
 
                 let event = MEvent::from_item(&s, MEventType::SET, Uuid::new_v4().to_string());
 
@@ -448,32 +518,9 @@ impl Actor for Server {
                     error!("Failed to send message to RepoManager: {}", err);
                 }
 
-                // Establish relationships (orphan cleanup, ensure-for initialization)
-                match ractor::call!(
-                    state.relationship_manager,
-                    RelationshipManagerMsg::EstablishRelations
-                ) {
-                    Ok(()) => {
-                        info!("Relationship cascades established");
-                    }
-                    Err(err) => {
-                        error!("Failed to establish relationships: {}", err);
-                    }
-                }
-
-                // Start all registered sagas
-                if let Err(err) = state.saga_manager.send_message(SagaManagerMsg::StartAll) {
-                    error!("Failed to start SagaManager: {}", err);
-                }
-
-                // Start WebSocket server with MessageHandler (breaks circular dep)
-                if let Err(err) = state
-                    .web_socket_server
-                    .send_message(WebSocketServerMsg::Start {
-                        message_handler: state.message_handler.clone(),
-                    })
-                {
-                    error!("Failed to send message to WebSocketServer: {}", err);
+                // Start PeerManager for peer discovery (after Server entity is published)
+                if let Err(err) = state.peer_manager.send_message(PeerManagerMsg::Start) {
+                    error!("Failed to start PeerManager: {}", err);
                 }
             }
             ServerMsg::GetManagers(reply) => {

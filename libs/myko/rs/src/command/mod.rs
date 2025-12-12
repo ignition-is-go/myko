@@ -1,10 +1,12 @@
 mod handler;
 
+use std::{fmt::Debug, sync::Arc};
+
 use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::client::MykoClient;
+use crate::{client::MykoClient, common::with_transaction::WithTransaction};
 
 pub use handler::{
     BoxFuture, CommandContext, CommandHandler, CommandHandlerFactory, CommandHandlerRegistration,
@@ -55,7 +57,36 @@ pub struct CommandError {
 }
 
 pub trait CommandId {
-    fn command_id(&self) -> String;
+    fn command_id(&self) -> Arc<str>;
+}
+
+/// Type-erased command trait for dynamic dispatch.
+/// All commands implement this via the `#[myko_command]` macro.
+pub trait AnyCommand: WithTransaction + CommandId + Debug + Send + Sync + 'static {
+    /// Serialize this command to a JSON Value.
+    fn to_value(&self) -> Value;
+}
+
+// Conversion from Arc<dyn AnyCommand> to WrappedCommand
+impl From<&dyn AnyCommand> for WrappedCommand {
+    fn from(command: &dyn AnyCommand) -> Self {
+        WrappedCommand {
+            command: command.to_value(),
+            command_id: command.command_id().to_string(),
+        }
+    }
+}
+
+impl From<Arc<dyn AnyCommand>> for WrappedCommand {
+    fn from(command: Arc<dyn AnyCommand>) -> Self {
+        WrappedCommand::from(command.as_ref())
+    }
+}
+
+impl From<&Arc<dyn AnyCommand>> for WrappedCommand {
+    fn from(command: &Arc<dyn AnyCommand>) -> Self {
+        WrappedCommand::from(command.as_ref())
+    }
 }
 
 pub fn wrap_command<C: CommandId + Serialize + Clone>(
@@ -76,6 +107,6 @@ pub fn wrap_command<C: CommandId + Serialize + Clone>(
 
     Ok(WrappedCommand {
         command: json,
-        command_id: command.command_id(),
+        command_id: command.command_id().to_string(),
     })
 }

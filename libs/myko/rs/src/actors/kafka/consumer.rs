@@ -9,7 +9,7 @@ use crate::{
     event::MEvent,
     server::MykoServerCtx,
 };
-use log::{debug, error};
+use log::{error, trace};
 use ractor::{Actor, ActorRef};
 use rdkafka::{
     ClientConfig, Message,
@@ -87,7 +87,7 @@ impl Actor for KafkaConsumer {
             .await
         {
             Ok(_) => {
-                debug!("{}: Created Kafka topic", topic);
+                trace!("{}: Created Kafka topic", topic);
             }
             Err(err) => {
                 panic!("{}: Failed to create Kafka topic: {}", topic, err);
@@ -96,7 +96,7 @@ impl Actor for KafkaConsumer {
 
         match consumer.subscribe(&[&topic.clone()]) {
             Ok(_) => {
-                debug!("{}: Consumer Subscribed", topic);
+                trace!("{}: Consumer subscribed", topic);
             }
             Err(err) => {
                 panic!("{}: Failed to subscribe: {}", topic, err);
@@ -184,7 +184,7 @@ impl Actor for KafkaConsumer {
         });
 
         if high_water == 0 {
-            debug!("{}: High water is 0, caught up immediately", topic);
+            trace!("{}: High water is 0, caught up immediately", topic);
             match repo_ref_clone.send_message(EventHandlerMessage::PersisterCaughtUp) {
                 Ok(_) => {}
                 Err(err) => error!("Error sending caught up message: {}", err),

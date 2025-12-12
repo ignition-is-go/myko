@@ -1,6 +1,6 @@
 mod handler;
 
-use std::{pin::Pin, sync::Arc};
+use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 use futures::Stream;
 use log::error;
@@ -82,7 +82,36 @@ pub struct ReportError {
 }
 
 pub trait ReportId {
-    fn report_id(&self) -> String;
+    fn report_id(&self) -> Arc<str>;
+}
+
+/// Type-erased report trait for dynamic dispatch.
+/// All reports implement this via the `#[myko_report]` macro.
+pub trait AnyReport: WithTransaction + ReportId + Debug + Send + Sync + 'static {
+    /// Serialize this report to a JSON Value.
+    fn to_value(&self) -> Value;
+}
+
+// Conversion from Arc<dyn AnyReport> to WrappedReport
+impl From<&dyn AnyReport> for WrappedReport {
+    fn from(report: &dyn AnyReport) -> Self {
+        WrappedReport {
+            report: report.to_value(),
+            report_id: report.report_id().to_string(),
+        }
+    }
+}
+
+impl From<Arc<dyn AnyReport>> for WrappedReport {
+    fn from(report: Arc<dyn AnyReport>) -> Self {
+        WrappedReport::from(report.as_ref())
+    }
+}
+
+impl From<&Arc<dyn AnyReport>> for WrappedReport {
+    fn from(report: &Arc<dyn AnyReport>) -> Self {
+        WrappedReport::from(report.as_ref())
+    }
 }
 
 pub fn wrap_report<Q: ReportId + Serialize + Clone>(
@@ -103,7 +132,7 @@ pub fn wrap_report<Q: ReportId + Serialize + Clone>(
 
     Ok(WrappedReport {
         report: json,
-        report_id: report.report_id(),
+        report_id: report.report_id().to_string(),
     })
 }
 

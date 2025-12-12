@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use log::{error, info, warn};
+use log::{debug, error, trace, warn};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 
 use crate::{
@@ -55,8 +55,6 @@ impl Actor for SagaManager {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        info!("SagaManager starting");
-
         Ok(SagaManagerState {
             ctx: args.ctx,
             command_manager: args.command_manager,
@@ -78,17 +76,14 @@ impl Actor for SagaManager {
                     return Ok(());
                 }
 
-                info!("Starting all registered sagas");
-
                 // Discover and spawn all registered sagas
                 let registrations: Vec<_> = inventory::iter::<SagaRegistration>.into_iter().collect();
-                info!("Found {} registered sagas", registrations.len());
 
                 for registration in registrations {
                     let saga = (registration.create)();
                     let saga_name = saga.name();
 
-                    info!("Spawning saga runner for: {}", saga_name);
+                    trace!("Spawning saga runner for: {}", saga_name);
 
                     match Actor::spawn(
                         Some(format!("saga-{}", saga_name)),
@@ -103,7 +98,6 @@ impl Actor for SagaManager {
                     {
                         Ok((actor_ref, _handle)) => {
                             state.saga_runners.push(actor_ref);
-                            info!("Started saga runner: {}", saga_name);
                         }
                         Err(e) => {
                             error!("Failed to spawn saga runner for {}: {}", saga_name, e);
@@ -112,16 +106,13 @@ impl Actor for SagaManager {
                 }
 
                 state.started = true;
-                info!(
-                    "Started {} saga runners",
-                    state.saga_runners.len()
-                );
+                debug!("SagaManager: {} sagas", state.saga_runners.len());
 
                 Ok(())
             }
 
             SagaManagerMsg::StopAll => {
-                info!("Stopping all saga runners");
+                trace!("Stopping all saga runners");
 
                 for runner in &state.saga_runners {
                     if let Err(e) = runner.send_message(SagaRunnerMsg::Stop) {
@@ -142,7 +133,7 @@ impl Actor for SagaManager {
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        info!("SagaManager stopping, cleaning up {} saga runners", state.saga_runners.len());
+        trace!("SagaManager stopping, cleaning up {} saga runners", state.saga_runners.len());
 
         // Stop all saga runners
         for runner in &state.saga_runners {

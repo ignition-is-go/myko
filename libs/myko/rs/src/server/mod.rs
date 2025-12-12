@@ -102,7 +102,21 @@ impl MykoServer {
 
 pub type MykoServerArgs = ServerArgs;
 
-#[derive(Debug)]
+/// Server context shared across actors.
+///
+/// Contains server identity and shared resources like the EventBus.
 pub struct MykoServerCtx {
+    /// Unique identifier for this server instance
     pub host_id: Uuid,
+    /// Event bus for high-throughput event distribution (set during server startup)
+    pub event_bus: std::sync::OnceLock<crate::actors::event::EventBus>,
+}
+
+impl std::fmt::Debug for MykoServerCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MykoServerCtx")
+            .field("host_id", &self.host_id)
+            .field("event_bus", &self.event_bus.get().map(|_| "EventBus"))
+            .finish()
+    }
 }

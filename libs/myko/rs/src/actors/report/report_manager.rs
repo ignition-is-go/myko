@@ -83,7 +83,6 @@ impl Actor for ReportManager {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        debug!("ReportManager starting");
         Ok(ReportManagerState {
             ctx: args.ctx,
             query_manager: args.query_manager,
@@ -100,7 +99,7 @@ impl Actor for ReportManager {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             ReportManagerMsg::RegisterReport(data) => {
-                debug!("Registering report handler: {}", data.report_id);
+                trace!("Registering report handler: {}", data.report_id);
                 state.handlers.insert(
                     data.report_id,
                     RegisteredReport {
@@ -213,7 +212,7 @@ impl Actor for ReportManager {
                     // Replace for empty initial state, so we need to send it explicitly
                     let initial_snapshot = ractor::call!(
                         query_manager,
-                        QueryManagerMsg::QuerySnapshot,
+                        QueryManagerMsg::WrappedQuerySnapshot,
                         wrapped_query.clone()
                     );
 
