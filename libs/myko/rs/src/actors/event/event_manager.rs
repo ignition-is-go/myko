@@ -40,6 +40,8 @@ pub enum EventManagerMsg {
     GetEventHandler(Arc<str>, RpcReplyPort<ActorRef<EventHandlerMessage>>),
     /// Set the EventBus for high-throughput event broadcasting to sagas
     SetEventBus(EventBus),
+    /// Get counts for all entity types
+    GetAllCounts(RpcReplyPort<Vec<(Arc<str>, usize)>>),
 }
 
 pub struct EventManagerArgs {
@@ -186,6 +188,29 @@ impl Actor for EventManager {
             EventManagerMsg::SetEventBus(event_bus) => {
                 info!("EventManager: EventBus configured for saga broadcast");
                 state.event_bus = Some(event_bus);
+                Ok(())
+            }
+            EventManagerMsg::GetAllCounts(reply) => {
+                let mut counts: Vec<(Arc<str>, usize)> = Vec::with_capacity(state.handlers.len());
+
+                for (entity_name, handler) in &state.handlers {
+                    match ractor::call!(handler, EventHandlerMessage::GetState) {
+                        Ok(entity_state) => {
+                            counts.push((entity_name.clone(), entity_state.len()));
+                        }
+                        Err(err) => {
+                            error!("Failed to get state for {}: {}", entity_name, err);
+                            counts.push((entity_name.clone(), 0));
+                        }
+                    }
+                }
+
+                // Sort by entity name for consistent output
+                counts.sort_by(|a, b| a.0.cmp(&b.0));
+
+                if let Err(err) = reply.send(counts) {
+                    error!("Failed to reply with entity counts: {:?}", err);
+                }
                 Ok(())
             }
         }

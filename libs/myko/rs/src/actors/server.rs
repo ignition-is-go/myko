@@ -355,6 +355,22 @@ impl Actor for Server {
                 {
                     error!("Failed to send message to WebSocketServer: {}", err);
                 }
+
+                // Log entity counts after initialization
+                match ractor::call!(state.repo_manager, EventManagerMsg::GetAllCounts) {
+                    Ok(counts) => {
+                        let total: usize = counts.iter().map(|(_, c)| c).sum();
+                        let counts_str = counts
+                            .iter()
+                            .map(|(name, count)| format!("{}: {}", name, count))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        info!("Entity counts after init: {} total [{}]", total, counts_str);
+                    }
+                    Err(err) => {
+                        error!("Failed to get entity counts: {}", err);
+                    }
+                }
             }
             ServerMsg::GetManagers(reply) => {
                 if let Err(err) = reply.send((

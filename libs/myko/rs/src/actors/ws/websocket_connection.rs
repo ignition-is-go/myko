@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use futures_util::{StreamExt, stream::SplitSink};
-use log::{debug, error, trace};
+use log::{debug, error, info, trace};
 use ractor::{Actor, ActorRef};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, accept_hdr_async};
@@ -61,6 +61,9 @@ impl Actor for WebSocketConnection {
             server_id,
         } = args;
 
+        // Get peer address before consuming the stream
+        let peer_addr = stream.peer_addr().ok();
+
         let (tx, mut rx) = match accept_hdr_async(stream, |req: &Request, response: Response| {
             let path = req.uri().path();
             debug!("WebSocket handshake request path: {}", path);
@@ -85,6 +88,14 @@ impl Actor for WebSocketConnection {
         };
 
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
+
+        let peer_addr_str = peer_addr
+            .map(|addr| format!("{}:{}", addr.ip(), addr.port()))
+            .unwrap_or_else(|| "unknown".to_string());
+        info!(
+            "WebSocket client connected: {} from {}",
+            client_id, peer_addr_str
+        );
 
         // Clone myself for the spawned task before moving to RegisterClient
         let task_myself = myself.clone();
@@ -185,7 +196,7 @@ impl Actor for WebSocketConnection {
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
-        debug!("WebSocketConnection stopping for client {}", state.client_id);
+        info!("WebSocket connection closed, client_id: {}", state.client_id);
 
         // Unregister from WebSocket server
         if let Err(e) = state.websocket_server.send_message(WebSocketServerMsg::UnregisterClient {

@@ -1,5 +1,5 @@
 use crate::{actors::kafka::common::KafkaSharedConfig, event::MEvent};
-use log::{debug, error};
+use log::{debug, error, info};
 use ractor::{Actor, ActorRef};
 use rdkafka::{
     ClientConfig,
@@ -118,10 +118,12 @@ impl Actor for KafkaProducer {
 
                         match send_res {
                             Ok(_) => {
-                                // debug!(
-                                //     "{}: Produced event:  source_id: {:?}, host_id: {} ",
-                                //     state.topic, data.event.source_id, state.ctx.host_id
-                                // );
+                                info!(
+                                    "Persisted {:?} {} to Kafka topic {}",
+                                    data.event.change_type,
+                                    data.event.item_type,
+                                    state.topic
+                                );
                             }
                             Err(err) => {
                                 error!("{}: Failed to produce event: {}", state.topic, err.0);
