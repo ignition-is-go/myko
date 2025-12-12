@@ -35,7 +35,7 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
     };
 
     let derives = quote! {
-         #[derive(Clone, Debug, Serialize, Deserialize, myko_rs::TS)]
+         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]
          #[serde(rename_all = "camelCase")]
     };
 
@@ -104,7 +104,15 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
 
         }
 
-        impl myko_rs::prelude::AnyQuery for #struct_name {}
+        impl myko_rs::prelude::AnyQuery for #struct_name {
+            fn query_item_type(&self) -> std::sync::Arc<str> {
+                <Self as myko_rs::prelude::QueryItemType>::query_item_type(self)
+            }
+
+            fn to_value(&self) -> serde_json::Value {
+                serde_json::to_value(self).expect("Query should serialize to JSON")
+            }
+        }
 
         impl myko_rs::prelude::QueryIdStatic for #struct_name {
             fn query_id_static() -> std::sync::Arc<str> {

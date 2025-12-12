@@ -88,8 +88,8 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
         }
 
         impl myko_rs::prelude::ReportId for #struct_name {
-            fn report_id(&self) -> String {
-                stringify!(#struct_name).to_string()
+            fn report_id(&self) -> std::sync::Arc<str> {
+                stringify!(#struct_name).into()
             }
         }
 
@@ -102,6 +102,12 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
         impl myko_rs::prelude::ReportIdStatic for #struct_name {
             fn report_id_static() -> &'static str {
                 stringify!(#struct_name)
+            }
+        }
+
+        impl myko_rs::prelude::AnyReport for #struct_name {
+            fn to_value(&self) -> serde_json::Value {
+                serde_json::to_value(self).expect("Report should serialize to JSON")
             }
         }
 
