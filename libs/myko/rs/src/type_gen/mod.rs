@@ -7,6 +7,79 @@ use dprint_plugin_typescript::{
 
 use crate::{command::CommandRegistration, item::ItemRegistration, message::MessageEventRegistration, query::QueryRegistration, report::ReportRegistration};
 
+// ============================================================================
+// ts-rs Export Registration
+// ============================================================================
+
+/// Registration for ts-rs type exports.
+/// Allows types with `#[derive(TS)]` to be exported without running cargo test.
+pub struct TsExportRegistration {
+    /// Name of the type being exported (for logging)
+    pub type_name: &'static str,
+    /// Function that calls `T::export()` for the registered type
+    pub export_fn: fn() -> Result<(), ts_rs::ExportError>,
+}
+
+inventory::collect!(TsExportRegistration);
+
+/// Register a type for ts-rs export.
+///
+/// Usage:
+/// ```ignore
+/// use myko_rs::register_ts_export;
+///
+/// #[derive(TS)]
+/// // Don't need #[ts(export)] anymore!
+/// struct MyType { ... }
+///
+/// register_ts_export!(MyType);
+/// ```
+#[macro_export]
+macro_rules! register_ts_export {
+    ($ty:ty) => {
+        $crate::inventory::submit! {
+            $crate::type_gen::TsExportRegistration {
+                type_name: stringify!($ty),
+                export_fn: || <$ty as $crate::ts_rs::TS>::export(),
+            }
+        }
+    };
+    // Register multiple types at once
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            $crate::register_ts_export!($ty);
+        )+
+    };
+}
+
+/// Export all registered ts-rs types to the bindings directory.
+/// Called automatically by `generate_item_types()`.
+pub fn export_registered_ts_types() -> Result<(), anyhow::Error> {
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    for registration in inventory::iter::<TsExportRegistration> {
+        match (registration.export_fn)() {
+            Ok(()) => {
+                println!("  Exported: {}", registration.type_name);
+                success_count += 1;
+            }
+            Err(e) => {
+                eprintln!("  Failed to export {}: {}", registration.type_name, e);
+                error_count += 1;
+            }
+        }
+    }
+
+    println!("ts-rs export complete: {} succeeded, {} failed", success_count, error_count);
+
+    if error_count > 0 {
+        anyhow::bail!("{} ts-rs exports failed", error_count);
+    }
+
+    Ok(())
+}
+
 /// Collect all .ts files in the bindings directory (excluding index.ts, .d.ts files, and subdirectories)
 fn collect_binding_types(directory_path: &str) -> Vec<String> {
     let mut types = Vec::new();
@@ -70,6 +143,10 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
 
     // Create the directory if it doesn't exist
     fs::create_dir_all(directory_path)?;
+
+    // First, export all registered ts-rs types
+    println!("Exporting ts-rs types...");
+    export_registered_ts_types()?;
 
     let crate_name = std::env::var("CARGO_PKG_NAME")
         .expect("CARGO_PKG_NAME environment variable not found")

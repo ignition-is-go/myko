@@ -12,7 +12,6 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
     // Apply derives directly to args_struct
     args_struct.attrs = vec![
         syn::parse_quote!(#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]),
-        syn::parse_quote!(#[ts(export)]),
         syn::parse_quote!(#[serde(rename_all = "camelCase")]),
     ];
 
@@ -37,7 +36,6 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
 
     let derives = quote! {
          #[derive(Clone, Debug, Serialize, Deserialize, myko_rs::TS)]
-         #[ts(export)]
          #[serde(rename_all = "camelCase")]
     };
 
@@ -81,6 +79,9 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
         myko_rs::submit! {
             #query_registration
         }
+
+        // Register for ts-rs export
+        myko_rs::register_ts_export!(#struct_name, #args_struct_name);
 
         // Impl MykoQuery
         impl myko_rs::prelude::Query for #struct_name {

@@ -12,7 +12,6 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
     // Apply derives directly to args_struct
     args_struct.attrs = vec![
         syn::parse_quote!(#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]),
-        syn::parse_quote!(#[ts(export)]),
         syn::parse_quote!(#[serde(rename_all = "camelCase")]),
     ];
 
@@ -31,7 +30,6 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
 
     let derives = quote! {
          #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]
-         #[ts(export)]
          #[serde(rename_all = "camelCase")]
     };
 
@@ -78,6 +76,9 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
         myko_rs::submit! {
             #report_registration
         }
+
+        // Register for ts-rs export
+        myko_rs::register_ts_export!(#struct_name, #args_struct_name);
 
         // Client-side watch (legacy compatibility)
         impl myko_rs::prelude::MykoReport<#report_output_type> for #struct_name {

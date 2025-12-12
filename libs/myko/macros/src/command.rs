@@ -117,6 +117,9 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
                 crate_name: module_path!(),
             }
         }
+
+        // Register for ts-rs export
+        myko_rs::register_ts_export!(#struct_name);
     };
 
     expanded

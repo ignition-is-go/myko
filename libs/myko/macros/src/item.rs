@@ -41,7 +41,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let derives = quote! {
         #[derive(Partial, PartialEq, Clone, Serialize, Deserialize, Debug, myko_rs::TS)]
-        #[ts(export)]
         #[serde(rename_all = "camelCase")]
         #[partially(derive(Clone, Serialize, Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS))]
     };
@@ -102,10 +101,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let count_result_type = quote! {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
-        #[ts(export)]
         pub struct #count_result_ident {
             pub count: usize,
         }
+
+        myko_rs::register_ts_export!(#count_result_ident);
     };
 
     // Generate CountAll report
@@ -195,16 +195,16 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         /// Result type for Delete command
         #[derive(Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
-        #[ts(export)]
         pub struct #delete_result_ident {
             pub deleted: bool,
         }
+
+        myko_rs::register_ts_export!(#delete_result_ident);
 
         /// Command to delete a single entity by ID
         #[myko_macros::myko_command(#delete_result_ident)]
         #[derive(Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
-        #[ts(export)]
         pub struct #delete_command_ident {
             pub id: std::sync::Arc<str>,
         }
@@ -243,16 +243,16 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         /// Result type for bulk Delete command
         #[derive(Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
-        #[ts(export)]
         pub struct #delete_many_result_ident {
             pub deleted_count: usize,
         }
+
+        myko_rs::register_ts_export!(#delete_many_result_ident);
 
         /// Command to delete multiple entities by ID
         #[myko_macros::myko_command(#delete_many_result_ident)]
         #[derive(Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
-        #[ts(export)]
         pub struct #delete_many_command_ident {
             pub ids: Vec<std::sync::Arc<str>>,
         }
@@ -309,6 +309,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #derives
         #input_struct
 
+        // Register for ts-rs export
+        myko_rs::register_ts_export!(#name, #partial_ident);
 
         myko_rs::submit! {
             #item_registration

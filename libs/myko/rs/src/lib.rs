@@ -108,8 +108,11 @@ pub mod type_gen;
 
 #[cfg(feature = "bench")]
 pub mod bench_entities;
-pub use inventory::submit;
-pub use ts_rs::TS;
+// Re-export crates for use in macros
+pub use inventory;
+pub use inventory::submit;  // For myko_rs::submit! macro
+pub use ts_rs;
+pub use ts_rs::TS;  // For #[derive(myko_rs::TS)]
 
 /// Helper macro for submitting message event registrations
 #[macro_export]

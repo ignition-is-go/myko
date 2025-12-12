@@ -17,8 +17,11 @@ pub use crate::{
         ReportOutputType, ReportRegistration, WrappedReport,
     },
     server::MykoServer,
-    type_gen::generate_item_types,
+    type_gen::{generate_item_types, export_registered_ts_types, TsExportRegistration},
 };
 pub use chrono::Utc;
 pub use myko_macros::*;
 pub use uuid::Uuid;
+
+// Re-export ts_rs::TS for derive macros
+pub use ts_rs::TS;
