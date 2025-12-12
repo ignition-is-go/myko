@@ -707,15 +707,13 @@ startedAt: string (ISO DateTime)
 **Peer Discovery** (entity-based):
 - On init, subscribe to `GetPeerServers` query (returns all `Server` entities except self)
 - When new `Server` entities appear in the query results, connect to them
-- Servers publish their own `Server` entity on startup, which propagates via event replication
+- Servers publish their own `Server` entity on startup
 - Optional: Docker DNS seeding via `tasks.<MYKO_SERVICE_NAME>` can bootstrap initial `Server` entities
 
 **Peer Connection** (`PeerClientRegistry`):
 1. For each discovered server, create `WSMClient` connection
 2. On connect, verify server ID matches expected via `GetConnectedServer` query
-3. Subscribe to `ServerEventLog` report to receive peer's events
-4. Forward received events to local `peerBus`
-5. On disconnect, clean up and delete peer's `Server` entity
+3. On disconnect, clean up and delete peer's `Server` entity
 
 **Federation Wrappers**:
 ```
@@ -740,9 +738,6 @@ PeerAlive { peerId: ID } -> Observable<number | false>
 
 PeerLastSeen { peerId: ID } -> Observable<string>
   - ISO timestamp of last successful ping
-
-ServerEventLog -> Observable<MEvent>
-  - Stream of all events from this server (for peers to subscribe)
 ```
 
 **Key Queries**:
@@ -752,11 +747,6 @@ GetPeerServers -> Server[]      // Returns all other servers in cluster
 GetServers -> Server[]          // Returns all known servers
 GetServersByClientIds { clientIds[] } -> Server[]  // Servers hosting specific clients
 ```
-
-**Event Replication**:
-- Each server subscribes to peers' `ServerEventLog`
-- Received events are published to local `peerBus` (separate from main `eventBus`)
-- This enables read-your-writes consistency within a server, eventual consistency across cluster
 
 **Repo `peerQuery` Option**:
 - Repos can be configured with `peerQuery: (ids: ID[]) => Observable<T[]>`
@@ -852,7 +842,6 @@ getPeerToken() -> string
 - Full-text search (tantivy integration)
 - Windback/snapshots
 - Authentication (Auth0/JWT validation)
-- Event replication (ServerEventLog subscription for peer event sync)
 - RebalanceItem command
 - Most rship domain entities (need to be defined with `#[myko_item]`)
 
@@ -873,7 +862,6 @@ getPeerToken() -> string
 12. 📐 Context propagation (tx, clientId, lineage, hostId) - DESIGNED
 13. 📐 Authentication (async-oidc-jwt-validator + peerSecret) - DESIGNED
 14. 📐 Windback/Snapshots (version-control approach) - DESIGNED
-15. 📐 Event Replication (ServerEventLog subscription) - DESIGNED
 
 **Application Layer** (separate from framework, e.g. rship):
 - Define domain entities using `#[myko_item]`
@@ -1783,373 +1771,29 @@ pub struct ItemChange {
 | Simple mental model | Like git: commit, checkout, restore |
 | Branching possible | Future: could support branching from snapshots |
 
-### Peer Discovery & Federation Design (Rust)
+### Peer Discovery & Federation (Rust) - ✅ IMPLEMENTED
+
+See `libs/myko/rs/src/actors/peer/peer_manager.rs` for implementation.
 
 Multi-server clustering where servers discover each other and proxy operations across the cluster.
 
-#### Core Entities (Framework Level)
+**Key Components:**
+- `Server` entity: Self-announces each server (id, version, address, port, started_at)
+- `PeerManager` actor: Manages peer connections, discovery via `GetPeerServers` query subscription
+- `ForwardQuery/ForwardCommand/ForwardReport`: Proxy operations to peer servers
 
-```rust
-#[myko_item]
-pub struct Server {
-    /// Server version (e.g., "1.0.0")
-    pub version: String,
-    /// IP address where reachable (e.g., "10.0.0.5")
-    pub address: String,
-    /// Port the server is listening on
-    pub port: u16,
-    /// When this server started (ISO DateTime)
-    pub started_at: String,
-}
+**Behavior:**
+- On startup: Clean up stale Server records at same address:port, publish own Server entity
+- Discovery: Subscribe to `GetPeerServers` query, connect to discovered servers
+- Deduplication: `connecting: HashSet<Uuid>` prevents duplicate connection attempts (keyed by server ID)
+- On disconnect: Delete peer's Server entity
 
-#[myko_query(Server)]
-pub struct GetConnectedServer;  // Returns this server
-
-#[myko_query(Server)]
-pub struct GetPeerServers;  // Returns all servers except self
-
-#[myko_report]
-pub struct ServerEventLog;  // Streams events originating from this server
-```
-
-#### PeerManager Actor
-
-Central actor managing peer connections:
-
-```rust
-pub struct PeerManager {
-    host_id: Uuid,
-    host_address: String,
-    host_port: u16,
-
-    /// Active peer connections
-    peers: HashMap<Uuid, PeerConnection>,
-
-    /// Server IDs we're currently connecting to (prevents duplicate connection attempts)
-    connecting: HashSet<Uuid>,
-
-    /// Authentication service for peer tokens
-    auth: Arc<dyn AuthService>,
-
-    /// Local event bus to publish peer events
-    event_manager: ActorRef<EventManagerMsg>,
-
-    /// Query manager for GetPeerServers subscription
-    query_manager: ActorRef<QueryManagerMsg>,
-}
-
-pub struct PeerConnection {
-    server_id: Uuid,
-    client: MykoClient,
-    /// Subscription to peer's ServerEventLog
-    event_subscription: Option<JoinHandle<()>>,
-}
-
-pub enum PeerManagerMsg {
-    /// Server entity appeared - try to connect
-    ServerDiscovered(Server),
-    /// Server entity removed - disconnect
-    ServerRemoved { server_id: Uuid },
-    /// Peer connected successfully
-    PeerConnected { server_id: Uuid, client: MykoClient },
-    /// Peer disconnected
-    PeerDisconnected { server_id: Uuid },
-    /// Forward query to peer
-    ForwardQuery { peer_id: Uuid, query: Box<dyn Query>, reply: RpcReplyPort<QueryStream> },
-    /// Forward command to peer
-    ForwardCommand { peer_id: Uuid, command: Box<dyn Command>, reply: RpcReplyPort<CommandResult> },
-    /// Forward report to peer
-    ForwardReport { peer_id: Uuid, report: Box<dyn Report>, reply: RpcReplyPort<ReportStream> },
-    /// Peer event received (from ServerEventLog subscription)
-    PeerEventReceived(MEvent),
-}
-```
-
-#### Discovery Flow
-
-```rust
-impl PeerManager {
-    async fn start(&self, ctx: &ActorContext) {
-        // 1. Clean up stale server records with same address:port
-        let stale = self.query_servers_at_address(&self.host_address, self.host_port).await;
-        for server in stale {
-            self.event_manager.send(PublishDel { item: server, tx: Uuid::new_v4() }).await;
-        }
-
-        // 2. Publish our own Server entity
-        let server = Server {
-            id: self.host_id.to_string().into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            address: self.host_address.clone(),
-            port: self.host_port,
-            started_at: Utc::now().to_rfc3339(),
-            hash: None,
-        };
-        self.event_manager.send(PublishSet { item: server, tx: Uuid::new_v4() }).await;
-
-        // 3. Subscribe to GetPeerServers query
-        let peer_stream = self.query_manager.call(Subscribe {
-            query: Box::new(GetPeerServers),
-        }).await;
-
-        // 4. Spawn task to handle peer discovery
-        let self_ref = ctx.actor_ref().clone();
-        tokio::spawn(async move {
-            while let Some(servers) = peer_stream.next().await {
-                for server in servers {
-                    self_ref.send_message(PeerManagerMsg::ServerDiscovered(server));
-                }
-            }
-        });
-    }
-
-    async fn handle_server_discovered(&mut self, server: Server) {
-        let address_key = format!("{}:{}", server.address, server.port);
-
-        // Skip if already connected or connecting
-        if self.peers.contains_key(&server.id.parse().unwrap())
-           || self.connecting.contains(&address_key) {
-            return;
-        }
-
-        self.connecting.insert(address_key.clone());
-
-        // Connect in background
-        let self_ref = self.actor_ref.clone();
-        let auth_token = self.auth.peer_token().to_string();
-        tokio::spawn(async move {
-            match MykoClient::connect(&server.address, server.port, &auth_token).await {
-                Ok(client) => {
-                    // Verify server ID matches
-                    if let Ok(connected) = client.query_one::<Server>(GetConnectedServer).await {
-                        if connected.id == server.id {
-                            self_ref.send_message(PeerManagerMsg::PeerConnected {
-                                server_id: server.id.parse().unwrap(),
-                                client,
-                            });
-                            return;
-                        }
-                    }
-                    // ID mismatch - delete stale Server entity
-                    self_ref.send_message(PeerManagerMsg::ServerRemoved {
-                        server_id: server.id.parse().unwrap(),
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to connect to peer {}: {}", address_key, e);
-                }
-            }
-        });
-    }
-
-    async fn handle_peer_connected(&mut self, server_id: Uuid, client: MykoClient) {
-        // Subscribe to peer's event log
-        let event_stream = client.watch_report(ServerEventLog).await;
-        let self_ref = self.actor_ref.clone();
-
-        let subscription = tokio::spawn(async move {
-            while let Some(event) = event_stream.next().await {
-                self_ref.send_message(PeerManagerMsg::PeerEventReceived(event));
-            }
-            // Stream ended - peer disconnected
-            self_ref.send_message(PeerManagerMsg::PeerDisconnected { server_id });
-        });
-
-        self.peers.insert(server_id, PeerConnection {
-            server_id,
-            client,
-            event_subscription: Some(subscription),
-        });
-
-        tracing::info!("Connected to peer: {}", server_id);
-    }
-
-    async fn handle_peer_disconnected(&mut self, server_id: Uuid) {
-        if let Some(peer) = self.peers.remove(&server_id) {
-            if let Some(sub) = peer.event_subscription {
-                sub.abort();
-            }
-            // Publish DEL for the peer's Server entity
-            self.event_manager.send(PublishDel {
-                item: Server { id: server_id.to_string().into(), ..Default::default() },
-                tx: Uuid::new_v4(),
-            }).await;
-        }
-        tracing::info!("Peer disconnected: {}", server_id);
-    }
-}
-```
-
-#### Federation Wrappers
-
-```rust
-/// Route query to specific peer
-#[myko_command]
-pub struct PeerQuery {
-    pub query: Box<dyn Query>,
-    pub peer_id: Uuid,
-}
-
-/// Route command to specific peer
-#[myko_command]
-pub struct PeerCommand {
-    pub command: Box<dyn Command>,
-    pub peer_id: Uuid,
-}
-
-/// Route report to specific peer
-#[myko_command]
-pub struct PeerReport {
-    pub report: Box<dyn Report>,
-    pub peer_id: Uuid,
-}
-```
-
-#### Federation Handlers
-
-```rust
-#[myko_query_handler(PeerQuery)]
-async fn handle_peer_query(
-    query: PeerQuery,
-    ctx: &QueryContext,
-    peer_manager: ActorRef<PeerManagerMsg>,
-) -> QueryStream {
-    // Local query - execute directly
-    if query.peer_id == ctx.host_id() {
-        return ctx.query(query.query).await;
-    }
-
-    // Forward to peer
-    peer_manager.call(ForwardQuery {
-        peer_id: query.peer_id,
-        query: query.query,
-    }).await.unwrap_or_else(|_| QueryStream::empty())
-}
-
-#[myko_command_handler(PeerCommand)]
-async fn handle_peer_command(
-    command: PeerCommand,
-    ctx: &CommandContext,
-    peer_manager: ActorRef<PeerManagerMsg>,
-) -> Result<()> {
-    let peer = peer_manager.call(GetPeer { id: command.peer_id }).await?;
-
-    match peer {
-        Some(peer) => {
-            // Verify requesting client is local before forwarding
-            let local_clients = ctx.query(GetClientsByQuery {
-                partial: Client { server_id: Some(ctx.host_id().to_string().into()), ..Default::default() }
-            }).await?;
-
-            if !local_clients.iter().any(|c| c.id == ctx.client_id().unwrap_or_default()) {
-                bail!("Only local clients can forward commands to peers");
-            }
-
-            peer.client.send_command(command.command).await
-        }
-        None => bail!("Peer not found: {}", command.peer_id),
-    }
-}
-
-#[myko_report_handler(PeerReport)]
-async fn handle_peer_report(
-    report: PeerReport,
-    ctx: &ReportContext,
-    peer_manager: ActorRef<PeerManagerMsg>,
-) -> ReportStream {
-    // Local report - execute directly
-    if report.peer_id == ctx.host_id() {
-        return ctx.report(report.report).await;
-    }
-
-    // Forward to peer (returns empty if peer not connected)
-    peer_manager.call(ForwardReport {
-        peer_id: report.peer_id,
-        report: report.report,
-    }).await.unwrap_or_else(|_| ReportStream::empty())
-}
-```
-
-#### Event Replication
-
-```rust
-impl PeerManager {
-    async fn handle_peer_event(&mut self, event: MEvent, ctx: &RequestContext) {
-        // Forward peer events to local event bus
-        // These events originated on another server but should update local state
-        match event.change_type {
-            ChangeType::Set => {
-                self.event_manager.send(PublishSet {
-                    item: event.item,
-                    context: ctx.clone(),
-                    options: EventOptions { from_peer: true, ..Default::default() },
-                }).await;
-            }
-            ChangeType::Del => {
-                self.event_manager.send(PublishDel {
-                    item: event.item,
-                    context: ctx.clone(),
-                    options: EventOptions { from_peer: true, ..Default::default() },
-                }).await;
-            }
-        }
-    }
-}
-```
-
-#### ServerEventLog Report Handler
-
-```rust
-#[myko_report_handler(ServerEventLog)]
-fn handle_server_event_log(
-    _report: ServerEventLog,
-    ctx: &ReportContext,
-    event_manager: ActorRef<EventManagerMsg>,
-) -> impl Stream<Item = MEvent> {
-    // Stream events that originated from this server
-    event_manager.subscribe()
-        .filter(move |e| e.source_id == ctx.host_id())
-}
-```
-
-#### Peer Query Option for Repositories
-
-```rust
-pub struct RepoConfig<T> {
-    /// Optional function to query peers for missing items
-    pub peer_query: Option<fn(&[Arc<str>]) -> BoxFuture<'static, Vec<T>>>,
-}
-
-impl<T: Item> Repository<T> {
-    /// Get item by ID, falling back to peer query if not found locally
-    pub async fn get_with_fallback(&self, id: &str) -> Option<T> {
-        // Try local first
-        if let Some(item) = self.get_id(id).await {
-            return Some(item);
-        }
-
-        // Try peer query if configured
-        if let Some(peer_query) = &self.config.peer_query {
-            let results = peer_query(&[Arc::from(id)]).await;
-            return results.into_iter().next();
-        }
-
-        None
-    }
-}
-```
-
-#### Design Decisions
-
+**Design Decisions:**
 | Decision | Rationale |
 |----------|-----------|
 | Entity-based discovery | No external service discovery needed; servers self-announce via Server entities |
-| PeerManager actor | Centralizes peer connection lifecycle; easy to query peer state |
-| ServerEventLog streaming | Real-time event replication without polling |
-| Server ID deduplication | Prevents duplicate connections to same server during startup race (keyed by ID, not address) |
+| Server ID deduplication | Prevents duplicate connections during startup race (keyed by ID, not address) |
 | Peer token auth | Cluster traffic uses shared secret, not JWT |
-| Delete stale on startup | Handles server restarts with same address:port |
-| from_peer event option | Prevents cascade loops; relationship handlers skip peer events |
 
 ---
 
