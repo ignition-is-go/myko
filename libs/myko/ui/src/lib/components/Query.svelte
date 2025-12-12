@@ -1,15 +1,17 @@
 <script lang="ts" generics="Q extends QueryReturn<unknown>">
 	import type { QueryReturn, QueryItem } from '@myko/ts';
-	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
+	import {
+		getMykoClient,
+		type ReactiveQuery,
+		type SvelteMykoClient
+	} from '../services/svelte-client.svelte.js';
 	import type { Snippet } from 'svelte';
 	import { onDestroy } from 'svelte';
-
-	type Item = QueryItem<Q> & { id: string };
 
 	interface Props {
 		query: Q;
 		client?: SvelteMykoClient;
-		children: Snippet<[Item]>;
+		children: Snippet<[QueryItem<Q> & { id: string }]>;
 		empty?: Snippet;
 		loading?: Snippet;
 	}
@@ -17,7 +19,7 @@
 	let { query, client, children, empty, loading }: Props = $props();
 
 	const resolvedClient = client ?? getMykoClient();
-	const result = resolvedClient.query(query);
+	const result: ReactiveQuery<Q> = resolvedClient.query(query);
 
 	onDestroy(() => {
 		result.release();

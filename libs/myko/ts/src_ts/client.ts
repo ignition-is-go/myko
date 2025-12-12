@@ -96,8 +96,6 @@ export class MykoClient {
   private messageQueue: MykoMessage[] = []
 
   constructor() {
-    console.log('[MykoClient] constructor called - creating new instance')
-    console.trace('[MykoClient] stack trace')
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
   }
 
@@ -119,11 +117,9 @@ export class MykoClient {
   /** Set server address (e.g., 'ws://localhost:5155/myko') */
   setAddress(address: string | null): void {
     const wasConnected = this.ws !== null
-    console.log('[MykoClient] setAddress:', address, 'wasConnected:', wasConnected)
 
     // Clean up existing connection
     if (this.ws) {
-      console.log('[MykoClient] setAddress: closing existing ws')
       // Null handlers to prevent async onclose from triggering reconnect
       this.ws.onclose = null
       this.ws.onerror = null
@@ -132,7 +128,6 @@ export class MykoClient {
     }
 
     if (this.reconnectTimeout) {
-      console.log('[MykoClient] setAddress: clearing reconnect timeout')
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
     }
@@ -387,11 +382,8 @@ export class MykoClient {
   private connect(): void {
     if (!this.address) return
 
-    console.log('[MykoClient] connect() called, existing ws:', this.ws?.readyState)
-
     // Close any existing connection before creating a new one
     if (this.ws) {
-      console.log('[MykoClient] connect: closing existing ws, readyState:', this.ws.readyState)
       this.ws.onclose = null // Prevent triggering reconnect from this close
       this.ws.close()
       this.ws = null
@@ -400,18 +392,15 @@ export class MykoClient {
     this.connectionStatusSubject.next(ConnectionStatus.Connecting)
 
     try {
-      console.log('[MykoClient] creating new WebSocket to:', this.address)
       this.ws = new WebSocket(this.address)
 
       this.ws.onopen = () => {
-        console.log('[MykoClient] ws.onopen')
         this.connectionStatusSubject.next(ConnectionStatus.Connected)
         this.flushQueue()
         this.resendSubscriptions()
       }
 
       this.ws.onclose = () => {
-        console.log('[MykoClient] ws.onclose, shouldReconnect:', this.shouldReconnect)
         this.ws = null
         this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
 
@@ -420,16 +409,14 @@ export class MykoClient {
         }
       }
 
-      this.ws.onerror = (err) => {
-        console.log('[MykoClient] ws.onerror', err)
+      this.ws.onerror = () => {
         // Error handling is done in onclose
       }
 
       this.ws.onmessage = (event) => {
         this.onMessage(event.data)
       }
-    } catch (err) {
-      console.log('[MykoClient] connect catch:', err)
+    } catch {
       this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
       if (this.shouldReconnect) {
         this.scheduleReconnect()
@@ -438,21 +425,15 @@ export class MykoClient {
   }
 
   private scheduleReconnect(): void {
-    console.log('[MykoClient] scheduleReconnect called, hasTimeout:', !!this.reconnectTimeout, 'wsState:', this.ws?.readyState)
-
     // Don't schedule if already scheduled or already connecting
     if (this.reconnectTimeout) {
-      console.log('[MykoClient] scheduleReconnect: already have timeout, skipping')
       return
     }
     if (this.ws?.readyState === WebSocket.CONNECTING) {
-      console.log('[MykoClient] scheduleReconnect: ws is CONNECTING, skipping')
       return
     }
 
-    console.log('[MykoClient] scheduleReconnect: scheduling reconnect in 1s')
     this.reconnectTimeout = setTimeout(() => {
-      console.log('[MykoClient] reconnect timeout fired, shouldReconnect:', this.shouldReconnect)
       this.reconnectTimeout = null
       if (this.shouldReconnect && this.address) {
         this.connect()

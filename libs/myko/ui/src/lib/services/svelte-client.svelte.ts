@@ -31,20 +31,20 @@ export type CommandError = {
 	error: Error;
 };
 
-/** Reactive query result using SvelteMap */
-export type ReactiveQuery<T extends { id: string }> = {
+/** Reactive query result using SvelteMap - generic over the QueryReturn factory type */
+export type ReactiveQuery<Q extends QueryReturn<unknown>> = {
 	/** Reactive map of items by ID */
-	readonly items: SvelteMap<string, T>;
+	readonly items: SvelteMap<string, QueryItem<Q> & { id: string }>;
 	/** Whether the query has received its first response */
 	readonly resolved: boolean;
 	/** Release this consumer's reference (unsubscribes when last consumer releases) */
 	release: () => void;
 };
 
-/** Reactive report result */
-export type ReactiveReport<T> = {
+/** Reactive report result - generic over the ReportReturn factory type */
+export type ReactiveReport<R extends ReportReturn<unknown>> = {
 	/** Current value (reactive via $state) */
-	readonly value: T | undefined;
+	readonly value: ReportResult<R> | undefined;
 	/** Release this consumer's reference (unsubscribes when last consumer releases) */
 	release: () => void;
 };
@@ -92,12 +92,10 @@ export class SvelteMykoClient {
 	#connectionStatus = $state<ConnectionStatus>(ConnectionStatus.Disconnected);
 
 	constructor() {
-		console.log('[SvelteMykoClient] constructor called - creating new instance');
-		console.trace('[SvelteMykoClient] stack trace');
 		this.client = new MykoClient();
 
 		// Sync connection status to reactive state
-		this.client.connectionStatus$.subscribe((status) => {
+		this.client.connectionStatus$.subscribe((status: ConnectionStatus) => {
 			this.#connectionStatus = status;
 		});
 	}
@@ -167,9 +165,7 @@ export class SvelteMykoClient {
 	 * {/each}
 	 * ```
 	 */
-	query<Q extends QueryReturn<unknown>>(
-		queryFactory: Q
-	): ReactiveQuery<QueryItem<Q> & { id: string }> {
+	query<Q extends QueryReturn<unknown>>(queryFactory: Q): ReactiveQuery<Q> {
 		type Item = QueryItem<Q> & { id: string };
 		const cacheKey = this.getCacheKey('query', queryFactory);
 
@@ -243,7 +239,7 @@ export class SvelteMykoClient {
 	 * <div>Count: {count.value?.count ?? 'loading...'}</div>
 	 * ```
 	 */
-	report<R extends ReportReturn<unknown>>(reportFactory: R): ReactiveReport<ReportResult<R>> {
+	report<R extends ReportReturn<unknown>>(reportFactory: R): ReactiveReport<R> {
 		type Result = ReportResult<R>;
 		const cacheKey = this.getCacheKey('report', reportFactory);
 
@@ -253,9 +249,8 @@ export class SvelteMykoClient {
 		if (!shared) {
 			// Create new shared report with reactive state
 			let value = $state<Result | undefined>(undefined);
-
 			const subscription = this.client.watchReport(reportFactory).subscribe({
-				next: (result) => {
+				next: (result: Result) => {
 					value = result;
 				}
 			});
@@ -336,7 +331,6 @@ export const myko = new SvelteMykoClient();
 // HMR cleanup - disconnect old client when module is hot-reloaded
 if (import.meta.hot) {
 	import.meta.hot.dispose(() => {
-		console.log('[SvelteMykoClient] HMR dispose - disconnecting old client');
 		myko.disconnect();
 	});
 }
