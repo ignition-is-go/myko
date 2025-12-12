@@ -17,7 +17,19 @@ import {
 	type ReportReturn
 } from '@myko/ts';
 import { SvelteMap } from 'svelte/reactivity';
-import type { Subscription } from 'rxjs';
+import { Subject, type Observable, type Subscription } from 'rxjs';
+
+/** Command success event */
+export type CommandSuccess = {
+	commandId: string;
+	response: unknown;
+};
+
+/** Command error event */
+export type CommandError = {
+	commandId: string;
+	error: Error;
+};
 
 /** Reactive query result using SvelteMap */
 export type ReactiveQuery<T extends { id: string }> = {
@@ -62,6 +74,16 @@ export class SvelteMykoClient {
 
 	// Shared reports by cache key
 	private sharedReports = new Map<string, SharedReport<unknown>>();
+
+	// Command outcome subjects
+	private commandSuccessSubject = new Subject<CommandSuccess>();
+	private commandErrorSubject = new Subject<CommandError>();
+
+	/** Observable of all command successes */
+	readonly commandSuccess$: Observable<CommandSuccess> = this.commandSuccessSubject.asObservable();
+
+	/** Observable of all command errors */
+	readonly commandError$: Observable<CommandError> = this.commandErrorSubject.asObservable();
 
 	// Reactive connection status
 	#connectionStatus = $state<ConnectionStatus>(ConnectionStatus.Disconnected);
@@ -264,6 +286,8 @@ export class SvelteMykoClient {
 	/**
 	 * Send a command and wait for the response.
 	 *
+	 * Emits to commandSuccess$ or commandError$ observables for generic handling.
+	 *
 	 * @example
 	 * ```svelte
 	 * <script>
@@ -274,10 +298,19 @@ export class SvelteMykoClient {
 	 * </script>
 	 * ```
 	 */
-	sendCommand<C extends CommandReturn<unknown>>(
+	async sendCommand<C extends CommandReturn<unknown>>(
 		commandFactory: C
 	): Promise<C extends CommandReturn<infer R> ? R : unknown> {
-		return this.client.sendCommand(commandFactory);
+		const commandId = commandFactory.commandId;
+		try {
+			const response = await this.client.sendCommand(commandFactory);
+			this.commandSuccessSubject.next({ commandId, response });
+			return response;
+		} catch (e) {
+			const error = e instanceof Error ? e : new Error(String(e));
+			this.commandErrorSubject.next({ commandId, error });
+			throw e;
+		}
 	}
 
 	/** Access the underlying MykoClient for advanced use cases */

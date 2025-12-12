@@ -6,6 +6,8 @@ export {
 	getMykoClient,
 	myko,
 	SvelteMykoClient,
+	type CommandError,
+	type CommandSuccess,
 	type ReactiveQuery,
 	type ReactiveReport
 } from './svelte-client.svelte.js';
