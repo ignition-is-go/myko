@@ -19,6 +19,8 @@ pub struct AutoReconnectSocket {
     pub status: Mutable<SocketConnectionStatus>,
     pub incoming: tokio::sync::broadcast::Sender<Message>,
     pub outgoing: tokio::sync::broadcast::Sender<Message>,
+    /// Token to cancel the current connection/reconnection loop
+    teardown: Mutable<Option<CancellationToken>>,
 }
 
 impl Default for AutoReconnectSocket {
@@ -33,23 +35,29 @@ impl AutoReconnectSocket {
             status: Mutable::new(SocketConnectionStatus::Disconnected),
             incoming: tokio::sync::broadcast::channel(1000).0,
             outgoing: tokio::sync::broadcast::channel(1000).0,
+            teardown: Mutable::new(None),
         }
     }
 
     pub fn set_addr(&self, addr: Option<String>) {
         let current_status = self.status.lock_ref().clone();
 
-        // Cancel existing connection if different address or disconnecting
-        if let SocketConnectionStatus::Connected(current_addr, teardown)
-        | SocketConnectionStatus::Connecting(current_addr, teardown) = current_status
+        // Cancel existing connection/reconnection loop
+        if let SocketConnectionStatus::Connected(current_addr, _)
+        | SocketConnectionStatus::Connecting(current_addr, _) = &current_status
         {
             if Some(current_addr.clone()) == addr {
                 info!("Already connected to {current_addr}");
                 return;
             }
-            teardown.cancel();
-            self.status.set(SocketConnectionStatus::Disconnected);
         }
+
+        // Cancel the reconnection loop via stored token
+        if let Some(teardown) = self.teardown.lock_ref().as_ref() {
+            teardown.cancel();
+        }
+        self.teardown.set(None);
+        self.status.set(SocketConnectionStatus::Disconnected);
 
         // Start new connection if address provided
         if let Some(addr) = addr {
@@ -58,10 +66,24 @@ impl AutoReconnectSocket {
         }
     }
 
+    /// Close the socket and stop any reconnection attempts.
+    /// This cancels the reconnection loop even if currently disconnected and retrying.
+    pub fn close(&self) {
+        info!("Closing socket and stopping reconnection");
+        if let Some(teardown) = self.teardown.lock_ref().as_ref() {
+            teardown.cancel();
+        }
+        self.teardown.set(None);
+        self.status.set(SocketConnectionStatus::Disconnected);
+    }
+
     fn build(&self, addr: String) {
         info!("Building Connection to {addr}");
 
         let teardown = CancellationToken::new();
+        // Store the teardown token so it can be cancelled externally
+        self.teardown.set(Some(teardown.clone()));
+
         let send = self.outgoing.clone();
         let recv = self.incoming.clone();
         let status = self.status.clone();
