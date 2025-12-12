@@ -1,0 +1,27 @@
+[package]
+name = "myko-python"
+version = "3.0.0-canary.809"
+edition = "2024"
+description = "Python bindings for myko-rs"
+license = "AGPL-3.0-or-later"
+
+# Keep this package independent from the main workspace
+# Required for maturin to work correctly
+[workspace]
+
+[lib]
+name = "myko_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+myko-rs = { version = "3.0.0-canary.809", path = "../rs" }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+pythonize = "0.22"
+uuid = { version = "1.0", features = ["v4"] }
+chrono = "0.4"
+
+[build-dependencies]
+pyo3-build-config = "0.22"
