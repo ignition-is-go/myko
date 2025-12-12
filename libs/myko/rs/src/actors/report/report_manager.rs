@@ -193,6 +193,9 @@ impl Actor for ReportManager {
             } => {
                 trace!("Report subscribing to query: {}", query_id);
 
+                // Clone query_id for use in async block (original moves into wrapped_query)
+                let query_id_for_trace = query_id.clone();
+
                 // Create a WrappedQuery and forward to QueryManager
                 let wrapped_query = WrappedQuery {
                     query,
@@ -203,19 +206,74 @@ impl Actor for ReportManager {
                 // Get the signal from QueryManager and forward updates to response_tx
                 let query_manager = state.query_manager.clone();
                 tokio::spawn(async move {
+                    let query_id = query_id_for_trace;
                     use std::collections::BTreeMap;
 
+                    // First get the initial snapshot - futures-signals doesn't emit
+                    // Replace for empty initial state, so we need to send it explicitly
+                    let initial_snapshot = ractor::call!(
+                        query_manager,
+                        QueryManagerMsg::QuerySnapshot,
+                        wrapped_query.clone()
+                    );
+
+                    let mut accumulated: BTreeMap<Arc<str>, Arc<dyn AnyItem>> = match initial_snapshot
+                    {
+                        Ok(snapshot) => snapshot,
+                        Err(e) => {
+                            error!("Failed to get initial snapshot for query: {}", e);
+                            return;
+                        }
+                    };
+
+                    // Send initial state immediately (even if empty)
+                    let initial_values: Vec<Value> =
+                        accumulated.values().map(|item| item.to_value()).collect();
+                    trace!(
+                        "Report query [{}] sending initial {} items to report",
+                        query_id,
+                        initial_values.len()
+                    );
+                    if response_tx.send(initial_values).await.is_err() {
+                        return;
+                    }
+
+                    // Now subscribe for updates
                     match ractor::call!(query_manager, QueryManagerMsg::StartQuery, wrapped_query) {
                         Ok(signal_map) => {
-                            // Convert MutableSignalMap to a stream of MapDiff events
-                            // and accumulate into a BTreeMap
+                            trace!("Report query [{}] subscribed for updates", query_id);
+
                             let mut stream = SignalMapStream::new(signal_map);
-                            let mut accumulated: BTreeMap<Arc<str>, Arc<dyn AnyItem>> =
-                                BTreeMap::new();
+                            let mut seen_initial_replace = false;
 
                             while let Some(diff) = stream.next().await {
+                                // Skip the first Replace - we already sent the initial snapshot
+                                if matches!(&diff, MapDiff::Replace { .. }) && !seen_initial_replace {
+                                    seen_initial_replace = true;
+                                    trace!(
+                                        "Report query [{}] skipping initial Replace (already sent snapshot)",
+                                        query_id
+                                    );
+                                    continue;
+                                }
+
+                                trace!(
+                                    "Report query [{}] received diff: {:?}",
+                                    query_id,
+                                    match &diff {
+                                        MapDiff::Replace { entries } => {
+                                            format!("Replace({} entries)", entries.len())
+                                        }
+                                        MapDiff::Insert { key, .. } => format!("Insert({})", key),
+                                        MapDiff::Update { key, .. } => format!("Update({})", key),
+                                        MapDiff::Remove { key } => format!("Remove({})", key),
+                                        MapDiff::Clear {} => "Clear".to_string(),
+                                    }
+                                );
+
                                 match diff {
                                     MapDiff::Replace { entries } => {
+                                        // Subsequent Replace (e.g., on reconnect) - process normally
                                         accumulated.clear();
                                         for (k, v) in entries {
                                             accumulated.insert(k, v);
@@ -238,6 +296,11 @@ impl Actor for ReportManager {
                                 // Send current state as Vec<Value>
                                 let values: Vec<Value> =
                                     accumulated.values().map(|item| item.to_value()).collect();
+                                trace!(
+                                    "Report query [{}] sending {} items to report",
+                                    query_id,
+                                    values.len()
+                                );
                                 if response_tx.send(values).await.is_err() {
                                     break;
                                 }

@@ -146,8 +146,16 @@ pub trait Report:
                     use futures::StreamExt;
                     match s.next().await {
                         Some(output) => {
-                            let value = serde_json::to_value(&output).ok()?;
-                            Some((value, s))
+                            match serde_json::to_value(&output) {
+                                Ok(value) => {
+                                    log::trace!("Report serialized output: {}", value);
+                                    Some((value, s))
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to serialize report output: {}", e);
+                                    None
+                                }
+                            }
                         }
                         None => None,
                     }

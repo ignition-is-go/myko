@@ -13,7 +13,7 @@ use crate::{
     prelude::AnyItem,
     server::MykoServerCtx,
 };
-use log::{debug, error};
+use log::{debug, error, trace};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -37,6 +37,27 @@ pub enum EventHandlerMessage {
     Init(Option<KafkaSharedConfig>),
     PersisterCaughtUp,
     GetState(RpcReplyPort<BTreeMap<Arc<str>, Arc<dyn AnyItem>>>),
+
+    // Internal query messages for RelationshipManager
+    /// Query items by field value (field name is JSON camelCase)
+    QueryByField {
+        field: String,
+        value: String,
+        reply: RpcReplyPort<Vec<serde_json::Value>>,
+    },
+    /// Query items where an array field contains a specific value
+    QueryArrayContains {
+        field: String,
+        value: String,
+        reply: RpcReplyPort<Vec<serde_json::Value>>,
+    },
+    /// Get items by their IDs
+    GetByIds {
+        ids: Vec<Arc<str>>,
+        reply: RpcReplyPort<Vec<serde_json::Value>>,
+    },
+    /// Get all items as JSON values
+    GetAllItems(RpcReplyPort<Vec<serde_json::Value>>),
 }
 
 pub struct EventHandlerArgs {
@@ -192,6 +213,11 @@ impl Actor for EventHandler {
 
                 match change_type {
                     crate::event::MEventType::DEL => {
+                        trace!(
+                            "{}: Processing DEL for item {}",
+                            state.entity_name,
+                            item.id()
+                        );
                         state.store.remove(&item.id());
 
                         // Direct send to QueryManager (bypasses Server actor)
@@ -225,6 +251,79 @@ impl Actor for EventHandler {
                 if let Err(err) = reply.send(state.store.clone()) {
                     error!("Unable to reply with store state: {}", err);
                 };
+                Ok(())
+            }
+            EventHandlerMessage::QueryByField { field, value, reply } => {
+                let results: Vec<serde_json::Value> = state
+                    .store
+                    .values()
+                    .filter_map(|item| {
+                        let json = item.to_value();
+                        // Check if the field matches the value
+                        if let Some(field_value) = json.get(&field) {
+                            // Compare as string (handles both string and numeric values)
+                            let matches = match field_value {
+                                serde_json::Value::String(s) => s == &value,
+                                serde_json::Value::Number(n) => n.to_string() == value,
+                                _ => field_value.to_string().trim_matches('"') == value,
+                            };
+                            if matches {
+                                return Some(json);
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+
+                if let Err(err) = reply.send(results) {
+                    error!("Unable to reply with query results: {}", err);
+                }
+                Ok(())
+            }
+            EventHandlerMessage::QueryArrayContains { field, value, reply } => {
+                let results: Vec<serde_json::Value> = state
+                    .store
+                    .values()
+                    .filter_map(|item| {
+                        let json = item.to_value();
+                        // Check if the array field contains the value
+                        if let Some(serde_json::Value::Array(arr)) = json.get(&field) {
+                            let contains = arr.iter().any(|v| match v {
+                                serde_json::Value::String(s) => s == &value,
+                                serde_json::Value::Number(n) => n.to_string() == value,
+                                _ => v.to_string().trim_matches('"') == value,
+                            });
+                            if contains {
+                                return Some(json);
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+
+                if let Err(err) = reply.send(results) {
+                    error!("Unable to reply with query results: {}", err);
+                }
+                Ok(())
+            }
+            EventHandlerMessage::GetByIds { ids, reply } => {
+                let results: Vec<serde_json::Value> = ids
+                    .iter()
+                    .filter_map(|id| state.store.get(id).map(|item| item.to_value()))
+                    .collect();
+
+                if let Err(err) = reply.send(results) {
+                    error!("Unable to reply with items: {}", err);
+                }
+                Ok(())
+            }
+            EventHandlerMessage::GetAllItems(reply) => {
+                let results: Vec<serde_json::Value> =
+                    state.store.values().map(|item| item.to_value()).collect();
+
+                if let Err(err) = reply.send(results) {
+                    error!("Unable to reply with all items: {}", err);
+                }
                 Ok(())
             }
         }

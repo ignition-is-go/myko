@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use log::{debug, info, warn};
+use log::{debug, info, trace, warn};
 use ractor::{Actor, ActorRef, cast};
 use tokio::net::TcpListener;
 
@@ -77,15 +77,17 @@ impl Actor for WebSocketServer {
             WebSocketServerMsg::SendToClient(SendToClientData { client_id, message }) => {
                 if let Some(client) = state._connections.get(&client_id) {
                     if let Err(e) = cast!(client, WebSocketConnectionMsg::Transmit(message)) {
-                        warn!("Failed to send to client {}: {}", client_id, e);
+                        trace!("Failed to send to client {} (likely disconnected): {}", client_id, e);
                     }
                 } else {
-                    warn!("Client {} not found in connections", client_id);
+                    // Client not found - this is normal when clients disconnect while
+                    // query/report tasks are still sending, or during orphan cleanup
+                    trace!("Client {} not found in connections (already disconnected)", client_id);
                 }
                 Ok(())
             }
             WebSocketServerMsg::RegisterClient { client_id, client } => {
-                debug!("Registering client {}", client_id);
+                trace!("Registering client {}", client_id);
                 state._connections.insert(client_id, client);
                 Ok(())
             }

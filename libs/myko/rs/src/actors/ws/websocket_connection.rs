@@ -52,7 +52,7 @@ impl Actor for WebSocketConnection {
         myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        debug!("WebSocketConnection started");
+        trace!("WebSocketConnection started");
 
         let WebSocketConnectionArgs {
             stream,
@@ -66,7 +66,7 @@ impl Actor for WebSocketConnection {
 
         let (tx, mut rx) = match accept_hdr_async(stream, |req: &Request, response: Response| {
             let path = req.uri().path();
-            debug!("WebSocket handshake request path: {}", path);
+            trace!("WebSocket handshake request path: {}", path);
             if !(path == "/myko" || path == "/myko/") {
                 let res = Response::builder()
                     .status(404u16)

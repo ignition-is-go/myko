@@ -46,7 +46,7 @@ impl Actor for ReportRunner {
         myself: ActorRef<Self::Msg>,
         mut args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        debug!("Starting ReportRunner for tx: {}", args.tx);
+        trace!("Starting ReportRunner for tx: {}", args.tx);
 
         // Spawn a task to forward subscription requests to the actor
         let myself_clone = myself.clone();
@@ -74,7 +74,13 @@ impl Actor for ReportRunner {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             ReportRunnerMsg::EmitValue(value) => {
-                trace!("ReportRunner [{}] emitting value", state.tx);
+                let value_preview = value.to_string();
+                let preview = if value_preview.len() > 100 {
+                    format!("{}...", &value_preview[..100])
+                } else {
+                    value_preview
+                };
+                trace!("ReportRunner [{}] emitting value: {}", state.tx, preview);
                 if let Err(e) = state.output_tx.send(value).await {
                     error!("Failed to send report output: {}", e);
                     // Output channel closed, stop the runner

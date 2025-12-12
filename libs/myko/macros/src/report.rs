@@ -35,17 +35,14 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
          #[serde(rename_all = "camelCase")]
     };
 
-    // Extract just the type name (last segment) from the path for registration
-    let output_type_name = report_output_type
-        .segments
-        .last()
-        .map(|seg| &seg.ident)
-        .expect("Output type path must have at least one segment");
+    // Convert the full output type path to a string for registration
+    // This preserves generics like Option<Server> -> "Option < Server >"
+    let output_type_str = quote!(#report_output_type).to_string();
 
     let report_registration = quote! {
         myko_rs::prelude::ReportRegistration {
             report_id: stringify!(#struct_name),
-            output_type: stringify!(#output_type_name),
+            output_type: #output_type_str,
             crate_name: module_path!(),
             // Output type crate: use module_path!() since the output type is defined
             // in the same crate as the report (either explicitly or via generated types)

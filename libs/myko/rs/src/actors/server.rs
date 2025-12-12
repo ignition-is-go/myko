@@ -9,6 +9,7 @@ use crate::{
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
         query::query_manager::{QueryManager, QueryManagerArgs, QueryManagerMsg},
+        relationship::{RelationshipManager, RelationshipManagerArgs, RelationshipManagerMsg},
         report::report_manager::{ReportManager, ReportManagerArgs, ReportManagerMsg},
         saga::{SagaManager, SagaManagerArgs, SagaManagerMsg},
         ws::websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
@@ -35,6 +36,7 @@ pub struct ServerState {
     report_manager: ActorRef<ReportManagerMsg>,
     command_manager: ActorRef<CommandManagerMsg>,
     saga_manager: ActorRef<SagaManagerMsg>,
+    relationship_manager: ActorRef<RelationshipManagerMsg>,
     ctx: Arc<MykoServerCtx>,
     args: ServerArgs,
 }
@@ -217,6 +219,35 @@ impl Actor for Server {
             error!("Failed to set EventBus in EventManager: {}", err);
         }
 
+        // Spawn RelationshipManager for cascade operations
+        let relationship_manager = match Actor::spawn(
+            None,
+            RelationshipManager,
+            RelationshipManagerArgs {
+                ctx: ctx.clone(),
+                event_manager: event_manager.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn RelationshipManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
+        // Wire RelationshipManager to receive events via EventBus
+        let relationship_manager_for_bus = relationship_manager.clone();
+        let mut subscriber = event_bus.subscribe();
+        tokio::spawn(async move {
+            while let Some(event) = subscriber.recv().await {
+                // Forward to RelationshipManager (clone event from Arc)
+                let _ = relationship_manager_for_bus
+                    .send_message(RelationshipManagerMsg::ProcessEvent((*event).clone()));
+            }
+        });
+
         // MessageHandler with direct references to all managers + ws_server
         let message_handler = match Actor::spawn(
             None,
@@ -246,6 +277,7 @@ impl Actor for Server {
             report_manager,
             command_manager,
             saga_manager,
+            relationship_manager,
             ctx,
             args,
         })
@@ -302,6 +334,7 @@ impl Actor for Server {
                                 created_at: Utc::now().to_rfc3339(),
                                 tx: Uuid::new_v4().to_string(),
                                 source_id: None,
+                                options: None,
                             };
                             if let Err(err) = state.repo_manager.send_message(
                                 EventManagerMsg::ProcessEvent(ProcessEventData {
@@ -341,6 +374,19 @@ impl Actor for Server {
                     error!("Failed to send message to RepoManager: {}", err);
                 }
 
+                // Establish relationships (orphan cleanup, ensure-for initialization)
+                match ractor::call!(
+                    state.relationship_manager,
+                    RelationshipManagerMsg::EstablishRelations
+                ) {
+                    Ok(()) => {
+                        info!("Relationship cascades established");
+                    }
+                    Err(err) => {
+                        error!("Failed to establish relationships: {}", err);
+                    }
+                }
+
                 // Start all registered sagas
                 if let Err(err) = state.saga_manager.send_message(SagaManagerMsg::StartAll) {
                     error!("Failed to start SagaManager: {}", err);
@@ -354,22 +400,6 @@ impl Actor for Server {
                     })
                 {
                     error!("Failed to send message to WebSocketServer: {}", err);
-                }
-
-                // Log entity counts after initialization
-                match ractor::call!(state.repo_manager, EventManagerMsg::GetAllCounts) {
-                    Ok(counts) => {
-                        let total: usize = counts.iter().map(|(_, c)| c).sum();
-                        let counts_str = counts
-                            .iter()
-                            .map(|(name, count)| format!("{}: {}", name, count))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        info!("Entity counts after init: {} total [{}]", total, counts_str);
-                    }
-                    Err(err) => {
-                        error!("Failed to get entity counts: {}", err);
-                    }
                 }
             }
             ServerMsg::GetManagers(reply) => {

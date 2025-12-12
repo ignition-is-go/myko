@@ -6,5 +6,6 @@ use std::sync::Arc;
 
 #[myko_item]
 pub struct Client {
+	#[belongs_to(Server)]
     pub server_id: Arc<str>,
 }

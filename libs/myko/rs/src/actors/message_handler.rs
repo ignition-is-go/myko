@@ -265,6 +265,14 @@ impl Actor for MessageHandler {
                         // Spawn task to forward report outputs to client
                         tokio::spawn(async move {
                             while let Some(value) = output_rx.recv().await {
+                                let value_str = value.to_string();
+                                let preview = if value_str.len() > 100 {
+                                    format!("{}...", &value_str[..100])
+                                } else {
+                                    value_str
+                                };
+                                trace!("Sending report response [tx={}]: {}", tx, preview);
+
                                 let response = ReportResponse {
                                     response: value,
                                     tx: tx.to_string(),
@@ -374,7 +382,7 @@ impl Actor for MessageHandler {
                 }
             }
             MessageHandlerMsg::ClientConnected { client_id, server_id } => {
-                debug!("Client connected: {}", client_id);
+                trace!("Client connected: {}", client_id);
 
                 // Publish Client entity
                 let client = Client {

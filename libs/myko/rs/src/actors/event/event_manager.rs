@@ -42,6 +42,16 @@ pub enum EventManagerMsg {
     SetEventBus(EventBus),
     /// Get counts for all entity types
     GetAllCounts(RpcReplyPort<Vec<(Arc<str>, usize)>>),
+
+    // Internal query messages for RelationshipManager (tuple variants for ractor::call!)
+    /// Query items of a specific entity type by field value (entity_type, field, value, reply)
+    QueryByField(Arc<str>, String, String, RpcReplyPort<Vec<serde_json::Value>>),
+    /// Query items where an array field contains a value (entity_type, field, value, reply)
+    QueryArrayContains(Arc<str>, String, String, RpcReplyPort<Vec<serde_json::Value>>),
+    /// Get items by IDs from a specific entity type (entity_type, ids, reply)
+    GetByIds(Arc<str>, Vec<Arc<str>>, RpcReplyPort<Vec<serde_json::Value>>),
+    /// Get all items of a specific entity type (entity_type, reply)
+    GetAllItems(Arc<str>, RpcReplyPort<Vec<serde_json::Value>>),
 }
 
 pub struct EventManagerArgs {
@@ -210,6 +220,73 @@ impl Actor for EventManager {
 
                 if let Err(err) = reply.send(counts) {
                     error!("Failed to reply with entity counts: {:?}", err);
+                }
+                Ok(())
+            }
+            EventManagerMsg::QueryByField(entity_type, field, value, reply) => {
+                if let Some(handler) = state.handlers.get(&entity_type) {
+                    // Forward to the specific EventHandler
+                    if let Err(err) = handler.send_message(EventHandlerMessage::QueryByField {
+                        field,
+                        value,
+                        reply,
+                    }) {
+                        error!("Failed to forward QueryByField to {}: {}", entity_type, err);
+                    }
+                } else {
+                    warn!("No handler found for entity type: {}", entity_type);
+                    if let Err(err) = reply.send(vec![]) {
+                        error!("Failed to send empty response: {}", err);
+                    }
+                }
+                Ok(())
+            }
+            EventManagerMsg::QueryArrayContains(entity_type, field, value, reply) => {
+                if let Some(handler) = state.handlers.get(&entity_type) {
+                    if let Err(err) = handler.send_message(EventHandlerMessage::QueryArrayContains {
+                        field,
+                        value,
+                        reply,
+                    }) {
+                        error!(
+                            "Failed to forward QueryArrayContains to {}: {}",
+                            entity_type, err
+                        );
+                    }
+                } else {
+                    warn!("No handler found for entity type: {}", entity_type);
+                    if let Err(err) = reply.send(vec![]) {
+                        error!("Failed to send empty response: {}", err);
+                    }
+                }
+                Ok(())
+            }
+            EventManagerMsg::GetByIds(entity_type, ids, reply) => {
+                if let Some(handler) = state.handlers.get(&entity_type) {
+                    if let Err(err) =
+                        handler.send_message(EventHandlerMessage::GetByIds { ids, reply })
+                    {
+                        error!("Failed to forward GetByIds to {}: {}", entity_type, err);
+                    }
+                } else {
+                    warn!("No handler found for entity type: {}", entity_type);
+                    if let Err(err) = reply.send(vec![]) {
+                        error!("Failed to send empty response: {}", err);
+                    }
+                }
+                Ok(())
+            }
+            EventManagerMsg::GetAllItems(entity_type, reply) => {
+                if let Some(handler) = state.handlers.get(&entity_type) {
+                    if let Err(err) = handler.send_message(EventHandlerMessage::GetAllItems(reply))
+                    {
+                        error!("Failed to forward GetAllItems to {}: {}", entity_type, err);
+                    }
+                } else {
+                    warn!("No handler found for entity type: {}", entity_type);
+                    if let Err(err) = reply.send(vec![]) {
+                        error!("Failed to send empty response: {}", err);
+                    }
                 }
                 Ok(())
             }

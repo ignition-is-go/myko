@@ -1,5 +1,5 @@
 use crate::{actors::kafka::common::KafkaSharedConfig, event::MEvent};
-use log::{debug, error, info};
+use log::{debug, error,  trace};
 use ractor::{Actor, ActorRef};
 use rdkafka::{
     ClientConfig,
@@ -118,7 +118,7 @@ impl Actor for KafkaProducer {
 
                         match send_res {
                             Ok(_) => {
-                                info!(
+                                trace!(
                                     "Persisted {:?} {} to Kafka topic {}",
                                     data.event.change_type,
                                     data.event.item_type,
