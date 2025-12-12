@@ -13,6 +13,8 @@ use crate::{
         saga::{SagaManager, SagaManagerArgs, SagaManagerMsg},
         ws::websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
     },
+    api::query::wrap_query,
+    entities::server::{GetServersByQuery, PartialServer},
     event::{MEvent, MEventType},
     saga::SagaContext,
     server::MykoServerCtx,
@@ -86,11 +88,14 @@ impl Actor for Server {
         // 6. SagaManager (needs command_manager)
         // 7. MessageHandler (needs all managers + ws_server)
 
+        let server_id: Arc<str> = ctx.host_id.to_string().into();
+
         let web_socket_server = match Actor::spawn(
             None,
             WebSocketServer,
             WebSocketServerArgs {
                 port: args.bind_port,
+                server_id: server_id.clone(),
             },
         )
         .await
@@ -267,6 +272,53 @@ impl Actor for Server {
                 };
             }
             ServerMsg::AllInitComplete => {
+                // Clean up stale servers with the same address and port
+                let query = GetServersByQuery {
+                    partial: PartialServer {
+                        address: Some(state.args.public_host_address.clone()),
+                        port: Some(state.args.bind_port),
+                        ..Default::default()
+                    },
+                    tx: Uuid::new_v4().to_string().into(),
+                    created_at: Utc::now().to_rfc3339().into(),
+                };
+
+                let wrapped = match wrap_query(Uuid::new_v4().to_string().into(), &query) {
+                    Ok(w) => w,
+                    Err(err) => {
+                        error!("Failed to wrap cleanup query: {}", err);
+                        return Ok(());
+                    }
+                };
+
+                match ractor::call!(state.query_manager, QueryManagerMsg::QuerySnapshot, wrapped) {
+                    Ok(stale_servers) => {
+                        for (id, server) in stale_servers {
+                            info!("Cleaning up stale server: {}", id);
+                            let event = MEvent {
+                                item: server.to_value(),
+                                change_type: MEventType::DEL,
+                                item_type: "Server".to_string(),
+                                created_at: Utc::now().to_rfc3339(),
+                                tx: Uuid::new_v4().to_string(),
+                                source_id: None,
+                            };
+                            if let Err(err) = state.repo_manager.send_message(
+                                EventManagerMsg::ProcessEvent(ProcessEventData {
+                                    event,
+                                    persist: PersistEvent::Persist,
+                                    parsed_item: None,
+                                }),
+                            ) {
+                                error!("Failed to delete stale server {}: {}", id, err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        error!("Failed to query for stale servers: {}", err);
+                    }
+                }
+
                 let s = crate::entities::server::Server {
                     id: state.ctx.host_id.to_string().into(),
                     address: state.args.public_host_address.to_string(),
