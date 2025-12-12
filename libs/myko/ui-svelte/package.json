@@ -1,5 +1,5 @@
 {
-	"name": "@myko/ui",
+	"name": "@myko/ui-svelte",
 	"version": "3.0.0-canary.809",
 	"scripts": {
 		"dev": "vite dev",
