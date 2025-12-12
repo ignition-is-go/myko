@@ -6,6 +6,7 @@
 
 import {
   MykoEvent,
+  type JsonValue,
   type MEvent,
   type MykoMessage,
   type QueryReturn,
@@ -54,22 +55,13 @@ export type QueryDiff<T> = {
 }
 
 // Message type aliases from MykoMessage discriminated union
-type QueryResponseMessage = Extract<
-  MykoMessage<unknown>,
-  { event: typeof MykoEvent.QueryResponse }
->
-type ReportResponseMessage = Extract<
-  MykoMessage<unknown>,
-  { event: typeof MykoEvent.ReportResponse }
->
+type QueryResponseMessage = Extract<MykoMessage, { event: typeof MykoEvent.QueryResponse }>
+type ReportResponseMessage = Extract<MykoMessage, { event: typeof MykoEvent.ReportResponse }>
 type CommandResponseMessage = Extract<
-  MykoMessage<unknown>,
+  MykoMessage,
   { event: typeof MykoEvent.CommandResponse }
 >
-type CommandErrorMessage = Extract<
-  MykoMessage<unknown>,
-  { event: typeof MykoEvent.CommandError }
->
+type CommandErrorMessage = Extract<MykoMessage, { event: typeof MykoEvent.CommandError }>
 
 /** Command factory type for type-safe commands */
 export type CommandReturn<T> = {
@@ -101,9 +93,11 @@ export class MykoClient {
   private sharedReports = new Map<string, Observable<unknown>>()
 
   // Message queue for when not connected
-  private messageQueue: MykoMessage<unknown>[] = []
+  private messageQueue: MykoMessage[] = []
 
   constructor() {
+    console.log('[MykoClient] constructor called - creating new instance')
+    console.trace('[MykoClient] stack trace')
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
   }
 
@@ -260,7 +254,7 @@ export class MykoClient {
       map((r) => ({
         sequence: BigInt(r.data.sequence),
         deletes: r.data.deletes,
-        upserts: r.data.upserts.map((w) => w.item) as QueryItem<Q>[],
+        upserts: r.data.upserts.map((w: WrappedItem<JsonValue>) => w.item) as QueryItem<Q>[],
       })),
 
       finalize(() => {
@@ -471,7 +465,7 @@ export class MykoClient {
     if (typeof data !== 'string') return
 
     try {
-      const message = JSON.parse(data) as MykoMessage<unknown>
+      const message = JSON.parse(data) as MykoMessage
 
       switch (message.event) {
         case MykoEvent.QueryResponse:
@@ -492,7 +486,7 @@ export class MykoClient {
     }
   }
 
-  private send(message: MykoMessage<unknown>): void {
+  private send(message: MykoMessage): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message))
     } else {

@@ -92,6 +92,8 @@ export class SvelteMykoClient {
 	#connectionStatus = $state<ConnectionStatus>(ConnectionStatus.Disconnected);
 
 	constructor() {
+		console.log('[SvelteMykoClient] constructor called - creating new instance');
+		console.trace('[SvelteMykoClient] stack trace');
 		this.client = new MykoClient();
 
 		// Sync connection status to reactive state
@@ -330,6 +332,14 @@ export class SvelteMykoClient {
 
 /** Global singleton client instance (auto-initialized) */
 export const myko = new SvelteMykoClient();
+
+// HMR cleanup - disconnect old client when module is hot-reloaded
+if (import.meta.hot) {
+	import.meta.hot.dispose(() => {
+		console.log('[SvelteMykoClient] HMR dispose - disconnecting old client');
+		myko.disconnect();
+	});
+}
 
 /** Get the global MykoClient instance */
 export function getMykoClient(): SvelteMykoClient {

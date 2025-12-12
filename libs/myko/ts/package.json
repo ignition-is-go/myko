@@ -2,8 +2,14 @@
   "name": "@myko/ts",
   "version": "3.0.0-canary.809",
   "description": "Pure TypeScript client for Myko servers",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "default": "./src_ts/index.ts"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "test": "echo 'no tests yet'"
