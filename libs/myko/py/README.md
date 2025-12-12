@@ -11,17 +11,17 @@ Python bindings for the Rust myko-rs library, providing high-performance WebSock
 pip install maturin
 
 # Build and install in development mode
-just build-myko-python
+just build-myko-py
 # or directly:
-cd libs/myko/python-rs && maturin develop
+cd libs/myko/py && maturin develop
 ```
 
 ### Release Build
 
 ```bash
-just build-myko-python-release
+just build-myko-py-release
 # or directly:
-cd libs/myko/python-rs && maturin build --release
+cd libs/myko/py && maturin build --release
 pip install target/wheels/myko_rs-*.whl
 ```
 
@@ -82,8 +82,8 @@ This package wraps the Rust `myko_rs::client::MykoClient` using PyO3, providing:
 
 ```bash
 # Check compilation
-cd libs/myko/python-rs && cargo check
+cd libs/myko/py && cargo check
 
 # Run tests
-cd libs/myko/python-rs && cargo test
+cd libs/myko/py && cargo test
 ```
