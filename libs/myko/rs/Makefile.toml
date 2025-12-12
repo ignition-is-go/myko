@@ -1,0 +1,8 @@
+
+[tasks.gen]
+command = "cargo"
+args = ["run", "--bin", "typegen"]
+
+[tasks.gen-watch]
+command = "cargo"
+args = ["watch", "-x", "run --bin typegen"]
