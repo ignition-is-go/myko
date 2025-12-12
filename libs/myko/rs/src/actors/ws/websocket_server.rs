@@ -30,18 +30,20 @@ pub enum WebSocketServerMsg {
     UnregisterClient {
         client_id: Arc<str>,
     },
-    Start,
+    /// Start accepting connections. MessageHandler passed here to break circular dependency.
+    Start {
+        message_handler: ActorRef<MessageHandlerMsg>,
+    },
 }
 
 pub struct WebSocketServerState {
     _connections: HashMap<Arc<str>, ActorRef<WebSocketConnectionMsg>>,
-    config: WebSocketServerArgs,
+    port: u16,
 }
 
 #[derive(Clone)]
 pub struct WebSocketServerArgs {
     pub port: u16,
-    pub message_handler: ActorRef<MessageHandlerMsg>,
 }
 
 impl Actor for WebSocketServer {
@@ -57,7 +59,7 @@ impl Actor for WebSocketServer {
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
         Ok(WebSocketServerState {
-            config: args,
+            port: args.port,
             _connections: HashMap::new(),
         })
     }
@@ -89,12 +91,8 @@ impl Actor for WebSocketServer {
                 state._connections.remove(&client_id);
                 Ok(())
             }
-            WebSocketServerMsg::Start => {
-                let WebSocketServerArgs {
-                    port,
-                    message_handler,
-                } = state.config.clone();
-
+            WebSocketServerMsg::Start { message_handler } => {
+                let port = state.port;
                 let address = format!("0.0.0.0:{port}");
                 debug!("Trying to bind to {address}");
 

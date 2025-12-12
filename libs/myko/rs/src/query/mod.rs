@@ -116,21 +116,17 @@ pub trait Query:
 
         let parser: Arc<dyn MykoQueryParser> = Arc::new(CapturedQueryParser::<Self>::new());
 
-        match server
-            .server
-            .send_message(crate::actors::server::ServerMsg::QueryManagerMsg(
-                QueryManagerMsg::RegisterQuery(RegisterQueryData {
-                    query_id: Self::query_id_static(),
-                    query_item_type: Self::query_item_type_static(),
-                    closure,
-                    parser,
-                }),
-            )) {
-            Ok(_) => {}
-            Err(err) => {
-                error!("Failed to register query: {}", err);
-            }
-        };
+        // Direct send to QueryManager (bypasses Server routing)
+        if let Err(err) = server.query_manager.send_message(
+            QueryManagerMsg::RegisterQuery(RegisterQueryData {
+                query_id: Self::query_id_static(),
+                query_item_type: Self::query_item_type_static(),
+                closure,
+                parser,
+            }),
+        ) {
+            error!("Failed to register query: {}", err);
+        }
 
         Ok(())
     }

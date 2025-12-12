@@ -9,10 +9,7 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use crate::{
-    actors::{
-        report::report_manager::{RegisterReportData, ReportManagerMsg},
-        server::ServerMsg,
-    },
+    actors::report::report_manager::{RegisterReportData, ReportManagerMsg},
     client::MykoClient,
     common::with_transaction::WithTransaction,
     server::MykoServer,
@@ -158,20 +155,15 @@ pub trait Report:
             },
         );
 
-        match server
-            .server
-            .send_message(ServerMsg::ReportManagerMsg(ReportManagerMsg::RegisterReport(
-                RegisterReportData {
-                    report_id: <Self as ReportIdStatic>::report_id_static().into(),
-                    compute_fn,
-                },
-            )))
-        {
-            Ok(_) => {}
-            Err(err) => {
-                error!("Failed to register report: {}", err);
-            }
-        };
+        // Direct send to ReportManager (bypasses Server routing)
+        if let Err(err) = server.report_manager.send_message(
+            ReportManagerMsg::RegisterReport(RegisterReportData {
+                report_id: <Self as ReportIdStatic>::report_id_static().into(),
+                compute_fn,
+            }),
+        ) {
+            error!("Failed to register report: {}", err);
+        }
 
         Ok(())
     }

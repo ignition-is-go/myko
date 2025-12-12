@@ -28,7 +28,6 @@ pub type QueryClosureType = Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync
 pub struct QueryManagerArgs {
     pub ctx: Arc<MykoServerCtx>,
     pub server: ActorRef<ServerMsg>,
-    pub event_manager: ActorRef<EventManagerMsg>,
 }
 
 pub struct QueryManagerState {
@@ -38,7 +37,8 @@ pub struct QueryManagerState {
     handlers: HashMap<Arc<str>, HashMap<Arc<str>, ActorRef<QueryHandlerMsg>>>,
     // by query_id
     parsers: HashMap<Arc<str>, Arc<dyn MykoQueryParser>>,
-    event_manager: ActorRef<EventManagerMsg>,
+    /// Set after EventManager is spawned (breaks circular dependency)
+    event_manager: Option<ActorRef<EventManagerMsg>>,
 }
 
 pub struct RegisterQueryData {
@@ -51,6 +51,8 @@ pub struct RegisterQueryData {
 pub enum QueryManagerMsg {
     RegisterQuery(RegisterQueryData),
     ProcessUpdate(ProcessUpdateData, Arc<str>),
+    /// Batch of updates for a single item type - more efficient for high throughput
+    ProcessBatch(Vec<ProcessUpdateData>, Arc<str>),
     StartQuery(
         WrappedQuery,
         RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
@@ -60,6 +62,8 @@ pub enum QueryManagerMsg {
         WrappedQuery,
         RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
+    /// Set EventManager reference (breaks circular dependency at startup)
+    SetEventManager(ActorRef<EventManagerMsg>),
 }
 
 impl Actor for QueryManager {
@@ -77,7 +81,7 @@ impl Actor for QueryManager {
             server: args.server,
             handlers: HashMap::new(),
             parsers: HashMap::new(),
-            event_manager: args.event_manager,
+            event_manager: None, // Set later via SetEventManager
         })
     }
 
@@ -93,6 +97,14 @@ impl Actor for QueryManager {
                     error!("Parser already registered for query ID {}", data.query_id);
                 }
 
+                let event_manager = match &state.event_manager {
+                    Some(em) => em.clone(),
+                    None => {
+                        error!("Cannot register query before EventManager is set");
+                        return Ok(());
+                    }
+                };
+
                 state.parsers.insert(data.query_id.clone(), data.parser);
 
                 match Actor::spawn(
@@ -103,7 +115,7 @@ impl Actor for QueryManager {
                         closure: data.closure,
                         ctx: state.ctx.clone(),
                         server: state.server.clone(),
-                        event_manager: state.event_manager.clone(),
+                        event_manager,
                         query_item_type: data.query_item_type.clone(),
                     },
                 )
@@ -174,19 +186,10 @@ impl Actor for QueryManager {
                 Ok(())
             }
             QueryManagerMsg::ProcessUpdate(update_data, item_type) => {
-                //
                 let item_handlers = state.handlers.get(&item_type);
 
                 match item_handlers {
                     Some(handlers) => {
-                        // if handlers.iter().len() > 0 {
-                        //     debug!(
-                        //         "Processing update for item type {:?} in {} handlers",
-                        //         item_type,
-                        //         handlers.iter().len()
-                        //     );
-                        // }
-
                         for (key, handler) in handlers.iter() {
                             match handler
                                 .send_message(QueryHandlerMsg::ProcessUpdate(update_data.clone()))
@@ -195,6 +198,34 @@ impl Actor for QueryManager {
                                 Err(err) => {
                                     log::error!(
                                         "Failed to process update for [{}: {}]: {}",
+                                        key,
+                                        item_type,
+                                        err
+                                    );
+                                }
+                            };
+                        }
+                    }
+                    None => {
+                        warn!("No Query handlers registered for item type {:?}", item_type);
+                    }
+                }
+
+                Ok(())
+            }
+            QueryManagerMsg::ProcessBatch(batch, item_type) => {
+                // Batch processing - send entire batch to each handler for efficient processing
+                let item_handlers = state.handlers.get(&item_type);
+
+                match item_handlers {
+                    Some(handlers) => {
+                        for (key, handler) in handlers.iter() {
+                            match handler.send_message(QueryHandlerMsg::ProcessBatch(batch.clone()))
+                            {
+                                Ok(_) => (),
+                                Err(err) => {
+                                    log::error!(
+                                        "Failed to process batch for [{}: {}]: {}",
                                         key,
                                         item_type,
                                         err
@@ -255,6 +286,11 @@ impl Actor for QueryManager {
                     error!("Failed to get query snapshot: {}", err);
                 };
 
+                Ok(())
+            }
+            QueryManagerMsg::SetEventManager(event_manager) => {
+                log::info!("QueryManager: EventManager reference set");
+                state.event_manager = Some(event_manager);
                 Ok(())
             }
         }

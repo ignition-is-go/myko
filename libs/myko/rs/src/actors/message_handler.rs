@@ -5,7 +5,6 @@ use crate::{
         event::{common::ProcessEventData, event_manager::EventManagerMsg},
         query::query_manager::QueryManagerMsg,
         report::report_manager::ReportManagerMsg,
-        server::ServerMsg,
         ws::websocket_server::{SendToClientData, WebSocketServerMsg},
     },
     api::query::QueryResponse,
@@ -26,7 +25,8 @@ pub struct MessageHandlerArgs {
     pub query_manager: ActorRef<QueryManagerMsg>,
     pub report_manager: ActorRef<ReportManagerMsg>,
     pub command_manager: ActorRef<CommandManagerMsg>,
-    pub server: ActorRef<ServerMsg>,
+    /// Direct reference to WebSocketServer (bypasses Server routing)
+    pub ws_server: ActorRef<WebSocketServerMsg>,
 }
 
 pub struct MessageHandlerState {
@@ -34,7 +34,8 @@ pub struct MessageHandlerState {
     query_manager: ActorRef<QueryManagerMsg>,
     report_manager: ActorRef<ReportManagerMsg>,
     command_manager: ActorRef<CommandManagerMsg>,
-    server: ActorRef<ServerMsg>,
+    /// Direct reference to WebSocketServer (bypasses Server routing)
+    ws_server: ActorRef<WebSocketServerMsg>,
 }
 
 pub struct ProcessTextData {
@@ -63,7 +64,7 @@ impl Actor for MessageHandler {
             query_manager: args.query_manager,
             report_manager: args.report_manager,
             command_manager: args.command_manager,
-            server: args.server,
+            ws_server: args.ws_server,
         })
     }
 
@@ -112,7 +113,8 @@ impl Actor for MessageHandler {
 
                         let mut sequence = 0_u64;
 
-                        let server_ref = state.server.clone();
+                        // Direct reference to WS server (bypasses Server routing)
+                        let ws_server_ref = state.ws_server.clone();
 
                         tokio::spawn(sig.for_each(move |v| {
                             trace!("Map Diff in MessageHandler: {:?}", v);
@@ -182,14 +184,15 @@ impl Actor for MessageHandler {
                                 }
                             };
 
+                            // Direct send to WebSocketServer (bypasses Server actor)
                             if let Err(e) = cast!(
-                                server_ref,
-                                ServerMsg::WebSocketServerMsg(WebSocketServerMsg::SendToClient(
+                                ws_server_ref,
+                                WebSocketServerMsg::SendToClient(
                                     SendToClientData {
                                         client_id: client_id.clone(),
                                         message: MykoMessage::QueryResponse(update),
                                     }
-                                ))
+                                )
                             ) {
                                 error!("Failed to send query response: {}", e);
                             };
@@ -220,7 +223,8 @@ impl Actor for MessageHandler {
                             return Ok(());
                         }
 
-                        let server_ref = state.server.clone();
+                        // Direct reference to WS server (bypasses Server routing)
+                        let ws_server_ref = state.ws_server.clone();
                         let client_id = client_id.clone();
 
                         // Spawn task to forward report outputs to client
@@ -231,14 +235,15 @@ impl Actor for MessageHandler {
                                     tx: tx.to_string(),
                                 };
 
+                                // Direct send to WebSocketServer (bypasses Server actor)
                                 if let Err(e) = cast!(
-                                    server_ref,
-                                    ServerMsg::WebSocketServerMsg(WebSocketServerMsg::SendToClient(
+                                    ws_server_ref,
+                                    WebSocketServerMsg::SendToClient(
                                         SendToClientData {
                                             client_id: client_id.clone(),
                                             message: MykoMessage::ReportResponse(response),
                                         }
-                                    ))
+                                    )
                                 ) {
                                     error!("Failed to send report response: {}", e);
                                     break;
@@ -271,7 +276,8 @@ impl Actor for MessageHandler {
                         trace!("Received command: {} with tx {}", wrapped_command.command_id, tx);
 
                         let command_manager = state.command_manager.clone();
-                        let server_ref = state.server.clone();
+                        // Direct reference to WS server (bypasses Server routing)
+                        let ws_server_ref = state.ws_server.clone();
                         let client_id_clone = client_id.clone();
 
                         // Execute command asynchronously and send response
@@ -302,14 +308,15 @@ impl Actor for MessageHandler {
                                 }
                             };
 
+                            // Direct send to WebSocketServer (bypasses Server actor)
                             if let Err(e) = ractor::cast!(
-                                server_ref,
-                                ServerMsg::WebSocketServerMsg(WebSocketServerMsg::SendToClient(
+                                ws_server_ref,
+                                WebSocketServerMsg::SendToClient(
                                     SendToClientData {
                                         client_id: client_id_clone,
                                         message: response_message,
                                     }
-                                ))
+                                )
                             ) {
                                 error!("Failed to send command response: {}", e);
                             }

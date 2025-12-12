@@ -63,8 +63,8 @@ impl BenchHarness {
         BenchItem::register(&server).expect("Failed to register BenchItem");
         GetBenchItemsByCategory::register(&server).expect("Failed to register GetBenchItemsByCategory");
 
-        // Get manager refs for direct access
-        let managers = server.get_managers().await.expect("Failed to get managers");
+        // Get manager refs for direct access (now synchronous)
+        let managers = server.get_managers();
 
         // Initialize (in-memory mode signals caught up immediately)
         server.init_modules().expect("Failed to init");

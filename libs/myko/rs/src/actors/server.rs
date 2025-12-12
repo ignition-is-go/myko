@@ -4,6 +4,7 @@ use crate::{
         event::{
             common::{PersistEvent, ProcessEventData},
             event_manager::{EventManager, EventManagerArgs, EventManagerMsg},
+            EventBus,
         },
         kafka::common::KafkaSharedConfig,
         message_handler::{MessageHandler, MessageHandlerArgs, MessageHandlerMsg},
@@ -45,16 +46,11 @@ pub struct ServerArgs {
     pub public_host_address: String,
 }
 
+/// Server messages - lifecycle only (routing eliminated for performance)
 pub enum ServerMsg {
     Start,
     InitAllModules,
     AllInitComplete,
-    RepoManagerMsg(EventManagerMsg),
-    WebSocketServerMsg(WebSocketServerMsg),
-    MessageHandlerMsg(MessageHandlerMsg),
-    QueryManagerMsg(QueryManagerMsg),
-    ReportManagerMsg(ReportManagerMsg),
-    CommandManagerMsg(CommandManagerMsg),
     /// Get direct references to manager actors (useful for benchmarking/testing)
     #[allow(clippy::type_complexity)]
     GetManagers(
@@ -81,11 +77,54 @@ impl Actor for Server {
             host_id: Uuid::new_v4(),
         });
 
+        // Spawn order optimized for direct references (no Server routing):
+        // 1. WebSocketServer (no deps, receives message_handler in Start msg)
+        // 2. QueryManager (no deps)
+        // 3. EventManager (needs query_manager)
+        // 4. ReportManager (needs query_manager)
+        // 5. CommandManager (needs event_manager, query_manager, report_manager)
+        // 6. SagaManager (needs command_manager)
+        // 7. MessageHandler (needs all managers + ws_server)
+
+        let web_socket_server = match Actor::spawn(
+            None,
+            WebSocketServer,
+            WebSocketServerArgs {
+                port: args.bind_port,
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn WebSocketServer actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
+        let query_manager = match Actor::spawn(
+            None,
+            QueryManager,
+            QueryManagerArgs {
+                ctx: ctx.clone(),
+                server: myself.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn QueryManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
         let event_manager = match Actor::spawn(
             None,
             EventManager,
             EventManagerArgs {
                 server: myself.clone(),
+                query_manager: query_manager.clone(),
                 ctx: ctx.clone(),
             },
         )
@@ -98,23 +137,10 @@ impl Actor for Server {
             }
         };
 
-        let query_manager = match Actor::spawn(
-            None,
-            QueryManager,
-            QueryManagerArgs {
-                ctx: ctx.clone(),
-                server: myself.clone(),
-                event_manager: event_manager.clone(),
-            },
-        )
-        .await
-        {
-            Ok((a, _h)) => a,
-            Err(err) => {
-                error!("Failed to spawn QueryManager actor: {}", err);
-                return Err(err.into());
-            }
-        };
+        // Wire EventManager reference to QueryManager (breaks circular dependency)
+        if let Err(err) = query_manager.send_message(QueryManagerMsg::SetEventManager(event_manager.clone())) {
+            error!("Failed to set EventManager in QueryManager: {}", err);
+        }
 
         let report_manager = match Actor::spawn(
             None,
@@ -152,12 +178,16 @@ impl Actor for Server {
             }
         };
 
+        // Create EventBus for high-throughput event distribution to sagas
+        let event_bus = EventBus::new();
+
         // Create SagaContext for saga handlers
         let saga_ctx = Arc::new(SagaContext::new(
             ctx.clone(),
             event_manager.clone(),
             command_manager.clone(),
             query_manager.clone(),
+            event_bus.clone(),
         ));
 
         let saga_manager = match Actor::spawn(
@@ -177,11 +207,12 @@ impl Actor for Server {
             }
         };
 
-        // Wire SagaManager to EventManager for event broadcasting
-        if let Err(err) = event_manager.send_message(EventManagerMsg::SetSagaManager(saga_manager.clone())) {
-            error!("Failed to set SagaManager in EventManager: {}", err);
+        // Wire EventBus to EventManager for high-throughput saga broadcasting
+        if let Err(err) = event_manager.send_message(EventManagerMsg::SetEventBus(event_bus.clone())) {
+            error!("Failed to set EventBus in EventManager: {}", err);
         }
 
+        // MessageHandler with direct references to all managers + ws_server
         let message_handler = match Actor::spawn(
             None,
             MessageHandler,
@@ -190,7 +221,7 @@ impl Actor for Server {
                 query_manager: query_manager.clone(),
                 report_manager: report_manager.clone(),
                 command_manager: command_manager.clone(),
-                server: myself.clone(),
+                ws_server: web_socket_server.clone(),
             },
         )
         .await
@@ -198,23 +229,6 @@ impl Actor for Server {
             Ok((a, _h)) => a,
             Err(err) => {
                 error!("Failed to spawn MessageHandler actor: {}", err);
-                return Err(err.into());
-            }
-        };
-
-        let web_socket_server = match Actor::spawn(
-            None,
-            WebSocketServer,
-            WebSocketServerArgs {
-                port: args.bind_port,
-                message_handler: message_handler.clone(),
-            },
-        )
-        .await
-        {
-            Ok((a, _h)) => a,
-            Err(err) => {
-                error!("Failed to spawn WebSocketServer actor: {}", err);
                 return Err(err.into());
             }
         };
@@ -238,37 +252,9 @@ impl Actor for Server {
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
+        // NOTE: Server actor is now lifecycle-only. Routing eliminated for performance.
+        // All managers communicate directly via ActorRef.
         match message {
-            ServerMsg::MessageHandlerMsg(msg) => {
-                if let Err(err) = state.message_handler.send_message(msg) {
-                    error!("Failed to send message to MessageHandler: {}", err);
-                };
-            }
-            ServerMsg::RepoManagerMsg(msg) => {
-                if let Err(err) = state.repo_manager.send_message(msg) {
-                    error!("Failed to send message to RepoManager: {}", err);
-                };
-            }
-            ServerMsg::WebSocketServerMsg(msg) => {
-                if let Err(err) = state.web_socket_server.send_message(msg) {
-                    error!("Failed to send message to WebSocketServer: {}", err);
-                };
-            }
-            ServerMsg::QueryManagerMsg(msg) => {
-                if let Err(err) = state.query_manager.send_message(msg) {
-                    error!("Failed to send message to QueryManager: {}", err);
-                };
-            }
-            ServerMsg::ReportManagerMsg(msg) => {
-                if let Err(err) = state.report_manager.send_message(msg) {
-                    error!("Failed to send message to ReportManager: {}", err);
-                };
-            }
-            ServerMsg::CommandManagerMsg(msg) => {
-                if let Err(err) = state.command_manager.send_message(msg) {
-                    error!("Failed to send message to CommandManager: {}", err);
-                };
-            }
             ServerMsg::Start => {
                 info!("Starting Server!");
             }
@@ -308,9 +294,12 @@ impl Actor for Server {
                     error!("Failed to start SagaManager: {}", err);
                 }
 
+                // Start WebSocket server with MessageHandler (breaks circular dep)
                 if let Err(err) = state
                     .web_socket_server
-                    .send_message(WebSocketServerMsg::Start)
+                    .send_message(WebSocketServerMsg::Start {
+                        message_handler: state.message_handler.clone(),
+                    })
                 {
                     error!("Failed to send message to WebSocketServer: {}", err);
                 }

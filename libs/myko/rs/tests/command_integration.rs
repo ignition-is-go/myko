@@ -49,7 +49,7 @@ async fn create_test_server() -> Arc<MykoServer> {
 
 /// Helper to emit a BenchItem to the server
 async fn emit_bench_item(server: &MykoServer, item: &BenchItem) {
-    let managers = server.get_managers().await.expect("Failed to get managers");
+    let managers = server.get_managers();
     let event = MEvent::from_item(item, MEventType::SET, uuid::Uuid::new_v4().to_string());
 
     use myko_rs::actors::event::{
@@ -77,7 +77,7 @@ async fn execute_command<T: serde::Serialize + myko_rs::command::CommandId>(
     server: &MykoServer,
     cmd: &T,
 ) -> Result<serde_json::Value, myko_rs::command::CommandError> {
-    let managers = server.get_managers().await.expect("Failed to get managers");
+    let managers = server.get_managers();
 
     let tx = uuid::Uuid::new_v4().to_string();
 
@@ -225,7 +225,7 @@ async fn test_query_reflects_delete() {
     };
 
     let server = create_test_server().await;
-    let managers = server.get_managers().await.expect("Failed to get managers");
+    let managers = server.get_managers();
 
     // Create items
     for i in 0..3 {

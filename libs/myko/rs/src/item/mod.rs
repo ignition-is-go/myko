@@ -4,6 +4,7 @@ use crate::{
     prelude::AnyItem,
     server::MykoServer,
 };
+use log::error;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{any::Any, sync::Arc};
 use ts_rs::TS;
@@ -30,12 +31,13 @@ pub trait Eventable:
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
         let parser: Arc<dyn MykoItemParser> = Arc::new(CapturedItemParser::<Self>::new());
 
-        server
-            .server
-            .send_message(crate::actors::server::ServerMsg::RepoManagerMsg(
-                EventManagerMsg::RegisterRepo(Self::entity_name_static().into(), parser),
-            ))
-            .map_err(anyhow::Error::msg)?;
+        // Direct send to EventManager (bypasses Server routing)
+        if let Err(err) = server.event_manager.send_message(
+            EventManagerMsg::RegisterRepo(Self::entity_name_static().into(), parser),
+        ) {
+            error!("Failed to register entity {}: {}", Self::entity_name_static(), err);
+            return Err(anyhow::Error::msg(err));
+        }
 
         // Register auto-generated queries
         <Self as MykoAutoQueries>::register_auto(server)?;

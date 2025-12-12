@@ -26,6 +26,11 @@ pub struct ManagerRefs {
 pub struct MykoServer {
     pub(crate) server: ActorRef<ServerMsg>,
     notify_end: Arc<Notify>,
+    /// Direct manager references for registration (bypasses Server routing)
+    pub(crate) event_manager: ActorRef<EventManagerMsg>,
+    pub(crate) query_manager: ActorRef<QueryManagerMsg>,
+    pub(crate) report_manager: ActorRef<ReportManagerMsg>,
+    pub(crate) command_manager: ActorRef<CommandManagerMsg>,
 }
 
 impl MykoServer {
@@ -43,9 +48,17 @@ impl MykoServer {
                     n_clone.notify_waiters();
                 });
 
+                // Get direct manager references for registration (bypasses Server routing)
+                let (event_manager, query_manager, report_manager, command_manager) =
+                    ractor::call!(server, ServerMsg::GetManagers)?;
+
                 let server = Arc::new(MykoServer {
                     server,
                     notify_end: notify.clone(),
+                    event_manager,
+                    query_manager,
+                    report_manager,
+                    command_manager,
                 });
 
                 crate::entities::server::Server::register(&server)?;
@@ -70,16 +83,13 @@ impl MykoServer {
 
     /// Get direct references to the internal manager actors.
     /// Useful for benchmarking and testing where you need direct actor access.
-    pub async fn get_managers(&self) -> Result<ManagerRefs, anyhow::Error> {
-        let (event_manager, query_manager, report_manager, command_manager) =
-            ractor::call!(self.server, ServerMsg::GetManagers)?;
-
-        Ok(ManagerRefs {
-            event_manager,
-            query_manager,
-            report_manager,
-            command_manager,
-        })
+    pub fn get_managers(&self) -> ManagerRefs {
+        ManagerRefs {
+            event_manager: self.event_manager.clone(),
+            query_manager: self.query_manager.clone(),
+            report_manager: self.report_manager.clone(),
+            command_manager: self.command_manager.clone(),
+        }
     }
 
     /// Initialize all modules without blocking.

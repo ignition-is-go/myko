@@ -39,6 +39,8 @@ pub struct QueryHandlerState {
 
 pub enum QueryHandlerMsg {
     ProcessUpdate(ProcessUpdateData),
+    /// Batch of updates - forwarded to runners for efficient processing
+    ProcessBatch(Vec<ProcessUpdateData>),
     StartQuery(
         Arc<dyn AnyQuery>,
         RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
@@ -105,7 +107,6 @@ impl Actor for QueryHandler {
                     QueryRunnerArgs {
                         initial_state,
                         query,
-                        tx: tx.clone(),
                         closure: state.closure.clone(),
                         ctx: state.ctx.clone(),
                     },
@@ -131,6 +132,16 @@ impl Actor for QueryHandler {
                         runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))
                     {
                         error!("Failed to send update to runner: {}", err);
+                    };
+                }
+            }
+            QueryHandlerMsg::ProcessBatch(batch) => {
+                // Forward batch to all runners for efficient processing
+                for runner in state.runners.values() {
+                    if let Err(err) =
+                        runner.send_message(QueryRunnerMsg::ProcessBatch(batch.clone()))
+                    {
+                        error!("Failed to send batch to runner: {}", err);
                     };
                 }
             }
