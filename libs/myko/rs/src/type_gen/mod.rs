@@ -137,24 +137,26 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .join(";");
 
     // Import output types for reports, filtered by crate and deduplicated
+    // Extract inner types from Option<T>/Vec<T> for imports
     let report_output_imports = reports
         .clone()
         .filter(|r| r.output_type_crate.contains(&crate_name))
-        .map(|i| i.output_type)
+        .flat_map(|i| extract_importable_types(i.output_type))
         .collect::<HashSet<_>>()
         .into_iter()
-        .map(gen_type_import)
+        .map(|t| gen_type_import(&t))
         .collect::<Vec<String>>()
         .join(";");
 
     // Import result types for commands, filtered by crate and deduplicated
+    // Extract inner types from Option<T>/Vec<T> for imports
     let command_result_imports = commands
         .clone()
         .filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()")
-        .map(|i| i.result_type)
+        .flat_map(|i| extract_importable_types(i.result_type))
         .collect::<HashSet<_>>()
         .into_iter()
-        .map(gen_type_import)
+        .map(|t| gen_type_import(&t))
         .collect::<Vec<String>>()
         .join(";");
 
@@ -282,6 +284,7 @@ fn generate_query_constructor(query_id: &str, query_item_type: &str) -> String {
 }
 
 fn generate_report_constructor(report_id: &str, output_type: &str) -> String {
+    let ts_output_type = rust_type_to_ts(output_type);
     format!(
         "{}: {}\n",
         report_id,
@@ -296,10 +299,38 @@ fn generate_report_constructor(report_id: &str, output_type: &str) -> String {
                     ]
                     .join(",")
                 ),
-                output_type
+                ts_output_type
             )
         )
     )
+}
+
+/// Convert Rust type strings to TypeScript type strings
+fn rust_type_to_ts(rust_type: &str) -> String {
+    let trimmed = rust_type.trim();
+
+    // Handle Option<T> -> T | null
+    if trimmed.starts_with("Option")
+        && let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.rfind('>')
+    {
+        let inner = trimmed[start + 1..end].trim();
+        let inner_ts = rust_type_to_ts(inner);
+        return format!("{} | null", inner_ts);
+    }
+
+    // Handle Vec<T> -> T[]
+    if trimmed.starts_with("Vec")
+        && let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.rfind('>')
+    {
+        let inner = trimmed[start + 1..end].trim();
+        let inner_ts = rust_type_to_ts(inner);
+        return format!("{}[]", inner_ts);
+    }
+
+    // Default: return as-is (works for simple types like Server, Client, etc.)
+    trimmed.to_string()
 }
 
 fn generate_command_constructor(command_id: &str, result_type: &str) -> String {
@@ -352,6 +383,39 @@ fn generate_item_constructor(item_name: &str) -> String {
 
 fn gen_import(item_name: &str) -> String {
     format!("import type {{ {} }} from './{}';", item_name, item_name)
+}
+
+/// Extract the inner types that need to be imported from a Rust type string.
+/// For example:
+/// - `Option < Server >` -> `["Server"]`
+/// - `Vec < Client >` -> `["Client"]`
+/// - `Server` -> `["Server"]`
+fn extract_importable_types(rust_type: &str) -> Vec<String> {
+    let trimmed = rust_type.trim();
+
+    // Handle Option<T> - extract inner type
+    if trimmed.starts_with("Option")
+        && let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.rfind('>')
+    {
+        let inner = trimmed[start + 1..end].trim();
+        return extract_importable_types(inner);
+    }
+
+    // Handle Vec<T> - extract inner type
+    if trimmed.starts_with("Vec")
+        && let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.rfind('>')
+    {
+        let inner = trimmed[start + 1..end].trim();
+        return extract_importable_types(inner);
+    }
+
+    // Remove any spaces (from quote! formatting)
+    let clean_type = trimmed.replace(" ", "");
+
+    // Default: return the type itself (it's an entity type that needs importing)
+    vec![clean_type]
 }
 
 fn gen_type_import(type_name: &str) -> String {
