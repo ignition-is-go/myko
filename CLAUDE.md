@@ -2148,3 +2148,4 @@ impl<T: Item> Repository<T> {
 ## Performance Optimization
 
 See `libs/myko/rs/OPTIMIZATION.md` for detailed performance optimization strategies, benchmarks, crate selection, and actor structure refactoring plans.
+- use cargo check when you're doing checks instead of running a full build
