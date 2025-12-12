@@ -37,9 +37,10 @@
 //!
 //! // EnsureFor: Create one BundleStatus per Session×Bundle combination
 //! #[myko_item]
-//! #[ensure_for(Session, Bundle)]
 //! pub struct BundleStatus {
+//!     #[ensure_for(Session)]
 //!     pub session_id: Arc<str>,
+//!     #[ensure_for(Bundle)]
 //!     pub bundle_id: Arc<str>,
 //!     #[default_value(false)]
 //!     pub armed: bool,

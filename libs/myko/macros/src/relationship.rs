@@ -26,7 +26,18 @@ pub struct OwnsManyInfo {
     pub foreign_type: String,
 }
 
-/// Information about an ensure_for relationship on the struct
+/// Information about a single ensure_for dependency on a field
+#[derive(Debug)]
+pub struct EnsureForFieldInfo {
+    /// Field name in Rust (snake_case)
+    pub field_name: String,
+    /// Field name in JSON (camelCase)
+    pub field_name_json: String,
+    /// Foreign entity type name (the dependency)
+    pub foreign_type: String,
+}
+
+/// Information about ensure_for relationships on the struct (collected from fields)
 #[derive(Debug)]
 pub struct EnsureForInfo {
     /// Dependencies (foreign_type, local_key, local_key_json)
@@ -108,6 +119,43 @@ pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
     None
 }
 
+/// Parse ensure_for attribute from a field.
+///
+/// `#[ensure_for(Type)]` on a field indicates this entity should be auto-created
+/// for each instance of the dependency type. Multiple ensure_for attributes on
+/// different fields create a Cartesian product.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct BundleStatus {
+///     #[ensure_for(Session)]
+///     pub session_id: Arc<str>,
+///     #[ensure_for(Bundle)]
+///     pub bundle_id: Arc<str>,
+/// }
+/// // Creates one BundleStatus per Session×Bundle combination
+/// ```
+pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
+    let field_name = field.ident.as_ref()?.to_string();
+    let field_name_json = to_camel_case(&field_name);
+
+    for attr in &field.attrs {
+        if attr.path().is_ident("ensure_for")
+            && let Ok(path) = attr.parse_args::<Path>()
+        {
+            let foreign_type = path.segments.last()?.ident.to_string();
+            return Some(EnsureForFieldInfo {
+                field_name,
+                field_name_json,
+                foreign_type,
+            });
+        }
+    }
+    None
+}
+
 /// Parse default_value attribute from a field
 pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
     let field_name = field.ident.as_ref()?.to_string();
@@ -138,60 +186,9 @@ pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
     None
 }
 
-/// Parse ensure_for attributes from struct-level attributes
-pub fn parse_ensure_for(input: &ItemStruct) -> Option<EnsureForInfo> {
-    let mut dependencies = Vec::new();
-
-    for attr in &input.attrs {
-        if attr.path().is_ident("ensure_for") {
-            // Parse comma-separated list of types: #[ensure_for(Session, Bundle)]
-            if let Ok(paths) = attr.parse_args_with(
-                syn::punctuated::Punctuated::<Path, syn::Token![,]>::parse_terminated,
-            ) {
-                for path in paths {
-                    if let Some(segment) = path.segments.last() {
-                        let foreign_type = segment.ident.to_string();
-                        // The local key is derived from foreign type: Session -> session_id
-                        let local_key = format!("{}_id", to_snake_case(&foreign_type));
-                        let local_key_json = to_camel_case(&local_key);
-                        dependencies.push((foreign_type, local_key, local_key_json));
-                    }
-                }
-            }
-        }
-    }
-
-    if dependencies.is_empty() {
-        None
-    } else {
-        Some(EnsureForInfo { dependencies })
-    }
-}
-
-/// Convert PascalCase to snake_case
-fn to_snake_case(s: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_ascii_lowercase());
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// Strip relationship attributes from a field's attributes
 pub fn strip_relationship_attrs(field: &mut Field) {
     field.attrs.retain(|attr| !is_relationship_attr(attr));
-}
-
-/// Strip ensure_for attributes from struct-level attributes
-pub fn strip_ensure_for_attrs(input: &mut ItemStruct) {
-    input.attrs.retain(|attr| !attr.path().is_ident("ensure_for"));
 }
 
 /// Collected relationship information from an item
@@ -199,16 +196,36 @@ pub fn strip_ensure_for_attrs(input: &mut ItemStruct) {
 pub struct RelationshipInfo {
     pub belongs_to: Vec<BelongsToInfo>,
     pub owns_many: Vec<OwnsManyInfo>,
-    pub ensure_for: Option<EnsureForInfo>,
+    pub ensure_for_fields: Vec<EnsureForFieldInfo>,
     pub default_values: Vec<DefaultValueInfo>,
+}
+
+impl RelationshipInfo {
+    /// Convert ensure_for_fields to EnsureForInfo for registration
+    pub fn ensure_for(&self) -> Option<EnsureForInfo> {
+        if self.ensure_for_fields.is_empty() {
+            None
+        } else {
+            Some(EnsureForInfo {
+                dependencies: self
+                    .ensure_for_fields
+                    .iter()
+                    .map(|ef| {
+                        (
+                            ef.foreign_type.clone(),
+                            ef.field_name.clone(),
+                            ef.field_name_json.clone(),
+                        )
+                    })
+                    .collect(),
+            })
+        }
+    }
 }
 
 /// Collect all relationship information from an item struct
 pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
-    let mut info = RelationshipInfo {
-        ensure_for: parse_ensure_for(input),
-        ..Default::default()
-    };
+    let mut info = RelationshipInfo::default();
 
     // Collect field-level relationships
     if let syn::Fields::Named(ref fields) = input.fields {
@@ -218,6 +235,9 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
             }
             if let Some(om) = parse_owns_many(field) {
                 info.owns_many.push(om);
+            }
+            if let Some(ef) = parse_ensure_for_field(field) {
+                info.ensure_for_fields.push(ef);
             }
             if let Some(dv) = parse_default_value(field) {
                 info.default_values.push(dv);
@@ -273,7 +293,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
     }
 
     // Generate EnsureFor registration if present
-    if let Some(ref ef) = info.ensure_for {
+    if let Some(ref ef) = info.ensure_for() {
         let deps: Vec<_> = ef
             .dependencies
             .iter()
@@ -333,12 +353,5 @@ mod tests {
         assert_eq!(to_camel_case("node_ids"), "nodeIds");
         assert_eq!(to_camel_case("name"), "name");
         assert_eq!(to_camel_case("my_long_field_name"), "myLongFieldName");
-    }
-
-    #[test]
-    fn test_to_snake_case() {
-        assert_eq!(to_snake_case("Session"), "session");
-        assert_eq!(to_snake_case("BindingNode"), "binding_node");
-        assert_eq!(to_snake_case("Name"), "name");
     }
 }

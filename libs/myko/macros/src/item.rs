@@ -8,9 +8,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     // Collect relationship information BEFORE stripping attributes
     let rel_info = relationship::collect_relationships(&input_struct);
 
-    // Strip relationship attributes from struct-level (ensure_for)
-    relationship::strip_ensure_for_attrs(&mut input_struct);
-
     let name = &input_struct.ident;
     let name_str = name.to_string();
 

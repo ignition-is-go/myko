@@ -828,7 +828,7 @@ getPeerToken() -> string
 - In-memory mode (Kafka optional)
 - Query delta protocol
 - Signal stream utilities
-- **Relationship system**: `#[belongs_to(Type)]`, `#[owns_many(Type)]`, `#[ensure_for(T1, T2)]` attributes
+- **Relationship system**: `#[belongs_to(Type)]`, `#[owns_many(Type)]`, `#[ensure_for(Type)]` field attributes
   - BelongsTo cascades: Parent DEL → cascade delete children
   - OwnsMany cascades: Parent DEL → delete children, Child DEL → update parent arrays
   - EnsureFor: Auto-create entities for each dependency combination
@@ -891,9 +891,10 @@ pub struct Scene {
 }
 
 #[myko_item]
-#[ensure_for(Project, Session)]  // Auto-create one per Project×Session combination
 pub struct SessionVariable {
+    #[ensure_for(Project)]  // Auto-create one per Project×Session combination
     pub project_id: Arc<str>,
+    #[ensure_for(Session)]
     pub session_id: Arc<str>,
     #[default_value("unnamed")]
     pub name: String,
