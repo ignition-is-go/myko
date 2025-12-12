@@ -99,10 +99,10 @@ impl Actor for MessageHandler {
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
             MessageHandlerMsg::ProcessText(ProcessTextData { client_id, text }) => {
-                debug!("Processing text message from {}: {}", client_id, &text[..text.len().min(200)]);
+                trace!("Processing text message from {}: {}", client_id, &text[..text.len().min(200)]);
                 let myko_message = match serde_json::from_str::<MykoMessage>(&text) {
                     Ok(msg) => {
-                        debug!("Parsed message type: {:?}", std::mem::discriminant(&msg));
+                        trace!("Parsed message type: {:?}", std::mem::discriminant(&msg));
                         msg
                     }
                     Err(e) => {
@@ -289,7 +289,7 @@ impl Actor for MessageHandler {
                         Ok(())
                     }
                     MykoMessage::QueryCancel(cancel) => {
-                        debug!("Query cancel requested: {}", cancel.tx);
+                        trace!("Query cancel requested: {}", cancel.tx);
                         if let Err(e) = state.query_manager.send_message(
                             QueryManagerMsg::CancelQuery(cancel.tx.into())
                         ) {
@@ -298,7 +298,7 @@ impl Actor for MessageHandler {
                         Ok(())
                     }
                     MykoMessage::ReportCancel(cancel) => {
-                        debug!("Report cancel requested: {}", cancel.tx);
+                        trace!("Report cancel requested: {}", cancel.tx);
                         if let Err(e) = state.report_manager.send_message(
                             ReportManagerMsg::StopReport(cancel.tx.into())
                         ) {
@@ -307,7 +307,7 @@ impl Actor for MessageHandler {
                         Ok(())
                     }
                     MykoMessage::Command(wrapped_command) => {
-                        debug!("Received Command message: {}", wrapped_command.command_id);
+                        trace!("Received Command message: {}", wrapped_command.command_id);
 
                         let tx: String = wrapped_command
                             .command
@@ -388,7 +388,7 @@ impl Actor for MessageHandler {
                 if let Err(e) = state.event_manager.send_message(
                     EventManagerMsg::ProcessEvent(ProcessEventData {
                         event,
-                        persist: PersistEvent::NoPersist, // Client entities are ephemeral
+                        persist: PersistEvent::Persist,
                         parsed_item: Some(Arc::new(client)),
                     })
                 ) {
@@ -434,7 +434,7 @@ impl Actor for MessageHandler {
                 if let Err(e) = state.event_manager.send_message(
                     EventManagerMsg::ProcessEvent(ProcessEventData {
                         event,
-                        persist: PersistEvent::NoPersist,
+                        persist: PersistEvent::Persist,
                         parsed_item: Some(Arc::new(client)),
                     })
                 ) {
