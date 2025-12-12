@@ -2,12 +2,24 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Field, FieldsNamed, ItemStruct};
 
-pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
-    let name = &input_struct.ident;
+use crate::relationship;
 
+pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
+    // Collect relationship information BEFORE stripping attributes
+    let rel_info = relationship::collect_relationships(&input_struct);
+
+    // Strip relationship attributes from struct-level (ensure_for)
+    relationship::strip_ensure_for_attrs(&mut input_struct);
+
+    let name = &input_struct.ident;
     let name_str = name.to_string();
 
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+        // Strip relationship attributes from each field
+        for field in named.iter_mut() {
+            relationship::strip_relationship_attrs(field);
+        }
+
         let id = quote! { id };
         let arc_str = quote! { std::sync::Arc<str> };
         let pub_viz = quote! { pub };
@@ -290,6 +302,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         }
     };
 
+    // Generate relationship registrations
+    let relationship_registrations = relationship::generate_registrations(&name_str, &rel_info);
+
     let expanded = quote! {
 
         use myko_rs::prelude::Query;
@@ -363,6 +378,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                      Ok(())
                 }
         }
+
+        // Relationship registrations (belongs_to, owns_many, ensure_for)
+        #relationship_registrations
 
     };
 

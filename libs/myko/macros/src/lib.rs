@@ -6,6 +6,7 @@ mod item;
 mod message_events;
 mod partial_matches;
 mod query;
+mod relationship;
 mod report;
 mod saga;
 

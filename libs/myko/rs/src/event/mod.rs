@@ -12,8 +12,20 @@ pub enum MEventType {
     DEL,
 }
 
+/// Options that can be attached to an event
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct EventOptions {
+    /// When true, relationship cascades are skipped for this event.
+    /// Used to prevent infinite loops during cascade processing.
+    #[serde(default)]
+    pub prevent_relationship_updates: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct MEvent {
     pub item: Value,
 
@@ -28,6 +40,10 @@ pub struct MEvent {
     pub tx: String,
 
     pub source_id: Option<String>,
+
+    /// Optional event options (e.g., prevent_relationship_updates)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<EventOptions>,
 }
 
 fn generate_random_uuid() -> String {
@@ -61,7 +77,34 @@ impl MEvent {
             created_at: Utc::now().to_rfc3339(),
             tx,
             source_id: None,
+            options: None,
         }
+    }
+
+    /// Create an event with options
+    pub fn from_item_with_options(
+        item: &impl Eventable,
+        change_type: MEventType,
+        tx: String,
+        options: Option<EventOptions>,
+    ) -> MEvent {
+        MEvent {
+            item: serde_json::to_value(item).unwrap(),
+            change_type,
+            item_type: item.entity_name().to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            tx,
+            source_id: None,
+            options,
+        }
+    }
+
+    /// Check if relationship updates should be prevented for this event
+    pub fn prevent_relationship_updates(&self) -> bool {
+        self.options
+            .as_ref()
+            .map(|o| o.prevent_relationship_updates)
+            .unwrap_or(false)
     }
 
     pub fn change_type(&self) -> MEventType {

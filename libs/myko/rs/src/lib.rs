@@ -9,6 +9,7 @@ pub mod item;
 pub mod message;
 pub mod parsers;
 pub mod query;
+pub mod relationship;
 pub mod report;
 pub mod saga;
 pub mod server;
