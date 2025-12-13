@@ -13,6 +13,7 @@ use crate::{
     command::{
         CommandContext, CommandError, CommandHandler, CommandHandlerRegistration, WrappedCommand,
     },
+    context::RequestContext,
     server::MykoServerCtx,
 };
 
@@ -37,18 +38,18 @@ pub struct CommandManagerState {
 }
 
 pub enum CommandManagerMsg {
-    /// Execute a command from a client
+    /// Execute a command from a client.
+    /// The RequestContext is created by the caller (MessageHandler) from the WebSocket message.
     Execute(
         WrappedCommand,
-        Arc<str>, // client_id
+        RequestContext,
         RpcReplyPort<Result<Value, CommandError>>,
     ),
-    /// Execute a nested command (from within a handler)
+    /// Execute a nested command (from within a handler).
+    /// The RequestContext has extended lineage from the parent command.
     ExecuteNested(
         WrappedCommand,
-        Arc<str>,    // client_id
-        Vec<String>, // lineage
-        String,      // created_at
+        RequestContext,
         RpcReplyPort<Result<Value, CommandError>>,
     ),
 }
@@ -90,44 +91,27 @@ impl Actor for CommandManager {
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
         match message {
-            CommandManagerMsg::Execute(command, client_id, reply) => {
+            CommandManagerMsg::Execute(command, req, reply) => {
                 let command_id = command.command_id.as_str();
-                let tx: Arc<str> = command
-                    .command
-                    .get("tx")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.into())
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().into());
+                trace!(
+                    "Executing command {} with tx {} (lineage: {})",
+                    command_id,
+                    req.tx(),
+                    req.lineage_string()
+                );
 
-                let created_at = command
-                    .command
-                    .get("createdAt")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-
-                trace!("Executing command {} with tx {}", command_id, tx);
-
-                let result = self
-                    .execute_command(
-                        state,
-                        &command,
-                        client_id,
-                        vec!["client".to_string()],
-                        created_at,
-                    )
-                    .await;
-
+                let result = self.execute_command(state, &command, req).await;
                 let _ = reply.send(result);
             }
-            CommandManagerMsg::ExecuteNested(command, client_id, lineage, created_at, reply) => {
+            CommandManagerMsg::ExecuteNested(command, req, reply) => {
                 let command_id = command.command_id.as_str();
-                trace!("Executing nested command {} with lineage {:?}", command_id, lineage);
+                trace!(
+                    "Executing nested command {} (lineage: {})",
+                    command_id,
+                    req.lineage_string()
+                );
 
-                let result = self
-                    .execute_command(state, &command, client_id, lineage, created_at)
-                    .await;
-
+                let result = self.execute_command(state, &command, req).await;
                 let _ = reply.send(result);
             }
         }
@@ -140,17 +124,9 @@ impl CommandManager {
         &self,
         state: &mut CommandManagerState,
         command: &WrappedCommand,
-        client_id: Arc<str>,
-        lineage: Vec<String>,
-        created_at: String,
+        req: RequestContext,
     ) -> Result<Value, CommandError> {
         let command_id = command.command_id.as_str();
-        let tx: Arc<str> = command
-            .command
-            .get("tx")
-            .and_then(|v| v.as_str())
-            .map(|s| s.into())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().into());
 
         // Look up handler
         let handler = state.handlers.get(command_id).ok_or_else(|| {
@@ -160,17 +136,14 @@ impl CommandManager {
                 state.handlers.keys().collect::<Vec<_>>()
             );
             CommandError {
-                tx: tx.to_string(),
+                tx: req.tx().to_string(),
                 message: format!("No handler registered for command: {}", command_id),
             }
         })?;
 
-        // Build context
+        // Build context from RequestContext
         let ctx = CommandContext::new(
-            client_id,
-            tx.clone(),
-            lineage,
-            created_at,
+            req,
             state.ctx.clone(),
             state.event_manager.clone(),
             state.myself.clone().expect("myself should be set"),

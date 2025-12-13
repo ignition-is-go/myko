@@ -5,6 +5,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::{
     actors::{
@@ -15,6 +16,7 @@ use crate::{
     },
     api::query::WrappedQuery,
     command::{CommandError, CommandId},
+    context::RequestContext,
     event::EventOptions,
     item::Eventable,
     query::{Query, QueryIdStatic, QueryItemType},
@@ -29,11 +31,13 @@ use crate::{
 /// - Execute nested commands
 /// - Execute reports (one-shot)
 /// - Access server context
+/// - Access request context (tx, client_id, lineage, host_id)
+///
+/// The context carries request tracing information via [`RequestContext`],
+/// which propagates through nested operations for correlation and debugging.
 pub struct CommandContext {
-    pub client_id: Arc<str>,
-    pub tx: Arc<str>,
-    pub lineage: Vec<String>,
-    pub created_at: String,
+    /// Request context with tracing information (tx, client_id, lineage, host_id).
+    pub req: RequestContext,
 
     pub(crate) server_ctx: Arc<MykoServerCtx>,
     pub(crate) event_manager: ActorRef<EventManagerMsg>,
@@ -43,13 +47,9 @@ pub struct CommandContext {
 }
 
 impl CommandContext {
-    /// Create a new CommandContext
-    #[allow(clippy::too_many_arguments)]
+    /// Create a new CommandContext from a RequestContext.
     pub fn new(
-        client_id: Arc<str>,
-        tx: Arc<str>,
-        lineage: Vec<String>,
-        created_at: String,
+        req: RequestContext,
         server_ctx: Arc<MykoServerCtx>,
         event_manager: ActorRef<EventManagerMsg>,
         command_manager: ActorRef<CommandManagerMsg>,
@@ -57,10 +57,7 @@ impl CommandContext {
         report_manager: ActorRef<ReportManagerMsg>,
     ) -> Self {
         Self {
-            client_id,
-            tx,
-            lineage,
-            created_at,
+            req,
             server_ctx,
             event_manager,
             command_manager,
@@ -69,9 +66,38 @@ impl CommandContext {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Convenience accessors for backward compatibility and ergonomics
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get the transaction ID.
+    pub fn tx(&self) -> &str {
+        &self.req.tx
+    }
+
+    /// Get the client ID if present.
+    pub fn client_id(&self) -> Option<&str> {
+        self.req.client_id.as_deref()
+    }
+
+    /// Get the host ID.
+    pub fn host_id(&self) -> Uuid {
+        self.req.host_id
+    }
+
+    /// Get the lineage (call chain).
+    pub fn lineage(&self) -> &[Arc<str>] {
+        &self.req.lineage
+    }
+
+    /// Get the request creation timestamp.
+    pub fn created_at(&self) -> &str {
+        &self.req.created_at
+    }
+
     /// Get an EventPublisher for emitting events.
     fn publisher(&self) -> EventPublisher {
-        EventPublisher::new(self.event_manager.clone(), self.server_ctx.host_id)
+        EventPublisher::new(self.event_manager.clone(), self.req.host_id)
     }
 
     /// Emit a SET event for an item.
@@ -80,9 +106,9 @@ impl CommandContext {
         item: &T,
     ) -> Result<(), CommandError> {
         self.publisher()
-            .publish_set(item, &self.tx, Some(self.client_id.clone()), None)
+            .publish_set(item, self.tx(), self.req.client_id.clone(), None)
             .map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -94,9 +120,9 @@ impl CommandContext {
         options: EventOptions,
     ) -> Result<(), CommandError> {
         self.publisher()
-            .publish_set(item, &self.tx, Some(self.client_id.clone()), Some(options))
+            .publish_set(item, self.tx(), self.req.client_id.clone(), Some(options))
             .map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -107,9 +133,9 @@ impl CommandContext {
         item: &T,
     ) -> Result<(), CommandError> {
         self.publisher()
-            .publish_del(item, &self.tx, Some(self.client_id.clone()), None)
+            .publish_del(item, self.tx(), self.req.client_id.clone(), None)
             .map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -121,40 +147,40 @@ impl CommandContext {
         options: EventOptions,
     ) -> Result<(), CommandError> {
         self.publisher()
-            .publish_del(item, &self.tx, Some(self.client_id.clone()), Some(options))
+            .publish_del(item, self.tx(), self.req.client_id.clone(), Some(options))
             .map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
 
-    /// Execute a nested command, updating lineage
+    /// Execute a nested command, updating lineage.
+    ///
+    /// The child command receives a context with extended lineage tracking
+    /// the call chain (e.g., `["client", "CreateScene", "CreateBinding"]`).
     pub async fn execute_command<C: CommandId + Serialize + Clone>(
         &self,
         command: C,
     ) -> Result<Value, CommandError> {
-        let wrapped = crate::command::wrap_command(self.tx.to_string(), &command).map_err(|e| {
+        let wrapped = crate::command::wrap_command(self.tx().to_string(), &command).map_err(|e| {
             CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to wrap command: {}", e),
             }
         })?;
 
-        // Build child lineage
-        let mut child_lineage = self.lineage.clone();
-        child_lineage.push(command.command_id().to_string());
+        // Create child context with extended lineage
+        let child_req = self.req.child(&command.command_id());
 
         // Execute via command manager
         ractor::call!(
             self.command_manager,
             CommandManagerMsg::ExecuteNested,
             wrapped,
-            self.client_id.clone(),
-            child_lineage,
-            self.created_at.clone()
+            child_req
         )
         .map_err(|e| CommandError {
-            tx: self.tx.to_string(),
+            tx: self.tx().to_string(),
             message: format!("Failed to call command manager: {}", e),
         })?
     }
@@ -174,7 +200,7 @@ impl CommandContext {
         Q::Item: DeserializeOwned + Send + Sync,
     {
         let query_value = serde_json::to_value(query).map_err(|e| CommandError {
-            tx: self.tx.to_string(),
+            tx: self.tx().to_string(),
             message: format!("Failed to serialize query: {}", e),
         })?;
 
@@ -188,7 +214,7 @@ impl CommandContext {
         let snapshot =
             ractor::call!(self.query_manager, QueryManagerMsg::WrappedQuerySnapshot, wrapped)
                 .map_err(|e| CommandError {
-                    tx: self.tx.to_string(),
+                    tx: self.tx().to_string(),
                     message: format!("Failed to query snapshot: {}", e),
                 })?;
 
@@ -196,7 +222,7 @@ impl CommandContext {
         if let Some((_, item)) = snapshot.into_iter().next() {
             let value = item.to_value();
             let parsed: Q::Item = serde_json::from_value(value).map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to parse query result: {}", e),
             })?;
             Ok(Some(parsed))
@@ -215,7 +241,7 @@ impl CommandContext {
         <R as ReportOutputType>::Output: DeserializeOwned,
     {
         let report_value = serde_json::to_value(report).map_err(|e| CommandError {
-            tx: self.tx.to_string(),
+            tx: self.tx().to_string(),
             message: format!("Failed to serialize report: {}", e),
         })?;
 
@@ -224,27 +250,30 @@ impl CommandContext {
             report_id: R::report_id_static().to_string(),
         };
 
+        // Create child context with extended lineage for the report
+        let child_req = self.req.child(R::report_id_static());
+
         // Create a channel to receive report output
         let (output_tx, mut output_rx) = mpsc::channel::<Value>(1);
 
         // Start the report
         self.report_manager
-            .send_message(ReportManagerMsg::StartReport(wrapped, output_tx))
+            .send_message(ReportManagerMsg::StartReport(wrapped, child_req, output_tx))
             .map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to start report: {}", e),
             })?;
 
         // Wait for the first value
         let first_value = output_rx.recv().await.ok_or_else(|| CommandError {
-            tx: self.tx.to_string(),
+            tx: self.tx().to_string(),
             message: "Report completed without emitting a value".to_string(),
         })?;
 
         // Parse the result
         let result: <R as ReportOutputType>::Output =
             serde_json::from_value(first_value).map_err(|e| CommandError {
-                tx: self.tx.to_string(),
+                tx: self.tx().to_string(),
                 message: format!("Failed to parse report result: {}", e),
             })?;
 
