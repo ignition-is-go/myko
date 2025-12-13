@@ -4,10 +4,12 @@ use crate::{
         event::event_manager::EventManagerMsg,
         query::query_manager::QueryManagerMsg,
         report::report_manager::ReportManagerMsg,
+        search::SearchManagerMsg,
         server::{Server, ServerArgs, ServerMsg},
     },
     item::Eventable,
     query::Query,
+    report::Report,
 };
 use anyhow::bail;
 use ractor::{Actor, ActorRef};
@@ -67,6 +69,9 @@ impl MykoServer {
 
                 crate::entities::client::Client::register(&server)?;
 
+                // Register EntitySearch report
+                crate::search::EntitySearch::register(&server)?;
+
                 Ok(server)
             }
         }
@@ -110,6 +115,8 @@ pub struct MykoServerCtx {
     pub host_id: Uuid,
     /// Event bus for high-throughput event distribution (set during server startup)
     pub event_bus: std::sync::OnceLock<crate::actors::event::EventBus>,
+    /// Search manager for full-text search (set during server startup)
+    pub search_manager: std::sync::OnceLock<ActorRef<SearchManagerMsg>>,
 }
 
 impl std::fmt::Debug for MykoServerCtx {
@@ -117,6 +124,41 @@ impl std::fmt::Debug for MykoServerCtx {
         f.debug_struct("MykoServerCtx")
             .field("host_id", &self.host_id)
             .field("event_bus", &self.event_bus.get().map(|_| "EventBus"))
+            .field(
+                "search_manager",
+                &self.search_manager.get().map(|_| "SearchManager"),
+            )
             .finish()
+    }
+}
+
+impl MykoServerCtx {
+    /// Search for entities matching a query string.
+    ///
+    /// Returns matching entity IDs (up to `limit` results).
+    /// Returns empty Vec if no SearchManager is available or entity type is not indexed.
+    pub async fn search(
+        &self,
+        entity_type: &str,
+        query: &str,
+        limit: usize,
+    ) -> Vec<Arc<str>> {
+        let Some(search_manager) = self.search_manager.get() else {
+            return vec![];
+        };
+
+        match ractor::call!(
+            search_manager,
+            SearchManagerMsg::Search,
+            entity_type.to_string(),
+            query.to_string(),
+            limit
+        ) {
+            Ok(ids) => ids,
+            Err(e) => {
+                log::error!("Search call failed: {}", e);
+                vec![]
+            }
+        }
     }
 }

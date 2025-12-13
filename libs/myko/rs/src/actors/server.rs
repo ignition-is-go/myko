@@ -17,6 +17,7 @@
 //!    ├── CommandManager (command execution)
 //!    ├── SagaManager (event stream processors)
 //!    ├── RelationshipManager (cascade operations)
+//!    ├── SearchManager (full-text search indexing)
 //!    └── MessageHandler (WebSocket message routing)
 //! ```
 //!
@@ -53,6 +54,7 @@ use crate::{
         relationship::{RelationshipManager, RelationshipManagerArgs, RelationshipManagerMsg},
         report::report_manager::{ReportManager, ReportManagerArgs, ReportManagerMsg},
         saga::{SagaManager, SagaManagerArgs, SagaManagerMsg},
+        search::{SearchManager, SearchManagerArgs, SearchManagerMsg},
         ws::websocket_server::{WebSocketServer, WebSocketServerArgs, WebSocketServerMsg},
     },
     api::query::wrap_query,
@@ -95,6 +97,9 @@ pub struct ServerState {
     relationship_manager: ActorRef<RelationshipManagerMsg>,
     /// PeerManager for peer discovery and federation
     peer_manager: ActorRef<PeerManagerMsg>,
+    /// SearchManager for full-text search (kept alive, accessed via ctx.search_manager)
+    #[allow(dead_code)]
+    search_manager: ActorRef<SearchManagerMsg>,
     /// Server context with host ID
     ctx: Arc<MykoServerCtx>,
     /// Original arguments for reference during lifecycle events
@@ -158,6 +163,7 @@ impl Actor for Server {
         let ctx = Arc::new(MykoServerCtx {
             host_id: Uuid::new_v4(),
             event_bus: std::sync::OnceLock::new(),
+            search_manager: std::sync::OnceLock::new(),
         });
 
         // Spawn order optimized for direct references (no Server routing):
@@ -301,6 +307,27 @@ impl Actor for Server {
             error!("Failed to set EventBus in EventManager: {}", err);
         }
 
+        // Spawn SearchManager for full-text search indexing
+        let search_manager = match Actor::spawn(
+            None,
+            SearchManager,
+            SearchManagerArgs {
+                ctx: ctx.clone(),
+                event_manager: event_manager.clone(),
+            },
+        )
+        .await
+        {
+            Ok((a, _h)) => a,
+            Err(err) => {
+                error!("Failed to spawn SearchManager actor: {}", err);
+                return Err(err.into());
+            }
+        };
+
+        // Store SearchManager in context for reports to access
+        let _ = ctx.search_manager.set(search_manager.clone());
+
         // Spawn RelationshipManager for cascade operations
         let relationship_manager = match Actor::spawn(
             None,
@@ -380,6 +407,7 @@ impl Actor for Server {
             saga_manager,
             relationship_manager,
             peer_manager,
+            search_manager,
             ctx,
             args,
         })
@@ -415,6 +443,14 @@ impl Actor for Server {
                 // Start all registered sagas
                 if let Err(err) = state.saga_manager.send_message(SagaManagerMsg::StartAll) {
                     error!("Failed to start SagaManager: {}", err);
+                }
+
+                // Populate search indices with existing entities
+                if let Err(err) = state
+                    .search_manager
+                    .send_message(SearchManagerMsg::PopulateAll)
+                {
+                    error!("Failed to populate search indices: {}", err);
                 }
 
                 // Start WebSocket server FIRST and wait for it to be ready

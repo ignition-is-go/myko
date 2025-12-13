@@ -101,6 +101,7 @@ pub mod query;
 pub mod relationship;
 pub mod report;
 pub mod saga;
+pub mod search;
 pub mod server;
 pub mod utils;
 
