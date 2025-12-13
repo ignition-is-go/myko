@@ -138,6 +138,34 @@ pub fn iter_relations() -> impl Iterator<Item = &'static RelationRegistration> {
     inventory::iter::<RelationRegistration>()
 }
 
+/// Registration for entities that have a client_id field.
+/// When present, the server will auto-populate this field with the client_id
+/// of the WebSocket connection that sent the event.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct Instance {
+///     #[myko_client_id]
+///     pub client_id: Option<String>,
+/// }
+/// ```
+pub struct ClientIdRegistration {
+    /// Entity type that has the client_id field
+    pub entity_type: &'static str,
+    /// Field name in JSON (camelCase)
+    pub field_name_json: &'static str,
+}
+
+// Collect all client_id registrations at compile time
+inventory::collect!(ClientIdRegistration);
+
+/// Iterator over all registered client_id fields
+pub fn iter_client_id_registrations() -> impl Iterator<Item = &'static ClientIdRegistration> {
+    inventory::iter::<ClientIdRegistration>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

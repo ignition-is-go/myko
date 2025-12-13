@@ -53,6 +53,17 @@ pub struct DefaultValueInfo {
     pub value_tokens: TokenStream,
 }
 
+/// Information about a myko_client_id attribute on a field.
+/// When present, the server will auto-populate this field with the client_id
+/// of the WebSocket connection that sent the event.
+#[derive(Debug)]
+pub struct ClientIdFieldInfo {
+    /// Field name in Rust (snake_case)
+    pub field_name: String,
+    /// Field name in JSON (camelCase)
+    pub field_name_json: String,
+}
+
 /// Convert snake_case to camelCase
 pub fn to_camel_case(s: &str) -> String {
     let mut result = String::new();
@@ -77,6 +88,7 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
         || path.is_ident("owns_many")
         || path.is_ident("ensure_for")
         || path.is_ident("default_value")
+        || path.is_ident("myko_client_id")
 }
 
 /// Parse belongs_to attribute from a field
@@ -186,6 +198,35 @@ pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
     None
 }
 
+/// Parse myko_client_id attribute from a field.
+///
+/// When present, the server will auto-populate this field with the client_id
+/// of the WebSocket connection that sent the event.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct Instance {
+///     #[myko_client_id]
+///     pub client_id: Option<String>,
+/// }
+/// ```
+pub fn parse_client_id(field: &Field) -> Option<ClientIdFieldInfo> {
+    let field_name = field.ident.as_ref()?.to_string();
+    let field_name_json = to_camel_case(&field_name);
+
+    for attr in &field.attrs {
+        if attr.path().is_ident("myko_client_id") {
+            return Some(ClientIdFieldInfo {
+                field_name,
+                field_name_json,
+            });
+        }
+    }
+    None
+}
+
 /// Strip relationship attributes from a field's attributes
 pub fn strip_relationship_attrs(field: &mut Field) {
     field.attrs.retain(|attr| !is_relationship_attr(attr));
@@ -198,6 +239,7 @@ pub struct RelationshipInfo {
     pub owns_many: Vec<OwnsManyInfo>,
     pub ensure_for_fields: Vec<EnsureForFieldInfo>,
     pub default_values: Vec<DefaultValueInfo>,
+    pub client_id_field: Option<ClientIdFieldInfo>,
 }
 
 impl RelationshipInfo {
@@ -241,6 +283,9 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
             }
             if let Some(dv) = parse_default_value(field) {
                 info.default_values.push(dv);
+            }
+            if let Some(ci) = parse_client_id(field) {
+                info.client_id_field = Some(ci);
             }
         }
     }
@@ -333,6 +378,20 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                             serde_json::Value::Object(obj)
                         },
                     }
+                }
+            }
+        });
+    }
+
+    // Generate ClientId registration if present
+    if let Some(ref ci) = info.client_id_field {
+        let field_name_json = &ci.field_name_json;
+
+        registrations.push(quote! {
+            myko_rs::submit! {
+                myko_rs::relationship::ClientIdRegistration {
+                    entity_type: #local_type,
+                    field_name_json: #field_name_json,
                 }
             }
         });
