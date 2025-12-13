@@ -337,6 +337,7 @@ impl Actor for Server {
                 report_manager: report_manager.clone(),
                 command_manager: command_manager.clone(),
                 ws_server: web_socket_server.clone(),
+                host_id: ctx.host_id,
             },
         )
         .await
@@ -418,19 +419,19 @@ impl Actor for Server {
 
                 // Start WebSocket server FIRST and wait for it to be ready
                 // This ensures we can accept connections before advertising ourselves
-                let (tx, rx) = ractor::concurrency::oneshot();
+                let (ready_sender, ready_receiver) = ractor::concurrency::oneshot();
                 if let Err(err) = state
                     .web_socket_server
                     .send_message(WebSocketServerMsg::Start {
                         message_handler: state.message_handler.clone(),
-                        reply: tx.into(),
+                        reply: ready_sender.into(),
                     })
                 {
                     error!("Failed to send Start to WebSocketServer: {}", err);
                     return Ok(());
                 }
 
-                match rx.await {
+                match ready_receiver.await {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         error!("WebSocket server failed to start: {}", e);

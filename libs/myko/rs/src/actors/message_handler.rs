@@ -9,6 +9,7 @@ use crate::{
     },
     api::query::QueryResponse,
     command::{CommandError, CommandResponse},
+    context::RequestContext,
     entities::client::Client,
     event::{MEvent, MEventType},
     item::WrappedItem,
@@ -19,6 +20,7 @@ use futures_signals::signal_map::SignalMapExt;
 use log::{debug, error, trace};
 use ractor::{Actor, ActorRef, cast};
 use std::{collections::{HashMap, HashSet}, sync::Arc};
+use uuid::Uuid;
 
 pub struct MessageHandler;
 
@@ -29,6 +31,8 @@ pub struct MessageHandlerArgs {
     pub command_manager: ActorRef<CommandManagerMsg>,
     /// Direct reference to WebSocketServer (bypasses Server routing)
     pub ws_server: ActorRef<WebSocketServerMsg>,
+    /// Host ID for request context
+    pub host_id: Uuid,
 }
 
 pub struct MessageHandlerState {
@@ -38,6 +42,8 @@ pub struct MessageHandlerState {
     command_manager: ActorRef<CommandManagerMsg>,
     /// Direct reference to WebSocketServer (bypasses Server routing)
     ws_server: ActorRef<WebSocketServerMsg>,
+    /// Host ID for creating RequestContext
+    host_id: Uuid,
     /// Track active subscriptions per client for cleanup on disconnect
     /// Maps client_id -> set of (subscription_type, tx)
     client_subscriptions: HashMap<Arc<str>, HashSet<(SubscriptionType, Arc<str>)>>,
@@ -87,6 +93,7 @@ impl Actor for MessageHandler {
             report_manager: args.report_manager,
             command_manager: args.command_manager,
             ws_server: args.ws_server,
+            host_id: args.host_id,
             client_subscriptions: HashMap::new(),
         })
     }
@@ -247,13 +254,20 @@ impl Actor for MessageHandler {
                             .or_default()
                             .insert((SubscriptionType::Report, tx.clone()));
 
+                        // Create RequestContext for this report
+                        let req = RequestContext::from_client(
+                            tx.clone(),
+                            client_id.clone(),
+                            state.host_id,
+                        );
+
                         // Create channel for report outputs
                         let (output_tx, mut output_rx) =
                             tokio::sync::mpsc::channel::<serde_json::Value>(16);
 
                         // Start the report
                         if let Err(e) = state.report_manager.send_message(
-                            ReportManagerMsg::StartReport(report, output_tx),
+                            ReportManagerMsg::StartReport(report, req, output_tx),
                         ) {
                             error!("Failed to start report: {}", e);
                             return Ok(());
@@ -318,14 +332,21 @@ impl Actor for MessageHandler {
                     MykoMessage::Command(wrapped_command) => {
                         trace!("Received Command message: {}", wrapped_command.command_id);
 
-                        let tx: String = wrapped_command
+                        let tx: Arc<str> = wrapped_command
                             .command
                             .get("tx")
                             .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                            .map(|s| Arc::from(s))
+                            .unwrap_or_else(|| Arc::from(Uuid::new_v4().to_string()));
 
                         trace!("Received command: {} with tx {}", wrapped_command.command_id, tx);
+
+                        // Create RequestContext for this command
+                        let req = RequestContext::from_client(
+                            tx.clone(),
+                            client_id.clone(),
+                            state.host_id,
+                        );
 
                         let command_manager = state.command_manager.clone();
                         // Direct reference to WS server (bypasses Server routing)
@@ -338,14 +359,14 @@ impl Actor for MessageHandler {
                                 command_manager,
                                 CommandManagerMsg::Execute,
                                 wrapped_command,
-                                client_id_clone.clone()
+                                req
                             );
 
                             let response_message = match result {
                                 Ok(Ok(response)) => {
                                     MykoMessage::CommandResponse(CommandResponse {
                                         response,
-                                        tx: tx.clone(),
+                                        tx: tx.to_string(),
                                     })
                                 }
                                 Ok(Err(cmd_error)) => {
@@ -354,7 +375,7 @@ impl Actor for MessageHandler {
                                 Err(e) => {
                                     error!("Failed to execute command: {}", e);
                                     MykoMessage::CommandError(CommandError {
-                                        tx: tx.clone(),
+                                        tx: tx.to_string(),
                                         message: format!("Internal error: {}", e),
                                     })
                                 }

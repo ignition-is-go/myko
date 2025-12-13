@@ -26,7 +26,7 @@ pub enum WebSocketConnectionMsg {
 }
 
 pub struct WebSocketConnectionState {
-    pub tx: SplitSink<WebSocketStream<TcpStream>, Message>,
+    pub ws_sink: SplitSink<WebSocketStream<TcpStream>, Message>,
     pub client_id: Arc<str>,
     pub server_id: Arc<str>,
     pub message_handler: ActorRef<MessageHandlerMsg>,
@@ -64,7 +64,7 @@ impl Actor for WebSocketConnection {
         // Get peer address before consuming the stream
         let peer_addr = stream.peer_addr().ok();
 
-        let (tx, mut rx) = match accept_hdr_async(stream, |req: &Request, response: Response| {
+        let (ws_sink, mut ws_stream) = match accept_hdr_async(stream, |req: &Request, response: Response| {
             let path = req.uri().path();
             trace!("WebSocket handshake request path: {}", path);
             if !(path == "/myko" || path == "/myko/") {
@@ -120,7 +120,7 @@ impl Actor for WebSocketConnection {
         let task_message_handler = message_handler.clone();
 
         tokio::spawn(async move {
-            while let Some(message) = rx.next().await {
+            while let Some(message) = ws_stream.next().await {
                 let message = match message {
                     Err(e) => {
                         log::error!("Failed to accept WebSocket connection: {}", e);
@@ -154,7 +154,7 @@ impl Actor for WebSocketConnection {
         });
 
         Ok(WebSocketConnectionState {
-            tx,
+            ws_sink,
             client_id,
             server_id,
             message_handler,
@@ -179,7 +179,7 @@ impl Actor for WebSocketConnection {
                 trace!("Sending message to client {}: {}", state.client_id, &json[..json.len().min(100)]);
 
                 state
-                    .tx
+                    .ws_sink
                     .send(Message::Text(json))
                     .await
                     .map_err(|e| {
