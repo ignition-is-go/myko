@@ -58,9 +58,14 @@ pub struct DefaultValueInfo {
 /// of the WebSocket connection that sent the event.
 #[derive(Debug)]
 pub struct ClientIdFieldInfo {
-    /// Field name in Rust (snake_case)
-    pub field_name: String,
     /// Field name in JSON (camelCase)
+    pub field_name_json: String,
+}
+
+/// Information about a searchable field for full-text search indexing.
+#[derive(Debug)]
+pub struct SearchableFieldInfo {
+    /// Field name in JSON (camelCase) - used for indexing
     pub field_name_json: String,
 }
 
@@ -89,6 +94,7 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
         || path.is_ident("ensure_for")
         || path.is_ident("default_value")
         || path.is_ident("myko_client_id")
+        || path.is_ident("searchable")
 }
 
 /// Parse belongs_to attribute from a field
@@ -218,10 +224,35 @@ pub fn parse_client_id(field: &Field) -> Option<ClientIdFieldInfo> {
 
     for attr in &field.attrs {
         if attr.path().is_ident("myko_client_id") {
-            return Some(ClientIdFieldInfo {
-                field_name,
-                field_name_json,
-            });
+            return Some(ClientIdFieldInfo { field_name_json });
+        }
+    }
+    None
+}
+
+/// Parse searchable attribute from a field.
+///
+/// When present, this field will be included in full-text search indexing.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct Target {
+///     #[searchable]
+///     pub name: String,
+///     #[searchable]
+///     pub category: String,
+///     pub service_id: Arc<str>,  // not searchable
+/// }
+/// ```
+pub fn parse_searchable(field: &Field) -> Option<SearchableFieldInfo> {
+    let field_name = field.ident.as_ref()?.to_string();
+    let field_name_json = to_camel_case(&field_name);
+
+    for attr in &field.attrs {
+        if attr.path().is_ident("searchable") {
+            return Some(SearchableFieldInfo { field_name_json });
         }
     }
     None
@@ -240,6 +271,7 @@ pub struct RelationshipInfo {
     pub ensure_for_fields: Vec<EnsureForFieldInfo>,
     pub default_values: Vec<DefaultValueInfo>,
     pub client_id_field: Option<ClientIdFieldInfo>,
+    pub searchable_fields: Vec<SearchableFieldInfo>,
 }
 
 impl RelationshipInfo {
@@ -286,6 +318,9 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
             }
             if let Some(ci) = parse_client_id(field) {
                 info.client_id_field = Some(ci);
+            }
+            if let Some(sf) = parse_searchable(field) {
+                info.searchable_fields.push(sf);
             }
         }
     }
@@ -392,6 +427,27 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 myko_rs::relationship::ClientIdRegistration {
                     entity_type: #local_type,
                     field_name_json: #field_name_json,
+                }
+            }
+        });
+    }
+
+    // Generate Searchable registration if any fields are marked searchable
+    if !info.searchable_fields.is_empty() {
+        let fields: Vec<_> = info
+            .searchable_fields
+            .iter()
+            .map(|sf| {
+                let field = &sf.field_name_json;
+                quote! { #field }
+            })
+            .collect();
+
+        registrations.push(quote! {
+            myko_rs::submit! {
+                myko_rs::search::SearchableRegistration {
+                    entity_type: #local_type,
+                    fields: &[#(#fields),*],
                 }
             }
         });
