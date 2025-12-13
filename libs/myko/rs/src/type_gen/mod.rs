@@ -189,49 +189,48 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     let commands =
         inventory::iter::<CommandRegistration>().filter(|x| x.crate_name.contains(&crate_name));
 
-    let item_imports = items
-        .clone()
-        .map(|i| gen_import(i.entity_type))
-        .collect::<Vec<String>>()
-        .join(";");
+    // Collect all types to import, deduplicated
+    let mut all_types_to_import = HashSet::new();
 
-    let query_imports = queries
-        .clone()
-        .map(|i| gen_import(i.query_id))
-        .collect::<Vec<String>>()
-        .join(";");
+    // Entity types
+    for item in items.clone() {
+        all_types_to_import.insert(item.entity_type.to_string());
+    }
 
-    let report_imports = reports
-        .clone()
-        .map(|i| gen_import(i.report_id))
-        .collect::<Vec<String>>()
-        .join(";");
+    // Query IDs
+    for query in queries.clone() {
+        all_types_to_import.insert(query.query_id.to_string());
+    }
 
-    let command_imports = commands
-        .clone()
-        .map(|i| gen_import(i.command_id))
-        .collect::<Vec<String>>()
-        .join(";");
+    // Report IDs
+    for report in reports.clone() {
+        all_types_to_import.insert(report.report_id.to_string());
+    }
 
-    // Import output types for reports, filtered by crate and deduplicated
-    // Extract inner types from Option<T>/Vec<T> for imports
-    let report_output_imports = reports
-        .clone()
-        .filter(|r| r.output_type_crate.contains(&crate_name))
-        .flat_map(|i| extract_importable_types(i.output_type))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .map(|t| gen_type_import(&t))
-        .collect::<Vec<String>>()
-        .join(";");
+    // Command IDs
+    for command in commands.clone() {
+        all_types_to_import.insert(command.command_id.to_string());
+    }
 
-    // Import result types for commands, filtered by crate and deduplicated
-    // Extract inner types from Option<T>/Vec<T> for imports
-    let command_result_imports = commands
+    // Report output types (extract inner types from Option<T>/Vec<T>)
+    for report in reports.clone().filter(|r| r.output_type_crate.contains(&crate_name)) {
+        for t in extract_importable_types(report.output_type) {
+            all_types_to_import.insert(t);
+        }
+    }
+
+    // Command result types (extract inner types from Option<T>/Vec<T>)
+    for command in commands
         .clone()
         .filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()")
-        .flat_map(|i| extract_importable_types(i.result_type))
-        .collect::<HashSet<_>>()
+    {
+        for t in extract_importable_types(command.result_type) {
+            all_types_to_import.insert(t);
+        }
+    }
+
+    // Generate deduplicated imports
+    let all_imports = all_types_to_import
         .into_iter()
         .map(|t| gen_type_import(&t))
         .collect::<Vec<String>>()
@@ -294,12 +293,7 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];
         subdir_exports,
         "".to_string(),
         "// Entity, query, report, and command utilities".to_string(),
-        item_imports,
-        query_imports,
-        report_imports,
-        command_imports,
-        report_output_imports,
-        command_result_imports,
+        all_imports,
         query_return_type,
         report_return_type,
         command_return_type,
@@ -457,11 +451,6 @@ fn generate_item_constructor(item_name: &str) -> String {
         )
     )
 }
-
-fn gen_import(item_name: &str) -> String {
-    format!("import type {{ {} }} from './{}';", item_name, item_name)
-}
-
 /// Extract the inner types that need to be imported from a Rust type string.
 /// For example:
 /// - `Option < Server >` -> `["Server"]`
