@@ -37,6 +37,7 @@ use crate::{
         query::query_manager::QueryManagerMsg,
     },
     command::{CommandError, CommandId, WrappedCommand},
+    context::RequestContext,
     server::MykoServerCtx,
 };
 
@@ -134,13 +135,17 @@ impl SagaContext {
             command_id: cmd.command_id().to_string(),
         };
 
-        let client_id: Arc<str> = format!("saga-{}", self.host_id()).into();
+        let req = RequestContext::internal(
+            Arc::from(Uuid::new_v4().to_string()),
+            self.host_id(),
+            "saga-context",
+        );
 
         ractor::call!(
             self.command_manager,
             CommandManagerMsg::Execute,
             wrapped,
-            client_id
+            req
         )
         .map_err(|e| SagaError {
             saga_id: "context".to_string(),

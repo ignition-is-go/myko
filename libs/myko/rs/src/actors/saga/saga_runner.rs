@@ -11,8 +11,11 @@ use futures::StreamExt;
 use log::{debug, error, trace};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 
+use uuid::Uuid;
+
 use crate::{
     actors::command::command_manager::CommandManagerMsg,
+    context::RequestContext,
     saga::{AnySaga, SagaContext},
 };
 
@@ -61,21 +64,26 @@ impl Actor for SagaRunner {
         // Spawn a single task to process the entire pipeline
         let command_manager = args.command_manager.clone();
         let saga_name_for_task = saga_name;
+        let host_id = args.ctx.server_ctx.host_id;
         let pipeline_task_handle = tokio::spawn(async move {
             futures::pin_mut!(command_stream);
 
             while let Some(command) = command_stream.next().await {
                 trace!("Saga {} emitting command: {}", saga_name_for_task, command.command_id);
 
-                // Create a synthetic client ID for saga-originated commands
-                let client_id: Arc<str> = format!("saga-{}", saga_name_for_task).into();
+                // Create a RequestContext for saga-originated commands
+                let req = RequestContext::internal(
+                    Arc::from(Uuid::new_v4().to_string()),
+                    host_id,
+                    &format!("saga-{}", saga_name_for_task),
+                );
 
                 // Use ractor::call! to execute the command and wait for response
                 match ractor::call!(
                     command_manager,
                     CommandManagerMsg::Execute,
                     command,
-                    client_id
+                    req
                 ) {
                     Ok(Ok(_value)) => {
                         trace!("Saga {} command executed successfully", saga_name_for_task);
