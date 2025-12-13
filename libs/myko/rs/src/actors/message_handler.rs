@@ -336,7 +336,7 @@ impl Actor for MessageHandler {
                             .command
                             .get("tx")
                             .and_then(|v| v.as_str())
-                            .map(|s| Arc::from(s))
+                            .map(Arc::from)
                             .unwrap_or_else(|| Arc::from(Uuid::new_v4().to_string()));
 
                         trace!("Received command: {} with tx {}", wrapped_command.command_id, tx);

@@ -5,6 +5,8 @@
 //! - [`CommandContext`](crate::command::handler::CommandContext) for command-emitted events
 //! - [`RelationshipManager`](crate::actors::relationship::RelationshipManager) for cascade events
 
+#![allow(clippy::result_large_err)]
+
 use super::{
     common::{PersistEvent, ProcessEventData},
     event_manager::EventManagerMsg,
