@@ -14,6 +14,16 @@ pub struct CancelSubscription {
     pub tx: String,
 }
 
+/// Ping payload for latency measurement
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PingData {
+    /// Unique identifier to correlate ping/pong
+    pub id: String,
+    /// Client-side timestamp when ping was sent (milliseconds since epoch)
+    pub timestamp: i64,
+}
+
 /// Registration for message event types - used for TypeScript codegen
 #[derive(Debug)]
 pub struct MessageEventRegistration {
@@ -51,4 +61,6 @@ pub enum MykoMessage {
     CommandResponse(CommandResponse),
     #[serde(rename = "ws:m:command-error")]
     CommandError(CommandError),
+    #[serde(rename = "ws:m:ping")]
+    Ping(PingData),
 }

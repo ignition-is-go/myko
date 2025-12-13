@@ -397,6 +397,22 @@ impl Actor for MessageHandler {
 
                         Ok(())
                     }
+                    MykoMessage::Ping(ping_data) => {
+                        // Echo ping back immediately for latency measurement
+                        trace!("Ping received, echoing back: id={}", ping_data.id);
+                        if let Err(e) = cast!(
+                            state.ws_server,
+                            WebSocketServerMsg::SendToClient(
+                                SendToClientData {
+                                    client_id: client_id.clone(),
+                                    message: MykoMessage::Ping(ping_data),
+                                }
+                            )
+                        ) {
+                            error!("Failed to send ping response: {}", e);
+                        }
+                        Ok(())
+                    }
                     _ => {
                         trace!("Unhandled message type: {:?}", myko_message);
                         Ok(())
