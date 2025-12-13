@@ -59,5 +59,7 @@ pub mod common;
 pub mod event_bus;
 pub mod event_handler;
 pub mod event_manager;
+pub mod publisher;
 
 pub use event_bus::{EventBus, EventBusStream, EventBusSubscriber};
+pub use publisher::EventPublisher;
