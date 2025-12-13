@@ -863,7 +863,7 @@ getPeerToken() -> string
 9. ✅ Peer Discovery (entity-based via GetPeerServers)
 10. ✅ Federation Handlers (ForwardQuery/ForwardCommand/ForwardReport)
 11. ✅ Full-text Search integration (tantivy)
-12. 📐 Context propagation (tx, clientId, lineage, hostId) - DESIGNED
+12. ✅ Context propagation (tx, clientId, lineage, hostId)
 13. 📐 Authentication (async-oidc-jwt-validator + peerSecret) - DESIGNED
 14. 📐 Windback/Snapshots (version-control approach) - DESIGNED
 
@@ -1126,7 +1126,7 @@ impl Saga for MyTransitionSaga {
 - SagaRunners subscribe to EventBus for high-throughput event reception
 - Commands emitted by sagas are sent to CommandManager
 
-### Context Propagation Design (Rust)
+### Context Propagation (Rust) - ✅ IMPLEMENTED
 
 All sub-operations (commands, queries, reports, events) automatically inherit context from the originating request.
 
