@@ -9,13 +9,13 @@ use tokio::sync::mpsc;
 use crate::{
     actors::{
         command::CommandManagerMsg,
-        event::event_manager::EventManagerMsg,
+        event::{event_manager::EventManagerMsg, EventPublisher},
         query::query_manager::QueryManagerMsg,
         report::report_manager::ReportManagerMsg,
     },
     api::query::WrappedQuery,
     command::{CommandError, CommandId},
-    event::MEvent,
+    event::EventOptions,
     item::Eventable,
     query::{Query, QueryIdStatic, QueryItemType},
     report::{Report, ReportIdStatic, ReportOutputType, WrappedReport},
@@ -69,48 +69,63 @@ impl CommandContext {
         }
     }
 
-    /// Emit a SET event for an item
-    pub fn emit_set<T: Eventable + Serialize + Clone>(&self, item: &T) -> Result<(), CommandError> {
-        let event = MEvent::from_item(item, crate::event::MEventType::SET, self.tx.to_string());
-        // Clone and wrap item to avoid deserializing it again in EventHandler
-        let parsed_item: Arc<dyn crate::prelude::AnyItem> = Arc::new(item.clone());
-
-        self.event_manager
-            .send_message(crate::actors::event::event_manager::EventManagerMsg::ProcessEvent(
-                crate::actors::event::common::ProcessEventData {
-                    event,
-                    persist: crate::actors::event::common::PersistEvent::Persist,
-                    parsed_item: Some(parsed_item),
-                },
-            ))
-            .map_err(|e| CommandError {
-                tx: self.tx.to_string(),
-                message: format!("Failed to send event: {}", e),
-            })?;
-
-        Ok(())
+    /// Get an EventPublisher for emitting events.
+    fn publisher(&self) -> EventPublisher {
+        EventPublisher::new(self.event_manager.clone(), self.server_ctx.host_id)
     }
 
-    /// Emit a DEL event for an item
-    pub fn emit_del<T: Eventable + Serialize + Clone>(&self, item: &T) -> Result<(), CommandError> {
-        let event = MEvent::from_item(item, crate::event::MEventType::DEL, self.tx.to_string());
-        // Clone and wrap item to avoid deserializing it again in EventHandler
-        let parsed_item: Arc<dyn crate::prelude::AnyItem> = Arc::new(item.clone());
-
-        self.event_manager
-            .send_message(crate::actors::event::event_manager::EventManagerMsg::ProcessEvent(
-                crate::actors::event::common::ProcessEventData {
-                    event,
-                    persist: crate::actors::event::common::PersistEvent::Persist,
-                    parsed_item: Some(parsed_item),
-                },
-            ))
+    /// Emit a SET event for an item.
+    pub fn emit_set<T: Eventable + Serialize + Clone + 'static>(
+        &self,
+        item: &T,
+    ) -> Result<(), CommandError> {
+        self.publisher()
+            .publish_set(item, &self.tx, Some(self.client_id.clone()), None)
             .map_err(|e| CommandError {
                 tx: self.tx.to_string(),
                 message: format!("Failed to send event: {}", e),
-            })?;
+            })
+    }
 
-        Ok(())
+    /// Emit a SET event for an item with custom options.
+    pub fn emit_set_with_options<T: Eventable + Serialize + Clone + 'static>(
+        &self,
+        item: &T,
+        options: EventOptions,
+    ) -> Result<(), CommandError> {
+        self.publisher()
+            .publish_set(item, &self.tx, Some(self.client_id.clone()), Some(options))
+            .map_err(|e| CommandError {
+                tx: self.tx.to_string(),
+                message: format!("Failed to send event: {}", e),
+            })
+    }
+
+    /// Emit a DEL event for an item.
+    pub fn emit_del<T: Eventable + Serialize + Clone + 'static>(
+        &self,
+        item: &T,
+    ) -> Result<(), CommandError> {
+        self.publisher()
+            .publish_del(item, &self.tx, Some(self.client_id.clone()), None)
+            .map_err(|e| CommandError {
+                tx: self.tx.to_string(),
+                message: format!("Failed to send event: {}", e),
+            })
+    }
+
+    /// Emit a DEL event for an item with custom options.
+    pub fn emit_del_with_options<T: Eventable + Serialize + Clone + 'static>(
+        &self,
+        item: &T,
+        options: EventOptions,
+    ) -> Result<(), CommandError> {
+        self.publisher()
+            .publish_del(item, &self.tx, Some(self.client_id.clone()), Some(options))
+            .map_err(|e| CommandError {
+                tx: self.tx.to_string(),
+                message: format!("Failed to send event: {}", e),
+            })
     }
 
     /// Execute a nested command, updating lineage
