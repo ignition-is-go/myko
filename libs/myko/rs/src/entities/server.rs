@@ -5,6 +5,7 @@ use crate::{self as myko_rs};
 #[myko_item]
 pub struct Server {
     pub version: String,
+    #[searchable]
     pub address: String,
     pub port: u16,
     pub started_at: String, // ISO DateTime
