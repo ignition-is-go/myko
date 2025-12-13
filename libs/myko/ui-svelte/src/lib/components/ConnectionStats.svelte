@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { queries } from '@myko/ts';
+	import { GetConnectedServer } from '@myko/ts';
 	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
 	import { onDestroy } from 'svelte';
 
@@ -18,7 +18,7 @@
 	const isConnected = $derived(resolvedClient.isConnected);
 
 	// Query for connected server
-	const serverQuery = resolvedClient.query(queries.GetConnectedServer({}));
+	const serverQuery = resolvedClient.query(new GetConnectedServer({}));
 	onDestroy(() => serverQuery.release());
 
 	const server = $derived([...serverQuery.items.values()][0]);

@@ -1,5 +1,5 @@
 <script lang="ts" generics="T extends { id: string }">
-	import type { QueryReturn, ReportReturn, EntitySearchResult } from '@myko/ts';
+	import { EntitySearch, type Query, type Report, type EntitySearchResult } from '@myko/ts';
 	import {
 		getMykoClient,
 		type ReactiveReport,
@@ -17,9 +17,9 @@
 		/** Maximum number of results (default: 100) */
 		limit?: number;
 		/** Query factory to fetch items by IDs - receives array of matching IDs */
-		queryByIds: (ids: string[]) => QueryReturn<T[]>;
+		queryByIds: (ids: string[]) => Query<T>;
 		/** Query to use when search query is empty (shows all items) */
-		showAllOnEmpty?: QueryReturn<T[]>;
+		showAllOnEmpty?: Query<T>;
 		/** Optional client instance */
 		client?: SvelteMykoClient;
 		/** Render snippet for each result item */
@@ -44,17 +44,14 @@
 
 	const resolvedClient = client ?? getMykoClient();
 
-	// Build EntitySearch report factory
-	function buildSearchReport(q: string): ReportReturn<EntitySearchResult> {
-		return {
-			report: { entityType, query: q, limit },
-			reportId: 'EntitySearch'
-		} as ReportReturn<EntitySearchResult>;
+	// Build EntitySearch report
+	function buildSearchReport(q: string): EntitySearch {
+		return new EntitySearch({ entityType, query: q, limit });
 	}
 
 	// Track current subscriptions for cleanup
-	let currentSearchReport: ReactiveReport<ReportReturn<EntitySearchResult>> | null = null;
-	let currentItemsQuery: ReactiveQuery<QueryReturn<T[]>> | null = null;
+	let currentSearchReport: ReactiveReport<Report<EntitySearchResult>> | null = null;
+	let currentItemsQuery: ReactiveQuery<Query<T>> | null = null;
 
 	// Reactive search results
 	let searchResult = $state<EntitySearchResult | undefined>(undefined);

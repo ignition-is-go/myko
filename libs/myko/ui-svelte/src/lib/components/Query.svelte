@@ -1,5 +1,5 @@
-<script lang="ts" generics="Q extends QueryReturn<unknown>">
-	import type { QueryReturn, QueryItem } from '@myko/ts';
+<script lang="ts" generics="Q extends Query<unknown>">
+	import type { Query, QueryItem } from '@myko/ts';
 	import {
 		getMykoClient,
 		type ReactiveQuery,

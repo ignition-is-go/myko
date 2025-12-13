@@ -1,5 +1,5 @@
-<script lang="ts" generics="R extends ReportReturn<unknown>">
-	import type { ReportReturn, ReportResult } from '@myko/ts';
+<script lang="ts" generics="R extends Report<unknown>">
+	import type { Report, ReportResult } from '@myko/ts';
 	import {
 		getMykoClient,
 		type ReactiveReport,

@@ -10,12 +10,13 @@ import {
 	ConnectionStatus,
 	MykoClient,
 	type ClientStats,
-	type CommandReturn,
+	type Command,
+	type CommandResult,
+	type Query,
 	type QueryDiff,
 	type QueryItem,
-	type QueryReturn,
-	type ReportResult,
-	type ReportReturn
+	type Report,
+	type ReportResult
 } from '@myko/ts';
 import { SvelteMap } from 'svelte/reactivity';
 import { Subject, type Observable, type Subscription } from 'rxjs';
@@ -32,8 +33,8 @@ export type CommandError = {
 	error: Error;
 };
 
-/** Reactive query result using SvelteMap - generic over the QueryReturn factory type */
-export type ReactiveQuery<Q extends QueryReturn<unknown>> = {
+/** Reactive query result using SvelteMap - generic over the Query class type */
+export type ReactiveQuery<Q extends Query<unknown>> = {
 	/** Reactive map of items by ID */
 	readonly items: SvelteMap<string, QueryItem<Q> & { id: string }>;
 	/** Whether the query has received its first response */
@@ -42,8 +43,8 @@ export type ReactiveQuery<Q extends QueryReturn<unknown>> = {
 	release: () => void;
 };
 
-/** Reactive report result - generic over the ReportReturn factory type */
-export type ReactiveReport<R extends ReportReturn<unknown>> = {
+/** Reactive report result - generic over the Report class type */
+export type ReactiveReport<R extends Report<unknown>> = {
 	/** Current value (reactive via $state) */
 	readonly value: ReportResult<R> | undefined;
 	/** Release this consumer's reference (unsubscribes when last consumer releases) */
@@ -193,7 +194,7 @@ export class SvelteMykoClient {
 	 * @example
 	 * ```svelte
 	 * <script>
-	 *   const { items, release } = client.query(queries.GetAllTargets({}))
+	 *   const { items, release } = client.query(new GetAllTargets({}))
 	 *   onDestroy(release)
 	 * </script>
 	 *
@@ -202,7 +203,7 @@ export class SvelteMykoClient {
 	 * {/each}
 	 * ```
 	 */
-	query<Q extends QueryReturn<unknown>>(queryFactory: Q): ReactiveQuery<Q> {
+	query<Q extends Query<unknown>>(queryFactory: Q): ReactiveQuery<Q> {
 		type Item = QueryItem<Q> & { id: string };
 		const cacheKey = this.getCacheKey('query', queryFactory);
 
@@ -269,14 +270,14 @@ export class SvelteMykoClient {
 	 * @example
 	 * ```svelte
 	 * <script>
-	 *   const count = client.report(reports.CountAllTargets({}))
+	 *   const count = client.report(new CountAllTargets({}))
 	 *   onDestroy(count.release)
 	 * </script>
 	 *
 	 * <div>Count: {count.value?.count ?? 'loading...'}</div>
 	 * ```
 	 */
-	report<R extends ReportReturn<unknown>>(reportFactory: R): ReactiveReport<R> {
+	report<R extends Report<unknown>>(reportFactory: R): ReactiveReport<R> {
 		type Result = ReportResult<R>;
 		const cacheKey = this.getCacheKey('report', reportFactory);
 
@@ -335,15 +336,15 @@ export class SvelteMykoClient {
 	 * ```svelte
 	 * <script>
 	 *   async function deleteMachine(id: string) {
-	 *     const result = await myko.sendCommand(commands.DeleteMachine({ machineId: id }))
+	 *     const result = await myko.sendCommand(new DeleteMachine({ id }))
 	 *     console.log('Deleted:', result)
 	 *   }
 	 * </script>
 	 * ```
 	 */
-	async sendCommand<C extends CommandReturn<unknown>>(
+	async sendCommand<C extends Command<unknown>>(
 		commandFactory: C
-	): Promise<C extends CommandReturn<infer R> ? R : unknown> {
+	): Promise<CommandResult<C>> {
 		const commandId = commandFactory.commandId;
 		try {
 			const response = await this.client.sendCommand(commandFactory);
