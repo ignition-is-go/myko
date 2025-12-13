@@ -91,6 +91,7 @@ pub mod api;
 pub mod client;
 pub mod command;
 pub mod common;
+pub mod context;
 pub mod entities;
 pub mod event;
 pub mod item;
