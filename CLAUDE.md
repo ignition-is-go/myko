@@ -837,9 +837,13 @@ getPeerToken() -> string
   - ForwardQuery/ForwardCommand/ForwardReport for cross-server proxying
   - Peer health tracking (latency, last_seen)
   - Automatic connection/reconnection to discovered peers
+- **Full-text search**: tantivy-based in-memory search
+  - SearchManager actor subscribes to EventBus for real-time indexing
+  - `#[searchable]` field attribute for marking searchable fields
+  - EntitySearch report for querying search results
+  - Fuzzy matching with configurable distance
 
 **Not Yet Implemented**:
-- Full-text search (tantivy integration)
 - Windback/snapshots
 - Authentication (Auth0/JWT validation)
 - RebalanceItem command
@@ -858,7 +862,7 @@ getPeerToken() -> string
 8. ✅ Saga pattern (stateful stream processors with EventBus)
 9. ✅ Peer Discovery (entity-based via GetPeerServers)
 10. ✅ Federation Handlers (ForwardQuery/ForwardCommand/ForwardReport)
-11. 📐 Full-text Search integration (tantivy) - DESIGNED
+11. ✅ Full-text Search integration (tantivy)
 12. 📐 Context propagation (tx, clientId, lineage, hostId) - DESIGNED
 13. 📐 Authentication (async-oidc-jwt-validator + peerSecret) - DESIGNED
 14. 📐 Windback/Snapshots (version-control approach) - DESIGNED
@@ -923,7 +927,9 @@ pub struct Instance {
 - Uses camelCase field name in JSON (e.g., `clientId`)
 - Useful for tracking which client created an entity
 
-### Full-Text Search Design (Rust)
+### Full-Text Search (Rust) - ✅ IMPLEMENTED
+
+See `libs/myko/rs/src/actors/search/search_manager.rs` and `libs/myko/rs/src/search/` for implementation.
 
 #### Library Choice: tantivy
 
