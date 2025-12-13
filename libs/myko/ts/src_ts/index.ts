@@ -11,6 +11,7 @@ export * from '@myko/rs'
 export {
   ConnectionStatus,
   MykoClient,
+  type ClientStats,
   type CommandReturn,
   type QueryDiff,
   type QueryItem,
