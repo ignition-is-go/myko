@@ -98,8 +98,8 @@ pub enum EventHandlerMessage {
         field: String,
         /// Value to match against
         value: String,
-        /// Reply channel for matching items
-        reply: RpcReplyPort<Vec<serde_json::Value>>,
+        /// Reply channel for matching items (includes parsed items for cascade events)
+        reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>,
     },
 
     /// Query items where an array field contains a specific value.
@@ -109,8 +109,8 @@ pub enum EventHandlerMessage {
         field: String,
         /// Value to search for in the array
         value: String,
-        /// Reply channel for matching items
-        reply: RpcReplyPort<Vec<serde_json::Value>>,
+        /// Reply channel for matching items (includes parsed items for cascade events)
+        reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>,
     },
 
     /// Get items by their IDs.
@@ -118,13 +118,13 @@ pub enum EventHandlerMessage {
     GetByIds {
         /// List of item IDs to fetch
         ids: Vec<Arc<str>>,
-        /// Reply channel for found items
-        reply: RpcReplyPort<Vec<serde_json::Value>>,
+        /// Reply channel for found items (includes parsed items for cascade events)
+        reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>,
     },
 
-    /// Get all items of this entity type as JSON.
+    /// Get all items of this entity type.
     /// Used by RelationshipManager for orphan cleanup on startup.
-    GetAllItems(RpcReplyPort<Vec<serde_json::Value>>),
+    GetAllItems(RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
 }
 
 /// Arguments for spawning an EventHandler actor.
@@ -324,25 +324,24 @@ impl Actor for EventHandler {
                 Ok(())
             }
             EventHandlerMessage::QueryByField { field, value, reply } => {
-                let results: Vec<serde_json::Value> = state
+                let results: Vec<Arc<dyn AnyItem>> = state
                     .store
                     .values()
-                    .filter_map(|item| {
+                    .filter(|item| {
                         let json = item.to_value();
                         // Check if the field matches the value
                         if let Some(field_value) = json.get(&field) {
                             // Compare as string (handles both string and numeric values)
-                            let matches = match field_value {
+                            match field_value {
                                 serde_json::Value::String(s) => s == &value,
                                 serde_json::Value::Number(n) => n.to_string() == value,
                                 _ => field_value.to_string().trim_matches('"') == value,
-                            };
-                            if matches {
-                                return Some(json);
                             }
+                        } else {
+                            false
                         }
-                        None
                     })
+                    .cloned()
                     .collect();
 
                 if let Err(err) = reply.send(results) {
@@ -351,24 +350,23 @@ impl Actor for EventHandler {
                 Ok(())
             }
             EventHandlerMessage::QueryArrayContains { field, value, reply } => {
-                let results: Vec<serde_json::Value> = state
+                let results: Vec<Arc<dyn AnyItem>> = state
                     .store
                     .values()
-                    .filter_map(|item| {
+                    .filter(|item| {
                         let json = item.to_value();
                         // Check if the array field contains the value
                         if let Some(serde_json::Value::Array(arr)) = json.get(&field) {
-                            let contains = arr.iter().any(|v| match v {
+                            arr.iter().any(|v| match v {
                                 serde_json::Value::String(s) => s == &value,
                                 serde_json::Value::Number(n) => n.to_string() == value,
                                 _ => v.to_string().trim_matches('"') == value,
-                            });
-                            if contains {
-                                return Some(json);
-                            }
+                            })
+                        } else {
+                            false
                         }
-                        None
                     })
+                    .cloned()
                     .collect();
 
                 if let Err(err) = reply.send(results) {
@@ -377,9 +375,9 @@ impl Actor for EventHandler {
                 Ok(())
             }
             EventHandlerMessage::GetByIds { ids, reply } => {
-                let results: Vec<serde_json::Value> = ids
+                let results: Vec<Arc<dyn AnyItem>> = ids
                     .iter()
-                    .filter_map(|id| state.store.get(id).map(|item| item.to_value()))
+                    .filter_map(|id| state.store.get(id).cloned())
                     .collect();
 
                 if let Err(err) = reply.send(results) {
@@ -388,8 +386,7 @@ impl Actor for EventHandler {
                 Ok(())
             }
             EventHandlerMessage::GetAllItems(reply) => {
-                let results: Vec<serde_json::Value> =
-                    state.store.values().map(|item| item.to_value()).collect();
+                let results: Vec<Arc<dyn AnyItem>> = state.store.values().cloned().collect();
 
                 if let Err(err) = reply.send(results) {
                     error!("Unable to reply with all items: {}", err);
