@@ -9,6 +9,7 @@
 import {
 	ConnectionStatus,
 	MykoClient,
+	type ClientStats,
 	type CommandReturn,
 	type QueryDiff,
 	type QueryItem,
@@ -91,12 +92,27 @@ export class SvelteMykoClient {
 	// Reactive connection status
 	#connectionStatus = $state<ConnectionStatus>(ConnectionStatus.Disconnected);
 
+	// Reactive connection stats
+	#stats = $state<ClientStats | null>(null);
+	private statsSubscription: Subscription | null = null;
+
 	constructor() {
 		this.client = new MykoClient();
 
 		// Sync connection status to reactive state
 		this.client.connectionStatus$.subscribe((status: ConnectionStatus) => {
 			this.#connectionStatus = status;
+
+			// Start/stop stats subscription based on connection
+			if (status === ConnectionStatus.Connected && !this.statsSubscription) {
+				this.statsSubscription = this.client.stats().subscribe((stats) => {
+					this.#stats = stats;
+				});
+			} else if (status === ConnectionStatus.Disconnected && this.statsSubscription) {
+				this.statsSubscription.unsubscribe();
+				this.statsSubscription = null;
+				this.#stats = null;
+			}
 		});
 	}
 
@@ -125,9 +141,23 @@ export class SvelteMykoClient {
 		return this.#connectionStatus === ConnectionStatus.Connected;
 	}
 
+	/** Current connection stats (reactive, null when disconnected) */
+	get stats(): ClientStats | null {
+		return this.#stats;
+	}
+
 	/** Set the server address and connect */
 	connect(address: string): void {
 		this.client.setAddress(address);
+	}
+
+	/**
+	 * Enable automatic peer discovery via GetPeerServers query.
+	 * When enabled, the client will automatically add discovered peer servers
+	 * to the connection pool for redundancy and load balancing.
+	 */
+	enablePeerDiscovery(enabled: boolean, secure = false): void {
+		this.client.enablePeerDiscovery(enabled, secure);
 	}
 
 	/** Disconnect from the server */
@@ -143,6 +173,13 @@ export class SvelteMykoClient {
 			shared.subscription.unsubscribe();
 		}
 		this.sharedReports.clear();
+
+		// Unsubscribe stats
+		if (this.statsSubscription) {
+			this.statsSubscription.unsubscribe();
+			this.statsSubscription = null;
+			this.#stats = null;
+		}
 
 		this.client.disconnect();
 	}
