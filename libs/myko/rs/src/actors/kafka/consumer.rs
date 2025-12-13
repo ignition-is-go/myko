@@ -152,6 +152,7 @@ impl Actor for KafkaConsumer {
                                             event,
                                             persist: PersistEvent::NoPersist,
                                             parsed_item: None, // Kafka events need parsing
+                                            client_id: None,   // Kafka events have no client
                                         },
                                     )) {
                                         Ok(_) => {}

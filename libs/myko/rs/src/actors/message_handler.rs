@@ -118,6 +118,7 @@ impl Actor for MessageHandler {
                                 event,
                                 persist: PersistEvent::Persist,
                                 parsed_item: None, // External events need parsing
+                                client_id: Some(client_id.clone()),
                             }))?;
                         Ok(())
                     }
@@ -398,6 +399,7 @@ impl Actor for MessageHandler {
                         event,
                         persist: PersistEvent::Persist,
                         parsed_item: Some(Arc::new(client)),
+                        client_id: Some(client_id.clone()),
                     })
                 ) {
                     error!("Failed to publish Client entity: {}", e);
@@ -444,6 +446,7 @@ impl Actor for MessageHandler {
                         event,
                         persist: PersistEvent::Persist,
                         parsed_item: Some(Arc::new(client)),
+                        client_id: Some(client_id.clone()),
                     })
                 ) {
                     error!("Failed to delete Client entity: {}", e);
