@@ -119,6 +119,7 @@ impl Actor for ReportRunner {
                     SubscriptionRequest::Report {
                         report,
                         report_id,
+                        req,
                         response_tx,
                     } => {
                         trace!(
@@ -131,6 +132,7 @@ impl Actor for ReportRunner {
                             super::report_manager::ReportManagerMsg::SubscribeReport {
                                 report,
                                 report_id,
+                                req,
                                 response_tx,
                             },
                         ) {

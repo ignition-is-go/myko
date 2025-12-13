@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use crate::{
     actors::query::query_manager::QueryManagerMsg,
     api::query::WrappedQuery,
+    context::RequestContext,
     prelude::AnyItem,
     report::{ReportContext, ReportRunnerHandle, WrappedReport},
     server::MykoServerCtx,
@@ -54,8 +55,8 @@ pub struct RegisterReportData {
 pub enum ReportManagerMsg {
     /// Register a new report handler
     RegisterReport(RegisterReportData),
-    /// Start a new report subscription
-    StartReport(WrappedReport, mpsc::Sender<Value>),
+    /// Start a new report subscription with request context
+    StartReport(WrappedReport, RequestContext, mpsc::Sender<Value>),
     /// Subscribe to a query from within a report
     SubscribeQuery {
         query: Value,
@@ -67,6 +68,8 @@ pub enum ReportManagerMsg {
     SubscribeReport {
         report: Value,
         report_id: Arc<str>,
+        /// Request context to propagate to the sub-report
+        req: RequestContext,
         response_tx: mpsc::Sender<Value>,
     },
     /// Stop a report by tx
@@ -107,16 +110,10 @@ impl Actor for ReportManager {
                     },
                 );
             }
-            ReportManagerMsg::StartReport(wrapped_report, output_tx) => {
+            ReportManagerMsg::StartReport(wrapped_report, req, output_tx) => {
                 let report_id: Arc<str> = wrapped_report.report_id.clone().into();
-                let tx: Arc<str> = wrapped_report
-                    .report
-                    .get("tx")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.into())
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string().into());
 
-                trace!("Starting report {} with tx {}", report_id, tx);
+                trace!("Starting report {} with tx {}", report_id, req.tx());
 
                 let handler = match state.handlers.get(&report_id) {
                     Some(h) => h,
@@ -133,13 +130,16 @@ impl Actor for ReportManager {
                 // Create channels for the runner
                 let (subscription_tx, subscription_rx) = mpsc::channel(16);
 
-                // Create ReportContext with report args
+                // Create ReportContext with report args and request context
                 let runner_handle = Arc::new(ReportRunnerHandle { subscription_tx });
                 let report_ctx = ReportContext {
+                    req: req.clone(),
                     server_ctx: state.ctx.clone(),
                     report_args: wrapped_report.report.clone(),
                     runner: runner_handle,
                 };
+
+                let tx: Arc<str> = req.tx.clone();
 
                 // Create the report stream
                 let compute_fn = handler.compute_fn.clone();
@@ -314,9 +314,10 @@ impl Actor for ReportManager {
             ReportManagerMsg::SubscribeReport {
                 report,
                 report_id,
+                req,
                 response_tx,
             } => {
-                trace!("Report subscribing to sub-report: {}", report_id);
+                trace!("Report subscribing to sub-report: {} (lineage: {})", report_id, req.lineage_string());
 
                 // Create a WrappedReport and start it
                 let wrapped_report = WrappedReport {
@@ -324,9 +325,12 @@ impl Actor for ReportManager {
                     report_id: report_id.to_string(),
                 };
 
-                // Recursively start the sub-report
+                // Create child context with extended lineage
+                let child_req = req.child(&report_id);
+
+                // Recursively start the sub-report with propagated context
                 if let Err(e) =
-                    myself.send_message(ReportManagerMsg::StartReport(wrapped_report, response_tx))
+                    myself.send_message(ReportManagerMsg::StartReport(wrapped_report, child_req, response_tx))
                 {
                     error!("Failed to start sub-report: {}", e);
                 }

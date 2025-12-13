@@ -5,7 +5,9 @@ use futures::Stream;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
+use crate::context::RequestContext;
 use crate::event::MEvent;
 use crate::query::Query;
 use crate::report::ReportIdStatic;
@@ -18,7 +20,10 @@ use crate::server::MykoServerCtx;
 /// - Subscribe to other reports (including self for recursion)
 /// - Access server context for additional data
 /// - Access the report arguments via `report_args`
+/// - Access request context (tx, client_id, lineage, host_id)
 pub struct ReportContext {
+    /// Request context with tracing information (tx, client_id, lineage, host_id).
+    pub req: RequestContext,
     pub server_ctx: Arc<MykoServerCtx>,
     /// The report arguments as a JSON Value - handlers should parse this to their Args type
     pub report_args: Value,
@@ -42,11 +47,41 @@ pub enum SubscriptionRequest {
     Report {
         report: Value,
         report_id: Arc<str>,
+        /// Request context to propagate to the sub-report
+        req: RequestContext,
         response_tx: mpsc::Sender<Value>,
     },
 }
 
 impl ReportContext {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Convenience accessors for request context
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get the transaction ID.
+    pub fn tx(&self) -> &str {
+        &self.req.tx
+    }
+
+    /// Get the client ID if present.
+    pub fn client_id(&self) -> Option<&str> {
+        self.req.client_id.as_deref()
+    }
+
+    /// Get the host ID.
+    pub fn host_id(&self) -> Uuid {
+        self.req.host_id
+    }
+
+    /// Get the lineage (call chain).
+    pub fn lineage(&self) -> &[Arc<str>] {
+        &self.req.lineage
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Report-specific methods
+    // ─────────────────────────────────────────────────────────────────────────
+
     /// Parse the report arguments to the expected Args type.
     ///
     /// This is a convenience method to deserialize the report_args Value
@@ -71,7 +106,7 @@ impl ReportContext {
         let query_item_type = QueryItemType::query_item_type(&query);
         let query_value = serde_json::to_value(&query).expect("Query should serialize");
 
-        let (tx, mut rx) = mpsc::channel::<Vec<Value>>(16);
+        let (sender, mut receiver) = mpsc::channel::<Vec<Value>>(16);
 
         // Send subscription request to runner
         let subscription_tx = runner.subscription_tx.clone();
@@ -81,14 +116,14 @@ impl ReportContext {
                     query: query_value,
                     query_id,
                     query_item_type,
-                    response_tx: tx,
+                    response_tx: sender,
                 })
                 .await;
         });
 
         // Convert channel to stream, deserializing items
         Box::pin(async_stream::stream! {
-            while let Some(items) = rx.recv().await {
+            while let Some(items) = receiver.recv().await {
                 let parsed: Vec<Q::Item> = items
                     .into_iter()
                     .filter_map(|v| serde_json::from_value(v).ok())
@@ -114,8 +149,9 @@ impl ReportContext {
         let runner = self.runner.clone();
         let report_id: Arc<str> = R::report_id_static().into();
         let report_value = serde_json::to_value(&report).expect("Report should serialize");
+        let req = self.req.clone();
 
-        let (tx, mut rx) = mpsc::channel::<Value>(16);
+        let (sender, mut receiver) = mpsc::channel::<Value>(16);
 
         // Send subscription request to runner
         let subscription_tx = runner.subscription_tx.clone();
@@ -124,14 +160,15 @@ impl ReportContext {
                 .send(SubscriptionRequest::Report {
                     report: report_value,
                     report_id,
-                    response_tx: tx,
+                    req,
+                    response_tx: sender,
                 })
                 .await;
         });
 
         // Convert channel to stream, deserializing output
         Box::pin(async_stream::stream! {
-            while let Some(value) = rx.recv().await {
+            while let Some(value) = receiver.recv().await {
                 if let Ok(parsed) = serde_json::from_value::<R::Output>(value) {
                     yield parsed;
                 }
