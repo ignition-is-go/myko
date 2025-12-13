@@ -16,6 +16,7 @@ use crate::actors::query::query_manager::QueryManagerMsg;
 use crate::api::query::WrappedQuery;
 use crate::client::MykoClient;
 use crate::command::{AnyCommand, WrappedCommand};
+use crate::context::RequestContext;
 use crate::entities::server::{DeleteServer, GetConnectedServer, GetPeerServers, Server};
 use crate::message::MykoMessage;
 use crate::parsers::query::AnyQuery;
@@ -135,20 +136,24 @@ pub struct PeerManager;
 
 impl PeerManager {
     /// Delete a Server entity via DeleteServer command
-    async fn delete_server(command_manager: &ActorRef<CommandManagerMsg>, server_id: Uuid) {
+    async fn delete_server(command_manager: &ActorRef<CommandManagerMsg>, server_id: Uuid, host_id: Uuid) {
         use crate::entities::server::DeleteServerArgs;
         let delete_cmd = DeleteServer::new(DeleteServerArgs {
             id: server_id.to_string().into(),
         });
 
         let wrapped: WrappedCommand = (&delete_cmd as &dyn AnyCommand).into();
-        let client_id: Arc<str> = Arc::from("peer-manager");
+        let req = RequestContext::internal(
+            Arc::from(Uuid::new_v4().to_string()),
+            host_id,
+            "peer-manager",
+        );
 
         match ractor::call!(
             command_manager,
             CommandManagerMsg::Execute,
             wrapped,
-            client_id
+            req
         ) {
             Ok(_) => debug!("[PEER] DELETE: {} entry removed", server_id),
             Err(e) => warn!("[PEER] DELETE FAILED: {} - {:?}", server_id, e),
@@ -328,6 +333,7 @@ impl Actor for PeerManager {
                 let peer_address = format!("ws://{}:{}/myko", server.address, server.port);
                 let expected_server_id = server_id;
                 let command_manager = state.command_manager.clone();
+                let host_id = state.ctx.host_id;
 
                 tokio::spawn(async move {
                     let client = MykoClient::new();
@@ -350,7 +356,7 @@ impl Actor for PeerManager {
                     if !connected {
                         warn!("[PEER] TIMEOUT: {} at {} - deleting entry", expected_server_id, address_key);
                         client.close();
-                        Self::delete_server(&command_manager, expected_server_id).await;
+                        Self::delete_server(&command_manager, expected_server_id, host_id).await;
                         let _ = myself_clone.send_message(PeerManagerMsg::ConnectionFailed {
                             server_id: expected_server_id,
                             address: address_key,
@@ -392,7 +398,7 @@ impl Actor for PeerManager {
                             expected_server_id, address_key, actual_id
                         );
                         client.close();
-                        Self::delete_server(&command_manager, expected_server_id).await;
+                        Self::delete_server(&command_manager, expected_server_id, host_id).await;
                         let _ = myself_clone.send_message(PeerManagerMsg::ConnectionFailed {
                             server_id: expected_server_id,
                             address: address_key,
@@ -468,12 +474,17 @@ impl Actor for PeerManager {
                 // Convert to WrappedCommand using From impl
                 let wrapped: WrappedCommand = (&delete_cmd as &dyn AnyCommand).into();
 
-                let client_id: Arc<str> = Arc::from("peer-manager");
+                let host_id = state.ctx.host_id;
+                let req = RequestContext::internal(
+                    Arc::from(Uuid::new_v4().to_string()),
+                    host_id,
+                    "peer-manager",
+                );
                 let command_manager = state.command_manager.clone();
 
                 // Execute command in background - we don't need to wait for the result
                 tokio::spawn(async move {
-                    match ractor::call!(command_manager, CommandManagerMsg::Execute, wrapped, client_id) {
+                    match ractor::call!(command_manager, CommandManagerMsg::Execute, wrapped, req) {
                         Ok(_) => debug!("Successfully deleted disconnected server {}", server_id),
                         Err(e) => warn!("Failed to delete disconnected server {}: {:?}", server_id, e),
                     }
