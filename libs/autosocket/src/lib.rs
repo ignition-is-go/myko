@@ -45,11 +45,10 @@ impl AutoReconnectSocket {
         // Cancel existing connection/reconnection loop
         if let SocketConnectionStatus::Connected(current_addr, _)
         | SocketConnectionStatus::Connecting(current_addr, _) = &current_status
+            && Some(current_addr.clone()) == addr
         {
-            if Some(current_addr.clone()) == addr {
-                info!("Already connected to {current_addr}");
-                return;
-            }
+            info!("Already connected to {current_addr}");
+            return;
         }
 
         // Cancel the reconnection loop via stored token

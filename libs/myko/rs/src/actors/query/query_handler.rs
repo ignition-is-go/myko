@@ -286,11 +286,11 @@ impl QueryHandler {
                 }
             };
 
-            if let Some(update) = update {
-                if watcher.sender.send(update).is_err() {
-                    // Channel closed - mark for removal
-                    dead_watchers.push(tx.clone());
-                }
+            if let Some(update) = update
+                && watcher.sender.send(update).is_err()
+            {
+                // Channel closed - mark for removal
+                dead_watchers.push(tx.clone());
             }
         }
 

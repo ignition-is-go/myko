@@ -260,20 +260,24 @@ impl Actor for EventManager {
                 }
 
                 // Auto-populate client_id field if entity has one and client_id is available
-                if let Some(field_name) = state.client_id_fields.get(entity_type.as_ref()) {
-                    if let Some(client_id) = &data.client_id {
-                        if let serde_json::Value::Object(ref mut obj) = data.event.item {
-                            // Only set if not already set (allows explicit override)
-                            if !obj.contains_key(field_name) || obj.get(field_name) == Some(&serde_json::Value::Null) {
-                                obj.insert(field_name.clone(), serde_json::Value::String(client_id.to_string()));
-                                trace!(
-                                    "EventManager: Auto-populated {} on {} with client_id {}",
-                                    field_name,
-                                    entity_type,
-                                    client_id
-                                );
-                            }
-                        }
+                if let Some(field_name) = state.client_id_fields.get(entity_type.as_ref())
+                    && let Some(client_id) = &data.client_id
+                    && let serde_json::Value::Object(ref mut obj) = data.event.item
+                {
+                    // Only set if not already set (allows explicit override)
+                    if !obj.contains_key(field_name)
+                        || obj.get(field_name) == Some(&serde_json::Value::Null)
+                    {
+                        obj.insert(
+                            field_name.clone(),
+                            serde_json::Value::String(client_id.to_string()),
+                        );
+                        trace!(
+                            "EventManager: Auto-populated {} on {} with client_id {}",
+                            field_name,
+                            entity_type,
+                            client_id
+                        );
                     }
                 }
 

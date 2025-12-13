@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use log::{debug, error, trace};
+use log::{error, trace};
 use ractor::{Actor, ActorRef};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -88,7 +88,7 @@ impl Actor for ReportRunner {
                 }
             }
             ReportRunnerMsg::Complete => {
-                debug!("ReportRunner [{}] completed", state.tx);
+                trace!("ReportRunner [{}] completed", state.tx);
                 myself.stop(Some("report completed".to_string()));
             }
             ReportRunnerMsg::HandleSubscription(request) => {
@@ -150,7 +150,7 @@ impl Actor for ReportRunner {
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ractor::ActorProcessingErr> {
-        debug!("ReportRunner [{}] stopped", state.tx);
+        trace!("ReportRunner [{}] stopped", state.tx);
         Ok(())
     }
 }

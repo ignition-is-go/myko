@@ -155,8 +155,8 @@ impl PeerManager {
             wrapped,
             req
         ) {
-            Ok(_) => debug!("[PEER] DELETE: {} entry removed", server_id),
-            Err(e) => warn!("[PEER] DELETE FAILED: {} - {:?}", server_id, e),
+            Ok(_) => trace!("Deleted server entry {}", server_id),
+            Err(e) => warn!("Failed to delete server {}: {:?}", server_id, e),
         }
     }
 }
@@ -171,7 +171,7 @@ impl Actor for PeerManager {
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        info!(
+        debug!(
             "PeerManager starting for host {}:{}",
             args.host_address, args.host_port
         );
@@ -196,7 +196,7 @@ impl Actor for PeerManager {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             PeerManagerMsg::Start => {
-                debug!("[PEER] Starting peer discovery");
+                trace!("Starting peer discovery");
 
                 let myself_clone = myself.clone();
                 let host_id = state.ctx.host_id;
@@ -227,12 +227,12 @@ impl Actor for PeerManager {
                         std::collections::BTreeMap::new();
 
                     // Process query updates
-                    debug!("[PEER] WatchQuery subscription active");
+                    trace!("Discovery subscription active");
                     while let Some(update) = receiver.recv().await {
                         match update {
                             QueryStreamUpdate::Initial(items) => {
                                 let peer_count = items.iter().filter(|(id, _)| id.as_ref() != host_id.to_string()).count();
-                                debug!("[PEER] Initial: {} peer servers", peer_count);
+                                debug!("Discovered {} peer servers", peer_count);
                                 // Initial snapshot - populate current state and trigger connections
                                 current_servers.clear();
                                 for (id, item) in items {
@@ -241,7 +241,7 @@ impl Actor for PeerManager {
                                     }
                                     if let Some(server) = downcast_item::<Server>(&item) {
                                         trace!(
-                                            "[PEER]   - {} at {}:{} (started: {})",
+                                            "  - {} at {}:{} (started: {})",
                                             server.id, server.address, server.port, server.started_at
                                         );
                                         current_servers.insert(id, server.clone());
@@ -263,12 +263,12 @@ impl Actor for PeerManager {
 
                                     if is_new {
                                         debug!(
-                                            "[PEER] New: {} at {}:{}",
+                                            "Peer discovered: {} at {}:{}",
                                             server.id, server.address, server.port
                                         );
                                     } else {
-                                        debug!(
-                                            "[PEER] Update: {} (started: {} -> {})",
+                                        trace!(
+                                            "Peer updated: {} (started: {} -> {})",
                                             server.id,
                                             old_started_at.unwrap_or_default(), server.started_at
                                         );
@@ -280,7 +280,7 @@ impl Actor for PeerManager {
                             QueryStreamUpdate::Remove(id) => {
                                 if let Some(server) = current_servers.remove(&id) {
                                     debug!(
-                                        "[PEER] Remove: {} at {}:{}",
+                                        "Peer removed: {} at {}:{}",
                                         server.id, server.address, server.port
                                     );
                                     if let Ok(uuid) = Uuid::parse_str(&id) {
@@ -292,7 +292,7 @@ impl Actor for PeerManager {
                         }
                     }
 
-                    debug!("[PEER] Discovery loop ended");
+                    trace!("Discovery loop ended");
                 });
 
                 state.discovery_handle = Some(handle);
@@ -305,7 +305,7 @@ impl Actor for PeerManager {
                 let server_id = match Uuid::parse_str(&server.id) {
                     Ok(id) => id,
                     Err(e) => {
-                        warn!("[PEER] Invalid server ID {}: {}", server.id, e);
+                        warn!("Invalid server ID {}: {}", server.id, e);
                         return Ok(());
                     }
                 };
@@ -317,15 +317,15 @@ impl Actor for PeerManager {
 
                 // Skip if already connected or connecting
                 if state.peers.contains_key(&server_id) {
-                    debug!("[PEER] Already connected to {} - skipping", server_id);
+                    trace!("Already connected to {}", server_id);
                     return Ok(());
                 }
                 if state.connecting.contains(&server_id) {
-                    debug!("[PEER] Already connecting to {} - skipping", server_id);
+                    trace!("Already connecting to {}", server_id);
                     return Ok(());
                 }
 
-                debug!("[PEER] Connecting: {} at {}", server_id, address_key);
+                trace!("Connecting to {} at {}", server_id, address_key);
                 state.connecting.insert(server_id);
 
                 // Connect in background
@@ -354,7 +354,7 @@ impl Actor for PeerManager {
                     .unwrap_or(false);
 
                     if !connected {
-                        warn!("[PEER] TIMEOUT: {} at {} - deleting entry", expected_server_id, address_key);
+                        warn!("Connection timeout: {} at {}", expected_server_id, address_key);
                         client.close();
                         Self::delete_server(&command_manager, expected_server_id, host_id).await;
                         let _ = myself_clone.send_message(PeerManagerMsg::ConnectionFailed {
@@ -386,7 +386,7 @@ impl Actor for PeerManager {
                     let (actual_id, verified) = verification_result;
 
                     if verified {
-                        debug!("[PEER] Verified: {} at {}", expected_server_id, address_key);
+                        trace!("Verified peer {} at {}", expected_server_id, address_key);
                         let _ = myself_clone.send_message(PeerManagerMsg::PeerConnected {
                             server_id: expected_server_id,
                             address: address_key,
@@ -394,7 +394,7 @@ impl Actor for PeerManager {
                         });
                     } else {
                         warn!(
-                            "[PEER] MISMATCH: {} at {} (got {:?}) - deleting entry",
+                            "Server ID mismatch: expected {} at {}, got {:?}",
                             expected_server_id, address_key, actual_id
                         );
                         client.close();
@@ -412,7 +412,7 @@ impl Actor for PeerManager {
                 address,
                 client,
             } => {
-                info!("[PEER] CONNECTED: {} at {}", server_id, address);
+                info!("Connected to peer {} at {}", server_id, address);
 
                 // Remove from connecting set
                 state.connecting.remove(&server_id);
@@ -434,7 +434,7 @@ impl Actor for PeerManager {
                             }
                             crate::client::ConnectionStatus::Disconnected => {
                                 if was_connected {
-                                    info!("[PEER] LOST: {} - stopping reconnection", server_id);
+                                    debug!("Lost connection to peer {}", server_id);
                                     monitor_client.close();
                                     let _ = myself_clone
                                         .send_message(PeerManagerMsg::PeerDisconnected { server_id });
@@ -457,7 +457,7 @@ impl Actor for PeerManager {
             }
 
             PeerManagerMsg::PeerDisconnected { server_id } => {
-                info!("[PEER] DISCONNECTED: {} - deleting entry", server_id);
+                info!("Disconnected from peer {}", server_id);
 
                 // Close the client to stop any reconnection attempts
                 if let Some(peer) = state.peers.remove(&server_id) {
@@ -485,14 +485,14 @@ impl Actor for PeerManager {
                 // Execute command in background - we don't need to wait for the result
                 tokio::spawn(async move {
                     match ractor::call!(command_manager, CommandManagerMsg::Execute, wrapped, req) {
-                        Ok(_) => debug!("Successfully deleted disconnected server {}", server_id),
-                        Err(e) => warn!("Failed to delete disconnected server {}: {:?}", server_id, e),
+                        Ok(_) => trace!("Deleted server entry {}", server_id),
+                        Err(e) => warn!("Failed to delete server {}: {:?}", server_id, e),
                     }
                 });
             }
 
             PeerManagerMsg::PeerRemoved { server_id } => {
-                debug!("Peer {} removed from GetPeerServers", server_id);
+                trace!("Peer {} removed from discovery", server_id);
 
                 // If we're connected, disconnect
                 if state.peers.contains_key(&server_id) {
@@ -526,7 +526,7 @@ impl Actor for PeerManager {
                         let wrapped: WrappedQuery = query.into();
 
                         tokio::spawn(async move {
-                            debug!("Forwarding query {} to peer {}", query_id, peer_id);
+                            trace!("Forwarding query {} to peer {}", query_id, peer_id);
 
                             // Set up listener for response before sending
                             let mut stream = client.get_messages();
@@ -607,7 +607,7 @@ impl Actor for PeerManager {
                         let wrapped: WrappedCommand = command.into();
 
                         tokio::spawn(async move {
-                            debug!("Forwarding command {} to peer {}", command_id, peer_id);
+                            trace!("Forwarding command {} to peer {}", command_id, peer_id);
 
                             // Set up listener for response before sending
                             let mut stream = client.get_messages();
@@ -682,7 +682,7 @@ impl Actor for PeerManager {
                         let wrapped: WrappedReport = report.into();
 
                         tokio::spawn(async move {
-                            debug!("Forwarding report {} to peer {}", report_id, peer_id);
+                            trace!("Forwarding report {} to peer {}", report_id, peer_id);
 
                             // Set up listener for response before sending
                             let mut stream = client.get_messages();
@@ -781,7 +781,7 @@ impl Actor for PeerManager {
                 if let Some(peer) = state.peers.get_mut(&peer_id) {
                     peer.last_seen = Some(std::time::Instant::now());
                     peer.last_latency_ms = Some(latency_ms);
-                    debug!("Updated health for peer {}: {}ms", peer_id, latency_ms);
+                    trace!("Peer {} health: {}ms", peer_id, latency_ms);
                 }
             }
 
@@ -791,10 +791,7 @@ impl Actor for PeerManager {
             } => {
                 // Just remove from connecting set - server entry already deleted by caller
                 state.connecting.remove(&server_id);
-                debug!(
-                    "[PEER] Connection to {} at {} failed, removed from connecting set",
-                    server_id, address
-                );
+                trace!("Connection failed: {} at {}", server_id, address);
             }
 
         }
@@ -807,7 +804,7 @@ impl Actor for PeerManager {
         _myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        debug!("[PEER] Stopping");
+        trace!("PeerManager stopping");
 
         // Cancel discovery task
         if let Some(handle) = state.discovery_handle.take() {

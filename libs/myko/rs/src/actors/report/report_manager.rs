@@ -2,7 +2,7 @@ use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use futures::{Stream, StreamExt};
 use futures_signals::signal_map::MapDiff;
-use log::{debug, error, trace};
+use log::{error, trace};
 use ractor::{Actor, ActorRef};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -337,7 +337,7 @@ impl Actor for ReportManager {
             }
             ReportManagerMsg::StopReport(tx) => {
                 if let Some(runner) = state.runners.remove(&tx) {
-                    debug!("Stopping report runner for tx: {}", tx);
+                    trace!("Stopping report runner for tx: {}", tx);
                     runner.stop(Some("stopped by manager".to_string()));
                 }
             }

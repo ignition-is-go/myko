@@ -608,19 +608,18 @@ impl RelationshipManager {
                     if let Some(fk_value) = child_value
                         .get(lookup.local_key_json)
                         .and_then(|v| v.as_str())
+                        && !parent_ids.contains(fk_value)
                     {
-                        if !parent_ids.contains(fk_value) {
-                            trace!(
-                                "RelationshipManager: Deleting BelongsTo orphan {} {} (parent {} {} not found)",
-                                child_type,
-                                child.id(),
-                                lookup.foreign_type,
-                                fk_value
-                            );
-                            self.publish_del_with_item(state, child_type, child, &tx)
-                                .await;
-                            orphan_count += 1;
-                        }
+                        trace!(
+                            "RelationshipManager: Deleting BelongsTo orphan {} {} (parent {} {} not found)",
+                            child_type,
+                            child.id(),
+                            lookup.foreign_type,
+                            fk_value
+                        );
+                        self.publish_del_with_item(state, child_type, child, &tx)
+                            .await;
+                        orphan_count += 1;
                     }
                 }
 
