@@ -23,17 +23,6 @@ pub struct TsExportRegistration {
 inventory::collect!(TsExportRegistration);
 
 /// Register a type for ts-rs export.
-///
-/// Usage:
-/// ```ignore
-/// use myko_rs::register_ts_export;
-///
-/// #[derive(TS)]
-/// // Don't need #[ts(export)] anymore!
-/// struct MyType { ... }
-///
-/// register_ts_export!(MyType);
-/// ```
 #[macro_export]
 macro_rules! register_ts_export {
     ($ty:ty) => {
@@ -44,7 +33,6 @@ macro_rules! register_ts_export {
             }
         }
     };
-    // Register multiple types at once
     ($($ty:ty),+ $(,)?) => {
         $(
             $crate::register_ts_export!($ty);
@@ -53,7 +41,6 @@ macro_rules! register_ts_export {
 }
 
 /// Export all registered ts-rs types to the bindings directory.
-/// Called automatically by `generate_item_types()`.
 pub fn export_registered_ts_types() -> Result<(), anyhow::Error> {
     let mut success_count = 0;
     let mut error_count = 0;
@@ -80,7 +67,6 @@ pub fn export_registered_ts_types() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-/// Collect all .ts files in the bindings directory (excluding index.ts, .d.ts files, and subdirectories)
 fn collect_binding_types(directory_path: &str) -> Vec<String> {
     let mut types = Vec::new();
 
@@ -91,7 +77,7 @@ fn collect_binding_types(directory_path: &str) -> Vec<String> {
             if path.is_file()
                 && path.extension().map(|e| e == "ts").unwrap_or(false)
                 && let Some(ref fname) = filename
-                && !fname.ends_with(".d.ts") // Exclude .d.ts declaration files
+                && !fname.ends_with(".d.ts")
                 && let Some(name) = path.file_stem()
             {
                 let name = name.to_string_lossy().to_string();
@@ -106,7 +92,6 @@ fn collect_binding_types(directory_path: &str) -> Vec<String> {
     types
 }
 
-/// Collect types from subdirectories (e.g., serde_json/JsonValue), excluding .d.ts files
 fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
     let mut types = Vec::new();
 
@@ -122,7 +107,7 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
                         if subpath.is_file()
                             && subpath.extension().map(|e| e == "ts").unwrap_or(false)
                             && let Some(ref fname) = filename
-                            && !fname.ends_with(".d.ts") // Exclude .d.ts declaration files
+                            && !fname.ends_with(".d.ts")
                             && let Some(name) = subpath.file_stem()
                         {
                             let name = name.to_string_lossy().to_string();
@@ -138,13 +123,11 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
 }
 
 pub fn generate_item_types() -> Result<(), anyhow::Error> {
-    let directory_path = "bindings"; // Specify the target directory
+    let directory_path = "bindings";
     let file_name = "index.ts";
 
-    // Create the directory if it doesn't exist
     fs::create_dir_all(directory_path)?;
 
-    // First, export all registered ts-rs types
     println!("Exporting ts-rs types...");
     export_registered_ts_types()?;
 
@@ -153,155 +136,140 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .replace("-", "_");
     println!("The current crate name is: {}", crate_name);
 
-    // Collect all ts-rs generated types
     let binding_types = collect_binding_types(directory_path);
     let subdir_types = collect_subdir_types(directory_path);
 
-    // Generate re-exports for ts-rs types
+    let items: Vec<_> =
+        inventory::iter::<ItemRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
+    let queries: Vec<_> =
+        inventory::iter::<QueryRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
+    let reports: Vec<_> =
+        inventory::iter::<ReportRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
+    let commands: Vec<_> =
+        inventory::iter::<CommandRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
+
+    // Collect query/report/command type names (these will be classes, not re-exported types)
+    let class_type_names: HashSet<&str> = queries.iter().map(|q| q.query_id)
+        .chain(reports.iter().map(|r| r.report_id))
+        .chain(commands.iter().map(|c| c.command_id))
+        .collect();
+
+    // Re-export types that are NOT query/report/command classes
     let binding_exports = binding_types
         .iter()
+        .filter(|name| !class_type_names.contains(name.as_str()))
         .map(|name| format!("export type {{ {} }} from \"./{}\";", name, name))
         .collect::<Vec<String>>()
         .join("\n");
 
-    // Generate re-exports for subdirectory types
     let subdir_exports = subdir_types
         .iter()
         .map(|(subdir, name)| format!("export type {{ {} }} from \"./{}/{}\";", name, subdir, name))
         .collect::<Vec<String>>()
         .join("\n");
 
-    let query_return_type = "export type QueryReturn<U> = { query: Record<string, unknown>; queryId: string; queryItemType: string; $res?: () => U[] }".to_string();
-
-    let report_return_type = "export type ReportReturn<U> = { report: Record<string, unknown>; reportId: string; $res?: () => U }".to_string();
-
-    let command_return_type = "export type CommandReturn<U> = { command: Record<string, unknown>; commandId: string; $res?: () => U }".to_string();
-
-    let items =
-        inventory::iter::<ItemRegistration>().filter(|x| x.crate_name.contains(&crate_name));
-
-    let queries =
-        inventory::iter::<QueryRegistration>().filter(|x| x.crate_name.contains(&crate_name));
-
-    let reports =
-        inventory::iter::<ReportRegistration>().filter(|x| x.crate_name.contains(&crate_name));
-
-    let commands =
-        inventory::iter::<CommandRegistration>().filter(|x| x.crate_name.contains(&crate_name));
-
-    // Collect all types to import, deduplicated
-    let mut all_types_to_import = HashSet::new();
-
-    // Entity types
-    for item in items.clone() {
-        all_types_to_import.insert(item.entity_type.to_string());
+    // Collect entity types for imports
+    let mut entity_types: HashSet<String> = HashSet::new();
+    for item in &items {
+        entity_types.insert(item.entity_type.to_string());
     }
-
-    // Query IDs
-    for query in queries.clone() {
-        all_types_to_import.insert(query.query_id.to_string());
+    for query in &queries {
+        entity_types.insert(query.query_item_type.to_string());
     }
-
-    // Report IDs
-    for report in reports.clone() {
-        all_types_to_import.insert(report.report_id.to_string());
-    }
-
-    // Command IDs
-    for command in commands.clone() {
-        all_types_to_import.insert(command.command_id.to_string());
-    }
-
-    // Report output types (extract inner types from Option<T>/Vec<T>)
-    for report in reports.clone().filter(|r| r.output_type_crate.contains(&crate_name)) {
+    for report in reports.iter().filter(|r| r.output_type_crate.contains(&crate_name)) {
         for t in extract_importable_types(report.output_type) {
-            all_types_to_import.insert(t);
+            entity_types.insert(t);
         }
     }
-
-    // Command result types (extract inner types from Option<T>/Vec<T>)
-    for command in commands
-        .clone()
-        .filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()")
-    {
+    for command in commands.iter().filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()") {
         for t in extract_importable_types(command.result_type) {
-            all_types_to_import.insert(t);
+            entity_types.insert(t);
         }
     }
 
-    // Generate deduplicated imports
-    let all_imports = all_types_to_import
-        .into_iter()
-        .map(|t| gen_type_import(&t))
+    // Generate imports for entity types (no alias needed)
+    let entity_imports = entity_types
+        .iter()
+        .filter(|t| !class_type_names.contains(t.as_str()))
+        .map(|t| format!("import type {{ {} }} from './{t}';", t))
         .collect::<Vec<String>>()
-        .join(";");
+        .join("\n");
 
+    // Generate aliased imports for query/report/command types (to avoid name collision with classes)
+    let aliased_imports = class_type_names
+        .iter()
+        .map(|name| format!("import type {{ {} as _{} }} from './{name}';", name, name))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // Generate query classes
+    let query_classes = queries
+        .iter()
+        .map(|q| generate_query_class(q.query_id, q.query_item_type))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+
+    // Generate report classes
+    let report_classes = reports
+        .iter()
+        .map(|r| generate_report_class(r.report_id, r.output_type))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+
+    // Generate command classes
+    let command_classes = commands
+        .iter()
+        .map(|c| generate_command_class(c.command_id, c.result_type))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+
+    // Generate item constructors (keep as object for now)
     let item_ctors = items
-        .clone()
+        .iter()
         .map(|i| generate_item_constructor(i.entity_type))
         .collect::<Vec<String>>()
         .join(",\n");
+    let item_ctor_obj = format!("export const items = {{\n{}\n}};", item_ctors);
 
-    let query_ctors = queries
-        .clone()
-        .map(|i| generate_query_constructor(i.query_id, i.query_item_type))
-        .collect::<Vec<String>>()
-        .join(",\n");
-
-    let report_ctors = reports
-        .clone()
-        .map(|i| generate_report_constructor(i.report_id, i.output_type))
-        .collect::<Vec<String>>()
-        .join(",\n");
-
-    let command_ctors = commands
-        .clone()
-        .map(|i| generate_command_constructor(i.command_id, i.result_type))
-        .collect::<Vec<String>>()
-        .join(",\n");
-
-    let item_ctor_obj = ["export const items = {", &item_ctors, "}"].join("");
-
-    let query_ctor_obj = ["export const queries = {", &query_ctors, "}"].join("");
-
-    let report_ctor_obj = ["export const reports = {", &report_ctors, "}"].join("");
-
-    let command_ctor_obj = ["export const commands = {", &command_ctors, "}"].join("");
-
-    // Message event constants - generated from inventory
+    // Message event constants
     let message_event_entries = inventory::iter::<MessageEventRegistration>()
         .map(|r| format!("  {}: '{}',", r.variant_name, r.event_value))
         .collect::<Vec<String>>()
         .join("\n");
 
     let message_events = format!(
-        r#"
-// Message event constants
-export const MykoEvent = {{
+        r#"export const MykoEvent = {{
 {}
 }} as const;
-export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];
-"#,
+export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
         message_event_entries
     );
 
     let code = [
         "// Auto-generated by type_gen - do not edit manually".to_string(),
         "".to_string(),
-        "// Re-export all ts-rs generated types".to_string(),
+        "// Re-export ts-rs generated types".to_string(),
         binding_exports,
         subdir_exports,
         "".to_string(),
-        "// Entity, query, report, and command utilities".to_string(),
-        all_imports,
-        query_return_type,
-        report_return_type,
-        command_return_type,
+        "// Internal imports".to_string(),
+        entity_imports,
+        aliased_imports,
+        "".to_string(),
+        "// Query classes".to_string(),
+        query_classes,
+        "".to_string(),
+        "// Report classes".to_string(),
+        report_classes,
+        "".to_string(),
+        "// Command classes".to_string(),
+        command_classes,
+        "".to_string(),
+        "// Item constructors".to_string(),
         item_ctor_obj,
-        query_ctor_obj,
-        report_ctor_obj,
-        command_ctor_obj,
-        message_events.to_string(),
+        "".to_string(),
+        "// Message events".to_string(),
+        message_events,
     ]
     .join("\n");
 
@@ -323,64 +291,68 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];
         anyhow::bail!("Generated code is empty");
     }
 
-    let code = code.unwrap();
-
-    fs::write(&file_path, &code)?;
-
+    fs::write(&file_path, code.unwrap())?;
     println!("Successfully wrote to file: {}", file_path.display());
 
     Ok(())
 }
 
-fn generate_query_constructor(query_id: &str, query_item_type: &str) -> String {
+fn generate_query_class(query_id: &str, query_item_type: &str) -> String {
     format!(
-        "{}: {}\n",
-        query_id,
-        func_obj(
-            &format!("args: Omit<{}, 'tx' | 'createdAt'>", query_id),
-            &format!(
-                "({}) as unknown as QueryReturn<{}[]>",
-                scope(
-                    &[
-                        kv("query", "args"),
-                        kv("queryId", &format!("\"{}\"", query_id)),
-                        kv("queryItemType", &format!("\"{}\"", query_item_type))
-                    ]
-                    .join(",")
-                ),
-                query_item_type
-            )
-        )
+        r#"export class {query_id} {{
+  static readonly queryId = "{query_id}" as const;
+  static readonly queryItemType = "{query_item_type}" as const;
+  readonly queryId = "{query_id}" as const;
+  readonly queryItemType = "{query_item_type}" as const;
+  readonly query: Omit<_{query_id}, 'tx' | 'createdAt'>;
+  declare readonly $res: () => {query_item_type}[];
+
+  constructor(args: Omit<_{query_id}, 'tx' | 'createdAt'>) {{
+    this.query = args;
+  }}
+}}"#
     )
 }
 
-fn generate_report_constructor(report_id: &str, output_type: &str) -> String {
+fn generate_report_class(report_id: &str, output_type: &str) -> String {
     let ts_output_type = rust_type_to_ts(output_type);
     format!(
-        "{}: {}\n",
-        report_id,
-        func_obj(
-            &format!("args: Omit<{}, 'tx'>", report_id),
-            &format!(
-                "({}) as unknown as ReportReturn<{}>",
-                scope(
-                    &[
-                        kv("report", "args"),
-                        kv("reportId", &format!("\"{}\"", report_id)),
-                    ]
-                    .join(",")
-                ),
-                ts_output_type
-            )
-        )
+        r#"export class {report_id} {{
+  static readonly reportId = "{report_id}" as const;
+  readonly reportId = "{report_id}" as const;
+  readonly report: Omit<_{report_id}, 'tx'>;
+  declare readonly $res: () => {ts_output_type};
+
+  constructor(args: Omit<_{report_id}, 'tx'>) {{
+    this.report = args;
+  }}
+}}"#
     )
 }
 
-/// Convert Rust type strings to TypeScript type strings
+fn generate_command_class(command_id: &str, result_type: &str) -> String {
+    let ts_result_type = if result_type == "()" {
+        "void".to_string()
+    } else {
+        rust_type_to_ts(result_type)
+    };
+    format!(
+        r#"export class {command_id} {{
+  static readonly commandId = "{command_id}" as const;
+  readonly commandId = "{command_id}" as const;
+  readonly command: Omit<_{command_id}, 'tx' | 'createdAt'>;
+  declare readonly $res: () => {ts_result_type};
+
+  constructor(args: Omit<_{command_id}, 'tx' | 'createdAt'>) {{
+    this.command = args;
+  }}
+}}"#
+    )
+}
+
 fn rust_type_to_ts(rust_type: &str) -> String {
     let trimmed = rust_type.trim();
 
-    // Handle Option<T> -> T | null
     if trimmed.starts_with("Option")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -390,7 +362,6 @@ fn rust_type_to_ts(rust_type: &str) -> String {
         return format!("{} | null", inner_ts);
     }
 
-    // Handle Vec<T> -> T[]
     if trimmed.starts_with("Vec")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -400,66 +371,19 @@ fn rust_type_to_ts(rust_type: &str) -> String {
         return format!("{}[]", inner_ts);
     }
 
-    // Default: return as-is (works for simple types like Server, Client, etc.)
     trimmed.to_string()
-}
-
-fn generate_command_constructor(command_id: &str, result_type: &str) -> String {
-    // Handle () result type by using void in TypeScript
-    let ts_result_type = if result_type == "()" {
-        "void"
-    } else {
-        result_type
-    };
-
-    format!(
-        "{}: {}\n",
-        command_id,
-        func_obj(
-            &format!("args: Omit<{}, 'tx' | 'createdAt'>", command_id),
-            &format!(
-                "({}) as unknown as CommandReturn<{}>",
-                scope(
-                    &[
-                        kv("command", "args"),
-                        kv("commandId", &format!("\"{}\"", command_id)),
-                    ]
-                    .join(",")
-                ),
-                ts_result_type
-            )
-        )
-    )
 }
 
 fn generate_item_constructor(item_name: &str) -> String {
     format!(
-        "{}: {}\n",
-        item_name,
-        func_obj(
-            &format!("args: Omit<{}, 'hash'>", item_name),
-            &format!(
-                "({})",
-                scope(
-                    &[
-                        kv("item", "args"),
-                        kv("itemType", &format!("\"{}\"", item_name))
-                    ]
-                    .join(",")
-                )
-            )
-        )
+        "  {}: (args: Omit<{}, 'hash'>) => ({{ item: args, itemType: \"{}\" }})",
+        item_name, item_name, item_name
     )
 }
-/// Extract the inner types that need to be imported from a Rust type string.
-/// For example:
-/// - `Option < Server >` -> `["Server"]`
-/// - `Vec < Client >` -> `["Client"]`
-/// - `Server` -> `["Server"]`
+
 fn extract_importable_types(rust_type: &str) -> Vec<String> {
     let trimmed = rust_type.trim();
 
-    // Handle Option<T> - extract inner type
     if trimmed.starts_with("Option")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -468,7 +392,6 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
         return extract_importable_types(inner);
     }
 
-    // Handle Vec<T> - extract inner type
     if trimmed.starts_with("Vec")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -477,27 +400,8 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
         return extract_importable_types(inner);
     }
 
-    // Remove any spaces (from quote! formatting)
     let clean_type = trimmed.replace(" ", "");
-
-    // Default: return the type itself (it's an entity type that needs importing)
     vec![clean_type]
-}
-
-fn gen_type_import(type_name: &str) -> String {
-    format!("import type {{ {} }} from './{}';", type_name, type_name)
-}
-
-fn scope(body: &str) -> String {
-    format!("{}{}{}", "{", body, "}")
-}
-
-fn kv(key: &str, value: &str) -> String {
-    format!("{}: {}", key, value)
-}
-
-fn func_obj(args: &str, body: &str) -> String {
-    format!("({}) => ({})", args, body)
 }
 
 #[cfg(test)]
