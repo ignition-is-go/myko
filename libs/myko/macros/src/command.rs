@@ -143,7 +143,7 @@ pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct
                 Box::pin(async move {
                     let cmd: #struct_name = serde_json::from_value(command).map_err(|e| {
                         myko_rs::command::CommandError {
-                            tx: ctx.tx.to_string(),
+                            tx: ctx.tx().to_string(),
                             message: format!("Failed to parse command: {}", e),
                         }
                     })?;

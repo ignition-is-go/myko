@@ -224,7 +224,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                         Ok(#delete_result_ident { deleted: true })
                     }
                     None => Err(myko_rs::prelude::CommandError {
-                        tx: ctx.tx.to_string(),
+                        tx: ctx.tx().to_string(),
                         message: format!("{} not found: {}", #name_str, cmd.id),
                     }),
                 }
