@@ -319,16 +319,13 @@ impl Actor for Server {
             }
         };
 
-        // Wire RelationshipManager to receive events via EventBus
-        let relationship_manager_for_bus = relationship_manager.clone();
-        let mut subscriber = event_bus.subscribe();
-        tokio::spawn(async move {
-            while let Some(event) = subscriber.recv().await {
-                // Forward to RelationshipManager (clone event from Arc)
-                let _ = relationship_manager_for_bus
-                    .send_message(RelationshipManagerMsg::ProcessEvent((*event).clone()));
-            }
-        });
+        // Wire RelationshipManager to receive events directly from EventManager
+        // (includes parsed items for efficient cascade handling)
+        if let Err(err) =
+            event_manager.send_message(EventManagerMsg::SetRelationshipManager(relationship_manager.clone()))
+        {
+            error!("Failed to set RelationshipManager in EventManager: {}", err);
+        }
 
         // MessageHandler with direct references to all managers + ws_server
         let message_handler = match Actor::spawn(
@@ -482,6 +479,7 @@ impl Actor for Server {
                                     event,
                                     persist: PersistEvent::Persist,
                                     parsed_item: None,
+                                    client_id: None, // Server internal events have no client
                                 }),
                             ) {
                                 error!("Failed to delete stale server {}: {}", id, err);
@@ -513,6 +511,7 @@ impl Actor for Server {
                         event,
                         persist: PersistEvent::Persist,
                         parsed_item: None, // Server startup event, needs parsing
+                        client_id: None,   // Server internal events have no client
                     }))
                 {
                     error!("Failed to send message to RepoManager: {}", err);

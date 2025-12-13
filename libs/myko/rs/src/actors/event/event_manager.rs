@@ -20,9 +20,12 @@ use crate::{
         event::event_handler::{EventHandler, EventHandlerArgs, EventHandlerMessage},
         kafka::common::KafkaSharedConfig,
         query::query_manager::QueryManagerMsg,
+        relationship::RelationshipManagerMsg,
         server::ServerMsg,
     },
     parsers::item::MykoItemParser,
+    prelude::AnyItem,
+    relationship::iter_client_id_registrations,
     server::MykoServerCtx,
 };
 use log::{error, info, trace, warn};
@@ -62,6 +65,10 @@ pub struct EventManagerState {
     ctx: Arc<MykoServerCtx>,
     /// Event bus for high-throughput broadcast to sagas (optional for backwards compat)
     event_bus: Option<EventBus>,
+    /// Map of entity type → client_id field name (camelCase) for auto-population
+    client_id_fields: HashMap<String, String>,
+    /// Optional reference to RelationshipManager for forwarding events
+    relationship_manager: Option<ActorRef<RelationshipManagerMsg>>,
 }
 
 /// Messages handled by the EventManager actor.
@@ -91,29 +98,34 @@ pub enum EventManagerMsg {
     /// Must be called before events are processed if saga support is needed.
     SetEventBus(EventBus),
 
+    /// Set the RelationshipManager for receiving events with parsed items.
+    /// Events are forwarded to RelationshipManager after processing.
+    SetRelationshipManager(ActorRef<RelationshipManagerMsg>),
+
     /// Get entity counts for all registered types. Used for diagnostics.
     GetAllCounts(RpcReplyPort<Vec<(Arc<str>, usize)>>),
 
     // ─────────────────────────────────────────────────────────────────────────
     // Internal query messages for RelationshipManager cascade operations.
     // These use tuple variants for compatibility with ractor::call!() macro.
+    // Return Arc<dyn AnyItem> to allow including parsed items in cascade events.
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Query items by field equality. (entity_type, field_name, value, reply)
     /// Used by RelationshipManager to find children by foreign key.
-    QueryByField(Arc<str>, String, String, RpcReplyPort<Vec<serde_json::Value>>),
+    QueryByField(Arc<str>, String, String, RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
 
     /// Query items where array field contains value. (entity_type, field_name, value, reply)
     /// Used by RelationshipManager to find parents that own a child.
-    QueryArrayContains(Arc<str>, String, String, RpcReplyPort<Vec<serde_json::Value>>),
+    QueryArrayContains(Arc<str>, String, String, RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
 
     /// Get items by their IDs. (entity_type, ids, reply)
     /// Used by RelationshipManager to fetch items for cascade deletion.
-    GetByIds(Arc<str>, Vec<Arc<str>>, RpcReplyPort<Vec<serde_json::Value>>),
+    GetByIds(Arc<str>, Vec<Arc<str>>, RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
 
     /// Get all items of an entity type. (entity_type, reply)
     /// Used by RelationshipManager for orphan cleanup on startup.
-    GetAllItems(Arc<str>, RpcReplyPort<Vec<serde_json::Value>>),
+    GetAllItems(Arc<str>, RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
 }
 
 /// Arguments for spawning the EventManager actor.
@@ -138,6 +150,19 @@ impl Actor for EventManager {
         myself: ractor::ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
+        // Build lookup map for entities with #[myko_client_id] fields
+        let client_id_fields: HashMap<String, String> = iter_client_id_registrations()
+            .map(|reg| (reg.entity_type.to_string(), reg.field_name_json.to_string()))
+            .collect();
+
+        if !client_id_fields.is_empty() {
+            info!(
+                "EventManager: {} entity types have client_id fields: {:?}",
+                client_id_fields.len(),
+                client_id_fields.keys().collect::<Vec<_>>()
+            );
+        }
+
         Ok(EventManagerState {
             left_to_init: HashSet::new(),
             handlers: HashMap::new(),
@@ -146,6 +171,8 @@ impl Actor for EventManager {
             myself,
             ctx: args.ctx,
             event_bus: None,
+            client_id_fields,
+            relationship_manager: None,
         })
     }
 
@@ -232,9 +259,33 @@ impl Actor for EventManager {
                     data.event.source_id = Some(state.ctx.host_id.to_string());
                 }
 
+                // Auto-populate client_id field if entity has one and client_id is available
+                if let Some(field_name) = state.client_id_fields.get(entity_type.as_ref()) {
+                    if let Some(client_id) = &data.client_id {
+                        if let serde_json::Value::Object(ref mut obj) = data.event.item {
+                            // Only set if not already set (allows explicit override)
+                            if !obj.contains_key(field_name) || obj.get(field_name) == Some(&serde_json::Value::Null) {
+                                obj.insert(field_name.clone(), serde_json::Value::String(client_id.to_string()));
+                                trace!(
+                                    "EventManager: Auto-populated {} on {} with client_id {}",
+                                    field_name,
+                                    entity_type,
+                                    client_id
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Publish event to EventBus for saga subscribers (high-throughput path)
                 if let Some(event_bus) = &state.event_bus {
                     event_bus.publish(data.event.clone());
+                }
+
+                // Forward to RelationshipManager for cascade handling (with parsed item)
+                if let Some(relationship_manager) = &state.relationship_manager {
+                    let _ = relationship_manager
+                        .send_message(RelationshipManagerMsg::ProcessEvent(data.clone()));
                 }
 
                 let handler = state.handlers.get(&entity_type);
@@ -267,6 +318,11 @@ impl Actor for EventManager {
             EventManagerMsg::SetEventBus(event_bus) => {
                 info!("EventManager: EventBus configured for saga broadcast");
                 state.event_bus = Some(event_bus);
+                Ok(())
+            }
+            EventManagerMsg::SetRelationshipManager(relationship_manager) => {
+                info!("EventManager: RelationshipManager configured for cascade forwarding");
+                state.relationship_manager = Some(relationship_manager);
                 Ok(())
             }
             EventManagerMsg::GetAllCounts(reply) => {

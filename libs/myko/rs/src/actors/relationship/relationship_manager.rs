@@ -82,10 +82,12 @@
 
 use crate::{
     actors::event::{
-        common::{PersistEvent, ProcessEventData},
+        common::ProcessEventData,
         event_manager::EventManagerMsg,
+        EventPublisher,
     },
     event::{EventOptions, MEvent, MEventType},
+    prelude::AnyItem,
     relationship::{Relation, RelationRegistration},
     server::MykoServerCtx,
 };
@@ -171,7 +173,10 @@ pub enum RelationshipManagerMsg {
     /// Events are filtered by:
     /// - `source_id`: Only events from this server are processed
     /// - `prevent_relationship_updates`: Events with this flag are skipped
-    ProcessEvent(MEvent),
+    ///
+    /// The `ProcessEventData` includes the parsed item when available, avoiding
+    /// re-parsing of JSON for cascade operations.
+    ProcessEvent(ProcessEventData),
 
     /// Establish all relations on startup (called after Kafka catchup).
     ///
@@ -321,7 +326,9 @@ impl Actor for RelationshipManager {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            RelationshipManagerMsg::ProcessEvent(event) => {
+            RelationshipManagerMsg::ProcessEvent(data) => {
+                let event = &data.event;
+
                 // Only process events originating from this server
                 if let Some(ref source_id) = event.source_id
                     && source_id != &state.ctx.host_id.to_string()
@@ -346,18 +353,20 @@ impl Actor for RelationshipManager {
                 match event.change_type() {
                     MEventType::DEL => {
                         // Handle BelongsTo cascades (parent deleted → delete children)
-                        self.handle_belongs_to_cascade(state, &event).await?;
+                        self.handle_belongs_to_cascade(state, event, data.parsed_item.as_ref())
+                            .await?;
 
                         // Handle OwnsMany parent deleted → delete owned children
-                        self.handle_owns_many_parent_delete(state, &event).await?;
+                        self.handle_owns_many_parent_delete(state, event, data.parsed_item.as_ref())
+                            .await?;
 
                         // Handle OwnsMany child deleted → update parent arrays
-                        self.handle_owns_many_child_delete(state, &event).await?;
+                        self.handle_owns_many_child_delete(state, event).await?;
                     }
                     MEventType::SET => {
                         // Handle EnsureFor (dependency created → ensure derived entities exist)
                         if state.ensure_for_by_dependency.contains_key(item_type.as_str()) {
-                            self.handle_ensure_for(state, &event).await?;
+                            self.handle_ensure_for(state, event).await?;
                         }
                     }
                 }
@@ -395,6 +404,7 @@ impl RelationshipManager {
         &self,
         state: &RelationshipManagerState,
         event: &MEvent,
+        _parsed_item: Option<&Arc<dyn AnyItem>>,
     ) -> Result<(), ActorProcessingErr> {
         let item_type = event.item_type();
         let Some(lookups) = state.belongs_to_by_foreign.get(item_type.as_str()) else {
@@ -405,19 +415,20 @@ impl RelationshipManager {
         let tx = &event.tx;
 
         for lookup in lookups {
-            // Query children by foreign key
+            // Query children by foreign key (returns parsed items)
             let children = self
                 .query_by_field(state, lookup.local_type, lookup.local_key_json, parent_id)
                 .await;
 
             for child in children {
-                if let Some(child_id) = child.get("id").and_then(|v| v.as_str()) {
-                    trace!(
-                        "RelationshipManager: Cascade delete {} {} (parent {} deleted)",
-                        lookup.local_type, child_id, parent_id
-                    );
-                    self.publish_del(state, lookup.local_type, child, tx).await;
-                }
+                trace!(
+                    "RelationshipManager: Cascade delete {} {} (parent {} deleted)",
+                    lookup.local_type,
+                    child.id(),
+                    parent_id
+                );
+                self.publish_del_with_item(state, lookup.local_type, child, tx)
+                    .await;
             }
         }
 
@@ -429,6 +440,7 @@ impl RelationshipManager {
         &self,
         state: &RelationshipManagerState,
         event: &MEvent,
+        _parsed_item: Option<&Arc<dyn AnyItem>>,
     ) -> Result<(), ActorProcessingErr> {
         let item_type = event.item_type();
         let Some(lookups) = state.owns_many_by_local.get(item_type.as_str()) else {
@@ -454,18 +466,18 @@ impl RelationshipManager {
                 continue;
             }
 
-            // Get and delete each child
+            // Get and delete each child (returns parsed items)
             let children = self
                 .get_by_ids(state, lookup.foreign_type, &child_ids)
                 .await;
             for child in children {
-                if let Some(child_id) = child.get("id").and_then(|v| v.as_str()) {
-                    trace!(
-                        "RelationshipManager: Cascade delete owned {} {}",
-                        lookup.foreign_type, child_id
-                    );
-                    self.publish_del(state, lookup.foreign_type, child, tx).await;
-                }
+                trace!(
+                    "RelationshipManager: Cascade delete owned {} {}",
+                    lookup.foreign_type,
+                    child.id()
+                );
+                self.publish_del_with_item(state, lookup.foreign_type, child, tx)
+                    .await;
             }
         }
 
@@ -492,7 +504,9 @@ impl RelationshipManager {
                 .query_array_contains(state, lookup.local_type, lookup.local_key_json, &child_id)
                 .await;
 
-            for mut parent in parents {
+            for parent_item in parents {
+                // Convert to Value for modification (we can't modify Arc<dyn AnyItem> in place)
+                let mut parent = parent_item.to_value();
                 if let Some(arr) = parent
                     .get_mut(lookup.local_key_json)
                     .and_then(|v| v.as_array_mut())
@@ -506,7 +520,7 @@ impl RelationshipManager {
                             "RelationshipManager: Updating {} to remove {} from {}",
                             lookup.local_type, child_id, lookup.local_key_json
                         );
-                        // Publish updated parent (hash will be recalculated)
+                        // Publish updated parent (hash will be recalculated, no parsed item since modified)
                         self.publish_set(state, lookup.local_type, parent, tx)
                             .await;
                     }
@@ -582,28 +596,31 @@ impl RelationshipManager {
             for lookup in lookups {
                 // Get all parent IDs that exist
                 let parents = self.get_all_items(state, lookup.foreign_type).await;
-                let parent_ids: HashSet<String> = parents
-                    .iter()
-                    .filter_map(|p| p.get("id").and_then(|v| v.as_str()).map(String::from))
-                    .collect();
+                let parent_ids: HashSet<String> =
+                    parents.iter().map(|p| p.id().to_string()).collect();
 
                 // Get all children and find orphans (those pointing to non-existent parents)
                 let children = self.get_all_items(state, child_type).await;
                 let mut orphan_count = 0;
 
                 for child in children {
-                    if let Some(fk_value) = child
+                    let child_value = child.to_value();
+                    if let Some(fk_value) = child_value
                         .get(lookup.local_key_json)
                         .and_then(|v| v.as_str())
-                        && !parent_ids.contains(fk_value)
-                        && let Some(child_id) = child.get("id").and_then(|v| v.as_str())
                     {
-                        trace!(
-                            "RelationshipManager: Deleting BelongsTo orphan {} {} (parent {} {} not found)",
-                            child_type, child_id, lookup.foreign_type, fk_value
-                        );
-                        self.publish_del(state, child_type, child, &tx).await;
-                        orphan_count += 1;
+                        if !parent_ids.contains(fk_value) {
+                            trace!(
+                                "RelationshipManager: Deleting BelongsTo orphan {} {} (parent {} {} not found)",
+                                child_type,
+                                child.id(),
+                                lookup.foreign_type,
+                                fk_value
+                            );
+                            self.publish_del_with_item(state, child_type, child, &tx)
+                                .await;
+                            orphan_count += 1;
+                        }
                     }
                 }
 
@@ -633,7 +650,8 @@ impl RelationshipManager {
                 let mut referenced_ids: HashSet<String> = HashSet::new();
 
                 for parent in &parents {
-                    if let Some(arr) = parent
+                    let parent_value = parent.to_value();
+                    if let Some(arr) = parent_value
                         .get(lookup.local_key_json)
                         .and_then(|v| v.as_array())
                     {
@@ -648,14 +666,13 @@ impl RelationshipManager {
                 let mut orphan_count = 0;
 
                 for child in children {
-                    if let Some(child_id) = child.get("id").and_then(|v| v.as_str())
-                        && !referenced_ids.contains(child_id)
-                    {
+                    let child_id = child.id();
+                    if !referenced_ids.contains(&child_id.to_string()) {
                         trace!(
                             "RelationshipManager: Deleting OwnsMany orphan {} {}",
                             lookup.foreign_type, child_id
                         );
-                        self.publish_del(state, lookup.foreign_type, child, &tx)
+                        self.publish_del_with_item(state, lookup.foreign_type, child, &tx)
                             .await;
                         orphan_count += 1;
                     }
@@ -759,10 +776,7 @@ impl RelationshipManager {
 
         for (foreign_type, _, _) in dependencies {
             let items = self.get_all_items(state, foreign_type).await;
-            let ids: Vec<String> = items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(String::from))
-                .collect();
+            let ids: Vec<String> = items.iter().map(|item| item.id().to_string()).collect();
             dep_ids.push(ids);
         }
 
@@ -800,7 +814,7 @@ impl RelationshipManager {
         local_type: &str,
         dependencies: &[(&'static str, &'static str, &'static str)],
         combo: &[String],
-    ) -> Option<Value> {
+    ) -> Option<Arc<dyn AnyItem>> {
         // For the first dependency, query by that field
         if dependencies.is_empty() || combo.is_empty() {
             return None;
@@ -815,9 +829,10 @@ impl RelationshipManager {
 
         // Filter by remaining dependencies
         for candidate in candidates {
+            let candidate_value = candidate.to_value();
             let mut matches = true;
             for (i, (_, _, key_json)) in dependencies.iter().enumerate() {
-                if let Some(field_value) = candidate.get(*key_json).and_then(|v| v.as_str()) {
+                if let Some(field_value) = candidate_value.get(*key_json).and_then(|v| v.as_str()) {
                     if field_value != combo[i] {
                         matches = false;
                         break;
@@ -843,7 +858,7 @@ impl RelationshipManager {
         entity_type: &str,
         field: &str,
         value: &str,
-    ) -> Vec<Value> {
+    ) -> Vec<Arc<dyn AnyItem>> {
         match ractor::call!(
             state.event_manager,
             EventManagerMsg::QueryByField,
@@ -868,7 +883,7 @@ impl RelationshipManager {
         entity_type: &str,
         field: &str,
         value: &str,
-    ) -> Vec<Value> {
+    ) -> Vec<Arc<dyn AnyItem>> {
         match ractor::call!(
             state.event_manager,
             EventManagerMsg::QueryArrayContains,
@@ -892,7 +907,7 @@ impl RelationshipManager {
         state: &RelationshipManagerState,
         entity_type: &str,
         ids: &[Arc<str>],
-    ) -> Vec<Value> {
+    ) -> Vec<Arc<dyn AnyItem>> {
         match ractor::call!(
             state.event_manager,
             EventManagerMsg::GetByIds,
@@ -910,7 +925,11 @@ impl RelationshipManager {
         }
     }
 
-    async fn get_all_items(&self, state: &RelationshipManagerState, entity_type: &str) -> Vec<Value> {
+    async fn get_all_items(
+        &self,
+        state: &RelationshipManagerState,
+        entity_type: &str,
+    ) -> Vec<Arc<dyn AnyItem>> {
         match ractor::call!(
             state.event_manager,
             EventManagerMsg::GetAllItems,
@@ -927,6 +946,20 @@ impl RelationshipManager {
         }
     }
 
+    /// Get cascade event options (prevent_relationship_updates to avoid loops)
+    fn cascade_options() -> EventOptions {
+        EventOptions {
+            prevent_relationship_updates: true,
+            ..Default::default()
+        }
+    }
+
+    /// Get an EventPublisher for cascade events
+    fn publisher(state: &RelationshipManagerState) -> EventPublisher {
+        EventPublisher::new(state.event_manager.clone(), state.ctx.host_id)
+    }
+
+    /// Publish a SET event. For modified items where we don't have a parsed representation.
     async fn publish_set(
         &self,
         state: &RelationshipManagerState,
@@ -934,26 +967,12 @@ impl RelationshipManager {
         item: Value,
         tx: &str,
     ) {
-        let event = MEvent {
-            tx: tx.to_string(),
-            item_type: entity_type.to_string(),
+        if let Err(err) = Self::publisher(state).publish_set_value(
+            entity_type,
             item,
-            change_type: MEventType::SET,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            source_id: Some(state.ctx.host_id.to_string()),
-            options: Some(EventOptions {
-                prevent_relationship_updates: true,
-                ..Default::default()
-            }),
-        };
-
-        if let Err(err) = state.event_manager.send_message(EventManagerMsg::ProcessEvent(
-            ProcessEventData {
-                event,
-                persist: PersistEvent::Persist,
-                parsed_item: None,
-            },
-        )) {
+            tx,
+            Some(Self::cascade_options()),
+        ) {
             error!(
                 "RelationshipManager: Failed to publish SET event: {}",
                 err
@@ -961,33 +980,20 @@ impl RelationshipManager {
         }
     }
 
-    async fn publish_del(
+    /// Publish a DEL event with the parsed item for efficient downstream processing.
+    async fn publish_del_with_item(
         &self,
         state: &RelationshipManagerState,
         entity_type: &str,
-        item: Value,
+        item: Arc<dyn AnyItem>,
         tx: &str,
     ) {
-        let event = MEvent {
-            tx: tx.to_string(),
-            item_type: entity_type.to_string(),
+        if let Err(err) = Self::publisher(state).publish_del_item(
+            entity_type,
             item,
-            change_type: MEventType::DEL,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            source_id: Some(state.ctx.host_id.to_string()),
-            options: Some(EventOptions {
-                prevent_relationship_updates: true,
-                ..Default::default()
-            }),
-        };
-
-        if let Err(err) = state.event_manager.send_message(EventManagerMsg::ProcessEvent(
-            ProcessEventData {
-                event,
-                persist: PersistEvent::Persist,
-                parsed_item: None,
-            },
-        )) {
+            tx,
+            Some(Self::cascade_options()),
+        ) {
             error!(
                 "RelationshipManager: Failed to publish DEL event: {}",
                 err
