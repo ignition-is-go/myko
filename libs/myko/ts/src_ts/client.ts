@@ -6,14 +6,12 @@
  */
 
 import {
+  GetPeerServers,
   MykoEvent,
-  queries,
   type JsonValue,
   type MEvent,
   type MykoMessage,
   type PingData,
-  type QueryReturn,
-  type ReportReturn,
   type Server,
   type WrappedItem,
   type WrappedQuery,
@@ -62,28 +60,45 @@ export enum ConnectionStatus {
   Connecting = 'Connecting',
 }
 
-/** Extract result type from a query factory */
-export type QueryResult<Q> = Q extends QueryReturn<infer R> ? R : unknown[]
+/** Query class interface */
+export interface Query<T> {
+  readonly queryId: string
+  readonly queryItemType: string
+  readonly query: Record<string, unknown>
+  readonly $res?: () => T[]
+}
 
-/** Extract item type from a query factory (unwrapped from array) */
-export type QueryItem<Q> =
-  Q extends QueryReturn<infer R> ? (R extends (infer I)[] ? I : R) : unknown
+/** Report class interface */
+export interface Report<T> {
+  readonly reportId: string
+  readonly report: Record<string, unknown>
+  readonly $res?: () => T
+}
 
-/** Extract result type from a report factory */
-export type ReportResult<R> = R extends ReportReturn<infer T> ? T : unknown
+/** Command class interface */
+export interface Command<T> {
+  readonly commandId: string
+  readonly command: Record<string, unknown>
+  readonly $res?: () => T
+}
+
+/** Extract result type from a query */
+export type QueryResult<Q> = Q extends Query<infer R> ? R[] : unknown[]
+
+/** Extract item type from a query */
+export type QueryItem<Q> = Q extends Query<infer R> ? R : unknown
+
+/** Extract result type from a report */
+export type ReportResult<R> = R extends Report<infer T> ? T : unknown
+
+/** Extract result type from a command */
+export type CommandResult<C> = C extends Command<infer T> ? T : unknown
 
 /** Diff event for incremental query updates */
 export type QueryDiff<T> = {
   sequence: bigint
   deletes: string[]
   upserts: T[]
-}
-
-/** Command factory type */
-export type CommandReturn<T> = {
-  command: Record<string, unknown>
-  commandId: string
-  $res?: () => T
 }
 
 // Message type aliases
@@ -235,7 +250,7 @@ export class MykoClient {
 
   private startPeerDiscovery(): void {
     this.peerDiscoverySubscription?.unsubscribe()
-    this.peerDiscoverySubscription = this.watchQuery(queries.GetPeerServers({})).subscribe(
+    this.peerDiscoverySubscription = this.watchQuery(new GetPeerServers({})).subscribe(
       (servers: Server[]) => {
         const addresses = servers.map((s) =>
           this.useSecureWebSocket
@@ -325,14 +340,14 @@ export class MykoClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /** Start a query subscription, returns [tx, responses$] */
-  private startQuery<Q extends QueryReturn<unknown>>(
-    queryFactory: Q,
+  private startQuery<Q extends Query<unknown>>(
+    query: Q,
   ): [string, Observable<QueryResponseMessage>] {
     const tx = uuid()
     const wrappedQuery: WrappedQuery = {
-      query: { ...queryFactory.query, tx, createdAt: new Date().toISOString() },
-      queryId: queryFactory.queryId,
-      queryItemType: queryFactory.queryItemType,
+      query: { ...query.query, tx, createdAt: new Date().toISOString() },
+      queryId: query.queryId,
+      queryItemType: query.queryItemType,
     }
 
     this.activeQueries.set(tx, wrappedQuery)
@@ -350,8 +365,8 @@ export class MykoClient {
   }
 
   /** Watch a query and receive live updates */
-  watchQuery<Q extends QueryReturn<unknown>>(queryFactory: Q): Observable<QueryResult<Q>> {
-    const [, responses$] = this.startQuery(queryFactory)
+  watchQuery<Q extends Query<unknown>>(query: Q): Observable<QueryResult<Q>> {
+    const [, responses$] = this.startQuery(query)
 
     return responses$.pipe(
       scan((acc, update) => {
@@ -369,10 +384,8 @@ export class MykoClient {
   }
 
   /** Watch a query and receive raw diff events */
-  watchQueryDiff<Q extends QueryReturn<unknown>>(
-    queryFactory: Q,
-  ): Observable<QueryDiff<QueryItem<Q>>> {
-    const [, responses$] = this.startQuery(queryFactory)
+  watchQueryDiff<Q extends Query<unknown>>(query: Q): Observable<QueryDiff<QueryItem<Q>>> {
+    const [, responses$] = this.startQuery(query)
 
     return responses$.pipe(
       map((r) => ({
@@ -384,16 +397,16 @@ export class MykoClient {
   }
 
   /** Watch a report with automatic deduplication */
-  watchReport<R extends ReportReturn<unknown>>(reportFactory: R): Observable<ReportResult<R>> {
-    const cacheKey = `report:${reportFactory.reportId}:${JSON.stringify(reportFactory.report)}`
+  watchReport<R extends Report<unknown>>(report: R): Observable<ReportResult<R>> {
+    const cacheKey = `report:${report.reportId}:${JSON.stringify(report.report)}`
 
     const existing = this.sharedReports.get(cacheKey)
     if (existing) return existing as Observable<ReportResult<R>>
 
     const tx = uuid()
     const wrappedReport: WrappedReport = {
-      report: { ...reportFactory.report, tx },
-      reportId: reportFactory.reportId,
+      report: { ...report.report, tx },
+      reportId: report.reportId,
     }
 
     this.activeReports.set(tx, wrappedReport)
@@ -424,28 +437,25 @@ export class MykoClient {
   }
 
   /** Send a command and wait for response */
-  sendCommand<C extends CommandReturn<unknown>>(
-    commandFactory: C,
-  ): Promise<C extends CommandReturn<infer R> ? R : unknown> {
-    type Result = C extends CommandReturn<infer R> ? R : unknown
+  sendCommand<C extends Command<unknown>>(command: C): Promise<CommandResult<C>> {
     const tx = uuid()
 
     const wrappedCommand = {
       command: {
-        ...commandFactory.command,
+        ...command.command,
         tx,
         createdAt: new Date().toISOString(),
         ...(this.userToken && { userToken: this.userToken }),
       },
-      commandId: commandFactory.commandId,
+      commandId: command.commandId,
     }
 
-    return new Promise<Result>((resolve, reject) => {
+    return new Promise<CommandResult<C>>((resolve, reject) => {
       const responseSub = this.commandResponses
         .pipe(filter((r) => r.data.tx === tx))
         .subscribe((r) => {
           cleanup()
-          resolve(r.data.response as Result)
+          resolve(r.data.response as CommandResult<C>)
         })
 
       const errorSub = this.commandErrors
