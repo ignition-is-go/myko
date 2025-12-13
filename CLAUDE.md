@@ -904,6 +904,25 @@ pub struct SessionVariable {
 - Orphan cleanup on startup for both BelongsTo and OwnsMany
 - Events share transaction ID for traceability
 
+### Client ID Auto-Population (Rust) - ✅ IMPLEMENTED
+
+The `#[myko_client_id]` field attribute auto-populates a field with the WebSocket client ID when events are processed.
+
+**Usage:**
+```rust
+#[myko_item]
+pub struct Instance {
+    #[myko_client_id]
+    pub client_id: Option<String>,  // Auto-populated with WebSocket client ID
+}
+```
+
+**Behavior:**
+- Field is populated during event processing in EventManager
+- Only set if field is null/missing (allows explicit override)
+- Uses camelCase field name in JSON (e.g., `clientId`)
+- Useful for tracking which client created an entity
+
 ### Full-Text Search Design (Rust)
 
 #### Library Choice: tantivy
