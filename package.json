@@ -19,11 +19,15 @@
     "format:all": "prettier --write .",
     "prepare": "git config --local core.hooksPath .githooks",
     "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
-    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json"
+    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "test:smoke": "bun run ./tools/scripts/smoke-test.ts"
   },
   "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
   "private": true,
   "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
     "@capacitor/cli": "^5.7.8",
     "@capacitor/core": "^5.7.8",
     "@tsconfig/bun": "^1.0.7",
