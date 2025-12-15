@@ -6,7 +6,7 @@
 		type SvelteMykoClient
 	} from '../services/svelte-client.svelte.js';
 	import type { Snippet } from 'svelte';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
 	interface Props {
 		report: R;
@@ -18,15 +18,21 @@
 	let { report, client, children, loading }: Props = $props();
 
 	const resolvedClient = client ?? getMykoClient();
-	const result: ReactiveReport<R> = resolvedClient.report(report);
+	let result: ReactiveReport<R> | undefined = $state(undefined);
+
+	onMount(() => {
+		result = resolvedClient.report(report);
+	});
 
 	onDestroy(() => {
-		result.release();
+		result?.release();
 	});
 </script>
 
-{#if result.value === undefined && loading}
-	{@render loading()}
-{:else if result.value !== undefined}
+{#if result === undefined || result.value === undefined}
+	{#if loading}
+		{@render loading()}
+	{/if}
+{:else}
 	{@render children(result.value)}
 {/if}
