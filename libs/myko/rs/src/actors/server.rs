@@ -369,13 +369,11 @@ impl Server {
 
         // Clean up stale servers with the same address and port
         // Create the query params (without tx/created_at - those are in QueryRequest)
-        let query_params = GetServersByQuery {
-            partial: PartialServer {
-                address: Some(self.args.public_host_address.clone()),
-                port: Some(self.args.bind_port),
-                ..Default::default()
-            },
-        };
+        let query_params = GetServersByQuery(PartialServer {
+            address: Some(self.args.public_host_address.clone()),
+            port: Some(self.args.bind_port),
+            ..Default::default()
+        });
 
         // Wrap with QueryRequest to add tx and created_at
         let query_request = QueryRequest::new(query_params);

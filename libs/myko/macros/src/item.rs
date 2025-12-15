@@ -42,7 +42,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let derives = quote! {
         #[derive(partially::Partial, PartialEq, Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
-        #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS))]
+        #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS), attribute(ts(optional_fields)))]
     };
 
     let get_all_query_ident = format_ident!("GetAll{}s", name_str);
@@ -82,13 +82,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let get_by_partial_query = quote! {
         #[myko_macros::myko_query(#name)]
-         pub struct #get_by_partial_ident {
-             pub partial: #partial_ident
-         }
+         pub struct #get_by_partial_ident(pub #partial_ident);
 
          impl myko_rs::prelude::QueryHandler for #get_by_partial_ident {
              fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
-                 ctx.query.partial.matches(&ctx.item)
+                 ctx.query.0.matches(&ctx.item)
              }
          }
 
@@ -135,9 +133,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let count_report = quote! {
         #[myko_macros::myko_report(#count_result_ident)]
-        pub struct #count_report_ident {
-            pub partial: #partial_ident,
-        }
+        pub struct #count_report_ident(pub #partial_ident);
 
         impl myko_rs::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
@@ -147,10 +143,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
                 // Parse the report params (which are the args now - no separate Args type)
                 let params: #count_report_ident = ctx.args().expect("Failed to parse count report params");
-                let partial = params.partial;
 
                 // Use bare query params - ctx.query() wraps them automatically
-                let query = #get_by_partial_ident { partial };
+                let query = #get_by_partial_ident(params.0);
                 let stream = ctx.query(query);
 
                 Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
@@ -279,6 +274,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         myko_rs::prelude::ItemRegistration {
             entity_type: #name_str,
             crate_name: module_path!(),
+            register_fn: <#name as myko_rs::item::Eventable>::register,
         }
     };
 

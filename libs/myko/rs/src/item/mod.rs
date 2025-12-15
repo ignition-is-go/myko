@@ -11,9 +11,42 @@ use ts_rs::TS;
 
 inventory::collect!(ItemRegistration);
 
+/// Type alias for the registration function pointer
+pub type RegisterFn = fn(&Arc<MykoServer>) -> Result<(), anyhow::Error>;
+
 pub struct ItemRegistration {
     pub entity_type: &'static str,
+    /// Crate where this entity is defined (for type_gen filtering)
     pub crate_name: &'static str,
+    /// Function pointer to register this entity with the server
+    pub register_fn: RegisterFn,
+}
+
+/// Register all entities discovered via inventory with the server
+///
+/// This iterates through all `ItemRegistration`s collected via inventory
+/// and calls their `register_fn`. Ensure dependent crates are linked first
+/// by calling their `link()` function.
+///
+/// # Example
+/// ```ignore
+/// // Ensure entity crate is linked
+/// rship_entities::link();
+///
+/// // Register all discovered entities
+/// register_all_entities(&server)?;
+/// ```
+pub fn register_all_entities(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+    use log::{debug, info};
+
+    let mut count = 0;
+    for registration in inventory::iter::<ItemRegistration> {
+        debug!("Registering entity: {}", registration.entity_type);
+        (registration.register_fn)(server)?;
+        count += 1;
+    }
+    info!("Registered {} entities", count);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
