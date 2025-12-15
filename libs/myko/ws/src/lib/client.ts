@@ -71,6 +71,8 @@ import {
 } from '@myko/core'
 import { DateTime } from 'luxon'
 import { pack, unpack } from 'msgpackr'
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore - uuid types resolved from esm-browser bundle in monorepo
 import { v4 } from 'uuid'
 import { SocketGroup, SocketSendMode } from './socket.group'
 

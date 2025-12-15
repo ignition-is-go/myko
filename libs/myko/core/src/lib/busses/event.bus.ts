@@ -246,7 +246,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                     props[propertyKey] = value
                   })
 
-                const newItem = new relation.makeDefault({
+                const newItem = new (relation.makeDefault as unknown as new (props: any) => any)({
                   id: uuid(),
                   ...props,
                 })

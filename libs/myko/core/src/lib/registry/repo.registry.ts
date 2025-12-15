@@ -136,7 +136,7 @@ const createRepo = <T extends MItem>(itemName: string) => {
   }
 
   const newRepo = repoFactory(itemName, {
-    persister: persister as Persister<T>,
+    persister: persister as unknown as Persister<T>,
     searchIndeces: buildSerachKeys(itemName),
   })
   if (persister) {
