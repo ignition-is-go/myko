@@ -10,7 +10,7 @@ import {
   finalize,
   from,
   map,
-  Observable,
+  type Observable,
   of,
   scan,
   shareReplay,
@@ -23,7 +23,7 @@ import { beforeInit, fireInit } from '../hooks'
 import type { Persister } from '../persisters'
 import {
   MEventType,
-  MItem,
+  type MItem,
   type DeepPartial,
   type ID,
   type MEvent,

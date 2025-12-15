@@ -55,7 +55,7 @@ export const MykoItem =
       throw new Error('itemType is undefined')
     }
 
-    const withType: any = function (...args: any[]) {
+    const withType: any = (...args: any[]) => {
       const typed = new original(...args)
       args.forEach((arg) => Object.assign(typed, arg))
       Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, typed)

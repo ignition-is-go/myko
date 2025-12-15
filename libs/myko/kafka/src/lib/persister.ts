@@ -1,5 +1,5 @@
 import {
-  MItem,
+  type MItem,
   MykoLogger,
   Persister,
   getHostId,

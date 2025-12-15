@@ -1,9 +1,9 @@
-import { filter, Subscription } from 'rxjs'
+import { filter, type Subscription } from 'rxjs'
 import {
   makeDel,
   makeSet,
   MEventType,
-  MItem,
+  type MItem,
   recalculateHash,
   type DynamicItem,
   type ID,

@@ -61,7 +61,7 @@ export const MykoCommand: (opts?: {
         throw new Error('commandId is undefined')
       }
 
-      const withType: any = function (...args: any[]) {
+      const withType: any = (...args: any[]) => {
         const typed = new original(...args)
         Reflect.defineMetadata(MYKO_COMMAND_ID_KEY, commandId, typed)
         return typed

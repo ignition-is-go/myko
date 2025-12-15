@@ -1,4 +1,4 @@
-import { BehaviorSubject, Observable, shareReplay } from 'rxjs'
+import { BehaviorSubject, type Observable, shareReplay } from 'rxjs'
 import { LogLevel } from './logLevel.type'
 
 const names = new Map<string, {}>()

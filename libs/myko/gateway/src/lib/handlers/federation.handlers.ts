@@ -1,7 +1,7 @@
 import {
   GetClientsByQuery,
   getHostId,
-  MReport,
+  type MReport,
   MykoCommandError,
   MykoCommandHandler,
   MykoLogger,
@@ -17,7 +17,7 @@ import {
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
-import { distinctUntilChanged, EMPTY, Observable, switchMap } from 'rxjs'
+import { distinctUntilChanged, EMPTY, type Observable, switchMap } from 'rxjs'
 import { peers } from '../registry/peer.registry'
 
 @MykoQueryHandler(PeerQuery)

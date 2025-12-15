@@ -72,7 +72,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       return throwError(() => new Error(err)) as unknown as MLiveQueryResult<T>
     }
 
-    let clone: MQuery = {
+    const clone: MQuery = {
       ...query,
       tx: undefined,
     }

@@ -1,11 +1,11 @@
-import { getServer, Server, serverSchema } from '@myko/core'
+import { getServer, type Server, serverSchema } from '@myko/core'
 import { createSocket } from 'node:dgram'
 import os from 'node:os'
 
 export const startUdpDiscovery = (onDiscovered: (server: Server) => void) => {
   console.log('Starting Discovery')
 
-  let socket = createSocket('udp4')
+  const socket = createSocket('udp4')
 
   socket.on('message', (msg, _rinfo) => {
     const me = getServer()

@@ -9,7 +9,7 @@ import {
   interval,
   map,
   merge,
-  Observable,
+  type Observable,
   ReplaySubject,
   scan,
   share,
@@ -52,9 +52,9 @@ import {
 
 import {
   GetPeerServers,
-  MCommand,
-  MQuery,
-  MReport,
+  type MCommand,
+  type MQuery,
+  type MReport,
   MykoProtocol,
   ProtocolMessages,
   unwrapCommand,
@@ -72,7 +72,7 @@ import {
 import { DateTime } from 'luxon'
 import { pack, unpack } from 'msgpackr'
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore - uuid types resolved from esm-browser bundle in monorepo
+// @ts-expect-error - uuid types resolved from esm-browser bundle in monorepo
 import { v4 } from 'uuid'
 import { SocketGroup, SocketSendMode } from './socket.group'
 
@@ -531,22 +531,25 @@ export class WSMClient {
     const message: WSMMessage = decoder(dataPrepper(body))
 
     switch (message.event) {
-      case MCOMMAND_EVENT:
+      case MCOMMAND_EVENT: {
         const cmd = unwrapCommand(message.data)
         this.commandSubject.next(cmd)
 
         this.send(wrapCommandResponseWS(cmd.tx, cmd))
         break
+      }
 
-      case MQUERY_EVENT:
+      case MQUERY_EVENT: {
         const query = unwrapQuery(message.data)
         this.querySubject.next(query)
         break
+      }
 
-      case MEVENT_EVENT:
+      case MEVENT_EVENT: {
         const evt = message.data
         this.eventSubject.next(evt)
         break
+      }
 
       case MQUERY_ERROR_EVENT:
         this.errorSubject.next(message)
@@ -563,10 +566,11 @@ export class WSMClient {
         this.commandResponses.next(message)
         break
 
-      case MREPORT_EVENT:
+      case MREPORT_EVENT: {
         const report = unwrapReport(message.data)
         this.reportSubject.next(report)
         break
+      }
 
       case MREPORT_ERROR_EVENT:
         this.errorSubject.next(message)

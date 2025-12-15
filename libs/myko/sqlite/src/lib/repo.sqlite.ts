@@ -1,7 +1,7 @@
 import {
   buildFilter,
   MEventType,
-  MItem,
+  type MItem,
   Repo,
   unwrapItem,
   type DeepPartial,

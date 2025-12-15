@@ -1,6 +1,6 @@
 import {
   addMissingHash,
-  MItem,
+  type MItem,
   MykoLogger,
   Repo,
   unwrapItem,
@@ -9,8 +9,8 @@ import {
   type MEvent,
 } from '@myko/core'
 import { surrealdbWasmEngines } from '@surrealdb/wasm'
-import { map, Observable, Subject, tap } from 'rxjs'
-import { RecordId, Surreal, Uuid } from 'surrealdb'
+import { map, type Observable, Subject, tap } from 'rxjs'
+import { RecordId, Surreal, type Uuid } from 'surrealdb'
 
 export class SurrealRepo<T extends MItem> extends Repo<T> {
   private db: Surreal

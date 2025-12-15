@@ -1,10 +1,10 @@
-import {
-  type ID,
-  type MEvent,
-  type MWrappedCommand,
-  type MWrappedItem,
-  type MWrappedQuery,
-  type MWrappedReport,
+import type {
+  ID,
+  MEvent,
+  MWrappedCommand,
+  MWrappedItem,
+  MWrappedQuery,
+  MWrappedReport,
 } from '@myko/core'
 
 export const MEVENT_EVENT = 'ws:m:event'

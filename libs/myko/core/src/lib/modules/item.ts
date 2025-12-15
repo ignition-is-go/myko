@@ -2,7 +2,7 @@ import { MykoCommand, MykoReport } from '../decorators'
 import {
   getItemName,
   MCommand,
-  MItem,
+  type MItem,
   MReport,
   type DeepPartial,
   type ID,

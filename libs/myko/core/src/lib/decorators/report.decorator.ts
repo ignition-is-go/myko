@@ -12,7 +12,7 @@ export const MykoReport =
 
     reports.add(reportId)
 
-    const withType: any = function (...args: any[]) {
+    const withType: any = (...args: any[]) => {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_REPORT_ID_KEY, reportId, typed)
       return typed

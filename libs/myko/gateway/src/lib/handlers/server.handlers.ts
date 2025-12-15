@@ -1,7 +1,7 @@
 import {
   Client,
   eventBus,
-  EventContainer,
+  type EventContainer,
   GetConnectedServer,
   GetEventLog,
   getEvents,
@@ -34,7 +34,7 @@ import {
   filter,
   interval,
   map,
-  Observable,
+  type Observable,
   of,
   startWith,
   switchMap,

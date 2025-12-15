@@ -1,11 +1,11 @@
-import {
+import type {
   MCommand,
   MQuery,
   MReport,
   MykoCommandError,
-  type ID,
-  type MEvent,
-  type MWrappedCommand,
+  ID,
+  MEvent,
+  MWrappedCommand,
 } from '@myko/core'
 import {
   MCOMMAND_ERROR_EVENT,

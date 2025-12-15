@@ -1,6 +1,6 @@
 import {
   MEventType,
-  MItem,
+  type MItem,
   addMissingHash,
   type DeepPartial,
   type ID,
@@ -34,13 +34,14 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
 
   async save(event: MEvent<T>): Promise<MEvent<T>> {
     switch (event.changeType) {
-      case MEventType.SET:
+      case MEventType.SET: {
         const item = unwrapItem(event) as T
 
         const hashedItem = addMissingHash(item) as T
 
         this.store.set(event.item.id, hashedItem)
         break
+      }
       case MEventType.DEL:
         this.store.delete(event.item.id)
         break

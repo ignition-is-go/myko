@@ -1,5 +1,5 @@
 import { filter } from 'rxjs'
-import { Repo, type IRepo, type RepoFactory } from '../aggregates/repo.abstract'
+import type { Repo, IRepo, RepoFactory } from '../aggregates/repo.abstract'
 import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
 import { RepoWithHistory } from '../history/repo.manager'
@@ -17,7 +17,7 @@ import { relationRegistry } from './relation.registry'
 const repos = new Map<string, Repo<MItem>>()
 const searchKeys = new Map<string, string[]>()
 
-let defaultOpts: {
+const defaultOpts: {
   defaultPersisterFactory?: PersisterFactory
   defaultRepoFactory?: RepoFactory
   persisterOverrides?: PersisterOverrideData[]
