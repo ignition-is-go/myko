@@ -124,6 +124,110 @@ An appearance of a scene on a calendar.
 }
 ``` 
 
+## Artifact
+
+A deployable software artifact/package
+### Queries
+
+- [GetArtifacts](#getartifacts)
+- [GetArtifactById](#getartifactbyid)
+- [GetArtifactsByIds](#getartifactsbyids)
+- [GetArtifactsByOrganization](#getartifactsbyorganization)
+- [GetArtifactsByName](#getartifactsbyname)
+- [GetArtifactsByType](#getartifactsbytype)
+- [GetArtifactsByChannel](#getartifactsbychannel)
+- [GetLatestArtifact](#getlatestartifact)
+- [GetArtifactVersions](#getartifactversions)
+
+```ts
+{
+	// Organization that owns this artifact
+	// Belongs to Organization
+	organizationId: object
+	
+	// Artifact name
+	name: string
+	
+	// Artifact type
+	type: object
+	
+	// Semantic version
+	version: string
+	
+	// Release channel
+	channel: object
+	
+	// Supported platforms
+	platforms: array
+	
+	// Supported architectures
+	architectures: array
+	
+	// Download URL
+	artifactUrl: string
+	
+	// SHA256 checksum
+	checksum: string
+	
+	// Checksum algorithm
+	checksumAlgorithm: string
+	
+	// File size in bytes
+	sizeBytes: number
+	
+	// Release notes / changelog
+	releaseNotes: string
+	
+	// Minimum required version to upgrade from
+	minUpgradeVersion: string
+	
+	// Whether this is the latest version for its channel
+	isLatest: boolean
+	
+	// Whether this version is deprecated
+	deprecated: boolean
+	
+	// Deprecation message
+	deprecationMessage: string
+	
+	// Dependencies on other artifacts
+	dependencies: array
+	
+	// Required capabilities on target machine
+	requiredCapabilities: array
+	
+	// Environment variables to set
+	environmentVariables: object
+	
+	// Configuration schema (JSON Schema)
+	configSchema: object
+	
+	// Default configuration
+	defaultConfig: object
+	
+	// Signature for verification
+	signature: string
+	
+	// Signed by key ID
+	signedBy: string
+	
+	// Build metadata
+	buildInfo: object
+	
+	// Custom metadata
+	metadata: object
+	
+	// Published by user
+	publishedByUserId: string
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
 ## Asset
 
 An Asset Stub for future use
@@ -206,6 +310,148 @@ An audit log entry recording a security or compliance event
 	
 	// Error message if action failed
 	errorMessage: string
+}
+``` 
+
+## BandwidthTest
+
+Network bandwidth/throughput test result
+### Queries
+
+- [GetBandwidthTests](#getbandwidthtests)
+- [GetBandwidthTestById](#getbandwidthtestbyid)
+- [GetBandwidthTestsByIds](#getbandwidthtestsbyids)
+- [GetBandwidthTestsBySourceMachine](#getbandwidthtestsbysourcemachine)
+- [GetBandwidthTestsByTargetMachine](#getbandwidthtestsbytargetmachine)
+- [GetBandwidthTestsBySite](#getbandwidthtestsbysite)
+- [GetBandwidthTestsByStatus](#getbandwidthtestsbystatus)
+- [GetBandwidthTestsBetweenMachines](#getbandwidthtestsbetweenmachines)
+- [GetRecentBandwidthTests](#getrecentbandwidthtests)
+
+```ts
+{
+	// Site where test originated
+	// Belongs to Site
+	siteId: object
+	
+	// Source machine (client)
+	// Belongs to Machine
+	sourceMachineId: object
+	
+	// Source machine hostname
+	sourceHostname: string
+	
+	// Target machine (server)
+	// Belongs to Machine
+	targetMachineId: object
+	
+	// Target machine hostname
+	targetHostname: string
+	
+	// Target address used
+	targetAddress: string
+	
+	// Target port
+	port: number
+	
+	// Test protocol
+	protocol: object
+	
+	// Test direction
+	direction: object
+	
+	// Test status
+	status: object
+	
+	// Test duration in seconds
+	durationSeconds: number
+	
+	// Number of parallel streams
+	parallelStreams: number
+	
+	// Target bandwidth in bits/sec (for UDP)
+	targetBandwidthBps: number
+	
+	// Total bytes transferred
+	totalBytes: number
+	
+	// Average bandwidth in bits/sec
+	bandwidthBps: number
+	
+	// Average bandwidth in Mbps
+	bandwidthMbps: number
+	
+	// Peak bandwidth in bits/sec
+	peakBandwidthBps: number
+	
+	// Minimum bandwidth in bits/sec
+	minBandwidthBps: number
+	
+	// Total retransmits (TCP only)
+	retransmits: number
+	
+	// Average jitter in milliseconds (UDP only)
+	jitterMs: number
+	
+	// Packet loss percentage (UDP only)
+	packetLossPercent: number
+	
+	// Lost packets (UDP only)
+	lostPackets: number
+	
+	// Total packets (UDP only)
+	totalPackets: number
+	
+	// CPU utilization on source (%)
+	sourceCpuPercent: number
+	
+	// CPU utilization on target (%)
+	targetCpuPercent: number
+	
+	// Interval results
+	intervals: array
+	
+	// Download results (for bidirectional)
+	downloadResults: object
+	
+	// Upload results (for bidirectional)
+	uploadResults: object
+	
+	// Whether test was successful
+	success: boolean
+	
+	// Error message if failed
+	error: string
+	
+	// Raw iperf3 JSON output
+	rawOutput: string
+	
+	// Test initiated by user
+	initiatedByUserId: string
+	
+	// Test parameters
+	parameters: object
+	
+	// Test scheduled time
+	scheduledAt: string
+	
+	// Test started time
+	startedAt: string
+	
+	// Test completed time
+	completedAt: string
+	
+	// Actual test duration in milliseconds
+	actualDurationMs: number
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
 }
 ``` 
 
@@ -579,6 +825,133 @@ A Myko Client connected to a Server
 }
 ``` 
 
+## ConnectivityTest
+
+Network connectivity test result
+### Queries
+
+- [GetConnectivityTests](#getconnectivitytests)
+- [GetConnectivityTestById](#getconnectivitytestbyid)
+- [GetConnectivityTestsByIds](#getconnectivitytestsbyids)
+- [GetConnectivityTestsByMachine](#getconnectivitytestsbymachine)
+- [GetConnectivityTestsBySite](#getconnectivitytestsbysite)
+- [GetConnectivityTestsByTarget](#getconnectivitytestsbytarget)
+- [GetConnectivityTestsByType](#getconnectivitytestsbytype)
+- [GetConnectivityTestsByStatus](#getconnectivitytestsbystatus)
+- [GetRecentConnectivityTests](#getrecentconnectivitytests)
+- [GetFailedConnectivityTests](#getfailedconnectivitytests)
+
+```ts
+{
+	// Site where test originated
+	// Belongs to Site
+	siteId: object
+	
+	// Source machine running the test
+	// Belongs to Machine
+	sourceMachineId: object
+	
+	// Source machine hostname
+	sourceHostname: string
+	
+	// Target address (IP or hostname)
+	target: string
+	
+	// Resolved target IP
+	resolvedIp: string
+	
+	// Test type
+	testType: object
+	
+	// Test status
+	status: object
+	
+	// Target port (for TCP/UDP tests)
+	port: number
+	
+	// Number of ping packets sent
+	packetsSent: number
+	
+	// Number of ping packets received
+	packetsReceived: number
+	
+	// Packet loss percentage
+	packetLossPercent: number
+	
+	// Minimum latency in milliseconds
+	minLatencyMs: number
+	
+	// Maximum latency in milliseconds
+	maxLatencyMs: number
+	
+	// Average latency in milliseconds
+	avgLatencyMs: number
+	
+	// Standard deviation of latency
+	stdDevLatencyMs: number
+	
+	// Jitter in milliseconds
+	jitterMs: number
+	
+	// Traceroute hops
+	hops: array
+	
+	// Total hop count
+	hopCount: number
+	
+	// HTTP response code
+	httpStatusCode: number
+	
+	// HTTP response time in milliseconds
+	httpResponseTimeMs: number
+	
+	// DNS resolution time in milliseconds
+	dnsResolutionTimeMs: number
+	
+	// TLS handshake time in milliseconds
+	tlsHandshakeTimeMs: number
+	
+	// TCP connection time in milliseconds
+	tcpConnectTimeMs: number
+	
+	// Whether the target was reachable
+	reachable: boolean
+	
+	// Error message if failed
+	error: string
+	
+	// Raw command output
+	rawOutput: string
+	
+	// Test initiated by user
+	initiatedByUserId: string
+	
+	// Test parameters
+	parameters: object
+	
+	// Test scheduled time
+	scheduledAt: string
+	
+	// Test started time
+	startedAt: string
+	
+	// Test completed time
+	completedAt: string
+	
+	// Test duration in milliseconds
+	durationMs: number
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
 ## Constraint
 
 In progress, subject to change. The intention with the start and end time is to allow for times of day throughout a series of days, but probably needs to be reworked
@@ -720,6 +1093,300 @@ A data transfer between a binding and a payload
 }
 ``` 
 
+## Deployment
+
+A deployment of an artifact to target machines
+### Queries
+
+- [GetDeployments](#getdeployments)
+- [GetDeploymentById](#getdeploymentbyid)
+- [GetDeploymentsByIds](#getdeploymentsbyids)
+- [GetDeploymentsByOrganization](#getdeploymentsbyorganization)
+- [GetDeploymentsByArtifact](#getdeploymentsbyartifact)
+- [GetDeploymentsByStatus](#getdeploymentsbystatus)
+- [GetActiveDeployments](#getactivedeployments)
+- [GetDeploymentsByMachine](#getdeploymentsbymachine)
+- [GetDeploymentsByGroup](#getdeploymentsbygroup)
+- [GetRecentDeployments](#getrecentdeployments)
+
+```ts
+{
+	// Organization running this deployment
+	// Belongs to Organization
+	organizationId: object
+	
+	// Artifact being deployed
+	// Belongs to Artifact
+	artifactId: object
+	
+	// Artifact name (denormalized)
+	artifactName: string
+	
+	// Artifact version (denormalized)
+	artifactVersion: string
+	
+	// Target machine IDs
+	targetMachineIds: array
+	
+	// Target fleet group IDs (expands to machines)
+	targetGroupIds: array
+	
+	// Deployment strategy
+	strategy: object
+	
+	// Deployment status
+	status: object
+	
+	// Total target count
+	totalTargets: number
+	
+	// Completed target count
+	completedTargets: number
+	
+	// Failed target count
+	failedTargets: number
+	
+	// Skipped target count
+	skippedTargets: number
+	
+	// Current batch number
+	currentBatch: number
+	
+	// Total batch count
+	totalBatches: number
+	
+	// Progress percentage (0-100)
+	progressPercent: number
+	
+	// Deployment initiated by user
+	initiatedByUserId: string
+	
+	// Scheduled start time
+	scheduledAt: string
+	
+	// Actual start time
+	startedAt: string
+	
+	// Completion time
+	completedAt: string
+	
+	// Last error message
+	lastError: string
+	
+	// Previous artifact version (for rollback)
+	previousArtifactId: object
+	
+	// Previous version string
+	previousVersion: string
+	
+	// Configuration overrides
+	configOverrides: object
+	
+	// Environment variable overrides
+	envOverrides: object
+	
+	// Deployment notes
+	notes: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## DeploymentTarget
+
+Per-machine deployment state
+### Queries
+
+- [GetDeploymentTargets](#getdeploymenttargets)
+- [GetDeploymentTargetById](#getdeploymenttargetbyid)
+- [GetDeploymentTargetsByIds](#getdeploymenttargetsbyids)
+- [GetDeploymentTargetsByDeployment](#getdeploymenttargetsbydeployment)
+- [GetDeploymentTargetsByMachine](#getdeploymenttargetsbymachine)
+- [GetDeploymentTargetsByStatus](#getdeploymenttargetsbystatus)
+- [GetFailedDeploymentTargets](#getfaileddeploymenttargets)
+- [GetDeploymentTargetsByBatch](#getdeploymenttargetsbybatch)
+
+```ts
+{
+	// Parent deployment
+	// Belongs to Deployment
+	deploymentId: object
+	
+	// Target machine
+	// Belongs to Machine
+	machineId: object
+	
+	// Machine hostname (denormalized)
+	machineHostname: string
+	
+	// Current status
+	status: object
+	
+	// Batch number this target is in
+	batchNumber: number
+	
+	// Previous installed version
+	previousVersion: string
+	
+	// Previous artifact ID
+	previousArtifactId: object
+	
+	// Download progress (0-100)
+	downloadProgress: number
+	
+	// Install progress (0-100)
+	installProgress: number
+	
+	// Overall progress (0-100)
+	overallProgress: number
+	
+	// Download speed in bytes/sec
+	downloadSpeed: number
+	
+	// Estimated time remaining in seconds
+	estimatedTimeRemaining: number
+	
+	// Number of retry attempts
+	retryCount: number
+	
+	// Maximum retries allowed
+	maxRetries: number
+	
+	// Last error message
+	lastError: string
+	
+	// Error code
+	errorCode: string
+	
+	// Error details/stack trace
+	errorDetails: string
+	
+	// Health check results
+	healthCheckResults: array
+	
+	// Logs from deployment process
+	logs: array
+	
+	// Started at timestamp
+	startedAt: string
+	
+	// Completed at timestamp
+	completedAt: string
+	
+	// Duration in milliseconds
+	durationMs: number
+	
+	// Agent version on target
+	agentVersion: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## DeviceCredential
+
+Credentials for accessing a network device
+### Queries
+
+- [GetDeviceCredentials](#getdevicecredentials)
+- [GetDeviceCredentialById](#getdevicecredentialbyid)
+- [GetDeviceCredentialsByIds](#getdevicecredentialsbyids)
+- [GetDeviceCredentialsByOrganization](#getdevicecredentialsbyorganization)
+- [GetDeviceCredentialsByNode](#getdevicecredentialsbynode)
+- [GetDeviceCredentialsByMachine](#getdevicecredentialsbymachine)
+- [GetDeviceCredentialsByType](#getdevicecredentialsbytype)
+- [GetDefaultDeviceCredentials](#getdefaultdevicecredentials)
+
+```ts
+{
+	// Organization that owns this credential
+	// Belongs to Organization
+	organizationId: object
+	
+	// Credential display name
+	name: string
+	
+	// Credential type
+	credentialType: object
+	
+	// Target network node (if applicable)
+	// Belongs to NetworkGraphNode
+	targetNodeId: object
+	
+	// Target machine (if applicable)
+	// Belongs to Machine
+	targetMachineId: object
+	
+	// Reference to encrypted secrets blob in vault
+	encryptedBlobId: string
+	
+	// Username (for password-based auth)
+	username: string
+	
+	// Port override (if different from default)
+	port: number
+	
+	// SNMP v2c community string reference
+	communityStringRef: string
+	
+	// SNMP v3 credentials
+	snmpV3: object
+	
+	// SSH private key reference
+	sshKeyRef: string
+	
+	// SSH key passphrase reference
+	sshKeyPassphraseRef: string
+	
+	// API endpoint URL
+	apiEndpoint: string
+	
+	// API key/token reference
+	apiKeyRef: string
+	
+	// When the credential was last verified
+	lastVerified: string
+	
+	// Verification status
+	verificationStatus: object
+	
+	// Last verification error message
+	lastVerificationError: string
+	
+	// Whether this is a default credential for auto-discovery
+	isDefault: boolean
+	
+	// Priority for default credentials (lower = try first)
+	priority: number
+	
+	// Optional notes
+	notes: string
+	
+	// Credential creation timestamp
+	createdAt: string
+	
+	// User who created this credential
+	createdBy: object
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
 ## DeviceOwnership
 
 Ownership record for a device, supporting claiming and sharing
@@ -788,6 +1455,9 @@ A share granting a user access to a device
 	
 	// User ID receiving shared access
 	sharedWithUserId: object
+	
+	// Organization ID receiving shared access (alternative to user)
+	sharedWithOrganizationId: object
 	
 	// Permission level: view, control, manage
 	shareLevel: object
@@ -950,6 +1620,196 @@ An Event Track Playback in a Session
 }
 ``` 
 
+## FeedbackCluster
+
+A cluster of related feedback events describing the same underlying issue
+### Queries
+
+- [GetFeedbackClusters](#getfeedbackclusters)
+- [GetFeedbackClustersByIds](#getfeedbackclustersbyids)
+- [GetFeedbackClustersByStatus](#getfeedbackclustersbystatus)
+- [GetFeedbackClustersBySeverity](#getfeedbackclustersbyseverity)
+- [GetOpenFeedbackClustersAboveThreshold](#getopenfeedbackclustersabovethreshold)
+
+```ts
+{
+	// Title of the problem
+	problemTitle: string
+	
+	// Detailed statement describing the clustered problem
+	problemStatement: string
+	
+	// Array of feedback event IDs in this cluster
+	feedbackEventIds: array
+	
+	// Array of insight IDs in this cluster
+	insightIds: array
+	
+	// User segments affected by this issue
+	userSegmentsAffected: array
+	
+	// Severity assessment based on aggregated impact
+	severity: object
+	
+	// Priority score for ranking (higher = more urgent)
+	priority: number
+	
+	// Count of feedback events in cluster
+	feedbackCount: number
+	
+	// Timestamp of first feedback in cluster
+	firstSeenAt: string
+	
+	// Timestamp of most recent feedback in cluster
+	lastSeenAt: string
+	
+	// Cluster processing status
+	status: object
+	
+	// Affected area of the application
+	affectedArea: string
+	
+	// Reference to ProductIssue if one was created
+	productIssueId: object
+}
+``` 
+
+## FeedbackEvent
+
+A user feedback event from the frustration reporting system
+### Queries
+
+- [GetFeedbackEvents](#getfeedbackevents)
+- [GetFeedbackEventsByIds](#getfeedbackeventsbyids)
+- [GetFeedbackEventsByStatus](#getfeedbackeventsbystatus)
+- [GetFeedbackEventsByUserId](#getfeedbackeventsbyuserid)
+- [GetFeedbackEventsByRoute](#getfeedbackeventsbyroute)
+
+```ts
+{
+	// User ID if authenticated
+	userId: object
+	
+	// Anonymous session identifier for unauthenticated users
+	anonymousId: object
+	
+	// UI route where feedback was submitted
+	route: string
+	
+	// Raw user feedback text
+	rawText: string
+	
+	// Optional context about what user was trying to do
+	userContext: string
+	
+	// URL to uploaded screenshot in asset store
+	screenshotUrl: string
+	
+	// Arbitrary metadata blob
+	metadata: object
+	
+	// Browser user agent string
+	browserInfo: string
+	
+	// Environment: production, staging, development
+	environment: string
+	
+	// Viewport dimensions
+	viewport: object
+	
+	// Active feature flags at time of feedback
+	featureFlags: array
+	
+	// Recent console errors
+	recentErrors: array
+	
+	// Performance metrics at time of feedback
+	performanceMetrics: object
+	
+	// Project ID if within a project context
+	projectId: object
+	
+	// Session ID if within a session context
+	sessionId: object
+	
+	// Timestamp when feedback was created (client-side)
+	createdAt: string
+	
+	// Server timestamp when feedback was received
+	serverTimestamp: string
+	
+	// Server version/build identifier for correlation
+	serverVersion: string
+	
+	// Kafka topic offsets at time of feedback for state correlation
+	kafkaOffsets: object
+	
+	// Active session state snapshot for debugging
+	sessionStateSnapshot: object
+	
+	// Correlation ID for tracing through logs
+	correlationId: string
+	
+	// Processing status in the pipeline
+	status: object
+}
+``` 
+
+## FeedbackInsight
+
+LLM-generated insight from user feedback analysis
+### Queries
+
+- [GetFeedbackInsights](#getfeedbackinsights)
+- [GetFeedbackInsightsByIds](#getfeedbackinsightsbyids)
+- [GetFeedbackInsightsByFeedbackEventId](#getfeedbackinsightsbyfeedbackeventid)
+- [GetFeedbackInsightsByType](#getfeedbackinsightsbytype)
+- [GetFeedbackInsightsByImpact](#getfeedbackinsightsbyimpact)
+
+```ts
+{
+	// Reference to the source feedback event
+	// Belongs to FeedbackEvent
+	feedbackEventId: object
+	
+	// Classification of feedback type
+	type: object
+	
+	// Short summary of the issue (max 100 chars)
+	summary: string
+	
+	// Detailed description of the issue
+	description: string
+	
+	// Inferred user intent - what they were trying to accomplish
+	userIntent: string
+	
+	// Impact severity assessment
+	impact: object
+	
+	// Steps to reproduce the issue (if applicable)
+	reproductionSteps: array
+	
+	// Affected area of the application (e.g., "binding-execution", "ui-workspace")
+	affectedArea: string
+	
+	// Suggested fix ideas from LLM analysis
+	suggestedFixIdeas: array
+	
+	// Confidence level of this analysis
+	confidence: object
+	
+	// LLM model used for generation
+	llmModel: string
+	
+	// LLM prompt version for tracking
+	llmPromptVersion: string
+	
+	// Timestamp when insight was created
+	createdAt: string
+}
+``` 
+
 ## File
 
 
@@ -1082,6 +1942,106 @@ An Event Track Playback in a Session
 }
 ``` 
 
+## FleetGroup
+
+A logical grouping of machines (show, venue, cluster, etc.)
+### Queries
+
+- [GetFleetGroups](#getfleetgroups)
+- [GetFleetGroupById](#getfleetgroupbyid)
+- [GetFleetGroupsByIds](#getfleetgroupsbyids)
+- [GetFleetGroupsByOrganization](#getfleetgroupsbyorganization)
+- [GetFleetGroupsByType](#getfleetgroupsbytype)
+- [GetFleetGroupsByParent](#getfleetgroupsbyparent)
+- [GetRootFleetGroups](#getrootfleetgroups)
+
+```ts
+{
+	// Organization this group belongs to
+	// Belongs to Organization
+	organizationId: object
+	
+	// Group name
+	name: string
+	
+	// Group type classification
+	type: object
+	
+	// Display color (hex)
+	color: string
+	
+	// Icon identifier
+	icon: string
+	
+	// Parent group ID for hierarchical grouping
+	// Belongs to undefined
+	parentGroupId: object
+	
+	// Sort order within parent
+	sortOrder: number
+	
+	// Optional description
+	description: string
+	
+	// Tags for filtering and search
+	tags: array
+	
+	// Custom metadata
+	metadata: object
+	
+	// Whether this group is archived
+	archived: boolean
+	
+	// Group creation timestamp
+	createdAt: string
+	
+	// User who created this group
+	createdBy: object
+}
+``` 
+
+## FleetGroupMember
+
+Membership of a machine in a fleet group
+### Queries
+
+- [GetFleetGroupMembers](#getfleetgroupmembers)
+- [GetFleetGroupMemberById](#getfleetgroupmemberbyid)
+- [GetFleetGroupMembersByIds](#getfleetgroupmembersbyids)
+- [GetFleetGroupMembersByGroup](#getfleetgroupmembersbygroup)
+- [GetFleetGroupMembersByMachine](#getfleetgroupmembersbymachine)
+- [GetFleetGroupMemberByGroupAndMachine](#getfleetgroupmemberbygroupandmachine)
+
+```ts
+{
+	// The fleet group
+	// Belongs to FleetGroup
+	groupId: object
+	
+	// The machine
+	// Belongs to Machine
+	machineId: object
+	
+	// Role of this machine in the group
+	role: object
+	
+	// Sort order within the group
+	sortOrder: number
+	
+	// Display label override for this membership
+	label: string
+	
+	// Optional notes about this membership
+	notes: string
+	
+	// When the machine was added to the group
+	addedAt: string
+	
+	// User who added the machine to the group
+	addedBy: object
+}
+``` 
+
 ## GlobalVariable
 
 
@@ -1103,6 +2063,146 @@ An Event Track Playback in a Session
 	
 	// Belongs to Project
 	scopeId: object
+}
+``` 
+
+## InstalledSoftware
+
+Software installed on a machine
+### Queries
+
+- [GetInstalledSoftware](#getinstalledsoftware)
+- [GetInstalledSoftwareById](#getinstalledsoftwarebyid)
+- [GetInstalledSoftwareByIds](#getinstalledsoftwarebyids)
+- [GetInstalledSoftwareByMachine](#getinstalledsoftwarebymachine)
+- [GetInstalledSoftwareByName](#getinstalledsoftwarebyname)
+- [GetInstalledSoftwareByArtifact](#getinstalledsoftwarebyartifact)
+- [GetRunningSoftware](#getrunningsoftware)
+- [GetSoftwareWithUpdates](#getsoftwarewithupdates)
+- [GetUnhealthySoftware](#getunhealthysoftware)
+- [GetSoftwareByType](#getsoftwarebytype)
+
+```ts
+{
+	// Machine this software is installed on
+	// Belongs to Machine
+	machineId: object
+	
+	// Software name
+	name: string
+	
+	// Installed version
+	version: string
+	
+	// Software type
+	type: object
+	
+	// Source artifact (if deployed via rship)
+	// Belongs to Artifact
+	artifactId: object
+	
+	// Deployment that installed this version
+	// Belongs to Deployment
+	deploymentId: object
+	
+	// Install path on machine
+	installPath: string
+	
+	// Executable path
+	executablePath: string
+	
+	// Current running status
+	runningStatus: object
+	
+	// Process ID when running
+	pid: number
+	
+	// Whether service auto-starts
+	autoStart: boolean
+	
+	// Service/process name
+	serviceName: string
+	
+	// Startup command
+	startupCommand: string
+	
+	// Startup arguments
+	startupArgs: array
+	
+	// Working directory
+	workingDirectory: string
+	
+	// Environment variables
+	environmentVariables: object
+	
+	// Configuration file path
+	configPath: string
+	
+	// Active configuration
+	activeConfig: object
+	
+	// Log file paths
+	logPaths: array
+	
+	// Data directory path
+	dataPath: string
+	
+	// Ports used by this software
+	ports: array
+	
+	// CPU usage percentage (0-100)
+	cpuUsage: number
+	
+	// Memory usage in bytes
+	memoryUsage: number
+	
+	// Last health check result
+	healthStatus: string
+	
+	// Last health check message
+	healthMessage: string
+	
+	// Last health check timestamp
+	lastHealthCheck: string
+	
+	// Uptime in seconds
+	uptimeSeconds: number
+	
+	// Last started timestamp
+	lastStarted: string
+	
+	// Last stopped timestamp
+	lastStopped: string
+	
+	// Number of crashes since install
+	crashCount: number
+	
+	// Last crash timestamp
+	lastCrash: string
+	
+	// Last crash reason
+	lastCrashReason: string
+	
+	// Available update version
+	updateAvailable: string
+	
+	// Update artifact ID
+	updateArtifactId: object
+	
+	// Installation timestamp
+	installedAt: string
+	
+	// Installed by user
+	installedByUserId: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
 }
 ``` 
 
@@ -1637,6 +2737,59 @@ A Machine that hosts an instance or acts as a network bridge device
 }
 ``` 
 
+## MachineLocation
+
+Physical placement of a machine in a rack
+### Queries
+
+- [GetMachineLocations](#getmachinelocations)
+- [GetMachineLocationById](#getmachinelocationbyid)
+- [GetMachineLocationsByIds](#getmachinelocationsbyids)
+- [GetMachineLocationByMachine](#getmachinelocationbymachine)
+- [GetMachineLocationsByRack](#getmachinelocationsbyrack)
+
+```ts
+{
+	// The machine being placed
+	// Belongs to Machine
+	machineId: object
+	
+	// The rack containing the machine
+	// Belongs to Rack
+	rackId: object
+	
+	// Starting rack unit (1-indexed, bottom = 1)
+	startUnit: number
+	
+	// Height in rack units (U)
+	heightUnits: number
+	
+	// Equipment facing direction
+	facing: object
+	
+	// Power connections assigned
+	powerConnections: array
+	
+	// Rails or shelf type used
+	mountingType: string
+	
+	// Equipment weight in kg
+	weight: number
+	
+	// Asset tag on this specific installation
+	assetTag: string
+	
+	// Installation date
+	installedAt: string
+	
+	// User who installed the equipment
+	installedBy: object
+	
+	// Optional notes about installation
+	notes: string
+}
+``` 
+
 ## MachineStatus
 
 Connection Status of a machine
@@ -1662,6 +2815,118 @@ Connection Status of a machine
 	
 	// ISO DateTime string
 	lastSeen: string
+}
+``` 
+
+## MachineTelemetry
+
+Machine telemetry/metrics snapshot
+### Queries
+
+- [GetMachineTelemetry](#getmachinetelemetry)
+- [GetMachineTelemetryById](#getmachinetelemetrybyid)
+- [GetMachineTelemetryByMachine](#getmachinetelemetrybymachine)
+- [GetLatestMachineTelemetry](#getlatestmachinetelemetry)
+- [GetMachineTelemetryInRange](#getmachinetelemetryinrange)
+- [GetMachinesWithHighCpu](#getmachineswithhighcpu)
+- [GetMachinesWithHighMemory](#getmachineswithhighmemory)
+- [GetMachinesWithLowDisk](#getmachineswithlowdisk)
+
+```ts
+{
+	// Machine this telemetry is from
+	// Belongs to Machine
+	machineId: object
+	
+	// Telemetry timestamp
+	timestamp: string
+	
+	// CPU usage percentage (0-100)
+	cpuUsagePercent: number
+	
+	// Per-core CPU usage
+	cpuPerCore: array
+	
+	// CPU load averages (1, 5, 15 min)
+	loadAverage: array
+	
+	// Memory used in bytes
+	memoryUsedBytes: number
+	
+	// Memory available in bytes
+	memoryAvailableBytes: number
+	
+	// Memory total in bytes
+	memoryTotalBytes: number
+	
+	// Memory usage percentage
+	memoryUsagePercent: number
+	
+	// Swap used in bytes
+	swapUsedBytes: number
+	
+	// Swap total in bytes
+	swapTotalBytes: number
+	
+	// Disk usage per mount point
+	diskUsage: array
+	
+	// Total disk used bytes
+	totalDiskUsedBytes: number
+	
+	// Total disk available bytes
+	totalDiskAvailableBytes: number
+	
+	// Network interface statistics
+	networkStats: array
+	
+	// Total network RX bytes/sec
+	totalRxBytesPerSec: number
+	
+	// Total network TX bytes/sec
+	totalTxBytesPerSec: number
+	
+	// GPU metrics
+	gpuMetrics: array
+	
+	// Number of running processes
+	processCount: number
+	
+	// Top processes by CPU
+	topProcessesCpu: array
+	
+	// Top processes by memory
+	topProcessesMemory: array
+	
+	// CPU temperature in Celsius
+	cpuTemperatureC: number
+	
+	// System uptime in seconds
+	uptimeSeconds: number
+	
+	// Boot time
+	bootTime: string
+	
+	// System time
+	systemTime: string
+	
+	// Timezone
+	timezone: string
+	
+	// PTP sync status
+	ptpStatus: object
+	
+	// Agent version reporting this telemetry
+	agentVersion: string
+	
+	// Collection duration in milliseconds
+	collectionDurationMs: number
+	
+	// Custom metrics
+	customMetrics: object
+	
+	// Entity creation timestamp
+	createdAt: string
 }
 ``` 
 
@@ -1762,6 +3027,105 @@ Connection Status of a machine
 }
 ``` 
 
+## MediaFlow
+
+A media stream flow between network nodes
+### Queries
+
+- [GetMediaFlows](#getmediaflows)
+- [GetMediaFlowById](#getmediaflowbyid)
+- [GetMediaFlowsByIds](#getmediaflowsbyids)
+- [GetMediaFlowsBySite](#getmediaflowsbysite)
+- [GetMediaFlowsBySourceNode](#getmediaflowsbysourcenode)
+- [GetMediaFlowsByProtocol](#getmediaflowsbyprotocol)
+- [GetMediaFlowsByMediaType](#getmediaflowsbymediatype)
+- [GetMediaFlowByNmosId](#getmediaflowbynmosid)
+- [GetActiveMediaFlows](#getactivemediaflows)
+
+```ts
+{
+	// Site this flow belongs to
+	// Belongs to Site
+	siteId: object
+	
+	// Flow display name
+	name: string
+	
+	// Media protocol
+	protocol: object
+	
+	// Media type
+	mediaType: object
+	
+	// Source node ID
+	// Belongs to NetworkGraphNode
+	sourceNodeId: object
+	
+	// Source reference ID (sender ID, channel ID, etc.)
+	sourceRefId: string
+	
+	// Source multicast or unicast address
+	sourceAddress: string
+	
+	// Source port
+	sourcePort: number
+	
+	// Receiver node IDs (for multicast, can have multiple)
+	receiverNodeIds: array
+	
+	// Multicast group address
+	multicastAddress: string
+	
+	// Destination port
+	destinationPort: number
+	
+	// Video format information
+	videoFormat: object
+	
+	// Audio format information
+	audioFormat: object
+	
+	// Bandwidth in Mbps
+	bandwidthMbps: number
+	
+	// Flow status
+	status: object
+	
+	// Whether flow is PTP synchronized
+	ptpLocked: boolean
+	
+	// PTP domain
+	ptpDomain: number
+	
+	// Real-time metrics
+	metrics: object
+	
+	// NMOS flow ID if applicable
+	nmosFlowId: string
+	
+	// NMOS sender ID if applicable
+	nmosSenderId: string
+	
+	// Associated rship Emitter ID if applicable
+	emitterId: object
+	
+	// Custom metadata
+	metadata: object
+	
+	// Optional description
+	description: string
+	
+	// Flow creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+	
+	// Last time this flow was active
+	lastSeen: string
+}
+``` 
+
 ## Network
 
 A VPN network that machines can join for secure connectivity
@@ -1806,6 +3170,283 @@ A VPN network that machines can join for secure connectivity
 }
 ``` 
 
+## NetworkGraphEdge
+
+A link between two nodes in the network topology graph
+### Queries
+
+- [GetNetworkGraphEdges](#getnetworkgraphedges)
+- [GetNetworkGraphEdgeById](#getnetworkgraphedgebyid)
+- [GetNetworkGraphEdgesByIds](#getnetworkgraphedgesbyids)
+- [GetNetworkGraphEdgesBySite](#getnetworkgraphedgesbysite)
+- [GetNetworkGraphEdgesByNode](#getnetworkgraphedgesbynode)
+- [GetNetworkGraphEdgesByType](#getnetworkgraphedgesbytype)
+- [GetNetworkGraphEdgeBetweenNodes](#getnetworkgraphedgebetweennodes)
+
+```ts
+{
+	// Site this edge belongs to
+	// Belongs to Site
+	siteId: object
+	
+	// Source node ID
+	// Belongs to NetworkGraphNode
+	sourceNodeId: object
+	
+	// Source port/interface name
+	sourcePort: string
+	
+	// Target node ID
+	// Belongs to NetworkGraphNode
+	targetNodeId: object
+	
+	// Target port/interface name
+	targetPort: string
+	
+	// Edge type classification
+	edgeType: object
+	
+	// Network protocol
+	protocol: object
+	
+	// Link speed in Mbps
+	speedMbps: number
+	
+	// Duplex mode
+	duplex: object
+	
+	// VLAN IDs on this link
+	vlanIds: array
+	
+	// Whether this is a trunk port
+	isTrunk: boolean
+	
+	// Native/untagged VLAN
+	nativeVlan: number
+	
+	// Link status
+	status: object
+	
+	// How this edge was discovered
+	discoverySource: object
+	
+	// Discovery confidence (0-100)
+	confidence: number
+	
+	// Current utilization percentage (0-100)
+	utilization: number
+	
+	// Packet loss percentage
+	packetLoss: number
+	
+	// Latency in microseconds
+	latencyUs: number
+	
+	// Error count
+	errorCount: number
+	
+	// Whether this link is bidirectional
+	bidirectional: boolean
+	
+	// Cable type/description
+	cableType: string
+	
+	// Cable length in meters
+	cableLengthMeters: number
+	
+	// Custom metadata
+	metadata: object
+	
+	// Optional description
+	description: string
+	
+	// Edge creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+	
+	// Last time this edge was seen active
+	lastSeen: string
+}
+``` 
+
+## NetworkGraphEvent
+
+A historical event in the network topology graph
+### Queries
+
+- [GetNetworkGraphEvents](#getnetworkgraphevents)
+- [GetNetworkGraphEventById](#getnetworkgrapheventbyid)
+- [GetNetworkGraphEventsByIds](#getnetworkgrapheventsbyids)
+- [GetNetworkGraphEventsBySite](#getnetworkgrapheventsbysite)
+- [GetNetworkGraphEventsByNode](#getnetworkgrapheventsbynode)
+- [GetNetworkGraphEventsByEdge](#getnetworkgrapheventsbyedge)
+- [GetNetworkGraphEventsByFlow](#getnetworkgrapheventsbyflow)
+- [GetNetworkGraphEventsByType](#getnetworkgrapheventsbytype)
+- [GetNetworkGraphEventsBySeverity](#getnetworkgrapheventsbyseverity)
+- [GetUnacknowledgedNetworkGraphEvents](#getunacknowledgednetworkgraphevents)
+- [GetNetworkGraphEventsByCorrelation](#getnetworkgrapheventsbycorrelation)
+
+```ts
+{
+	// Event type
+	eventType: object
+	
+	// Event timestamp
+	timestamp: string
+	
+	// Site this event occurred in
+	// Belongs to Site
+	siteId: object
+	
+	// Related node ID (if applicable)
+	// Belongs to NetworkGraphNode
+	nodeId: object
+	
+	// Related edge ID (if applicable)
+	// Belongs to NetworkGraphEdge
+	edgeId: object
+	
+	// Related flow ID (if applicable)
+	// Belongs to MediaFlow
+	flowId: object
+	
+	// Previous state (JSON)
+	previousState: object
+	
+	// New state (JSON)
+	newState: object
+	
+	// Event severity
+	severity: object
+	
+	// Human-readable message
+	message: string
+	
+	// Source of the event (discovery executor, agent, etc.)
+	source: string
+	
+	// Source entity ID
+	sourceEntityId: object
+	
+	// Correlation ID for related events
+	correlationId: string
+	
+	// Whether this event has been acknowledged
+	acknowledged: boolean
+	
+	// User who acknowledged
+	acknowledgedBy: object
+	
+	// Acknowledgment timestamp
+	acknowledgedAt: string
+	
+	// Resolution notes
+	resolutionNotes: string
+	
+	// Additional event data
+	data: object
+	
+	// Tags for filtering
+	tags: array
+}
+``` 
+
+## NetworkGraphNode
+
+A node in the network topology graph
+### Queries
+
+- [GetNetworkGraphNodes](#getnetworkgraphnodes)
+- [GetNetworkGraphNodeById](#getnetworkgraphnodebyid)
+- [GetNetworkGraphNodesByIds](#getnetworkgraphnodesbyids)
+- [GetNetworkGraphNodesBySite](#getnetworkgraphnodesbysite)
+- [GetNetworkGraphNodesByType](#getnetworkgraphnodesbytype)
+- [GetNetworkGraphNodesByCategory](#getnetworkgraphnodesbycategory)
+- [GetNetworkGraphNodeByMachine](#getnetworkgraphnodebymachine)
+- [GetNetworkGraphNodesByHealthStatus](#getnetworkgraphnodesbyhealthstatus)
+
+```ts
+{
+	// Site this node belongs to
+	// Belongs to Site
+	siteId: object
+	
+	// Node display name
+	name: string
+	
+	// Node category
+	category: object
+	
+	// Node type classification
+	nodeType: object
+	
+	// Equipment vendor/manufacturer
+	vendor: string
+	
+	// Equipment model
+	model: string
+	
+	// Serial number
+	serialNumber: string
+	
+	// Firmware/software version
+	version: string
+	
+	// How this node was discovered
+	discoverySource: object
+	
+	// ID of source entity that reported this node
+	sourceEntityId: object
+	
+	// Type of source entity (Machine, Instance, etc.)
+	sourceEntityType: string
+	
+	// Management addresses
+	managementAddresses: array
+	
+	// Network interfaces
+	interfaces: array
+	
+	// PTP domain if applicable
+	ptpDomain: number
+	
+	// PTP clock identity
+	ptpClockId: string
+	
+	// Health status
+	healthStatus: object
+	
+	// Last time this node was seen/updated
+	lastSeen: string
+	
+	// Node capabilities
+	capabilities: object
+	
+	// Custom metadata
+	metadata: object
+	
+	// Optional description
+	description: string
+	
+	// Associated rship Machine ID if applicable
+	machineId: object
+	
+	// Discovery confidence score (0-100)
+	confidence: number
+	
+	// Whether this node is manually pinned (won't be auto-removed)
+	pinned: boolean
+	
+	// Node creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
 ## NetworkMember
 
 A machine membership in a VPN network
@@ -1844,6 +3485,544 @@ A machine membership in a VPN network
 }
 ``` 
 
+## NMOSConnection
+
+An NMOS IS-05 Connection between Sender and Receiver
+### Queries
+
+- [GetNMOSConnections](#getnmosconnections)
+- [GetNMOSConnectionById](#getnmosconnectionbyid)
+- [GetNMOSConnectionsByIds](#getnmosconnectionsbyids)
+- [GetNMOSConnectionByReceiver](#getnmosconnectionbyreceiver)
+- [GetNMOSConnectionsBySender](#getnmosconnectionsbysender)
+- [GetNMOSConnectionsByStatus](#getnmosconnectionsbystatus)
+- [GetActiveNMOSConnections](#getactivenmosconnections)
+- [GetScheduledNMOSConnections](#getschedulednmosconnections)
+- [GetFailedNMOSConnections](#getfailednmosconnections)
+
+```ts
+{
+	// Receiver in this connection
+	// Belongs to NMOSReceiver
+	receiverId: object
+	
+	// Receiver NMOS UUID
+	receiverNmosId: string
+	
+	// Sender in this connection (null for disconnect)
+	// Belongs to NMOSSender
+	senderId: object
+	
+	// Sender NMOS UUID (null for disconnect)
+	senderNmosId: string
+	
+	// Connection status
+	status: object
+	
+	// Master enable state
+	masterEnable: boolean
+	
+	// Activation mode
+	activationMode: object
+	
+	// Requested activation time (TAI timestamp)
+	requestedTime: string
+	
+	// Actual activation time (TAI timestamp)
+	activationTime: string
+	
+	// Staged transport parameters
+	stagedParams: array
+	
+	// Active transport parameters
+	activeParams: array
+	
+	// Sender manifest href (SDP)
+	senderManifest: string
+	
+	// Whether connection is locked (prevent modifications)
+	locked: boolean
+	
+	// Lock reason
+	lockReason: string
+	
+	// Last error message
+	lastError: string
+	
+	// Number of activation attempts
+	activationAttempts: number
+	
+	// Health check status
+	health: string
+	
+	// Health check details
+	healthDetails: object
+	
+	// Connection initiated by user
+	initiatedByUserId: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## NMOSDevice
+
+An NMOS IS-04 Device resource
+### Queries
+
+- [GetNMOSDevices](#getnmosdevices)
+- [GetNMOSDeviceById](#getnmosdevicebyid)
+- [GetNMOSDevicesByIds](#getnmosdevicesbyids)
+- [GetNMOSDevicesByNode](#getnmosdevicesbynode)
+- [GetNMOSDeviceByNmosId](#getnmosdevicebynmosid)
+- [GetNMOSDevicesByType](#getnmosdevicesbytype)
+- [GetNMOSDeviceByGraphNode](#getnmosdevicebygraphnode)
+
+```ts
+{
+	// Parent NMOS Node
+	// Belongs to NMOSNode
+	nodeId: object
+	
+	// NMOS UUID
+	nmosId: string
+	
+	// Device label
+	label: string
+	
+	// Device description
+	description: string
+	
+	// Device type URN
+	type: object
+	
+	// Control endpoints
+	controls: array
+	
+	// Sender IDs owned by this device
+	senderIds: array
+	
+	// Receiver IDs owned by this device
+	receiverIds: array
+	
+	// Device tags
+	tags: object
+	
+	// Linked network graph node
+	// Belongs to NetworkGraphNode
+	graphNodeId: object
+	
+	// Last seen timestamp
+	lastSeen: string
+	
+	// Device version (NMOS timestamp)
+	nmosVersion: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## NMOSNode
+
+An NMOS IS-04 Node resource
+### Queries
+
+- [GetNMOSNodes](#getnmosnodes)
+- [GetNMOSNodeById](#getnmosnodebyid)
+- [GetNMOSNodesByIds](#getnmosnodesbyids)
+- [GetNMOSNodesByRegistry](#getnmosnodesbyregistry)
+- [GetNMOSNodeByNmosId](#getnmosnodebynmosid)
+- [GetNMOSNodeByGraphNode](#getnmosnodebygraphnode)
+
+```ts
+{
+	// Registry this node is registered with
+	// Belongs to NMOSRegistry
+	registryId: object
+	
+	// NMOS UUID
+	nmosId: string
+	
+	// Node label
+	label: string
+	
+	// Node description
+	description: string
+	
+	// Node hostname
+	hostname: string
+	
+	// Node API href
+	href: string
+	
+	// Node API version
+	apiVersion: string
+	
+	// Node tags
+	tags: object
+	
+	// Node clocks
+	clocks: array
+	
+	// Node network interfaces
+	interfaces: array
+	
+	// Node services
+	services: array
+	
+	// Linked network graph node
+	// Belongs to NetworkGraphNode
+	graphNodeId: object
+	
+	// Last seen timestamp
+	lastSeen: string
+	
+	// Node version (NMOS timestamp)
+	nmosVersion: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## NMOSReceiver
+
+An NMOS IS-04 Receiver resource
+### Queries
+
+- [GetNMOSReceivers](#getnmosreceivers)
+- [GetNMOSReceiverById](#getnmosreceiverbyid)
+- [GetNMOSReceiversByIds](#getnmosreceiversbyids)
+- [GetNMOSReceiversByDevice](#getnmosreceiversbydevice)
+- [GetNMOSReceiverByNmosId](#getnmosreceiverbynmosid)
+- [GetNMOSReceiversByFormat](#getnmosreceiversbyformat)
+- [GetNMOSReceiversByTransport](#getnmosreceiversbytransport)
+- [GetActiveReceivers](#getactivereceivers)
+- [GetReceiversConnectedToSender](#getreceiversconnectedtosender)
+- [GetUnconnectedReceivers](#getunconnectedreceivers)
+
+```ts
+{
+	// Parent NMOS Device
+	// Belongs to NMOSDevice
+	deviceId: object
+	
+	// NMOS UUID
+	nmosId: string
+	
+	// Receiver label
+	label: string
+	
+	// Receiver description
+	description: string
+	
+	// Expected format
+	format: object
+	
+	// Transport protocol URN
+	transport: object
+	
+	// Interface bindings
+	interfaceBindings: array
+	
+	// Subscription state
+	subscription: object
+	
+	// IS-05 staged transport parameters
+	stagedTransportParams: array
+	
+	// IS-05 active transport parameters
+	activeTransportParams: array
+	
+	// Receiver capabilities
+	caps: object
+	
+	// Receiver tags
+	tags: object
+	
+	// Whether receiver is currently active
+	active: boolean
+	
+	// Currently connected sender NMOS ID
+	connectedSenderId: string
+	
+	// Currently connected sender rship entity ID
+	connectedSenderEntityId: object
+	
+	// Connection health status
+	connectionHealth: string
+	
+	// Last connection error
+	lastConnectionError: string
+	
+	// PTP lock status
+	ptpLocked: boolean
+	
+	// Last seen timestamp
+	lastSeen: string
+	
+	// Receiver version (NMOS timestamp)
+	nmosVersion: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## NMOSRegistry
+
+An NMOS IS-04 Registry instance
+### Queries
+
+- [GetNMOSRegistries](#getnmosregistries)
+- [GetNMOSRegistryById](#getnmosregistrybyid)
+- [GetNMOSRegistriesByIds](#getnmosregistriesbyids)
+- [GetNMOSRegistriesBySite](#getnmosregistriesbysite)
+- [GetOnlineNMOSRegistries](#getonlinenmosregistries)
+
+```ts
+{
+	// Site this registry serves
+	// Belongs to Site
+	siteId: object
+	
+	// Registry display name
+	name: string
+	
+	// Registry base URL
+	url: string
+	
+	// IS-04 API version
+	version: object
+	
+	// Registry status
+	status: object
+	
+	// Priority (for multiple registries, lower = higher priority)
+	priority: number
+	
+	// Last successful sync timestamp
+	lastSync: string
+	
+	// Last sync error message
+	lastSyncError: string
+	
+	// Number of registered nodes
+	nodeCount: number
+	
+	// Number of registered devices
+	deviceCount: number
+	
+	// Number of registered senders
+	senderCount: number
+	
+	// Number of registered receivers
+	receiverCount: number
+	
+	// Number of registered flows
+	flowCount: number
+	
+	// Number of registered sources
+	sourceCount: number
+	
+	// WebSocket subscription URL
+	wsSubscriptionUrl: string
+	
+	// Whether WebSocket subscription is active
+	wsConnected: boolean
+	
+	// Registry health check interval in ms
+	healthCheckIntervalMs: number
+	
+	// Sync interval in ms
+	syncIntervalMs: number
+	
+	// Optional description
+	description: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Registry creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## NMOSSender
+
+An NMOS IS-04 Sender resource
+### Queries
+
+- [GetNMOSSenders](#getnmossenders)
+- [GetNMOSSenderById](#getnmossenderbyid)
+- [GetNMOSSendersByIds](#getnmossendersbyids)
+- [GetNMOSSendersByDevice](#getnmossendersbydevice)
+- [GetNMOSSenderByNmosId](#getnmossenderbynmosid)
+- [GetNMOSSendersByFormat](#getnmossendersbyformat)
+- [GetNMOSSendersByTransport](#getnmossendersbytransport)
+- [GetActiveSenders](#getactivesenders)
+- [GetNMOSSenderByMediaFlow](#getnmossenderbymediaflow)
+
+```ts
+{
+	// Parent NMOS Device
+	// Belongs to NMOSDevice
+	deviceId: object
+	
+	// NMOS UUID
+	nmosId: string
+	
+	// Sender label
+	label: string
+	
+	// Sender description
+	description: string
+	
+	// Flow ID being sent
+	flowId: string
+	
+	// Transport protocol URN
+	transport: object
+	
+	// Manifest href (SDP file)
+	manifestHref: string
+	
+	// Media format
+	format: object
+	
+	// Interface bindings
+	interfaceBindings: array
+	
+	// Subscription state
+	subscription: object
+	
+	// IS-05 transport parameters
+	transportParams: array
+	
+	// Sender caps
+	caps: object
+	
+	// Sender tags
+	tags: object
+	
+	// Linked MediaFlow entity
+	// Belongs to MediaFlow
+	mediaFlowId: object
+	
+	// Whether sender is currently active
+	active: boolean
+	
+	// Multicast address (if applicable)
+	multicastAddress: string
+	
+	// Destination port
+	destinationPort: number
+	
+	// Last seen timestamp
+	lastSeen: string
+	
+	// Sender version (NMOS timestamp)
+	nmosVersion: string
+	
+	// Custom metadata
+	metadata: object
+	
+	// Entity creation timestamp
+	createdAt: string
+	
+	// Last update timestamp
+	updatedAt: string
+}
+``` 
+
+## NodeAgent
+
+Node agent running on a machine for remote management
+### Queries
+
+- [GetNodeAgents](#getnodeagents)
+- [GetNodeAgentById](#getnodeagentbyid)
+- [GetNodeAgentsByIds](#getnodeagentsbyids)
+- [GetNodeAgentByMachine](#getnodeagentbymachine)
+- [GetNodeAgentsByStatus](#getnodeagentsbystatus)
+- [GetOnlineNodeAgents](#getonlinenodeagents)
+
+```ts
+{
+	// The machine this agent runs on
+	// Belongs to Machine
+	machineId: object
+	
+	// Agent version string
+	version: string
+	
+	// Agent operational status
+	status: object
+	
+	// Last heartbeat timestamp
+	lastHeartbeat: string
+	
+	// Agent capabilities
+	capabilities: object
+	
+	// Agent configuration
+	config: object
+	
+	// System information
+	systemInfo: object
+	
+	// TLS certificate fingerprint for mTLS
+	certFingerprint: string
+	
+	// Agent public key for authentication
+	publicKey: string
+	
+	// When the agent first connected
+	firstSeenAt: string
+	
+	// Agent uptime in seconds
+	uptimeSeconds: number
+	
+	// Last error message if status is error
+	lastError: string
+	
+	// Last error timestamp
+	lastErrorAt: string
+	
+	// Pending update version (if any)
+	pendingUpdateVersion: string
+}
+``` 
+
 ## Organization
 
 An organization that owns users, devices, and networks
@@ -1867,6 +4046,12 @@ An organization that owns users, devices, and networks
 	
 	// Organization logo URL
 	logoUrl: string
+	
+	// Organization avatar URL
+	avatarUrl: string
+	
+	// Organization website URL
+	websiteUrl: string
 	
 	// Primary contact email
 	contactEmail: string
@@ -2178,6 +4363,86 @@ A network interface/port on a machine
 }
 ``` 
 
+## ProductIssue
+
+An actionable product issue derived from aggregated user feedback
+### Queries
+
+- [GetProductIssues](#getproductissues)
+- [GetProductIssuesByIds](#getproductissuesbyids)
+- [GetProductIssuesByClusterId](#getproductissuesbyclusterid)
+- [GetProductIssuesByStatus](#getproductissuesbystatus)
+- [GetAutoFixEligibleProductIssues](#getautofixeligibleproductissues)
+- [GetProductIssuesByPriority](#getproductissuesbypriority)
+
+```ts
+{
+	// Reference to the source feedback cluster
+	// Belongs to FeedbackCluster
+	clusterId: object
+	
+	// Issue title
+	title: string
+	
+	// Detailed description of the issue
+	description: string
+	
+	// Type classification
+	type: object
+	
+	// Acceptance criteria for considering the issue resolved
+	acceptanceCriteria: array
+	
+	// Priority level
+	priority: object
+	
+	// Scope/complexity estimate
+	scope: object
+	
+	// Whether this issue is eligible for auto-fix
+	autoFixEligible: boolean
+	
+	// File paths likely to need modification
+	affectedFiles: array
+	
+	// Suggested technical approach
+	technicalApproach: array
+	
+	// Current status in resolution workflow
+	status: object
+	
+	// External issue tracker URL (GitHub/Jira)
+	externalIssueUrl: string
+	
+	// GitHub issue number if synced
+	githubIssueNumber: number
+	
+	// Pull request URL if auto-fix was attempted
+	pullRequestUrl: string
+	
+	// Pull request number
+	pullRequestNumber: number
+	
+	// Whether auto-fix was attempted
+	autoFixAttempted: boolean
+	
+	// Whether auto-fix succeeded
+	autoFixSuccess: boolean
+	
+	// Error message if auto-fix failed
+	autoFixError: string
+	
+	// Number of feedback events contributing to this issue
+	feedbackCount: number
+	
+	// Timestamp when issue was created
+	createdAt: string
+	
+	// Timestamp when issue was last updated
+	updatedAt: string
+}
+``` 
+
 ## Project
 
 A Project - the scope of most data in Rocketship
@@ -2279,6 +4544,76 @@ A Pulse of data sent by an Emitter
 	
 	// Auto Client ID
 	clientId: object
+}
+``` 
+
+## Rack
+
+A physical equipment rack within a room
+### Queries
+
+- [GetRacks](#getracks)
+- [GetRackById](#getrackbyid)
+- [GetRacksByIds](#getracksbyids)
+- [GetRacksByRoom](#getracksbyroom)
+- [GetRacksByCoolingZone](#getracksbycoolingzone)
+
+```ts
+{
+	// Room this rack belongs to
+	// Belongs to Room
+	roomId: object
+	
+	// Rack name or identifier
+	name: string
+	
+	// Total rack units (e.g., 42 for a standard 42U rack)
+	totalUnits: number
+	
+	// Rack width in mm (standard 19" = 482.6mm)
+	widthMm: number
+	
+	// Rack depth in mm
+	depthMm: number
+	
+	// Position within the room for visualization
+	position: object
+	
+	// Maximum power capacity in watts
+	powerCapacity: number
+	
+	// Available power connections
+	powerConnections: array
+	
+	// Cooling zone identifier
+	coolingZone: string
+	
+	// Maximum weight capacity in kg
+	weightCapacity: number
+	
+	// Current total weight of installed equipment in kg
+	currentWeight: number
+	
+	// Asset tag or barcode
+	assetTag: string
+	
+	// Manufacturer
+	manufacturer: string
+	
+	// Model number
+	model: string
+	
+	// Serial number
+	serialNumber: string
+	
+	// Optional description or notes
+	description: string
+	
+	// Rack creation timestamp
+	createdAt: string
+	
+	// User who created this rack
+	createdBy: object
 }
 ``` 
 
@@ -2593,6 +4928,61 @@ A permission role granting a user access to a specific entity
 	
 	// Optional note about why this role was granted
 	note: string
+}
+``` 
+
+## Room
+
+A room within a site (e.g., control room, server room, stage)
+### Queries
+
+- [GetRooms](#getrooms)
+- [GetRoomById](#getroombyid)
+- [GetRoomsByIds](#getroomsbyids)
+- [GetRoomsBySite](#getroomsbysite)
+- [GetRoomsByType](#getroomsbytype)
+
+```ts
+{
+	// Site this room belongs to
+	// Belongs to Site
+	siteId: object
+	
+	// Room name
+	name: string
+	
+	// Room type classification
+	type: object
+	
+	// Floor/level within the site
+	floor: string
+	
+	// Room number or identifier
+	number: string
+	
+	// Optional description
+	description: string
+	
+	// Environmental monitoring enabled
+	environmentalMonitoring: boolean
+	
+	// Target temperature in Celsius
+	targetTemperature: number
+	
+	// Maximum power capacity in watts
+	powerCapacity: number
+	
+	// Cooling capacity in BTU/hr
+	coolingCapacity: number
+	
+	// Access restrictions or requirements
+	accessNotes: string
+	
+	// Room creation timestamp
+	createdAt: string
+	
+	// User who created this room
+	createdBy: object
 }
 ``` 
 
@@ -2917,6 +5307,65 @@ The statefull instance of a project
 }
 ``` 
 
+## Site
+
+A physical site/venue containing network infrastructure
+### Queries
+
+- [GetSites](#getsites)
+- [GetSiteById](#getsitebyid)
+- [GetSitesByIds](#getsitesbyids)
+- [GetSitesByOrganization](#getsitesbyorganization)
+- [GetSiteByCode](#getsitebycode)
+- [GetSitesByStatus](#getsitesbystatus)
+
+```ts
+{
+	// Organization that owns this site
+	// Belongs to Organization
+	organizationId: object
+	
+	// Human-readable site name
+	name: string
+	
+	// Site identifier code for quick reference (e.g., "NYC-01", "LA-STAGE")
+	code: string
+	
+	// Optional description
+	description: string
+	
+	// Physical address
+	address: object
+	
+	// Geographic coordinates for mapping
+	coordinates: object
+	
+	// Timezone (IANA format, e.g., "America/New_York")
+	timezone: string
+	
+	// Site status: active, maintenance, offline
+	status: object
+	
+	// Primary contact user ID for this site
+	contactUserId: object
+	
+	// Primary contact email (fallback if no contactUserId)
+	contactEmail: string
+	
+	// Primary contact phone
+	contactPhone: string
+	
+	// Notes or additional information
+	notes: string
+	
+	// Site creation timestamp
+	createdAt: string
+	
+	// User who created this site
+	createdBy: object
+}
+``` 
+
 ## Space
 
 A physical or virtual space occupied by a subset of targets. Incomplete
@@ -3163,11 +5612,17 @@ A user account with profile information and organization membership
 	// UI theme preference
 	theme: string
 	
+	// Receive email notifications
+	emailNotifications: boolean
+	
 	// API key for programmatic access (hashed)
 	apiKeyHash: string
 	
 	// API key prefix for identification
 	apiKeyPrefix: string
+	
+	// When API key was created
+	apiKeyCreatedAt: string
 	
 	// When API key was last used
 	apiKeyLastUsed: string
@@ -4288,6 +6743,176 @@ Returns: [Appearance[]](#appearance)
 }
 ``` 
 
+## GetOrganizations
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizations' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetOrganizationById
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizationById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetOrganizationBySlug
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizationBySlug' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetOrganizationsByUser
+
+Returns: [Organization[]](#organization)
+```ts
+{
+	queryId: 'GetOrganizationsByUser' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetArtifacts
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifacts' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetArtifactById
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetArtifactsByIds
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetArtifactsByOrganization
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactsByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetArtifactsByName
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactsByName' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetArtifactsByType
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetArtifactsByChannel
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactsByChannel' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetLatestArtifact
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetLatestArtifact' 
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$queryResult: Object
+	}
+}
+``` 
+
+## GetArtifactVersions
+
+Returns: [Artifact[]](#artifact)
+```ts
+{
+	queryId: 'GetArtifactVersions' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
 ## GetAssets
 
 Returns: [Asset[]](#asset)
@@ -4309,6 +6934,279 @@ Returns: [Asset[]](#asset)
 	{
 		tx: String
 		commandClientId: Array
+	}
+}
+``` 
+
+## GetMachines
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachines' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetMachinesByQuery
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachinesByQuery' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachinesByIds
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachinesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetMachineById
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachineById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachineByJnOtpAccountName
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachineByJnOtpAccountName' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetMachineBySerialNumber
+
+Returns: [Machine[]](#machine)
+```ts
+{
+	queryId: 'GetMachineBySerialNumber' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetSites
+
+Returns: [Site[]](#site)
+```ts
+{
+	queryId: 'GetSites' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetSiteById
+
+Returns: [Site[]](#site)
+```ts
+{
+	queryId: 'GetSiteById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetSitesByIds
+
+Returns: [Site[]](#site)
+```ts
+{
+	queryId: 'GetSitesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetSitesByOrganization
+
+Returns: [Site[]](#site)
+```ts
+{
+	queryId: 'GetSitesByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetSiteByCode
+
+Returns: [Site[]](#site)
+```ts
+{
+	queryId: 'GetSiteByCode' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: String
+	}
+}
+``` 
+
+## GetSitesByStatus
+
+Returns: [Site[]](#site)
+```ts
+{
+	queryId: 'GetSitesByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetBandwidthTests
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTests' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetBandwidthTestById
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetBandwidthTestsByIds
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetBandwidthTestsBySourceMachine
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestsBySourceMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetBandwidthTestsByTargetMachine
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestsByTargetMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetBandwidthTestsBySite
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestsBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetBandwidthTestsByStatus
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetBandwidthTestsBetweenMachines
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetBandwidthTestsBetweenMachines' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetRecentBandwidthTests
+
+Returns: [BandwidthTest[]](#bandwidthtest)
+```ts
+{
+	queryId: 'GetRecentBandwidthTests' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Number
 	}
 }
 ``` 
@@ -5206,6 +8104,136 @@ Returns: [ColorProfile[]](#colorprofile)
 }
 ``` 
 
+## GetConnectivityTests
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTests' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetConnectivityTestById
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetConnectivityTestsByIds
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetConnectivityTestsByMachine
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestsByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetConnectivityTestsBySite
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestsBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetConnectivityTestsByTarget
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestsByTarget' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetConnectivityTestsByType
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetConnectivityTestsByStatus
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetConnectivityTestsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRecentConnectivityTests
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetRecentConnectivityTests' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Number
+	}
+}
+``` 
+
+## GetFailedConnectivityTests
+
+Returns: [ConnectivityTest[]](#connectivitytest)
+```ts
+{
+	queryId: 'GetFailedConnectivityTests' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetConstraints
 
 Returns: [Constraint[]](#constraint)
@@ -5447,6 +8475,446 @@ Returns: [DataTransfer[]](#datatransfer)
 }
 ``` 
 
+## GetDeployments
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeployments' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDeploymentById
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentsByIds
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetDeploymentsByOrganization
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentsByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentsByArtifact
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentsByArtifact' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentsByStatus
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetActiveDeployments
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetActiveDeployments' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDeploymentsByMachine
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentsByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentsByGroup
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetDeploymentsByGroup' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRecentDeployments
+
+Returns: [Deployment[]](#deployment)
+```ts
+{
+	queryId: 'GetRecentDeployments' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Number
+	}
+}
+``` 
+
+## GetDeploymentTargets
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargets' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDeploymentTargetById
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargetById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentTargetsByIds
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargetsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetDeploymentTargetsByDeployment
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargetsByDeployment' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentTargetsByMachine
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargetsByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentTargetsByStatus
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargetsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetFailedDeploymentTargets
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetFailedDeploymentTargets' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeploymentTargetsByBatch
+
+Returns: [DeploymentTarget[]](#deploymenttarget)
+```ts
+{
+	queryId: 'GetDeploymentTargetsByBatch' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Number
+	}
+}
+``` 
+
+## GetNetworkGraphNodes
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodes' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNetworkGraphNodeById
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodeById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphNodesByIds
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNetworkGraphNodesBySite
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodesBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphNodesByType
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodesByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphNodesByCategory
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodesByCategory' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphNodeByMachine
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodeByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphNodesByHealthStatus
+
+Returns: [NetworkGraphNode[]](#networkgraphnode)
+```ts
+{
+	queryId: 'GetNetworkGraphNodesByHealthStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceCredentials
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentials' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetDeviceCredentialById
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentialById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceCredentialsByIds
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentialsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetDeviceCredentialsByOrganization
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentialsByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceCredentialsByNode
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentialsByNode' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceCredentialsByMachine
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentialsByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDeviceCredentialsByType
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDeviceCredentialsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetDefaultDeviceCredentials
+
+Returns: [DeviceCredential[]](#devicecredential)
+```ts
+{
+	queryId: 'GetDefaultDeviceCredentials' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetDeviceOwnership
 
 Returns: [DeviceOwnership[]](#deviceownership)
@@ -5624,83 +9092,6 @@ Returns: [EventTrackLayer[]](#eventtracklayer)
 }
 ``` 
 
-## GetMachines
-
-Returns: [Machine[]](#machine)
-```ts
-{
-	queryId: 'GetMachines' 
-	{
-		tx: String
-	}
-}
-``` 
-
-## GetMachinesByQuery
-
-Returns: [Machine[]](#machine)
-```ts
-{
-	queryId: 'GetMachinesByQuery' 
-	{
-		tx: String
-		commandClientId: Object
-	}
-}
-``` 
-
-## GetMachinesByIds
-
-Returns: [Machine[]](#machine)
-```ts
-{
-	queryId: 'GetMachinesByIds' 
-	{
-		tx: String
-		commandClientId: Array
-	}
-}
-``` 
-
-## GetMachineById
-
-Returns: [Machine[]](#machine)
-```ts
-{
-	queryId: 'GetMachineById' 
-	{
-		tx: String
-		commandClientId: Object
-	}
-}
-``` 
-
-## GetMachineByJnOtpAccountName
-
-Returns: [Machine[]](#machine)
-```ts
-{
-	queryId: 'GetMachineByJnOtpAccountName' 
-	{
-		tx: String
-		commandClientId: String
-	}
-}
-``` 
-
-## GetMachineBySerialNumber
-
-Returns: [Machine[]](#machine)
-```ts
-{
-	queryId: 'GetMachineBySerialNumber' 
-	{
-		tx: String
-		commandClientId: String
-	}
-}
-``` 
-
 ## GetExecLogs
 
 Returns: [ExecLog[]](#execlog)
@@ -5849,6 +9240,174 @@ Returns: [FileTransfer[]](#filetransfer)
 	{
 		tx: String
 		commandClientId: Array
+	}
+}
+``` 
+
+## GetFleetGroups
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetFleetGroups' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFleetGroupById
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetFleetGroupById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupsByIds
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetFleetGroupsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFleetGroupsByOrganization
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetFleetGroupsByOrganization' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupsByType
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetFleetGroupsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupsByParent
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetFleetGroupsByParent' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRootFleetGroups
+
+Returns: [FleetGroup[]](#fleetgroup)
+```ts
+{
+	queryId: 'GetRootFleetGroups' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupMembers
+
+Returns: [FleetGroupMember[]](#fleetgroupmember)
+```ts
+{
+	queryId: 'GetFleetGroupMembers' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFleetGroupMemberById
+
+Returns: [FleetGroupMember[]](#fleetgroupmember)
+```ts
+{
+	queryId: 'GetFleetGroupMemberById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupMembersByIds
+
+Returns: [FleetGroupMember[]](#fleetgroupmember)
+```ts
+{
+	queryId: 'GetFleetGroupMembersByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFleetGroupMembersByGroup
+
+Returns: [FleetGroupMember[]](#fleetgroupmember)
+```ts
+{
+	queryId: 'GetFleetGroupMembersByGroup' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupMembersByMachine
+
+Returns: [FleetGroupMember[]](#fleetgroupmember)
+```ts
+{
+	queryId: 'GetFleetGroupMembersByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFleetGroupMemberByGroupAndMachine
+
+Returns: [FleetGroupMember[]](#fleetgroupmember)
+```ts
+{
+	queryId: 'GetFleetGroupMemberByGroupAndMachine' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
 	}
 }
 ``` 
@@ -6166,6 +9725,133 @@ Returns: [FixturePreset[]](#fixturepreset)
 ```ts
 {
 	queryId: 'GetFixturePresetsByProjectId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetInstalledSoftware
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetInstalledSoftware' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetInstalledSoftwareById
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetInstalledSoftwareById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetInstalledSoftwareByIds
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetInstalledSoftwareByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetInstalledSoftwareByMachine
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetInstalledSoftwareByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetInstalledSoftwareByName
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetInstalledSoftwareByName' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetInstalledSoftwareByArtifact
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetInstalledSoftwareByArtifact' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRunningSoftware
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetRunningSoftware' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetSoftwareWithUpdates
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetSoftwareWithUpdates' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetUnhealthySoftware
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetUnhealthySoftware' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetSoftwareByType
+
+Returns: [InstalledSoftware[]](#installedsoftware)
+```ts
+{
+	queryId: 'GetSoftwareByType' 
 	{
 		tx: String
 		commandClientId: Object
@@ -6733,6 +10419,198 @@ Returns: [Location[]](#location)
 }
 ``` 
 
+## GetRooms
+
+Returns: [Room[]](#room)
+```ts
+{
+	queryId: 'GetRooms' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetRoomById
+
+Returns: [Room[]](#room)
+```ts
+{
+	queryId: 'GetRoomById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRoomsByIds
+
+Returns: [Room[]](#room)
+```ts
+{
+	queryId: 'GetRoomsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetRoomsBySite
+
+Returns: [Room[]](#room)
+```ts
+{
+	queryId: 'GetRoomsBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRoomsByType
+
+Returns: [Room[]](#room)
+```ts
+{
+	queryId: 'GetRoomsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRacks
+
+Returns: [Rack[]](#rack)
+```ts
+{
+	queryId: 'GetRacks' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetRackById
+
+Returns: [Rack[]](#rack)
+```ts
+{
+	queryId: 'GetRackById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRacksByIds
+
+Returns: [Rack[]](#rack)
+```ts
+{
+	queryId: 'GetRacksByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetRacksByRoom
+
+Returns: [Rack[]](#rack)
+```ts
+{
+	queryId: 'GetRacksByRoom' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetRacksByCoolingZone
+
+Returns: [Rack[]](#rack)
+```ts
+{
+	queryId: 'GetRacksByCoolingZone' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetMachineLocations
+
+Returns: [MachineLocation[]](#machinelocation)
+```ts
+{
+	queryId: 'GetMachineLocations' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetMachineLocationById
+
+Returns: [MachineLocation[]](#machinelocation)
+```ts
+{
+	queryId: 'GetMachineLocationById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachineLocationsByIds
+
+Returns: [MachineLocation[]](#machinelocation)
+```ts
+{
+	queryId: 'GetMachineLocationsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetMachineLocationByMachine
+
+Returns: [MachineLocation[]](#machinelocation)
+```ts
+{
+	queryId: 'GetMachineLocationByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachineLocationsByRack
+
+Returns: [MachineLocation[]](#machinelocation)
+```ts
+{
+	queryId: 'GetMachineLocationsByRack' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 ## GetMachineStatuses
 
 Returns: [MachineStatus[]](#machinestatus)
@@ -6784,6 +10662,111 @@ Returns: [MachineStatus[]](#machinestatus)
 }
 ``` 
 
+## GetMachineTelemetry
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachineTelemetry' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetMachineTelemetryById
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachineTelemetryById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachineTelemetryByMachine
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachineTelemetryByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetLatestMachineTelemetry
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetLatestMachineTelemetry' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMachineTelemetryInRange
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachineTelemetryInRange' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## GetMachinesWithHighCpu
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachinesWithHighCpu' 
+	{
+		tx: String
+		commandClientId: Number
+	}
+}
+``` 
+
+## GetMachinesWithHighMemory
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachinesWithHighMemory' 
+	{
+		tx: String
+		commandClientId: Number
+	}
+}
+``` 
+
+## GetMachinesWithLowDisk
+
+Returns: [MachineTelemetry[]](#machinetelemetry)
+```ts
+{
+	queryId: 'GetMachinesWithLowDisk' 
+	{
+		tx: String
+		commandClientId: Number
+	}
+}
+``` 
+
 ## GetMeasurements
 
 Returns: [Measurement[]](#measurement)
@@ -6818,6 +10801,121 @@ Returns: [Measurement[]](#measurement)
 	{
 		tx: String
 		commandClientId: Array
+	}
+}
+``` 
+
+## GetMediaFlows
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlows' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetMediaFlowById
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMediaFlowsByIds
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetMediaFlowsBySite
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowsBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMediaFlowsBySourceNode
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowsBySourceNode' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMediaFlowsByProtocol
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowsByProtocol' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMediaFlowsByMediaType
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowsByMediaType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetMediaFlowByNmosId
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetMediaFlowByNmosId' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetActiveMediaFlows
+
+Returns: [MediaFlow[]](#mediaflow)
+```ts
+{
+	queryId: 'GetActiveMediaFlows' 
+	{
+		tx: String
 	}
 }
 ``` 
@@ -6866,6 +10964,239 @@ Returns: [Network[]](#network)
 ```ts
 {
 	queryId: 'GetNetworkByVpnId' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetNetworkGraphEdges
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdges' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNetworkGraphEdgeById
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdgeById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEdgesByIds
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdgesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNetworkGraphEdgesBySite
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdgesBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEdgesByNode
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdgesByNode' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEdgesByType
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdgesByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEdgeBetweenNodes
+
+Returns: [NetworkGraphEdge[]](#networkgraphedge)
+```ts
+{
+	queryId: 'GetNetworkGraphEdgeBetweenNodes' 
+	{
+		tx: String
+		commandClientId: Object
+		createdAt: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEvents
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEvents' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNetworkGraphEventById
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsByIds
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNetworkGraphEventsBySite
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsByNode
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsByNode' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsByEdge
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsByEdge' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsByFlow
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsByFlow' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsByType
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsBySeverity
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsBySeverity' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetUnacknowledgedNetworkGraphEvents
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetUnacknowledgedNetworkGraphEvents' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNetworkGraphEventsByCorrelation
+
+Returns: [NetworkGraphEvent[]](#networkgraphevent)
+```ts
+{
+	queryId: 'GetNetworkGraphEventsByCorrelation' 
 	{
 		tx: String
 		commandClientId: String
@@ -6925,24 +11256,24 @@ Returns: [NetworkMember[]](#networkmember)
 }
 ``` 
 
-## GetOrganizations
+## GetNMOSRegistries
 
-Returns: [Organization[]](#organization)
+Returns: [NMOSRegistry[]](#nmosregistry)
 ```ts
 {
-	queryId: 'GetOrganizations' 
+	queryId: 'GetNMOSRegistries' 
 	{
 		tx: String
 	}
 }
 ``` 
 
-## GetOrganizationById
+## GetNMOSRegistryById
 
-Returns: [Organization[]](#organization)
+Returns: [NMOSRegistry[]](#nmosregistry)
 ```ts
 {
-	queryId: 'GetOrganizationById' 
+	queryId: 'GetNMOSRegistryById' 
 	{
 		tx: String
 		commandClientId: Object
@@ -6950,12 +11281,101 @@ Returns: [Organization[]](#organization)
 }
 ``` 
 
-## GetOrganizationBySlug
+## GetNMOSRegistriesByIds
 
-Returns: [Organization[]](#organization)
+Returns: [NMOSRegistry[]](#nmosregistry)
 ```ts
 {
-	queryId: 'GetOrganizationBySlug' 
+	queryId: 'GetNMOSRegistriesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNMOSRegistriesBySite
+
+Returns: [NMOSRegistry[]](#nmosregistry)
+```ts
+{
+	queryId: 'GetNMOSRegistriesBySite' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetOnlineNMOSRegistries
+
+Returns: [NMOSRegistry[]](#nmosregistry)
+```ts
+{
+	queryId: 'GetOnlineNMOSRegistries' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSNodes
+
+Returns: [NMOSNode[]](#nmosnode)
+```ts
+{
+	queryId: 'GetNMOSNodes' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSNodeById
+
+Returns: [NMOSNode[]](#nmosnode)
+```ts
+{
+	queryId: 'GetNMOSNodeById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSNodesByIds
+
+Returns: [NMOSNode[]](#nmosnode)
+```ts
+{
+	queryId: 'GetNMOSNodesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNMOSNodesByRegistry
+
+Returns: [NMOSNode[]](#nmosnode)
+```ts
+{
+	queryId: 'GetNMOSNodesByRegistry' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSNodeByNmosId
+
+Returns: [NMOSNode[]](#nmosnode)
+```ts
+{
+	queryId: 'GetNMOSNodeByNmosId' 
 	{
 		tx: String
 		commandClientId: String
@@ -6963,15 +11383,536 @@ Returns: [Organization[]](#organization)
 }
 ``` 
 
-## GetOrganizationsByUser
+## GetNMOSNodeByGraphNode
 
-Returns: [Organization[]](#organization)
+Returns: [NMOSNode[]](#nmosnode)
 ```ts
 {
-	queryId: 'GetOrganizationsByUser' 
+	queryId: 'GetNMOSNodeByGraphNode' 
 	{
 		tx: String
 		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSDevices
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDevices' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSDeviceById
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDeviceById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSDevicesByIds
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDevicesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNMOSDevicesByNode
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDevicesByNode' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSDeviceByNmosId
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDeviceByNmosId' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetNMOSDevicesByType
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDevicesByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSDeviceByGraphNode
+
+Returns: [NMOSDevice[]](#nmosdevice)
+```ts
+{
+	queryId: 'GetNMOSDeviceByGraphNode' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSReceivers
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceivers' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSReceiverById
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceiverById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSReceiversByIds
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceiversByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNMOSReceiversByDevice
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceiversByDevice' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSReceiverByNmosId
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceiverByNmosId' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetNMOSReceiversByFormat
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceiversByFormat' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSReceiversByTransport
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetNMOSReceiversByTransport' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetActiveReceivers
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetActiveReceivers' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetReceiversConnectedToSender
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetReceiversConnectedToSender' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetUnconnectedReceivers
+
+Returns: [NMOSReceiver[]](#nmosreceiver)
+```ts
+{
+	queryId: 'GetUnconnectedReceivers' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSSenders
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSenders' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSSenderById
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSenderById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSSendersByIds
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSendersByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNMOSSendersByDevice
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSendersByDevice' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSSenderByNmosId
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSenderByNmosId' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetNMOSSendersByFormat
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSendersByFormat' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSSendersByTransport
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSendersByTransport' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetActiveSenders
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetActiveSenders' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSSenderByMediaFlow
+
+Returns: [NMOSSender[]](#nmossender)
+```ts
+{
+	queryId: 'GetNMOSSenderByMediaFlow' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSConnections
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetNMOSConnections' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNMOSConnectionById
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetNMOSConnectionById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSConnectionsByIds
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetNMOSConnectionsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNMOSConnectionByReceiver
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetNMOSConnectionByReceiver' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSConnectionsBySender
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetNMOSConnectionsBySender' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNMOSConnectionsByStatus
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetNMOSConnectionsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetActiveNMOSConnections
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetActiveNMOSConnections' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetScheduledNMOSConnections
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetScheduledNMOSConnections' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFailedNMOSConnections
+
+Returns: [NMOSConnection[]](#nmosconnection)
+```ts
+{
+	queryId: 'GetFailedNMOSConnections' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNodeAgents
+
+Returns: [NodeAgent[]](#nodeagent)
+```ts
+{
+	queryId: 'GetNodeAgents' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetNodeAgentById
+
+Returns: [NodeAgent[]](#nodeagent)
+```ts
+{
+	queryId: 'GetNodeAgentById' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNodeAgentsByIds
+
+Returns: [NodeAgent[]](#nodeagent)
+```ts
+{
+	queryId: 'GetNodeAgentsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetNodeAgentByMachine
+
+Returns: [NodeAgent[]](#nodeagent)
+```ts
+{
+	queryId: 'GetNodeAgentByMachine' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetNodeAgentsByStatus
+
+Returns: [NodeAgent[]](#nodeagent)
+```ts
+{
+	queryId: 'GetNodeAgentsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetOnlineNodeAgents
+
+Returns: [NodeAgent[]](#nodeagent)
+```ts
+{
+	queryId: 'GetOnlineNodeAgents' 
+	{
+		tx: String
 	}
 }
 ``` 
@@ -8325,6 +13266,274 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## GetFeedbackEvents
+
+Returns: [FeedbackEvent[]](#feedbackevent)
+```ts
+{
+	queryId: 'GetFeedbackEvents' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFeedbackEventsByIds
+
+Returns: [FeedbackEvent[]](#feedbackevent)
+```ts
+{
+	queryId: 'GetFeedbackEventsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFeedbackEventsByStatus
+
+Returns: [FeedbackEvent[]](#feedbackevent)
+```ts
+{
+	queryId: 'GetFeedbackEventsByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFeedbackEventsByUserId
+
+Returns: [FeedbackEvent[]](#feedbackevent)
+```ts
+{
+	queryId: 'GetFeedbackEventsByUserId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFeedbackEventsByRoute
+
+Returns: [FeedbackEvent[]](#feedbackevent)
+```ts
+{
+	queryId: 'GetFeedbackEventsByRoute' 
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## GetFeedbackInsights
+
+Returns: [FeedbackInsight[]](#feedbackinsight)
+```ts
+{
+	queryId: 'GetFeedbackInsights' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFeedbackInsightsByIds
+
+Returns: [FeedbackInsight[]](#feedbackinsight)
+```ts
+{
+	queryId: 'GetFeedbackInsightsByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFeedbackInsightsByFeedbackEventId
+
+Returns: [FeedbackInsight[]](#feedbackinsight)
+```ts
+{
+	queryId: 'GetFeedbackInsightsByFeedbackEventId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFeedbackInsightsByType
+
+Returns: [FeedbackInsight[]](#feedbackinsight)
+```ts
+{
+	queryId: 'GetFeedbackInsightsByType' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFeedbackInsightsByImpact
+
+Returns: [FeedbackInsight[]](#feedbackinsight)
+```ts
+{
+	queryId: 'GetFeedbackInsightsByImpact' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFeedbackClusters
+
+Returns: [FeedbackCluster[]](#feedbackcluster)
+```ts
+{
+	queryId: 'GetFeedbackClusters' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetFeedbackClustersByIds
+
+Returns: [FeedbackCluster[]](#feedbackcluster)
+```ts
+{
+	queryId: 'GetFeedbackClustersByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetFeedbackClustersByStatus
+
+Returns: [FeedbackCluster[]](#feedbackcluster)
+```ts
+{
+	queryId: 'GetFeedbackClustersByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetFeedbackClustersBySeverity
+
+Returns: [FeedbackCluster[]](#feedbackcluster)
+```ts
+{
+	queryId: 'GetFeedbackClustersBySeverity' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetOpenFeedbackClustersAboveThreshold
+
+Returns: [FeedbackCluster[]](#feedbackcluster)
+```ts
+{
+	queryId: 'GetOpenFeedbackClustersAboveThreshold' 
+	{
+		tx: String
+		commandClientId: Number
+	}
+}
+``` 
+
+## GetProductIssues
+
+Returns: [ProductIssue[]](#productissue)
+```ts
+{
+	queryId: 'GetProductIssues' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetProductIssuesByIds
+
+Returns: [ProductIssue[]](#productissue)
+```ts
+{
+	queryId: 'GetProductIssuesByIds' 
+	{
+		tx: String
+		commandClientId: Array
+	}
+}
+``` 
+
+## GetProductIssuesByClusterId
+
+Returns: [ProductIssue[]](#productissue)
+```ts
+{
+	queryId: 'GetProductIssuesByClusterId' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetProductIssuesByStatus
+
+Returns: [ProductIssue[]](#productissue)
+```ts
+{
+	queryId: 'GetProductIssuesByStatus' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
+## GetAutoFixEligibleProductIssues
+
+Returns: [ProductIssue[]](#productissue)
+```ts
+{
+	queryId: 'GetAutoFixEligibleProductIssues' 
+	{
+		tx: String
+	}
+}
+``` 
+
+## GetProductIssuesByPriority
+
+Returns: [ProductIssue[]](#productissue)
+```ts
+{
+	queryId: 'GetProductIssuesByPriority' 
+	{
+		tx: String
+		commandClientId: Object
+	}
+}
+``` 
+
 # Commands
 
 ## SetLogLevel
@@ -9138,6 +14347,422 @@ Returns: [WindowGroup[]](#windowgroup)
 		createdAt: Object
 		lineage: String
 		$commandResult: String
+	}
+}
+``` 
+
+## CreateOrganization
+
+```ts
+{
+	commandId: 'CreateOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateOrganization
+
+```ts
+{
+	commandId: 'UpdateOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteOrganization
+
+```ts
+{
+	commandId: 'DeleteOrganization'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateOrganizationSubscription
+
+```ts
+{
+	commandId: 'UpdateOrganizationSubscription'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## PublishArtifact
+
+```ts
+{
+	commandId: 'PublishArtifact'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateArtifact
+
+```ts
+{
+	commandId: 'UpdateArtifact'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeprecateArtifact
+
+```ts
+{
+	commandId: 'DeprecateArtifact'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## DeleteArtifact
+
+```ts
+{
+	commandId: 'DeleteArtifact'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SetLatestArtifact
+
+```ts
+{
+	commandId: 'SetLatestArtifact'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## VerifyArtifactChecksum
+
+```ts
+{
+	commandId: 'VerifyArtifactChecksum'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## DeleteMachine
+
+```ts
+{
+	commandId: 'DeleteMachine'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+	}
+}
+``` 
+
+## DeleteOfflineMachines
+
+```ts
+{
+	commandId: 'DeleteOfflineMachines'
+	{
+		tx: String
+		commandClientId: String
+	}
+}
+``` 
+
+## UpdateMachineVpnStatus
+
+```ts
+{
+	commandId: 'UpdateMachineVpnStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Array
+	}
+}
+``` 
+
+## UpdateMachineWanMac
+
+```ts
+{
+	commandId: 'UpdateMachineWanMac'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## UpdateMachineDaemonVersion
+
+```ts
+{
+	commandId: 'UpdateMachineDaemonVersion'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## UpdateMachineHostname
+
+```ts
+{
+	commandId: 'UpdateMachineHostname'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+	}
+}
+``` 
+
+## SetMachineJnAuth
+
+```ts
+{
+	commandId: 'SetMachineJnAuth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: String
+	}
+}
+``` 
+
+## ClearMachineJnAuth
+
+```ts
+{
+	commandId: 'ClearMachineJnAuth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+	}
+}
+``` 
+
+## CompleteMachineMigration
+
+```ts
+{
+	commandId: 'CompleteMachineMigration'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+	}
+}
+``` 
+
+## CreateMachine
+
+```ts
+{
+	commandId: 'CreateMachine'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: Object
+	}
+}
+``` 
+
+## CreateSite
+
+```ts
+{
+	commandId: 'CreateSite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateSite
+
+```ts
+{
+	commandId: 'UpdateSite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteSite
+
+```ts
+{
+	commandId: 'DeleteSite'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SetSiteStatus
+
+```ts
+{
+	commandId: 'SetSiteStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RunBandwidthTest
+
+```ts
+{
+	commandId: 'RunBandwidthTest'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateBandwidthTestStatus
+
+```ts
+{
+	commandId: 'UpdateBandwidthTestStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## RecordBandwidthTestResult
+
+```ts
+{
+	commandId: 'RecordBandwidthTestResult'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CancelBandwidthTest
+
+```ts
+{
+	commandId: 'CancelBandwidthTest'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## DeleteBandwidthTest
+
+```ts
+{
+	commandId: 'DeleteBandwidthTest'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CleanupOldBandwidthTests
+
+```ts
+{
+	commandId: 'CleanupOldBandwidthTests'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Number
+		lineage: Object
 	}
 }
 ``` 
@@ -10558,6 +16183,104 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## RunConnectivityTest
+
+```ts
+{
+	commandId: 'RunConnectivityTest'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateConnectivityTestStatus
+
+```ts
+{
+	commandId: 'UpdateConnectivityTestStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## RecordConnectivityTestResult
+
+```ts
+{
+	commandId: 'RecordConnectivityTestResult'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CancelConnectivityTest
+
+```ts
+{
+	commandId: 'CancelConnectivityTest'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## DeleteConnectivityTest
+
+```ts
+{
+	commandId: 'DeleteConnectivityTest'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## BulkRunConnectivityTests
+
+```ts
+{
+	commandId: 'BulkRunConnectivityTests'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Array
+	}
+}
+``` 
+
+## CleanupOldConnectivityTests
+
+```ts
+{
+	commandId: 'CleanupOldConnectivityTests'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Number
+		lineage: Object
+	}
+}
+``` 
+
 ## CreateConstraint
 
 ```ts
@@ -10972,6 +16695,512 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## CreateDeployment
+
+```ts
+{
+	commandId: 'CreateDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
+		organizationId: Object
+	}
+}
+``` 
+
+## StartDeployment
+
+```ts
+{
+	commandId: 'StartDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## PauseDeployment
+
+```ts
+{
+	commandId: 'PauseDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ResumeDeployment
+
+```ts
+{
+	commandId: 'ResumeDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CancelDeployment
+
+```ts
+{
+	commandId: 'CancelDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## UpdateDeploymentProgress
+
+```ts
+{
+	commandId: 'UpdateDeploymentProgress'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CompleteDeployment
+
+```ts
+{
+	commandId: 'CompleteDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RollbackDeployment
+
+```ts
+{
+	commandId: 'RollbackDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## PromoteCanaryDeployment
+
+```ts
+{
+	commandId: 'PromoteCanaryDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RetryFailedTargets
+
+```ts
+{
+	commandId: 'RetryFailedTargets'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## DeleteDeployment
+
+```ts
+{
+	commandId: 'DeleteDeployment'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CreateDeploymentTarget
+
+```ts
+{
+	commandId: 'CreateDeploymentTarget'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## BulkCreateDeploymentTargets
+
+```ts
+{
+	commandId: 'BulkCreateDeploymentTargets'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## UpdateDeploymentTargetStatus
+
+```ts
+{
+	commandId: 'UpdateDeploymentTargetStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateDeploymentTargetProgress
+
+```ts
+{
+	commandId: 'UpdateDeploymentTargetProgress'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## AddDeploymentTargetLog
+
+```ts
+{
+	commandId: 'AddDeploymentTargetLog'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## AddDeploymentTargetHealthCheck
+
+```ts
+{
+	commandId: 'AddDeploymentTargetHealthCheck'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CompleteDeploymentTarget
+
+```ts
+{
+	commandId: 'CompleteDeploymentTarget'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RetryDeploymentTarget
+
+```ts
+{
+	commandId: 'RetryDeploymentTarget'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SkipDeploymentTarget
+
+```ts
+{
+	commandId: 'SkipDeploymentTarget'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## RollbackDeploymentTarget
+
+```ts
+{
+	commandId: 'RollbackDeploymentTarget'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## DeleteDeploymentTarget
+
+```ts
+{
+	commandId: 'DeleteDeploymentTarget'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CreateNetworkGraphNode
+
+```ts
+{
+	commandId: 'CreateNetworkGraphNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+		siteId: Object
+	}
+}
+``` 
+
+## UpdateNetworkGraphNode
+
+```ts
+{
+	commandId: 'UpdateNetworkGraphNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNetworkGraphNode
+
+```ts
+{
+	commandId: 'DeleteNetworkGraphNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ReportNodeDiscovery
+
+```ts
+{
+	commandId: 'ReportNodeDiscovery'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateNodeHealthStatus
+
+```ts
+{
+	commandId: 'UpdateNodeHealthStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNodeLastSeen
+
+```ts
+{
+	commandId: 'UpdateNodeLastSeen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## PinNetworkGraphNode
+
+```ts
+{
+	commandId: 'PinNetworkGraphNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## LinkNodeToMachine
+
+```ts
+{
+	commandId: 'LinkNodeToMachine'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CreateDeviceCredential
+
+```ts
+{
+	commandId: 'CreateDeviceCredential'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateDeviceCredential
+
+```ts
+{
+	commandId: 'UpdateDeviceCredential'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteDeviceCredential
+
+```ts
+{
+	commandId: 'DeleteDeviceCredential'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateCredentialVerificationStatus
+
+```ts
+{
+	commandId: 'UpdateCredentialVerificationStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+	}
+}
+``` 
+
+## SetCredentialAsDefault
+
+```ts
+{
+	commandId: 'SetCredentialAsDefault'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+		$commandResult: Number
+	}
+}
+``` 
+
+## ValidateDeviceCredential
+
+```ts
+{
+	commandId: 'ValidateDeviceCredential'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
 ## RegisterDevice
 
 ```ts
@@ -11143,6 +17372,21 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## TransferDevice
+
+```ts
+{
+	commandId: 'TransferDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
 ## CreateEventTrackLayer
 
 ```ts
@@ -11180,142 +17424,6 @@ Returns: [WindowGroup[]](#windowgroup)
 		commandClientId: String
 		createdAt: Object
 		lineage: String
-	}
-}
-``` 
-
-## DeleteMachine
-
-```ts
-{
-	commandId: 'DeleteMachine'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-	}
-}
-``` 
-
-## DeleteOfflineMachines
-
-```ts
-{
-	commandId: 'DeleteOfflineMachines'
-	{
-		tx: String
-		commandClientId: String
-	}
-}
-``` 
-
-## UpdateMachineVpnStatus
-
-```ts
-{
-	commandId: 'UpdateMachineVpnStatus'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-		lineage: Array
-	}
-}
-``` 
-
-## UpdateMachineWanMac
-
-```ts
-{
-	commandId: 'UpdateMachineWanMac'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-		lineage: String
-	}
-}
-``` 
-
-## UpdateMachineDaemonVersion
-
-```ts
-{
-	commandId: 'UpdateMachineDaemonVersion'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-		lineage: String
-	}
-}
-``` 
-
-## UpdateMachineHostname
-
-```ts
-{
-	commandId: 'UpdateMachineHostname'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-		lineage: String
-	}
-}
-``` 
-
-## SetMachineJnAuth
-
-```ts
-{
-	commandId: 'SetMachineJnAuth'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-		lineage: String
-		$commandResult: String
-	}
-}
-``` 
-
-## ClearMachineJnAuth
-
-```ts
-{
-	commandId: 'ClearMachineJnAuth'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-	}
-}
-``` 
-
-## CompleteMachineMigration
-
-```ts
-{
-	commandId: 'CompleteMachineMigration'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-	}
-}
-``` 
-
-## CreateMachine
-
-```ts
-{
-	commandId: 'CreateMachine'
-	{
-		tx: String
-		commandClientId: String
-		createdAt: String
-		lineage: Object
 	}
 }
 ``` 
@@ -11443,6 +17551,161 @@ Returns: [WindowGroup[]](#windowgroup)
 		tx: String
 		commandClientId: String
 		createdAt: Object
+	}
+}
+``` 
+
+## CreateFleetGroup
+
+```ts
+{
+	commandId: 'CreateFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateFleetGroup
+
+```ts
+{
+	commandId: 'UpdateFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteFleetGroup
+
+```ts
+{
+	commandId: 'DeleteFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ArchiveFleetGroup
+
+```ts
+{
+	commandId: 'ArchiveFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## MoveFleetGroup
+
+```ts
+{
+	commandId: 'MoveFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## AddMachineToFleetGroup
+
+```ts
+{
+	commandId: 'AddMachineToFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateFleetGroupMember
+
+```ts
+{
+	commandId: 'UpdateFleetGroupMember'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RemoveMachineFromFleetGroup
+
+```ts
+{
+	commandId: 'RemoveMachineFromFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SetFleetMemberRole
+
+```ts
+{
+	commandId: 'SetFleetMemberRole'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## BulkAddMachinesToFleetGroup
+
+```ts
+{
+	commandId: 'BulkAddMachinesToFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+		$commandResult: Object
+	}
+}
+``` 
+
+## BulkRemoveMachinesFromFleetGroup
+
+```ts
+{
+	commandId: 'BulkRemoveMachinesFromFleetGroup'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Array
 	}
 }
 ``` 
@@ -11918,6 +18181,185 @@ Returns: [WindowGroup[]](#windowgroup)
 		commandClientId: String
 		createdAt: Object
 		lineage: Object
+	}
+}
+``` 
+
+## RegisterInstalledSoftware
+
+```ts
+{
+	commandId: 'RegisterInstalledSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateInstalledSoftware
+
+```ts
+{
+	commandId: 'UpdateInstalledSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateSoftwareStatus
+
+```ts
+{
+	commandId: 'UpdateSoftwareStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateSoftwareMetrics
+
+```ts
+{
+	commandId: 'UpdateSoftwareMetrics'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateSoftwareHealth
+
+```ts
+{
+	commandId: 'UpdateSoftwareHealth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## ReportSoftwareCrash
+
+```ts
+{
+	commandId: 'ReportSoftwareCrash'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## SetSoftwareUpdateAvailable
+
+```ts
+{
+	commandId: 'SetSoftwareUpdateAvailable'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## ClearSoftwareUpdateAvailable
+
+```ts
+{
+	commandId: 'ClearSoftwareUpdateAvailable'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## StartSoftware
+
+```ts
+{
+	commandId: 'StartSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## StopSoftware
+
+```ts
+{
+	commandId: 'StopSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+	}
+}
+``` 
+
+## RestartSoftware
+
+```ts
+{
+	commandId: 'RestartSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UninstallSoftware
+
+```ts
+{
+	commandId: 'UninstallSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## DeleteInstalledSoftware
+
+```ts
+{
+	commandId: 'DeleteInstalledSoftware'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
 	}
 }
 ``` 
@@ -12781,6 +19223,220 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
+## CreateRoom
+
+```ts
+{
+	commandId: 'CreateRoom'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateRoom
+
+```ts
+{
+	commandId: 'UpdateRoom'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteRoom
+
+```ts
+{
+	commandId: 'DeleteRoom'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CreateRack
+
+```ts
+{
+	commandId: 'CreateRack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Number
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateRack
+
+```ts
+{
+	commandId: 'UpdateRack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteRack
+
+```ts
+{
+	commandId: 'DeleteRack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SetRackPosition
+
+```ts
+{
+	commandId: 'SetRackPosition'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CreateMachineLocation
+
+```ts
+{
+	commandId: 'CreateMachineLocation'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Number
+		userToken: Number
+		machineId: Object
+	}
+}
+``` 
+
+## UpdateMachineLocation
+
+```ts
+{
+	commandId: 'UpdateMachineLocation'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteMachineLocation
+
+```ts
+{
+	commandId: 'DeleteMachineLocation'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## MoveMachineToRack
+
+```ts
+{
+	commandId: 'MoveMachineToRack'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Number
+	}
+}
+``` 
+
+## RecordMachineTelemetry
+
+```ts
+{
+	commandId: 'RecordMachineTelemetry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteMachineTelemetry
+
+```ts
+{
+	commandId: 'DeleteMachineTelemetry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## CleanupOldTelemetry
+
+```ts
+{
+	commandId: 'CleanupOldTelemetry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## PurgeMachineTelemetry
+
+```ts
+{
+	commandId: 'PurgeMachineTelemetry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
 ## CreateMeasurement
 
 ```ts
@@ -12819,6 +19475,121 @@ Returns: [WindowGroup[]](#windowgroup)
 ```ts
 {
 	commandId: 'UpdateMeasurement'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CreateMediaFlow
+
+```ts
+{
+	commandId: 'CreateMediaFlow'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+		siteId: Object
+		name: Object
+	}
+}
+``` 
+
+## UpdateMediaFlow
+
+```ts
+{
+	commandId: 'UpdateMediaFlow'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteMediaFlow
+
+```ts
+{
+	commandId: 'DeleteMediaFlow'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateMediaFlowStatus
+
+```ts
+{
+	commandId: 'UpdateMediaFlowStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateMediaFlowMetrics
+
+```ts
+{
+	commandId: 'UpdateMediaFlowMetrics'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## AddFlowReceiver
+
+```ts
+{
+	commandId: 'AddFlowReceiver'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## RemoveFlowReceiver
+
+```ts
+{
+	commandId: 'RemoveFlowReceiver'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SyncNMOSFlow
+
+```ts
+{
+	commandId: 'SyncNMOSFlow'
 	{
 		tx: String
 		commandClientId: String
@@ -12867,6 +19638,195 @@ Returns: [WindowGroup[]](#windowgroup)
 		tx: String
 		commandClientId: String
 		createdAt: Object
+	}
+}
+``` 
+
+## CreateNetworkGraphEdge
+
+```ts
+{
+	commandId: 'CreateNetworkGraphEdge'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
+		siteId: Object
+	}
+}
+``` 
+
+## UpdateNetworkGraphEdge
+
+```ts
+{
+	commandId: 'UpdateNetworkGraphEdge'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNetworkGraphEdge
+
+```ts
+{
+	commandId: 'DeleteNetworkGraphEdge'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ReportEdgeDiscovery
+
+```ts
+{
+	commandId: 'ReportEdgeDiscovery'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateEdgeStatus
+
+```ts
+{
+	commandId: 'UpdateEdgeStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateEdgeMetrics
+
+```ts
+{
+	commandId: 'UpdateEdgeMetrics'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## BulkReportLLDPNeighbors
+
+```ts
+{
+	commandId: 'BulkReportLLDPNeighbors'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Array
+	}
+}
+``` 
+
+## CreateNetworkGraphEvent
+
+```ts
+{
+	commandId: 'CreateNetworkGraphEvent'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+		userToken: String
+		eventType: Object
+	}
+}
+``` 
+
+## AcknowledgeNetworkGraphEvent
+
+```ts
+{
+	commandId: 'AcknowledgeNetworkGraphEvent'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## BulkAcknowledgeNetworkGraphEvents
+
+```ts
+{
+	commandId: 'BulkAcknowledgeNetworkGraphEvents'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Array
+		lineage: Object
+	}
+}
+``` 
+
+## AddEventResolutionNotes
+
+```ts
+{
+	commandId: 'AddEventResolutionNotes'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+	}
+}
+``` 
+
+## DeleteNetworkGraphEvent
+
+```ts
+{
+	commandId: 'DeleteNetworkGraphEvent'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## PurgeOldNetworkGraphEvents
+
+```ts
+{
+	commandId: 'PurgeOldNetworkGraphEvents'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
 	}
 }
 ``` 
@@ -12942,59 +19902,805 @@ Returns: [WindowGroup[]](#windowgroup)
 }
 ``` 
 
-## CreateOrganization
+## CreateNMOSRegistry
 
 ```ts
 {
-	commandId: 'CreateOrganization'
+	commandId: 'CreateNMOSRegistry'
 	{
 		tx: String
 		commandClientId: String
-		createdAt: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+		userToken: Object
+		siteId: Object
+	}
+}
+``` 
+
+## UpdateNMOSRegistry
+
+```ts
+{
+	commandId: 'UpdateNMOSRegistry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNMOSRegistry
+
+```ts
+{
+	commandId: 'DeleteNMOSRegistry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateNMOSRegistryStatus
+
+```ts
+{
+	commandId: 'UpdateNMOSRegistryStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+	}
+}
+``` 
+
+## UpdateNMOSRegistryCounts
+
+```ts
+{
+	commandId: 'UpdateNMOSRegistryCounts'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## SyncNMOSRegistry
+
+```ts
+{
+	commandId: 'SyncNMOSRegistry'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SetNMOSRegistryWSStatus
+
+```ts
+{
+	commandId: 'SetNMOSRegistryWSStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+		$commandResult: String
+	}
+}
+``` 
+
+## SyncNMOSNode
+
+```ts
+{
+	commandId: 'SyncNMOSNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSNode
+
+```ts
+{
+	commandId: 'UpdateNMOSNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNMOSNode
+
+```ts
+{
+	commandId: 'DeleteNMOSNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## LinkNMOSNodeToGraphNode
+
+```ts
+{
+	commandId: 'LinkNMOSNodeToGraphNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSNodeLastSeen
+
+```ts
+{
+	commandId: 'UpdateNMOSNodeLastSeen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RemoveStaleNMOSNodes
+
+```ts
+{
+	commandId: 'RemoveStaleNMOSNodes'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## SyncNMOSDevice
+
+```ts
+{
+	commandId: 'SyncNMOSDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSDevice
+
+```ts
+{
+	commandId: 'UpdateNMOSDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNMOSDevice
+
+```ts
+{
+	commandId: 'DeleteNMOSDevice'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## LinkNMOSDeviceToGraphNode
+
+```ts
+{
+	commandId: 'LinkNMOSDeviceToGraphNode'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSDeviceLastSeen
+
+```ts
+{
+	commandId: 'UpdateNMOSDeviceLastSeen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RemoveStaleNMOSDevices
+
+```ts
+{
+	commandId: 'RemoveStaleNMOSDevices'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## SyncNMOSReceiver
+
+```ts
+{
+	commandId: 'SyncNMOSReceiver'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSReceiver
+
+```ts
+{
+	commandId: 'UpdateNMOSReceiver'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNMOSReceiver
+
+```ts
+{
+	commandId: 'DeleteNMOSReceiver'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## StageReceiverConnection
+
+```ts
+{
+	commandId: 'StageReceiverConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Array
+	}
+}
+``` 
+
+## ActivateReceiverConnection
+
+```ts
+{
+	commandId: 'ActivateReceiverConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DisconnectReceiver
+
+```ts
+{
+	commandId: 'DisconnectReceiver'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateReceiverConnectionHealth
+
+```ts
+{
+	commandId: 'UpdateReceiverConnectionHealth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+	}
+}
+``` 
+
+## UpdateNMOSReceiverLastSeen
+
+```ts
+{
+	commandId: 'UpdateNMOSReceiverLastSeen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RemoveStaleNMOSReceivers
+
+```ts
+{
+	commandId: 'RemoveStaleNMOSReceivers'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## SyncNMOSSender
+
+```ts
+{
+	commandId: 'SyncNMOSSender'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSSender
+
+```ts
+{
+	commandId: 'UpdateNMOSSender'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeleteNMOSSender
+
+```ts
+{
+	commandId: 'DeleteNMOSSender'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## ActivateNMOSSender
+
+```ts
+{
+	commandId: 'ActivateNMOSSender'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Array
+	}
+}
+``` 
+
+## DeactivateNMOSSender
+
+```ts
+{
+	commandId: 'DeactivateNMOSSender'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## LinkSenderToMediaFlow
+
+```ts
+{
+	commandId: 'LinkSenderToMediaFlow'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNMOSSenderLastSeen
+
+```ts
+{
+	commandId: 'UpdateNMOSSenderLastSeen'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RemoveStaleNMOSSenders
+
+```ts
+{
+	commandId: 'RemoveStaleNMOSSenders'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Number
+	}
+}
+``` 
+
+## CreateNMOSConnection
+
+```ts
+{
+	commandId: 'CreateNMOSConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: String
+		receiverId: Object
+	}
+}
+``` 
+
+## StageNMOSConnection
+
+```ts
+{
+	commandId: 'StageNMOSConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+		userToken: Object
+	}
+}
+``` 
+
+## ActivateNMOSConnection
+
+```ts
+{
+	commandId: 'ActivateNMOSConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## DeactivateNMOSConnection
+
+```ts
+{
+	commandId: 'DeactivateNMOSConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## UpdateNMOSConnectionStatus
+
+```ts
+{
+	commandId: 'UpdateNMOSConnectionStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateNMOSConnectionHealth
+
+```ts
+{
+	commandId: 'UpdateNMOSConnectionHealth'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
 		lineage: String
 		$commandResult: Object
 	}
 }
 ``` 
 
-## UpdateOrganization
+## LockNMOSConnection
 
 ```ts
 {
-	commandId: 'UpdateOrganization'
+	commandId: 'LockNMOSConnection'
 	{
 		tx: String
 		commandClientId: String
 		createdAt: Object
+		lineage: Boolean
+		$commandResult: String
+	}
+}
+``` 
+
+## DeleteNMOSConnection
+
+```ts
+{
+	commandId: 'DeleteNMOSConnection'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## BulkCreateNMOSConnections
+
+```ts
+{
+	commandId: 'BulkCreateNMOSConnections'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Array
 		lineage: Object
 	}
 }
 ``` 
 
-## DeleteOrganization
+## BulkActivateNMOSConnections
 
 ```ts
 {
-	commandId: 'DeleteOrganization'
+	commandId: 'BulkActivateNMOSConnections'
 	{
 		tx: String
 		commandClientId: String
-		createdAt: Object
+		createdAt: Array
+		lineage: Object
 	}
 }
 ``` 
 
-## UpdateOrganizationSubscription
+## BulkDeactivateNMOSConnections
 
 ```ts
 {
-	commandId: 'UpdateOrganizationSubscription'
+	commandId: 'BulkDeactivateNMOSConnections'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Array
+	}
+}
+``` 
+
+## NMOSConnect
+
+```ts
+{
+	commandId: 'NMOSConnect'
 	{
 		tx: String
 		commandClientId: String
 		createdAt: Object
 		lineage: Object
 		$commandResult: Object
+	}
+}
+``` 
+
+## NMOSDisconnect
+
+```ts
+{
+	commandId: 'NMOSDisconnect'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## NMOSSetAudioMapping
+
+```ts
+{
+	commandId: 'NMOSSetAudioMapping'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: String
+		userToken: Array
+	}
+}
+``` 
+
+## RegisterNodeAgent
+
+```ts
+{
+	commandId: 'RegisterNodeAgent'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+	}
+}
+``` 
+
+## UpdateNodeAgentStatus
+
+```ts
+{
+	commandId: 'UpdateNodeAgentStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateNodeAgentHeartbeat
+
+```ts
+{
+	commandId: 'UpdateNodeAgentHeartbeat'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNodeAgentConfig
+
+```ts
+{
+	commandId: 'UpdateNodeAgentConfig'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## UpdateNodeAgentVersion
+
+```ts
+{
+	commandId: 'UpdateNodeAgentVersion'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## UnregisterNodeAgent
+
+```ts
+{
+	commandId: 'UnregisterNodeAgent'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## SetNodeAgentPendingUpdate
+
+```ts
+{
+	commandId: 'SetNodeAgentPendingUpdate'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
 	}
 }
 ``` 
@@ -13154,6 +20860,19 @@ Returns: [WindowGroup[]](#windowgroup)
 ```ts
 {
 	commandId: 'DeleteUser'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+	}
+}
+``` 
+
+## RegenerateApiKey
+
+```ts
+{
+	commandId: 'RegenerateApiKey'
 	{
 		tx: String
 		commandClientId: String
@@ -15345,6 +23064,196 @@ Returns: [WindowGroup[]](#windowgroup)
 		createdAt: Object
 		lineage: Object
 		$commandResult: Number
+	}
+}
+``` 
+
+## CreateFeedbackEvent
+
+```ts
+{
+	commandId: 'CreateFeedbackEvent'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateFeedbackEventStatus
+
+```ts
+{
+	commandId: 'UpdateFeedbackEventStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CreateFeedbackInsight
+
+```ts
+{
+	commandId: 'CreateFeedbackInsight'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: String
+		userToken: String
+		feedbackEventId: String
+		type: Object
+		summary: Object
+		description: String
+		userIntent: String
+		impact: Object
+	}
+}
+``` 
+
+## CreateFeedbackCluster
+
+```ts
+{
+	commandId: 'CreateFeedbackCluster'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: Array
+		userToken: Array
+		problemTitle: Object
+		problemStatement: Object
+	}
+}
+``` 
+
+## AddFeedbackToCluster
+
+```ts
+{
+	commandId: 'AddFeedbackToCluster'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+		$commandResult: Object
+	}
+}
+``` 
+
+## UpdateFeedbackClusterStatus
+
+```ts
+{
+	commandId: 'UpdateFeedbackClusterStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## LinkClusterToProductIssue
+
+```ts
+{
+	commandId: 'LinkClusterToProductIssue'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## MergeFeedbackClusters
+
+```ts
+{
+	commandId: 'MergeFeedbackClusters'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## CreateProductIssue
+
+```ts
+{
+	commandId: 'CreateProductIssue'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: String
+		lineage: String
+		$commandResult: Object
+		userToken: Object
+		title: Object
+		description: Boolean
+		type: Number
+		priority: Object
+	}
+}
+``` 
+
+## UpdateProductIssueStatus
+
+```ts
+{
+	commandId: 'UpdateProductIssueStatus'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Object
+	}
+}
+``` 
+
+## LinkProductIssueToExternal
+
+```ts
+{
+	commandId: 'LinkProductIssueToExternal'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: String
+		$commandResult: Number
+	}
+}
+``` 
+
+## RecordAutoFixAttempt
+
+```ts
+{
+	commandId: 'RecordAutoFixAttempt'
+	{
+		tx: String
+		commandClientId: String
+		createdAt: Object
+		lineage: Boolean
+		$commandResult: Object
 	}
 }
 ``` 
