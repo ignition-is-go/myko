@@ -10,8 +10,9 @@ import { WithContext } from './base'
 export class MReport<T> extends WithContext {
   /**
    * The result of the report.
+   * Uses definite assignment assertion as value is set via Object.assign in fromWrappedReport
    */
-  $reportResult: T
+  $reportResult!: T
 
   constructor() {
     super()

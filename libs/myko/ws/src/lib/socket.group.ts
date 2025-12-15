@@ -7,8 +7,8 @@ export enum SocketSendMode {
 export type SocketGroupOpts = {
   onConnected: (url: string) => void
   onClosed: () => void
-  onError: (error: string) => void
-  onLog: (...log: any[]) => void
+  onError: (error: Event | string) => void
+  onLog: (...log: unknown[]) => void
   onMessage: (data: MessageEvent) => void
   onMainServerChange: (url: string) => void
   onMainSocketReconnecting: (url: string) => void
