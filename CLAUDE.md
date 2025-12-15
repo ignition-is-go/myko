@@ -1826,3 +1826,6 @@ Multi-server clustering where servers discover each other and proxy operations a
 
 See `libs/myko/rs/OPTIMIZATION.md` for detailed performance optimization strategies, benchmarks, crate selection, and actor structure refactoring plans.
 - use cargo check when you're doing checks instead of running a full build
+- no hardcoded strings of field names or type names
+- use real entities declared with the macro when making tests
+- dont construct json manually - always use the type construtors, and methods to generate values
