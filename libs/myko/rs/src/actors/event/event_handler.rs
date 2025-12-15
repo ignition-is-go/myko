@@ -29,27 +29,24 @@ use crate::{
         event::{common::PersistEvent, event_manager::EventManagerMsg},
         kafka::{
             common::KafkaSharedConfig,
-            consumer::{KafkaConsumer, KafkaConsumerArgs},
+            consumer::{spawn_kafka_consumer, KafkaConsumerArgs},
             producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
         },
         query::{common::ProcessUpdateData, query_manager::QueryManagerMsg},
     },
     parsers::item::MykoItemParser,
     prelude::AnyItem,
+    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
 use log::{error, trace};
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Actor that handles events for a single entity type.
 ///
 /// One EventHandler exists per registered entity type (e.g., `Target`, `Scene`, `Binding`).
 /// It maintains the authoritative in-memory state for that type and handles persistence.
-pub struct EventHandler;
-
-/// Internal state for an EventHandler actor.
-pub struct EventHandlerState {
+pub struct EventHandler {
     /// Name of the entity type this handler manages (e.g., "Target")
     entity_name: Arc<str>,
     /// Direct reference to EventManager for reporting init completion
@@ -64,6 +61,8 @@ pub struct EventHandlerState {
     parser: Arc<dyn MykoItemParser>,
     /// In-memory store of all items, keyed by ID
     store: BTreeMap<Arc<str>, Arc<dyn AnyItem>>,
+    /// Self-reference for sending messages to ourselves
+    myself: Option<ActorRef<EventHandlerMessage>>,
 }
 
 /// Messages handled by the EventHandler actor.
@@ -125,6 +124,35 @@ pub enum EventHandlerMessage {
     /// Get all items of this entity type.
     /// Used by RelationshipManager for orphan cleanup on startup.
     GetAllItems(RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
+
+    /// Set self-reference (called immediately after spawn)
+    SetMyself(ActorRef<EventHandlerMessage>),
+
+    /// Set Kafka producer reference (called after Kafka producer is spawned)
+    SetKafkaProducer(ActorRef<KafkaProducerMsg>),
+}
+
+impl std::fmt::Debug for EventHandlerMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventHandlerMessage::ProcessEvent(_) => write!(f, "ProcessEvent"),
+            EventHandlerMessage::Init(_) => write!(f, "Init"),
+            EventHandlerMessage::PersisterCaughtUp => write!(f, "PersisterCaughtUp"),
+            EventHandlerMessage::GetState(_) => write!(f, "GetState"),
+            EventHandlerMessage::QueryByField { field, value, .. } => {
+                write!(f, "QueryByField({}, {})", field, value)
+            }
+            EventHandlerMessage::QueryArrayContains { field, value, .. } => {
+                write!(f, "QueryArrayContains({}, {})", field, value)
+            }
+            EventHandlerMessage::GetByIds { ids, .. } => {
+                write!(f, "GetByIds({} ids)", ids.len())
+            }
+            EventHandlerMessage::GetAllItems(_) => write!(f, "GetAllItems"),
+            EventHandlerMessage::SetMyself(_) => write!(f, "SetMyself"),
+            EventHandlerMessage::SetKafkaProducer(_) => write!(f, "SetKafkaProducer"),
+        }
+    }
 }
 
 /// Arguments for spawning an EventHandler actor.
@@ -141,257 +169,289 @@ pub struct EventHandlerArgs {
     pub parser: Arc<dyn MykoItemParser>,
 }
 
+impl EventHandler {
+    /// Create a new EventHandler with the given arguments.
+    pub fn new(args: EventHandlerArgs) -> Self {
+        trace!("Creating Repo: {}", args.entity_name);
+
+        Self {
+            entity_name: args.entity_name,
+            event_manager: args.event_manager,
+            query_manager: args.query_manager,
+            ctx: args.ctx,
+            parser: args.parser,
+            kafka_producer: None,
+            store: BTreeMap::new(),
+            myself: None,
+        }
+    }
+
+    /// Spawn the EventHandler on a dedicated thread.
+    pub fn spawn(args: EventHandlerArgs) -> ActorHandle<EventHandlerMessage> {
+        let actor = Self::new(args);
+        let handle = crate::runtime::spawn::spawn(actor);
+
+        // Set self-reference
+        let actor_ref = handle.actor_ref();
+        let _ = actor_ref.send(EventHandlerMessage::SetMyself(actor_ref.clone()));
+
+        handle
+    }
+
+    fn handle_init(&mut self, conf: Option<KafkaSharedConfig>) {
+        let entity_name = self.entity_name.clone();
+        trace!("{}: Init", entity_name);
+
+        match conf {
+            Some(conf) => {
+                // With Kafka: spawn consumer and producer
+                let myself = self.myself.clone();
+                let ctx = self.ctx.clone();
+                let entity_name_clone = entity_name.clone();
+
+                // Spawn Kafka consumer (background thread with tokio runtime)
+                if let Some(myself_ref) = &myself {
+                    spawn_kafka_consumer(KafkaConsumerArgs {
+                        topic: entity_name_clone.clone(),
+                        shared_conf: conf.clone(),
+                        repo_ref: myself_ref.clone(),
+                        ctx: ctx.clone(),
+                    });
+                }
+
+                // Spawn Kafka producer on a background thread (it creates its own tokio runtime)
+                let myself_for_producer = myself.clone();
+                std::thread::spawn(move || {
+                    let producer_handle = KafkaProducer::spawn(KafkaProducerArgs {
+                        shared_conf: conf,
+                        topic: entity_name_clone,
+                    });
+
+                    if let Some(myself_ref) = myself_for_producer {
+                        let _ = myself_ref
+                            .send(EventHandlerMessage::SetKafkaProducer(producer_handle.actor_ref()));
+                    }
+                });
+            }
+            None => {
+                // In-memory mode: signal caught up immediately
+                if let Some(myself) = &self.myself {
+                    let _ = myself.send(EventHandlerMessage::PersisterCaughtUp);
+                }
+            }
+        }
+    }
+
+    fn handle_persister_caught_up(&self) {
+        trace!(
+            "{} Init Complete: {} entities",
+            self.entity_name,
+            self.store.len()
+        );
+
+        if let Err(err) = self
+            .event_manager
+            .send(EventManagerMsg::RepoInitComplete(self.entity_name.clone()))
+        {
+            error!("Failed to notify repo manager: {}", err);
+        }
+    }
+
+    fn handle_process_event(&mut self, data: ProcessEventData) {
+        let change_type = data.event.change_type();
+
+        // Use pre-parsed item if available (local events), otherwise parse from JSON
+        let item = match data.parsed_item {
+            Some(item) => item,
+            None => {
+                let item_json = data.event.item_json();
+                match self.parser.parse(item_json.clone()) {
+                    Ok(item) => item,
+                    Err(err) => {
+                        error!(
+                            "{}: Failed to parse item: {} \n {:?}",
+                            self.entity_name, err, item_json
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+
+        if let Some(kafka_producer) = &self.kafka_producer
+            && let PersistEvent::Persist = data.persist
+        {
+            let mut event = data.event.clone();
+            event.source_id = Some(self.ctx.host_id.to_string());
+
+            let produce_res = kafka_producer.send(KafkaProducerMsg::ProduceEvent(
+                ProduceEventData {
+                    event,
+                    key: item.id().clone(),
+                },
+            ));
+
+            if let Err(err) = produce_res {
+                error!("Failed to produce event: {}", err);
+            }
+        }
+
+        match change_type {
+            crate::event::MEventType::DEL => {
+                trace!(
+                    "{}: Processing DEL for item {}",
+                    self.entity_name,
+                    item.id()
+                );
+                self.store.remove(&item.id());
+
+                // Direct send to QueryManager (bypasses Server actor)
+                if let Err(err) = self.query_manager.send(QueryManagerMsg::ProcessUpdate(
+                    ProcessUpdateData::Del(item.id().clone()),
+                    self.entity_name.clone(),
+                )) {
+                    error!("Failed to send message to query manager: {}", err);
+                };
+            }
+            crate::event::MEventType::SET => {
+                self.store.insert(item.id(), item.clone());
+
+                // Direct send to QueryManager (bypasses Server actor)
+                if let Err(err) = self.query_manager.send(QueryManagerMsg::ProcessUpdate(
+                    ProcessUpdateData::Set(item.clone()),
+                    self.entity_name.clone(),
+                )) {
+                    error!("Failed to send message to query manager: {}", err);
+                };
+            }
+        }
+    }
+
+    fn handle_get_state(&self, reply: RpcReplyPort<BTreeMap<Arc<str>, Arc<dyn AnyItem>>>) {
+        if let Err(err) = reply.send(self.store.clone()) {
+            error!("Unable to reply with store state: {:?}", err);
+        };
+    }
+
+    fn handle_query_by_field(
+        &self,
+        field: String,
+        value: String,
+        reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>,
+    ) {
+        let results: Vec<Arc<dyn AnyItem>> = self
+            .store
+            .values()
+            .filter(|item| {
+                let json = item.to_value();
+                // Check if the field matches the value
+                if let Some(field_value) = json.get(&field) {
+                    // Compare as string (handles both string and numeric values)
+                    match field_value {
+                        serde_json::Value::String(s) => s == &value,
+                        serde_json::Value::Number(n) => n.to_string() == value,
+                        _ => field_value.to_string().trim_matches('"') == value,
+                    }
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if let Err(err) = reply.send(results) {
+            error!("Unable to reply with query results: {:?}", err);
+        }
+    }
+
+    fn handle_query_array_contains(
+        &self,
+        field: String,
+        value: String,
+        reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>,
+    ) {
+        let results: Vec<Arc<dyn AnyItem>> = self
+            .store
+            .values()
+            .filter(|item| {
+                let json = item.to_value();
+                // Check if the array field contains the value
+                if let Some(serde_json::Value::Array(arr)) = json.get(&field) {
+                    arr.iter().any(|v| match v {
+                        serde_json::Value::String(s) => s == &value,
+                        serde_json::Value::Number(n) => n.to_string() == value,
+                        _ => v.to_string().trim_matches('"') == value,
+                    })
+                } else {
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+
+        if let Err(err) = reply.send(results) {
+            error!("Unable to reply with query results: {:?}", err);
+        }
+    }
+
+    fn handle_get_by_ids(
+        &self,
+        ids: Vec<Arc<str>>,
+        reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>,
+    ) {
+        let results: Vec<Arc<dyn AnyItem>> = ids
+            .iter()
+            .filter_map(|id| self.store.get(id).cloned())
+            .collect();
+
+        if let Err(err) = reply.send(results) {
+            error!("Unable to reply with items: {:?}", err);
+        }
+    }
+
+    fn handle_get_all_items(&self, reply: RpcReplyPort<Vec<Arc<dyn AnyItem>>>) {
+        let results: Vec<Arc<dyn AnyItem>> = self.store.values().cloned().collect();
+
+        if let Err(err) = reply.send(results) {
+            error!("Unable to reply with all items: {:?}", err);
+        }
+    }
+}
+
 impl Actor for EventHandler {
     type Msg = EventHandlerMessage;
 
-    type State = EventHandlerState;
-
-    type Arguments = EventHandlerArgs;
-
-    async fn pre_start(
-        &self,
-        _myself: ractor::ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let EventHandlerArgs {
-            entity_name,
-            event_manager,
-            query_manager,
-            ctx,
-            parser,
-        } = args;
-
-        trace!("Creating Repo: {}", entity_name);
-
-        Ok(EventHandlerState {
-            entity_name,
-            event_manager,
-            query_manager,
-            ctx,
-            parser,
-            kafka_producer: None,
-            store: BTreeMap::new(),
-        })
-    }
-
-    async fn handle(
-        &self,
-        myself: ractor::ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match message {
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
             EventHandlerMessage::Init(conf) => {
-                let entity_name = state.entity_name.clone();
-                trace!("{}: Init", entity_name);
-
-                match conf {
-                    Some(conf) => {
-                        // With Kafka: spawn consumer and producer
-                        Actor::spawn(
-                            None,
-                            KafkaConsumer,
-                            KafkaConsumerArgs {
-                                topic: entity_name.clone(),
-                                shared_conf: conf.clone(),
-                                repo_ref: myself.clone(),
-                                ctx: state.ctx.clone(),
-                            },
-                        )
-                        .await?;
-
-                        let (producer_ref, _producer_handle) = Actor::spawn(
-                            None,
-                            KafkaProducer,
-                            KafkaProducerArgs {
-                                shared_conf: conf,
-                                topic: entity_name.clone(),
-                            },
-                        )
-                        .await?;
-
-                        state.kafka_producer = Some(producer_ref);
-                    }
-                    None => {
-                        // In-memory mode: signal caught up immediately
-                        myself.send_message(EventHandlerMessage::PersisterCaughtUp)?;
-                    }
-                }
-
-                Ok(())
+                self.handle_init(conf);
             }
             EventHandlerMessage::PersisterCaughtUp => {
-                trace!(
-                    "{} Init Complete: {} entities",
-                    state.entity_name,
-                    state.store.len()
-                );
-                // Direct send to EventManager (bypasses Server actor)
-                match state.event_manager.send_message(
-                    EventManagerMsg::RepoInitComplete(state.entity_name.clone()),
-                ) {
-                    Ok(_) => Ok(()),
-                    Err(err) => {
-                        error!("Failed to notify repo manager: {}", err);
-                        Err(ActorProcessingErr::from(String::from(
-                            "failed to notify repo manager of topic caught up",
-                        )))
-                    }
-                }
+                self.handle_persister_caught_up();
             }
             EventHandlerMessage::ProcessEvent(data) => {
-                let change_type = data.event.change_type();
-
-                // Use pre-parsed item if available (local events), otherwise parse from JSON
-                let item = match data.parsed_item {
-                    Some(item) => item,
-                    None => {
-                        let item_json = data.event.item_json();
-                        match state.parser.parse(item_json.clone()) {
-                            Ok(item) => item,
-                            Err(err) => {
-                                error!(
-                                    "{}: Failed to parse item: {} \n {:?}",
-                                    state.entity_name, err, item_json
-                                );
-                                return Ok(());
-                            }
-                        }
-                    }
-                };
-
-                if let Some(kafka_producer) = &state.kafka_producer
-                    && let PersistEvent::Persist = data.persist
-                {
-                    let mut event = data.event.clone();
-                    event.source_id = Some(state.ctx.host_id.to_string());
-
-                    let produce_res = kafka_producer.send_message(KafkaProducerMsg::ProduceEvent(
-                        ProduceEventData {
-                            event,
-                            key: item.id().clone(),
-                        },
-                    ));
-
-                    match produce_res {
-                        Ok(_) => (),
-                        Err(err) => {
-                            error!("Failed to produce event: {}", err);
-                        }
-                    }
-                }
-
-                match change_type {
-                    crate::event::MEventType::DEL => {
-                        trace!(
-                            "{}: Processing DEL for item {}",
-                            state.entity_name,
-                            item.id()
-                        );
-                        state.store.remove(&item.id());
-
-                        // Direct send to QueryManager (bypasses Server actor)
-                        if let Err(err) = state.query_manager.send_message(
-                            QueryManagerMsg::ProcessUpdate(
-                                ProcessUpdateData::Del(item.id().clone()),
-                                state.entity_name.clone(),
-                            ),
-                        ) {
-                            error!("Failed to send message to query manager: {}", err);
-                        };
-                    }
-                    crate::event::MEventType::SET => {
-                        state.store.insert(item.id(), item.clone());
-
-                        // Direct send to QueryManager (bypasses Server actor)
-                        if let Err(err) = state.query_manager.send_message(
-                            QueryManagerMsg::ProcessUpdate(
-                                ProcessUpdateData::Set(item.clone()),
-                                state.entity_name.clone(),
-                            ),
-                        ) {
-                            error!("Failed to send message to query manager: {}", err);
-                        };
-                    }
-                }
-
-                Ok(())
+                self.handle_process_event(data);
             }
             EventHandlerMessage::GetState(reply) => {
-                if let Err(err) = reply.send(state.store.clone()) {
-                    error!("Unable to reply with store state: {}", err);
-                };
-                Ok(())
+                self.handle_get_state(reply);
             }
             EventHandlerMessage::QueryByField { field, value, reply } => {
-                let results: Vec<Arc<dyn AnyItem>> = state
-                    .store
-                    .values()
-                    .filter(|item| {
-                        let json = item.to_value();
-                        // Check if the field matches the value
-                        if let Some(field_value) = json.get(&field) {
-                            // Compare as string (handles both string and numeric values)
-                            match field_value {
-                                serde_json::Value::String(s) => s == &value,
-                                serde_json::Value::Number(n) => n.to_string() == value,
-                                _ => field_value.to_string().trim_matches('"') == value,
-                            }
-                        } else {
-                            false
-                        }
-                    })
-                    .cloned()
-                    .collect();
-
-                if let Err(err) = reply.send(results) {
-                    error!("Unable to reply with query results: {}", err);
-                }
-                Ok(())
+                self.handle_query_by_field(field, value, reply);
             }
             EventHandlerMessage::QueryArrayContains { field, value, reply } => {
-                let results: Vec<Arc<dyn AnyItem>> = state
-                    .store
-                    .values()
-                    .filter(|item| {
-                        let json = item.to_value();
-                        // Check if the array field contains the value
-                        if let Some(serde_json::Value::Array(arr)) = json.get(&field) {
-                            arr.iter().any(|v| match v {
-                                serde_json::Value::String(s) => s == &value,
-                                serde_json::Value::Number(n) => n.to_string() == value,
-                                _ => v.to_string().trim_matches('"') == value,
-                            })
-                        } else {
-                            false
-                        }
-                    })
-                    .cloned()
-                    .collect();
-
-                if let Err(err) = reply.send(results) {
-                    error!("Unable to reply with query results: {}", err);
-                }
-                Ok(())
+                self.handle_query_array_contains(field, value, reply);
             }
             EventHandlerMessage::GetByIds { ids, reply } => {
-                let results: Vec<Arc<dyn AnyItem>> = ids
-                    .iter()
-                    .filter_map(|id| state.store.get(id).cloned())
-                    .collect();
-
-                if let Err(err) = reply.send(results) {
-                    error!("Unable to reply with items: {}", err);
-                }
-                Ok(())
+                self.handle_get_by_ids(ids, reply);
             }
             EventHandlerMessage::GetAllItems(reply) => {
-                let results: Vec<Arc<dyn AnyItem>> = state.store.values().cloned().collect();
-
-                if let Err(err) = reply.send(results) {
-                    error!("Unable to reply with all items: {}", err);
-                }
-                Ok(())
+                self.handle_get_all_items(reply);
+            }
+            EventHandlerMessage::SetMyself(myself) => {
+                self.myself = Some(myself);
+            }
+            EventHandlerMessage::SetKafkaProducer(producer) => {
+                self.kafka_producer = Some(producer);
             }
         }
     }

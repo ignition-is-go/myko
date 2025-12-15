@@ -240,7 +240,7 @@ async fn test_query_reflects_delete() {
     }
 
     // Start watching query
-    let query = GetAllBenchItems::new(GetAllBenchItemsArgs {});
+    let query = GetAllBenchItems::new();
     let wrapped = WrappedQuery {
         query: serde_json::to_value(&query).unwrap(),
         query_id: "GetAllBenchItems".into(),

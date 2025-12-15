@@ -29,7 +29,7 @@
 
 mod entity_search;
 
-pub use entity_search::{EntitySearch, EntitySearchArgs, EntitySearchResult};
+pub use entity_search::{EntitySearch, EntitySearchResult};
 
 use serde_json::Value;
 

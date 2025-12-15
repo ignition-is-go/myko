@@ -76,11 +76,11 @@ impl EntitySearch {
     /// let search = EntitySearch::for_type_with_limit::<Target>("audio mixer", 50);
     /// ```
     pub fn for_type_with_limit<T: Eventable>(query: &str, limit: usize) -> Self {
-        Self::new(EntitySearchArgs {
+        Self {
             entity_type: T::entity_name_static(),
             query: query.to_string(),
             limit,
-        })
+        }
     }
 }
 
@@ -99,8 +99,8 @@ impl ReportHandler for EntitySearch {
                 }
             };
 
-            // Perform search via server context
-            let ids = ctx.server_ctx.search(&args.entity_type, &args.query, args.limit).await;
+            // Perform search via server context (sync call)
+            let ids = ctx.server_ctx.search(&args.entity_type, &args.query, args.limit);
 
             yield EntitySearchResult { ids };
 

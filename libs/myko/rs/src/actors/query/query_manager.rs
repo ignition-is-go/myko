@@ -1,15 +1,18 @@
+//! Query manager for reactive query execution.
+//!
+//! The [`QueryManager`] coordinates query execution across all entity types,
+//! providing reactive query results that update automatically as data changes.
+
 use std::{collections::HashMap, sync::Arc};
 
-use futures_signals::signal_map::MutableSignalMap;
+use crossbeam::channel as crossbeam_channel;
 use log::{error, trace, warn};
-use ractor::{Actor, ActorRef, RpcReplyPort};
-use tokio::sync::mpsc;
 
 use crate::{
     actors::{
         event::event_manager::EventManagerMsg,
         query::{
-            common::{ProcessUpdateData, QueryStreamUpdate},
+            common::{ProcessUpdateData, QueryResultSink, QueryStreamUpdate},
             query_handler::{QueryHandler, QueryHandlerArgs, QueryHandlerMsg},
         },
         server::ServerMsg,
@@ -18,11 +21,10 @@ use crate::{
     parsers::query::{AnyQuery, MykoQueryParser},
     prelude::AnyItem,
     query::QueryHandlerCtxAny,
+    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
     utils::assert_default_for_key,
 };
-
-pub struct QueryManager;
 
 pub type QueryClosureType = Arc<dyn Fn(QueryHandlerCtxAny) -> bool + Send + Sync>;
 
@@ -31,7 +33,7 @@ pub struct QueryManagerArgs {
     pub server: ActorRef<ServerMsg>,
 }
 
-pub struct QueryManagerState {
+pub struct QueryManager {
     ctx: Arc<MykoServerCtx>,
     server: ActorRef<ServerMsg>,
     // by query_item_type and then query_id
@@ -40,6 +42,8 @@ pub struct QueryManagerState {
     parsers: HashMap<Arc<str>, Arc<dyn MykoQueryParser>>,
     /// Set after EventManager is spawned (breaks circular dependency)
     event_manager: Option<ActorRef<EventManagerMsg>>,
+    /// Self-reference
+    myself: Option<ActorRef<QueryManagerMsg>>,
 }
 
 pub struct RegisterQueryData {
@@ -54,10 +58,6 @@ pub enum QueryManagerMsg {
     ProcessUpdate(ProcessUpdateData, Arc<str>),
     /// Batch of updates for a single item type - more efficient for high throughput
     ProcessBatch(Vec<ProcessUpdateData>, Arc<str>),
-    StartQuery(
-        WrappedQuery,
-        RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
-    ),
     /// One-shot query using a typed query object (no serialization).
     /// For internal actor use - skips JSON parsing overhead.
     QuerySnapshot(
@@ -68,7 +68,7 @@ pub enum QueryManagerMsg {
     /// For internal actor use - skips JSON parsing overhead.
     WatchQuery(
         Arc<dyn AnyQuery>,
-        RpcReplyPort<mpsc::UnboundedReceiver<QueryStreamUpdate>>,
+        RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
     ),
     /// One-shot query from a WrappedQuery (with JSON parsing).
     /// For external/WebSocket use.
@@ -77,11 +77,14 @@ pub enum QueryManagerMsg {
         RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
     /// Watch a query from a WrappedQuery (with JSON parsing).
-    /// For external/WebSocket use.
+    /// For external/WebSocket use - returns a channel.
     WatchWrappedQuery(
         WrappedQuery,
-        RpcReplyPort<mpsc::UnboundedReceiver<QueryStreamUpdate>>,
+        RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
     ),
+    /// Watch a query with a custom sink for direct result forwarding.
+    /// For WebSocket use - no intermediate channel needed.
+    WatchWrappedQueryWithSink(WrappedQuery, Box<dyn QueryResultSink>),
     /// Parse a WrappedQuery into a typed Arc<dyn AnyQuery>.
     /// Useful when you receive a WrappedQuery but need the typed version.
     ParseQuery(WrappedQuery, RpcReplyPort<Option<Arc<dyn AnyQuery>>>),
@@ -89,275 +92,156 @@ pub enum QueryManagerMsg {
     CancelQuery(Arc<str>),
     /// Set EventManager reference (breaks circular dependency at startup)
     SetEventManager(ActorRef<EventManagerMsg>),
+    /// Set self-reference
+    SetMyself(ActorRef<QueryManagerMsg>),
 }
 
-impl Actor for QueryManager {
-    type Msg = QueryManagerMsg;
-    type Arguments = QueryManagerArgs;
-    type State = QueryManagerState;
-
-    async fn pre_start(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        Ok(QueryManagerState {
-            ctx: args.ctx,
-            server: args.server,
-            handlers: HashMap::new(),
-            parsers: HashMap::new(),
-            event_manager: None, // Set later via SetEventManager
-        })
-    }
-
-    async fn handle(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ractor::ActorProcessingErr> {
-        match message {
+impl std::fmt::Debug for QueryManagerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
             QueryManagerMsg::RegisterQuery(data) => {
-                if state.parsers.contains_key(&data.query_id) {
-                    error!("Parser already registered for query ID {}", data.query_id);
-                }
-
-                let event_manager = match &state.event_manager {
-                    Some(em) => em.clone(),
-                    None => {
-                        error!("Cannot register query before EventManager is set");
-                        return Ok(());
-                    }
-                };
-
-                state.parsers.insert(data.query_id.clone(), data.parser);
-
-                match Actor::spawn(
-                    None,
-                    QueryHandler,
-                    QueryHandlerArgs {
-                        query_id: data.query_id.clone(),
-                        closure: data.closure,
-                        ctx: state.ctx.clone(),
-                        server: state.server.clone(),
-                        event_manager,
-                        query_item_type: data.query_item_type.clone(),
-                    },
-                )
-                .await
-                {
-                    Ok((handler, _handler_join_handle)) => {
-                        assert_default_for_key(&mut state.handlers, &data.query_item_type);
-
-                        let item_handlers = state
-                            .handlers
-                            .get_mut(&data.query_item_type)
-                            .expect("Default Value asserted");
-
-                        item_handlers.insert(data.query_id.clone(), handler);
-                    }
-                    Err(err) => {
-                        log::error!("Failed to spawn query handler: {}", err);
-                    }
-                };
-                Ok(())
+                write!(f, "RegisterQuery({})", data.query_id)
             }
-            QueryManagerMsg::StartQuery(data, reply) => {
-                trace!("Starting query with ID {}", data.query_id);
-
-                let handler = state
-                    .handlers
-                    .get(&data.query_item_type)
-                    .and_then(|m| m.get(&data.query_id));
-
-                let parser = state.parsers.get(&data.query_id);
-
-                if parser.is_none() {
-                    error!(
-                        "No parser found for query ID {}: {:?}",
-                        data.query_id,
-                        state.parsers.keys()
-                    );
-                    return Ok(());
-                }
-
-                if handler.is_none() {
-                    error!(
-                        "No handler found for query ID {}: {:?}",
-                        data.query_id, state.handlers
-                    );
-
-                    return Ok(());
-                }
-
-                let parser = parser.unwrap();
-                let handler = handler.unwrap();
-
-                let parsed_query = parser.parse(data.query);
-
-                if let Err(err) = parsed_query {
-                    error!("Failed to parse query: {}", err);
-                    return Ok(());
-                }
-
-                let parsed_query = parsed_query.unwrap();
-
-                if let Err(err) =
-                    handler.send_message(QueryHandlerMsg::StartQuery(parsed_query, reply))
-                {
-                    error!("Failed to start query: {}", err);
-                };
-
-                Ok(())
+            QueryManagerMsg::ProcessUpdate(_, item_type) => {
+                write!(f, "ProcessUpdate({})", item_type)
             }
-            QueryManagerMsg::ProcessUpdate(update_data, item_type) => {
-                let item_handlers = state.handlers.get(&item_type);
-
-                match item_handlers {
-                    Some(handlers) => {
-                        for (key, handler) in handlers.iter() {
-                            match handler
-                                .send_message(QueryHandlerMsg::ProcessUpdate(update_data.clone()))
-                            {
-                                Ok(_) => (),
-                                Err(err) => {
-                                    log::error!(
-                                        "Failed to process update for [{}: {}]: {}",
-                                        key,
-                                        item_type,
-                                        err
-                                    );
-                                }
-                            };
-                        }
-                    }
-                    None => {
-                        warn!("No Query handlers registered for item type {:?}", item_type);
-                    }
-                }
-
-                Ok(())
+            QueryManagerMsg::ProcessBatch(updates, item_type) => {
+                write!(f, "ProcessBatch({} updates, {})", updates.len(), item_type)
             }
-            QueryManagerMsg::ProcessBatch(batch, item_type) => {
-                // Batch processing - send entire batch to each handler for efficient processing
-                let item_handlers = state.handlers.get(&item_type);
-
-                match item_handlers {
-                    Some(handlers) => {
-                        for (key, handler) in handlers.iter() {
-                            match handler.send_message(QueryHandlerMsg::ProcessBatch(batch.clone()))
-                            {
-                                Ok(_) => (),
-                                Err(err) => {
-                                    log::error!(
-                                        "Failed to process batch for [{}: {}]: {}",
-                                        key,
-                                        item_type,
-                                        err
-                                    );
-                                }
-                            };
-                        }
-                    }
-                    None => {
-                        warn!("No Query handlers registered for item type {:?}", item_type);
-                    }
-                }
-
-                Ok(())
+            QueryManagerMsg::QuerySnapshot(_, _) => write!(f, "QuerySnapshot"),
+            QueryManagerMsg::WatchQuery(_, _) => write!(f, "WatchQuery"),
+            QueryManagerMsg::WrappedQuerySnapshot(q, _) => {
+                write!(f, "WrappedQuerySnapshot({})", q.query_id)
             }
-            QueryManagerMsg::QuerySnapshot(query, reply) => {
-                Self::handle_query_snapshot(state, query, reply);
-                Ok(())
+            QueryManagerMsg::WatchWrappedQuery(q, _) => {
+                write!(f, "WatchWrappedQuery({})", q.query_id)
             }
-            QueryManagerMsg::WatchQuery(query, reply) => {
-                Self::handle_watch_query(state, query, reply);
-                Ok(())
+            QueryManagerMsg::WatchWrappedQueryWithSink(q, _) => {
+                write!(f, "WatchWrappedQueryWithSink({})", q.query_id)
             }
-            QueryManagerMsg::WrappedQuerySnapshot(data, reply) => {
-                // Parse and delegate to QuerySnapshot
-                trace!("Wrapped query snapshot with ID {}", data.query_id);
-
-                let parsed = Self::parse_query(state, &data);
-                match parsed {
-                    Some(query) => {
-                        Self::handle_query_snapshot(state, query, reply);
-                    }
-                    None => {
-                        error!("Failed to parse query {}", data.query_id);
-                    }
-                }
-
-                Ok(())
+            QueryManagerMsg::ParseQuery(q, _) => {
+                write!(f, "ParseQuery({})", q.query_id)
             }
-            QueryManagerMsg::WatchWrappedQuery(data, reply) => {
-                // Parse and delegate to WatchQuery
-                trace!("Wrapped watch query with ID {}", data.query_id);
-
-                let parsed = Self::parse_query(state, &data);
-                match parsed {
-                    Some(query) => {
-                        Self::handle_watch_query(state, query, reply);
-                    }
-                    None => {
-                        error!("Failed to parse query {}", data.query_id);
-                    }
-                }
-
-                Ok(())
-            }
-            QueryManagerMsg::ParseQuery(data, reply) => {
-                // Parse a WrappedQuery into Arc<dyn AnyQuery>
-                let parser = state.parsers.get(&data.query_id);
-
-                match parser {
-                    Some(parser) => {
-                        match parser.parse(data.query) {
-                            Ok(parsed) => {
-                                let _ = reply.send(Some(parsed));
-                            }
-                            Err(err) => {
-                                error!("Failed to parse query {}: {}", data.query_id, err);
-                                let _ = reply.send(None);
-                            }
-                        }
-                    }
-                    None => {
-                        error!(
-                            "No parser found for query ID {}: {:?}",
-                            data.query_id,
-                            state.parsers.keys()
-                        );
-                        let _ = reply.send(None);
-                    }
-                }
-
-                Ok(())
-            }
-            QueryManagerMsg::CancelQuery(tx) => {
-                trace!("Cancelling query with tx {}", tx);
-                // Broadcast cancel to all handlers - they check if they own this tx
-                for handlers in state.handlers.values() {
-                    for handler in handlers.values() {
-                        if let Err(err) = handler.send_message(QueryHandlerMsg::CancelQuery(tx.clone())) {
-                            error!("Failed to send cancel to handler: {}", err);
-                        }
-                    }
-                }
-                Ok(())
-            }
-            QueryManagerMsg::SetEventManager(event_manager) => {
-                state.event_manager = Some(event_manager);
-                Ok(())
-            }
+            QueryManagerMsg::CancelQuery(tx) => write!(f, "CancelQuery({})", tx),
+            QueryManagerMsg::SetEventManager(_) => write!(f, "SetEventManager"),
+            QueryManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
 
 impl QueryManager {
+    /// Create a new QueryManager with the given arguments.
+    pub fn new(args: QueryManagerArgs) -> Self {
+        Self {
+            ctx: args.ctx,
+            server: args.server,
+            handlers: HashMap::new(),
+            parsers: HashMap::new(),
+            event_manager: None,
+            myself: None,
+        }
+    }
+
+    /// Spawn the QueryManager on a dedicated thread.
+    pub fn spawn(args: QueryManagerArgs) -> ActorHandle<QueryManagerMsg> {
+        let actor = Self::new(args);
+        let handle = crate::runtime::spawn::spawn(actor);
+
+        // Set self-reference
+        let actor_ref = handle.actor_ref();
+        let _ = actor_ref.send(QueryManagerMsg::SetMyself(actor_ref.clone()));
+
+        handle
+    }
+
+    fn handle_register_query(&mut self, data: RegisterQueryData) {
+        if self.parsers.contains_key(&data.query_id) {
+            error!("Parser already registered for query ID {}", data.query_id);
+        }
+
+        let event_manager = match &self.event_manager {
+            Some(em) => em.clone(),
+            None => {
+                error!("Cannot register query before EventManager is set");
+                return;
+            }
+        };
+
+        self.parsers.insert(data.query_id.clone(), data.parser);
+
+        let handle = QueryHandler::spawn(QueryHandlerArgs {
+            query_id: data.query_id.clone(),
+            closure: data.closure,
+            ctx: self.ctx.clone(),
+            server: self.server.clone(),
+            event_manager,
+            query_item_type: data.query_item_type.clone(),
+        });
+
+        assert_default_for_key(&mut self.handlers, &data.query_item_type);
+
+        let item_handlers = self
+            .handlers
+            .get_mut(&data.query_item_type)
+            .expect("Default Value asserted");
+
+        item_handlers.insert(data.query_id.clone(), handle.actor_ref());
+    }
+
+    fn handle_process_update(&self, update_data: ProcessUpdateData, item_type: Arc<str>) {
+        let item_handlers = self.handlers.get(&item_type);
+
+        match item_handlers {
+            Some(handlers) => {
+                for (key, handler) in handlers.iter() {
+                    match handler.send_message(QueryHandlerMsg::ProcessUpdate(update_data.clone()))
+                    {
+                        Ok(_) => (),
+                        Err(err) => {
+                            log::error!(
+                                "Failed to process update for [{}: {}]: {}",
+                                key,
+                                item_type,
+                                err
+                            );
+                        }
+                    };
+                }
+            }
+            None => {
+                warn!("No Query handlers registered for item type {:?}", item_type);
+            }
+        }
+    }
+
+    fn handle_process_batch(&self, batch: Vec<ProcessUpdateData>, item_type: Arc<str>) {
+        let item_handlers = self.handlers.get(&item_type);
+
+        match item_handlers {
+            Some(handlers) => {
+                for (key, handler) in handlers.iter() {
+                    match handler.send_message(QueryHandlerMsg::ProcessBatch(batch.clone())) {
+                        Ok(_) => (),
+                        Err(err) => {
+                            log::error!(
+                                "Failed to process batch for [{}: {}]: {}",
+                                key,
+                                item_type,
+                                err
+                            );
+                        }
+                    };
+                }
+            }
+            None => {
+                warn!("No Query handlers registered for item type {:?}", item_type);
+            }
+        }
+    }
+
     /// Parse a WrappedQuery into Arc<dyn AnyQuery> using the registered parser
-    fn parse_query(state: &QueryManagerState, data: &WrappedQuery) -> Option<Arc<dyn AnyQuery>> {
-        let parser = state.parsers.get(&data.query_id)?;
+    fn parse_query(&self, data: &WrappedQuery) -> Option<Arc<dyn AnyQuery>> {
+        let parser = self.parsers.get(&data.query_id)?;
         match parser.parse(data.query.clone()) {
             Ok(parsed) => Some(parsed),
             Err(err) => {
@@ -367,9 +251,8 @@ impl QueryManager {
         }
     }
 
-    /// Handle a query snapshot request
     fn handle_query_snapshot(
-        state: &QueryManagerState,
+        &self,
         query: Arc<dyn AnyQuery>,
         reply: RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ) {
@@ -377,7 +260,7 @@ impl QueryManager {
         let query_item_type = query.query_item_type();
         trace!("Query snapshot with ID {}", query_id);
 
-        let handler = state
+        let handler = self
             .handlers
             .get(&query_item_type)
             .and_then(|m| m.get(&query_id));
@@ -385,7 +268,7 @@ impl QueryManager {
         if handler.is_none() {
             error!(
                 "No handler found for query ID {}: {:?}",
-                query_id, state.handlers
+                query_id, self.handlers
             );
             return;
         }
@@ -397,17 +280,16 @@ impl QueryManager {
         };
     }
 
-    /// Handle a watch query request
     fn handle_watch_query(
-        state: &QueryManagerState,
+        &self,
         query: Arc<dyn AnyQuery>,
-        reply: RpcReplyPort<mpsc::UnboundedReceiver<QueryStreamUpdate>>,
+        reply: RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
     ) {
         let query_id = query.query_id();
         let query_item_type = query.query_item_type();
         trace!("Watch query with ID {}", query_id);
 
-        let handler = state
+        let handler = self
             .handlers
             .get(&query_item_type)
             .and_then(|m| m.get(&query_id));
@@ -415,7 +297,7 @@ impl QueryManager {
         if handler.is_none() {
             error!(
                 "No handler found for query ID {}: {:?}",
-                query_id, state.handlers
+                query_id, self.handlers
             );
             return;
         }
@@ -425,5 +307,166 @@ impl QueryManager {
         if let Err(err) = handler.send_message(QueryHandlerMsg::WatchQuery(query, reply)) {
             error!("Failed to start watch query: {}", err);
         };
+    }
+
+    fn handle_wrapped_query_snapshot(
+        &self,
+        data: WrappedQuery,
+        reply: RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
+    ) {
+        trace!("Wrapped query snapshot with ID {}", data.query_id);
+
+        let parsed = self.parse_query(&data);
+        match parsed {
+            Some(query) => {
+                self.handle_query_snapshot(query, reply);
+            }
+            None => {
+                error!("Failed to parse query {}", data.query_id);
+            }
+        }
+    }
+
+    fn handle_watch_wrapped_query(
+        &self,
+        data: WrappedQuery,
+        reply: RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
+    ) {
+        trace!("Wrapped watch query with ID {}", data.query_id);
+
+        let parsed = self.parse_query(&data);
+        match parsed {
+            Some(query) => {
+                self.handle_watch_query(query, reply);
+            }
+            None => {
+                error!("Failed to parse query {}", data.query_id);
+            }
+        }
+    }
+
+    fn handle_watch_wrapped_query_with_sink(
+        &self,
+        data: WrappedQuery,
+        sink: Box<dyn QueryResultSink>,
+    ) {
+        trace!("Wrapped watch query with sink for ID {}", data.query_id);
+
+        let parsed = self.parse_query(&data);
+        match parsed {
+            Some(query) => {
+                let query_id = query.query_id();
+                let query_item_type = query.query_item_type();
+
+                let handler = self
+                    .handlers
+                    .get(&query_item_type)
+                    .and_then(|m| m.get(&query_id));
+
+                if handler.is_none() {
+                    error!(
+                        "No handler found for query ID {}: {:?}",
+                        query_id, self.handlers
+                    );
+                    return;
+                }
+
+                let handler = handler.unwrap();
+
+                if let Err(err) =
+                    handler.send_message(QueryHandlerMsg::WatchQueryWithSink(query, sink))
+                {
+                    error!("Failed to start watch query with sink: {}", err);
+                }
+            }
+            None => {
+                error!("Failed to parse query {}", data.query_id);
+            }
+        }
+    }
+
+    fn handle_parse_query(
+        &self,
+        data: WrappedQuery,
+        reply: RpcReplyPort<Option<Arc<dyn AnyQuery>>>,
+    ) {
+        let parser = self.parsers.get(&data.query_id);
+
+        match parser {
+            Some(parser) => match parser.parse(data.query) {
+                Ok(parsed) => {
+                    let _ = reply.send(Some(parsed));
+                }
+                Err(err) => {
+                    error!("Failed to parse query {}: {}", data.query_id, err);
+                    let _ = reply.send(None);
+                }
+            },
+            None => {
+                error!(
+                    "No parser found for query ID {}: {:?}",
+                    data.query_id,
+                    self.parsers.keys()
+                );
+                let _ = reply.send(None);
+            }
+        }
+    }
+
+    fn handle_cancel_query(&self, tx: Arc<str>) {
+        trace!("Cancelling query with tx {}", tx);
+        // Broadcast cancel to all handlers - they check if they own this tx
+        for handlers in self.handlers.values() {
+            for handler in handlers.values() {
+                if let Err(err) = handler.send_message(QueryHandlerMsg::CancelQuery(tx.clone())) {
+                    error!("Failed to send cancel to handler: {}", err);
+                }
+            }
+        }
+    }
+}
+
+impl Actor for QueryManager {
+    type Msg = QueryManagerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
+            QueryManagerMsg::RegisterQuery(data) => {
+                self.handle_register_query(data);
+            }
+            QueryManagerMsg::ProcessUpdate(update_data, item_type) => {
+                self.handle_process_update(update_data, item_type);
+            }
+            QueryManagerMsg::ProcessBatch(batch, item_type) => {
+                self.handle_process_batch(batch, item_type);
+            }
+            QueryManagerMsg::QuerySnapshot(query, reply) => {
+                self.handle_query_snapshot(query, reply);
+            }
+            QueryManagerMsg::WatchQuery(query, reply) => {
+                self.handle_watch_query(query, reply);
+            }
+            QueryManagerMsg::WrappedQuerySnapshot(data, reply) => {
+                self.handle_wrapped_query_snapshot(data, reply);
+            }
+            QueryManagerMsg::WatchWrappedQuery(data, reply) => {
+                self.handle_watch_wrapped_query(data, reply);
+            }
+            QueryManagerMsg::WatchWrappedQueryWithSink(data, sink) => {
+                self.handle_watch_wrapped_query_with_sink(data, sink);
+            }
+            QueryManagerMsg::ParseQuery(data, reply) => {
+                self.handle_parse_query(data, reply);
+            }
+            QueryManagerMsg::CancelQuery(tx) => {
+                self.handle_cancel_query(tx);
+            }
+            QueryManagerMsg::SetEventManager(event_manager) => {
+                self.event_manager = Some(event_manager);
+            }
+            QueryManagerMsg::SetMyself(myself) => {
+                self.myself = Some(myself);
+            }
+        }
     }
 }

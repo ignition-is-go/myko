@@ -11,16 +11,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, error, trace, warn};
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, FuzzyTermQuery, Occur, Query};
 use tantivy::schema::{Field, Schema, STORED, TEXT};
 use tantivy::schema::OwnedValue;
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
-use tokio::task::JoinHandle;
 
 use crate::actors::event::EventBus;
 use crate::event::{MEvent, MEventType};
+use crate::runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort};
 use crate::search::{extract_searchable_text, iter_searchable, SearchableRegistration};
 use crate::server::MykoServerCtx;
 
@@ -157,7 +156,13 @@ impl EntityIndex {
 }
 
 /// Actor that manages full-text search indices.
-pub struct SearchManager;
+pub struct SearchManager {
+    ctx: Arc<MykoServerCtx>,
+    event_manager: ActorRef<crate::actors::event::event_manager::EventManagerMsg>,
+    indices: HashMap<String, EntityIndex>,
+    commit_scheduled: bool,
+    myself: Option<ActorRef<SearchManagerMsg>>,
+}
 
 /// Messages for SearchManager actor.
 pub enum SearchManagerMsg {
@@ -173,15 +178,26 @@ pub enum SearchManagerMsg {
     Search(String, String, usize, RpcReplyPort<Vec<Arc<str>>>),
     /// Internal: commit pending changes
     CommitPending,
+    /// Set self-reference (called immediately after spawn)
+    SetMyself(ActorRef<SearchManagerMsg>),
 }
 
-/// State for SearchManager actor.
-pub struct SearchManagerState {
-    ctx: Arc<MykoServerCtx>,
-    event_manager: ActorRef<crate::actors::event::event_manager::EventManagerMsg>,
-    indices: HashMap<String, EntityIndex>,
-    event_task: Option<JoinHandle<()>>,
-    commit_scheduled: bool,
+impl std::fmt::Debug for SearchManagerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchManagerMsg::Initialize => write!(f, "Initialize"),
+            SearchManagerMsg::PopulateAll => write!(f, "PopulateAll"),
+            SearchManagerMsg::PopulateIndex(entity_type, items) => {
+                write!(f, "PopulateIndex({}, {} items)", entity_type, items.len())
+            }
+            SearchManagerMsg::ProcessEvent(_) => write!(f, "ProcessEvent"),
+            SearchManagerMsg::Search(entity_type, query, limit, _) => {
+                write!(f, "Search({}, {}, {})", entity_type, query, limit)
+            }
+            SearchManagerMsg::CommitPending => write!(f, "CommitPending"),
+            SearchManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
+        }
+    }
 }
 
 /// Arguments for spawning SearchManager.
@@ -190,16 +206,8 @@ pub struct SearchManagerArgs {
     pub event_manager: ActorRef<crate::actors::event::event_manager::EventManagerMsg>,
 }
 
-impl Actor for SearchManager {
-    type Msg = SearchManagerMsg;
-    type State = SearchManagerState;
-    type Arguments = SearchManagerArgs;
-
-    async fn pre_start(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ActorProcessingErr> {
+impl SearchManager {
+    pub fn new(args: SearchManagerArgs) -> Self {
         // Build indices from registered searchable entities
         let mut indices = HashMap::new();
 
@@ -224,71 +232,95 @@ impl Actor for SearchManager {
 
         debug!("SearchManager: initialized {} indices", indices.len());
 
-        // Send ourselves Initialize message to start event subscription
-        // (EventBus may not be ready yet in pre_start)
-        let _ = myself.send_message(SearchManagerMsg::Initialize);
-
-        Ok(SearchManagerState {
+        Self {
             ctx: args.ctx,
             event_manager: args.event_manager,
             indices,
-            event_task: None,
             commit_scheduled: false,
-        })
+            myself: None,
+        }
     }
 
-    async fn handle(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match message {
+    pub fn spawn(args: SearchManagerArgs) -> ActorHandle<SearchManagerMsg> {
+        let actor = Self::new(args);
+        let handle = crate::runtime::spawn::spawn(actor);
+
+        // Set self-reference and send Initialize
+        let actor_ref = handle.actor_ref();
+        let _ = actor_ref.send_message(SearchManagerMsg::SetMyself(actor_ref.clone()));
+        let _ = actor_ref.send_message(SearchManagerMsg::Initialize);
+
+        handle
+    }
+}
+
+impl Actor for SearchManager {
+    type Msg = SearchManagerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
+            SearchManagerMsg::SetMyself(myself) => {
+                self.myself = Some(myself);
+            }
+
             SearchManagerMsg::Initialize => {
+                let myself = match &self.myself {
+                    Some(m) => m.clone(),
+                    None => {
+                        error!("SearchManager: myself not set during Initialize");
+                        return;
+                    }
+                };
+
                 // Subscribe to EventBus
-                let event_bus = match state.ctx.event_bus.get() {
+                let event_bus = match self.ctx.event_bus.get() {
                     Some(bus) => bus.clone(),
                     None => {
                         warn!("SearchManager: EventBus not yet initialized, retrying...");
                         // Retry after a short delay
                         let myself_clone = myself.clone();
-                        tokio::spawn(async move {
+                        self.ctx.tokio_handle.spawn(async move {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             let _ = myself_clone.send_message(SearchManagerMsg::Initialize);
                         });
-                        return Ok(());
+                        return;
                     }
                 };
 
                 let myself_clone = myself.clone();
-                let entity_types: Vec<String> = state.indices.keys().cloned().collect();
+                let entity_types: Vec<String> = self.indices.keys().cloned().collect();
 
-                // Spawn event processor
-                let task = tokio::spawn(async move {
+                // Spawn event processor task
+                self.ctx.tokio_handle.spawn(async move {
                     process_events(myself_clone, event_bus, entity_types).await;
                 });
 
-                state.event_task = Some(task);
                 debug!("SearchManager: subscribed to EventBus");
-
-                Ok(())
             }
 
             SearchManagerMsg::PopulateAll => {
                 debug!("SearchManager: populating all indices with existing items");
 
+                let myself = match &self.myself {
+                    Some(m) => m.clone(),
+                    None => {
+                        error!("SearchManager: myself not set during PopulateAll");
+                        return;
+                    }
+                };
+
                 // Populate indices with existing items
-                for entity_type in state.indices.keys().cloned().collect::<Vec<_>>() {
+                for entity_type in self.indices.keys().cloned().collect::<Vec<_>>() {
                     let myself_clone = myself.clone();
-                    let event_manager = state.event_manager.clone();
+                    let event_manager = self.event_manager.clone();
                     let entity_type_clone: Arc<str> = entity_type.clone().into();
 
-                    tokio::spawn(async move {
+                    std::thread::spawn(move || {
                         use crate::actors::event::event_manager::EventManagerMsg;
 
                         trace!("SearchManager: fetching existing {} items", entity_type_clone);
 
-                        match ractor::call!(event_manager, EventManagerMsg::GetAllItems, entity_type_clone.clone()) {
+                        match event_manager.call(|r| EventManagerMsg::GetAllItems(entity_type_clone.clone(), r)) {
                             Ok(items) => {
                                 let values: Vec<serde_json::Value> = items
                                     .iter()
@@ -316,14 +348,12 @@ impl Actor for SearchManager {
                         }
                     });
                 }
-
-                Ok(())
             }
 
             SearchManagerMsg::PopulateIndex(entity_type, items) => {
-                let Some(index) = state.indices.get_mut(&entity_type) else {
+                let Some(index) = self.indices.get_mut(&entity_type) else {
                     warn!("SearchManager: PopulateIndex for '{}' but no index exists", entity_type);
-                    return Ok(());
+                    return;
                 };
 
                 let mut indexed_count = 0;
@@ -337,20 +367,18 @@ impl Actor for SearchManager {
                 // Commit immediately after population
                 index.commit();
                 debug!("SearchManager: indexed {} items and committed '{}' index", indexed_count, entity_type);
-
-                Ok(())
             }
 
             SearchManagerMsg::ProcessEvent(event) => {
                 // Get the index for this entity type
-                let Some(index) = state.indices.get_mut(&event.item_type) else {
+                let Some(index) = self.indices.get_mut(&event.item_type) else {
                     trace!("SearchManager: no index for entity type '{}'", event.item_type);
-                    return Ok(());
+                    return;
                 };
 
                 // Get item ID
                 let Some(id) = event.item.get("id").and_then(|v| v.as_str()) else {
-                    return Ok(());
+                    return;
                 };
 
                 // Process based on event type
@@ -366,20 +394,20 @@ impl Actor for SearchManager {
                 }
 
                 // Schedule commit if not already scheduled
-                if !state.commit_scheduled {
-                    state.commit_scheduled = true;
-                    let myself_clone = myself.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(COMMIT_DEBOUNCE_MS)).await;
-                        let _ = myself_clone.send_message(SearchManagerMsg::CommitPending);
-                    });
+                if !self.commit_scheduled {
+                    self.commit_scheduled = true;
+                    if let Some(myself) = &self.myself {
+                        let myself_clone = myself.clone();
+                        self.ctx.tokio_handle.spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(COMMIT_DEBOUNCE_MS)).await;
+                            let _ = myself_clone.send_message(SearchManagerMsg::CommitPending);
+                        });
+                    }
                 }
-
-                Ok(())
             }
 
             SearchManagerMsg::Search(entity_type, query, limit, reply) => {
-                let results = match state.indices.get(&entity_type) {
+                let results = match self.indices.get(&entity_type) {
                     Some(index) => {
                         let results = index.search(&query, limit);
                         trace!(
@@ -390,48 +418,37 @@ impl Actor for SearchManager {
                     }
                     None => {
                         warn!("SearchManager: no index for entity type '{}' (available: {:?})",
-                            entity_type, state.indices.keys().collect::<Vec<_>>());
+                            entity_type, self.indices.keys().collect::<Vec<_>>());
                         vec![]
                     }
                 };
 
                 let _ = reply.send(results);
-                Ok(())
             }
 
             SearchManagerMsg::CommitPending => {
-                state.commit_scheduled = false;
+                self.commit_scheduled = false;
 
-                for (entity_type, index) in &mut state.indices {
+                for (entity_type, index) in &mut self.indices {
                     if index.dirty {
                         trace!("Committing search index for {}", entity_type);
                         index.commit();
                     }
                 }
-
-                Ok(())
             }
         }
     }
 
-    async fn post_stop(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
+    fn on_shutdown(&mut self) {
         trace!("SearchManager stopping");
 
-        // Cancel event processing task
-        if let Some(task) = state.event_task.take() {
-            task.abort();
-        }
+        // Cancel event processing task - we detached threads so we can't abort them directly
+        // The threads will stop when EventBus closes or when the actor ref becomes invalid
 
         // Final commit
-        for index in state.indices.values_mut() {
+        for index in self.indices.values_mut() {
             index.commit();
         }
-
-        Ok(())
     }
 }
 

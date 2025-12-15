@@ -1,6 +1,14 @@
-use crate::{actors::kafka::common::KafkaSharedConfig, event::MEvent};
+//! Kafka producer actor for persisting events to a topic.
+//!
+//! The KafkaProducer handles async Kafka writes in a sync actor context
+//! by running a tokio runtime on its dedicated thread.
+
+use crate::{
+    actors::kafka::common::KafkaSharedConfig,
+    event::MEvent,
+    runtime::{Actor, ActorHandle},
+};
 use log::{error, trace};
-use ractor::{Actor, ActorRef};
 use rdkafka::{
     ClientConfig,
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
@@ -10,20 +18,15 @@ use rdkafka::{
 };
 use std::sync::Arc;
 
-pub struct KafkaProducer;
-
+#[derive(Debug)]
 pub struct ProduceEventData {
     pub event: MEvent,
     pub key: Arc<str>,
 }
 
+#[derive(Debug)]
 pub enum KafkaProducerMsg {
     ProduceEvent(ProduceEventData),
-}
-
-pub struct KafkaProducerState {
-    producer: FutureProducer,
-    topic: Arc<str>,
 }
 
 pub struct KafkaProducerArgs {
@@ -31,111 +34,131 @@ pub struct KafkaProducerArgs {
     pub shared_conf: KafkaSharedConfig,
 }
 
-impl Actor for KafkaProducer {
-    type Msg = KafkaProducerMsg;
+/// Kafka producer actor.
+///
+/// Uses a dedicated thread with tokio runtime for async Kafka operations.
+pub struct KafkaProducer {
+    producer: FutureProducer,
+    topic: Arc<str>,
+    rt: tokio::runtime::Runtime,
+}
 
-    type State = KafkaProducerState;
+impl KafkaProducer {
+    /// Create a new KafkaProducer (blocking - creates Kafka connections).
+    pub fn new(args: KafkaProducerArgs) -> Self {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
 
-    type Arguments = KafkaProducerArgs;
-    async fn pre_start(
-        &self,
-        _myself: ractor::ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
         let KafkaProducerArgs { topic, shared_conf } = args;
 
+        // Create producer
         let producer: FutureProducer = match ClientConfig::new()
             .set("bootstrap.servers", shared_conf.bootstrap_servers.join(","))
             .set("allow.auto.create.topics", "true")
             .create()
         {
-            Ok(consumer) => consumer,
+            Ok(producer) => producer,
             Err(err) => {
-                panic!("{}: Failed to create Kafka consumer: {}", topic, err);
+                panic!("{}: Failed to create Kafka producer: {}", topic, err);
             }
         };
 
-        let admin_client = match AdminClient::from_config(ClientConfig::new().set(
-            "bootstrap.servers",
-            shared_conf.bootstrap_servers.join(", "),
-        )) {
-            Ok(admin_client) => admin_client,
-            Err(err) => {
-                panic!("{}: Failed to create Kafka admin client: {}", topic, err);
-            }
-        };
+        // Create topic if it doesn't exist (blocking)
+        rt.block_on(async {
+            let admin_client = match AdminClient::from_config(ClientConfig::new().set(
+                "bootstrap.servers",
+                shared_conf.bootstrap_servers.join(", "),
+            )) {
+                Ok(admin_client) => admin_client,
+                Err(err) => {
+                    panic!("{}: Failed to create Kafka admin client: {}", topic, err);
+                }
+            };
 
-        match admin_client
-            .create_topics(
-                &[NewTopic {
-                    num_partitions: 1,
-                    replication: TopicReplication::Fixed(3),
-                    config: vec![("retention.ms", "-1"), ("cleanup.policy", "compact")],
-                    name: &topic.clone(),
-                }],
-                &AdminOptions::new(),
-            )
-            .await
-        {
-            Ok(_) => {
-                trace!("{}: Created Kafka topic", topic);
-            }
-            Err(err) => {
-                panic!("{}: Failed to create Kafka topic: {}", topic, err);
-            }
-        };
+            match admin_client
+                .create_topics(
+                    &[NewTopic {
+                        num_partitions: 1,
+                        replication: TopicReplication::Fixed(3),
+                        config: vec![("retention.ms", "-1"), ("cleanup.policy", "compact")],
+                        name: &topic.clone(),
+                    }],
+                    &AdminOptions::new(),
+                )
+                .await
+            {
+                Ok(_) => {
+                    trace!("{}: Created Kafka topic", topic);
+                }
+                Err(err) => {
+                    panic!("{}: Failed to create Kafka topic: {}", topic, err);
+                }
+            };
+        });
 
-        Ok(KafkaProducerState { producer, topic })
+        Self { producer, topic, rt }
     }
 
-    async fn handle(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ractor::ActorProcessingErr> {
-        match message {
+    /// Spawn a KafkaProducer on a dedicated thread.
+    pub fn spawn(args: KafkaProducerArgs) -> ActorHandle<KafkaProducerMsg> {
+        let actor = Self::new(args);
+        crate::runtime::spawn::spawn(actor)
+    }
+}
+
+impl Actor for KafkaProducer {
+    type Msg = KafkaProducerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
             KafkaProducerMsg::ProduceEvent(data) => {
-                let event_str = serde_json::to_string(&data.event);
-                let key = data.key.clone().to_string();
+                let event_str = match serde_json::to_string(&data.event) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        error!("{}: Failed to serialize event: {}", self.topic, err);
+                        return;
+                    }
+                };
 
-                match event_str {
-                    Ok(event_str) => {
-                        let send_res = state
-                            .producer
-                            .send(
-                                rdkafka::producer::FutureRecord {
-                                    topic: &state.topic,
-                                    partition: None,
-                                    payload: Some(&event_str),
-                                    key: Some(&key),
-                                    timestamp: None,
-                                    headers: None,
-                                },
-                                Timeout::Never,
-                            )
-                            .await;
+                let key = data.key.to_string();
+                let topic = self.topic.clone();
+                let event = data.event;
 
-                        match send_res {
-                            Ok(_) => {
-                                trace!(
-                                    "Persisted {:?} {} to Kafka topic {}",
-                                    data.event.change_type,
-                                    data.event.item_type,
-                                    state.topic
-                                );
-                            }
-                            Err(err) => {
-                                error!("{}: Failed to produce event: {}", state.topic, err.0);
-                            }
+                // Send asynchronously using our runtime
+                let producer = self.producer.clone();
+                self.rt.block_on(async move {
+                    let send_res = producer
+                        .send(
+                            rdkafka::producer::FutureRecord {
+                                topic: &topic,
+                                partition: None,
+                                payload: Some(&event_str),
+                                key: Some(&key),
+                                timestamp: None,
+                                headers: None,
+                            },
+                            Timeout::Never,
+                        )
+                        .await;
+
+                    match send_res {
+                        Ok(_) => {
+                            trace!(
+                                "Persisted {:?} {} to Kafka topic {}",
+                                event.change_type,
+                                event.item_type,
+                                topic
+                            );
+                        }
+                        Err(err) => {
+                            error!("{}: Failed to produce event: {}", topic, err.0);
                         }
                     }
-                    Err(err) => {
-                        error!("{}: Failed to serialize event: {}", state.topic, err);
-                    }
-                }
-                Ok(())
+                });
             }
         }
     }
 }
+

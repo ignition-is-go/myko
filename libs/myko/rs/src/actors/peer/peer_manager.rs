@@ -5,9 +5,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use log::{debug, info, trace, warn};
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use serde_json::Value;
-use tokio::task::JoinHandle;
 use tokio_stream::StreamExt as TokioStreamExt;
 use uuid::Uuid;
 
@@ -20,7 +18,9 @@ use crate::context::RequestContext;
 use crate::entities::server::{DeleteServer, GetConnectedServer, GetPeerServers, Server};
 use crate::message::MykoMessage;
 use crate::parsers::query::AnyQuery;
+use crate::query::QueryRequest;
 use crate::report::{AnyReport, WrappedReport};
+use crate::runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort};
 use crate::server::MykoServerCtx;
 use crate::utils::downcast_item;
 
@@ -36,25 +36,6 @@ pub struct PeerManagerArgs {
     pub query_manager: ActorRef<QueryManagerMsg>,
     /// Command manager for executing DeleteServer commands
     pub command_manager: ActorRef<CommandManagerMsg>,
-}
-
-/// State maintained by the PeerManager actor.
-pub struct PeerManagerState {
-    ctx: Arc<MykoServerCtx>,
-    #[allow(dead_code)]
-    host_address: String,
-    #[allow(dead_code)]
-    host_port: u16,
-    /// Query manager for local GetPeerServers subscription
-    query_manager: ActorRef<QueryManagerMsg>,
-    /// Command manager for executing DeleteServer commands
-    command_manager: ActorRef<CommandManagerMsg>,
-    /// Active peer connections keyed by server ID
-    peers: HashMap<Uuid, PeerConnection>,
-    /// Server IDs currently being connected to (prevents duplicate connection attempts for same ID)
-    connecting: HashSet<Uuid>,
-    /// Handle to the peer discovery task
-    discovery_handle: Option<JoinHandle<()>>,
 }
 
 /// Represents an active connection to a peer server.
@@ -85,6 +66,8 @@ pub struct PeerStatus {
 
 /// Messages handled by the PeerManager actor.
 pub enum PeerManagerMsg {
+    /// Set self-reference (called immediately after spawn)
+    SetMyself(ActorRef<PeerManagerMsg>),
     /// Start peer discovery (called after AllInitComplete)
     Start,
     /// A peer server was discovered via GetPeerServers query
@@ -132,11 +115,97 @@ pub enum PeerManagerMsg {
     ConnectionFailed { server_id: Uuid, address: String },
 }
 
-pub struct PeerManager;
+impl std::fmt::Debug for PeerManagerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
+            PeerManagerMsg::Start => write!(f, "Start"),
+            PeerManagerMsg::PeerDiscovered(server) => {
+                write!(f, "PeerDiscovered({})", server.id)
+            }
+            PeerManagerMsg::PeerRemoved { server_id } => {
+                write!(f, "PeerRemoved({})", server_id)
+            }
+            PeerManagerMsg::PeerConnected { server_id, address, .. } => {
+                write!(f, "PeerConnected({}, {})", server_id, address)
+            }
+            PeerManagerMsg::PeerDisconnected { server_id } => {
+                write!(f, "PeerDisconnected({})", server_id)
+            }
+            PeerManagerMsg::GetConnectedPeers(_) => write!(f, "GetConnectedPeers"),
+            PeerManagerMsg::ForwardQuery { peer_id, .. } => {
+                write!(f, "ForwardQuery({})", peer_id)
+            }
+            PeerManagerMsg::ForwardCommand { peer_id, .. } => {
+                write!(f, "ForwardCommand({})", peer_id)
+            }
+            PeerManagerMsg::ForwardReport { peer_id, .. } => {
+                write!(f, "ForwardReport({})", peer_id)
+            }
+            PeerManagerMsg::GetPeerStatus { peer_id, .. } => {
+                write!(f, "GetPeerStatus({})", peer_id)
+            }
+            PeerManagerMsg::GetAllPeerStatuses(_) => write!(f, "GetAllPeerStatuses"),
+            PeerManagerMsg::UpdatePeerHealth { peer_id, latency_ms } => {
+                write!(f, "UpdatePeerHealth({}, {}ms)", peer_id, latency_ms)
+            }
+            PeerManagerMsg::ConnectionFailed { server_id, address } => {
+                write!(f, "ConnectionFailed({}, {})", server_id, address)
+            }
+        }
+    }
+}
+
+pub struct PeerManager {
+    ctx: Arc<MykoServerCtx>,
+    #[allow(dead_code)]
+    host_address: String,
+    #[allow(dead_code)]
+    host_port: u16,
+    /// Query manager for local GetPeerServers subscription
+    query_manager: ActorRef<QueryManagerMsg>,
+    /// Command manager for executing DeleteServer commands
+    command_manager: ActorRef<CommandManagerMsg>,
+    /// Active peer connections keyed by server ID
+    peers: HashMap<Uuid, PeerConnection>,
+    /// Server IDs currently being connected to (prevents duplicate connection attempts for same ID)
+    connecting: HashSet<Uuid>,
+    /// Self-reference for nested operations
+    myself: Option<ActorRef<PeerManagerMsg>>,
+}
 
 impl PeerManager {
-    /// Delete a Server entity via DeleteServer command
-    async fn delete_server(command_manager: &ActorRef<CommandManagerMsg>, server_id: Uuid, host_id: Uuid) {
+    pub fn new(args: PeerManagerArgs) -> Self {
+        debug!(
+            "PeerManager starting for host {}:{}",
+            args.host_address, args.host_port
+        );
+
+        Self {
+            ctx: args.ctx,
+            host_address: args.host_address,
+            host_port: args.host_port,
+            query_manager: args.query_manager,
+            command_manager: args.command_manager,
+            peers: HashMap::new(),
+            connecting: HashSet::new(),
+            myself: None,
+        }
+    }
+
+    pub fn spawn(args: PeerManagerArgs) -> ActorHandle<PeerManagerMsg> {
+        let actor = Self::new(args);
+        let handle = crate::runtime::spawn::spawn(actor);
+
+        // Set self-reference
+        let actor_ref = handle.actor_ref();
+        let _ = actor_ref.send_message(PeerManagerMsg::SetMyself(actor_ref.clone()));
+
+        handle
+    }
+
+    /// Delete a Server entity via DeleteServer command (sync version)
+    fn delete_server_sync(command_manager: &ActorRef<CommandManagerMsg>, server_id: Uuid, host_id: Uuid) {
         use crate::entities::server::DeleteServerArgs;
         let delete_cmd = DeleteServer::new(DeleteServerArgs {
             id: server_id.to_string().into(),
@@ -149,12 +218,7 @@ impl PeerManager {
             "peer-manager",
         );
 
-        match ractor::call!(
-            command_manager,
-            CommandManagerMsg::Execute,
-            wrapped,
-            req
-        ) {
+        match command_manager.call(|r| CommandManagerMsg::Execute(wrapped, req, r)) {
             Ok(_) => trace!("Deleted server entry {}", server_id),
             Err(e) => warn!("Failed to delete server {}: {:?}", server_id, e),
         }
@@ -162,59 +226,36 @@ impl PeerManager {
 }
 
 impl Actor for PeerManager {
-    type State = PeerManagerState;
     type Msg = PeerManagerMsg;
-    type Arguments = PeerManagerArgs;
 
-    async fn pre_start(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ActorProcessingErr> {
-        debug!(
-            "PeerManager starting for host {}:{}",
-            args.host_address, args.host_port
-        );
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
+            PeerManagerMsg::SetMyself(myself) => {
+                self.myself = Some(myself);
+            }
 
-        Ok(PeerManagerState {
-            ctx: args.ctx,
-            host_address: args.host_address,
-            host_port: args.host_port,
-            query_manager: args.query_manager,
-            command_manager: args.command_manager,
-            peers: HashMap::new(),
-            connecting: HashSet::new(),
-            discovery_handle: None,
-        })
-    }
-
-    async fn handle(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match message {
             PeerManagerMsg::Start => {
                 trace!("Starting peer discovery");
 
-                let myself_clone = myself.clone();
-                let host_id = state.ctx.host_id;
-                let query_manager = state.query_manager.clone();
+                let myself = match &self.myself {
+                    Some(m) => m.clone(),
+                    None => {
+                        warn!("PeerManager: myself not set during Start");
+                        return;
+                    }
+                };
 
-                let handle = tokio::spawn(async move {
+                let host_id = self.ctx.host_id;
+                let query_manager = self.query_manager.clone();
+
+                // Spawn discovery thread (sync - uses crossbeam channel)
+                std::thread::spawn(move || {
                     use crate::actors::query::common::QueryStreamUpdate;
 
                     // Subscribe to GetPeerServers for immediate discovery
-                    let query: Arc<dyn AnyQuery> = Arc::new(GetPeerServers::new(
-                        crate::entities::server::GetPeerServersArgs {},
-                    ));
+                    let query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::new(GetPeerServers {}));
 
-                    let mut receiver = match ractor::call!(
-                        query_manager,
-                        QueryManagerMsg::WatchQuery,
-                        query
-                    ) {
+                    let receiver = match query_manager.call(|r| QueryManagerMsg::WatchQuery(query, r)) {
                         Ok(rx) => rx,
                         Err(e) => {
                             warn!("Failed to subscribe to GetPeerServers: {:?}", e);
@@ -226,9 +267,9 @@ impl Actor for PeerManager {
                     let mut current_servers: std::collections::BTreeMap<Arc<str>, Server> =
                         std::collections::BTreeMap::new();
 
-                    // Process query updates
+                    // Process query updates (sync iteration over crossbeam channel)
                     trace!("Discovery subscription active");
-                    while let Some(update) = receiver.recv().await {
+                    for update in receiver.iter() {
                         match update {
                             QueryStreamUpdate::Initial(items) => {
                                 let peer_count = items.iter().filter(|(id, _)| id.as_ref() != host_id.to_string()).count();
@@ -245,7 +286,7 @@ impl Actor for PeerManager {
                                             server.id, server.address, server.port, server.started_at
                                         );
                                         current_servers.insert(id, server.clone());
-                                        let _ = myself_clone
+                                        let _ = myself
                                             .send_message(PeerManagerMsg::PeerDiscovered(server));
                                     }
                                 }
@@ -273,7 +314,7 @@ impl Actor for PeerManager {
                                             old_started_at.unwrap_or_default(), server.started_at
                                         );
                                     }
-                                    let _ = myself_clone
+                                    let _ = myself
                                         .send_message(PeerManagerMsg::PeerDiscovered(server));
                                 }
                             }
@@ -284,7 +325,7 @@ impl Actor for PeerManager {
                                         server.id, server.address, server.port
                                     );
                                     if let Ok(uuid) = Uuid::parse_str(&id) {
-                                        let _ = myself_clone
+                                        let _ = myself
                                             .send_message(PeerManagerMsg::PeerRemoved { server_id: uuid });
                                     }
                                 }
@@ -294,8 +335,6 @@ impl Actor for PeerManager {
 
                     trace!("Discovery loop ended");
                 });
-
-                state.discovery_handle = Some(handle);
             }
 
             PeerManagerMsg::PeerDiscovered(server) => {
@@ -306,104 +345,106 @@ impl Actor for PeerManager {
                     Ok(id) => id,
                     Err(e) => {
                         warn!("Invalid server ID {}: {}", server.id, e);
-                        return Ok(());
+                        return;
                     }
                 };
 
                 // Skip if this is ourselves
-                if server_id == state.ctx.host_id {
-                    return Ok(());
+                if server_id == self.ctx.host_id {
+                    return;
                 }
 
                 // Skip if already connected or connecting
-                if state.peers.contains_key(&server_id) {
+                if self.peers.contains_key(&server_id) {
                     trace!("Already connected to {}", server_id);
-                    return Ok(());
+                    return;
                 }
-                if state.connecting.contains(&server_id) {
+                if self.connecting.contains(&server_id) {
                     trace!("Already connecting to {}", server_id);
-                    return Ok(());
+                    return;
                 }
 
                 trace!("Connecting to {} at {}", server_id, address_key);
-                state.connecting.insert(server_id);
+                self.connecting.insert(server_id);
 
                 // Connect in background
-                let myself_clone = myself.clone();
+                let myself = match &self.myself {
+                    Some(m) => m.clone(),
+                    None => return,
+                };
                 let peer_address = format!("ws://{}:{}/myko", server.address, server.port);
                 let expected_server_id = server_id;
-                let command_manager = state.command_manager.clone();
-                let host_id = state.ctx.host_id;
+                let command_manager = self.command_manager.clone();
+                let host_id = self.ctx.host_id;
 
-                tokio::spawn(async move {
+                self.ctx.tokio_handle.spawn(async move {
                     let client = MykoClient::new();
-                    client.set_address(Some(peer_address.clone()));
+                        client.set_address(Some(peer_address.clone()));
 
-                    // Wait for connection with timeout
-                    let connection_timeout = tokio::time::Duration::from_secs(5);
-                    let connected = tokio::time::timeout(connection_timeout, async {
-                        loop {
-                            let status = client.get_connection_status().await;
-                            if matches!(status, crate::client::ConnectionStatus::Connected(_)) {
-                                return true;
+                        // Wait for connection with timeout
+                        let connection_timeout = tokio::time::Duration::from_secs(5);
+                        let connected = tokio::time::timeout(connection_timeout, async {
+                            loop {
+                                let status = client.get_connection_status().await;
+                                if matches!(status, crate::client::ConnectionStatus::Connected(_)) {
+                                    return true;
+                                }
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             }
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        })
+                        .await
+                        .unwrap_or(false);
+
+                        if !connected {
+                            warn!("Connection timeout: {} at {}", expected_server_id, address_key);
+                            client.close();
+                            Self::delete_server_sync(&command_manager, expected_server_id, host_id);
+                            let _ = myself.send_message(PeerManagerMsg::ConnectionFailed {
+                                server_id: expected_server_id,
+                                address: address_key,
+                            });
+                            return;
                         }
-                    })
-                    .await
-                    .unwrap_or(false);
 
-                    if !connected {
-                        warn!("Connection timeout: {} at {}", expected_server_id, address_key);
-                        client.close();
-                        Self::delete_server(&command_manager, expected_server_id, host_id).await;
-                        let _ = myself_clone.send_message(PeerManagerMsg::ConnectionFailed {
-                            server_id: expected_server_id,
-                            address: address_key,
-                        });
-                        return;
-                    }
+                        // Verify server ID via GetConnectedServer query
+                        let query = QueryRequest::new(GetConnectedServer {});
 
-                    // Verify server ID via GetConnectedServer query
-                    let query =
-                        GetConnectedServer::new(crate::entities::server::GetConnectedServerArgs {});
+                        let verification_timeout = tokio::time::Duration::from_secs(3);
+                        let verification_result = tokio::time::timeout(verification_timeout, async {
+                            let stream = client.watch_query(&query);
+                            tokio::pin!(stream);
 
-                    let verification_timeout = tokio::time::Duration::from_secs(3);
-                    let verification_result = tokio::time::timeout(verification_timeout, async {
-                        let stream = client.watch_query::<Server, GetConnectedServer>(&query);
-                        tokio::pin!(stream);
+                            if let Some(servers) = TokioStreamExt::next(&mut stream).await {
+                                let actual_id = servers.first().map(|s| s.id.to_string());
+                                (actual_id.clone(), actual_id == Some(expected_server_id.to_string()))
+                            } else {
+                                (None, false)
+                            }
+                        })
+                        .await
+                        .unwrap_or((None, false));
 
-                        if let Some(servers) = TokioStreamExt::next(&mut stream).await {
-                            let actual_id = servers.first().map(|s| s.id.to_string());
-                            (actual_id.clone(), actual_id == Some(expected_server_id.to_string()))
+                        let (actual_id, verified) = verification_result;
+
+                        if verified {
+                            trace!("Verified peer {} at {}", expected_server_id, address_key);
+                            let _ = myself.send_message(PeerManagerMsg::PeerConnected {
+                                server_id: expected_server_id,
+                                address: address_key,
+                                client,
+                            });
                         } else {
-                            (None, false)
-                        }
-                    })
-                    .await
-                    .unwrap_or((None, false));
-
-                    let (actual_id, verified) = verification_result;
-
-                    if verified {
-                        trace!("Verified peer {} at {}", expected_server_id, address_key);
-                        let _ = myself_clone.send_message(PeerManagerMsg::PeerConnected {
-                            server_id: expected_server_id,
-                            address: address_key,
-                            client,
-                        });
-                    } else {
-                        warn!(
-                            "Server ID mismatch: expected {} at {}, got {:?}",
-                            expected_server_id, address_key, actual_id
-                        );
-                        client.close();
-                        Self::delete_server(&command_manager, expected_server_id, host_id).await;
-                        let _ = myself_clone.send_message(PeerManagerMsg::ConnectionFailed {
-                            server_id: expected_server_id,
-                            address: address_key,
-                        });
-                    }
+                            warn!(
+                                "Server ID mismatch: expected {} at {}, got {:?}",
+                                expected_server_id, address_key, actual_id
+                            );
+                            client.close();
+                            Self::delete_server_sync(&command_manager, expected_server_id, host_id);
+                    let _ = myself.send_message(PeerManagerMsg::ConnectionFailed {
+                        server_id: expected_server_id,
+                        address: address_key,
+                    });
+                }
                 });
             }
 
@@ -415,16 +456,18 @@ impl Actor for PeerManager {
                 info!("Connected to peer {} at {}", server_id, address);
 
                 // Remove from connecting set
-                state.connecting.remove(&server_id);
+                self.connecting.remove(&server_id);
 
                 // Monitor connection status - when it goes to Disconnected,
                 // close the client and notify PeerManager
                 let monitor_client = client.clone();
-                let myself_clone = myself.clone();
-                tokio::spawn(async move {
-                    use futures_signals::signal::SignalExt;
+                let myself = match &self.myself {
+                    Some(m) => m.clone(),
+                    None => return,
+                };
 
-                    let mut stream = monitor_client.get_status().to_stream();
+                self.ctx.tokio_handle.spawn(async move {
+                    let mut stream = monitor_client.watch_connection_status();
                     let mut was_connected = true;
 
                     while let Some(status) = TokioStreamExt::next(&mut stream).await {
@@ -436,7 +479,7 @@ impl Actor for PeerManager {
                                 if was_connected {
                                     debug!("Lost connection to peer {}", server_id);
                                     monitor_client.close();
-                                    let _ = myself_clone
+                                    let _ = myself
                                         .send_message(PeerManagerMsg::PeerDisconnected { server_id });
                                     break;
                                 }
@@ -445,7 +488,7 @@ impl Actor for PeerManager {
                     }
                 });
 
-                state.peers.insert(
+                self.peers.insert(
                     server_id,
                     PeerConnection {
                         server_id,
@@ -460,7 +503,7 @@ impl Actor for PeerManager {
                 info!("Disconnected from peer {}", server_id);
 
                 // Close the client to stop any reconnection attempts
-                if let Some(peer) = state.peers.remove(&server_id) {
+                if let Some(peer) = self.peers.remove(&server_id) {
                     peer.client.close();
                 }
 
@@ -474,17 +517,17 @@ impl Actor for PeerManager {
                 // Convert to WrappedCommand using From impl
                 let wrapped: WrappedCommand = (&delete_cmd as &dyn AnyCommand).into();
 
-                let host_id = state.ctx.host_id;
+                let host_id = self.ctx.host_id;
                 let req = RequestContext::internal(
                     Arc::from(Uuid::new_v4().to_string()),
                     host_id,
                     "peer-manager",
                 );
-                let command_manager = state.command_manager.clone();
+                let command_manager = self.command_manager.clone();
 
-                // Execute command in background - we don't need to wait for the result
-                tokio::spawn(async move {
-                    match ractor::call!(command_manager, CommandManagerMsg::Execute, wrapped, req) {
+                // Execute command in background thread
+                std::thread::spawn(move || {
+                    match command_manager.call(|r| CommandManagerMsg::Execute(wrapped, req, r)) {
                         Ok(_) => trace!("Deleted server entry {}", server_id),
                         Err(e) => warn!("Failed to delete server {}: {:?}", server_id, e),
                     }
@@ -495,13 +538,15 @@ impl Actor for PeerManager {
                 trace!("Peer {} removed from discovery", server_id);
 
                 // If we're connected, disconnect
-                if state.peers.contains_key(&server_id) {
+                if self.peers.contains_key(&server_id)
+                    && let Some(myself) = &self.myself
+                {
                     let _ = myself.send_message(PeerManagerMsg::PeerDisconnected { server_id });
                 }
             }
 
             PeerManagerMsg::GetConnectedPeers(reply) => {
-                let peer_ids: Vec<Uuid> = state.peers.keys().cloned().collect();
+                let peer_ids: Vec<Uuid> = self.peers.keys().cloned().collect();
                 let _ = reply.send(peer_ids);
             }
 
@@ -511,12 +556,12 @@ impl Actor for PeerManager {
                 reply,
             } => {
                 // Check if this is for the local server
-                if peer_id == state.ctx.host_id {
+                if peer_id == self.ctx.host_id {
                     let _ = reply.send(Err("Cannot forward query to self".to_string()));
-                    return Ok(());
+                    return;
                 }
 
-                match state.peers.get(&peer_id) {
+                match self.peers.get(&peer_id) {
                     Some(peer) => {
                         let client = peer.client.clone();
                         let query_id = query.query_id();
@@ -525,7 +570,7 @@ impl Actor for PeerManager {
                         // Convert to WrappedQuery using From impl
                         let wrapped: WrappedQuery = query.into();
 
-                        tokio::spawn(async move {
+                        self.ctx.tokio_handle.spawn(async move {
                             trace!("Forwarding query {} to peer {}", query_id, peer_id);
 
                             // Set up listener for response before sending
@@ -592,12 +637,12 @@ impl Actor for PeerManager {
                 reply,
             } => {
                 // Check if this is for the local server
-                if peer_id == state.ctx.host_id {
+                if peer_id == self.ctx.host_id {
                     let _ = reply.send(Err("Cannot forward command to self".to_string()));
-                    return Ok(());
+                    return;
                 }
 
-                match state.peers.get(&peer_id) {
+                match self.peers.get(&peer_id) {
                     Some(peer) => {
                         let client = peer.client.clone();
                         let command_id = command.command_id();
@@ -606,7 +651,7 @@ impl Actor for PeerManager {
                         // Convert to WrappedCommand using From impl
                         let wrapped: WrappedCommand = command.into();
 
-                        tokio::spawn(async move {
+                        self.ctx.tokio_handle.spawn(async move {
                             trace!("Forwarding command {} to peer {}", command_id, peer_id);
 
                             // Set up listener for response before sending
@@ -667,12 +712,12 @@ impl Actor for PeerManager {
                 reply,
             } => {
                 // Check if this is for the local server
-                if peer_id == state.ctx.host_id {
+                if peer_id == self.ctx.host_id {
                     let _ = reply.send(Err("Cannot forward report to self".to_string()));
-                    return Ok(());
+                    return;
                 }
 
-                match state.peers.get(&peer_id) {
+                match self.peers.get(&peer_id) {
                     Some(peer) => {
                         let client = peer.client.clone();
                         let report_id = report.report_id();
@@ -681,7 +726,7 @@ impl Actor for PeerManager {
                         // Convert to WrappedReport using From impl
                         let wrapped: WrappedReport = report.into();
 
-                        tokio::spawn(async move {
+                        self.ctx.tokio_handle.spawn(async move {
                             trace!("Forwarding report {} to peer {}", report_id, peer_id);
 
                             // Set up listener for response before sending
@@ -737,7 +782,7 @@ impl Actor for PeerManager {
             }
 
             PeerManagerMsg::GetPeerStatus { peer_id, reply } => {
-                let status = state.peers.get(&peer_id).map(|peer| {
+                let status = self.peers.get(&peer_id).map(|peer| {
                     let last_seen_iso = peer.last_seen.map(|instant| {
                         // Convert Instant to approximate ISO timestamp
                         let elapsed = instant.elapsed();
@@ -756,7 +801,7 @@ impl Actor for PeerManager {
             }
 
             PeerManagerMsg::GetAllPeerStatuses(reply) => {
-                let statuses: Vec<PeerStatus> = state
+                let statuses: Vec<PeerStatus> = self
                     .peers
                     .iter()
                     .map(|(peer_id, peer)| {
@@ -778,7 +823,7 @@ impl Actor for PeerManager {
             }
 
             PeerManagerMsg::UpdatePeerHealth { peer_id, latency_ms } => {
-                if let Some(peer) = state.peers.get_mut(&peer_id) {
+                if let Some(peer) = self.peers.get_mut(&peer_id) {
                     peer.last_seen = Some(std::time::Instant::now());
                     peer.last_latency_ms = Some(latency_ms);
                     trace!("Peer {} health: {}ms", peer_id, latency_ms);
@@ -790,32 +835,18 @@ impl Actor for PeerManager {
                 address,
             } => {
                 // Just remove from connecting set - server entry already deleted by caller
-                state.connecting.remove(&server_id);
+                self.connecting.remove(&server_id);
                 trace!("Connection failed: {} at {}", server_id, address);
             }
-
         }
-
-        Ok(())
     }
 
-    async fn post_stop(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
+    fn on_shutdown(&mut self) {
         trace!("PeerManager stopping");
 
-        // Cancel discovery task
-        if let Some(handle) = state.discovery_handle.take() {
-            handle.abort();
-        }
-
         // Close all peer connections
-        for (_, peer) in state.peers.drain() {
+        for (_, peer) in self.peers.drain() {
             peer.client.close();
         }
-
-        Ok(())
     }
 }

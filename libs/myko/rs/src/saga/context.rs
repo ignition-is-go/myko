@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```ignore
-//! async fn handle_event(event: MEvent, ctx: &SagaContext) -> Option<WrappedCommand> {
+//! fn handle_event(event: MEvent, ctx: &SagaContext) -> Option<WrappedCommand> {
 //!     // Check if this event originated from our server
 //!     if event.source_id.as_deref() != Some(&ctx.host_id().to_string()) {
 //!         return None;
@@ -16,7 +16,6 @@
 //!
 //!     // Execute a command in response
 //!     ctx.execute_command(&NotifyStatusChange { id: event.item_id() })
-//!         .await
 //!         .ok();
 //!
 //!     None
@@ -25,7 +24,6 @@
 
 use std::sync::Arc;
 
-use ractor::ActorRef;
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -38,6 +36,7 @@ use crate::{
     },
     command::{CommandError, CommandId, WrappedCommand},
     context::RequestContext,
+    runtime::ActorRef,
     server::MykoServerCtx,
 };
 
@@ -115,7 +114,7 @@ impl SagaContext {
     ///
     /// This is useful for sagas that need to perform complex operations
     /// that are already implemented as commands.
-    pub async fn execute_command<C>(&self, cmd: &C) -> Result<Value, SagaError>
+    pub fn execute_command<C>(&self, cmd: &C) -> Result<Value, SagaError>
     where
         C: CommandId + Serialize,
     {
@@ -141,19 +140,15 @@ impl SagaContext {
             "saga-context",
         );
 
-        ractor::call!(
-            self.command_manager,
-            CommandManagerMsg::Execute,
-            wrapped,
-            req
-        )
-        .map_err(|e| SagaError {
-            saga_id: "context".to_string(),
-            message: format!("Failed to execute command: {}", e),
-        })?
-        .map_err(|e: CommandError| SagaError {
-            saga_id: "context".to_string(),
-            message: e.message,
-        })
+        self.command_manager
+            .call(|r| CommandManagerMsg::Execute(wrapped, req, r))
+            .map_err(|e| SagaError {
+                saga_id: "context".to_string(),
+                message: format!("Failed to execute command: {}", e),
+            })?
+            .map_err(|e: CommandError| SagaError {
+                saga_id: "context".to_string(),
+                message: e.message,
+            })
     }
 }

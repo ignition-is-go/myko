@@ -3,26 +3,37 @@ use crate::{
     actors::{
         command::command_manager::CommandManagerMsg,
         event::{common::ProcessEventData, event_manager::EventManagerMsg},
-        query::query_manager::QueryManagerMsg,
+        query::{common::WebSocketSink, query_manager::QueryManagerMsg},
         report::report_manager::ReportManagerMsg,
         ws::websocket_server::{SendToClientData, WebSocketServerMsg},
     },
-    api::query::QueryResponse,
     command::{CommandError, CommandResponse},
     context::RequestContext,
     entities::client::Client,
     event::{MEvent, MEventType},
-    item::WrappedItem,
     message::MykoMessage,
     report::ReportResponse,
+    runtime::{Actor, ActorHandle, ActorRef},
 };
-use futures_signals::signal_map::SignalMapExt;
 use log::{debug, error, trace};
-use ractor::{Actor, ActorRef, cast};
 use std::{collections::{HashMap, HashSet}, sync::Arc};
 use uuid::Uuid;
 
-pub struct MessageHandler;
+pub struct MessageHandler {
+    event_manager: ActorRef<EventManagerMsg>,
+    query_manager: ActorRef<QueryManagerMsg>,
+    report_manager: ActorRef<ReportManagerMsg>,
+    command_manager: ActorRef<CommandManagerMsg>,
+    /// Direct reference to WebSocketServer (bypasses Server routing)
+    ws_server: ActorRef<WebSocketServerMsg>,
+    /// Host ID for creating RequestContext
+    host_id: Uuid,
+    /// Shared tokio runtime handle for async dispatch
+    tokio_handle: tokio::runtime::Handle,
+    /// Track active subscriptions per client for cleanup on disconnect
+    /// Maps client_id -> set of (subscription_type, tx)
+    client_subscriptions: HashMap<Arc<str>, HashSet<(SubscriptionType, Arc<str>)>>,
+}
 
 pub struct MessageHandlerArgs {
     pub event_manager: ActorRef<EventManagerMsg>,
@@ -33,20 +44,8 @@ pub struct MessageHandlerArgs {
     pub ws_server: ActorRef<WebSocketServerMsg>,
     /// Host ID for request context
     pub host_id: Uuid,
-}
-
-pub struct MessageHandlerState {
-    event_manager: ActorRef<EventManagerMsg>,
-    query_manager: ActorRef<QueryManagerMsg>,
-    report_manager: ActorRef<ReportManagerMsg>,
-    command_manager: ActorRef<CommandManagerMsg>,
-    /// Direct reference to WebSocketServer (bypasses Server routing)
-    ws_server: ActorRef<WebSocketServerMsg>,
-    /// Host ID for creating RequestContext
-    host_id: Uuid,
-    /// Track active subscriptions per client for cleanup on disconnect
-    /// Maps client_id -> set of (subscription_type, tx)
-    client_subscriptions: HashMap<Arc<str>, HashSet<(SubscriptionType, Arc<str>)>>,
+    /// Shared tokio runtime handle
+    pub tokio_handle: tokio::runtime::Handle,
 }
 
 /// Type of subscription for tracking
@@ -75,36 +74,47 @@ pub enum MessageHandlerMsg {
     },
 }
 
-impl Actor for MessageHandler {
-    type Msg = MessageHandlerMsg;
+impl std::fmt::Debug for MessageHandlerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MessageHandlerMsg::ProcessText(data) => {
+                write!(f, "ProcessText(client_id={})", data.client_id)
+            }
+            MessageHandlerMsg::ClientConnected { client_id, server_id } => {
+                write!(f, "ClientConnected(client={}, server={})", client_id, server_id)
+            }
+            MessageHandlerMsg::ClientDisconnected { client_id, server_id } => {
+                write!(f, "ClientDisconnected(client={}, server={})", client_id, server_id)
+            }
+        }
+    }
+}
 
-    type State = MessageHandlerState;
-
-    type Arguments = MessageHandlerArgs;
-
-    async fn pre_start(
-        &self,
-        _myself: ractor::ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        Ok(MessageHandlerState {
+impl MessageHandler {
+    pub fn new(args: MessageHandlerArgs) -> Self {
+        Self {
             event_manager: args.event_manager,
             query_manager: args.query_manager,
             report_manager: args.report_manager,
             command_manager: args.command_manager,
             ws_server: args.ws_server,
             host_id: args.host_id,
+            tokio_handle: args.tokio_handle,
             client_subscriptions: HashMap::new(),
-        })
+        }
     }
 
-    async fn handle(
-        &self,
-        _myself: ractor::ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ractor::ActorProcessingErr> {
-        match message {
+    pub fn spawn(args: MessageHandlerArgs) -> ActorHandle<MessageHandlerMsg> {
+        let actor = Self::new(args);
+        crate::runtime::spawn::spawn(actor)
+    }
+}
+
+impl Actor for MessageHandler {
+    type Msg = MessageHandlerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
             MessageHandlerMsg::ProcessText(ProcessTextData { client_id, text }) => {
                 trace!("Processing text message from {}: {}", client_id, &text[..text.len().min(200)]);
                 let myko_message = match serde_json::from_str::<MykoMessage>(&text) {
@@ -114,24 +124,23 @@ impl Actor for MessageHandler {
                     }
                     Err(e) => {
                         debug!("Failed to parse message: {} (text: {:?})", e, text);
-                        return Ok(());
+                        return;
                     }
                 };
                 match myko_message {
                     MykoMessage::Event(event) => {
-                        state
+                        let _ = self
                             .event_manager
                             .send_message(EventManagerMsg::ProcessEvent(ProcessEventData {
                                 event,
                                 persist: PersistEvent::Persist,
                                 parsed_item: None, // External events need parsing
                                 client_id: Some(client_id.clone()),
-                            }))?;
-                        Ok(())
+                            }));
                     }
                     MykoMessage::Query(query) => {
                         trace!("Received query: {:?}", query);
-                        let item_type_clone = query.query_item_type.clone();
+                        let item_type = query.query_item_type.clone();
                         let tx: Arc<str> = query
                             .query
                             .get("tx")
@@ -140,104 +149,26 @@ impl Actor for MessageHandler {
                             .into();
 
                         // Track subscription for cleanup on disconnect
-                        state.client_subscriptions
+                        self.client_subscriptions
                             .entry(client_id.clone())
                             .or_default()
                             .insert((SubscriptionType::Query, tx.clone()));
 
-                        let sig =
-                            ractor::call!(state.query_manager, QueryManagerMsg::StartQuery, query)?;
+                        // Create a WebSocket sink that sends directly to the client
+                        // No intermediate channel or async task needed
+                        let sink = Box::new(WebSocketSink::new(
+                            client_id.clone(),
+                            self.ws_server.clone(),
+                            item_type,
+                            tx,
+                        ));
 
-                        let mut sequence = 0_u64;
-
-                        // Direct reference to WS server (bypasses Server routing)
-                        let ws_server_ref = state.ws_server.clone();
-
-                        tokio::spawn(sig.for_each(move |v| {
-                            trace!("Map Diff in MessageHandler: {:?}", v);
-
-                            let update: QueryResponse = match v {
-                                futures_signals::signal_map::MapDiff::Replace { entries } => {
-                                    sequence = 0;
-                                    let items =
-                                        entries.iter().map(|f| f.1.to_value()).collect::<Vec<_>>();
-
-                                    let upserts = items
-                                        .iter()
-                                        .cloned()
-                                        .map(|item| {
-
-                                            WrappedItem {
-                                                item,
-                                                item_type: item_type_clone.clone(),
-                                            }
-                                        })
-                                        .collect::<Vec<_>>();
-                                    QueryResponse {
-                                        sequence,
-                                        deletes: vec![],
-                                        upserts,
-                                        tx: tx.clone(),
-                                    }
-                                }
-                                futures_signals::signal_map::MapDiff::Insert { key: _, value }
-                                | futures_signals::signal_map::MapDiff::Update { key: _, value } => {
-                                    let upserts = vec![WrappedItem {
-                                        item: value.to_value(),
-                                        item_type: item_type_clone.clone(),
-                                    }];
-
-                                    sequence += 1;
-
-                                    QueryResponse {
-                                        deletes: vec![],
-                                        upserts,
-                                        tx: tx.clone(),
-                                        sequence,
-                                    }
-                                }
-
-                                futures_signals::signal_map::MapDiff::Remove { key } => {
-                                    sequence += 1;
-
-                                    let deletes = vec![key];
-
-                                    QueryResponse {
-                                        deletes,
-                                        upserts: vec![],
-                                        tx: tx.clone(),
-                                        sequence,
-                                    }
-                                }
-                                futures_signals::signal_map::MapDiff::Clear {} => {
-                                    sequence = 0;
-
-                                    QueryResponse {
-                                        deletes: vec![],
-                                        upserts: vec![],
-                                        tx: tx.clone(),
-                                        sequence,
-                                    }
-                                }
-                            };
-
-                            // Direct send to WebSocketServer (bypasses Server actor)
-                            if let Err(e) = cast!(
-                                ws_server_ref,
-                                WebSocketServerMsg::SendToClient(
-                                    SendToClientData {
-                                        client_id: client_id.clone(),
-                                        message: MykoMessage::QueryResponse(update),
-                                    }
-                                )
-                            ) {
-                                error!("Failed to send query response: {}", e);
-                            };
-
-                            async {}
-                        }));
-
-                        Ok(())
+                        // Start the query with direct WebSocket forwarding
+                        if let Err(e) = self.query_manager.send_message(
+                            QueryManagerMsg::WatchWrappedQueryWithSink(query, sink)
+                        ) {
+                            error!("Failed to start query: {}", e);
+                        }
                     }
                     MykoMessage::Report(report) => {
                         trace!("Received report: {:?}", report);
@@ -249,7 +180,7 @@ impl Actor for MessageHandler {
                             .into();
 
                         // Track subscription for cleanup on disconnect
-                        state.client_subscriptions
+                        self.client_subscriptions
                             .entry(client_id.clone())
                             .or_default()
                             .insert((SubscriptionType::Report, tx.clone()));
@@ -258,7 +189,7 @@ impl Actor for MessageHandler {
                         let req = RequestContext::from_client(
                             tx.clone(),
                             client_id.clone(),
-                            state.host_id,
+                            self.host_id,
                         );
 
                         // Create channel for report outputs
@@ -266,19 +197,20 @@ impl Actor for MessageHandler {
                             tokio::sync::mpsc::channel::<serde_json::Value>(16);
 
                         // Start the report
-                        if let Err(e) = state.report_manager.send_message(
+                        if let Err(e) = self.report_manager.send_message(
                             ReportManagerMsg::StartReport(report, req, output_tx),
                         ) {
                             error!("Failed to start report: {}", e);
-                            return Ok(());
+                            return;
                         }
 
                         // Direct reference to WS server (bypasses Server routing)
-                        let ws_server_ref = state.ws_server.clone();
+                        let ws_server_ref = self.ws_server.clone();
                         let client_id = client_id.clone();
 
-                        // Spawn task to forward report outputs to client
-                        tokio::spawn(async move {
+                        // Use shared tokio runtime for report output forwarding
+                        // This avoids creating a new runtime per report subscription
+                        self.tokio_handle.spawn(async move {
                             while let Some(value) = output_rx.recv().await {
                                 let value_str = value.to_string();
                                 let preview = if value_str.len() > 100 {
@@ -294,8 +226,7 @@ impl Actor for MessageHandler {
                                 };
 
                                 // Direct send to WebSocketServer (bypasses Server actor)
-                                if let Err(e) = cast!(
-                                    ws_server_ref,
+                                if let Err(e) = ws_server_ref.send_message(
                                     WebSocketServerMsg::SendToClient(
                                         SendToClientData {
                                             client_id: client_id.clone(),
@@ -308,26 +239,22 @@ impl Actor for MessageHandler {
                                 }
                             }
                         });
-
-                        Ok(())
                     }
                     MykoMessage::QueryCancel(cancel) => {
                         trace!("Query cancel requested: {}", cancel.tx);
-                        if let Err(e) = state.query_manager.send_message(
+                        if let Err(e) = self.query_manager.send_message(
                             QueryManagerMsg::CancelQuery(cancel.tx.into())
                         ) {
                             error!("Failed to send cancel to QueryManager: {}", e);
                         }
-                        Ok(())
                     }
                     MykoMessage::ReportCancel(cancel) => {
                         trace!("Report cancel requested: {}", cancel.tx);
-                        if let Err(e) = state.report_manager.send_message(
+                        if let Err(e) = self.report_manager.send_message(
                             ReportManagerMsg::StopReport(cancel.tx.into())
                         ) {
                             error!("Failed to send cancel to ReportManager: {}", e);
                         }
-                        Ok(())
                     }
                     MykoMessage::Command(wrapped_command) => {
                         trace!("Received Command message: {}", wrapped_command.command_id);
@@ -345,35 +272,44 @@ impl Actor for MessageHandler {
                         let req = RequestContext::from_client(
                             tx.clone(),
                             client_id.clone(),
-                            state.host_id,
+                            self.host_id,
                         );
 
-                        let command_manager = state.command_manager.clone();
+                        let command_manager = self.command_manager.clone();
                         // Direct reference to WS server (bypasses Server routing)
-                        let ws_server_ref = state.ws_server.clone();
+                        let ws_server_ref = self.ws_server.clone();
                         let client_id_clone = client_id.clone();
 
-                        // Execute command asynchronously and send response
-                        tokio::spawn(async move {
-                            let result = ractor::call!(
-                                command_manager,
-                                CommandManagerMsg::Execute,
-                                wrapped_command,
-                                req
-                            );
+                        // Execute command using the tokio blocking thread pool
+                        // This bounds the number of concurrent command executions
+                        self.tokio_handle.spawn(async move {
+                            let result = tokio::task::spawn_blocking(move || {
+                                command_manager.call(|r| CommandManagerMsg::Execute(
+                                    wrapped_command,
+                                    req,
+                                    r
+                                ))
+                            }).await;
 
                             let response_message = match result {
-                                Ok(Ok(response)) => {
+                                Ok(Ok(Ok(response))) => {
                                     MykoMessage::CommandResponse(CommandResponse {
                                         response,
                                         tx: tx.to_string(),
                                     })
                                 }
-                                Ok(Err(cmd_error)) => {
+                                Ok(Ok(Err(cmd_error))) => {
                                     MykoMessage::CommandError(cmd_error)
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     error!("Failed to execute command: {}", e);
+                                    MykoMessage::CommandError(CommandError {
+                                        tx: tx.to_string(),
+                                        message: format!("Internal error: {}", e),
+                                    })
+                                }
+                                Err(e) => {
+                                    error!("Command task panicked: {}", e);
                                     MykoMessage::CommandError(CommandError {
                                         tx: tx.to_string(),
                                         message: format!("Internal error: {}", e),
@@ -382,8 +318,7 @@ impl Actor for MessageHandler {
                             };
 
                             // Direct send to WebSocketServer (bypasses Server actor)
-                            if let Err(e) = ractor::cast!(
-                                ws_server_ref,
+                            if let Err(e) = ws_server_ref.send_message(
                                 WebSocketServerMsg::SendToClient(
                                     SendToClientData {
                                         client_id: client_id_clone,
@@ -394,14 +329,11 @@ impl Actor for MessageHandler {
                                 error!("Failed to send command response: {}", e);
                             }
                         });
-
-                        Ok(())
                     }
                     MykoMessage::Ping(ping_data) => {
                         // Echo ping back immediately for latency measurement
                         trace!("Ping received, echoing back: id={}", ping_data.id);
-                        if let Err(e) = cast!(
-                            state.ws_server,
+                        if let Err(e) = self.ws_server.send_message(
                             WebSocketServerMsg::SendToClient(
                                 SendToClientData {
                                     client_id: client_id.clone(),
@@ -411,11 +343,9 @@ impl Actor for MessageHandler {
                         ) {
                             error!("Failed to send ping response: {}", e);
                         }
-                        Ok(())
                     }
                     _ => {
                         trace!("Unhandled message type: {:?}", myko_message);
-                        Ok(())
                     }
                 }
             }
@@ -431,7 +361,7 @@ impl Actor for MessageHandler {
 
                 let event = MEvent::from_item(&client, MEventType::SET, uuid::Uuid::new_v4().to_string());
 
-                if let Err(e) = state.event_manager.send_message(
+                if let Err(e) = self.event_manager.send_message(
                     EventManagerMsg::ProcessEvent(ProcessEventData {
                         event,
                         persist: PersistEvent::Persist,
@@ -441,25 +371,23 @@ impl Actor for MessageHandler {
                 ) {
                     error!("Failed to publish Client entity: {}", e);
                 }
-
-                Ok(())
             }
             MessageHandlerMsg::ClientDisconnected { client_id, server_id } => {
                 debug!("Client disconnected: {}, cancelling subscriptions", client_id);
 
                 // Cancel all subscriptions for this client
-                if let Some(subscriptions) = state.client_subscriptions.remove(&client_id) {
+                if let Some(subscriptions) = self.client_subscriptions.remove(&client_id) {
                     for (sub_type, tx) in subscriptions {
                         match sub_type {
                             SubscriptionType::Query => {
-                                if let Err(e) = state.query_manager.send_message(
+                                if let Err(e) = self.query_manager.send_message(
                                     QueryManagerMsg::CancelQuery(tx.clone())
                                 ) {
                                     error!("Failed to cancel query {}: {}", tx, e);
                                 }
                             }
                             SubscriptionType::Report => {
-                                if let Err(e) = state.report_manager.send_message(
+                                if let Err(e) = self.report_manager.send_message(
                                     ReportManagerMsg::StopReport(tx.clone())
                                 ) {
                                     error!("Failed to cancel report {}: {}", tx, e);
@@ -478,7 +406,7 @@ impl Actor for MessageHandler {
 
                 let event = MEvent::from_item(&client, MEventType::DEL, uuid::Uuid::new_v4().to_string());
 
-                if let Err(e) = state.event_manager.send_message(
+                if let Err(e) = self.event_manager.send_message(
                     EventManagerMsg::ProcessEvent(ProcessEventData {
                         event,
                         persist: PersistEvent::Persist,
@@ -488,8 +416,6 @@ impl Actor for MessageHandler {
                 ) {
                     error!("Failed to delete Client entity: {}", e);
                 }
-
-                Ok(())
             }
         }
     }

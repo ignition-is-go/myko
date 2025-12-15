@@ -5,4 +5,4 @@
 
 mod search_manager;
 
-pub use search_manager::{SearchManager, SearchManagerArgs, SearchManagerMsg, SearchManagerState};
+pub use search_manager::{SearchManager, SearchManagerArgs, SearchManagerMsg};

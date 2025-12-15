@@ -153,7 +153,7 @@ fn query_benchmarks(c: &mut Criterion) {
             b.to_async(Runtime::new().unwrap()).iter(|| {
                 let harness = harness.clone();
                 async move {
-                    let query = GetAllBenchItems::new(GetAllBenchItemsArgs {});
+                    let query = GetAllBenchItems::new();
                     let wrapped = WrappedQuery {
                         query: serde_json::to_value(&query).unwrap(),
                         query_id: "GetAllBenchItems".into(),
@@ -291,7 +291,7 @@ fn latency_benchmarks(c: &mut Criterion) {
         b.to_async(Runtime::new().unwrap()).iter(|| {
             let harness = harness.clone();
             async move {
-                let query = GetAllBenchItems::new(GetAllBenchItemsArgs {});
+                let query = GetAllBenchItems::new();
                 let wrapped = WrappedQuery {
                     query: serde_json::to_value(&query).unwrap(),
                     query_id: "GetAllBenchItems".into(),

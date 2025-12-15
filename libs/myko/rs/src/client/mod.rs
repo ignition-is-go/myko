@@ -1,19 +1,19 @@
 use crate::{
-    api::query::wrap_query,
+    api::query::WrappedQuery,
     command::{CommandId, wrap_command},
+    common::with_id::WithId,
     event::MEvent,
     item::Eventable,
     message::MykoMessage,
-    query::{QueryId, QueryItemType},
-    report::{MykoReport, ReportId, wrap_report},
+    query::{QueryParams, QueryRequest},
+    report::{ReportIdStatic, ReportParams, ReportRequest, WrappedReport},
 };
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
-use futures_signals::signal::{Signal, SignalExt};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
-use tokio_stream::{StreamExt, wrappers::BroadcastStream};
+use tokio_stream::{StreamExt, wrappers::BroadcastStream, wrappers::WatchStream};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
@@ -43,16 +43,23 @@ impl MykoClient {
         MykoClient { socket }
     }
 
-    pub fn get_status(&self) -> impl Signal<Item = ConnectionStatus> {
-        self.socket
-            .status
-            .signal_cloned()
-            .map(|x| match x {
-                SocketConnectionStatus::Connecting(_addr, _) => ConnectionStatus::Disconnected,
-                SocketConnectionStatus::Connected(addr, _) => ConnectionStatus::Connected(addr),
-                SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
-            })
-            .dedupe_cloned()
+    /// Get a stream of connection status changes
+    pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
+        let rx = self.socket.subscribe_status();
+        WatchStream::new(rx).map(|status| match status {
+            SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
+            SocketConnectionStatus::Connected(addr) => ConnectionStatus::Connected(addr),
+            SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
+        })
+    }
+
+    /// Get the current connection status
+    pub fn get_connection_status_sync(&self) -> ConnectionStatus {
+        match self.socket.get_status() {
+            SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
+            SocketConnectionStatus::Connected(addr) => ConnectionStatus::Connected(addr),
+            SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
+        }
     }
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
@@ -194,16 +201,11 @@ impl MykoClient {
     }
 
     pub async fn get_connection_status(&self) -> ConnectionStatus {
-        self.get_status()
-            .to_stream()
+        self.watch_connection_status()
             .take(1)
             .next()
             .await
             .unwrap_or(ConnectionStatus::Disconnected)
-    }
-
-    pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
-        self.get_status().to_stream()
     }
 
     pub fn handle_command<C, F, Fut>(&self, handler: F)
@@ -357,18 +359,29 @@ impl MykoClient {
         Ok(res)
     }
 
-    pub fn watch_report<T: MykoReport<U> + Clone + Serialize + ReportId, U: DeserializeOwned>(
-        &self,
-        report: &T,
-    ) -> impl tokio_stream::Stream<Item = U> {
+    /// Watch a report and receive updates as a stream.
+    ///
+    /// Accepts a `ReportRequest<R>` wrapper which contains the report params and transaction ID.
+    /// The tx from the wrapper is used for correlation.
+    pub fn watch_report<R, O>(&self, report: &ReportRequest<R>) -> impl tokio_stream::Stream<Item = O>
+    where
+        R: ReportParams + ReportIdStatic,
+        O: DeserializeOwned + 'static,
+    {
         let stream = self.get_messages();
 
-        let report_id = report.report_id().clone();
+        let report_id: Arc<str> = R::report_id_static().into();
+        let tx = report.tx.clone();
 
-        let tx = uuid::Uuid::new_v4().to_string();
+        // Serialize the ReportRequest directly (includes tx via serde flatten)
+        let report_value = serde_json::to_value(report).expect("Report should serialize");
 
-        let wrapped = wrap_report(tx.clone(), report);
+        let wrapped = WrappedReport {
+            report: report_value,
+            report_id: report_id.to_string(),
+        };
 
+        let tx_clone = tx.clone();
         let stream = stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage>(x);
             let data = match d {
@@ -381,11 +394,11 @@ impl MykoClient {
 
             match data {
                 MykoMessage::ReportResponse(response) => {
-                    if response.tx != tx {
+                    if response.tx != *tx_clone {
                         return None;
                     }
 
-                    let data = serde_json::from_value::<U>(response.response.clone())
+                    let data = serde_json::from_value::<O>(response.response.clone())
                         .expect("could not parse report value @ watch_report ");
 
                     Some(data)
@@ -394,12 +407,6 @@ impl MykoClient {
             }
         });
 
-        if wrapped.is_err() {
-            eprint!("Could not wrap report: {:?}", wrapped.err());
-            return stream;
-        }
-
-        let wrapped = wrapped.unwrap();
         let msg = MykoMessage::Report(wrapped);
 
         let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
@@ -432,23 +439,34 @@ impl MykoClient {
         stream
     }
 
-    pub fn watch_query<
-        T: Eventable + std::fmt::Debug,
-        Q: QueryId + QueryItemType + Serialize + Clone,
-    >(
-        &self,
-        query: &Q,
-    ) -> impl tokio_stream::Stream<Item = Vec<T>> {
+    /// Watch a query and receive updates as a stream.
+    ///
+    /// Accepts a `QueryRequest<Q>` wrapper which contains the query params and transaction ID.
+    /// The tx from the wrapper is used for correlation.
+    pub fn watch_query<Q>(&self, query: &QueryRequest<Q>) -> impl tokio_stream::Stream<Item = Vec<Q::Item>>
+    where
+        Q: QueryParams,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+    {
         let stream = self.get_messages();
 
-        let tx: Arc<str> = uuid::Uuid::new_v4().to_string().into();
+        let tx = query.tx.clone();
+        let query_id = query.query.query_id();
+        let query_item_type = Q::query_item_type_static();
 
-        let query_id = query.query_id();
-        let wrapped = wrap_query(tx.clone(), query);
+        // Serialize the QueryRequest directly (includes tx and created_at via serde flatten)
+        let query_value = serde_json::to_value(query).expect("Query should serialize");
+
+        let wrapped = WrappedQuery {
+            query: query_value,
+            query_id: query_id.clone(),
+            query_item_type,
+        };
 
         let send_query_id = query_id.clone();
-        let state: Arc<std::sync::Mutex<HashMap<Arc<str>, T>>> = Arc::default();
+        let state: Arc<std::sync::Mutex<HashMap<Arc<str>, Q::Item>>> = Arc::default();
 
+        let tx_clone = tx.clone();
         let stream = stream.filter_map(move |x| {
             let d = serde_json::from_value::<MykoMessage>(x);
             let data = match d {
@@ -461,7 +479,7 @@ impl MykoClient {
 
             match data {
                 MykoMessage::QueryResponse(response) => {
-                    if response.tx != tx {
+                    if response.tx != tx_clone {
                         return None;
                     }
 
@@ -475,9 +493,9 @@ impl MykoClient {
                         state.clear();
                     }
 
-                    let upserts: Vec<T> = upserts
+                    let upserts: Vec<Q::Item> = upserts
                         .iter()
-                        .filter_map(|x| serde_json::from_value::<T>(x.item.clone()).ok())
+                        .filter_map(|x| serde_json::from_value::<Q::Item>(x.item.clone()).ok())
                         .collect();
 
                     for up in upserts.iter() {
@@ -490,18 +508,11 @@ impl MykoClient {
                         state.remove(del);
                     }
 
-                    Some(state.values().cloned().collect::<Vec<T>>())
+                    Some(state.values().cloned().collect::<Vec<Q::Item>>())
                 }
                 _ => None,
             }
         });
-
-        if wrapped.is_err() {
-            eprint!("Could not wrap query: {:?}", wrapped.err());
-            return stream;
-        }
-
-        let wrapped = wrapped.unwrap();
 
         let msg = MykoMessage::Query(wrapped);
 

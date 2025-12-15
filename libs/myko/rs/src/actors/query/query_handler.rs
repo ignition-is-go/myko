@@ -1,25 +1,26 @@
+//! Query handler for a specific query type.
+//!
+//! Each QueryHandler manages subscriptions for a single query type.
+//! Supports both channel-based subscriptions (internal) and direct WebSocket forwarding (external).
+
 use crate::{
     actors::{
         event::{event_handler::EventHandlerMessage, event_manager::EventManagerMsg},
         query::{
-            common::{ProcessUpdateData, QueryStreamUpdate},
+            common::{ChannelSink, ProcessUpdateData, QueryResultSink, QueryStreamUpdate},
             query_manager::QueryClosureType,
-            query_runner::{QueryRunner, QueryRunnerArgs, QueryRunnerMsg},
         },
         server::ServerMsg,
     },
     parsers::query::AnyQuery,
     prelude::AnyItem,
     query::QueryHandlerCtxAny,
+    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
-use futures_signals::signal_map::MutableSignalMap;
+use crossbeam::channel as crossbeam_channel;
 use log::{debug, error, trace};
-use ractor::{Actor, ActorRef, RpcReplyPort};
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::mpsc;
-
-pub struct QueryHandler;
 
 pub struct QueryHandlerArgs {
     pub query_id: Arc<str>,
@@ -30,18 +31,17 @@ pub struct QueryHandlerArgs {
     pub event_manager: ActorRef<EventManagerMsg>,
 }
 
-/// Tracks a streaming query subscription
+/// Tracks a streaming query subscription with a generic sink
 struct WatchSubscription {
-    sender: mpsc::UnboundedSender<QueryStreamUpdate>,
+    sink: Box<dyn QueryResultSink>,
     closure: QueryClosureType,
     ctx: Arc<MykoServerCtx>,
     query: Arc<dyn AnyQuery>,
 }
 
-pub struct QueryHandlerState {
+pub struct QueryHandler {
     query_item_type: Arc<str>,
     closure: QueryClosureType,
-    runners: HashMap<Arc<str>, ActorRef<QueryRunnerMsg>>,
     /// Active streaming query subscriptions (by tx id)
     watchers: HashMap<Arc<str>, WatchSubscription>,
     ctx: Arc<MykoServerCtx>,
@@ -50,220 +50,201 @@ pub struct QueryHandlerState {
 
 pub enum QueryHandlerMsg {
     ProcessUpdate(ProcessUpdateData),
-    /// Batch of updates - forwarded to runners for efficient processing
+    /// Batch of updates - forwarded to watchers for efficient processing
     ProcessBatch(Vec<ProcessUpdateData>),
-    StartQuery(
-        Arc<dyn AnyQuery>,
-        RpcReplyPort<MutableSignalMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
-    ),
     /// One-shot query that returns current state without creating a subscription
     QuerySnapshot(
         Arc<dyn AnyQuery>,
         RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
-    /// Watch a query and receive updates via a channel.
-    /// Returns an unbounded receiver that emits QueryStreamUpdate messages.
+    /// Watch a query and receive updates via a crossbeam channel.
+    /// Returns a receiver that emits QueryStreamUpdate messages.
+    /// Used for internal actor-to-actor subscriptions.
     WatchQuery(
         Arc<dyn AnyQuery>,
-        RpcReplyPort<mpsc::UnboundedReceiver<QueryStreamUpdate>>,
+        RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
     ),
+    /// Watch a query with a custom sink for results.
+    /// Used for direct WebSocket forwarding without intermediate channels.
+    WatchQueryWithSink(Arc<dyn AnyQuery>, Box<dyn QueryResultSink>),
     /// Cancel a query subscription by transaction ID
     CancelQuery(Arc<str>),
 }
 
-impl Actor for QueryHandler {
-    type Arguments = QueryHandlerArgs;
-
-    type State = QueryHandlerState;
-
-    type Msg = QueryHandlerMsg;
-
-    async fn pre_start(
-        &self,
-        _myself: ractor::ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        trace!("Creating Handler for query {}", args.query_id);
-
-        Ok(QueryHandlerState {
-            closure: args.closure,
-            runners: HashMap::new(),
-            watchers: HashMap::new(),
-            ctx: args.ctx,
-            event_manager: args.event_manager,
-            query_item_type: args.query_item_type,
-        })
-    }
-
-    async fn handle(
-        &self,
-        _myself: ractor::ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ractor::ActorProcessingErr> {
-        match message {
-            QueryHandlerMsg::StartQuery(query, reply) => {
-                let handler = ractor::call!(
-                    state.event_manager.clone(),
-                    EventManagerMsg::GetEventHandler,
-                    state.query_item_type.clone()
-                )?;
-
-                let mut initial_state = ractor::call!(handler, EventHandlerMessage::GetState)?;
-
-                initial_state.retain(|_k, v| {
-                    state.closure.clone()(QueryHandlerCtxAny {
-                        ctx: state.ctx.clone(),
-                        item: v.clone(),
-                        query: query.clone(),
-                    })
-                });
-
-                let tx: Arc<str> = query.tx_id();
-
-                match Actor::spawn(
-                    None,
-                    QueryRunner,
-                    QueryRunnerArgs {
-                        initial_state,
-                        query,
-                        closure: state.closure.clone(),
-                        ctx: state.ctx.clone(),
-                    },
-                )
-                .await
-                {
-                    Ok((runner, _runner_handle)) => {
-                        state.runners.insert(tx, runner.clone());
-
-                        let response_signal = ractor::call!(runner, QueryRunnerMsg::GetState)?;
-
-                        reply.send(response_signal)?;
-                    }
-                    Err(err) => {
-                        error!("Failed to spawn query runner: {}", err);
-                    }
-                };
-                //
+impl std::fmt::Debug for QueryHandlerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueryHandlerMsg::ProcessUpdate(_) => write!(f, "ProcessUpdate"),
+            QueryHandlerMsg::ProcessBatch(updates) => {
+                write!(f, "ProcessBatch({} updates)", updates.len())
             }
-            QueryHandlerMsg::ProcessUpdate(data) => {
-                for runner in state.runners.values() {
-                    if let Err(err) =
-                        runner.send_message(QueryRunnerMsg::ProcessUpdate(data.clone()))
-                    {
-                        error!("Failed to send update to runner: {}", err);
-                    };
-                }
-
-                // Also notify streaming watchers
-                Self::notify_watchers(state, &data);
-            }
-            QueryHandlerMsg::ProcessBatch(batch) => {
-                // Forward batch to all runners for efficient processing
-                for runner in state.runners.values() {
-                    if let Err(err) =
-                        runner.send_message(QueryRunnerMsg::ProcessBatch(batch.clone()))
-                    {
-                        error!("Failed to send batch to runner: {}", err);
-                    };
-                }
-
-                // Also notify streaming watchers for each update in batch
-                for data in &batch {
-                    Self::notify_watchers(state, data);
-                }
-            }
-            QueryHandlerMsg::QuerySnapshot(query, reply) => {
-                // One-shot query: get current state, filter, and return immediately
-                let handler = ractor::call!(
-                    state.event_manager.clone(),
-                    EventManagerMsg::GetEventHandler,
-                    state.query_item_type.clone()
-                )?;
-
-                let mut snapshot = ractor::call!(handler, EventHandlerMessage::GetState)?;
-
-                snapshot.retain(|_k, v| {
-                    state.closure.clone()(QueryHandlerCtxAny {
-                        ctx: state.ctx.clone(),
-                        item: v.clone(),
-                        query: query.clone(),
-                    })
-                });
-
-                reply.send(snapshot)?;
-            }
-            QueryHandlerMsg::WatchQuery(query, reply) => {
-                // Get initial state
-                let handler = ractor::call!(
-                    state.event_manager.clone(),
-                    EventManagerMsg::GetEventHandler,
-                    state.query_item_type.clone()
-                )?;
-
-                let mut initial_state = ractor::call!(handler, EventHandlerMessage::GetState)?;
-
-                initial_state.retain(|_k, v| {
-                    state.closure.clone()(QueryHandlerCtxAny {
-                        ctx: state.ctx.clone(),
-                        item: v.clone(),
-                        query: query.clone(),
-                    })
-                });
-
-                let tx: Arc<str> = query.tx_id();
-
-                // Create channel for updates
-                let (sender, receiver) = mpsc::unbounded_channel();
-
-                // Send initial state
-                if sender
-                    .send(QueryStreamUpdate::Initial(initial_state.clone()))
-                    .is_err()
-                {
-                    error!("Failed to send initial state to watcher");
-                    return Ok(());
-                }
-
-                // Store the watcher
-                state.watchers.insert(
-                    tx.clone(),
-                    WatchSubscription {
-                        sender,
-                        closure: state.closure.clone(),
-                        ctx: state.ctx.clone(),
-                        query,
-                    },
-                );
-
-                debug!("Created watch subscription with tx {}", tx);
-                reply.send(receiver)?;
-            }
-            QueryHandlerMsg::CancelQuery(tx) => {
-                // Remove and stop the runner for this tx if we own it
-                if let Some(runner) = state.runners.remove(&tx) {
-                    trace!("Cancelling query runner for tx {}", tx);
-                    runner.stop(Some("Query cancelled by client".to_string()));
-                }
-                // Also remove any watcher for this tx
-                if state.watchers.remove(&tx).is_some() {
-                    trace!("Cancelled watch subscription for tx {}", tx);
-                }
-            }
+            QueryHandlerMsg::QuerySnapshot(_, _) => write!(f, "QuerySnapshot"),
+            QueryHandlerMsg::WatchQuery(_, _) => write!(f, "WatchQuery"),
+            QueryHandlerMsg::WatchQueryWithSink(_, _) => write!(f, "WatchQueryWithSink"),
+            QueryHandlerMsg::CancelQuery(tx) => write!(f, "CancelQuery({})", tx),
         }
-
-        Ok(())
     }
 }
 
 impl QueryHandler {
+    /// Create a new QueryHandler with the given arguments.
+    pub fn new(args: QueryHandlerArgs) -> Self {
+        trace!("Creating Handler for query {}", args.query_id);
+
+        Self {
+            closure: args.closure,
+            watchers: HashMap::new(),
+            ctx: args.ctx,
+            event_manager: args.event_manager,
+            query_item_type: args.query_item_type,
+        }
+    }
+
+    /// Spawn the QueryHandler on a dedicated thread.
+    pub fn spawn(args: QueryHandlerArgs) -> ActorHandle<QueryHandlerMsg> {
+        let actor = Self::new(args);
+        crate::runtime::spawn::spawn(actor)
+    }
+
+    fn handle_process_update(&mut self, data: ProcessUpdateData) {
+        self.notify_watchers(&data);
+    }
+
+    fn handle_process_batch(&mut self, batch: Vec<ProcessUpdateData>) {
+        for data in &batch {
+            self.notify_watchers(data);
+        }
+    }
+
+    fn handle_query_snapshot(
+        &self,
+        query: Arc<dyn AnyQuery>,
+        reply: RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
+    ) {
+        // One-shot query: get current state, filter, and return immediately
+        let handler = match self.event_manager.call(|r| {
+            EventManagerMsg::GetEventHandler(self.query_item_type.clone(), r)
+        }) {
+            Ok(h) => h,
+            Err(err) => {
+                error!("Failed to get event handler: {}", err);
+                return;
+            }
+        };
+
+        let mut snapshot = match handler.call(EventHandlerMessage::GetState) {
+            Ok(s) => s,
+            Err(err) => {
+                error!("Failed to get state: {}", err);
+                return;
+            }
+        };
+
+        snapshot.retain(|_k, v| {
+            self.closure.clone()(QueryHandlerCtxAny {
+                ctx: self.ctx.clone(),
+                item: v.clone(),
+                query: query.clone(),
+            })
+        });
+
+        let _ = reply.send(snapshot);
+    }
+
+    fn handle_watch_query(
+        &mut self,
+        query: Arc<dyn AnyQuery>,
+        reply: RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
+    ) {
+        // Create bounded channel for updates with backpressure
+        // 256 items should handle normal update bursts while preventing memory exhaustion
+        let (sender, receiver) = crossbeam_channel::bounded(256);
+        let sink = Box::new(ChannelSink::new(sender));
+
+        // Delegate to the generic sink handler
+        if self.subscribe_with_sink(query, sink) {
+            let _ = reply.send(receiver);
+        }
+    }
+
+    fn handle_watch_query_with_sink(
+        &mut self,
+        query: Arc<dyn AnyQuery>,
+        sink: Box<dyn QueryResultSink>,
+    ) {
+        self.subscribe_with_sink(query, sink);
+    }
+
+    /// Internal method to subscribe with any sink implementation.
+    /// Returns true if subscription was created successfully.
+    fn subscribe_with_sink(
+        &mut self,
+        query: Arc<dyn AnyQuery>,
+        mut sink: Box<dyn QueryResultSink>,
+    ) -> bool {
+        // Get initial state
+        let handler = match self.event_manager.call(|r| {
+            EventManagerMsg::GetEventHandler(self.query_item_type.clone(), r)
+        }) {
+            Ok(h) => h,
+            Err(err) => {
+                error!("Failed to get event handler: {}", err);
+                return false;
+            }
+        };
+
+        let mut initial_state = match handler.call(EventHandlerMessage::GetState) {
+            Ok(s) => s,
+            Err(err) => {
+                error!("Failed to get initial state: {}", err);
+                return false;
+            }
+        };
+
+        initial_state.retain(|_k, v| {
+            self.closure.clone()(QueryHandlerCtxAny {
+                ctx: self.ctx.clone(),
+                item: v.clone(),
+                query: query.clone(),
+            })
+        });
+
+        let tx: Arc<str> = query.tx_id();
+
+        // Send initial state through the sink
+        if !sink.push(QueryStreamUpdate::Initial(initial_state)) {
+            error!("Failed to send initial state to watcher");
+            return false;
+        }
+
+        // Store the watcher
+        self.watchers.insert(
+            tx.clone(),
+            WatchSubscription {
+                sink,
+                closure: self.closure.clone(),
+                ctx: self.ctx.clone(),
+                query,
+            },
+        );
+
+        debug!("Created watch subscription with tx {}", tx);
+        true
+    }
+
+    fn handle_cancel_query(&mut self, tx: Arc<str>) {
+        if self.watchers.remove(&tx).is_some() {
+            trace!("Cancelled watch subscription for tx {}", tx);
+        }
+    }
+
     /// Notify all streaming watchers about an update.
     /// Checks if each watcher's query matches the update before sending.
-    fn notify_watchers(state: &mut QueryHandlerState, data: &ProcessUpdateData) {
+    fn notify_watchers(&mut self, data: &ProcessUpdateData) {
         // Collect dead watchers to remove
         let mut dead_watchers = Vec::new();
 
-        for (tx, watcher) in state.watchers.iter() {
+        for (tx, watcher) in self.watchers.iter_mut() {
             let update = match data {
                 ProcessUpdateData::Del(id) => {
                     // Always send deletes - watcher will ignore if not tracking this ID
@@ -287,9 +268,9 @@ impl QueryHandler {
             };
 
             if let Some(update) = update
-                && watcher.sender.send(update).is_err()
+                && !watcher.sink.push(update)
             {
-                // Channel closed - mark for removal
+                // Sink closed - mark for removal
                 dead_watchers.push(tx.clone());
             }
         }
@@ -297,7 +278,34 @@ impl QueryHandler {
         // Remove dead watchers
         for tx in dead_watchers {
             debug!("Removing dead watcher with tx {}", tx);
-            state.watchers.remove(&tx);
+            self.watchers.remove(&tx);
+        }
+    }
+}
+
+impl Actor for QueryHandler {
+    type Msg = QueryHandlerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
+            QueryHandlerMsg::ProcessUpdate(data) => {
+                self.handle_process_update(data);
+            }
+            QueryHandlerMsg::ProcessBatch(batch) => {
+                self.handle_process_batch(batch);
+            }
+            QueryHandlerMsg::QuerySnapshot(query, reply) => {
+                self.handle_query_snapshot(query, reply);
+            }
+            QueryHandlerMsg::WatchQuery(query, reply) => {
+                self.handle_watch_query(query, reply);
+            }
+            QueryHandlerMsg::WatchQueryWithSink(query, sink) => {
+                self.handle_watch_query_with_sink(query, sink);
+            }
+            QueryHandlerMsg::CancelQuery(tx) => {
+                self.handle_cancel_query(tx);
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crossbeam::channel as crossbeam_channel;
 use futures::Stream;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
@@ -9,8 +10,8 @@ use uuid::Uuid;
 
 use crate::context::RequestContext;
 use crate::event::MEvent;
-use crate::query::Query;
-use crate::report::ReportIdStatic;
+use crate::query::QueryParams;
+use crate::report::{ReportOutputType, ReportParams};
 use crate::server::MykoServerCtx;
 
 /// Context provided to report handlers for accessing dependencies.
@@ -32,8 +33,8 @@ pub struct ReportContext {
 
 /// Handle to the report runner for creating subscriptions
 pub struct ReportRunnerHandle {
-    // Channel to request new query/report subscriptions
-    pub(crate) subscription_tx: mpsc::Sender<SubscriptionRequest>,
+    // Channel to request new query/report subscriptions (crossbeam for sync)
+    pub(crate) subscription_tx: crossbeam_channel::Sender<SubscriptionRequest>,
 }
 
 #[derive(Debug)]
@@ -42,7 +43,7 @@ pub enum SubscriptionRequest {
         query: Value,
         query_id: Arc<str>,
         query_item_type: Arc<str>,
-        response_tx: mpsc::Sender<Vec<Value>>,
+        response_tx: crossbeam_channel::Sender<Vec<Value>>,
     },
     Report {
         report: Value,
@@ -95,40 +96,51 @@ impl ReportContext {
     /// Returns a stream that emits whenever the query results change.
     /// The subscription is automatically managed - when the report is dropped,
     /// the query subscription is cleaned up.
+    ///
+    /// Accepts bare query params (e.g., `GetServersByIds { ids: vec![...] }`)
+    /// and automatically wraps them with transaction metadata.
     pub fn query<Q>(&self, query: Q) -> Pin<Box<dyn Stream<Item = Vec<Q::Item>> + Send>>
     where
-        Q: Query + Serialize + Send + Sync + 'static,
+        Q: QueryParams + 'static,
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        use crate::query::QueryItemType;
+        use crate::query::{QueryItemType, QueryRequest};
         let runner = self.runner.clone();
         let query_id = query.query_id();
         let query_item_type = QueryItemType::query_item_type(&query);
-        let query_value = serde_json::to_value(&query).expect("Query should serialize");
+        // Wrap with QueryRequest to add tx and created_at to the serialized value
+        let wrapped = QueryRequest::new(query);
+        let query_value = serde_json::to_value(&wrapped).expect("Query should serialize");
 
-        let (sender, mut receiver) = mpsc::channel::<Vec<Value>>(16);
+        // Create bounded channel for query responses with backpressure
+        // 64 items should handle normal query update bursts
+        let (sender, receiver) = crossbeam_channel::bounded::<Vec<Value>>(64);
 
-        // Send subscription request to runner
-        let subscription_tx = runner.subscription_tx.clone();
-        tokio::spawn(async move {
-            let _ = subscription_tx
-                .send(SubscriptionRequest::Query {
-                    query: query_value,
-                    query_id,
-                    query_item_type,
-                    response_tx: sender,
-                })
-                .await;
+        // Send subscription request to runner (sync send)
+        let _ = runner.subscription_tx.send(SubscriptionRequest::Query {
+            query: query_value,
+            query_id,
+            query_item_type,
+            response_tx: sender,
         });
 
-        // Convert channel to stream, deserializing items
+        // Convert crossbeam channel to async stream
         Box::pin(async_stream::stream! {
-            while let Some(items) = receiver.recv().await {
-                let parsed: Vec<Q::Item> = items
-                    .into_iter()
-                    .filter_map(|v| serde_json::from_value(v).ok())
-                    .collect();
-                yield parsed;
+            loop {
+                // Use spawn_blocking to avoid blocking the async runtime
+                let rx = receiver.clone();
+                let result = tokio::task::spawn_blocking(move || rx.recv()).await;
+
+                match result {
+                    Ok(Ok(items)) => {
+                        let parsed: Vec<Q::Item> = items
+                            .into_iter()
+                            .filter_map(|v| serde_json::from_value(v).ok())
+                            .collect();
+                        yield parsed;
+                    }
+                    _ => break, // Channel closed or error
+                }
             }
         })
     }
@@ -141,35 +153,35 @@ impl ReportContext {
     /// Cycle detection is performed at runtime - if the same report with
     /// the same arguments is already in the dependency chain, an error is logged
     /// and an empty stream is returned.
-    pub fn report<R>(&self, report: R) -> Pin<Box<dyn Stream<Item = R::Output> + Send>>
+    ///
+    /// Accepts bare report params and automatically wraps them with transaction metadata.
+    pub fn report<R>(&self, report: R) -> Pin<Box<dyn Stream<Item = <R as ReportOutputType>::Output> + Send>>
     where
-        R: ReportHandler + ReportIdStatic + Serialize + Send + Sync + 'static,
-        R::Output: DeserializeOwned + Clone + Send + Sync + 'static,
+        R: ReportParams + 'static,
+        <R as ReportOutputType>::Output: DeserializeOwned + Clone + Send + Sync + 'static,
     {
+        use crate::report::ReportRequest;
         let runner = self.runner.clone();
         let report_id: Arc<str> = R::report_id_static().into();
-        let report_value = serde_json::to_value(&report).expect("Report should serialize");
+        // Wrap with ReportRequest to add tx to the serialized value
+        let wrapped = ReportRequest::new(report);
+        let report_value = serde_json::to_value(&wrapped).expect("Report should serialize");
         let req = self.req.clone();
 
         let (sender, mut receiver) = mpsc::channel::<Value>(16);
 
-        // Send subscription request to runner
-        let subscription_tx = runner.subscription_tx.clone();
-        tokio::spawn(async move {
-            let _ = subscription_tx
-                .send(SubscriptionRequest::Report {
-                    report: report_value,
-                    report_id,
-                    req,
-                    response_tx: sender,
-                })
-                .await;
+        // Send subscription request to runner (sync send)
+        let _ = runner.subscription_tx.send(SubscriptionRequest::Report {
+            report: report_value,
+            report_id,
+            req,
+            response_tx: sender,
         });
 
         // Convert channel to stream, deserializing output
         Box::pin(async_stream::stream! {
             while let Some(value) = receiver.recv().await {
-                if let Ok(parsed) = serde_json::from_value::<R::Output>(value) {
+                if let Ok(parsed) = serde_json::from_value::<<R as ReportOutputType>::Output>(value) {
                     yield parsed;
                 }
             }

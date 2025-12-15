@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use log::{debug, error, trace};
-use ractor::{Actor, ActorRef, RpcReplyPort};
 use serde_json::Value;
 
 use crate::{
@@ -14,10 +13,9 @@ use crate::{
         CommandContext, CommandError, CommandHandler, CommandHandlerRegistration, WrappedCommand,
     },
     context::RequestContext,
+    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
-
-pub struct CommandManager;
 
 pub struct CommandManagerArgs {
     pub ctx: Arc<MykoServerCtx>,
@@ -26,7 +24,7 @@ pub struct CommandManagerArgs {
     pub report_manager: ActorRef<ReportManagerMsg>,
 }
 
-pub struct CommandManagerState {
+pub struct CommandManager {
     ctx: Arc<MykoServerCtx>,
     event_manager: ActorRef<EventManagerMsg>,
     query_manager: ActorRef<QueryManagerMsg>,
@@ -52,18 +50,26 @@ pub enum CommandManagerMsg {
         RequestContext,
         RpcReplyPort<Result<Value, CommandError>>,
     ),
+    /// Set self-reference (called immediately after spawn)
+    SetMyself(ActorRef<CommandManagerMsg>),
 }
 
-impl Actor for CommandManager {
-    type State = CommandManagerState;
-    type Msg = CommandManagerMsg;
-    type Arguments = CommandManagerArgs;
+impl std::fmt::Debug for CommandManagerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandManagerMsg::Execute(cmd, req, _) => {
+                write!(f, "Execute({}, tx={})", cmd.command_id, req.tx())
+            }
+            CommandManagerMsg::ExecuteNested(cmd, req, _) => {
+                write!(f, "ExecuteNested({}, tx={})", cmd.command_id, req.tx())
+            }
+            CommandManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
+        }
+    }
+}
 
-    async fn pre_start(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
+impl CommandManager {
+    pub fn new(args: CommandManagerArgs) -> Self {
         // Collect all registered handlers from inventory
         let mut handlers: HashMap<&'static str, Box<dyn CommandHandler>> = HashMap::new();
         for registration in inventory::iter::<CommandHandlerRegistration> {
@@ -74,66 +80,40 @@ impl Actor for CommandManager {
 
         debug!("CommandManager: {} handlers", handlers.len());
 
-        Ok(CommandManagerState {
+        Self {
             ctx: args.ctx,
             event_manager: args.event_manager,
             query_manager: args.query_manager,
             report_manager: args.report_manager,
             handlers,
-            myself: Some(myself),
-        })
-    }
-
-    async fn handle(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ractor::ActorProcessingErr> {
-        match message {
-            CommandManagerMsg::Execute(command, req, reply) => {
-                let command_id = command.command_id.as_str();
-                trace!(
-                    "Executing command {} with tx {} (lineage: {})",
-                    command_id,
-                    req.tx(),
-                    req.lineage_string()
-                );
-
-                let result = self.execute_command(state, &command, req).await;
-                let _ = reply.send(result);
-            }
-            CommandManagerMsg::ExecuteNested(command, req, reply) => {
-                let command_id = command.command_id.as_str();
-                trace!(
-                    "Executing nested command {} (lineage: {})",
-                    command_id,
-                    req.lineage_string()
-                );
-
-                let result = self.execute_command(state, &command, req).await;
-                let _ = reply.send(result);
-            }
+            myself: None,
         }
-        Ok(())
     }
-}
 
-impl CommandManager {
-    async fn execute_command(
+    pub fn spawn(args: CommandManagerArgs) -> ActorHandle<CommandManagerMsg> {
+        let actor = Self::new(args);
+        let handle = crate::runtime::spawn::spawn(actor);
+
+        // Set self-reference
+        let actor_ref = handle.actor_ref();
+        let _ = actor_ref.send_message(CommandManagerMsg::SetMyself(actor_ref.clone()));
+
+        handle
+    }
+
+    fn execute_command(
         &self,
-        state: &mut CommandManagerState,
         command: &WrappedCommand,
         req: RequestContext,
     ) -> Result<Value, CommandError> {
         let command_id = command.command_id.as_str();
 
         // Look up handler
-        let handler = state.handlers.get(command_id).ok_or_else(|| {
+        let handler = self.handlers.get(command_id).ok_or_else(|| {
             error!(
                 "No handler registered for command {}: {:?}",
                 command_id,
-                state.handlers.keys().collect::<Vec<_>>()
+                self.handlers.keys().collect::<Vec<_>>()
             );
             CommandError {
                 tx: req.tx().to_string(),
@@ -144,14 +124,51 @@ impl CommandManager {
         // Build context from RequestContext
         let ctx = CommandContext::new(
             req,
-            state.ctx.clone(),
-            state.event_manager.clone(),
-            state.myself.clone().expect("myself should be set"),
-            state.query_manager.clone(),
-            state.report_manager.clone(),
+            self.ctx.clone(),
+            self.event_manager.clone(),
+            self.myself.clone().expect("myself should be set"),
+            self.query_manager.clone(),
+            self.report_manager.clone(),
         );
 
-        // Execute handler
-        handler.execute(command.command.clone(), ctx).await
+        // Execute handler using shared tokio runtime
+        self.ctx
+            .tokio_handle
+            .block_on(handler.execute(command.command.clone(), ctx))
+    }
+}
+
+impl Actor for CommandManager {
+    type Msg = CommandManagerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
+            CommandManagerMsg::Execute(command, req, reply) => {
+                let command_id = command.command_id.as_str();
+                trace!(
+                    "Executing command {} with tx {} (lineage: {})",
+                    command_id,
+                    req.tx(),
+                    req.lineage_string()
+                );
+
+                let result = self.execute_command(&command, req);
+                let _ = reply.send(result);
+            }
+            CommandManagerMsg::ExecuteNested(command, req, reply) => {
+                let command_id = command.command_id.as_str();
+                trace!(
+                    "Executing nested command {} (lineage: {})",
+                    command_id,
+                    req.lineage_string()
+                );
+
+                let result = self.execute_command(&command, req);
+                let _ = reply.send(result);
+            }
+            CommandManagerMsg::SetMyself(myself) => {
+                self.myself = Some(myself);
+            }
+        }
     }
 }

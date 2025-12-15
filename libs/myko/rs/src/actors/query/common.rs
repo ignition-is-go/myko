@@ -1,4 +1,12 @@
-use crate::parsers::item::AnyItem;
+use crate::{
+    actors::ws::websocket_server::{SendToClientData, WebSocketServerMsg},
+    api::query::QueryResponse,
+    item::WrappedItem,
+    message::MykoMessage,
+    parsers::item::AnyItem,
+    runtime::ActorRef,
+};
+use crossbeam::channel as crossbeam_channel;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -24,4 +32,108 @@ pub enum QueryStreamUpdate {
     Upsert(Arc<str>, Arc<dyn AnyItem>),
     /// An item was removed
     Remove(Arc<str>),
+}
+
+/// Trait for receiving query result updates.
+/// Implementations can forward results to channels, WebSockets, or other destinations.
+pub trait QueryResultSink: Send + 'static {
+    /// Push an update to the sink. Returns false if the sink is closed.
+    fn push(&mut self, update: QueryStreamUpdate) -> bool;
+}
+
+/// Sink that forwards updates to a crossbeam channel.
+/// Used for internal actor-to-actor query subscriptions.
+pub struct ChannelSink {
+    sender: crossbeam_channel::Sender<QueryStreamUpdate>,
+}
+
+impl ChannelSink {
+    pub fn new(sender: crossbeam_channel::Sender<QueryStreamUpdate>) -> Self {
+        Self { sender }
+    }
+}
+
+impl QueryResultSink for ChannelSink {
+    fn push(&mut self, update: QueryStreamUpdate) -> bool {
+        self.sender.send(update).is_ok()
+    }
+}
+
+/// Sink that sends query results directly to a WebSocket client.
+/// Eliminates intermediate channels and async tasks for external subscriptions.
+pub struct WebSocketSink {
+    client_id: Arc<str>,
+    ws_server: ActorRef<WebSocketServerMsg>,
+    item_type: Arc<str>,
+    tx: Arc<str>,
+    sequence: u64,
+}
+
+impl WebSocketSink {
+    pub fn new(
+        client_id: Arc<str>,
+        ws_server: ActorRef<WebSocketServerMsg>,
+        item_type: Arc<str>,
+        tx: Arc<str>,
+    ) -> Self {
+        Self {
+            client_id,
+            ws_server,
+            item_type,
+            tx,
+            sequence: 0,
+        }
+    }
+}
+
+impl QueryResultSink for WebSocketSink {
+    fn push(&mut self, update: QueryStreamUpdate) -> bool {
+        let response = match update {
+            QueryStreamUpdate::Initial(entries) => {
+                self.sequence = 0;
+                let upserts = entries
+                    .values()
+                    .map(|item| WrappedItem {
+                        item: item.to_value(),
+                        item_type: self.item_type.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                QueryResponse {
+                    sequence: 0,
+                    deletes: vec![],
+                    upserts,
+                    tx: self.tx.clone(),
+                }
+            }
+            QueryStreamUpdate::Upsert(_id, value) => {
+                self.sequence += 1;
+                let upserts = vec![WrappedItem {
+                    item: value.to_value(),
+                    item_type: self.item_type.clone(),
+                }];
+                QueryResponse {
+                    sequence: self.sequence,
+                    deletes: vec![],
+                    upserts,
+                    tx: self.tx.clone(),
+                }
+            }
+            QueryStreamUpdate::Remove(key) => {
+                self.sequence += 1;
+                QueryResponse {
+                    sequence: self.sequence,
+                    deletes: vec![key],
+                    upserts: vec![],
+                    tx: self.tx.clone(),
+                }
+            }
+        };
+
+        self.ws_server
+            .send_message(WebSocketServerMsg::SendToClient(SendToClientData {
+                client_id: self.client_id.clone(),
+                message: MykoMessage::QueryResponse(response),
+            }))
+            .is_ok()
+    }
 }

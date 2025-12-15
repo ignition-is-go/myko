@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use log::{debug, error, info, trace, warn};
-use ractor::{Actor, ActorRef, RpcReplyPort, cast};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -12,9 +11,8 @@ use crate::{
         },
     },
     message::MykoMessage,
+    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
 };
-
-pub struct WebSocketServer;
 
 pub struct SendToClientData {
     pub client_id: Arc<str>,
@@ -36,12 +34,33 @@ pub enum WebSocketServerMsg {
         message_handler: ActorRef<MessageHandlerMsg>,
         reply: RpcReplyPort<Result<(), String>>,
     },
+    /// Set self-reference (called immediately after spawn)
+    SetMyself(ActorRef<WebSocketServerMsg>),
 }
 
-pub struct WebSocketServerState {
-    _connections: HashMap<Arc<str>, ActorRef<WebSocketConnectionMsg>>,
+impl std::fmt::Debug for WebSocketServerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WebSocketServerMsg::SendToClient(data) => {
+                write!(f, "SendToClient({})", data.client_id)
+            }
+            WebSocketServerMsg::RegisterClient { client_id, .. } => {
+                write!(f, "RegisterClient({})", client_id)
+            }
+            WebSocketServerMsg::UnregisterClient { client_id } => {
+                write!(f, "UnregisterClient({})", client_id)
+            }
+            WebSocketServerMsg::Start { .. } => write!(f, "Start"),
+            WebSocketServerMsg::SetMyself(_) => write!(f, "SetMyself"),
+        }
+    }
+}
+
+pub struct WebSocketServer {
+    connections: HashMap<Arc<str>, ActorRef<WebSocketConnectionMsg>>,
     port: u16,
     server_id: Arc<str>,
+    myself: Option<ActorRef<WebSocketServerMsg>>,
 }
 
 #[derive(Clone)]
@@ -50,63 +69,80 @@ pub struct WebSocketServerArgs {
     pub server_id: Arc<str>,
 }
 
-impl Actor for WebSocketServer {
-    type Arguments = WebSocketServerArgs;
-
-    type State = WebSocketServerState;
-
-    type Msg = WebSocketServerMsg;
-
-    async fn pre_start(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        Ok(WebSocketServerState {
+impl WebSocketServer {
+    pub fn new(args: WebSocketServerArgs) -> Self {
+        Self {
             port: args.port,
             server_id: args.server_id,
-            _connections: HashMap::new(),
-        })
+            connections: HashMap::new(),
+            myself: None,
+        }
     }
 
-    async fn handle(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ractor::ActorProcessingErr> {
-        match message {
-            WebSocketServerMsg::SendToClient(SendToClientData { client_id, message }) => {
-                if let Some(client) = state._connections.get(&client_id) {
-                    if let Err(e) = cast!(client, WebSocketConnectionMsg::Transmit(message)) {
-                        trace!("Failed to send to client {} (likely disconnected): {}", client_id, e);
-                    }
-                } else {
-                    // Client not found - this is normal when clients disconnect while
-                    // query/report tasks are still sending, or during orphan cleanup
-                    trace!("Client {} not found in connections (already disconnected)", client_id);
-                }
-                Ok(())
-            }
-            WebSocketServerMsg::RegisterClient { client_id, client } => {
-                trace!("Registering client {}", client_id);
-                state._connections.insert(client_id, client);
-                Ok(())
-            }
-            WebSocketServerMsg::UnregisterClient { client_id } => {
-                debug!("Unregistering client {}", client_id);
-                state._connections.remove(&client_id);
-                Ok(())
-            }
-            WebSocketServerMsg::Start {
-                message_handler,
-                reply,
-            } => {
-                let port = state.port;
-                let server_id = state.server_id.clone();
-                let address = format!("0.0.0.0:{port}");
-                debug!("Trying to bind to {address}");
+    pub fn spawn(args: WebSocketServerArgs) -> ActorHandle<WebSocketServerMsg> {
+        let actor = Self::new(args);
+        let handle = crate::runtime::spawn::spawn(actor);
 
+        // Set self-reference
+        let actor_ref = handle.actor_ref();
+        let _ = actor_ref.send_message(WebSocketServerMsg::SetMyself(actor_ref.clone()));
+
+        handle
+    }
+
+    fn handle_send_to_client(&self, data: SendToClientData) {
+        let SendToClientData { client_id, message } = data;
+        if let Some(client) = self.connections.get(&client_id) {
+            if let Err(e) = client.send_message(WebSocketConnectionMsg::Transmit(message)) {
+                trace!(
+                    "Failed to send to client {} (likely disconnected): {}",
+                    client_id,
+                    e
+                );
+            }
+        } else {
+            // Client not found - this is normal when clients disconnect while
+            // query/report tasks are still sending, or during orphan cleanup
+            trace!(
+                "Client {} not found in connections (already disconnected)",
+                client_id
+            );
+        }
+    }
+
+    fn handle_register_client(&mut self, client_id: Arc<str>, client: ActorRef<WebSocketConnectionMsg>) {
+        trace!("Registering client {}", client_id);
+        self.connections.insert(client_id, client);
+    }
+
+    fn handle_unregister_client(&mut self, client_id: Arc<str>) {
+        debug!("Unregistering client {}", client_id);
+        self.connections.remove(&client_id);
+    }
+
+    fn handle_start(&self, message_handler: ActorRef<MessageHandlerMsg>, reply: RpcReplyPort<Result<(), String>>) {
+        let port = self.port;
+        let server_id = self.server_id.clone();
+        let address = format!("0.0.0.0:{port}");
+        debug!("Trying to bind to {address}");
+
+        let myself = match &self.myself {
+            Some(m) => m.clone(),
+            None => {
+                error!("WebSocketServer myself reference not set");
+                let _ = reply.send(Err("myself reference not set".to_string()));
+                return;
+            }
+        };
+
+        // Spawn a thread with tokio runtime to handle async accept loop
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create tokio runtime for WebSocket server");
+
+            rt.block_on(async move {
                 // Bind the listener first, then signal ready
                 match TcpListener::bind(&address).await {
                     Ok(listener) => {
@@ -117,33 +153,49 @@ impl Actor for WebSocketServer {
                             error!("Failed to send WebSocket ready signal: {:?}", e);
                         }
 
-                        let msg_handler_clone = message_handler.clone();
-                        let ws_server = _myself.clone();
-
-                        // Spawn the accept loop in a separate task
-                        tokio::spawn(async move {
-                            while let Ok((stream, _)) = listener.accept().await {
-                                debug!("Accepted connection");
-                                let _ = Actor::spawn(
-                                    None,
-                                    WebSocketConnection,
-                                    WebSocketConnectionArgs {
-                                        stream,
-                                        message_handler: msg_handler_clone.clone(),
-                                        websocket_server: ws_server.clone(),
-                                        server_id: server_id.clone(),
-                                    },
-                                )
-                                .await;
-                            }
-                        });
+                        // Accept loop
+                        while let Ok((stream, _)) = listener.accept().await {
+                            debug!("Accepted connection");
+                            let _ = WebSocketConnection::spawn(WebSocketConnectionArgs {
+                                stream,
+                                message_handler: message_handler.clone(),
+                                websocket_server: myself.clone(),
+                                server_id: server_id.clone(),
+                            });
+                        }
                     }
                     Err(e) => {
                         warn!("Failed to bind to port {port}: {e}");
                         let _ = reply.send(Err(format!("Failed to bind: {e}")));
                     }
                 }
-                Ok(())
+            });
+        });
+    }
+}
+
+impl Actor for WebSocketServer {
+    type Msg = WebSocketServerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
+            WebSocketServerMsg::SendToClient(data) => {
+                self.handle_send_to_client(data);
+            }
+            WebSocketServerMsg::RegisterClient { client_id, client } => {
+                self.handle_register_client(client_id, client);
+            }
+            WebSocketServerMsg::UnregisterClient { client_id } => {
+                self.handle_unregister_client(client_id);
+            }
+            WebSocketServerMsg::Start {
+                message_handler,
+                reply,
+            } => {
+                self.handle_start(message_handler, reply);
+            }
+            WebSocketServerMsg::SetMyself(myself) => {
+                self.myself = Some(myself);
             }
         }
     }

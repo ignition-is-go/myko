@@ -1,6 +1,5 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use ractor::ActorRef;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -14,12 +13,13 @@ use crate::{
         query::query_manager::QueryManagerMsg,
         report::report_manager::ReportManagerMsg,
     },
+    runtime::ActorRef,
     api::query::WrappedQuery,
     command::{CommandError, CommandId},
     context::RequestContext,
     event::EventOptions,
     item::Eventable,
-    query::{Query, QueryIdStatic, QueryItemType},
+    query::{QueryParams, QueryRequest},
     report::{Report, ReportIdStatic, ReportOutputType, WrappedReport},
     server::MykoServerCtx,
 };
@@ -172,17 +172,13 @@ impl CommandContext {
         // Create child context with extended lineage
         let child_req = self.req.child(&command.command_id());
 
-        // Execute via command manager
-        ractor::call!(
-            self.command_manager,
-            CommandManagerMsg::ExecuteNested,
-            wrapped,
-            child_req
-        )
-        .map_err(|e| CommandError {
-            tx: self.tx().to_string(),
-            message: format!("Failed to call command manager: {}", e),
-        })?
+        // Execute via command manager (sync call - blocks briefly on channel)
+        self.command_manager
+            .call(|r| CommandManagerMsg::ExecuteNested(wrapped, child_req, r))
+            .map_err(|e| CommandError {
+                tx: self.tx().to_string(),
+                message: format!("Failed to call command manager: {}", e),
+            })?
     }
 
     /// Get the server context
@@ -194,12 +190,17 @@ impl CommandContext {
     ///
     /// This performs a one-shot query that returns current state without
     /// creating a subscription. Returns the first matching item if any exist.
+    ///
+    /// Accepts bare query params (e.g., `GetServersByIds { ids: vec![...] }`)
+    /// and automatically wraps them with transaction metadata.
     pub async fn query_one<Q>(&self, query: &Q) -> Result<Option<Q::Item>, CommandError>
     where
-        Q: Query + QueryIdStatic + QueryItemType + Serialize,
+        Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync,
     {
-        let query_value = serde_json::to_value(query).map_err(|e| CommandError {
+        // Wrap with QueryRequest to add tx and created_at
+        let wrapped_request = QueryRequest::new(query.clone());
+        let query_value = serde_json::to_value(&wrapped_request).map_err(|e| CommandError {
             tx: self.tx().to_string(),
             message: format!("Failed to serialize query: {}", e),
         })?;
@@ -211,12 +212,14 @@ impl CommandContext {
         };
 
         // Use WrappedQuerySnapshot for one-shot query (no subscription)
-        let snapshot =
-            ractor::call!(self.query_manager, QueryManagerMsg::WrappedQuerySnapshot, wrapped)
-                .map_err(|e| CommandError {
-                    tx: self.tx().to_string(),
-                    message: format!("Failed to query snapshot: {}", e),
-                })?;
+        // Sync call - blocks briefly on channel
+        let snapshot = self
+            .query_manager
+            .call(|r| QueryManagerMsg::WrappedQuerySnapshot(wrapped, r))
+            .map_err(|e| CommandError {
+                tx: self.tx().to_string(),
+                message: format!("Failed to query snapshot: {}", e),
+            })?;
 
         // Return the first item if any exist
         if let Some((_, item)) = snapshot.into_iter().next() {

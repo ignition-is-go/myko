@@ -15,8 +15,8 @@ use crate::{
     event::{EventOptions, MEvent, MEventType},
     item::Eventable,
     prelude::AnyItem,
+    runtime::{ActorRef, SendError},
 };
-use ractor::ActorRef;
 use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -49,7 +49,7 @@ impl EventPublisher {
         tx: &str,
         client_id: Option<Arc<str>>,
         options: Option<EventOptions>,
-    ) -> Result<(), ractor::MessagingErr<EventManagerMsg>> {
+    ) -> Result<(), SendError<EventManagerMsg>> {
         let mut event = MEvent::from_item(item, MEventType::SET, tx.to_string());
         event.source_id = Some(self.host_id.to_string());
         if let Some(opts) = options {
@@ -76,7 +76,7 @@ impl EventPublisher {
         tx: &str,
         client_id: Option<Arc<str>>,
         options: Option<EventOptions>,
-    ) -> Result<(), ractor::MessagingErr<EventManagerMsg>> {
+    ) -> Result<(), SendError<EventManagerMsg>> {
         let mut event = MEvent::from_item(item, MEventType::DEL, tx.to_string());
         event.source_id = Some(self.host_id.to_string());
         if let Some(opts) = options {
@@ -103,7 +103,7 @@ impl EventPublisher {
         item: Arc<dyn AnyItem>,
         tx: &str,
         options: Option<EventOptions>,
-    ) -> Result<(), ractor::MessagingErr<EventManagerMsg>> {
+    ) -> Result<(), SendError<EventManagerMsg>> {
         let event = MEvent {
             tx: tx.to_string(),
             item_type: entity_type.to_string(),
@@ -133,7 +133,7 @@ impl EventPublisher {
         item: serde_json::Value,
         tx: &str,
         options: Option<EventOptions>,
-    ) -> Result<(), ractor::MessagingErr<EventManagerMsg>> {
+    ) -> Result<(), SendError<EventManagerMsg>> {
         let event = MEvent {
             tx: tx.to_string(),
             item_type: entity_type.to_string(),

@@ -8,13 +8,12 @@ use crate::{
         server::{Server, ServerArgs, ServerMsg},
     },
     item::Eventable,
-    query::Query,
-    report::Report,
+    query::RegisterQuery,
+    report::RegisterReport,
+    runtime::ActorRef,
 };
 use anyhow::bail;
-use ractor::{Actor, ActorRef};
 use std::sync::Arc;
-use tokio::sync::Notify;
 use uuid::Uuid;
 
 /// References to the internal manager actors (useful for benchmarking/testing)
@@ -27,7 +26,6 @@ pub struct ManagerRefs {
 
 pub struct MykoServer {
     pub(crate) server: ActorRef<ServerMsg>,
-    notify_end: Arc<Notify>,
     /// Direct manager references for registration (bypasses Server routing)
     pub(crate) event_manager: ActorRef<EventManagerMsg>,
     pub(crate) query_manager: ActorRef<QueryManagerMsg>,
@@ -36,53 +34,50 @@ pub struct MykoServer {
 }
 
 impl MykoServer {
-    pub async fn init(args: MykoServerArgs) -> Result<Arc<MykoServer>, anyhow::Error> {
-        let notify = Arc::new(Notify::new());
-        match Actor::spawn(None, Server, args).await {
-            Err(err) => {
-                bail!("Failed to start MykoServer: {}", err);
-            }
+    pub fn init(args: MykoServerArgs) -> Result<Arc<MykoServer>, anyhow::Error> {
+        let handle = Server::spawn(args);
+        let server = handle.actor_ref();
 
-            Ok((server, server_handle)) => {
-                let n_clone = notify.clone();
-                tokio::spawn(async move {
-                    let _ = server_handle.await;
-                    n_clone.notify_waiters();
-                });
+        // Get direct manager references for registration (bypasses Server routing)
+        let (event_manager, query_manager, report_manager, command_manager) =
+            match server.call(ServerMsg::GetManagers) {
+                Ok(refs) => refs,
+                Err(err) => {
+                    bail!("Failed to get manager refs: {}", err);
+                }
+            };
 
-                // Get direct manager references for registration (bypasses Server routing)
-                let (event_manager, query_manager, report_manager, command_manager) =
-                    ractor::call!(server, ServerMsg::GetManagers)?;
+        let server = Arc::new(MykoServer {
+            server,
+            event_manager,
+            query_manager,
+            report_manager,
+            command_manager,
+        });
 
-                let server = Arc::new(MykoServer {
-                    server,
-                    notify_end: notify.clone(),
-                    event_manager,
-                    query_manager,
-                    report_manager,
-                    command_manager,
-                });
+        crate::entities::server::Server::register(&server)?;
+        crate::entities::server::GetConnectedServer::register(&server)?;
+        crate::entities::server::GetPeerServers::register(&server)?;
 
-                crate::entities::server::Server::register(&server)?;
-                crate::entities::server::GetConnectedServer::register(&server)?;
-                crate::entities::server::GetPeerServers::register(&server)?;
+        crate::entities::client::Client::register(&server)?;
 
-                crate::entities::client::Client::register(&server)?;
+        // Register EntitySearch report
+        crate::search::EntitySearch::register(&server)?;
 
-                // Register EntitySearch report
-                crate::search::EntitySearch::register(&server)?;
-
-                Ok(server)
-            }
-        }
+        Ok(server)
     }
 
-    pub async fn start(&self) -> Result<(), anyhow::Error> {
+    pub fn start(&self) -> Result<(), anyhow::Error> {
         self.server.send_message(ServerMsg::InitAllModules)?;
-
-        self.notify_end.notified().await;
-
         Ok(())
+    }
+
+    /// Block until the server stops.
+    /// This is typically not needed - the server runs on its own threads.
+    pub fn wait(&self) {
+        // Server actors run on dedicated threads, so we just park this thread
+        // The server will run indefinitely until the process exits
+        std::thread::park();
     }
 
     /// Get direct references to the internal manager actors.
@@ -117,6 +112,9 @@ pub struct MykoServerCtx {
     pub event_bus: std::sync::OnceLock<crate::actors::event::EventBus>,
     /// Search manager for full-text search (set during server startup)
     pub search_manager: std::sync::OnceLock<ActorRef<SearchManagerMsg>>,
+    /// Shared tokio runtime handle for async operations
+    /// This is used by actors that need to run async code from sync contexts
+    pub tokio_handle: tokio::runtime::Handle,
 }
 
 impl std::fmt::Debug for MykoServerCtx {
@@ -137,23 +135,14 @@ impl MykoServerCtx {
     ///
     /// Returns matching entity IDs (up to `limit` results).
     /// Returns empty Vec if no SearchManager is available or entity type is not indexed.
-    pub async fn search(
-        &self,
-        entity_type: &str,
-        query: &str,
-        limit: usize,
-    ) -> Vec<Arc<str>> {
+    pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
         let Some(search_manager) = self.search_manager.get() else {
             return vec![];
         };
 
-        match ractor::call!(
-            search_manager,
-            SearchManagerMsg::Search,
-            entity_type.to_string(),
-            query.to_string(),
-            limit
-        ) {
+        match search_manager.call(|r| {
+            SearchManagerMsg::Search(entity_type.to_string(), query.to_string(), limit, r)
+        }) {
             Ok(ids) => ids,
             Err(e) => {
                 log::error!("Search call failed: {}", e);

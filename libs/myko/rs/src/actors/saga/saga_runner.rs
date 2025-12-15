@@ -9,18 +9,21 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use log::{debug, error, trace};
-use ractor::{Actor, ActorProcessingErr, ActorRef};
 
 use uuid::Uuid;
 
 use crate::{
     actors::command::command_manager::CommandManagerMsg,
     context::RequestContext,
+    runtime::{Actor, ActorHandle, ActorRef},
     saga::{AnySaga, SagaContext},
 };
 
 /// Actor that runs a single saga's event processing pipeline.
-pub struct SagaRunner;
+pub struct SagaRunner {
+    saga_name: &'static str,
+    stopped: bool,
+}
 
 /// Messages for SagaRunner actor.
 pub enum SagaRunnerMsg {
@@ -28,11 +31,12 @@ pub enum SagaRunnerMsg {
     Stop,
 }
 
-/// State for SagaRunner actor.
-pub struct SagaRunnerState {
-    saga_name: &'static str,
-    // Task handle for the combined event+command pipeline
-    _pipeline_task_handle: tokio::task::JoinHandle<()>,
+impl std::fmt::Debug for SagaRunnerMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SagaRunnerMsg::Stop => write!(f, "Stop"),
+        }
+    }
 }
 
 /// Arguments for spawning a SagaRunner.
@@ -42,98 +46,101 @@ pub struct SagaRunnerArgs {
     pub command_manager: ActorRef<CommandManagerMsg>,
 }
 
-impl Actor for SagaRunner {
-    type Msg = SagaRunnerMsg;
-    type State = SagaRunnerState;
-    type Arguments = SagaRunnerArgs;
+impl SagaRunner {
+    pub fn new(saga_name: &'static str) -> Self {
+        Self {
+            saga_name,
+            stopped: false,
+        }
+    }
 
-    async fn pre_start(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ActorProcessingErr> {
+    pub fn spawn(args: SagaRunnerArgs) -> ActorHandle<SagaRunnerMsg> {
         let saga_name = args.saga.name();
         trace!("Starting saga runner: {}", saga_name);
 
-        // Subscribe to EventBus and convert directly to a stream (no intermediate channel)
-        let event_stream = args.ctx.event_bus.subscribe().into_stream();
+        let actor = Self::new(saga_name);
+        let handle = crate::runtime::spawn::spawn(actor);
 
-        // Build the saga's event processing pipeline directly from the EventBus stream
-        let command_stream = args.saga.build_boxed(Box::pin(event_stream), args.ctx.clone());
-
-        // Spawn a single task to process the entire pipeline
+        // Spawn task to process the saga pipeline
+        let event_bus = args.ctx.event_bus.clone();
+        let saga = args.saga.clone();
+        let ctx = args.ctx.clone();
         let command_manager = args.command_manager.clone();
-        let saga_name_for_task = saga_name;
         let host_id = args.ctx.server_ctx.host_id;
-        let pipeline_task_handle = tokio::spawn(async move {
+        let tokio_handle = args.ctx.server_ctx.tokio_handle.clone();
+
+        tokio_handle.spawn(async move {
+            // Subscribe to EventBus and convert directly to a stream
+            let event_stream = event_bus.subscribe().into_stream();
+
+            // Build the saga's event processing pipeline
+            let command_stream = saga.build_boxed(Box::pin(event_stream), ctx);
+
+            // Process the entire pipeline
             futures::pin_mut!(command_stream);
 
             while let Some(command) = command_stream.next().await {
-                trace!("Saga {} emitting command: {}", saga_name_for_task, command.command_id);
+                trace!("Saga {} emitting command: {}", saga_name, command.command_id);
 
                 // Create a RequestContext for saga-originated commands
                 let req = RequestContext::internal(
                     Arc::from(Uuid::new_v4().to_string()),
                     host_id,
-                    &format!("saga-{}", saga_name_for_task),
+                    &format!("saga-{}", saga_name),
                 );
 
-                // Use ractor::call! to execute the command and wait for response
-                match ractor::call!(
-                    command_manager,
-                    CommandManagerMsg::Execute,
-                    command,
-                    req
-                ) {
-                    Ok(Ok(_value)) => {
-                        trace!("Saga {} command executed successfully", saga_name_for_task);
+                // Execute the command synchronously via spawn_blocking
+                let cmd_mgr = command_manager.clone();
+                match tokio::task::spawn_blocking(move || {
+                    cmd_mgr.call(|r| CommandManagerMsg::Execute(command, req, r))
+                })
+                .await
+                {
+                    Ok(Ok(Ok(_value))) => {
+                        trace!("Saga {} command executed successfully", saga_name);
                     }
-                    Ok(Err(cmd_err)) => {
+                    Ok(Ok(Err(cmd_err))) => {
                         error!(
                             "Saga {} command failed: {}",
-                            saga_name_for_task, cmd_err.message
+                            saga_name, cmd_err.message
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        error!(
+                            "Saga {} failed to call CommandManager: {}",
+                            saga_name, e
                         );
                     }
                     Err(e) => {
                         error!(
-                            "Saga {} failed to call CommandManager: {}",
-                            saga_name_for_task, e
+                            "Saga {} spawn_blocking failed: {}",
+                            saga_name, e
                         );
                     }
                 }
             }
 
-            debug!("Saga {} pipeline ended", saga_name_for_task);
+            debug!("Saga {} pipeline ended", saga_name);
         });
 
-        Ok(SagaRunnerState {
-            saga_name,
-            _pipeline_task_handle: pipeline_task_handle,
-        })
+        handle
     }
+}
 
-    async fn handle(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match message {
+impl Actor for SagaRunner {
+    type Msg = SagaRunnerMsg;
+
+    fn handle(&mut self, msg: Self::Msg) {
+        match msg {
             SagaRunnerMsg::Stop => {
-                trace!("Stopping saga runner: {}", state.saga_name);
-                myself.stop(Some("Stop requested".to_string()));
-                Ok(())
+                trace!("Stopping saga runner: {}", self.saga_name);
+                self.stopped = true;
+                // The pipeline thread will stop when the event bus closes
             }
         }
     }
 
-    async fn post_stop(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        trace!("Saga runner stopped: {}", state.saga_name);
-        // Task will be aborted when the sender is dropped
-        Ok(())
+    fn on_shutdown(&mut self) {
+        trace!("Saga runner stopped: {}", self.saga_name);
     }
 }
