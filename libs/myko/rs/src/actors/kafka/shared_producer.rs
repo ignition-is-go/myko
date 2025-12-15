@@ -52,7 +52,9 @@ pub struct SharedKafkaProducer {
 impl SharedKafkaProducer {
     /// Create a new SharedKafkaProducer (blocking - creates Kafka connections).
     pub fn new(args: SharedKafkaProducerArgs) -> Self {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        // Use multi-threaded runtime so spawned send tasks run in background
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("Failed to create tokio runtime");
@@ -137,9 +139,10 @@ impl SharedKafkaProducer {
         let topic = data.topic.clone();
         let event = data.event;
 
-        // Send asynchronously using our runtime
+        // Fire-and-forget: spawn the send as a background task
+        // This allows the actor to process its mailbox without blocking on Kafka
         let producer = self.producer.clone();
-        self.rt.block_on(async move {
+        self.rt.spawn(async move {
             let send_res = producer
                 .send(
                     rdkafka::producer::FutureRecord {
