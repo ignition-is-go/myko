@@ -72,14 +72,8 @@ export class SetClientWindbackTime extends MCommand<boolean> {
   allowDuringWindback: true,
 })
 export class ClearClientWindbackTime extends MCommand {
-  constructor() {
-    super()
-  }
 }
 
 @MykoReport()
 export class WindbackStatus extends MReport<string | undefined> {
-  constructor() {
-    super()
-  }
 }

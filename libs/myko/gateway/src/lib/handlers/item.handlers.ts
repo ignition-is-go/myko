@@ -41,7 +41,6 @@ import {
 export class GetItemByTypeAndIdHandler
   implements MReportHandler<GetItemsByTypeAndIds>
 {
-  constructor() {}
   execute(query: GetItemsByTypeAndIds) {
     return repoName(query.type, query)
       .watchIds(query.ids)
@@ -75,7 +74,7 @@ export class FullChildEntitiesHandler
 
     return myChildren.pipe(
       switchMap((children) =>
-        children.length == 0
+        children.length === 0
           ? of([] as MItemStub[])
           : combineLatest(
               children.map((child) =>

@@ -25,7 +25,7 @@ import {
 
 export const beginTraceTransaction = (
   mContext: WithContext,
-  event: 'm:query' | 'm:command' | 'm:report',
+  _event: 'm:query' | 'm:command' | 'm:report',
   callId: ID,
 ) => {
   const tag = mContext.getTag()

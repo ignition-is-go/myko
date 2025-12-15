@@ -1,5 +1,5 @@
 import type { MEvent } from '@myko/core'
-import { randomUUID } from 'crypto'
+import { randomUUID } from 'node:crypto'
 import * as postgres from 'postgres'
 import { Observable } from 'rxjs'
 import { rowToEvent, type EventCols, type TXCols } from './types'
@@ -146,7 +146,7 @@ export const get_db_size = async () => {
 
   console.log(
     result
-      .map((x) => ({ name: x['datname'], size: x['size'] }))
+      .map((x) => ({ name: x.datname, size: x.size }))
       .map((x) => `${x.name}: ${x.size}`)
       .join('\n'),
   )

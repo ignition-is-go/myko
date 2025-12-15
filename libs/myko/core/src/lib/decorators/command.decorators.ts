@@ -28,7 +28,7 @@ export const MykoCommand: (opts?: {
       const original: any = target
 
       const commandName =
-        Object.getOwnPropertyDescriptors(original)?.['name'].value
+        Object.getOwnPropertyDescriptors(original)?.name.value
 
       const commandId = commandName
 

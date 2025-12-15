@@ -423,7 +423,7 @@ export const objectFilter = (query: object, ent: object): boolean => {
       if (typeof querySide === 'object' && typeof entSide === 'object') {
         return objectFilter(querySide, entSide)
       }
-    } catch (e) {
+    } catch (_e) {
       throw Error(
         `Error filtering object: query: ${JSON.stringify(querySide)}: ${typeof querySide}, ent: ${JSON.stringify(entSide)}: ${typeof entSide}`,
       )

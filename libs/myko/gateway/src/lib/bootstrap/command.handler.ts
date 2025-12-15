@@ -116,7 +116,7 @@ const proceed = async (
   if (userId) {
     try {
       getHistoryProvider().recordUserTransaction(userId, txId)
-    } catch (e) {}
+    } catch (_e) {}
   }
 
   const client = await liveRepo(Client).getId(clientId)

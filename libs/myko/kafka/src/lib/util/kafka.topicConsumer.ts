@@ -59,8 +59,8 @@ export class KafkaTopicConsumer {
 
     this.cons.on('consumer.end_batch_process', (e) => {
       this.hasSeenData = true
-      const last = Number.parseInt(e.payload.lastOffset)
-      const high = Number.parseInt(e.payload.highWatermark)
+      const last = Number.parseInt(e.payload.lastOffset, 10)
+      const high = Number.parseInt(e.payload.highWatermark, 10)
 
       if (last === high - 1 && !this.caughtUp) {
         this.caughtUp = true

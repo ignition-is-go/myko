@@ -38,7 +38,7 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
           return client.watchQuery(query.query)
         }),
       )
-    } catch (e) {
+    } catch (_e) {
       console.warn('Cant Execute Peer Query', query)
       return EMPTY
     }
@@ -47,13 +47,12 @@ export class PeerQueryHandler implements MQueryHandler<PeerQuery> {
 
 @MykoCommandHandler(PeerCommand)
 export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
-  constructor() {}
   async execute(command: PeerCommand): Promise<void> {
     const peer = peers.getPeer(command.peerId)
     if (!peer) {
       throw new MykoCommandError(
         command.tx,
-        'Peer Not Found for ' + command.command.getTag(),
+        `Peer Not Found for ${command.command.getTag()}`,
       )
     }
 
@@ -90,7 +89,7 @@ export class PeerReportHandler
           )
           return EMPTY
         }
-        logger.info('returning report for ' + report.report.getTag())
+        logger.info(`returning report for ${report.report.getTag()}`)
         return peer.watchReport(report.report)
       }),
     )

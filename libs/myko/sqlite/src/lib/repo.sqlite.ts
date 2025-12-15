@@ -33,8 +33,8 @@ export class SQLiteRepo<T extends MItem> extends Repo<T> {
 
     this.db = new Database(`db/${entity}.db`, { strict: true })
 
-    this.db.exec('DROP TABLE IF EXISTS ' + this.tableName)
-    this.db.exec('DROP TABLE IF EXISTS ' + this.eventTableName)
+    this.db.exec(`DROP TABLE IF EXISTS ${this.tableName}`)
+    this.db.exec(`DROP TABLE IF EXISTS ${this.eventTableName}`)
 
     this.db.exec(
       `CREATE TABLE ${this.tableName} (id TEXT PRIMARY KEY, data TEXT)`,

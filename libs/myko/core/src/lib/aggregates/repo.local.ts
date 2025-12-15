@@ -70,7 +70,7 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
   async getIndex(index: keyof T, value: any): Promise<T[]> {
     try {
       return this.store.getIndex(index, value)
-    } catch (e) {
+    } catch (_e) {
       console.warn(
         `No index crated on ${index.toString()} for ${
           this.entity

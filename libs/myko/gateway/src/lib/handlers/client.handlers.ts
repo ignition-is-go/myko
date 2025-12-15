@@ -26,7 +26,7 @@ import {
   type MReportHandler,
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
-import { ok } from 'assert'
+import { ok } from 'node:assert'
 import {
   filter,
   firstValueFrom,
@@ -46,7 +46,7 @@ const getMaxInflightPerClient = (() => {
   return () => {
     try {
       if (cached !== undefined) return cached
-      const v = process?.env?.['MYKO_CCMD_MAX_INFLIGHT_PER_CLIENT']
+      const v = process?.env?.MYKO_CCMD_MAX_INFLIGHT_PER_CLIENT
       const n = Number(v)
       cached = Number.isFinite(n) && n > 0 ? n : undefined
       return cached
@@ -66,7 +66,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
 
     const CCMD_TIMEOUT_MS = (() => {
       try {
-        const v = process?.env?.['MYKO_CCMD_TIMEOUT_MS']
+        const v = process?.env?.MYKO_CCMD_TIMEOUT_MS
         const n = Number(v)
         return Number.isFinite(n) && n > 0 ? n : undefined
       } catch {
@@ -105,7 +105,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
         })
         throw new MykoCommandError(
           command.tx,
-          'Peer Not Found for ' + command.command.commandId,
+          `Peer Not Found for ${command.command.commandId}`,
         )
       }
       ccm.forward(
@@ -171,7 +171,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
         }),
       )
 
-    const disconnectLogged$ = disconnect$.pipe(
+    const _disconnectLogged$ = disconnect$.pipe(
       tap(() =>
         logger.verbose('Client disconnected before response', {
           tag: innerWrappedCommand.commandId,
@@ -329,7 +329,7 @@ export class SetClientWindbackTimeHandler
   async execute(command: SetClientWindbackTime): Promise<true> {
     try {
       getHistoryProvider()
-    } catch (e) {
+    } catch (_e) {
       throw new MykoCommandError(
         command.tx,
         'History not provided. No Undo Functionality',

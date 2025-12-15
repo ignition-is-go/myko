@@ -14,10 +14,6 @@ export class MReport<T> extends WithContext {
    */
   $reportResult!: T
 
-  constructor() {
-    super()
-  }
-
   static fromWrappedReport<R>(wrappedReport: MWrappedReport): MReport<R> {
     const { report: reportInner, reportId } = wrappedReport
     const report = new MReport<R>()

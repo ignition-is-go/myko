@@ -10,12 +10,22 @@
       "correctness": {
         "noUnusedVariables": "warn",
         "noUnusedImports": "warn",
-        "useExhaustiveDependencies": "off"
+        "noUnusedFunctionParameters": "off",
+        "useExhaustiveDependencies": "off",
+        "noEmptyPattern": "warn",
+        "noUnreachable": "warn",
+        "noInnerDeclarations": "warn"
       },
       "suspicious": {
         "noExplicitAny": "off",
         "noConfusingVoidType": "off",
-        "noAssignInExpressions": "off"
+        "noAssignInExpressions": "off",
+        "useIterableCallbackReturn": "warn",
+        "noImplicitAnyLet": "warn",
+        "noThenProperty": "off",
+        "noPrototypeBuiltins": "warn",
+        "noSelfCompare": "warn",
+        "noShadowRestrictedNames": "warn"
       },
       "style": {
         "noNonNullAssertion": "off",
@@ -24,7 +34,15 @@
       },
       "complexity": {
         "noBannedTypes": "off",
-        "noForEach": "off"
+        "noForEach": "off",
+        "noArguments": "warn",
+        "noStaticOnlyClass": "off"
+      },
+      "performance": {
+        "noAccumulatingSpread": "warn"
+      },
+      "security": {
+        "noGlobalEval": "warn"
       }
     }
   },
@@ -37,7 +55,9 @@
       "libs/**/*.ts",
       "libs/**/*.tsx",
       "libs/**/*.js",
-      "libs/**/*.jsx"
+      "libs/**/*.jsx",
+      "!apps/labs/scratch/**",
+      "!libs/ableton/src/lib/max4node/**"
     ],
     "ignoreUnknown": true
   },

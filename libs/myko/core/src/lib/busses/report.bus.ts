@@ -98,7 +98,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
       tap(() => this.on_follow_up?.(report, callId)),
       map((x) => {
         // clone the object
-        if (x instanceof Array) return x.slice()
+        if (Array.isArray(x)) return x.slice()
         if (x instanceof Object) return { ...x }
         return x
       }),

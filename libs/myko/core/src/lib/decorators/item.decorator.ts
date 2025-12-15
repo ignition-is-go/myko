@@ -47,7 +47,7 @@ export const MykoItem =
   (target) => {
     const original: any = target
     const autoItemType =
-      Object.getOwnPropertyDescriptors(original)['name'].value
+      Object.getOwnPropertyDescriptors(original).name.value
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 

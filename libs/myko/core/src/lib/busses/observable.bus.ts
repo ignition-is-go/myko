@@ -17,8 +17,6 @@ export class ObservableBus<T> {
     | ((mContext: WithContext, callId: ID) => void)
     | undefined
 
-  constructor() {}
-
   /**
    * Gets the subject of the observable bus.
    *

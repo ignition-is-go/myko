@@ -24,9 +24,6 @@ export class EventsInRange extends MReport<MEvent[]> {
 
 @MykoReport()
 export class AllTransactions extends MReport<ID[]> {
-  constructor() {
-    super()
-  }
 }
 
 @MykoReport()

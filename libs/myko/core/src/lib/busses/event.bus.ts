@@ -338,9 +338,6 @@ const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
 }
 
 export class EventBus extends AMykoEventBus {
-  constructor() {
-    super()
-  }
 
   getServerId(): ID {
     return getHostId()

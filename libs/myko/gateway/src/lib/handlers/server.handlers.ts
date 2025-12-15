@@ -25,7 +25,7 @@ import {
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
-import { randomUUID } from 'crypto'
+import { randomUUID } from 'node:crypto'
 import { DateTime } from 'luxon'
 import { uniq } from 'ramda'
 import {
@@ -44,7 +44,7 @@ import { peers } from '../registry'
 onAllInit(async () => {
   try {
     getServer()
-  } catch (e) {
+  } catch (_e) {
     new MykoLogger('Gateway Handler').info('Not a Server, Skipping Purge')
     return
   }
@@ -85,7 +85,7 @@ export class GetConnectedServerHandler
 export class GetPeerServersHandler implements MQueryHandler<GetPeerServers> {
   execute(_: GetPeerServers): MLiveQueryResult<GetPeerServers> {
     return liveRepo(Server).watchFilter(
-      (s) => s.address != getServer().address || s.port != getServer().port,
+      (s) => s.address !== getServer().address || s.port !== getServer().port,
     )
   }
 }
@@ -155,7 +155,7 @@ export class PeerLastSeenHandler implements MReportHandler<PeerLastSeen> {
 @MykoReportHandler(ServerEventLog)
 export class ServerEventLogHandler implements MReportHandler<ServerEventLog> {
   execute(_report: ServerEventLog) {
-    return eventBus.subject$.pipe(filter((x) => x.sourceId == getHostId()))
+    return eventBus.subject$.pipe(filter((x) => x.sourceId === getHostId()))
   }
 }
 

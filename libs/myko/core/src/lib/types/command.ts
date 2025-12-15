@@ -19,10 +19,6 @@ export class MCommand<T = void> extends WithContext {
    */
   userToken: string | undefined
 
-  constructor() {
-    super()
-  }
-
   /**
    * Wraps the command in a command wrapper.
    * @returns The wrapped command.

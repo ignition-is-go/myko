@@ -27,7 +27,7 @@ export const MykoQuery: <U extends MItem<IMItem>>(
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
     const original: any = target
 
-    const queryName = Object.getOwnPropertyDescriptors(original)?.['name'].value
+    const queryName = Object.getOwnPropertyDescriptors(original)?.name.value
 
     const paramtypes =
       Reflect.getMetadata('design:paramtypes', original)?.map((x: { name: string }) => x.name) ??

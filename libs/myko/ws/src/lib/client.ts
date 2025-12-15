@@ -430,7 +430,7 @@ export class WSMClient {
       }),
       map((x) => {
         // clone the object
-        if (x instanceof Array) return x.slice()
+        if (Array.isArray(x)) return x.slice()
         if (x instanceof Object) return { ...x }
         return x
       }),

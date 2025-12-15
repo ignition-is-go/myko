@@ -93,12 +93,12 @@ export class MykoLogger {
     // In JSON mode, data is already included in the main log line
   }
 
-  error(message: string, data?: unknown, tx?: ID) {
+  error(message: string, data?: unknown, _tx?: ID) {
     if (levelShouldPrint(LogLevel.ERROR, logFilter.get())) {
       console.error(this.fmt(LogLevel.ERROR, message, data))
       this.outputData(data)
     }
-    const log = new Log({
+    const _log = new Log({
       data,
       id: v4(),
       level: LogLevel.ERROR,
@@ -111,12 +111,12 @@ export class MykoLogger {
     // eventBus.publishSet(log, tx ?? v4())
   }
 
-  warn(message: string, data?: unknown, tx?: ID) {
+  warn(message: string, data?: unknown, _tx?: ID) {
     if (levelShouldPrint(LogLevel.WARN, logFilter.get())) {
       console.warn(this.fmt(LogLevel.WARN, message, data))
       this.outputData(data)
     }
-    const log = new Log({
+    const _log = new Log({
       data,
       id: v4(),
       level: LogLevel.WARN,
@@ -129,12 +129,12 @@ export class MykoLogger {
     // eventBus.publishSet(log, tx ?? v4())
   }
 
-  info(message: string, data?: unknown, tx?: ID) {
+  info(message: string, data?: unknown, _tx?: ID) {
     if (levelShouldPrint(LogLevel.INFO, logFilter.get())) {
       console.info(this.fmt(LogLevel.INFO, message, data))
       this.outputData(data)
     }
-    const log = new Log({
+    const _log = new Log({
       data,
       id: v4(),
       level: LogLevel.INFO,
@@ -147,13 +147,13 @@ export class MykoLogger {
     // eventBus.publishSet(log, tx ?? v4())
   }
 
-  debug(message: string, data?: unknown, tx?: ID) {
+  debug(message: string, data?: unknown, _tx?: ID) {
     if (levelShouldPrint(LogLevel.DEBUG, logFilter.get())) {
       console.debug(this.fmt(LogLevel.DEBUG, message, data))
       this.outputData(data)
     }
 
-    const log = new Log({
+    const _log = new Log({
       data,
       id: v4(),
       level: LogLevel.DEBUG,
@@ -166,13 +166,13 @@ export class MykoLogger {
     // eventBus.publishSet(log, tx ?? v4())
   }
 
-  verbose(message: string, data?: unknown, tx?: ID) {
+  verbose(message: string, data?: unknown, _tx?: ID) {
     if (levelShouldPrint(LogLevel.VERBOSE, logFilter.get())) {
       console.log(this.fmt(LogLevel.VERBOSE, message, data))
       this.outputData(data)
     }
 
-    const log = new Log({
+    const _log = new Log({
       data,
       id: v4(),
       level: LogLevel.VERBOSE,

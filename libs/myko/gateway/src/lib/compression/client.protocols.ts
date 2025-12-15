@@ -9,7 +9,7 @@ const decoders = {
   [MykoProtocol.MSGPACK]: (data) => {
     try {
       return unpack(data)
-    } catch (e) {
+    } catch (_e) {
       return JSON.parse(data)
     }
   },

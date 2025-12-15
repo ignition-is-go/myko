@@ -2,7 +2,6 @@ import type { Observable } from 'rxjs'
 import type { MEvent, MItem } from '../types'
 
 export abstract class HistoryProvider {
-  constructor() {}
 
   abstract getEntityHistory(
     id: string,

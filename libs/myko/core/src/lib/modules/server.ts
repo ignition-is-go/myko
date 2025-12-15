@@ -28,23 +28,14 @@ export const serverSchema = Z.object({
 
 @MykoReport()
 export class ServerEventLog extends MReport<MEvent> {
-  constructor() {
-    super()
-  }
 }
 
 @MykoQuery(Server)
 export class GetConnectedServer extends MQuery<Server> {
-  constructor() {
-    super()
-  }
 }
 
 @MykoQuery(Server)
 export class GetPeerServers extends MQuery<Server> {
-  constructor() {
-    super()
-  }
 }
 
 @MykoQuery(Server)

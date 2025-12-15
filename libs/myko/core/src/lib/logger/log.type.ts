@@ -35,9 +35,6 @@ export class GetLogs extends MQuery<Log> {
 
 @MykoReport()
 export class Loggers extends MReport<string[]> {
-  constructor() {
-    super()
-  }
 }
 
 @MykoReport()

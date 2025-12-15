@@ -16,7 +16,7 @@ import {
   MCOMMAND_RESPONSE_EVENT,
 } from '@myko/ws'
 import type { ServerWebSocket } from 'bun'
-import { randomUUID } from 'crypto'
+import { randomUUID } from 'node:crypto'
 import { filter, firstValueFrom } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 import { parse, serialize } from '../compression/client.protocols'
@@ -175,7 +175,7 @@ export const bunAdapter: MykoWsAdapter = ({
             sessionId: body.sessionId,
             // Server-side enrichment
             serverTimestamp: new Date().toISOString(),
-            serverVersion: process.env['SERVER_VERSION'] || 'unknown',
+            serverVersion: process.env.SERVER_VERSION || 'unknown',
             correlationId,
           })
 
@@ -234,7 +234,7 @@ export const bunAdapter: MykoWsAdapter = ({
         try {
           const parsed = parse(ws.data.clientId, message)
           rx.next({ clientId: ws.data.clientId, data: parsed })
-        } catch (e) {
+        } catch (_e) {
           ws.send('Error parsing message')
         }
       },

@@ -7,7 +7,7 @@ export const MykoReport =
   <R>() =>
   <T extends MReport<R>>(target: new (...args: any[]) => T): any => {
     const original: any = target
-    const reportId = Object.getOwnPropertyDescriptors(original)['name']
+    const reportId = Object.getOwnPropertyDescriptors(original).name
       .value as string
 
     reports.add(reportId)

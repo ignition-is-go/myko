@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { groupBy } from 'ramda'
 import {
   docRegistry,
@@ -9,7 +9,6 @@ import {
 } from '../registry'
 
 export class MykoDocsService {
-  constructor() {}
 
   async writeDocs(path: string) {
     await mkdir(path, { recursive: true })
@@ -93,7 +92,7 @@ export class MykoDocsService {
         h2(query.queryName),
         query.queryReturnType &&
           `Returns: ${link(
-            query.queryReturnType + '[]',
+            `${query.queryReturnType}[]`,
             `#${query.queryReturnType?.toLocaleLowerCase()}`,
           )}`,
         query.props.length > 0

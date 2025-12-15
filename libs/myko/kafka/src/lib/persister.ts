@@ -79,11 +79,11 @@ abstract class KafkaPersister<T extends MItem> extends Persister<T> {
   private decodeMsg(buffer): MEvent<T> | null {
     try {
       return decode(buffer) as MEvent<T>
-    } catch (e) {}
+    } catch (_e) {}
 
     try {
       return JSON.parse(buffer.toString()) as MEvent<T>
-    } catch (e) {}
+    } catch (_e) {}
 
     console.warn('could not decode event', buffer.toString())
 
@@ -127,7 +127,7 @@ const getKafka = (options: KafkaConfig) => {
 
   if (!kafkaCache.has(key)) {
     new MykoLogger('Kafka Persister').info(
-      'Connecting Kafka at ' + options.brokers,
+      `Connecting Kafka at ${options.brokers}`,
     )
     kafkaCache.set(key, new Kafka(options))
   }

@@ -19,9 +19,6 @@ export type MCommandHandlerType = Type<MCommandHandler<MCommand<unknown>>>
  * Subclasses of this class should implement the `registerHandler` method to bind command handlers.
  */
 export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
-  constructor() {
-    super()
-  }
 
   /**
    * Executes a command and returns the command response.
@@ -90,9 +87,6 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
 }
 
 export class MCommandBus extends AMykoCommandBus {
-  constructor() {
-    super()
-  }
 
   protected registerHandler(handler: MCommandHandlerType): void {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, handler)
