@@ -110,7 +110,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     // Generate CountAll report
     let count_all_report_ident = format_ident!("CountAll{}s", name_str);
-    let get_all_args_ident = format_ident!("{}Args", get_all_query_ident);
 
     let count_all_report = quote! {
         #[myko_macros::myko_report(#count_result_ident)]
@@ -122,7 +121,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
                 use futures::StreamExt;
 
-                let query = #get_all_query_ident::new(#get_all_args_ident {});
+                // Use bare query params - ctx.query() wraps them automatically
+                let query = #get_all_query_ident {};
                 let stream = ctx.query(query);
 
                 Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
@@ -132,8 +132,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     // Generate Count report with partial filter
     let count_report_ident = format_ident!("Count{}s", name_str);
-    let count_report_args_ident = format_ident!("Count{}sArgs", name_str);
-    let get_by_partial_args_ident = format_ident!("{}Args", get_by_partial_ident);
 
     let count_report = quote! {
         #[myko_macros::myko_report(#count_result_ident)]
@@ -147,10 +145,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
                 use futures::StreamExt;
 
-                let args: #count_report_args_ident = ctx.args().expect("Failed to parse count report args");
-                let partial = args.partial;
+                // Parse the report params (which are the args now - no separate Args type)
+                let params: #count_report_ident = ctx.args().expect("Failed to parse count report params");
+                let partial = params.partial;
 
-                let query = #get_by_partial_ident::new(#get_by_partial_args_ident { partial });
+                // Use bare query params - ctx.query() wraps them automatically
+                let query = #get_by_partial_ident { partial };
                 let stream = ctx.query(query);
 
                 Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
@@ -160,8 +160,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     // Generate Get{Entity}ById report that returns Option<Entity>
     let get_by_id_report_ident = format_ident!("Get{}ById", name_str);
-    let get_by_id_report_args_ident = format_ident!("Get{}ByIdArgs", name_str);
-    let get_by_ids_args_ident = format_ident!("{}Args", get_by_ids_query_ident);
 
     let get_by_id_report = quote! {
         #[myko_macros::myko_report(Option<#name>)]
@@ -175,10 +173,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
                 use futures::StreamExt;
 
-                let args: #get_by_id_report_args_ident = ctx.args().expect("Failed to parse get by id report args");
-                let id = args.id;
+                // Parse the report params (which are the args now - no separate Args type)
+                let params: #get_by_id_report_ident = ctx.args().expect("Failed to parse get by id report params");
+                let id = params.id;
 
-                let query = #get_by_ids_query_ident::new(#get_by_ids_args_ident { ids: vec![id] });
+                // Use bare query params - ctx.query() wraps them automatically
+                let query = #get_by_ids_query_ident { ids: vec![id] };
                 let stream = ctx.query(query);
 
                 Box::pin(stream.map(|items| items.into_iter().next()))
@@ -212,9 +212,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 cmd: #delete_command_ident,
                 ctx: myko_rs::prelude::CommandContext,
             ) -> Result<#delete_result_ident, myko_rs::prelude::CommandError> {
-                let query = #get_by_ids_query_ident::new(#get_by_ids_args_ident {
-                    ids: vec![cmd.id.clone()],
-                });
+                // Use bare query params - ctx.query_one wraps them automatically
+                let query = #get_by_ids_query_ident { ids: vec![cmd.id.clone()] };
 
                 let entity = ctx.query_one(&query).await?;
 
@@ -258,24 +257,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 cmd: #delete_many_command_ident,
                 ctx: myko_rs::prelude::CommandContext,
             ) -> Result<#delete_many_result_ident, myko_rs::prelude::CommandError> {
-                let query = #get_by_ids_query_ident::new(#get_by_ids_args_ident {
-                    ids: cmd.ids.clone(),
-                });
-
-                let entities = ctx.query_one(&query).await?;
                 let mut deleted_count = 0;
-
-                // Query returns Option<Entity>, but we need to get all matching entities
-                // Use the query stream to get all items
-                let query = #get_by_ids_query_ident::new(#get_by_ids_args_ident {
-                    ids: cmd.ids.clone(),
-                });
 
                 // For bulk delete, we iterate through the provided IDs and delete each found entity
                 for id in &cmd.ids {
-                    let single_query = #get_by_ids_query_ident::new(#get_by_ids_args_ident {
-                        ids: vec![id.clone()],
-                    });
+                    // Use bare query params - ctx.query_one wraps them automatically
+                    let single_query = #get_by_ids_query_ident { ids: vec![id.clone()] };
 
                     if let Some(entity) = ctx.query_one(&single_query).await? {
                         ctx.emit_del(&entity)?;
@@ -356,7 +343,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         impl myko_rs::prelude::MykoAutoQueries for #name {
                 fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
-
+                        use myko_rs::query::RegisterQuery;
                         #get_all_query_ident::register(&server)?;
                         #get_by_ids_query_ident::register(&server)?;
                         #get_by_partial_ident::register(&server)?;
@@ -366,7 +353,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         impl myko_rs::prelude::MykoAutoReports for #name {
                 fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
-                        use myko_rs::prelude::Report;
+                        use myko_rs::report::RegisterReport;
                         #count_all_report_ident::register(&server)?;
                         #count_report_ident::register(&server)?;
                         #get_by_id_report_ident::register(&server)?;

@@ -16,7 +16,7 @@ pub use crate::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
         ReportIdStatic, ReportOutputType, ReportRegistration, WrappedReport,
     },
-    search::{EntitySearch, EntitySearchArgs, EntitySearchResult, SearchableRegistration, iter_searchable},
+    search::{EntitySearch, EntitySearchResult, SearchableRegistration, iter_searchable},
     server::{MykoServer, MykoServerArgs},
     type_gen::{generate_item_types, export_registered_ts_types, TsExportRegistration},
     utils::downcast_item,

@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use quote::quote;
 use syn::parse_macro_input;
 
 mod command;
@@ -168,4 +169,39 @@ pub fn derive_message_events(input: TokenStream) -> TokenStream {
 pub fn myko_saga(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
     saga::myko_saga_impl(input).into()
+}
+
+/// Adds standard derives and registers for TypeScript export.
+///
+/// Use this for report output types to reduce boilerplate.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[myko_report_output]
+/// pub struct ServerStatsOutput {
+///     pub server: Option<Server>,
+///     pub client_count: usize,
+/// }
+///
+/// // Expands to:
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+/// #[serde(rename_all = "camelCase")]
+/// pub struct ServerStatsOutput { ... }
+/// myko_rs::register_ts_export!(ServerStatsOutput);
+/// ```
+#[proc_macro_attribute]
+pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    let name = &input.ident;
+
+    let expanded = quote! {
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+        #[serde(rename_all = "camelCase")]
+        #input
+
+        myko_rs::register_ts_export!(#name);
+    };
+
+    expanded.into()
 }

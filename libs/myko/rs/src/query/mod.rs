@@ -1,16 +1,170 @@
 use crate::{
     actors::query::query_manager::{QueryManagerMsg, RegisterQueryData},
     client::MykoClient,
-    common::with_transaction::WithTransaction,
+    common::{with_id::WithId, with_transaction::WithTransaction},
+    item::Eventable,
     parsers::query::{AnyQuery, CapturedQueryParser, MykoQueryParser},
     prelude::AnyItem,
     server::{MykoServer, MykoServerCtx},
 };
+use chrono::Utc;
 use log::error;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{any::Any, sync::Arc};
+use ts_rs::TS;
+use uuid::Uuid;
 
 inventory::collect!(QueryRegistration);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QueryRequest<Q> - Generic wrapper that adds tx/created_at to any query params
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Wraps query parameters with transaction metadata.
+///
+/// This type adds `tx` (transaction ID) and `created_at` timestamp to any query
+/// parameters struct. Uses `#[serde(flatten)]` to serialize as a flat structure.
+///
+/// # Example
+///
+/// ```ignore
+/// // Query params (what user defines):
+/// #[myko_query(Server)]
+/// pub struct GetServersByIds {
+///     pub ids: Vec<Arc<str>>,
+/// }
+///
+/// // Create a request:
+/// let request = QueryRequest::new(GetServersByIds { ids: vec![...] });
+///
+/// // Serializes to: { "tx": "...", "createdAt": "...", "ids": [...] }
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryRequest<Q> {
+    pub tx: Arc<str>,
+    pub created_at: Arc<str>,
+    #[serde(flatten)]
+    pub query: Q,
+}
+
+impl<Q> QueryRequest<Q> {
+    /// Create a new query request with auto-generated tx and timestamp.
+    pub fn new(query: Q) -> Self {
+        Self {
+            tx: Uuid::new_v4().to_string().into(),
+            created_at: Utc::now().to_rfc3339().into(),
+            query,
+        }
+    }
+}
+
+impl<Q: Default> Default for QueryRequest<Q> {
+    fn default() -> Self {
+        Self::new(Q::default())
+    }
+}
+
+impl<Q> From<Q> for QueryRequest<Q> {
+    fn from(query: Q) -> Self {
+        Self::new(query)
+    }
+}
+
+impl<Q: Send + Sync + 'static> WithTransaction for QueryRequest<Q> {
+    fn tx_id(&self) -> Arc<str> {
+        self.tx.clone()
+    }
+}
+
+impl<Q: QueryId> QueryId for QueryRequest<Q> {
+    fn query_id(&self) -> Arc<str> {
+        self.query.query_id()
+    }
+}
+
+impl<Q: QueryIdStatic> QueryIdStatic for QueryRequest<Q> {
+    fn query_id_static() -> Arc<str> {
+        Q::query_id_static()
+    }
+}
+
+impl<Q: QueryItemType> QueryItemType for QueryRequest<Q> {
+    type Item = Q::Item;
+
+    fn query_item_type(&self) -> Arc<str> {
+        self.query.query_item_type()
+    }
+
+    fn query_item_type_static() -> Arc<str> {
+        Q::query_item_type_static()
+    }
+}
+
+impl<Q: QueryHandler + Clone> QueryHandler for QueryRequest<Q> {
+    fn test_entity(ctx: QueryHandlerCtx<Self>) -> bool {
+        // Delegate to inner query's test_entity
+        // We need to create a QueryHandlerCtx for the inner type
+        Q::test_entity(QueryHandlerCtx {
+            item: ctx.item,
+            query: Arc::new(ctx.query.query.clone()),
+            server_ctx: ctx.server_ctx,
+        })
+    }
+}
+
+impl<Q: QueryId + QueryItemType + Serialize + std::fmt::Debug + Send + Sync + 'static> AnyQuery
+    for QueryRequest<Q>
+{
+    fn query_item_type(&self) -> Arc<str> {
+        QueryItemType::query_item_type(self)
+    }
+
+    fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("QueryRequest should serialize to JSON")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QueryParams - Marker trait for query parameter structs (inner type)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Marker trait for query parameter structs.
+///
+/// This is implemented by the user-defined query struct (e.g., `GetServersByIds`).
+/// It combines identity traits without requiring transaction metadata.
+///
+/// The full `Query` trait is implemented on `QueryRequest<Q>` where `Q: QueryParams`.
+pub trait QueryParams:
+    Serialize
+    + DeserializeOwned
+    + Clone
+    + Send
+    + Sync
+    + QueryId
+    + QueryIdStatic
+    + QueryItemType
+    + QueryHandler
+    + std::fmt::Debug
+    + 'static
+{
+}
+
+// Blanket impl for any type that satisfies the bounds
+impl<T> QueryParams for T where
+    T: Serialize
+        + DeserializeOwned
+        + Clone
+        + Send
+        + Sync
+        + QueryId
+        + QueryIdStatic
+        + QueryItemType
+        + QueryHandler
+        + std::fmt::Debug
+        + 'static
+{
+}
 
 #[derive(Debug)]
 pub struct QueryRegistration {
@@ -60,6 +214,10 @@ pub struct QueryHandlerCtxAny {
     pub ctx: Arc<MykoServerCtx>,
 }
 
+/// Full query trait implemented on `QueryRequest<Q>`.
+///
+/// This provides the `watch` method for client-side subscriptions.
+/// For server-side registration, use `Q::register()` on the params type.
 pub trait Query:
     Serialize
     + DeserializeOwned
@@ -73,23 +231,54 @@ pub trait Query:
     + AnyQuery
     + 'static
 {
+    /// The inner query params type
+    type Params: QueryParams;
+
     fn watch(
         &self,
         client: &MykoClient,
     ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>>;
+}
 
+// Blanket impl of Query for QueryRequest<Q>
+impl<Q: QueryParams> Query for QueryRequest<Q>
+where
+    Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
+    type Params = Q;
+
+    fn watch(
+        &self,
+        client: &MykoClient,
+    ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>> {
+        client.watch_query(self)
+    }
+}
+
+/// Extension trait for QueryParams to provide registration.
+///
+/// This is implemented for all QueryParams types via blanket impl.
+pub trait RegisterQuery: QueryParams {
+    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error>;
+}
+
+impl<Q: QueryParams> RegisterQuery for Q
+where
+    Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+        // The closure works with QueryRequest<Q> internally
         let closure = Arc::new(|ctx: QueryHandlerCtxAny| -> bool {
             let item_ref: Arc<dyn Any + Send + Sync> = ctx.item;
             let query_ref: Arc<dyn Any + Send + Sync> = ctx.query;
 
-            let item = item_ref.downcast::<Self::Item>();
-            let query = query_ref.downcast::<Self>();
+            let item = item_ref.downcast::<Q::Item>();
+            let query = query_ref.downcast::<QueryRequest<Q>>();
 
             if query.is_err() {
                 error!(
                     "Query did not correctly downcast in closure: {}",
-                    Self::query_id_static()
+                    Q::query_id_static()
                 );
                 return false;
             }
@@ -99,28 +288,28 @@ pub trait Query:
             if item.is_err() {
                 error!(
                     "Item did not downcast: {} in {}",
-                    Self::query_item_type_static(),
-                    Self::query_id_static(),
+                    Q::query_item_type_static(),
+                    Q::query_id_static(),
                 );
                 return false;
             }
 
             let item = item.expect("Item downcast should be valid");
 
-            <Self as QueryHandler>::test_entity(QueryHandlerCtx::<Self> {
+            <QueryRequest<Q> as QueryHandler>::test_entity(QueryHandlerCtx::<QueryRequest<Q>> {
                 server_ctx: ctx.ctx,
                 item: item.clone(),
                 query: query.clone(),
             })
         });
 
-        let parser: Arc<dyn MykoQueryParser> = Arc::new(CapturedQueryParser::<Self>::new());
+        let parser: Arc<dyn MykoQueryParser> = Arc::new(CapturedQueryParser::<QueryRequest<Q>>::new());
 
         // Direct send to QueryManager (bypasses Server routing)
         if let Err(err) = server.query_manager.send_message(
             QueryManagerMsg::RegisterQuery(RegisterQueryData {
-                query_id: Self::query_id_static(),
-                query_item_type: Self::query_item_type_static(),
+                query_id: Q::query_id_static(),
+                query_item_type: Q::query_item_type_static(),
                 closure,
                 parser,
             }),

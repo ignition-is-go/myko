@@ -1,4 +1,5 @@
 mod handler;
+pub mod stream;
 
 use std::{fmt::Debug, pin::Pin, sync::Arc};
 
@@ -7,6 +8,7 @@ use log::error;
 use serde::{Deserialize, Serialize, de::DeserializeOwned, ser::Error};
 use serde_json::Value;
 use ts_rs::TS;
+use uuid::Uuid;
 
 use crate::{
     actors::report::report_manager::{RegisterReportData, ReportManagerMsg},
@@ -16,6 +18,155 @@ use crate::{
 };
 
 pub use handler::{ReportContext, ReportHandler, ReportRunnerHandle, SubscriptionRequest};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReportRequest<R> - Generic wrapper that adds tx to any report params
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Wraps report parameters with transaction metadata.
+///
+/// This type adds `tx` (transaction ID) to any report parameters struct.
+/// Uses `#[serde(flatten)]` to serialize as a flat structure.
+///
+/// # Example
+///
+/// ```ignore
+/// // Report params (what user defines):
+/// #[myko_report(ServerStatsOutput)]
+/// pub struct ServerStats {}
+///
+/// // Create a request:
+/// let request = ReportRequest::new(ServerStats {});
+///
+/// // Serializes to: { "tx": "...", ...params }
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportRequest<R> {
+    pub tx: Arc<str>,
+    #[serde(flatten)]
+    pub report: R,
+}
+
+impl<R> ReportRequest<R> {
+    /// Create a new report request with auto-generated tx.
+    pub fn new(report: R) -> Self {
+        Self {
+            tx: Uuid::new_v4().to_string().into(),
+            report,
+        }
+    }
+}
+
+impl<R: Default> Default for ReportRequest<R> {
+    fn default() -> Self {
+        Self::new(R::default())
+    }
+}
+
+impl<R> From<R> for ReportRequest<R> {
+    fn from(report: R) -> Self {
+        Self::new(report)
+    }
+}
+
+impl<R: Send + Sync + 'static> WithTransaction for ReportRequest<R> {
+    fn tx_id(&self) -> Arc<str> {
+        self.tx.clone()
+    }
+}
+
+impl<R: ReportId> ReportId for ReportRequest<R> {
+    fn report_id(&self) -> Arc<str> {
+        self.report.report_id()
+    }
+}
+
+impl<R: ReportIdStatic> ReportIdStatic for ReportRequest<R> {
+    fn report_id_static() -> &'static str {
+        R::report_id_static()
+    }
+}
+
+impl<R: ReportOutputType> ReportOutputType for ReportRequest<R> {
+    type Output = R::Output;
+}
+
+impl<R: ReportId + Serialize + Debug + Send + Sync + 'static> AnyReport for ReportRequest<R> {
+    fn to_value(&self) -> Value {
+        serde_json::to_value(self).expect("ReportRequest should serialize to JSON")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReportParams - Marker trait for report parameter structs (inner type)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Marker trait for report parameter structs.
+///
+/// This is implemented by the user-defined report struct (e.g., `ServerStats`).
+/// It combines identity traits without requiring transaction metadata.
+///
+/// The full `Report` trait is implemented on `ReportRequest<R>` where `R: ReportParams`.
+pub trait ReportParams:
+    Serialize
+    + DeserializeOwned
+    + Clone
+    + Send
+    + Sync
+    + ReportId
+    + ReportIdStatic
+    + ReportOutputType
+    + ReportHandler
+    + Debug
+    + 'static
+{
+}
+
+// Blanket impl for any type that satisfies the bounds
+impl<T> ReportParams for T where
+    T: Serialize
+        + DeserializeOwned
+        + Clone
+        + Send
+        + Sync
+        + ReportId
+        + ReportIdStatic
+        + ReportOutputType
+        + ReportHandler
+        + Debug
+        + 'static
+{
+}
+
+/// Convenience macro for creating report streams.
+///
+/// This macro wraps `Box::pin(async_stream::stream! { ... })` to reduce boilerplate
+/// in `ReportHandler::compute` implementations.
+///
+/// # Example
+///
+/// ```ignore
+/// impl ReportHandler for MyReport {
+///     type Output = MyOutput;
+///
+///     fn compute(ctx: ReportContext) -> Pin<Box<dyn Stream<Item = Self::Output> + Send>> {
+///         report_stream! {
+///             let data_stream = ctx.query(MyQuery::default());
+///             futures::pin_mut!(data_stream);
+///             while let Some(items) = data_stream.next().await {
+///                 yield MyOutput { count: items.len() };
+///             }
+///         }
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! report_stream {
+    ($($body:tt)*) => {
+        Box::pin(async_stream::stream! { $($body)* })
+    };
+}
 
 inventory::collect!(ReportRegistration);
 
@@ -136,14 +287,10 @@ pub fn wrap_report<Q: ReportId + Serialize + Clone>(
     })
 }
 
-/// Main trait for reports that can be registered and watched.
+/// Full report trait implemented on `ReportRequest<R>`.
 ///
-/// A Report combines:
-/// - ReportId: runtime report ID
-/// - ReportIdStatic: static report ID for registration
-/// - ReportOutputType: the output type of the report
-/// - ReportHandler: the compute logic
-/// - WithTransaction: transaction ID handling
+/// This provides the `watch` method for client-side subscriptions.
+/// For server-side registration, use `R::register()` on the params type.
 pub trait Report:
     Serialize
     + DeserializeOwned
@@ -152,23 +299,46 @@ pub trait Report:
     + ReportId
     + ReportIdStatic
     + ReportOutputType
-    + ReportHandler
     + WithTransaction
+    + AnyReport
     + 'static
 {
+    /// The inner report params type
+    type Params: ReportParams;
+
     /// Watch this report on a client connection
     fn watch(
         &self,
         client: &MykoClient,
     ) -> impl tokio_stream::Stream<Item = <Self as ReportOutputType>::Output>;
+}
 
-    /// Register this report handler with the server
+// Blanket impl of Report for ReportRequest<R>
+impl<R: ReportParams> Report for ReportRequest<R> {
+    type Params = R;
+
+    fn watch(
+        &self,
+        client: &MykoClient,
+    ) -> impl tokio_stream::Stream<Item = <Self as ReportOutputType>::Output> {
+        client.watch_report::<R, <R as ReportOutputType>::Output>(self)
+    }
+}
+
+/// Extension trait for ReportParams to provide registration.
+///
+/// This is implemented for all ReportParams types via blanket impl.
+pub trait RegisterReport: ReportParams {
+    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error>;
+}
+
+impl<R: ReportParams> RegisterReport for R {
     fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
         let compute_fn = Arc::new(
             |ctx: ReportContext, _report_value: Value| -> Pin<Box<dyn Stream<Item = Value> + Send>> {
                 // The report args are available in ctx.report_args
                 // Call the handler's compute function
-                let stream = <Self as ReportHandler>::compute(ctx);
+                let stream = <R as ReportHandler>::compute(ctx);
 
                 // Map the output to Value
                 Box::pin(futures::stream::unfold(stream, |mut s| async move {
@@ -195,7 +365,7 @@ pub trait Report:
         // Direct send to ReportManager (bypasses Server routing)
         if let Err(err) = server.report_manager.send_message(
             ReportManagerMsg::RegisterReport(RegisterReportData {
-                report_id: <Self as ReportIdStatic>::report_id_static().into(),
+                report_id: <R as ReportIdStatic>::report_id_static().into(),
                 compute_fn,
             }),
         ) {

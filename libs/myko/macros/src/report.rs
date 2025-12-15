@@ -1,36 +1,25 @@
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
-use syn::{Field, FieldsNamed, ItemStruct, Path};
+use quote::quote;
+use syn::{ItemStruct, Path};
 
-pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) -> TokenStream {
+pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> TokenStream {
     let struct_name = &input_struct.ident;
 
-    let args_struct_name = format_ident!("{}Args", struct_name);
+    // Check if struct has no fields (empty)
+    let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
+        || matches!(&input_struct.fields, syn::Fields::Unit);
 
-    let mut args_struct = input_struct.clone();
-    args_struct.ident = args_struct_name.clone();
-    // Apply derives directly to args_struct
-    args_struct.attrs = vec![
-        syn::parse_quote!(#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]),
-        syn::parse_quote!(#[serde(rename_all = "camelCase")]),
-    ];
-
-    // Add tx field for tracking
-    if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
-        let tx = quote! { tx };
-        let arc_str = quote! { std::sync::Arc<str> };
-        let pub_viz = quote! { pub };
-
-        let tx_field: Field = syn::parse_quote! {
-            #pub_viz #tx: #arc_str
-        };
-
-        named.push(tx_field);
-    };
-
-    let derives = quote! {
-         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]
-         #[serde(rename_all = "camelCase")]
+    // Apply derives (add Default for empty structs)
+    let derives = if is_empty {
+        quote! {
+            #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+            #[serde(rename_all = "camelCase")]
+        }
+    } else {
+        quote! {
+            #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+            #[serde(rename_all = "camelCase")]
+        }
     };
 
     // Convert the full output type path to a string for registration
@@ -48,54 +37,24 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
         }
     };
 
-    let pairs = args_struct
-        .fields
-        .iter()
-        .map(|f| {
-            let f_name = f.ident.as_ref().expect("must be field struct");
-            quote! {#f_name: args.#f_name,}
-        })
-        .collect::<Vec<_>>();
-
     // Generate the implementation
+    // Note: We don't generate Args type or inject tx anymore.
+    // Those are handled by ReportRequest<R> wrapper.
     let expanded = quote! {
         #derives
         #input_struct
-        #args_struct
-
-        impl #struct_name {
-            pub fn new(args: #args_struct_name) -> Self {
-                let tx: std::sync::Arc<str> = myko_rs::prelude::Uuid::new_v4().to_string().into();
-                Self {
-                    tx,
-                    #(#pairs)*
-                }
-            }
-        }
 
         myko_rs::submit! {
             #report_registration
         }
 
-        // Register for ts-rs export
-        myko_rs::register_ts_export!(#struct_name, #args_struct_name);
+        // Register for ts-rs export (just the params type now)
+        myko_rs::register_ts_export!(#struct_name);
 
-        // Client-side watch (legacy compatibility)
-        impl myko_rs::prelude::MykoReport<#report_output_type> for #struct_name {
-            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_output_type> {
-                client.watch_report::<#struct_name, #report_output_type>(self)
-            }
-        }
-
+        // Impl ReportId
         impl myko_rs::prelude::ReportId for #struct_name {
             fn report_id(&self) -> std::sync::Arc<str> {
                 stringify!(#struct_name).into()
-            }
-        }
-
-        impl myko_rs::prelude::WithTransaction for #struct_name {
-            fn tx_id(&self) -> std::sync::Arc<str> {
-                self.tx.clone()
             }
         }
 
@@ -105,28 +64,13 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
             }
         }
 
-        impl myko_rs::prelude::AnyReport for #struct_name {
-            fn to_value(&self) -> serde_json::Value {
-                serde_json::to_value(self).expect("Report should serialize to JSON")
-            }
-        }
-
         impl myko_rs::prelude::ReportOutputType for #struct_name {
             type Output = #report_output_type;
         }
 
-        impl From<myko_rs::prelude::WrappedReport> for #struct_name {
-            fn from(wrapped_report: myko_rs::prelude::WrappedReport) -> Self {
-                serde_json::from_value::<Self>(wrapped_report.report).expect("Failed to deserialize report")
-            }
-        }
-
-        // Report trait impl - requires ReportHandler to be implemented by the user
-        impl myko_rs::prelude::Report for #struct_name {
-            fn watch(&self, client: &myko_rs::client::MykoClient) -> impl tokio_stream::Stream<Item = #report_output_type> {
-                client.watch_report::<Self, #report_output_type>(self)
-            }
-        }
+        // Note: WithTransaction, AnyReport, and Report are implemented on ReportRequest<#struct_name>
+        // via blanket impls in myko_rs. The user's struct just implements the identity traits.
+        // ReportHandler must still be implemented by the user.
     };
 
     expanded
