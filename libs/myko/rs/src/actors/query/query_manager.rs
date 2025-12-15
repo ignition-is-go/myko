@@ -156,7 +156,8 @@ impl QueryManager {
 
     fn handle_register_query(&mut self, data: RegisterQueryData) {
         if self.parsers.contains_key(&data.query_id) {
-            error!("Parser already registered for query ID {}", data.query_id);
+            trace!("Query {} already registered, skipping", data.query_id);
+            return;
         }
 
         let event_manager = match &self.event_manager {

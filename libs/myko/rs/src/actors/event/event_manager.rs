@@ -18,7 +18,11 @@ use super::{common::ProcessEventData, EventBus};
 use crate::{
     actors::{
         event::event_handler::{EventHandler, EventHandlerArgs, EventHandlerMessage},
-        kafka::common::KafkaSharedConfig,
+        kafka::{
+            common::KafkaSharedConfig,
+            shared_consumer::{SharedConsumerHandle, SharedKafkaConsumerArgs, spawn_shared_kafka_consumer},
+            shared_producer::{SharedKafkaProducer, SharedKafkaProducerArgs, SharedKafkaProducerMsg},
+        },
         query::query_manager::QueryManagerMsg,
         relationship::RelationshipManagerMsg,
         server::ServerMsg,
@@ -66,6 +70,10 @@ pub struct EventManager {
     client_id_fields: HashMap<String, String>,
     /// Optional reference to RelationshipManager for forwarding events
     relationship_manager: Option<ActorRef<RelationshipManagerMsg>>,
+    /// Shared Kafka producer (single connection for all entity types)
+    shared_kafka_producer: Option<ActorRef<SharedKafkaProducerMsg>>,
+    /// Shared Kafka consumer handle for registering topic handlers
+    shared_consumer_handle: Option<SharedConsumerHandle>,
 }
 
 /// Messages handled by the EventManager actor.
@@ -199,6 +207,8 @@ impl EventManager {
             event_bus: None,
             client_id_fields,
             relationship_manager: None,
+            shared_kafka_producer: None,
+            shared_consumer_handle: None,
         }
     }
 
@@ -219,7 +229,7 @@ impl EventManager {
 
         self.left_to_init.insert(entity_name.clone());
         if self.handlers.contains_key(&entity_name) {
-            error!("Entity already exists");
+            trace!("Entity {} already registered, skipping", entity_name);
             return;
         }
 
@@ -267,10 +277,36 @@ impl EventManager {
         };
     }
 
-    fn handle_init_all(&self, config: Option<KafkaSharedConfig>) {
+    fn handle_init_all(&mut self, config: Option<KafkaSharedConfig>) {
         info!("Initializing all repositories: {}", self.handlers.len());
+
+        // Create shared Kafka actors if Kafka is configured
+        if let Some(ref shared_conf) = config {
+            // Spawn shared producer (single Kafka connection for all entity types)
+            let producer_handle = SharedKafkaProducer::spawn(SharedKafkaProducerArgs {
+                shared_conf: shared_conf.clone(),
+            });
+            self.shared_kafka_producer = Some(producer_handle.actor_ref());
+
+            // Create shared consumer handle and spawn the consumer
+            let (consumer_handle, handler_rx) = SharedConsumerHandle::new();
+            spawn_shared_kafka_consumer(SharedKafkaConsumerArgs {
+                shared_conf: shared_conf.clone(),
+                ctx: self.ctx.clone(),
+                handler_rx,
+            });
+            self.shared_consumer_handle = Some(consumer_handle);
+
+            info!("Shared Kafka producer and consumer created");
+        }
+
+        // Send init message to all handlers with shared Kafka references
         for handler in self.handlers.values() {
-            let _ = handler.send_message(EventHandlerMessage::Init(config.clone()));
+            let _ = handler.send_message(EventHandlerMessage::Init {
+                config: config.clone(),
+                shared_producer: self.shared_kafka_producer.clone(),
+                shared_consumer_handle: self.shared_consumer_handle.clone(),
+            });
         }
     }
 

@@ -29,8 +29,8 @@ use crate::{
         event::{common::PersistEvent, event_manager::EventManagerMsg},
         kafka::{
             common::KafkaSharedConfig,
-            consumer::{spawn_kafka_consumer, KafkaConsumerArgs},
-            producer::{KafkaProducer, KafkaProducerArgs, KafkaProducerMsg, ProduceEventData},
+            shared_consumer::SharedConsumerHandle,
+            shared_producer::{SharedKafkaProducerMsg, SharedProduceEventData},
         },
         query::{common::ProcessUpdateData, query_manager::QueryManagerMsg},
     },
@@ -55,8 +55,8 @@ pub struct EventHandler {
     query_manager: ActorRef<QueryManagerMsg>,
     /// Server context with host ID
     ctx: Arc<MykoServerCtx>,
-    /// Kafka producer for persisting events (None in in-memory mode)
-    kafka_producer: Option<ActorRef<KafkaProducerMsg>>,
+    /// Shared Kafka producer for persisting events (None in in-memory mode)
+    shared_kafka_producer: Option<ActorRef<SharedKafkaProducerMsg>>,
     /// Parser for converting JSON to strongly-typed items
     parser: Arc<dyn MykoItemParser>,
     /// In-memory store of all items, keyed by ID
@@ -72,11 +72,15 @@ pub enum EventHandlerMessage {
     ProcessEvent(ProcessEventData),
 
     /// Initialize the handler with optional Kafka configuration.
-    /// - `Some(config)`: Spawn Kafka consumer/producer, replay history
+    /// - `Some(config)`: Register with shared consumer, use shared producer
     /// - `None`: In-memory only, signal ready immediately
-    Init(Option<KafkaSharedConfig>),
+    Init {
+        config: Option<KafkaSharedConfig>,
+        shared_producer: Option<ActorRef<SharedKafkaProducerMsg>>,
+        shared_consumer_handle: Option<SharedConsumerHandle>,
+    },
 
-    /// Notification from KafkaConsumer that it has caught up with the topic.
+    /// Notification from SharedKafkaConsumer that this topic has caught up.
     /// Triggers [`RepoInitComplete`](crate::actors::event::event_manager::EventManagerMsg::RepoInitComplete)
     /// notification to EventManager.
     PersisterCaughtUp,
@@ -127,16 +131,13 @@ pub enum EventHandlerMessage {
 
     /// Set self-reference (called immediately after spawn)
     SetMyself(ActorRef<EventHandlerMessage>),
-
-    /// Set Kafka producer reference (called after Kafka producer is spawned)
-    SetKafkaProducer(ActorRef<KafkaProducerMsg>),
 }
 
 impl std::fmt::Debug for EventHandlerMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EventHandlerMessage::ProcessEvent(_) => write!(f, "ProcessEvent"),
-            EventHandlerMessage::Init(_) => write!(f, "Init"),
+            EventHandlerMessage::Init { .. } => write!(f, "Init"),
             EventHandlerMessage::PersisterCaughtUp => write!(f, "PersisterCaughtUp"),
             EventHandlerMessage::GetState(_) => write!(f, "GetState"),
             EventHandlerMessage::QueryByField { field, value, .. } => {
@@ -150,7 +151,6 @@ impl std::fmt::Debug for EventHandlerMessage {
             }
             EventHandlerMessage::GetAllItems(_) => write!(f, "GetAllItems"),
             EventHandlerMessage::SetMyself(_) => write!(f, "SetMyself"),
-            EventHandlerMessage::SetKafkaProducer(_) => write!(f, "SetKafkaProducer"),
         }
     }
 }
@@ -180,7 +180,7 @@ impl EventHandler {
             query_manager: args.query_manager,
             ctx: args.ctx,
             parser: args.parser,
-            kafka_producer: None,
+            shared_kafka_producer: None,
             store: BTreeMap::new(),
             myself: None,
         }
@@ -198,42 +198,27 @@ impl EventHandler {
         handle
     }
 
-    fn handle_init(&mut self, conf: Option<KafkaSharedConfig>) {
+    fn handle_init(
+        &mut self,
+        _config: Option<KafkaSharedConfig>,
+        shared_producer: Option<ActorRef<SharedKafkaProducerMsg>>,
+        shared_consumer_handle: Option<SharedConsumerHandle>,
+    ) {
         let entity_name = self.entity_name.clone();
         trace!("{}: Init", entity_name);
 
-        match conf {
-            Some(conf) => {
-                // With Kafka: spawn consumer and producer
-                let myself = self.myself.clone();
-                let ctx = self.ctx.clone();
-                let entity_name_clone = entity_name.clone();
+        match (shared_producer, shared_consumer_handle) {
+            (Some(producer), Some(consumer_handle)) => {
+                // With Kafka: use shared producer and register with shared consumer
+                self.shared_kafka_producer = Some(producer);
 
-                // Spawn Kafka consumer (background thread with tokio runtime)
-                if let Some(myself_ref) = &myself {
-                    spawn_kafka_consumer(KafkaConsumerArgs {
-                        topic: entity_name_clone.clone(),
-                        shared_conf: conf.clone(),
-                        repo_ref: myself_ref.clone(),
-                        ctx: ctx.clone(),
-                    });
+                // Register this handler with the shared consumer
+                if let Some(myself_ref) = &self.myself {
+                    consumer_handle.register(entity_name.clone(), myself_ref.clone());
+                    trace!("{}: Registered with shared Kafka consumer", entity_name);
                 }
-
-                // Spawn Kafka producer on a background thread (it creates its own tokio runtime)
-                let myself_for_producer = myself.clone();
-                std::thread::spawn(move || {
-                    let producer_handle = KafkaProducer::spawn(KafkaProducerArgs {
-                        shared_conf: conf,
-                        topic: entity_name_clone,
-                    });
-
-                    if let Some(myself_ref) = myself_for_producer {
-                        let _ = myself_ref
-                            .send(EventHandlerMessage::SetKafkaProducer(producer_handle.actor_ref()));
-                    }
-                });
             }
-            None => {
+            _ => {
                 // In-memory mode: signal caught up immediately
                 if let Some(myself) = &self.myself {
                     let _ = myself.send(EventHandlerMessage::PersisterCaughtUp);
@@ -278,14 +263,15 @@ impl EventHandler {
             }
         };
 
-        if let Some(kafka_producer) = &self.kafka_producer
+        if let Some(shared_producer) = &self.shared_kafka_producer
             && let PersistEvent::Persist = data.persist
         {
             let mut event = data.event.clone();
             event.source_id = Some(self.ctx.host_id.to_string());
 
-            let produce_res = kafka_producer.send(KafkaProducerMsg::ProduceEvent(
-                ProduceEventData {
+            let produce_res = shared_producer.send(SharedKafkaProducerMsg::ProduceEvent(
+                SharedProduceEventData {
+                    topic: self.entity_name.clone(),
                     event,
                     key: item.id().clone(),
                 },
@@ -423,8 +409,12 @@ impl Actor for EventHandler {
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
-            EventHandlerMessage::Init(conf) => {
-                self.handle_init(conf);
+            EventHandlerMessage::Init {
+                config,
+                shared_producer,
+                shared_consumer_handle,
+            } => {
+                self.handle_init(config, shared_producer, shared_consumer_handle);
             }
             EventHandlerMessage::PersisterCaughtUp => {
                 self.handle_persister_caught_up();
@@ -449,9 +439,6 @@ impl Actor for EventHandler {
             }
             EventHandlerMessage::SetMyself(myself) => {
                 self.myself = Some(myself);
-            }
-            EventHandlerMessage::SetKafkaProducer(producer) => {
-                self.kafka_producer = Some(producer);
             }
         }
     }
