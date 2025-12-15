@@ -25,7 +25,8 @@
         "noThenProperty": "off",
         "noPrototypeBuiltins": "warn",
         "noSelfCompare": "warn",
-        "noShadowRestrictedNames": "warn"
+        "noShadowRestrictedNames": "warn",
+        "useBiomeIgnoreFolder": "off"
       },
       "style": {
         "noNonNullAssertion": "off",
@@ -39,7 +40,7 @@
         "noStaticOnlyClass": "off"
       },
       "performance": {
-        "noAccumulatingSpread": "warn"
+        "noAccumulatingSpread": "off"
       },
       "security": {
         "noGlobalEval": "warn"
@@ -57,7 +58,9 @@
       "libs/**/*.js",
       "libs/**/*.jsx",
       "!apps/labs/scratch/**",
-      "!libs/ableton/src/lib/max4node/**"
+      "!libs/ableton/src/lib/max4node/**",
+      "!libs/svelte-schema-form/**",
+      "!libs/mediamtx/generated/**"
     ],
     "ignoreUnknown": true
   },

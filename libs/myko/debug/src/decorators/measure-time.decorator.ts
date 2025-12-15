@@ -3,7 +3,7 @@ const timeCache = new Map<
   { totalTime: number; numCalls: number; avgTime: number }
 >()
 
-let interval
+let interval: ReturnType<typeof setInterval> | undefined
 
 let enable = false
 try {
