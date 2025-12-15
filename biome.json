@@ -20,7 +20,7 @@
         "noExplicitAny": "off",
         "noConfusingVoidType": "off",
         "noAssignInExpressions": "off",
-        "useIterableCallbackReturn": "warn",
+        "useIterableCallbackReturn": "off",
         "noImplicitAnyLet": "warn",
         "noThenProperty": "off",
         "noPrototypeBuiltins": "warn",
