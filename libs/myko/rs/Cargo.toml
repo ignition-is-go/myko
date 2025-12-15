@@ -17,7 +17,6 @@ serde_json = "1.0"
 uuid = { version = "1.0", features = ["serde", "v4", "js"] }
 partially = { version = "0.2.1", features = ["derive"] }
 futures = "0.3"
-futures-signals = "0.3.33"
 futures-util = "0.3.30"
 async-stream = "0.3"
 tokio = { version = "1", features = ["full"] }
@@ -43,6 +42,7 @@ ts-rs = { version = "11.1.0", features = ["serde-json-impl"] }
 inventory = "0.3.21"
 dprint-plugin-typescript = "0.95.12"
 tantivy = "0.22"
+crossbeam = "0.8"
 
 [features]
 default = []
@@ -50,8 +50,13 @@ bench = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+num_cpus = "1.16"
 
 [[bench]]
 name = "gateway"
 harness = false
 required-features = ["bench"]
+
+[[bench]]
+name = "runtime"
+harness = false

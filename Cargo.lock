@@ -466,7 +466,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 name = "autosocket"
 version = "0.1.0"
 dependencies = [
- "futures-signals",
  "futures-util",
  "log 0.4.29",
  "tokio",
@@ -5297,14 +5296,15 @@ dependencies = [
  "autosocket",
  "chrono",
  "criterion",
+ "crossbeam",
  "dprint-plugin-typescript",
  "futures 0.3.31",
- "futures-signals",
  "futures-util",
  "inventory",
  "log 0.4.29",
  "md5",
  "myko-macros",
+ "num_cpus",
  "openssl",
  "partially",
  "pin-project-lite",
