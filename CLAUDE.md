@@ -330,7 +330,7 @@ This is production software used in live entertainment, broadcast, and installat
 
 - **Svelte 5** (not Svelte 4): Uses runes (`$state`, `$derived`, `$effect`), not reactive statements (`$:`). Components use `<script>` not `<script lang="ts">` with stores. Check existing components in `apps/ui/src/lib/` for patterns.
 - **SvelteKit 2**: File-based routing in `src/routes/`. Uses `+page.svelte`, `+layout.svelte`, `+server.ts` conventions. Load functions in `+page.ts` or `+layout.ts`.
-- **Tauri 2** (not Tauri 1): Different plugin system, command structure, and IPC. Uses `@tauri-apps/api` v2 imports. Check `apps/ui-desktop/src-tauri/` for current patterns.
+- **Tauri 2** (not Tauri 1): Different plugin system, command structure, and IPC. Uses `@tauri-apps/api` v2 imports. Check `apps/ui/src-tauri/` for current patterns.
 - **Threlte 8**: Three.js integration for Svelte 5. Different component API from earlier versions.
 - **RxJS 7**: Used extensively for reactive streams. Check `@myko/` packages for observable patterns.
 
