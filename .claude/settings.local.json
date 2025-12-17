@@ -3,7 +3,8 @@
     "allow": [
       "Bash(npx prettier:*)",
       "Bash(grep:*)",
-      "Bash(pnpm install:*)"
+      "Bash(pnpm install:*)",
+      "Bash(git config:*)"
     ]
   }
 }
