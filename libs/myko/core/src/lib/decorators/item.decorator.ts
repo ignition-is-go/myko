@@ -55,7 +55,8 @@ export const MykoItem =
       throw new Error('itemType is undefined')
     }
 
-    const withType: any = (...args: any[]) => {
+    // Use regular function (not arrow) to be callable with `new`
+    function withType(this: any, ...args: any[]) {
       const typed = new original(...args)
       args.forEach((arg) => Object.assign(typed, arg))
       Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, typed)
@@ -66,7 +67,7 @@ export const MykoItem =
 
     Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
 
-    constructorRegistry.set(itemType, withType)
+    constructorRegistry.set(itemType, withType as any)
 
     docEntity(opts?.doc, itemType, opts?.deprecated, opts?.preventDoc)(target)
 
@@ -149,14 +150,14 @@ export const MykoItem =
             localKey: propertyKey,
           }
         }),
-        makeDefault: withType,
+        makeDefault: withType as any,
         localType: itemType,
       })
     }
 
-    initRepo(withType)
+    initRepo(withType as any)
 
-    return withType
+    return withType as any
   }
 
 //

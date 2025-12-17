@@ -12,7 +12,8 @@ export const MykoReport =
 
     reports.add(reportId)
 
-    const withType: any = (...args: any[]) => {
+    // Use regular function (not arrow) to be callable with `new`
+    function withType(this: any, ...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_REPORT_ID_KEY, reportId, typed)
       return typed

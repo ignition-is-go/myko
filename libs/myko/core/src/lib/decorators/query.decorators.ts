@@ -51,7 +51,8 @@ export const MykoQuery: <U extends MItem<IMItem>>(
       throw new Error('commandId is undefined')
     }
 
-    const withType: any = (...args: any[]) => {
+    // Use regular function (not arrow) to be callable with `new`
+    function withType(this: any, ...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_QUERY_ID_KEY, queryId, typed)
       Reflect.defineMetadata(MYKO_QUERY_ITEM_TYPE_KEY, itemType, typed)
