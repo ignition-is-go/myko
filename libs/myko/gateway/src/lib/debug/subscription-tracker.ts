@@ -11,7 +11,8 @@ export class SubscriptionTracker {
 
     const key = `${type}:${id}`
     const current = this.subscriptionCounts.get(key) || 0
-    const newCount = action === 'subscribe' ? current + 1 : Math.max(0, current - 1)
+    const newCount =
+      action === 'subscribe' ? current + 1 : Math.max(0, current - 1)
 
     this.subscriptionCounts.set(key, newCount)
 
@@ -23,7 +24,10 @@ export class SubscriptionTracker {
   static report() {
     if (!this.enabled) return
 
-    const total = Array.from(this.subscriptionCounts.values()).reduce((a, b) => a + b, 0)
+    const total = Array.from(this.subscriptionCounts.values()).reduce(
+      (a, b) => a + b,
+      0,
+    )
     const byType = new Map<string, number>()
 
     for (const [key, count] of this.subscriptionCounts.entries()) {

@@ -96,10 +96,12 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       }),
       tap(() => this.on_follow_up?.(query, callId)),
       distinctUntilChanged((a, b) => {
-        const aHash = new Set(a.map(x => x.hash))
-        const bHash = new Set(b.map(x => x.hash))
+        const aHash = new Set(a.map((x) => x.hash))
+        const bHash = new Set(b.map((x) => x.hash))
 
-        return a.length === b.length && aHash.symmetricDifference(bHash).size === 0
+        return (
+          a.length === b.length && aHash.symmetricDifference(bHash).size === 0
+        )
       }),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),

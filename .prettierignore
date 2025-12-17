@@ -78,9 +78,12 @@ libs/ableton/src/lib/max4node/*
 .husky/*
 
 # generated
-
-apps/rship/link-ui/src/bindings.ts
-apps/link-ui/src-tauri/gen/schemas/*
+libs/generated/*
+libs/asset-store/core/bindings/*
+libs/mediamtx/generated/*
+apps/execs/disguise/generated/*
+apps/link-ui/src/bindings.ts
+apps/link-ui/src-tauri/gen/*
 
 *.log
 *.log.*
