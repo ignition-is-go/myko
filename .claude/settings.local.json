@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx prettier:*)",
+      "Bash(grep:*)",
+      "Bash(pnpm install:*)"
+    ]
+  }
+}
