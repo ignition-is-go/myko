@@ -33,7 +33,7 @@ tokio-util = "0.7.10"
 tokio-stream = { version = "0.1.15", features = ["sync"] }
 pin-project-lite = "0.2"
 url = "2.5.0"
-chrono = "0.4.39"
+chrono = { version = "0.4.39", features = ["serde"] }
 log = "0.4"
 ractor = "0.15.9"
 anyhow = "1.0.100"
