@@ -59,18 +59,17 @@ impl AutoReconnectSocket {
         // Cancel existing connection/reconnection loop
         if let SocketConnectionStatus::Connected(ref current_addr)
         | SocketConnectionStatus::Connecting(ref current_addr) = current_status
+            && Some(current_addr.clone()) == addr
         {
-            if Some(current_addr.clone()) == addr {
-                info!("Already connected to {current_addr}");
-                return;
-            }
+            info!("Already connected to {current_addr}");
+            return;
         }
 
         // Cancel the reconnection loop via stored token
-        if let Ok(guard) = self.teardown.lock() {
-            if let Some(ref teardown) = *guard {
-                teardown.cancel();
-            }
+        if let Ok(guard) = self.teardown.lock()
+            && let Some(ref teardown) = *guard
+        {
+            teardown.cancel();
         }
         {
             let mut guard = self.teardown.lock().unwrap();
@@ -89,10 +88,10 @@ impl AutoReconnectSocket {
     /// This cancels the reconnection loop even if currently disconnected and retrying.
     pub fn close(&self) {
         info!("Closing socket and stopping reconnection");
-        if let Ok(guard) = self.teardown.lock() {
-            if let Some(ref teardown) = *guard {
-                teardown.cancel();
-            }
+        if let Ok(guard) = self.teardown.lock()
+            && let Some(ref teardown) = *guard
+        {
+            teardown.cancel();
         }
         {
             let mut guard = self.teardown.lock().unwrap();

@@ -223,9 +223,7 @@ pub fn spawn_shared_kafka_consumer(args: SharedKafkaConsumerArgs) {
                     consumer.recv(),
                 ).await {
                     Ok(Ok(message)) => {
-                        let topic = match message.topic() {
-                            t => Arc::<str>::from(t),
-                        };
+                        let topic = Arc::<str>::from(message.topic());
                         let offset = message.offset();
 
                         // Track current offset and message count
@@ -255,17 +253,17 @@ pub fn spawn_shared_kafka_consumer(args: SharedKafkaConsumerArgs) {
                                     .clone()
                                     .is_some_and(|id| id == host_id_string);
 
-                                if !my_event {
-                                    if let Some(handler) = handlers.get(&topic) {
-                                        let _ = handler.send(EventHandlerMessage::ProcessEvent(
-                                            ProcessEventData {
-                                                event,
-                                                persist: PersistEvent::NoPersist,
-                                                parsed_item: None,
-                                                client_id: None,
-                                            },
-                                        ));
-                                    }
+                                if !my_event
+                                    && let Some(handler) = handlers.get(&topic)
+                                {
+                                    let _ = handler.send(EventHandlerMessage::ProcessEvent(
+                                        ProcessEventData {
+                                            event,
+                                            persist: PersistEvent::NoPersist,
+                                            parsed_item: None,
+                                            client_id: None,
+                                        },
+                                    ));
                                 }
                             }
                             Err(err) => {

@@ -57,13 +57,10 @@ pub fn collect_setter_fields(input: &ItemStruct) -> Vec<SetterField> {
 
 /// Parse optional string argument from attribute: #[attr("value")]
 fn parse_string_arg(attr: &syn::Attribute) -> Option<String> {
-    if let Meta::List(meta_list) = &attr.meta {
-        // Try to parse the tokens as a string literal
-        if let Ok(lit) = meta_list.parse_args::<Lit>() {
-            if let Lit::Str(lit_str) = lit {
-                return Some(lit_str.value());
-            }
-        }
+    if let Meta::List(meta_list) = &attr.meta
+        && let Ok(Lit::Str(lit_str)) = meta_list.parse_args::<Lit>()
+    {
+        return Some(lit_str.value());
     }
     None
 }
