@@ -162,9 +162,10 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .collect::<Vec<String>>()
         .join("\n");
 
+    // Use `export *` for subdirectory files since they may export types and/or values
     let subdir_exports = subdir_types
         .iter()
-        .map(|(subdir, name)| format!("export type {{ {} }} from \"./{}/{}\";", name, subdir, name))
+        .map(|(subdir, name)| format!("export * from \"./{}/{}\";", subdir, name))
         .collect::<Vec<String>>()
         .join("\n");
 
@@ -353,6 +354,7 @@ fn generate_command_class(command_id: &str, result_type: &str) -> String {
 fn rust_type_to_ts(rust_type: &str) -> String {
     let trimmed = rust_type.trim();
 
+    // Handle Option<T> -> T | null
     if trimmed.starts_with("Option")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -362,6 +364,7 @@ fn rust_type_to_ts(rust_type: &str) -> String {
         return format!("{} | null", inner_ts);
     }
 
+    // Handle Vec<T> -> T[]
     if trimmed.starts_with("Vec")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -371,7 +374,25 @@ fn rust_type_to_ts(rust_type: &str) -> String {
         return format!("{}[]", inner_ts);
     }
 
-    trimmed.to_string()
+    // Handle Arc<T> -> unwrap to inner type
+    if trimmed.starts_with("Arc")
+        && let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.rfind('>')
+    {
+        let inner = trimmed[start + 1..end].trim();
+        return rust_type_to_ts(inner);
+    }
+
+    // Map Rust primitive types to TypeScript
+    match trimmed {
+        "str" | "String" => "string".to_string(),
+        "bool" => "boolean".to_string(),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
+        "f32" | "f64" => "number".to_string(),
+        "()" => "void".to_string(),
+        _ => trimmed.to_string(),
+    }
 }
 
 fn generate_item_constructor(item_name: &str) -> String {
@@ -384,6 +405,7 @@ fn generate_item_constructor(item_name: &str) -> String {
 fn extract_importable_types(rust_type: &str) -> Vec<String> {
     let trimmed = rust_type.trim();
 
+    // Handle Option<T> - extract inner type
     if trimmed.starts_with("Option")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
@@ -392,12 +414,34 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
         return extract_importable_types(inner);
     }
 
+    // Handle Vec<T> - extract inner type
     if trimmed.starts_with("Vec")
         && let Some(start) = trimmed.find('<')
         && let Some(end) = trimmed.rfind('>')
     {
         let inner = trimmed[start + 1..end].trim();
         return extract_importable_types(inner);
+    }
+
+    // Handle Arc<T> - extract inner type
+    if trimmed.starts_with("Arc")
+        && let Some(start) = trimmed.find('<')
+        && let Some(end) = trimmed.rfind('>')
+    {
+        let inner = trimmed[start + 1..end].trim();
+        return extract_importable_types(inner);
+    }
+
+    // Filter out Rust primitive types that don't need imports
+    let primitives = [
+        "str", "String", "bool", "()",
+        "i8", "i16", "i32", "i64", "i128", "isize",
+        "u8", "u16", "u32", "u64", "u128", "usize",
+        "f32", "f64",
+    ];
+
+    if primitives.contains(&trimmed) {
+        return vec![];
     }
 
     let clean_type = trimmed.replace(" ", "");
