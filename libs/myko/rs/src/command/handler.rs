@@ -248,6 +248,56 @@ impl CommandContext {
         }
     }
 
+    /// Execute a query and return all results.
+    ///
+    /// This performs a one-shot query that returns current state without
+    /// creating a subscription. Returns all matching items.
+    ///
+    /// Accepts bare query params (e.g., `GetServersByQuery { ... }`)
+    /// and automatically wraps them with transaction metadata.
+    pub async fn query_all<Q>(&self, query: &Q) -> Result<Vec<Q::Item>, CommandError>
+    where
+        Q: QueryParams,
+        Q::Item: DeserializeOwned + Send + Sync,
+    {
+        // Wrap with QueryRequest to add tx and created_at
+        let wrapped_request = QueryRequest::new(query.clone());
+        let query_value = serde_json::to_value(&wrapped_request).map_err(|e| CommandError {
+            tx: self.tx().to_string(),
+            command_id: self.command_id.to_string(),
+            message: format!("Failed to serialize query: {}", e),
+        })?;
+
+        let wrapped = WrappedQuery {
+            query: query_value,
+            query_id: Q::query_id_static(),
+            query_item_type: Q::query_item_type_static(),
+        };
+
+        // Use WrappedQuerySnapshot for one-shot query (no subscription)
+        let snapshot = self
+            .query_manager
+            .call(|r| QueryManagerMsg::WrappedQuerySnapshot(wrapped, r))
+            .map_err(|e| CommandError {
+                tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
+                message: format!("Failed to query snapshot: {}", e),
+            })?;
+
+        // Parse and return all items
+        let mut results = Vec::with_capacity(snapshot.len());
+        for (_, item) in snapshot {
+            let value = item.to_value();
+            let parsed: Q::Item = serde_json::from_value(value).map_err(|e| CommandError {
+                tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
+                message: format!("Failed to parse query result: {}", e),
+            })?;
+            results.push(parsed);
+        }
+        Ok(results)
+    }
+
     /// Execute a report and return the first emitted value.
     ///
     /// This starts a report and waits for the first value to be emitted,
