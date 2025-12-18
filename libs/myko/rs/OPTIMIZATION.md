@@ -245,3 +245,181 @@ WebSocket ──► MessageHandler ──► EventManager ──► EventHandler
 | Query state storage | BTreeMap + locks | DashMap (lock-free) | High |
 | Hash function | SipHash | ahash | Medium |
 | JSON parsing | Sync in actor | Async thread pool | Low |
+
+---
+
+## 1M Events/Sec Scale Plan
+
+**Target**: 1M events/sec with 300 reports, 300 queries, 50 clients, <10ms p99 latency.
+
+### Current Capacity Analysis
+
+| Metric | Current | Required | Gap |
+|--------|---------|----------|-----|
+| Events/sec (single server) | ~500 | 1,000,000 | 2,000x |
+| p99 latency | 75-150ms | <10ms | 10-15x |
+| Serializations per event | 1,500 (per client) | 2 (per format) | 750x |
+
+### Workload Assumptions
+
+- Few hot entity types (90%+ events on Target, Emitter)
+- Low match rate (<10% of queries match each event)
+- Horizontal scaling available
+
+### Phase 1: Serialization (P0) - 100x Improvement
+
+#### 1.1 MessagePack as Opt-In via WebSocket Subprotocol
+
+Not all clients support MessagePack. Opt-in via WebSocket subprotocol negotiation:
+
+```
+// Client request header
+Sec-WebSocket-Protocol: msgpack
+
+// Server response (if supported)
+Sec-WebSocket-Protocol: msgpack
+```
+
+**Files:**
+- `src/actors/ws/websocket_server.rs` - subprotocol negotiation
+- `src/actors/ws/websocket_connection.rs` - per-client format tracking
+
+```rust
+pub enum SerializationFormat {
+    Json,       // Default, always supported
+    MessagePack, // Opt-in via subprotocol
+}
+
+pub struct WebSocketConnection {
+    format: SerializationFormat,
+    // ...
+}
+```
+
+#### 1.2 Serialize-Once Per Format, Broadcast-Many
+
+Serialize once per format, not per client:
+
+```rust
+struct SerializedUpdate {
+    msgpack: Option<Arc<[u8]>>,  // Lazy, computed on first msgpack client
+    json: Option<Arc<str>>,      // Lazy, computed on first json client
+}
+
+impl SerializedUpdate {
+    fn get_for_format(&mut self, format: SerializationFormat, update: &QueryStreamUpdate) -> Message {
+        match format {
+            SerializationFormat::MessagePack => {
+                let bytes = self.msgpack.get_or_insert_with(|| {
+                    Arc::from(rmp_serde::to_vec_named(update).unwrap())
+                });
+                Message::Binary(bytes.to_vec())
+            }
+            SerializationFormat::Json => {
+                let text = self.json.get_or_insert_with(|| {
+                    Arc::from(serde_json::to_string(update).unwrap())
+                });
+                Message::Text(text.to_string())
+            }
+        }
+    }
+}
+```
+
+**Impact**: 50 JSON + 50 MessagePack clients = 2 serializations (not 100)
+
+#### 1.3 Entity-Type Pre-Filtering
+
+Only evaluate queries matching the event's entity type:
+
+```rust
+// Before: Iterate all 300 queries
+for handler in self.handlers.values() {
+    handler.send_message(ProcessUpdate(data));
+}
+
+// After: Only queries for matching entity type
+if let Some(handlers) = self.handlers.get(&data.entity_type) {
+    for handler in handlers.values() {
+        handler.send_message(ProcessUpdate(data));
+    }
+}
+```
+
+**Impact**: With 10 entity types, 10x fewer handler invocations
+
+### Phase 2: Fanout & Bridging (P1) - 10x Improvement
+
+#### 2.1 Batched Notifications
+
+Batch updates within 1-2ms window:
+
+```rust
+pending_updates.push(update);
+
+if pending_updates.len() >= 100 || elapsed >= 2ms {
+    query_manager.send_message(ProcessBatch(pending_updates.drain(..).collect()));
+}
+```
+
+**Impact**: 10-100x fewer channel sends under load
+
+#### 2.2 Flume for Report Channels
+
+Replace crossbeam with flume at sync→async bridge points to eliminate spawn_blocking:
+
+**Files:**
+- `src/report/handler.rs`
+- `src/actors/report/report_runner.rs`
+- `src/actors/report/report_manager.rs`
+
+```rust
+// Before: spawn_blocking overhead per poll
+let result = tokio::task::spawn_blocking(move || rx.recv()).await;
+
+// After: native async, no thread pool
+let result = rx.recv_async().await;
+```
+
+**Impact**: Eliminates blocking thread pool contention
+
+### Phase 3: State & Sharding (P2) - Linear Scaling
+
+#### 3.1 DashMap for QueryHandler State
+
+```rust
+// Before
+state: Arc<Mutex<BTreeMap<Arc<str>, Arc<dyn AnyItem>>>>
+
+// After
+state: DashMap<Arc<str>, Arc<dyn AnyItem>>
+```
+
+#### 3.2 Horizontal Sharding by Entity Type
+
+- Server 1: Target, Emitter (high-volume)
+- Server 2: Scene, Binding, Calendar
+- Server 3: Reports, aggregations
+
+### Expected Results
+
+| Phase | Single Server Capacity | Cumulative |
+|-------|------------------------|------------|
+| Current | ~500/sec | - |
+| P0 (Serialization) | 50,000-100,000/sec | 100-200x |
+| P1 (Batching + Flume) | 500,000/sec | 1,000x |
+| P2 (Sharding) | 500,000+/server | Linear |
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `Cargo.toml` | Add `rmp-serde`, `flume`, `dashmap` |
+| `src/actors/ws/websocket_server.rs` | Subprotocol negotiation |
+| `src/actors/ws/websocket_connection.rs` | Per-client format, MessagePack |
+| `src/actors/query/query_handler.rs` | Serialize-once, DashMap |
+| `src/actors/query/query_manager.rs` | Entity-type pre-filtering |
+| `src/actors/event/event_handler.rs` | Batched notifications |
+| `src/report/handler.rs` | Flume channels |
+| `src/actors/report/report_runner.rs` | Flume async recv |
+| `src/actors/report/report_manager.rs` | Flume async recv |
