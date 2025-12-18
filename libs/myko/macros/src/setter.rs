@@ -3,16 +3,18 @@
 //! Supports:
 //! - `#[myko_rename]` on name fields - generates `Rename{Entity} { id, name }`
 //! - `#[myko_setter]` on any field - generates `Set{Entity}{Field} { id, field }`
+//! - `#[myko_setter("CustomName")]` - generates `CustomName { id, field }` with custom command name
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Field, ItemStruct};
+use syn::{Field, ItemStruct, Lit, Meta};
 
 /// Information about a field that needs a setter command
 pub struct SetterField {
     pub field_name: syn::Ident,
     pub field_type: syn::Type,
-    pub is_rename: bool, // true for #[myko_rename], false for #[myko_setter]
+    pub is_rename: bool,           // true for #[myko_rename], false for #[myko_setter]
+    pub command_name_override: Option<String>, // Optional custom command name
 }
 
 /// Collect fields marked with #[myko_rename] or #[myko_setter]
@@ -26,17 +28,23 @@ pub fn collect_setter_fields(input: &ItemStruct) -> Vec<SetterField> {
 
             for attr in &field.attrs {
                 if attr.path().is_ident("myko_rename") {
+                    // Check for optional name override: #[myko_rename("CustomName")]
+                    let command_name_override = parse_string_arg(attr);
                     setters.push(SetterField {
                         field_name,
                         field_type,
                         is_rename: true,
+                        command_name_override,
                     });
                     break;
                 } else if attr.path().is_ident("myko_setter") {
+                    // Check for optional name override: #[myko_setter("CustomName")]
+                    let command_name_override = parse_string_arg(attr);
                     setters.push(SetterField {
                         field_name,
                         field_type,
                         is_rename: false,
+                        command_name_override,
                     });
                     break;
                 }
@@ -45,6 +53,19 @@ pub fn collect_setter_fields(input: &ItemStruct) -> Vec<SetterField> {
     }
 
     setters
+}
+
+/// Parse optional string argument from attribute: #[attr("value")]
+fn parse_string_arg(attr: &syn::Attribute) -> Option<String> {
+    if let Meta::List(meta_list) = &attr.meta {
+        // Try to parse the tokens as a string literal
+        if let Ok(lit) = meta_list.parse_args::<Lit>() {
+            if let Lit::Str(lit_str) = lit {
+                return Some(lit_str.value());
+            }
+        }
+    }
+    None
 }
 
 /// Strip #[myko_rename] and #[myko_setter] attributes from a field
@@ -78,22 +99,28 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
             let field_name = &setter.field_name;
             let field_type = &setter.field_type;
 
-            // Generate command name
+            // Generate command name (with optional override)
             let (command_name, handler_name, param_name) = if setter.is_rename {
-                // #[myko_rename] generates Rename{Entity}
-                (
-                    format_ident!("Rename{}", entity_name),
-                    format_ident!("Rename{}Handler", entity_name),
-                    format_ident!("name"),
-                )
+                // #[myko_rename] or #[myko_rename("CustomName")]
+                let cmd_name = setter
+                    .command_name_override
+                    .as_ref()
+                    .map(|s| format_ident!("{}", s))
+                    .unwrap_or_else(|| format_ident!("Rename{}", entity_name));
+                let handler = format_ident!("{}Handler", cmd_name);
+                (cmd_name, handler, format_ident!("name"))
             } else {
-                // #[myko_setter] generates Set{Entity}{Field}
-                let field_pascal = to_pascal_case(&field_name.to_string());
-                (
-                    format_ident!("Set{}{}", entity_name, field_pascal),
-                    format_ident!("Set{}{}Handler", entity_name, field_pascal),
-                    field_name.clone(),
-                )
+                // #[myko_setter] or #[myko_setter("CustomName")]
+                let cmd_name = setter
+                    .command_name_override
+                    .as_ref()
+                    .map(|s| format_ident!("{}", s))
+                    .unwrap_or_else(|| {
+                        let field_pascal = to_pascal_case(&field_name.to_string());
+                        format_ident!("Set{}{}", entity_name, field_pascal)
+                    });
+                let handler = format_ident!("{}Handler", cmd_name);
+                (cmd_name, handler, field_name.clone())
             };
 
             // For rename, the param is always "name" but field might be different
