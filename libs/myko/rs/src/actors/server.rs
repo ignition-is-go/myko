@@ -43,7 +43,7 @@ use crate::{
     entities::server::{GetServersByQuery, PartialServer},
     event::{MEvent, MEventType},
     query::QueryRequest,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     saga::SagaContext,
     server::MykoServerCtx,
 };
@@ -135,7 +135,7 @@ pub struct Server {
 
 impl Server {
     /// Create a new Server with all child actors spawned.
-    pub fn new(args: ServerArgs) -> Self {
+    fn create(args: ServerArgs, myself: ActorRef<ServerMsg>) -> Self {
         // Create shared tokio runtime for all async operations
         let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -151,12 +151,8 @@ impl Server {
 
         let server_id: Arc<str> = ctx.host_id.to_string().into();
 
-        // Create a temporary ActorRef for the server itself
-        // We'll use this as a placeholder and update spawned actors as needed
-        let (server_tx, _server_rx) = crossbeam::channel::unbounded::<ServerMsg>();
-        let server_ref = ActorRef {
-            tx: server_tx.clone(),
-        };
+        // Use the real server reference for child actors
+        let server_ref = myself;
 
         // 1. Spawn WebSocketServer
         let web_socket_server = WebSocketServer::spawn(WebSocketServerArgs {
@@ -293,22 +289,6 @@ impl Server {
             ctx,
             args,
         }
-    }
-
-    /// Spawn the Server on a dedicated thread.
-    pub fn spawn(args: ServerArgs) -> ActorHandle<ServerMsg> {
-        let actor = Self::new(args);
-        let event_manager = actor.repo_manager.clone();
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Wire up the real server reference to EventManager
-        // (it was initialized with a placeholder during new())
-        let server_ref = handle.actor_ref();
-        if let Err(err) = event_manager.send_message(EventManagerMsg::SetServer(server_ref)) {
-            error!("Failed to set server reference in EventManager: {}", err);
-        }
-
-        handle
     }
 
     fn handle_init_all_modules(&self) {
@@ -480,6 +460,11 @@ impl Server {
 
 impl Actor for Server {
     type Msg = ServerMsg;
+    type Args = ServerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args, myself)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

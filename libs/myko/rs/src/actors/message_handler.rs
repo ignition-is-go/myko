@@ -12,8 +12,8 @@ use crate::{
     entities::client::Client,
     event::{MEvent, MEventType},
     message::MykoMessage,
-    report::ReportResponse,
-    runtime::{Actor, ActorHandle, ActorRef},
+    report::{ReportError, ReportOutput, ReportResponse},
+    runtime::{Actor, ActorRef},
 };
 use log::{debug, error, trace};
 use std::{collections::{HashMap, HashSet}, sync::Arc};
@@ -91,7 +91,7 @@ impl std::fmt::Debug for MessageHandlerMsg {
 }
 
 impl MessageHandler {
-    pub fn new(args: MessageHandlerArgs) -> Self {
+    fn create(args: MessageHandlerArgs) -> Self {
         Self {
             event_manager: args.event_manager,
             query_manager: args.query_manager,
@@ -103,15 +103,15 @@ impl MessageHandler {
             client_subscriptions: HashMap::new(),
         }
     }
-
-    pub fn spawn(args: MessageHandlerArgs) -> ActorHandle<MessageHandlerMsg> {
-        let actor = Self::new(args);
-        crate::runtime::spawn::spawn(actor)
-    }
 }
 
 impl Actor for MessageHandler {
     type Msg = MessageHandlerMsg;
+    type Args = MessageHandlerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -194,7 +194,7 @@ impl Actor for MessageHandler {
 
                         // Create channel for report outputs
                         let (output_tx, mut output_rx) =
-                            tokio::sync::mpsc::channel::<serde_json::Value>(16);
+                            tokio::sync::mpsc::channel::<ReportOutput>(16);
 
                         // Start the report
                         if let Err(e) = self.report_manager.send_message(
@@ -211,18 +211,29 @@ impl Actor for MessageHandler {
                         // Use shared tokio runtime for report output forwarding
                         // This avoids creating a new runtime per report subscription
                         self.tokio_handle.spawn(async move {
-                            while let Some(value) = output_rx.recv().await {
-                                let value_str = value.to_string();
-                                let preview = if value_str.len() > 100 {
-                                    format!("{}...", &value_str[..100])
-                                } else {
-                                    value_str
-                                };
-                                trace!("Sending report response [tx={}]: {}", tx, preview);
+                            while let Some(output) = output_rx.recv().await {
+                                let message = match output {
+                                    ReportOutput::Value(value) => {
+                                        let value_str = value.to_string();
+                                        let preview = if value_str.len() > 100 {
+                                            format!("{}...", &value_str[..100])
+                                        } else {
+                                            value_str
+                                        };
+                                        trace!("Sending report response [tx={}]: {}", tx, preview);
 
-                                let response = ReportResponse {
-                                    response: value,
-                                    tx: tx.to_string(),
+                                        MykoMessage::ReportResponse(ReportResponse {
+                                            response: value,
+                                            tx: tx.to_string(),
+                                        })
+                                    }
+                                    ReportOutput::Error(err_msg) => {
+                                        error!("Report error [tx={}]: {}", tx, err_msg);
+                                        MykoMessage::ReportError(ReportError {
+                                            tx: tx.to_string(),
+                                            message: err_msg,
+                                        })
+                                    }
                                 };
 
                                 // Direct send to WebSocketServer (bypasses Server actor)
@@ -230,7 +241,7 @@ impl Actor for MessageHandler {
                                     WebSocketServerMsg::SendToClient(
                                         SendToClientData {
                                             client_id: client_id.clone(),
-                                            message: MykoMessage::ReportResponse(response),
+                                            message,
                                         }
                                     )
                                 ) {

@@ -10,7 +10,7 @@
 use crate::{
     actors::kafka::common::KafkaSharedConfig,
     event::MEvent,
-    runtime::{Actor, ActorHandle},
+    runtime::{Actor, ActorRef},
 };
 use log::{error, info, trace};
 use rdkafka::{
@@ -67,7 +67,7 @@ pub struct SharedKafkaProducer {
 
 impl SharedKafkaProducer {
     /// Create a new SharedKafkaProducer (blocking - creates Kafka connections).
-    pub fn new(args: SharedKafkaProducerArgs) -> Self {
+    fn create(args: SharedKafkaProducerArgs) -> Self {
         // Use multi-threaded runtime so per-topic sender tasks run in background
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -101,12 +101,6 @@ impl SharedKafkaProducer {
             created_topics: HashSet::new(),
             topic_senders: HashMap::new(),
         }
-    }
-
-    /// Spawn a SharedKafkaProducer on a dedicated thread.
-    pub fn spawn(args: SharedKafkaProducerArgs) -> ActorHandle<SharedKafkaProducerMsg> {
-        let actor = Self::new(args);
-        crate::runtime::spawn::spawn(actor)
     }
 
     fn ensure_topic(&mut self, topic: Arc<str>) {
@@ -213,6 +207,11 @@ impl SharedKafkaProducer {
 
 impl Actor for SharedKafkaProducer {
     type Msg = SharedKafkaProducerMsg;
+    type Args = SharedKafkaProducerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

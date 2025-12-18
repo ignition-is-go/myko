@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use serde_json::Value;
 use tokio_stream::StreamExt as TokioStreamExt;
 use uuid::Uuid;
@@ -20,7 +20,7 @@ use crate::message::MykoMessage;
 use crate::parsers::query::AnyQuery;
 use crate::query::QueryRequest;
 use crate::report::{AnyReport, WrappedReport};
-use crate::runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort};
+use crate::runtime::{Actor, ActorRef, RpcReplyPort};
 use crate::server::MykoServerCtx;
 use crate::utils::downcast_item;
 
@@ -66,8 +66,6 @@ pub struct PeerStatus {
 
 /// Messages handled by the PeerManager actor.
 pub enum PeerManagerMsg {
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<PeerManagerMsg>),
     /// Start peer discovery (called after AllInitComplete)
     Start,
     /// A peer server was discovered via GetPeerServers query
@@ -118,7 +116,6 @@ pub enum PeerManagerMsg {
 impl std::fmt::Debug for PeerManagerMsg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PeerManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
             PeerManagerMsg::Start => write!(f, "Start"),
             PeerManagerMsg::PeerDiscovered(server) => {
                 write!(f, "PeerDiscovered({})", server.id)
@@ -171,11 +168,11 @@ pub struct PeerManager {
     /// Server IDs currently being connected to (prevents duplicate connection attempts for same ID)
     connecting: HashSet<Uuid>,
     /// Self-reference for nested operations
-    myself: Option<ActorRef<PeerManagerMsg>>,
+    myself: ActorRef<PeerManagerMsg>,
 }
 
 impl PeerManager {
-    pub fn new(args: PeerManagerArgs) -> Self {
+    fn create(args: PeerManagerArgs, myself: ActorRef<PeerManagerMsg>) -> Self {
         debug!(
             "PeerManager starting for host {}:{}",
             args.host_address, args.host_port
@@ -189,19 +186,8 @@ impl PeerManager {
             command_manager: args.command_manager,
             peers: HashMap::new(),
             connecting: HashSet::new(),
-            myself: None,
+            myself,
         }
-    }
-
-    pub fn spawn(args: PeerManagerArgs) -> ActorHandle<PeerManagerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send_message(PeerManagerMsg::SetMyself(actor_ref.clone()));
-
-        handle
     }
 
     /// Delete a Server entity via DeleteServer command (sync version)
@@ -227,23 +213,18 @@ impl PeerManager {
 
 impl Actor for PeerManager {
     type Msg = PeerManagerMsg;
+    type Args = PeerManagerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args, myself)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
-            PeerManagerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
-            }
-
             PeerManagerMsg::Start => {
                 trace!("Starting peer discovery");
 
-                let myself = match &self.myself {
-                    Some(m) => m.clone(),
-                    None => {
-                        warn!("PeerManager: myself not set during Start");
-                        return;
-                    }
-                };
+                let myself = self.myself.clone();
 
                 let host_id = self.ctx.host_id;
                 let query_manager = self.query_manager.clone();
@@ -330,6 +311,10 @@ impl Actor for PeerManager {
                                     }
                                 }
                             }
+                            QueryStreamUpdate::Error(msg) => {
+                                error!("Query error in peer discovery: {}", msg);
+                                break;
+                            }
                         }
                     }
 
@@ -368,10 +353,7 @@ impl Actor for PeerManager {
                 self.connecting.insert(server_id);
 
                 // Connect in background
-                let myself = match &self.myself {
-                    Some(m) => m.clone(),
-                    None => return,
-                };
+                let myself = self.myself.clone();
                 let peer_address = format!("ws://{}:{}/myko", server.address, server.port);
                 let expected_server_id = server_id;
                 let command_manager = self.command_manager.clone();
@@ -461,10 +443,7 @@ impl Actor for PeerManager {
                 // Monitor connection status - when it goes to Disconnected,
                 // close the client and notify PeerManager
                 let monitor_client = client.clone();
-                let myself = match &self.myself {
-                    Some(m) => m.clone(),
-                    None => return,
-                };
+                let myself = self.myself.clone();
 
                 self.ctx.tokio_handle.spawn(async move {
                     let mut stream = monitor_client.watch_connection_status();
@@ -538,10 +517,8 @@ impl Actor for PeerManager {
                 trace!("Peer {} removed from discovery", server_id);
 
                 // If we're connected, disconnect
-                if self.peers.contains_key(&server_id)
-                    && let Some(myself) = &self.myself
-                {
-                    let _ = myself.send_message(PeerManagerMsg::PeerDisconnected { server_id });
+                if self.peers.contains_key(&server_id) {
+                    let _ = self.myself.send_message(PeerManagerMsg::PeerDisconnected { server_id });
                 }
             }
 

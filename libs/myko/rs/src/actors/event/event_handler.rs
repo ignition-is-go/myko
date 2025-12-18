@@ -36,7 +36,7 @@ use crate::{
     },
     parsers::item::MykoItemParser,
     prelude::AnyItem,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
 use log::{error, trace};
@@ -62,7 +62,7 @@ pub struct EventHandler {
     /// In-memory store of all items, keyed by ID
     store: BTreeMap<Arc<str>, Arc<dyn AnyItem>>,
     /// Self-reference for sending messages to ourselves
-    myself: Option<ActorRef<EventHandlerMessage>>,
+    myself: ActorRef<EventHandlerMessage>,
 }
 
 /// Messages handled by the EventHandler actor.
@@ -128,9 +128,6 @@ pub enum EventHandlerMessage {
     /// Get all items of this entity type.
     /// Used by RelationshipManager for orphan cleanup on startup.
     GetAllItems(RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
-
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<EventHandlerMessage>),
 }
 
 impl std::fmt::Debug for EventHandlerMessage {
@@ -150,7 +147,6 @@ impl std::fmt::Debug for EventHandlerMessage {
                 write!(f, "GetByIds({} ids)", ids.len())
             }
             EventHandlerMessage::GetAllItems(_) => write!(f, "GetAllItems"),
-            EventHandlerMessage::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
@@ -170,33 +166,6 @@ pub struct EventHandlerArgs {
 }
 
 impl EventHandler {
-    /// Create a new EventHandler with the given arguments.
-    pub fn new(args: EventHandlerArgs) -> Self {
-        trace!("Creating Repo: {}", args.entity_name);
-
-        Self {
-            entity_name: args.entity_name,
-            event_manager: args.event_manager,
-            query_manager: args.query_manager,
-            ctx: args.ctx,
-            parser: args.parser,
-            shared_kafka_producer: None,
-            store: BTreeMap::new(),
-            myself: None,
-        }
-    }
-
-    /// Spawn the EventHandler on a dedicated thread.
-    pub fn spawn(args: EventHandlerArgs) -> ActorHandle<EventHandlerMessage> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send(EventHandlerMessage::SetMyself(actor_ref.clone()));
-
-        handle
-    }
 
     fn handle_init(
         &mut self,
@@ -213,16 +182,12 @@ impl EventHandler {
                 self.shared_kafka_producer = Some(producer);
 
                 // Register this handler with the shared consumer
-                if let Some(myself_ref) = &self.myself {
-                    consumer_handle.register(entity_name.clone(), myself_ref.clone());
-                    trace!("{}: Registered with shared Kafka consumer", entity_name);
-                }
+                consumer_handle.register(entity_name.clone(), self.myself.clone());
+                trace!("{}: Registered with shared Kafka consumer", entity_name);
             }
             _ => {
                 // In-memory mode: signal caught up immediately
-                if let Some(myself) = &self.myself {
-                    let _ = myself.send(EventHandlerMessage::PersisterCaughtUp);
-                }
+                let _ = self.myself.send(EventHandlerMessage::PersisterCaughtUp);
             }
         }
     }
@@ -406,6 +371,22 @@ impl EventHandler {
 
 impl Actor for EventHandler {
     type Msg = EventHandlerMessage;
+    type Args = EventHandlerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        trace!("Creating Repo: {}", args.entity_name);
+
+        Self {
+            entity_name: args.entity_name,
+            event_manager: args.event_manager,
+            query_manager: args.query_manager,
+            ctx: args.ctx,
+            parser: args.parser,
+            shared_kafka_producer: None,
+            store: BTreeMap::new(),
+            myself,
+        }
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -436,9 +417,6 @@ impl Actor for EventHandler {
             }
             EventHandlerMessage::GetAllItems(reply) => {
                 self.handle_get_all_items(reply);
-            }
-            EventHandlerMessage::SetMyself(myself) => {
-                self.myself = Some(myself);
             }
         }
     }

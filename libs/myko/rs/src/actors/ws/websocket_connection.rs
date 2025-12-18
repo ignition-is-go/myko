@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crossbeam::channel::{Receiver, Sender};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use log::{debug, error, info, trace};
 use tokio::net::TcpStream;
@@ -58,13 +59,22 @@ impl WebSocketConnection {
         // Create channel for sending messages to the async writer task
         let (ws_tx, mut ws_rx) = mpsc::channel::<Message>(256);
 
+        let (tx, rx): (Sender<WebSocketConnectionMsg>, Receiver<WebSocketConnectionMsg>) = crossbeam::channel::unbounded();
+        let actor_ref = ActorRef { tx: tx.clone() };
+
         let actor = Self {
             client_id: client_id.clone(),
             ws_tx,
         };
 
-        let handle = crate::runtime::spawn::spawn(actor);
-        let actor_ref = handle.actor_ref();
+        let thread = std::thread::spawn(move || {
+            let mut actor_instance = actor;
+            while let Ok(msg) = rx.recv() {
+                actor_instance.handle(msg);
+            }
+        });
+
+        let handle = ActorHandle::new(actor_ref.clone(), thread);
 
         // Register this connection with the WebSocket server
         if let Err(e) = websocket_server.send_message(WebSocketServerMsg::RegisterClient {
@@ -202,6 +212,13 @@ impl WebSocketConnection {
 
 impl Actor for WebSocketConnection {
     type Msg = WebSocketConnectionMsg;
+    type Args = WebSocketConnectionArgs;
+
+    fn new(_args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        // NOTE: This actor uses a custom spawn() function that does async I/O setup.
+        // The new() method here is required by the trait but never called.
+        unreachable!("WebSocketConnection::new should never be called - use spawn() instead")
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

@@ -19,7 +19,7 @@ use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
 use crate::actors::event::EventBus;
 use crate::event::{MEvent, MEventType};
-use crate::runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort};
+use crate::runtime::{Actor, ActorRef, RpcReplyPort};
 use crate::search::{extract_searchable_text, iter_searchable, SearchableRegistration};
 use crate::server::MykoServerCtx;
 
@@ -161,7 +161,7 @@ pub struct SearchManager {
     event_manager: ActorRef<crate::actors::event::event_manager::EventManagerMsg>,
     indices: HashMap<String, EntityIndex>,
     commit_scheduled: bool,
-    myself: Option<ActorRef<SearchManagerMsg>>,
+    myself: ActorRef<SearchManagerMsg>,
 }
 
 /// Messages for SearchManager actor.
@@ -178,8 +178,6 @@ pub enum SearchManagerMsg {
     Search(String, String, usize, RpcReplyPort<Vec<Arc<str>>>),
     /// Internal: commit pending changes
     CommitPending,
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<SearchManagerMsg>),
 }
 
 impl std::fmt::Debug for SearchManagerMsg {
@@ -195,7 +193,6 @@ impl std::fmt::Debug for SearchManagerMsg {
                 write!(f, "Search({}, {}, {})", entity_type, query, limit)
             }
             SearchManagerMsg::CommitPending => write!(f, "CommitPending"),
-            SearchManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
@@ -207,7 +204,7 @@ pub struct SearchManagerArgs {
 }
 
 impl SearchManager {
-    pub fn new(args: SearchManagerArgs) -> Self {
+    fn create(args: SearchManagerArgs, myself: ActorRef<SearchManagerMsg>) -> Self {
         // Build indices from registered searchable entities
         let mut indices = HashMap::new();
 
@@ -237,40 +234,23 @@ impl SearchManager {
             event_manager: args.event_manager,
             indices,
             commit_scheduled: false,
-            myself: None,
+            myself,
         }
-    }
-
-    pub fn spawn(args: SearchManagerArgs) -> ActorHandle<SearchManagerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference and send Initialize
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send_message(SearchManagerMsg::SetMyself(actor_ref.clone()));
-        let _ = actor_ref.send_message(SearchManagerMsg::Initialize);
-
-        handle
     }
 }
 
 impl Actor for SearchManager {
     type Msg = SearchManagerMsg;
+    type Args = SearchManagerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args, myself)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
-            SearchManagerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
-            }
-
             SearchManagerMsg::Initialize => {
-                let myself = match &self.myself {
-                    Some(m) => m.clone(),
-                    None => {
-                        error!("SearchManager: myself not set during Initialize");
-                        return;
-                    }
-                };
+                let myself = self.myself.clone();
 
                 // Subscribe to EventBus
                 let event_bus = match self.ctx.event_bus.get() {
@@ -301,13 +281,7 @@ impl Actor for SearchManager {
             SearchManagerMsg::PopulateAll => {
                 debug!("SearchManager: populating all indices with existing items");
 
-                let myself = match &self.myself {
-                    Some(m) => m.clone(),
-                    None => {
-                        error!("SearchManager: myself not set during PopulateAll");
-                        return;
-                    }
-                };
+                let myself = self.myself.clone();
 
                 // Populate indices with existing items
                 for entity_type in self.indices.keys().cloned().collect::<Vec<_>>() {
@@ -396,13 +370,11 @@ impl Actor for SearchManager {
                 // Schedule commit if not already scheduled
                 if !self.commit_scheduled {
                     self.commit_scheduled = true;
-                    if let Some(myself) = &self.myself {
-                        let myself_clone = myself.clone();
-                        self.ctx.tokio_handle.spawn(async move {
-                            tokio::time::sleep(Duration::from_millis(COMMIT_DEBOUNCE_MS)).await;
-                            let _ = myself_clone.send_message(SearchManagerMsg::CommitPending);
-                        });
-                    }
+                    let myself = self.myself.clone();
+                    self.ctx.tokio_handle.spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(COMMIT_DEBOUNCE_MS)).await;
+                        let _ = myself.send_message(SearchManagerMsg::CommitPending);
+                    });
                 }
             }
 

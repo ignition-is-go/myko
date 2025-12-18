@@ -7,10 +7,7 @@ use crate::{
         search::SearchManagerMsg,
         server::{Server, ServerArgs, ServerMsg},
     },
-    item::Eventable,
-    query::RegisterQuery,
-    report::RegisterReport,
-    runtime::ActorRef,
+    runtime::{Actor, ActorRef},
 };
 use anyhow::bail;
 use std::sync::Arc;
@@ -55,19 +52,11 @@ impl MykoServer {
             command_manager,
         });
 
-        crate::entities::server::Server::register(&server)?;
-        crate::entities::server::GetConnectedServer::register(&server)?;
-        crate::entities::server::GetPeerServers::register(&server)?;
-
-        crate::entities::client::Client::register(&server)?;
-
-        // Register EntitySearch report
-        crate::search::EntitySearch::register(&server)?;
-
         Ok(server)
     }
 
     pub fn start(&self) -> Result<(), anyhow::Error> {
+        // All entities, queries, and reports are auto-registered in their manager constructors
         self.server.send_message(ServerMsg::InitAllModules)?;
         Ok(())
     }

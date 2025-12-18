@@ -30,7 +30,7 @@ use crate::{
     parsers::item::MykoItemParser,
     prelude::AnyItem,
     relationship::iter_client_id_registrations,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
 use log::{error, info, trace, warn};
@@ -60,8 +60,8 @@ pub struct EventManager {
     server: ActorRef<ServerMsg>,
     /// Direct reference to QueryManager for EventHandlers (bypasses Server routing)
     query_manager: ActorRef<QueryManagerMsg>,
-    /// Reference back to ourselves for EventHandlers to report init completion
-    myself: Option<ActorRef<EventManagerMsg>>,
+    /// Reference to ourselves for passing to EventHandlers
+    myself: ActorRef<EventManagerMsg>,
     /// Server context with host ID and config
     ctx: Arc<MykoServerCtx>,
     /// Event bus for high-throughput broadcast to sagas (optional for backwards compat)
@@ -133,9 +133,6 @@ pub enum EventManagerMsg {
     /// Used by RelationshipManager for orphan cleanup on startup.
     GetAllItems(Arc<str>, RpcReplyPort<Vec<Arc<dyn AnyItem>>>),
 
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<EventManagerMsg>),
-
     /// Set the real server reference (called after Server actor is spawned)
     SetServer(ActorRef<ServerMsg>),
 }
@@ -165,7 +162,6 @@ impl std::fmt::Debug for EventManagerMsg {
                 write!(f, "GetByIds({}, {} ids)", entity, ids.len())
             }
             EventManagerMsg::GetAllItems(entity, _) => write!(f, "GetAllItems({})", entity),
-            EventManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
             EventManagerMsg::SetServer(_) => write!(f, "SetServer"),
         }
     }
@@ -182,48 +178,6 @@ pub struct EventManagerArgs {
 }
 
 impl EventManager {
-    /// Create a new EventManager with the given arguments.
-    pub fn new(args: EventManagerArgs) -> Self {
-        // Build lookup map for entities with #[myko_client_id] fields
-        let client_id_fields: HashMap<String, String> = iter_client_id_registrations()
-            .map(|reg| (reg.entity_type.to_string(), reg.field_name_json.to_string()))
-            .collect();
-
-        if !client_id_fields.is_empty() {
-            info!(
-                "EventManager: {} entity types have client_id fields: {:?}",
-                client_id_fields.len(),
-                client_id_fields.keys().collect::<Vec<_>>()
-            );
-        }
-
-        Self {
-            left_to_init: HashSet::new(),
-            handlers: HashMap::new(),
-            server: args.server,
-            query_manager: args.query_manager,
-            myself: None,
-            ctx: args.ctx,
-            event_bus: None,
-            client_id_fields,
-            relationship_manager: None,
-            shared_kafka_producer: None,
-            shared_consumer_handle: None,
-        }
-    }
-
-    /// Spawn the EventManager on a dedicated thread.
-    pub fn spawn(args: EventManagerArgs) -> ActorHandle<EventManagerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send(EventManagerMsg::SetMyself(actor_ref.clone()));
-
-        handle
-    }
-
     fn handle_register_repo(&mut self, entity_name: Arc<str>, parser: Arc<dyn MykoItemParser>) {
         trace!("Registering repository: {}", entity_name);
 
@@ -233,17 +187,9 @@ impl EventManager {
             return;
         }
 
-        let myself = match &self.myself {
-            Some(m) => m.clone(),
-            None => {
-                error!("EventManager: myself not set, cannot spawn EventHandler");
-                return;
-            }
-        };
-
         let handle = EventHandler::spawn(EventHandlerArgs {
             entity_name: entity_name.clone(),
-            event_manager: myself,
+            event_manager: self.myself.clone(),
             query_manager: self.query_manager.clone(),
             ctx: self.ctx.clone(),
             parser,
@@ -496,6 +442,49 @@ impl EventManager {
 
 impl Actor for EventManager {
     type Msg = EventManagerMsg;
+    type Args = EventManagerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        use crate::item::ItemRegistration;
+
+        // Build lookup map for entities with #[myko_client_id] fields
+        let client_id_fields: HashMap<String, String> = iter_client_id_registrations()
+            .map(|reg| (reg.entity_type.to_string(), reg.field_name_json.to_string()))
+            .collect();
+
+        if !client_id_fields.is_empty() {
+            info!(
+                "EventManager: {} entity types have client_id fields: {:?}",
+                client_id_fields.len(),
+                client_id_fields.keys().collect::<Vec<_>>()
+            );
+        }
+
+        let mut manager = Self {
+            left_to_init: HashSet::new(),
+            handlers: HashMap::new(),
+            server: args.server,
+            query_manager: args.query_manager,
+            myself,
+            ctx: args.ctx,
+            event_bus: None,
+            client_id_fields,
+            relationship_manager: None,
+            shared_kafka_producer: None,
+            shared_consumer_handle: None,
+        };
+
+        // Register all entities from inventory
+        let mut count = 0;
+        for registration in inventory::iter::<ItemRegistration> {
+            let data = (registration.factory)();
+            manager.handle_register_repo(data.entity_type, data.parser);
+            count += 1;
+        }
+        log::debug!("EventManager: registered {} entities from inventory", count);
+
+        manager
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -536,9 +525,6 @@ impl Actor for EventManager {
             }
             EventManagerMsg::GetAllItems(entity_type, reply) => {
                 self.handle_get_all_items(entity_type, reply);
-            }
-            EventManagerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
             }
             EventManagerMsg::SetServer(server) => {
                 self.server = server;

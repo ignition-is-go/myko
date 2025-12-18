@@ -1,4 +1,9 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap,
+    panic::{catch_unwind, AssertUnwindSafe},
+    pin::Pin,
+    sync::Arc,
+};
 
 use crossbeam::channel as crossbeam_channel;
 use futures::{Stream, StreamExt};
@@ -11,8 +16,8 @@ use crate::{
     api::query::WrappedQuery,
     context::RequestContext,
     prelude::AnyItem,
-    report::{ReportContext, ReportRunnerHandle, WrappedReport},
-    runtime::{Actor, ActorHandle, ActorRef},
+    report::{ReportContext, ReportOutput, ReportRunnerHandle, WrappedReport},
+    runtime::{Actor, ActorRef},
     server::MykoServerCtx,
 };
 
@@ -43,7 +48,7 @@ pub struct RegisterReportData {
 pub struct ReportManager {
     ctx: Arc<MykoServerCtx>,
     query_manager: ActorRef<QueryManagerMsg>,
-    myself: Option<ActorRef<ReportManagerMsg>>,
+    myself: ActorRef<ReportManagerMsg>,
     /// Registered report handlers by report_id
     handlers: HashMap<Arc<str>, RegisteredReport>,
     /// Active report runners by tx
@@ -54,7 +59,7 @@ pub enum ReportManagerMsg {
     /// Register a new report handler
     RegisterReport(RegisterReportData),
     /// Start a new report subscription with request context
-    StartReport(WrappedReport, RequestContext, mpsc::Sender<Value>),
+    StartReport(WrappedReport, RequestContext, mpsc::Sender<ReportOutput>),
     /// Subscribe to a query from within a report (uses crossbeam channel)
     SubscribeQuery {
         query: Value,
@@ -68,12 +73,10 @@ pub enum ReportManagerMsg {
         report_id: Arc<str>,
         /// Request context to propagate to the sub-report
         req: RequestContext,
-        response_tx: mpsc::Sender<Value>,
+        response_tx: mpsc::Sender<ReportOutput>,
     },
     /// Stop a report by tx
     StopReport(Arc<str>),
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<ReportManagerMsg>),
 }
 
 impl std::fmt::Debug for ReportManagerMsg {
@@ -92,31 +95,39 @@ impl std::fmt::Debug for ReportManagerMsg {
                 write!(f, "SubscribeReport({})", report_id)
             }
             ReportManagerMsg::StopReport(tx) => write!(f, "StopReport({})", tx),
-            ReportManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
 
 impl ReportManager {
-    pub fn new(args: ReportManagerArgs) -> Self {
+    /// Create a new ReportManager with the given arguments.
+    /// Collects all report registrations from inventory and registers them.
+    fn create(args: ReportManagerArgs, myself: ActorRef<ReportManagerMsg>) -> Self {
+        use crate::report::ReportRegistration;
+        use log::{debug, trace};
+
+        // Collect all registered reports from inventory
+        let mut handlers = HashMap::new();
+        for registration in inventory::iter::<ReportRegistration> {
+            trace!("Registering report: {}", registration.report_id);
+            let data = (registration.factory)();
+            handlers.insert(
+                data.report_id,
+                RegisteredReport {
+                    compute_fn: data.compute_fn,
+                },
+            );
+        }
+
+        debug!("ReportManager: {} reports registered", handlers.len());
+
         Self {
             ctx: args.ctx,
             query_manager: args.query_manager,
-            myself: None,
-            handlers: HashMap::new(),
+            myself,
+            handlers,
             runners: HashMap::new(),
         }
-    }
-
-    pub fn spawn(args: ReportManagerArgs) -> ActorHandle<ReportManagerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-referenc
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send_message(ReportManagerMsg::SetMyself(actor_ref.clone()));
-
-        handle
     }
 
     fn handle_register_report(&mut self, data: RegisterReportData) {
@@ -133,7 +144,7 @@ impl ReportManager {
         &mut self,
         wrapped_report: WrappedReport,
         req: RequestContext,
-        output_tx: mpsc::Sender<Value>,
+        output_tx: mpsc::Sender<ReportOutput>,
     ) {
         let report_id: Arc<str> = wrapped_report.report_id.clone().into();
 
@@ -142,11 +153,13 @@ impl ReportManager {
         let handler = match self.handlers.get(&report_id) {
             Some(h) => h,
             None => {
-                error!(
+                let err_msg = format!(
                     "No handler registered for report {}: {:?}",
                     report_id,
                     self.handlers.keys().collect::<Vec<_>>()
                 );
+                error!("{}", err_msg);
+                let _ = output_tx.blocking_send(ReportOutput::Error(err_msg));
                 return;
             }
         };
@@ -166,18 +179,31 @@ impl ReportManager {
 
         let tx: Arc<str> = req.tx.clone();
 
-        // Create the report stream
+        // Create the report stream with panic catching
         let compute_fn = handler.compute_fn.clone();
-        let report_stream = compute_fn(report_ctx, wrapped_report.report.clone());
+        let report_args = wrapped_report.report.clone();
+        let report_stream = catch_unwind(AssertUnwindSafe(|| {
+            compute_fn(report_ctx, report_args)
+        }));
 
-        // Get myself reference
-        let myself = match &self.myself {
-            Some(m) => m.clone(),
-            None => {
-                error!("ReportManager myself reference not set");
+        let report_stream = match report_stream {
+            Ok(stream) => stream,
+            Err(panic_payload) => {
+                let panic_msg = extract_panic_message(panic_payload);
+                error!(
+                    "Report {} panicked during creation: {} (tx={})",
+                    report_id, panic_msg, tx
+                );
+                let _ = output_tx.blocking_send(ReportOutput::Error(format!(
+                    "Report handler panicked: {}",
+                    panic_msg
+                )));
                 return;
             }
         };
+
+        // Get myself reference
+        let myself = self.myself.clone();
 
         // Spawn the runner actor
         let runner_args = ReportRunnerArgs {
@@ -192,6 +218,8 @@ impl ReportManager {
         self.runners.insert(tx.clone(), runner.clone());
 
         // Spawn async task to drive the report stream and send values to runner
+        // Note: Panics during stream polling will crash this tokio task but not the server.
+        // The panic hook will log them, and the client won't receive further updates.
         let runner_ref = runner.clone();
         self.ctx.tokio_handle.spawn(async move {
             let mut stream = report_stream;
@@ -264,6 +292,10 @@ impl ReportManager {
                     QueryStreamUpdate::Remove(key) => {
                         accumulated.remove(&key);
                     }
+                    QueryStreamUpdate::Error(msg) => {
+                        error!("Query error in report subscription [{}]: {}", query_id, msg);
+                        break;
+                    }
                 }
 
                 // Send current state as Vec<Value>
@@ -286,7 +318,7 @@ impl ReportManager {
         report: Value,
         report_id: Arc<str>,
         req: RequestContext,
-        response_tx: mpsc::Sender<Value>,
+        response_tx: mpsc::Sender<ReportOutput>,
     ) {
         trace!(
             "Report subscribing to sub-report: {} (lineage: {})",
@@ -303,16 +335,8 @@ impl ReportManager {
         // Create child context with extended lineage
         let child_req = req.child(&report_id);
 
-        // Get myself reference
-        let myself = match &self.myself {
-            Some(m) => m.clone(),
-            None => {
-                error!("ReportManager myself reference not set");
-                return;
-            }
-        };
-
         // Recursively start the sub-report with propagated context
+        let myself = self.myself.clone();
         if let Err(e) =
             myself.send_message(ReportManagerMsg::StartReport(wrapped_report, child_req, response_tx))
         {
@@ -331,6 +355,11 @@ impl ReportManager {
 
 impl Actor for ReportManager {
     type Msg = ReportManagerMsg;
+    type Args = ReportManagerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args, myself)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -359,9 +388,17 @@ impl Actor for ReportManager {
             ReportManagerMsg::StopReport(tx) => {
                 self.handle_stop_report(tx);
             }
-            ReportManagerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
-            }
         }
+    }
+}
+
+/// Extract a human-readable message from a panic payload
+fn extract_panic_message(panic_payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }

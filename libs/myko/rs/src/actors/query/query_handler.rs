@@ -15,12 +15,16 @@ use crate::{
     parsers::query::AnyQuery,
     prelude::AnyItem,
     query::QueryHandlerCtxAny,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
 use crossbeam::channel as crossbeam_channel;
 use log::{debug, error, trace};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    panic::{catch_unwind, AssertUnwindSafe},
+    sync::Arc,
+};
 
 pub struct QueryHandlerArgs {
     pub query_id: Arc<str>,
@@ -88,7 +92,7 @@ impl std::fmt::Debug for QueryHandlerMsg {
 
 impl QueryHandler {
     /// Create a new QueryHandler with the given arguments.
-    pub fn new(args: QueryHandlerArgs) -> Self {
+    fn create(args: QueryHandlerArgs) -> Self {
         trace!("Creating Handler for query {}", args.query_id);
 
         Self {
@@ -100,10 +104,36 @@ impl QueryHandler {
         }
     }
 
-    /// Spawn the QueryHandler on a dedicated thread.
-    pub fn spawn(args: QueryHandlerArgs) -> ActorHandle<QueryHandlerMsg> {
-        let actor = Self::new(args);
-        crate::runtime::spawn::spawn(actor)
+    /// Safely call the query closure with panic catching.
+    /// Returns Ok(matches) if successful, Err(panic_message) if the closure panicked.
+    fn call_closure_safe(
+        closure: &QueryClosureType,
+        ctx: &Arc<MykoServerCtx>,
+        item: &Arc<dyn AnyItem>,
+        query: &Arc<dyn AnyQuery>,
+    ) -> Result<bool, String> {
+        let closure = closure.clone();
+        let ctx = ctx.clone();
+        let item = item.clone();
+        let query = query.clone();
+
+        let result = catch_unwind(AssertUnwindSafe(move || {
+            closure(QueryHandlerCtxAny { ctx, item, query })
+        }));
+
+        match result {
+            Ok(matches) => Ok(matches),
+            Err(panic_payload) => {
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                Err(panic_msg)
+            }
+        }
     }
 
     fn handle_process_update(&mut self, data: ProcessUpdateData) {
@@ -140,12 +170,17 @@ impl QueryHandler {
             }
         };
 
+        // Filter with panic catching
+        let closure = &self.closure;
+        let ctx = &self.ctx;
         snapshot.retain(|_k, v| {
-            self.closure.clone()(QueryHandlerCtxAny {
-                ctx: self.ctx.clone(),
-                item: v.clone(),
-                query: query.clone(),
-            })
+            match Self::call_closure_safe(closure, ctx, v, &query) {
+                Ok(matches) => matches,
+                Err(panic_msg) => {
+                    error!("Query closure panicked during snapshot: {}", panic_msg);
+                    false // Exclude item on panic
+                }
+            }
         });
 
         let _ = reply.send(snapshot);
@@ -189,6 +224,10 @@ impl QueryHandler {
             Ok(h) => h,
             Err(err) => {
                 error!("Failed to get event handler: {}", err);
+                sink.push(QueryStreamUpdate::Error(format!(
+                    "Failed to get event handler: {}",
+                    err
+                )));
                 return false;
             }
         };
@@ -197,17 +236,40 @@ impl QueryHandler {
             Ok(s) => s,
             Err(err) => {
                 error!("Failed to get initial state: {}", err);
+                sink.push(QueryStreamUpdate::Error(format!(
+                    "Failed to get initial state: {}",
+                    err
+                )));
                 return false;
             }
         };
 
+        // Filter with panic catching
+        let closure = &self.closure;
+        let ctx = &self.ctx;
+        let mut panic_error: Option<String> = None;
         initial_state.retain(|_k, v| {
-            self.closure.clone()(QueryHandlerCtxAny {
-                ctx: self.ctx.clone(),
-                item: v.clone(),
-                query: query.clone(),
-            })
+            if panic_error.is_some() {
+                return false; // Skip remaining items after first panic
+            }
+            match Self::call_closure_safe(closure, ctx, v, &query) {
+                Ok(matches) => matches,
+                Err(panic_msg) => {
+                    error!("Query closure panicked during subscription: {}", panic_msg);
+                    panic_error = Some(panic_msg);
+                    false
+                }
+            }
         });
+
+        // If there was a panic, send error and fail subscription
+        if let Some(panic_msg) = panic_error {
+            sink.push(QueryStreamUpdate::Error(format!(
+                "Query handler panicked: {}",
+                panic_msg
+            )));
+            return false;
+        }
 
         let tx: Arc<str> = query.tx_id();
 
@@ -241,7 +303,7 @@ impl QueryHandler {
     /// Notify all streaming watchers about an update.
     /// Checks if each watcher's query matches the update before sending.
     fn notify_watchers(&mut self, data: &ProcessUpdateData) {
-        // Collect dead watchers to remove
+        // Collect dead watchers and errored watchers to remove
         let mut dead_watchers = Vec::new();
 
         for (tx, watcher) in self.watchers.iter_mut() {
@@ -251,18 +313,34 @@ impl QueryHandler {
                     Some(QueryStreamUpdate::Remove(id.clone()))
                 }
                 ProcessUpdateData::Set(item) => {
-                    // Check if item matches query
-                    let matches = (watcher.closure)(QueryHandlerCtxAny {
-                        ctx: watcher.ctx.clone(),
-                        item: item.clone(),
-                        query: watcher.query.clone(),
-                    });
-
-                    if matches {
-                        Some(QueryStreamUpdate::Upsert(item.id(), item.clone()))
-                    } else {
-                        // Item doesn't match - send remove in case it was previously matching
-                        Some(QueryStreamUpdate::Remove(item.id()))
+                    // Check if item matches query with panic catching
+                    match Self::call_closure_safe(
+                        &watcher.closure,
+                        &watcher.ctx,
+                        item,
+                        &watcher.query,
+                    ) {
+                        Ok(matches) => {
+                            if matches {
+                                Some(QueryStreamUpdate::Upsert(item.id(), item.clone()))
+                            } else {
+                                // Item doesn't match - send remove in case it was previously matching
+                                Some(QueryStreamUpdate::Remove(item.id()))
+                            }
+                        }
+                        Err(panic_msg) => {
+                            error!(
+                                "Query closure panicked during notify (tx={}): {}",
+                                tx, panic_msg
+                            );
+                            // Send error and mark for removal
+                            watcher.sink.push(QueryStreamUpdate::Error(format!(
+                                "Query handler panicked: {}",
+                                panic_msg
+                            )));
+                            dead_watchers.push(tx.clone());
+                            continue;
+                        }
                     }
                 }
             };
@@ -285,6 +363,11 @@ impl QueryHandler {
 
 impl Actor for QueryHandler {
     type Msg = QueryHandlerMsg;
+    type Args = QueryHandlerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

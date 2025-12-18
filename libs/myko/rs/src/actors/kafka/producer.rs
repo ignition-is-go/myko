@@ -6,7 +6,7 @@
 use crate::{
     actors::kafka::common::KafkaSharedConfig,
     event::MEvent,
-    runtime::{Actor, ActorHandle},
+    runtime::{Actor, ActorRef},
 };
 use log::{error, trace};
 use rdkafka::{
@@ -45,7 +45,7 @@ pub struct KafkaProducer {
 
 impl KafkaProducer {
     /// Create a new KafkaProducer (blocking - creates Kafka connections).
-    pub fn new(args: KafkaProducerArgs) -> Self {
+    fn create(args: KafkaProducerArgs) -> Self {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -100,16 +100,15 @@ impl KafkaProducer {
 
         Self { producer, topic, rt }
     }
-
-    /// Spawn a KafkaProducer on a dedicated thread.
-    pub fn spawn(args: KafkaProducerArgs) -> ActorHandle<KafkaProducerMsg> {
-        let actor = Self::new(args);
-        crate::runtime::spawn::spawn(actor)
-    }
 }
 
 impl Actor for KafkaProducer {
     type Msg = KafkaProducerMsg;
+    type Args = KafkaProducerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

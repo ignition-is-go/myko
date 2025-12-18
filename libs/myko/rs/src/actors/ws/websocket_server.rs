@@ -11,7 +11,7 @@ use crate::{
         },
     },
     message::MykoMessage,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
 };
 
 pub struct SendToClientData {
@@ -34,8 +34,6 @@ pub enum WebSocketServerMsg {
         message_handler: ActorRef<MessageHandlerMsg>,
         reply: RpcReplyPort<Result<(), String>>,
     },
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<WebSocketServerMsg>),
 }
 
 impl std::fmt::Debug for WebSocketServerMsg {
@@ -51,7 +49,6 @@ impl std::fmt::Debug for WebSocketServerMsg {
                 write!(f, "UnregisterClient({})", client_id)
             }
             WebSocketServerMsg::Start { .. } => write!(f, "Start"),
-            WebSocketServerMsg::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
@@ -60,7 +57,7 @@ pub struct WebSocketServer {
     connections: HashMap<Arc<str>, ActorRef<WebSocketConnectionMsg>>,
     port: u16,
     server_id: Arc<str>,
-    myself: Option<ActorRef<WebSocketServerMsg>>,
+    myself: ActorRef<WebSocketServerMsg>,
 }
 
 #[derive(Clone)]
@@ -70,24 +67,13 @@ pub struct WebSocketServerArgs {
 }
 
 impl WebSocketServer {
-    pub fn new(args: WebSocketServerArgs) -> Self {
+    fn create(args: WebSocketServerArgs, myself: ActorRef<WebSocketServerMsg>) -> Self {
         Self {
             port: args.port,
             server_id: args.server_id,
             connections: HashMap::new(),
-            myself: None,
+            myself,
         }
-    }
-
-    pub fn spawn(args: WebSocketServerArgs) -> ActorHandle<WebSocketServerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send_message(WebSocketServerMsg::SetMyself(actor_ref.clone()));
-
-        handle
     }
 
     fn handle_send_to_client(&self, data: SendToClientData) {
@@ -126,14 +112,7 @@ impl WebSocketServer {
         let address = format!("0.0.0.0:{port}");
         debug!("Trying to bind to {address}");
 
-        let myself = match &self.myself {
-            Some(m) => m.clone(),
-            None => {
-                error!("WebSocketServer myself reference not set");
-                let _ = reply.send(Err("myself reference not set".to_string()));
-                return;
-            }
-        };
+        let myself = self.myself.clone();
 
         // Spawn a thread with tokio runtime to handle async accept loop
         std::thread::spawn(move || {
@@ -176,6 +155,11 @@ impl WebSocketServer {
 
 impl Actor for WebSocketServer {
     type Msg = WebSocketServerMsg;
+    type Args = WebSocketServerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args, myself)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -193,9 +177,6 @@ impl Actor for WebSocketServer {
                 reply,
             } => {
                 self.handle_start(message_handler, reply);
-            }
-            WebSocketServerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
             }
         }
     }

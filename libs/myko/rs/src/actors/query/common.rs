@@ -1,6 +1,6 @@
 use crate::{
     actors::ws::websocket_server::{SendToClientData, WebSocketServerMsg},
-    api::query::QueryResponse,
+    api::query::{QueryError, QueryResponse},
     item::WrappedItem,
     message::MykoMessage,
     parsers::item::AnyItem,
@@ -32,6 +32,8 @@ pub enum QueryStreamUpdate {
     Upsert(Arc<str>, Arc<dyn AnyItem>),
     /// An item was removed
     Remove(Arc<str>),
+    /// An error occurred processing this query
+    Error(String),
 }
 
 /// Trait for receiving query result updates.
@@ -88,7 +90,7 @@ impl WebSocketSink {
 
 impl QueryResultSink for WebSocketSink {
     fn push(&mut self, update: QueryStreamUpdate) -> bool {
-        let response = match update {
+        let message = match update {
             QueryStreamUpdate::Initial(entries) => {
                 self.sequence = 0;
                 let upserts = entries
@@ -98,12 +100,12 @@ impl QueryResultSink for WebSocketSink {
                         item_type: self.item_type.clone(),
                     })
                     .collect::<Vec<_>>();
-                QueryResponse {
+                MykoMessage::QueryResponse(QueryResponse {
                     sequence: 0,
                     deletes: vec![],
                     upserts,
                     tx: self.tx.clone(),
-                }
+                })
             }
             QueryStreamUpdate::Upsert(_id, value) => {
                 self.sequence += 1;
@@ -111,28 +113,34 @@ impl QueryResultSink for WebSocketSink {
                     item: value.to_value(),
                     item_type: self.item_type.clone(),
                 }];
-                QueryResponse {
+                MykoMessage::QueryResponse(QueryResponse {
                     sequence: self.sequence,
                     deletes: vec![],
                     upserts,
                     tx: self.tx.clone(),
-                }
+                })
             }
             QueryStreamUpdate::Remove(key) => {
                 self.sequence += 1;
-                QueryResponse {
+                MykoMessage::QueryResponse(QueryResponse {
                     sequence: self.sequence,
                     deletes: vec![key],
                     upserts: vec![],
                     tx: self.tx.clone(),
-                }
+                })
+            }
+            QueryStreamUpdate::Error(message) => {
+                MykoMessage::QueryError(QueryError {
+                    tx: self.tx.to_string(),
+                    message,
+                })
             }
         };
 
         self.ws_server
             .send_message(WebSocketServerMsg::SendToClient(SendToClientData {
                 client_id: self.client_id.clone(),
-                message: MykoMessage::QueryResponse(response),
+                message,
             }))
             .is_ok()
     }

@@ -21,7 +21,7 @@ use crate::{
     parsers::query::{AnyQuery, MykoQueryParser},
     prelude::AnyItem,
     query::QueryHandlerCtxAny,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
     utils::assert_default_for_key,
 };
@@ -42,8 +42,6 @@ pub struct QueryManager {
     parsers: HashMap<Arc<str>, Arc<dyn MykoQueryParser>>,
     /// Set after EventManager is spawned (breaks circular dependency)
     event_manager: Option<ActorRef<EventManagerMsg>>,
-    /// Self-reference
-    myself: Option<ActorRef<QueryManagerMsg>>,
 }
 
 pub struct RegisterQueryData {
@@ -92,8 +90,6 @@ pub enum QueryManagerMsg {
     CancelQuery(Arc<str>),
     /// Set EventManager reference (breaks circular dependency at startup)
     SetEventManager(ActorRef<EventManagerMsg>),
-    /// Set self-reference
-    SetMyself(ActorRef<QueryManagerMsg>),
 }
 
 impl std::fmt::Debug for QueryManagerMsg {
@@ -124,35 +120,11 @@ impl std::fmt::Debug for QueryManagerMsg {
             }
             QueryManagerMsg::CancelQuery(tx) => write!(f, "CancelQuery({})", tx),
             QueryManagerMsg::SetEventManager(_) => write!(f, "SetEventManager"),
-            QueryManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
 
 impl QueryManager {
-    /// Create a new QueryManager with the given arguments.
-    pub fn new(args: QueryManagerArgs) -> Self {
-        Self {
-            ctx: args.ctx,
-            server: args.server,
-            handlers: HashMap::new(),
-            parsers: HashMap::new(),
-            event_manager: None,
-            myself: None,
-        }
-    }
-
-    /// Spawn the QueryManager on a dedicated thread.
-    pub fn spawn(args: QueryManagerArgs) -> ActorHandle<QueryManagerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send(QueryManagerMsg::SetMyself(actor_ref.clone()));
-
-        handle
-    }
 
     fn handle_register_query(&mut self, data: RegisterQueryData) {
         if self.parsers.contains_key(&data.query_id) {
@@ -241,15 +213,13 @@ impl QueryManager {
     }
 
     /// Parse a WrappedQuery into Arc<dyn AnyQuery> using the registered parser
-    fn parse_query(&self, data: &WrappedQuery) -> Option<Arc<dyn AnyQuery>> {
-        let parser = self.parsers.get(&data.query_id)?;
-        match parser.parse(data.query.clone()) {
-            Ok(parsed) => Some(parsed),
-            Err(err) => {
-                error!("Failed to parse query {}: {}", data.query_id, err);
-                None
-            }
-        }
+    fn parse_query(&self, data: &WrappedQuery) -> Result<Arc<dyn AnyQuery>, String> {
+        let parser = self.parsers.get(&data.query_id).ok_or_else(|| {
+            format!("No parser registered for query {}", data.query_id)
+        })?;
+        parser.parse(data.query.clone()).map_err(|err| {
+            format!("Failed to parse query {}: {}", data.query_id, err)
+        })
     }
 
     fn handle_query_snapshot(
@@ -317,13 +287,12 @@ impl QueryManager {
     ) {
         trace!("Wrapped query snapshot with ID {}", data.query_id);
 
-        let parsed = self.parse_query(&data);
-        match parsed {
-            Some(query) => {
+        match self.parse_query(&data) {
+            Ok(query) => {
                 self.handle_query_snapshot(query, reply);
             }
-            None => {
-                error!("Failed to parse query {}", data.query_id);
+            Err(err) => {
+                error!("{}", err);
             }
         }
     }
@@ -335,13 +304,12 @@ impl QueryManager {
     ) {
         trace!("Wrapped watch query with ID {}", data.query_id);
 
-        let parsed = self.parse_query(&data);
-        match parsed {
-            Some(query) => {
+        match self.parse_query(&data) {
+            Ok(query) => {
                 self.handle_watch_query(query, reply);
             }
-            None => {
-                error!("Failed to parse query {}", data.query_id);
+            Err(err) => {
+                error!("{}", err);
             }
         }
     }
@@ -349,13 +317,12 @@ impl QueryManager {
     fn handle_watch_wrapped_query_with_sink(
         &self,
         data: WrappedQuery,
-        sink: Box<dyn QueryResultSink>,
+        mut sink: Box<dyn QueryResultSink>,
     ) {
         trace!("Wrapped watch query with sink for ID {}", data.query_id);
 
-        let parsed = self.parse_query(&data);
-        match parsed {
-            Some(query) => {
+        match self.parse_query(&data) {
+            Ok(query) => {
                 let query_id = query.query_id();
                 let query_item_type = query.query_item_type();
 
@@ -365,10 +332,9 @@ impl QueryManager {
                     .and_then(|m| m.get(&query_id));
 
                 if handler.is_none() {
-                    error!(
-                        "No handler found for query ID {}: {:?}",
-                        query_id, self.handlers
-                    );
+                    let err_msg = format!("No handler found for query {}", query_id);
+                    error!("{}", err_msg);
+                    sink.push(QueryStreamUpdate::Error(err_msg));
                     return;
                 }
 
@@ -380,8 +346,9 @@ impl QueryManager {
                     error!("Failed to start watch query with sink: {}", err);
                 }
             }
-            None => {
-                error!("Failed to parse query {}", data.query_id);
+            Err(err_msg) => {
+                error!("{}", err_msg);
+                sink.push(QueryStreamUpdate::Error(err_msg));
             }
         }
     }
@@ -429,6 +396,17 @@ impl QueryManager {
 
 impl Actor for QueryManager {
     type Msg = QueryManagerMsg;
+    type Args = QueryManagerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self {
+            ctx: args.ctx,
+            server: args.server,
+            handlers: HashMap::new(),
+            parsers: HashMap::new(),
+            event_manager: None,
+        }
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -463,10 +441,18 @@ impl Actor for QueryManager {
                 self.handle_cancel_query(tx);
             }
             QueryManagerMsg::SetEventManager(event_manager) => {
+                use crate::query::QueryRegistration;
+
                 self.event_manager = Some(event_manager);
-            }
-            QueryManagerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
+
+                // Register all queries from inventory now that EventManager is available
+                let mut count = 0;
+                for registration in inventory::iter::<QueryRegistration> {
+                    let data = (registration.factory)();
+                    self.handle_register_query(data);
+                    count += 1;
+                }
+                log::debug!("QueryManager: registered {} queries from inventory", count);
             }
         }
     }

@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    panic::{catch_unwind, AssertUnwindSafe},
+    sync::Arc,
+};
 
 use log::{debug, error, trace};
 use serde_json::Value;
@@ -13,7 +17,7 @@ use crate::{
         CommandContext, CommandError, CommandHandler, CommandHandlerRegistration, WrappedCommand,
     },
     context::RequestContext,
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
 
@@ -32,7 +36,7 @@ pub struct CommandManager {
     /// Registered command handlers by command_id
     handlers: HashMap<&'static str, Box<dyn CommandHandler>>,
     /// Self-reference for nested command execution
-    myself: Option<ActorRef<CommandManagerMsg>>,
+    myself: ActorRef<CommandManagerMsg>,
 }
 
 pub enum CommandManagerMsg {
@@ -50,8 +54,6 @@ pub enum CommandManagerMsg {
         RequestContext,
         RpcReplyPort<Result<Value, CommandError>>,
     ),
-    /// Set self-reference (called immediately after spawn)
-    SetMyself(ActorRef<CommandManagerMsg>),
 }
 
 impl std::fmt::Debug for CommandManagerMsg {
@@ -63,43 +65,11 @@ impl std::fmt::Debug for CommandManagerMsg {
             CommandManagerMsg::ExecuteNested(cmd, req, _) => {
                 write!(f, "ExecuteNested({}, tx={})", cmd.command_id, req.tx())
             }
-            CommandManagerMsg::SetMyself(_) => write!(f, "SetMyself"),
         }
     }
 }
 
 impl CommandManager {
-    pub fn new(args: CommandManagerArgs) -> Self {
-        // Collect all registered handlers from inventory
-        let mut handlers: HashMap<&'static str, Box<dyn CommandHandler>> = HashMap::new();
-        for registration in inventory::iter::<CommandHandlerRegistration> {
-            trace!("Registering command handler: {}", registration.command_id);
-            let handler = (registration.factory)();
-            handlers.insert(registration.command_id, handler);
-        }
-
-        debug!("CommandManager: {} handlers", handlers.len());
-
-        Self {
-            ctx: args.ctx,
-            event_manager: args.event_manager,
-            query_manager: args.query_manager,
-            report_manager: args.report_manager,
-            handlers,
-            myself: None,
-        }
-    }
-
-    pub fn spawn(args: CommandManagerArgs) -> ActorHandle<CommandManagerMsg> {
-        let actor = Self::new(args);
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Set self-reference
-        let actor_ref = handle.actor_ref();
-        let _ = actor_ref.send_message(CommandManagerMsg::SetMyself(actor_ref.clone()));
-
-        handle
-    }
 
     fn execute_command(
         &self,
@@ -126,7 +96,7 @@ impl CommandManager {
             req,
             self.ctx.clone(),
             self.event_manager.clone(),
-            self.myself.clone().expect("myself should be set"),
+            self.myself.clone(),
             self.query_manager.clone(),
             self.report_manager.clone(),
         );
@@ -136,38 +106,97 @@ impl CommandManager {
             .tokio_handle
             .block_on(handler.execute(command.command.clone(), ctx))
     }
+
+    /// Execute a command with panic catching.
+    /// Converts panics to CommandError to prevent actor crashes.
+    fn execute_command_safe(
+        &self,
+        command: &WrappedCommand,
+        req: RequestContext,
+        tx: &str,
+    ) -> Result<Value, CommandError> {
+        let command_id = command.command_id.clone();
+
+        // Wrap in catch_unwind to prevent panics from crashing the actor
+        let result = catch_unwind(AssertUnwindSafe(|| self.execute_command(command, req)));
+
+        match result {
+            Ok(inner_result) => inner_result,
+            Err(panic_payload) => {
+                // Extract panic message
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+
+                error!(
+                    "Command handler {} panicked: {} (tx={})",
+                    command_id, panic_msg, tx
+                );
+
+                Err(CommandError {
+                    tx: tx.to_string(),
+                    message: format!("Command handler panicked: {}", panic_msg),
+                })
+            }
+        }
+    }
 }
 
 impl Actor for CommandManager {
     type Msg = CommandManagerMsg;
+    type Args = CommandManagerArgs;
+
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        // Collect all registered handlers from inventory
+        let mut handlers: HashMap<&'static str, Box<dyn CommandHandler>> = HashMap::new();
+        for registration in inventory::iter::<CommandHandlerRegistration> {
+            trace!("Registering command handler: {}", registration.command_id);
+            let handler = (registration.factory)();
+            handlers.insert(registration.command_id, handler);
+        }
+
+        debug!("CommandManager: {} handlers", handlers.len());
+
+        Self {
+            ctx: args.ctx,
+            event_manager: args.event_manager,
+            query_manager: args.query_manager,
+            report_manager: args.report_manager,
+            handlers,
+            myself,
+        }
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
             CommandManagerMsg::Execute(command, req, reply) => {
                 let command_id = command.command_id.as_str();
+                let tx = req.tx().to_string();
                 trace!(
                     "Executing command {} with tx {} (lineage: {})",
                     command_id,
-                    req.tx(),
+                    tx,
                     req.lineage_string()
                 );
 
-                let result = self.execute_command(&command, req);
+                let result = self.execute_command_safe(&command, req, &tx);
                 let _ = reply.send(result);
             }
             CommandManagerMsg::ExecuteNested(command, req, reply) => {
                 let command_id = command.command_id.as_str();
+                let tx = req.tx().to_string();
                 trace!(
                     "Executing nested command {} (lineage: {})",
                     command_id,
                     req.lineage_string()
                 );
 
-                let result = self.execute_command(&command, req);
+                let result = self.execute_command_safe(&command, req, &tx);
                 let _ = reply.send(result);
-            }
-            CommandManagerMsg::SetMyself(myself) => {
-                self.myself = Some(myself);
             }
         }
     }

@@ -54,7 +54,7 @@ pub type RpcReplyPort<T> = crossbeam::channel::Sender<T>;
 
 /// Spawn functions for convenience.
 pub mod spawn {
-    pub use super::actor::{spawn, spawn_fn};
+    pub use super::actor::spawn_fn;
     pub use super::pool::{spawn as pool, spawn_with_state as pool_with_state};
     pub use super::sharded::{spawn as sharded, spawn_with_state as sharded_with_state};
 }

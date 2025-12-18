@@ -89,7 +89,7 @@ use crate::{
     event::{EventOptions, MEvent, MEventType},
     prelude::AnyItem,
     relationship::{Relation, RelationRegistration},
-    runtime::{Actor, ActorHandle, ActorRef, RpcReplyPort},
+    runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
 use log::{debug, error, trace, warn};
@@ -192,7 +192,7 @@ pub struct RelationshipManagerArgs {
 
 impl RelationshipManager {
     /// Create a new RelationshipManager with the given arguments.
-    pub fn new(args: RelationshipManagerArgs) -> Self {
+    fn create(args: RelationshipManagerArgs) -> Self {
         trace!("RelationshipManager: Initializing");
 
         // Build lookup indexes from inventory registrations
@@ -305,12 +305,6 @@ impl RelationshipManager {
         }
     }
 
-    /// Spawn the RelationshipManager on a dedicated thread.
-    pub fn spawn(args: RelationshipManagerArgs) -> ActorHandle<RelationshipManagerMsg> {
-        let actor = Self::new(args);
-        crate::runtime::spawn::spawn(actor)
-    }
-
     fn handle_process_event(&mut self, data: ProcessEventData) {
         let event = &data.event;
 
@@ -379,6 +373,11 @@ impl RelationshipManager {
 
 impl Actor for RelationshipManager {
     type Msg = RelationshipManagerMsg;
+    type Args = RelationshipManagerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

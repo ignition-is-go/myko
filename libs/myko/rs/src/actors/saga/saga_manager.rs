@@ -13,7 +13,7 @@ use log::{debug, error, trace, warn};
 
 use crate::{
     actors::command::command_manager::CommandManagerMsg,
-    runtime::{Actor, ActorHandle, ActorRef},
+    runtime::{Actor, ActorRef},
     saga::{SagaContext, SagaRegistration},
 };
 
@@ -43,7 +43,7 @@ pub struct SagaManagerArgs {
 }
 
 impl SagaManager {
-    pub fn new(args: SagaManagerArgs) -> Self {
+    fn create(args: SagaManagerArgs) -> Self {
         Self {
             ctx: args.ctx,
             command_manager: args.command_manager,
@@ -51,15 +51,15 @@ impl SagaManager {
             started: false,
         }
     }
-
-    pub fn spawn(args: SagaManagerArgs) -> ActorHandle<SagaManagerMsg> {
-        let actor = Self::new(args);
-        crate::runtime::spawn::spawn(actor)
-    }
 }
 
 impl Actor for SagaManager {
     type Msg = SagaManagerMsg;
+    type Args = SagaManagerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self::create(args)
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {

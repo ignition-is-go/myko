@@ -6,8 +6,8 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::{
-    report::SubscriptionRequest,
-    runtime::{Actor, ActorHandle, ActorRef},
+    report::{ReportOutput, SubscriptionRequest},
+    runtime::{Actor, ActorRef},
 };
 
 use super::report_manager::ReportManagerMsg;
@@ -16,7 +16,7 @@ pub struct ReportRunnerArgs {
     /// The transaction ID for this report subscription
     pub tx: Arc<str>,
     /// Channel to send report outputs back to the subscriber
-    pub output_tx: mpsc::Sender<Value>,
+    pub output_tx: mpsc::Sender<ReportOutput>,
     /// Channel to receive subscription requests from ReportContext (crossbeam)
     pub subscription_rx: crossbeam_channel::Receiver<SubscriptionRequest>,
     /// Reference to report manager for fulfilling sub-report requests
@@ -25,7 +25,7 @@ pub struct ReportRunnerArgs {
 
 pub struct ReportRunner {
     tx: Arc<str>,
-    output_tx: mpsc::Sender<Value>,
+    output_tx: mpsc::Sender<ReportOutput>,
     report_manager: ActorRef<ReportManagerMsg>,
 }
 
@@ -40,40 +40,6 @@ pub enum ReportRunnerMsg {
 }
 
 impl ReportRunner {
-    pub fn spawn(args: ReportRunnerArgs) -> ActorHandle<ReportRunnerMsg> {
-        trace!("Starting ReportRunner for tx: {}", args.tx);
-
-        let tx_for_log = args.tx.clone();
-        let subscription_rx = args.subscription_rx;
-
-        let actor = Self {
-            tx: args.tx,
-            output_tx: args.output_tx,
-            report_manager: args.report_manager,
-        };
-
-        let handle = crate::runtime::spawn::spawn(actor);
-
-        // Spawn thread to forward subscription requests to the actor
-        let actor_ref = handle.actor_ref();
-        std::thread::spawn(move || {
-            for request in subscription_rx.iter() {
-                if let Err(e) =
-                    actor_ref.send_message(ReportRunnerMsg::HandleSubscription(request))
-                {
-                    error!("Failed to forward subscription request: {}", e);
-                    break;
-                }
-            }
-            trace!(
-                "ReportRunner [{}] subscription forwarder exiting",
-                tx_for_log
-            );
-        });
-
-        handle
-    }
-
     fn handle_subscription(&self, request: SubscriptionRequest) {
         match request {
             SubscriptionRequest::Query {
@@ -130,6 +96,15 @@ impl ReportRunner {
 
 impl Actor for ReportRunner {
     type Msg = ReportRunnerMsg;
+    type Args = ReportRunnerArgs;
+
+    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+        Self {
+            tx: args.tx,
+            output_tx: args.output_tx,
+            report_manager: args.report_manager,
+        }
+    }
 
     fn handle(&mut self, msg: Self::Msg) {
         match msg {
@@ -143,7 +118,7 @@ impl Actor for ReportRunner {
                 trace!("ReportRunner [{}] emitting value: {}", self.tx, preview);
 
                 // Use blocking_send for sync context
-                if let Err(e) = self.output_tx.blocking_send(value) {
+                if let Err(e) = self.output_tx.blocking_send(ReportOutput::Value(value)) {
                     error!("Failed to send report output: {}", e);
                 }
             }

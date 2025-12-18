@@ -13,9 +13,18 @@ use super::sink::Sink;
 /// Trait for actor implementations.
 ///
 /// Actors are stateful message processors that run on a dedicated thread.
-pub trait Actor: Send + 'static {
+pub trait Actor: Send + Sized + 'static {
     /// The message type this actor handles.
     type Msg: Send + 'static;
+
+    /// Arguments for constructing the actor.
+    type Args: Send + 'static;
+
+    /// Create a new actor instance.
+    ///
+    /// The `myself` parameter provides a reference to send messages to this actor,
+    /// which can be stored for later use (e.g., passing to child actors).
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self;
 
     /// Handle a single message.
     ///
@@ -27,6 +36,28 @@ pub trait Actor: Send + 'static {
     ///
     /// Override this to perform cleanup. Default implementation does nothing.
     fn on_shutdown(&mut self) {}
+
+    /// Spawn the actor on a dedicated thread.
+    fn spawn(args: Self::Args) -> ActorHandle<Self::Msg> {
+        let (tx, rx): (Sender<Self::Msg>, Receiver<Self::Msg>) = channel::unbounded();
+        let actor_ref = ActorRef { tx };
+
+        let thread = thread::spawn({
+            let actor_ref = actor_ref.clone();
+            move || {
+                let mut actor = Self::new(args, actor_ref);
+                while let Ok(msg) = rx.recv() {
+                    actor.handle(msg);
+                }
+                actor.on_shutdown();
+            }
+        });
+
+        ActorHandle {
+            actor_ref,
+            thread: Some(thread),
+        }
+    }
 }
 
 /// Handle to a running actor, used to send messages.
@@ -113,6 +144,17 @@ pub struct ActorHandle<M> {
 }
 
 impl<M> ActorHandle<M> {
+    /// Create a new ActorHandle from an actor reference and thread handle.
+    ///
+    /// This is useful for custom spawn implementations that need to construct
+    /// an ActorHandle manually.
+    pub fn new(actor_ref: ActorRef<M>, thread: JoinHandle<()>) -> Self {
+        Self {
+            actor_ref,
+            thread: Some(thread),
+        }
+    }
+
     /// Get a cloneable reference for sending messages.
     ///
     /// The returned reference can be cloned and shared across threads.
@@ -149,23 +191,6 @@ impl<M> ActorHandle<M> {
         } else {
             Ok(())
         }
-    }
-}
-
-/// Spawn an actor on a dedicated thread.
-pub fn spawn<A: Actor>(mut actor: A) -> ActorHandle<A::Msg> {
-    let (tx, rx): (Sender<A::Msg>, Receiver<A::Msg>) = channel::unbounded();
-
-    let thread = thread::spawn(move || {
-        while let Ok(msg) = rx.recv() {
-            actor.handle(msg);
-        }
-        actor.on_shutdown();
-    });
-
-    ActorHandle {
-        actor_ref: ActorRef { tx },
-        thread: Some(thread),
     }
 }
 
@@ -224,13 +249,18 @@ mod tests {
 
         impl Actor for Doubler {
             type Msg = (i32, Sender<i32>);
+            type Args = ();
+
+            fn new(_args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+                Doubler
+            }
 
             fn handle(&mut self, (n, reply): Self::Msg) {
                 let _ = reply.send(n * 2);
             }
         }
 
-        let handle = spawn(Doubler);
+        let handle = Doubler::spawn(());
 
         let result = handle.actor_ref.call(|reply| (21, reply));
         assert_eq!(result.expect("call failed"), 42);
