@@ -21,3 +21,75 @@ members = [
   "libs/asset-store/core", "apps/server_rs", "libs/autosocket",
   "libs/entities/macros",
 ]
+
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7"
+
+# Serialization
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+rmp = "0.8"
+rmp-serde = "1.1"
+
+# Async utilities
+async-trait = "0.1"
+async-stream = "0.3"
+futures = "0.3"
+futures-util = "0.3"
+pin-project-lite = "0.2"
+
+# Error handling
+anyhow = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Time/UUID
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.13", features = ["v4", "serde"] }
+
+# WebSocket
+tungstenite = "0.21"
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+
+# Actor framework
+ractor = "0.15"
+
+# Proc macros
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+
+# Type generation
+ts-rs = "11.1"
+
+# Misc utilities
+url = "2.5"
+crossbeam = "0.8"
+ordered-float = { version = "5.1", features = ["serde"] }
+partially = { version = "0.2", features = ["derive"] }
+regex = "1"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Node.js bindings
+napi = { version = "2.12", default-features = false, features = ["napi4", "async"] }
+napi-derive = "2.12"
+napi-build = "2.0"
+
+# Internal crates
+myko-rs = { version = "3.0.0-canary.809", path = "libs/myko/rs" }
+myko-macros = { version = "3.0.0-canary.809", path = "libs/myko/macros" }
+rship-entities = { version = "3.0.0-canary.809", path = "libs/entities/rs" }
+rship-entities-macros = { version = "3.0.0-canary.809", path = "libs/entities/macros" }
+rship-sdk = { version = "3.0.0-canary.809", path = "libs/sdk/rs" }
+autosocket = { version = "0.1.0", path = "libs/autosocket" }
+link = { version = "3.0.0-canary.809", path = "libs/link/core" }
+rship_sync_core = { version = "3.0.0-canary.809", path = "libs/sync/core" }

@@ -12,37 +12,37 @@ repository = "https://github.com/ignition-is-go/rship"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = "1.0"
-uuid = { version = "1.0", features = ["serde", "v4", "js"] }
-partially = { version = "0.2.1", features = ["derive"] }
-futures = "0.3"
-futures-util = "0.3.30"
-async-stream = "0.3"
-tokio = { version = "1", features = ["full"] }
-tungstenite = "0.21.0"
-tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
-async-trait = "0.1.77"
-rdkafka = {version = "0.36.2", features=["cmake-build"]}
-myko-macros = { version= "3.0.0-canary.809", path = "../macros" }
+serde.workspace = true
+serde_json.workspace = true
+uuid = { workspace = true, features = ["js"] }
+partially.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+tokio.workspace = true
+tungstenite.workspace = true
+tokio-tungstenite.workspace = true
+async-trait.workspace = true
+rdkafka = { version = "0.36.2", features = ["cmake-build"] }
+myko-macros.workspace = true
 openssl = { version = "0.10.35", features = ["vendored"] }
-rmp = "0.8.12"
-rmp-serde = "1.1.2"
+rmp.workspace = true
+rmp-serde.workspace = true
 md5 = "0.7.0"
-tokio-util = "0.7.10"
-tokio-stream = { version = "0.1.15", features = ["sync"] }
-pin-project-lite = "0.2"
-url = "2.5.0"
-chrono = { version = "0.4.39", features = ["serde"] }
-log = "0.4"
-ractor = "0.15.9"
-anyhow = "1.0.100"
-autosocket = { version = "0.1.0", path = "../../autosocket" }
-ts-rs = { version = "11.1.0", features = ["serde-json-impl"] }
+tokio-util.workspace = true
+tokio-stream.workspace = true
+pin-project-lite.workspace = true
+url.workspace = true
+chrono.workspace = true
+log.workspace = true
+ractor.workspace = true
+anyhow.workspace = true
+autosocket.workspace = true
+ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.21"
 dprint-plugin-typescript = "0.95.12"
 tantivy = "0.22"
-crossbeam = "0.8"
+crossbeam.workspace = true
 
 [features]
 default = []
