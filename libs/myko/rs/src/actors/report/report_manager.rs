@@ -104,12 +104,14 @@ impl ReportManager {
     /// Collects all report registrations from inventory and registers them.
     fn create(args: ReportManagerArgs, myself: ActorRef<ReportManagerMsg>) -> Self {
         use crate::report::ReportRegistration;
-        use log::{debug, trace};
+        use log::trace;
 
         // Collect all registered reports from inventory
         let mut handlers = HashMap::new();
+        let mut report_ids: Vec<&str> = Vec::new();
         for registration in inventory::iter::<ReportRegistration> {
             trace!("Registering report: {}", registration.report_id);
+            report_ids.push(registration.report_id);
             let data = (registration.factory)();
             handlers.insert(
                 data.report_id,
@@ -119,7 +121,11 @@ impl ReportManager {
             );
         }
 
-        debug!("ReportManager: {} reports registered", handlers.len());
+        log::debug!(
+            "ReportManager: {} reports registered: {:?}",
+            handlers.len(),
+            report_ids
+        );
 
         Self {
             ctx: args.ctx,
@@ -148,7 +154,12 @@ impl ReportManager {
     ) {
         let report_id: Arc<str> = wrapped_report.report_id.clone().into();
 
-        trace!("Starting report {} with tx {}", report_id, req.tx());
+        trace!(
+            "Starting report {} with tx {} (args: {})",
+            report_id,
+            req.tx(),
+            serde_json::to_string(&wrapped_report.report).unwrap_or_default()
+        );
 
         let handler = match self.handlers.get(&report_id) {
             Some(h) => h,
@@ -211,6 +222,7 @@ impl ReportManager {
             output_tx: output_tx.clone(),
             subscription_rx,
             report_manager: myself,
+            tokio_handle: self.ctx.tokio_handle.clone(),
         };
 
         let runner_handle = ReportRunner::spawn(runner_args);
@@ -221,7 +233,14 @@ impl ReportManager {
         // Note: Panics during stream polling will crash this tokio task but not the server.
         // The panic hook will log them, and the client won't receive further updates.
         let runner_ref = runner.clone();
+        let report_id_for_task = report_id.clone();
+        let tx_for_task = tx.clone();
         self.ctx.tokio_handle.spawn(async move {
+            trace!(
+                "[Report {}] Stream task started for tx={}",
+                report_id_for_task,
+                tx_for_task
+            );
             let mut stream = report_stream;
             while let Some(value) = stream.next().await {
                 let json_value = match serde_json::to_value(&value) {
@@ -236,6 +255,11 @@ impl ReportManager {
                     break;
                 }
             }
+            trace!(
+                "[Report {}] Stream completed for tx={}",
+                report_id_for_task,
+                tx_for_task
+            );
             let _ = runner_ref.send_message(ReportRunnerMsg::Complete);
         });
     }

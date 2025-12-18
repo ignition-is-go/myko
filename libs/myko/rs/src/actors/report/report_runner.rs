@@ -21,6 +21,8 @@ pub struct ReportRunnerArgs {
     pub subscription_rx: crossbeam_channel::Receiver<SubscriptionRequest>,
     /// Reference to report manager for fulfilling sub-report requests
     pub report_manager: ActorRef<ReportManagerMsg>,
+    /// Tokio runtime handle for spawning subscription reader task
+    pub tokio_handle: tokio::runtime::Handle,
 }
 
 pub struct ReportRunner {
@@ -98,7 +100,49 @@ impl Actor for ReportRunner {
     type Msg = ReportRunnerMsg;
     type Args = ReportRunnerArgs;
 
-    fn new(args: Self::Args, _myself: ActorRef<Self::Msg>) -> Self {
+    fn new(args: Self::Args, myself: ActorRef<Self::Msg>) -> Self {
+        // Spawn a task to read subscription requests and forward them to self
+        let subscription_rx = args.subscription_rx;
+        let myself_ref = myself.clone();
+        let tx_for_task = args.tx.clone();
+
+        args.tokio_handle.spawn(async move {
+            loop {
+                let rx = subscription_rx.clone();
+                let result = tokio::task::spawn_blocking(move || rx.recv()).await;
+
+                match result {
+                    Ok(Ok(request)) => {
+                        trace!(
+                            "[ReportRunner {}] Received subscription request: {:?}",
+                            tx_for_task,
+                            match &request {
+                                SubscriptionRequest::Query { query_id, .. } =>
+                                    format!("Query({})", query_id),
+                                SubscriptionRequest::Report { report_id, .. } =>
+                                    format!("Report({})", report_id),
+                            }
+                        );
+                        if let Err(e) =
+                            myself_ref.send_message(ReportRunnerMsg::HandleSubscription(request))
+                        {
+                            trace!("ReportRunner channel closed: {}", e);
+                            break;
+                        }
+                    }
+                    Ok(Err(_)) => {
+                        // Channel closed
+                        trace!("[ReportRunner {}] Subscription channel closed", tx_for_task);
+                        break;
+                    }
+                    Err(e) => {
+                        error!("[ReportRunner {}] spawn_blocking error: {}", tx_for_task, e);
+                        break;
+                    }
+                }
+            }
+        });
+
         Self {
             tx: args.tx,
             output_tx: args.output_tx,
