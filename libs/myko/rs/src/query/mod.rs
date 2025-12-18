@@ -1,11 +1,11 @@
 use crate::{
-    actors::query::query_manager::{QueryManagerMsg, RegisterQueryData},
+    actors::query::query_manager::RegisterQueryData,
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
     item::Eventable,
     parsers::query::{AnyQuery, CapturedQueryParser, MykoQueryParser},
     prelude::AnyItem,
-    server::{MykoServer, MykoServerCtx},
+    server::MykoServerCtx,
 };
 use chrono::Utc;
 use log::error;
@@ -15,6 +15,10 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 inventory::collect!(QueryRegistration);
+
+/// Type alias for the query factory function pointer.
+/// Returns the data needed to register a query (closure + parser).
+pub type QueryFactoryFn = fn() -> RegisterQueryData;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QueryRequest<Q> - Generic wrapper that adds tx/created_at to any query params
@@ -166,11 +170,22 @@ impl<T> QueryParams for T where
 {
 }
 
-#[derive(Debug)]
 pub struct QueryRegistration {
     pub query_id: &'static str,
     pub query_item_type: &'static str,
     pub crate_name: &'static str,
+    /// Factory function that creates the registration data (closure + parser)
+    pub factory: QueryFactoryFn,
+}
+
+impl std::fmt::Debug for QueryRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryRegistration")
+            .field("query_id", &self.query_id)
+            .field("query_item_type", &self.query_item_type)
+            .field("crate_name", &self.crate_name)
+            .finish()
+    }
 }
 
 pub trait QueryId {
@@ -255,18 +270,19 @@ where
     }
 }
 
-/// Extension trait for QueryParams to provide registration.
+/// Extension trait for QueryParams to provide a factory function.
 ///
 /// This is implemented for all QueryParams types via blanket impl.
-pub trait RegisterQuery: QueryParams {
-    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error>;
+pub trait QueryFactory: QueryParams {
+    /// Create the registration data (closure + parser) for this query type.
+    fn create_registration() -> RegisterQueryData;
 }
 
-impl<Q: QueryParams> RegisterQuery for Q
+impl<Q: QueryParams> QueryFactory for Q
 where
     Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
-    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+    fn create_registration() -> RegisterQueryData {
         // The closure works with QueryRequest<Q> internally
         let closure = Arc::new(|ctx: QueryHandlerCtxAny| -> bool {
             let item_ref: Arc<dyn Any + Send + Sync> = ctx.item;
@@ -305,18 +321,11 @@ where
 
         let parser: Arc<dyn MykoQueryParser> = Arc::new(CapturedQueryParser::<QueryRequest<Q>>::new());
 
-        // Direct send to QueryManager (bypasses Server routing)
-        if let Err(err) = server.query_manager.send_message(
-            QueryManagerMsg::RegisterQuery(RegisterQueryData {
-                query_id: Q::query_id_static(),
-                query_item_type: Q::query_item_type_static(),
-                closure,
-                parser,
-            }),
-        ) {
-            error!("Failed to register query: {}", err);
+        RegisterQueryData {
+            query_id: Q::query_id_static(),
+            query_item_type: Q::query_item_type_static(),
+            closure,
+            parser,
         }
-
-        Ok(())
     }
 }

@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::context::RequestContext;
 use crate::event::MEvent;
 use crate::query::QueryParams;
-use crate::report::{ReportOutputType, ReportParams};
+use crate::report::{ReportOutput, ReportOutputType, ReportParams};
 use crate::server::MykoServerCtx;
 
 /// Context provided to report handlers for accessing dependencies.
@@ -22,6 +22,7 @@ use crate::server::MykoServerCtx;
 /// - Access server context for additional data
 /// - Access the report arguments via `report_args`
 /// - Access request context (tx, client_id, lineage, host_id)
+#[derive(Clone)]
 pub struct ReportContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
     pub req: RequestContext,
@@ -50,7 +51,7 @@ pub enum SubscriptionRequest {
         report_id: Arc<str>,
         /// Request context to propagate to the sub-report
         req: RequestContext,
-        response_tx: mpsc::Sender<Value>,
+        response_tx: mpsc::Sender<ReportOutput>,
     },
 }
 
@@ -168,7 +169,7 @@ impl ReportContext {
         let report_value = serde_json::to_value(&wrapped).expect("Report should serialize");
         let req = self.req.clone();
 
-        let (sender, mut receiver) = mpsc::channel::<Value>(16);
+        let (sender, mut receiver) = mpsc::channel::<ReportOutput>(16);
 
         // Send subscription request to runner (sync send)
         let _ = runner.subscription_tx.send(SubscriptionRequest::Report {
@@ -180,9 +181,17 @@ impl ReportContext {
 
         // Convert channel to stream, deserializing output
         Box::pin(async_stream::stream! {
-            while let Some(value) = receiver.recv().await {
-                if let Ok(parsed) = serde_json::from_value::<<R as ReportOutputType>::Output>(value) {
-                    yield parsed;
+            while let Some(output) = receiver.recv().await {
+                match output {
+                    ReportOutput::Value(value) => {
+                        if let Ok(parsed) = serde_json::from_value::<<R as ReportOutputType>::Output>(value) {
+                            yield parsed;
+                        }
+                    }
+                    ReportOutput::Error(err) => {
+                        log::error!("Sub-report error: {}", err);
+                        // Don't yield on error, just log and continue
+                    }
                 }
             }
         })

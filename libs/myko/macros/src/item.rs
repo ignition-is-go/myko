@@ -274,7 +274,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         myko_rs::prelude::ItemRegistration {
             entity_type: #name_str,
             crate_name: module_path!(),
-            register_fn: <#name as myko_rs::item::Eventable>::register,
+            factory: || -> myko_rs::item::RegisterItemData {
+                <#name as myko_rs::item::Eventable>::create_registration()
+            },
         }
     };
 
@@ -336,26 +338,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #delete_command
 
         #delete_many_command
-
-        impl myko_rs::prelude::MykoAutoQueries for #name {
-                fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
-                        use myko_rs::query::RegisterQuery;
-                        #get_all_query_ident::register(&server)?;
-                        #get_by_ids_query_ident::register(&server)?;
-                        #get_by_partial_ident::register(&server)?;
-                     Ok(())
-                }
-        }
-
-        impl myko_rs::prelude::MykoAutoReports for #name {
-                fn register_auto(server: &std::sync::Arc<myko_rs::prelude::MykoServer>) -> Result<(), anyhow::Error>{
-                        use myko_rs::report::RegisterReport;
-                        #count_all_report_ident::register(&server)?;
-                        #count_report_ident::register(&server)?;
-                        #get_by_id_report_ident::register(&server)?;
-                     Ok(())
-                }
-        }
 
         // Relationship registrations (belongs_to, owns_many, ensure_for)
         #relationship_registrations

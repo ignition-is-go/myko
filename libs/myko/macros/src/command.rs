@@ -54,13 +54,9 @@ pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct
         None => quote! { () },
     };
 
-    // Get the result type name as a string for registration
+    // Get the result type name as a string for registration (including generic args)
     let result_type_str = match &result_type {
-        Some(path) => path
-            .segments
-            .last()
-            .map(|s| s.ident.to_string())
-            .unwrap_or_else(|| "()".to_string()),
+        Some(path) => quote!(#path).to_string(),
         None => "()".to_string(),
     };
 

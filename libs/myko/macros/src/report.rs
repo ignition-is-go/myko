@@ -34,6 +34,10 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
             // Output type crate: use module_path!() since the output type is defined
             // in the same crate as the report (either explicitly or via generated types)
             output_type_crate: module_path!(),
+            factory: || -> myko_rs::actors::report::report_manager::RegisterReportData {
+                use myko_rs::report::ReportFactory;
+                #struct_name::create_registration()
+            },
         }
     };
 

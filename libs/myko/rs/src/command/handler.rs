@@ -20,7 +20,7 @@ use crate::{
     event::EventOptions,
     item::Eventable,
     query::{QueryParams, QueryRequest},
-    report::{Report, ReportIdStatic, ReportOutputType, WrappedReport},
+    report::{Report, ReportIdStatic, ReportOutput, ReportOutputType, WrappedReport},
     server::MykoServerCtx,
 };
 
@@ -257,7 +257,7 @@ impl CommandContext {
         let child_req = self.req.child(R::report_id_static());
 
         // Create a channel to receive report output
-        let (output_tx, mut output_rx) = mpsc::channel::<Value>(1);
+        let (output_tx, mut output_rx) = mpsc::channel::<ReportOutput>(1);
 
         // Start the report
         self.report_manager
@@ -267,11 +267,22 @@ impl CommandContext {
                 message: format!("Failed to start report: {}", e),
             })?;
 
-        // Wait for the first value
-        let first_value = output_rx.recv().await.ok_or_else(|| CommandError {
+        // Wait for the first output
+        let first_output = output_rx.recv().await.ok_or_else(|| CommandError {
             tx: self.tx().to_string(),
             message: "Report completed without emitting a value".to_string(),
         })?;
+
+        // Handle value or error
+        let first_value = match first_output {
+            ReportOutput::Value(v) => v,
+            ReportOutput::Error(err_msg) => {
+                return Err(CommandError {
+                    tx: self.tx().to_string(),
+                    message: format!("Report error: {}", err_msg),
+                });
+            }
+        };
 
         // Parse the result
         let result: <R as ReportOutputType>::Output =

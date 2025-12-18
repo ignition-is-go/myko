@@ -4,17 +4,15 @@ pub mod stream;
 use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 use futures::Stream;
-use log::error;
 use serde::{Deserialize, Serialize, de::DeserializeOwned, ser::Error};
 use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::{
-    actors::report::report_manager::{RegisterReportData, ReportManagerMsg},
+    actors::report::report_manager::RegisterReportData,
     client::MykoClient,
     common::with_transaction::WithTransaction,
-    server::MykoServer,
 };
 
 pub use handler::{ReportContext, ReportHandler, ReportRunnerHandle, SubscriptionRequest};
@@ -170,13 +168,29 @@ macro_rules! report_stream {
 
 inventory::collect!(ReportRegistration);
 
-#[derive(Debug)]
+/// Type alias for the report factory function pointer.
+/// Returns the data needed to register a report (compute_fn).
+pub type ReportFactoryFn = fn() -> RegisterReportData;
+
 pub struct ReportRegistration {
     pub report_id: &'static str,
     pub output_type: &'static str,
     pub crate_name: &'static str,
     /// The crate where the output type is defined (for filtering imports)
     pub output_type_crate: &'static str,
+    /// Factory function that creates the registration data
+    pub factory: ReportFactoryFn,
+}
+
+impl std::fmt::Debug for ReportRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReportRegistration")
+            .field("report_id", &self.report_id)
+            .field("output_type", &self.output_type)
+            .field("crate_name", &self.crate_name)
+            .field("output_type_crate", &self.output_type_crate)
+            .finish()
+    }
 }
 
 /// Wrapper struct for count report outputs.
@@ -230,6 +244,13 @@ pub struct WrappedReport {
 pub struct ReportError {
     pub tx: String,
     pub message: String,
+}
+
+/// Output from a report - either a value or an error
+#[derive(Debug, Clone)]
+pub enum ReportOutput {
+    Value(Value),
+    Error(String),
 }
 
 pub trait ReportId {
@@ -325,15 +346,16 @@ impl<R: ReportParams> Report for ReportRequest<R> {
     }
 }
 
-/// Extension trait for ReportParams to provide registration.
+/// Extension trait for ReportParams to provide a factory function.
 ///
 /// This is implemented for all ReportParams types via blanket impl.
-pub trait RegisterReport: ReportParams {
-    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error>;
+pub trait ReportFactory: ReportParams {
+    /// Create the registration data (compute_fn) for this report type.
+    fn create_registration() -> RegisterReportData;
 }
 
-impl<R: ReportParams> RegisterReport for R {
-    fn register(server: &Arc<MykoServer>) -> Result<(), anyhow::Error> {
+impl<R: ReportParams> ReportFactory for R {
+    fn create_registration() -> RegisterReportData {
         let compute_fn = Arc::new(
             |ctx: ReportContext, _report_value: Value| -> Pin<Box<dyn Stream<Item = Value> + Send>> {
                 // The report args are available in ctx.report_args
@@ -362,16 +384,9 @@ impl<R: ReportParams> RegisterReport for R {
             },
         );
 
-        // Direct send to ReportManager (bypasses Server routing)
-        if let Err(err) = server.report_manager.send_message(
-            ReportManagerMsg::RegisterReport(RegisterReportData {
-                report_id: <R as ReportIdStatic>::report_id_static().into(),
-                compute_fn,
-            }),
-        ) {
-            error!("Failed to register report: {}", err);
+        RegisterReportData {
+            report_id: <R as ReportIdStatic>::report_id_static().into(),
+            compute_fn,
         }
-
-        Ok(())
     }
 }
