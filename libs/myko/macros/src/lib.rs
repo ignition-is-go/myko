@@ -10,6 +10,7 @@ mod query;
 mod relationship;
 mod report;
 mod saga;
+mod setter;
 
 #[proc_macro_derive(PartialMatches)]
 pub fn derive_partial_matches(input: TokenStream) -> TokenStream {

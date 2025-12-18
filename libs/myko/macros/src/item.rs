@@ -3,18 +3,23 @@ use quote::{format_ident, quote};
 use syn::{Field, FieldsNamed, ItemStruct};
 
 use crate::relationship;
+use crate::setter;
 
 pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     // Collect relationship information BEFORE stripping attributes
     let rel_info = relationship::collect_relationships(&input_struct);
 
+    // Collect setter fields BEFORE stripping attributes
+    let setter_fields = setter::collect_setter_fields(&input_struct);
+
     let name = &input_struct.ident;
     let name_str = name.to_string();
 
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
-        // Strip relationship attributes from each field
+        // Strip relationship and setter attributes from each field
         for field in named.iter_mut() {
             relationship::strip_relationship_attrs(field);
+            setter::strip_setter_attrs(field);
         }
 
         let id = quote! { id };
@@ -283,6 +288,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     // Generate relationship registrations
     let relationship_registrations = relationship::generate_registrations(&name_str, &rel_info);
 
+    // Generate setter commands for fields with #[myko_rename] or #[myko_setter]
+    let setter_commands = setter::generate_setter_commands(&name_str, &setter_fields);
+
     let expanded = quote! {
 
         use myko_rs::prelude::Query;
@@ -338,6 +346,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #delete_command
 
         #delete_many_command
+
+        // Setter commands (from #[myko_rename] and #[myko_setter] field attributes)
+        #setter_commands
 
         // Relationship registrations (belongs_to, owns_many, ensure_for)
         #relationship_registrations
