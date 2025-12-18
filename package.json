@@ -59,6 +59,9 @@
     "svelte-preprocess"
   ],
   "pnpm": {
+    "overrides": {
+      "rxjs": "7.8.2"
+    },
     "onlyBuiltDependencies": [
       "@serialport/bindings-cpp",
       "@sveltejs/kit",
