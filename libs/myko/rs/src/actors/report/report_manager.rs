@@ -23,9 +23,10 @@ use crate::{
 
 use super::report_runner::{ReportRunner, ReportRunnerArgs, ReportRunnerMsg};
 
-/// Type alias for report compute functions
+/// Type alias for report compute functions.
+/// Returns Result to allow framework-level arg validation before computing.
 pub type ReportComputeFn = Arc<
-    dyn Fn(ReportContext, Value) -> Pin<Box<dyn Stream<Item = Value> + Send>> + Send + Sync,
+    dyn Fn(ReportContext, Value) -> Result<Pin<Box<dyn Stream<Item = Value> + Send>>, String> + Send + Sync,
 >;
 
 /// Type alias for report parser functions
@@ -197,8 +198,18 @@ impl ReportManager {
             compute_fn(report_ctx, report_args)
         }));
 
+        // Handle both panics and arg parse errors
         let report_stream = match report_stream {
-            Ok(stream) => stream,
+            Ok(Ok(stream)) => stream,
+            Ok(Err(arg_error)) => {
+                // Arg parsing failed (framework-level validation)
+                error!(
+                    "Report {} arg parse error: {} (tx={})",
+                    report_id, arg_error, tx
+                );
+                let _ = output_tx.blocking_send(ReportOutput::Error(arg_error));
+                return;
+            }
             Err(panic_payload) => {
                 let panic_msg = extract_panic_message(panic_payload);
                 error!(

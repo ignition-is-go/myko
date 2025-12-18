@@ -372,30 +372,34 @@ pub trait ReportFactory: ReportParams {
 impl<R: ReportParams> ReportFactory for R {
     fn create_registration() -> RegisterReportData {
         let compute_fn = Arc::new(
-            |ctx: ReportContext, _report_value: Value| -> Pin<Box<dyn Stream<Item = Value> + Send>> {
-                // The report args are available in ctx.report_args
-                // Call the handler's compute function
+            |ctx: ReportContext,
+             _report_value: Value|
+             -> Result<Pin<Box<dyn Stream<Item = Value> + Send>>, String> {
+                // Validate args can be parsed before calling compute
+                // This matches how queries handle parse errors upstream
+                let _args: R = serde_json::from_value(ctx.report_args.clone())
+                    .map_err(|e| format!("Failed to parse report args: {}", e))?;
+
+                // Args valid - call compute (handler can use ctx.args().unwrap())
                 let stream = <R as ReportHandler>::compute(ctx);
 
                 // Map the output to Value
-                Box::pin(futures::stream::unfold(stream, |mut s| async move {
+                Ok(Box::pin(futures::stream::unfold(stream, |mut s| async move {
                     use futures::StreamExt;
                     match s.next().await {
-                        Some(output) => {
-                            match serde_json::to_value(&output) {
-                                Ok(value) => {
-                                    log::trace!("Report serialized output: {}", value);
-                                    Some((value, s))
-                                }
-                                Err(e) => {
-                                    log::error!("Failed to serialize report output: {}", e);
-                                    None
-                                }
+                        Some(output) => match serde_json::to_value(&output) {
+                            Ok(value) => {
+                                log::trace!("Report serialized output: {}", value);
+                                Some((value, s))
                             }
-                        }
+                            Err(e) => {
+                                log::error!("Failed to serialize report output: {}", e);
+                                None
+                            }
+                        },
                         None => None,
                     }
-                }))
+                })))
             },
         );
 

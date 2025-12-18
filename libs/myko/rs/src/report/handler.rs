@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::context::RequestContext;
 use crate::event::MEvent;
 use crate::query::QueryParams;
-use crate::report::{ReportOutput, ReportOutputType, ReportParams};
+use crate::report::{ReportOutput, ReportOutputType, ReportParams, ReportStream};
 use crate::server::MykoServerCtx;
 
 /// Context provided to report handlers for accessing dependencies.
@@ -243,20 +243,27 @@ impl ReportContext {
 /// `flat_map`, `switch_map`, etc. to dynamically change subscriptions
 /// based on upstream values.
 ///
+/// # Argument Parsing
+///
+/// Report arguments are validated by the framework before `compute` is called.
+/// If argument parsing fails, an error is sent to the client and `compute` is
+/// never invoked. Handlers can safely use `ctx.args::<Self>().unwrap()` knowing
+/// the args have been pre-validated.
+///
 /// # Example
 ///
 /// ```ignore
 /// impl ReportHandler for GetParentTargets {
 ///     type Output = Vec<Target>;
 ///
-///     fn compute(ctx: ReportContext) -> impl Stream<Item = Self::Output> {
-///         let target_id = ctx.report.target_id.clone();
-///         ctx.query(GetTargetsByIds { ids: vec![target_id] })
+///     fn compute(ctx: ReportContext) -> ReportStream<Self::Output> {
+///         let args = ctx.args::<Self>().unwrap();
+///         ctx.query(GetTargetsByIds { ids: vec![args.target_id.clone()] })
 ///             .flat_map(move |targets| {
 ///                 match targets.first().and_then(|t| t.parent_id.as_ref()) {
 ///                     Some(parent_id) => ctx.report(GetParentTargets {
 ///                         target_id: parent_id.clone(),
-///                         depth: ctx.report.depth - 1,
+///                         depth: args.depth - 1,
 ///                     }).boxed(),
 ///                     None => stream::once(async { vec![] }).boxed()
 ///                 }
@@ -271,5 +278,8 @@ pub trait ReportHandler: Sized + Send + Sync + 'static {
     ///
     /// This method is called once when the report is first subscribed to.
     /// The returned stream should emit whenever dependencies change.
-    fn compute(ctx: ReportContext) -> Pin<Box<dyn Stream<Item = Self::Output> + Send>>;
+    ///
+    /// Note: Report arguments are pre-validated by the framework before this
+    /// method is called. Use `ctx.args::<Self>().unwrap()` to access them.
+    fn compute(ctx: ReportContext) -> ReportStream<Self::Output>;
 }
