@@ -140,6 +140,7 @@ pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct
                     let cmd: #struct_name = serde_json::from_value(command).map_err(|e| {
                         myko_rs::command::CommandError {
                             tx: ctx.tx().to_string(),
+                            command_id: ctx.command_id.to_string(),
                             message: format!("Failed to parse command: {}", e),
                         }
                     })?;
@@ -149,6 +150,7 @@ pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct
                     serde_json::to_value(&result).map_err(|e| {
                         myko_rs::command::CommandError {
                             tx: String::new(),
+                            command_id: stringify!(#struct_name).to_string(),
                             message: format!("Failed to serialize result: {}", e),
                         }
                     })

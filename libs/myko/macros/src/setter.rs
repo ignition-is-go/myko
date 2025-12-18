@@ -172,6 +172,7 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
                         let entity = ctx.query_one(&query).await?.ok_or_else(|| {
                             myko_rs::prelude::CommandError {
                                 tx: ctx.tx().to_string(),
+                                command_id: ctx.command_id.to_string(),
                                 message: format!("{} {} not found", stringify!(#entity_ident), cmd.id),
                             }
                         })?;
