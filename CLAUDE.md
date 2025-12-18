@@ -207,6 +207,24 @@ When types or logic need to exist in multiple languages:
 
 Entity generation: `libs/entities/rs/src/bin/typegen.rs` produces TypeScript types.
 
+## Beads Workflow
+
+This project uses Beads for issue tracking. Follow these rules:
+
+- **No auto-push**: Only sync with remote (`bd sync`) when explicitly asked
+- **Local-only by default**: Use `bd sync --flush-only` to save changes to JSONL without git operations
+- **Task-scoped commits**: When completing a task, only commit files changed for that specific task
+- **Separate concerns**: Commit code changes separately from beads changes
+
+When completing work:
+```bash
+git add <only-task-files>           # Stage only files for this task
+git commit -m "feat(scope): ..."    # Commit code changes
+bd sync --flush-only                # Export beads to JSONL (no commit/push)
+```
+
+Only run `bd sync` (full sync with push) when explicitly requested.
+
 ## Migration Guide
 
 See `libs/myko/rs/MIGRATION.md` for TypeScript to Rust migration details.

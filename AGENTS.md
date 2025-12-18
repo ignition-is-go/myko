@@ -9,32 +9,38 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
-bd sync               # Sync with git
+bd sync --flush-only  # Save beads to JSONL (local only)
 ```
 
-## Landing the Plane (Session Completion)
+## Beads Workflow Rules
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+- **No auto-push**: Only sync with remote when the user explicitly asks
+- **Local-only by default**: Use `bd sync --flush-only` to save changes without git operations
+- **Task-scoped commits**: Only commit files changed for the current task
+- **Separate concerns**: Commit code changes separately from beads changes
 
-**MANDATORY WORKFLOW:**
+## Completing Work
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+When finishing a task:
 
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+```bash
+git add <only-task-files>           # Stage only files for this task
+git commit -m "feat(scope): ..."    # Commit code changes
+bd sync --flush-only                # Export beads to JSONL (no commit/push)
+```
 
+**Do NOT automatically push to remote.** Only run `bd sync` (full sync) or `git push` when the user explicitly requests it.
+
+## Quality Gates (if code changed)
+
+Run applicable checks before committing:
+- `cargo check` - Type checking
+- `cargo clippy` - Lints
+- `cargo test` - Tests
+- `pnpm build` - TypeScript builds
+
+## Issue Management
+
+1. **Create issues for follow-up work** - Use `bd create` for anything needing future attention
+2. **Update status** - Close finished work with `bd close <id>`
+3. **Flush changes** - Run `bd sync --flush-only` to persist to JSONL
