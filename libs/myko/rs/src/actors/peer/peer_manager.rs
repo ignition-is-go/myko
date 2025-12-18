@@ -193,13 +193,16 @@ impl PeerManager {
     /// Delete a Server entity via DeleteServer command (sync version)
     fn delete_server_sync(command_manager: &ActorRef<CommandManagerMsg>, server_id: Uuid, host_id: Uuid) {
         use crate::entities::server::DeleteServerArgs;
+        use crate::command::CommandRequest;
+
         let delete_cmd = DeleteServer::new(DeleteServerArgs {
             id: server_id.to_string().into(),
         });
+        let request = CommandRequest::new(delete_cmd);
 
-        let wrapped: WrappedCommand = (&delete_cmd as &dyn AnyCommand).into();
+        let wrapped: WrappedCommand = (&request as &dyn AnyCommand).into();
         let req = RequestContext::internal(
-            Arc::from(Uuid::new_v4().to_string()),
+            request.tx.clone(),
             host_id,
             "peer-manager",
         );
@@ -489,16 +492,19 @@ impl Actor for PeerManager {
                 // Delete the Server entity via DeleteServer command
                 // This will cascade delete any associated Client entities via belongs_to
                 use crate::entities::server::DeleteServerArgs;
+                use crate::command::CommandRequest;
+
                 let delete_cmd = DeleteServer::new(DeleteServerArgs {
                     id: server_id.to_string().into(),
                 });
+                let request = CommandRequest::new(delete_cmd);
 
                 // Convert to WrappedCommand using From impl
-                let wrapped: WrappedCommand = (&delete_cmd as &dyn AnyCommand).into();
+                let wrapped: WrappedCommand = (&request as &dyn AnyCommand).into();
 
                 let host_id = self.ctx.host_id;
                 let req = RequestContext::internal(
-                    Arc::from(Uuid::new_v4().to_string()),
+                    request.tx.clone(),
                     host_id,
                     "peer-manager",
                 );

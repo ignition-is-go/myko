@@ -167,11 +167,16 @@ impl CommandContext {
     ///
     /// The child command receives a context with extended lineage tracking
     /// the call chain (e.g., `["client", "CreateScene", "CreateBinding"]`).
+    /// The parent's tx is preserved for the nested command.
     pub async fn execute_command<C: CommandId + Serialize + Clone>(
         &self,
         command: C,
     ) -> Result<Value, CommandError> {
-        let wrapped = crate::command::wrap_command(self.tx().to_string(), &command).map_err(|e| {
+        use crate::command::{CommandRequest, wrap_command_request};
+
+        // Wrap command with parent's tx for transaction correlation
+        let request = CommandRequest::with_tx(command.clone(), self.req.tx.clone());
+        let wrapped = wrap_command_request(&request).map_err(|e| {
             CommandError {
                 tx: self.tx().to_string(),
                 command_id: command.command_id().to_string(),

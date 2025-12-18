@@ -1,6 +1,6 @@
 use crate::{
     api::query::WrappedQuery,
-    command::{CommandId, wrap_command},
+    command::{CommandId, CommandRequest, wrap_command_request},
     common::with_id::WithId,
     event::MEvent,
     item::Eventable,
@@ -288,9 +288,10 @@ impl MykoClient {
         &self,
         command: &C,
     ) -> Result<R, String> {
-        let tx = uuid::Uuid::new_v4().to_string();
+        let request = CommandRequest::new(command.clone());
+        let tx = request.tx.to_string();
 
-        let wrapped = wrap_command(tx.clone(), command).map_err(|e| e.to_string())?;
+        let wrapped = wrap_command_request(&request).map_err(|e| e.to_string())?;
 
         let msg = MykoMessage::Command(wrapped);
 

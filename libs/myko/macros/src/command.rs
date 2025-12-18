@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Field, FieldsNamed, ItemStruct, Path};
+use syn::{ItemStruct, Path};
 
 /// Generates a command with its handler struct and registration.
 ///
@@ -22,31 +22,19 @@ use syn::{Field, FieldsNamed, ItemStruct, Path};
 ///     }
 /// }
 /// ```
-pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct) -> TokenStream {
+pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) -> TokenStream {
     let struct_name = &input_struct.ident;
     let handler_name = format_ident!("{}Handler", struct_name);
     let args_struct_name = format_ident!("{}Args", struct_name);
 
-    // Create args struct (without tx field)
+    // Create args struct (identical to main struct for backward compatibility)
+    // TODO(ts): Remove Args pattern once all call sites are updated to use CommandRequest
     let mut args_struct = input_struct.clone();
     args_struct.ident = args_struct_name.clone();
     args_struct.attrs = vec![
         syn::parse_quote!(#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko_rs::TS)]),
         syn::parse_quote!(#[serde(rename_all = "camelCase")]),
     ];
-
-    // Add tx field to main struct
-    if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
-        let tx = quote! { tx };
-        let arc_str = quote! { std::sync::Arc<str> };
-        let pub_viz = quote! { pub };
-
-        let tx_field: Field = syn::parse_quote! {
-            #pub_viz #tx: #arc_str
-        };
-
-        named.push(tx_field);
-    };
 
     // Default to () if no result type specified
     let result_type_tokens = match &result_type {
@@ -65,7 +53,7 @@ pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct
          #[serde(rename_all = "camelCase")]
     };
 
-    let pairs = args_struct
+    let pairs = input_struct
         .fields
         .iter()
         .map(|f| {
@@ -92,24 +80,21 @@ pub fn myko_command_impl(result_type: Option<Path>, mut input_struct: ItemStruct
             }
         }
 
-        impl myko_rs::prelude::WithTransaction for #struct_name {
-            fn tx_id(&self) -> std::sync::Arc<str> {
-                self.tx.clone()
+        impl myko_rs::command::CommandIdStatic for #struct_name {
+            fn command_id_static() -> &'static str {
+                stringify!(#struct_name)
             }
         }
 
-        impl myko_rs::command::AnyCommand for #struct_name {
-            fn to_value(&self) -> serde_json::Value {
-                serde_json::to_value(self).expect("Command should serialize to JSON")
-            }
+        impl myko_rs::command::CommandResultType for #struct_name {
+            type Result = #result_type_tokens;
         }
 
         impl #struct_name {
-            /// Create a new command instance with auto-generated tx
+            /// Create a new command instance from args (backward compatibility)
+            /// Prefer using CommandRequest::new(Command { ... }) for new code
             pub fn new(args: #args_struct_name) -> Self {
-                let tx: std::sync::Arc<str> = myko_rs::prelude::Uuid::new_v4().to_string().into();
                 Self {
-                    tx,
                     #(#pairs)*
                 }
             }

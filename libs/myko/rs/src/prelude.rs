@@ -1,7 +1,10 @@
 pub use crate::{
     api::query::WrappedQuery,
     client::MykoClient,
-    command::{AnyCommand, CommandContext, CommandError, CommandHandler, CommandHandlerRegistration},
+    command::{
+        AnyCommand, CommandContext, CommandError, CommandHandler, CommandHandlerRegistration,
+        CommandId, CommandIdStatic, CommandParams, CommandRequest, CommandResultType,
+    },
     common::{to_value::ToValue, with_id::WithId, with_transaction::WithTransaction},
     item::ItemRegistration,
     parsers::{
@@ -18,6 +21,7 @@ pub use crate::{
     },
     search::{EntitySearch, EntitySearchResult, SearchableRegistration, iter_searchable},
     server::{MykoServer, MykoServerArgs},
+    sync_client::{RunnerInfo, SyncClient, ValueUpdated},
     type_gen::{generate_item_types, export_registered_ts_types, TsExportRegistration},
     utils::downcast_item,
 };
