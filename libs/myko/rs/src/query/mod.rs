@@ -69,9 +69,19 @@ impl<Q: Default> Default for QueryRequest<Q> {
     }
 }
 
-impl<Q> From<Q> for QueryRequest<Q> {
+/// Convert query params directly into a QueryRequest.
+/// This only works for types that implement QueryParams (actual query param structs),
+/// not for QueryRequest itself, which avoids ambiguity with From<&QueryRequest<Q>>.
+impl<Q: QueryParams> From<Q> for QueryRequest<Q> {
     fn from(query: Q) -> Self {
         Self::new(query)
+    }
+}
+
+/// Convert a reference to a QueryRequest into an owned QueryRequest by cloning.
+impl<Q: Clone> From<&QueryRequest<Q>> for QueryRequest<Q> {
+    fn from(request: &QueryRequest<Q>) -> Self {
+        request.clone()
     }
 }
 
@@ -256,7 +266,7 @@ pub trait Query:
 }
 
 // Blanket impl of Query for QueryRequest<Q>
-impl<Q: QueryParams> Query for QueryRequest<Q>
+impl<Q: QueryParams + Clone> Query for QueryRequest<Q>
 where
     Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
@@ -266,7 +276,7 @@ where
         &self,
         client: &MykoClient,
     ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>> {
-        client.watch_query(self)
+        client.watch_query::<Q>(self)
     }
 }
 

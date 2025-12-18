@@ -141,6 +141,7 @@ impl Actor for MessageHandler {
                     MykoMessage::Query(query) => {
                         trace!("Received query: {:?}", query);
                         let item_type = query.query_item_type.clone();
+                        let query_id = query.query_id.clone();
                         let tx: Arc<str> = query
                             .query
                             .get("tx")
@@ -160,6 +161,7 @@ impl Actor for MessageHandler {
                             client_id.clone(),
                             self.ws_server.clone(),
                             item_type,
+                            query_id,
                             tx,
                         ));
 
@@ -172,6 +174,7 @@ impl Actor for MessageHandler {
                     }
                     MykoMessage::Report(report) => {
                         trace!("Received report: {:?}", report);
+                        let report_id = report.report_id.clone();
                         let tx: Arc<str> = report
                             .report
                             .get("tx")
@@ -231,6 +234,7 @@ impl Actor for MessageHandler {
                                         error!("Report error [tx={}]: {}", tx, err_msg);
                                         MykoMessage::ReportError(ReportError {
                                             tx: tx.to_string(),
+                                            report_id: report_id.clone(),
                                             message: err_msg,
                                         })
                                     }
@@ -270,6 +274,7 @@ impl Actor for MessageHandler {
                     MykoMessage::Command(wrapped_command) => {
                         trace!("Received Command message: {}", wrapped_command.command_id);
 
+                        let command_id = wrapped_command.command_id.clone();
                         let tx: Arc<str> = wrapped_command
                             .command
                             .get("tx")
@@ -277,7 +282,7 @@ impl Actor for MessageHandler {
                             .map(Arc::from)
                             .unwrap_or_else(|| Arc::from(Uuid::new_v4().to_string()));
 
-                        trace!("Received command: {} with tx {}", wrapped_command.command_id, tx);
+                        trace!("Received command: {} with tx {}", command_id, tx);
 
                         // Create RequestContext for this command
                         let req = RequestContext::from_client(
@@ -316,6 +321,7 @@ impl Actor for MessageHandler {
                                     error!("Failed to execute command: {}", e);
                                     MykoMessage::CommandError(CommandError {
                                         tx: tx.to_string(),
+                                        command_id: command_id.clone(),
                                         message: format!("Internal error: {}", e),
                                     })
                                 }
@@ -323,6 +329,7 @@ impl Actor for MessageHandler {
                                     error!("Command task panicked: {}", e);
                                     MykoMessage::CommandError(CommandError {
                                         tx: tx.to_string(),
+                                        command_id: command_id.clone(),
                                         message: format!("Internal error: {}", e),
                                     })
                                 }

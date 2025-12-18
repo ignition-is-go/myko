@@ -265,6 +265,7 @@ impl MykoClient {
                             Err(message) => {
                                 let err = crate::command::CommandError {
                                     tx: tx.clone(),
+                                    command_id: wrapped.command_id.clone(),
                                     message,
                                 };
                                 let msg = MykoMessage::CommandError(err);
@@ -361,20 +362,34 @@ impl MykoClient {
 
     /// Watch a report and receive updates as a stream.
     ///
-    /// Accepts a `ReportRequest<R>` wrapper which contains the report params and transaction ID.
-    /// The tx from the wrapper is used for correlation.
-    pub fn watch_report<R, O>(&self, report: &ReportRequest<R>) -> impl tokio_stream::Stream<Item = O>
+    /// Accepts any type that can be converted into a `ReportRequest<R>`, including:
+    /// - Report params directly (e.g., `MissingFiles { machine_id: "..." }`)
+    /// - A `ReportRequest<R>` wrapper
+    /// - A reference to a `ReportRequest<R>`
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Pass report params directly - no need to wrap in ReportRequest::new()
+    /// let stream = client.watch_report::<MissingFiles, Missing>(
+    ///     MissingFiles { machine_id: id.clone() }
+    /// );
+    /// ```
+    pub fn watch_report<R, O>(
+        &self,
+        report: impl Into<ReportRequest<R>>,
+    ) -> impl tokio_stream::Stream<Item = O>
     where
-        R: ReportParams + ReportIdStatic,
+        R: ReportParams + ReportIdStatic + Clone,
         O: DeserializeOwned + 'static,
     {
+        let report: ReportRequest<R> = report.into();
         let stream = self.get_messages();
 
         let report_id: Arc<str> = R::report_id_static().into();
         let tx = report.tx.clone();
 
         // Serialize the ReportRequest directly (includes tx via serde flatten)
-        let report_value = serde_json::to_value(report).expect("Report should serialize");
+        let report_value = serde_json::to_value(&report).expect("Report should serialize");
 
         let wrapped = WrappedReport {
             report: report_value,
@@ -441,13 +456,25 @@ impl MykoClient {
 
     /// Watch a query and receive updates as a stream.
     ///
-    /// Accepts a `QueryRequest<Q>` wrapper which contains the query params and transaction ID.
-    /// The tx from the wrapper is used for correlation.
-    pub fn watch_query<Q>(&self, query: &QueryRequest<Q>) -> impl tokio_stream::Stream<Item = Vec<Q::Item>>
+    /// Accepts any type that can be converted into a `QueryRequest<Q>`, including:
+    /// - Query params directly (e.g., `GetTargetsByIds { ids: vec![...] }`)
+    /// - A `QueryRequest<Q>` wrapper
+    /// - A reference to a `QueryRequest<Q>`
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Pass query params directly - no need to wrap in QueryRequest::new()
+    /// let stream = client.watch_query(GetTargetsByIds { ids: vec![id.into()] });
+    /// ```
+    pub fn watch_query<Q>(
+        &self,
+        query: impl Into<QueryRequest<Q>>,
+    ) -> impl tokio_stream::Stream<Item = Vec<Q::Item>>
     where
-        Q: QueryParams,
+        Q: QueryParams + Clone,
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
+        let query: QueryRequest<Q> = query.into();
         let stream = self.get_messages();
 
         let tx = query.tx.clone();

@@ -39,6 +39,9 @@ pub struct CommandContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
     pub req: RequestContext,
 
+    /// The command ID being executed (for error reporting).
+    pub command_id: Arc<str>,
+
     pub(crate) server_ctx: Arc<MykoServerCtx>,
     pub(crate) event_manager: ActorRef<EventManagerMsg>,
     pub(crate) command_manager: ActorRef<CommandManagerMsg>,
@@ -50,6 +53,7 @@ impl CommandContext {
     /// Create a new CommandContext from a RequestContext.
     pub fn new(
         req: RequestContext,
+        command_id: Arc<str>,
         server_ctx: Arc<MykoServerCtx>,
         event_manager: ActorRef<EventManagerMsg>,
         command_manager: ActorRef<CommandManagerMsg>,
@@ -58,6 +62,7 @@ impl CommandContext {
     ) -> Self {
         Self {
             req,
+            command_id,
             server_ctx,
             event_manager,
             command_manager,
@@ -109,6 +114,7 @@ impl CommandContext {
             .publish_set(item, self.tx(), self.req.client_id.clone(), None)
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -123,6 +129,7 @@ impl CommandContext {
             .publish_set(item, self.tx(), self.req.client_id.clone(), Some(options))
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -136,6 +143,7 @@ impl CommandContext {
             .publish_del(item, self.tx(), self.req.client_id.clone(), None)
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -150,6 +158,7 @@ impl CommandContext {
             .publish_del(item, self.tx(), self.req.client_id.clone(), Some(options))
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to send event: {}", e),
             })
     }
@@ -165,6 +174,7 @@ impl CommandContext {
         let wrapped = crate::command::wrap_command(self.tx().to_string(), &command).map_err(|e| {
             CommandError {
                 tx: self.tx().to_string(),
+                command_id: command.command_id().to_string(),
                 message: format!("Failed to wrap command: {}", e),
             }
         })?;
@@ -177,6 +187,7 @@ impl CommandContext {
             .call(|r| CommandManagerMsg::ExecuteNested(wrapped, child_req, r))
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: command.command_id().to_string(),
                 message: format!("Failed to call command manager: {}", e),
             })?
     }
@@ -202,6 +213,7 @@ impl CommandContext {
         let wrapped_request = QueryRequest::new(query.clone());
         let query_value = serde_json::to_value(&wrapped_request).map_err(|e| CommandError {
             tx: self.tx().to_string(),
+            command_id: self.command_id.to_string(),
             message: format!("Failed to serialize query: {}", e),
         })?;
 
@@ -218,6 +230,7 @@ impl CommandContext {
             .call(|r| QueryManagerMsg::WrappedQuerySnapshot(wrapped, r))
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to query snapshot: {}", e),
             })?;
 
@@ -226,6 +239,7 @@ impl CommandContext {
             let value = item.to_value();
             let parsed: Q::Item = serde_json::from_value(value).map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to parse query result: {}", e),
             })?;
             Ok(Some(parsed))
@@ -245,6 +259,7 @@ impl CommandContext {
     {
         let report_value = serde_json::to_value(report).map_err(|e| CommandError {
             tx: self.tx().to_string(),
+            command_id: self.command_id.to_string(),
             message: format!("Failed to serialize report: {}", e),
         })?;
 
@@ -264,12 +279,14 @@ impl CommandContext {
             .send_message(ReportManagerMsg::StartReport(wrapped, child_req, output_tx))
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to start report: {}", e),
             })?;
 
         // Wait for the first output
         let first_output = output_rx.recv().await.ok_or_else(|| CommandError {
             tx: self.tx().to_string(),
+            command_id: self.command_id.to_string(),
             message: "Report completed without emitting a value".to_string(),
         })?;
 
@@ -279,6 +296,7 @@ impl CommandContext {
             ReportOutput::Error(err_msg) => {
                 return Err(CommandError {
                     tx: self.tx().to_string(),
+                    command_id: self.command_id.to_string(),
                     message: format!("Report error: {}", err_msg),
                 });
             }
@@ -288,6 +306,7 @@ impl CommandContext {
         let result: <R as ReportOutputType>::Output =
             serde_json::from_value(first_value).map_err(|e| CommandError {
                 tx: self.tx().to_string(),
+                command_id: self.command_id.to_string(),
                 message: format!("Failed to parse report result: {}", e),
             })?;
 

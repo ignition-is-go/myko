@@ -87,6 +87,7 @@ impl CommandManager {
             );
             CommandError {
                 tx: req.tx().to_string(),
+                command_id: command_id.to_string(),
                 message: format!("No handler registered for command: {}", command_id),
             }
         })?;
@@ -94,6 +95,7 @@ impl CommandManager {
         // Build context from RequestContext
         let ctx = CommandContext::new(
             req,
+            command_id.into(),
             self.ctx.clone(),
             self.event_manager.clone(),
             self.myself.clone(),
@@ -109,6 +111,7 @@ impl CommandManager {
 
     /// Execute a command with panic catching.
     /// Converts panics to CommandError to prevent actor crashes.
+    /// Logs all errors before returning them.
     fn execute_command_safe(
         &self,
         command: &WrappedCommand,
@@ -121,7 +124,16 @@ impl CommandManager {
         let result = catch_unwind(AssertUnwindSafe(|| self.execute_command(command, req)));
 
         match result {
-            Ok(inner_result) => inner_result,
+            Ok(inner_result) => {
+                // Log handler errors before returning
+                if let Err(ref cmd_error) = inner_result {
+                    error!(
+                        "Command {} failed: {} (tx={})",
+                        command_id, cmd_error.message, tx
+                    );
+                }
+                inner_result
+            }
             Err(panic_payload) => {
                 // Extract panic message
                 let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
@@ -139,6 +151,7 @@ impl CommandManager {
 
                 Err(CommandError {
                     tx: tx.to_string(),
+                    command_id: command_id.to_string(),
                     message: format!("Command handler panicked: {}", panic_msg),
                 })
             }

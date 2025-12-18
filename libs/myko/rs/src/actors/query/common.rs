@@ -7,6 +7,7 @@ use crate::{
     runtime::ActorRef,
 };
 use crossbeam::channel as crossbeam_channel;
+use log::error;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -67,6 +68,7 @@ pub struct WebSocketSink {
     client_id: Arc<str>,
     ws_server: ActorRef<WebSocketServerMsg>,
     item_type: Arc<str>,
+    query_id: Arc<str>,
     tx: Arc<str>,
     sequence: u64,
 }
@@ -76,12 +78,14 @@ impl WebSocketSink {
         client_id: Arc<str>,
         ws_server: ActorRef<WebSocketServerMsg>,
         item_type: Arc<str>,
+        query_id: Arc<str>,
         tx: Arc<str>,
     ) -> Self {
         Self {
             client_id,
             ws_server,
             item_type,
+            query_id,
             tx,
             sequence: 0,
         }
@@ -130,8 +134,10 @@ impl QueryResultSink for WebSocketSink {
                 })
             }
             QueryStreamUpdate::Error(message) => {
+                error!("Query error [tx={}]: {}", self.tx, message);
                 MykoMessage::QueryError(QueryError {
                     tx: self.tx.to_string(),
+                    query_id: self.query_id.to_string(),
                     message,
                 })
             }

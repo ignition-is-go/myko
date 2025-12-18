@@ -53,6 +53,7 @@ pub struct WrappedCommand {
 #[serde(rename_all = "camelCase")]
 pub struct CommandError {
     pub tx: String,
+    pub command_id: String,
     pub message: String,
 }
 

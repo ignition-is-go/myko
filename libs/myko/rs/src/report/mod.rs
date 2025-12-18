@@ -62,9 +62,19 @@ impl<R: Default> Default for ReportRequest<R> {
     }
 }
 
-impl<R> From<R> for ReportRequest<R> {
+/// Convert report params directly into a ReportRequest.
+/// This only works for types that implement ReportParams (actual report param structs),
+/// not for ReportRequest itself, which avoids ambiguity with From<&ReportRequest<R>>.
+impl<R: ReportParams> From<R> for ReportRequest<R> {
     fn from(report: R) -> Self {
         Self::new(report)
+    }
+}
+
+/// Convert a reference to a ReportRequest into an owned ReportRequest by cloning.
+impl<R: Clone> From<&ReportRequest<R>> for ReportRequest<R> {
+    fn from(request: &ReportRequest<R>) -> Self {
+        request.clone()
     }
 }
 
@@ -243,6 +253,7 @@ pub struct WrappedReport {
 #[ts(export)]
 pub struct ReportError {
     pub tx: String,
+    pub report_id: String,
     pub message: String,
 }
 

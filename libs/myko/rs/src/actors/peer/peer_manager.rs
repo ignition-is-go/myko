@@ -393,7 +393,7 @@ impl Actor for PeerManager {
 
                         let verification_timeout = tokio::time::Duration::from_secs(3);
                         let verification_result = tokio::time::timeout(verification_timeout, async {
-                            let stream = client.watch_query(&query);
+                            let stream = client.watch_query::<GetConnectedServer>(&query);
                             tokio::pin!(stream);
 
                             if let Some(servers) = TokioStreamExt::next(&mut stream).await {

@@ -72,6 +72,7 @@ pub struct WrappedQuery {
 #[serde(rename_all = "camelCase")]
 pub struct QueryError {
     pub tx: String,
+    pub query_id: String,
     pub message: String,
 }
 
