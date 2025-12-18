@@ -12,9 +12,11 @@ import {
 	type ClientStats,
 	type Command,
 	type CommandResult,
+	type MykoError,
 	type Query,
 	type QueryDiff,
 	type QueryItem,
+	type QueryResult,
 	type Report,
 	type ReportResult
 } from '@myko/ts';
@@ -159,6 +161,11 @@ export class SvelteMykoClient {
 	 */
 	enablePeerDiscovery(enabled: boolean, secure = false): void {
 		this.client.enablePeerDiscovery(enabled, secure);
+	}
+
+	/** Set authentication token for commands */
+	setToken(token: string | null): void {
+		this.client.setToken(token);
 	}
 
 	/** Disconnect from the server */
@@ -328,6 +335,43 @@ export class SvelteMykoClient {
 	}
 
 	/**
+	 * Watch a query with Observable-based updates.
+	 *
+	 * Returns an Observable that emits the full array of items whenever
+	 * the result set changes. For Svelte-optimized reactive state, use
+	 * the `query()` method instead.
+	 *
+	 * @example
+	 * ```svelte
+	 * <script>
+	 *   const targets$ = client.watchQuery(new GetAllTargets({}))
+	 *   targets$.subscribe(targets => console.log('Got', targets.length, 'targets'))
+	 * </script>
+	 * ```
+	 */
+	watchQuery<Q extends Query<unknown>>(queryFactory: Q): Observable<QueryResult<Q>> {
+		return this.client.watchQuery(queryFactory);
+	}
+
+	/**
+	 * Watch a report with Observable-based updates.
+	 *
+	 * Returns an Observable that emits whenever the report result changes.
+	 * For Svelte-optimized reactive state, use the `report()` method instead.
+	 *
+	 * @example
+	 * ```svelte
+	 * <script>
+	 *   const count$ = client.watchReport(new CountAllTargets({}))
+	 *   count$.subscribe(result => console.log('Count:', result.count))
+	 * </script>
+	 * ```
+	 */
+	watchReport<R extends Report<unknown>>(reportFactory: R): Observable<ReportResult<R>> {
+		return this.client.watchReport(reportFactory);
+	}
+
+	/**
 	 * Send a command and wait for the response.
 	 *
 	 * Emits to commandSuccess$ or commandError$ observables for generic handling.
@@ -360,6 +404,34 @@ export class SvelteMykoClient {
 	/** Access the underlying MykoClient for advanced use cases */
 	get raw(): MykoClient {
 		return this.client;
+	}
+
+	/** Measure round-trip latency */
+	ping(): Promise<number> {
+		return this.client.ping();
+	}
+
+	/** Observable of all errors from the server */
+	get errors(): Observable<MykoError> {
+		return this.client.errors$;
+	}
+
+	/**
+	 * Watch command completion status.
+	 * Note: This is a compatibility shim - the underlying MykoClient doesn't track
+	 * command completions the same way as the legacy WSMClient.
+	 */
+	watchCommandStatus(): Observable<unknown[]> {
+		// Return empty observable - command tracking is handled via sendCommand promises
+		return new Subject<unknown[]>().asObservable();
+	}
+
+	/**
+	 * Clear a command completion from tracking.
+	 * Note: This is a compatibility shim - no-op in the new client.
+	 */
+	clearCommandCompletion(_tx: string): void {
+		// No-op - command tracking is handled via sendCommand promises
 	}
 }
 

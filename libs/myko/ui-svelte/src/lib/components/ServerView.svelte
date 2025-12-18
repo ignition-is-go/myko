@@ -10,7 +10,7 @@
 	import { DateTime } from 'luxon';
 	import { Observable, interval, switchMap } from 'rxjs';
 	import { onDestroy } from 'svelte';
-	import { client } from '../services/client.js';
+	import { myko as client } from '../services/svelte-client.svelte.js';
 
 	interface Props {
 		server: Server;

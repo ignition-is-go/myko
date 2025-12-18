@@ -4,7 +4,7 @@ export { default as ServerView } from './components/ServerView.svelte';
 export * from './components/state/windback.svelte.js';
 export { default as Transactions } from './components/transactions/Transactions.svelte';
 export * from './components/windback/index.js';
-export * from './services/client.js';
+export { myko, myko as client, getMykoClient } from './services/svelte-client.svelte.js';
 
 // Svelte-friendly Myko client
 export {

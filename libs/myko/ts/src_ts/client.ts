@@ -39,9 +39,15 @@ import {
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
+/** Union type for error event names */
+export type MykoErrorEvent =
+  | typeof MykoEvent.QueryError
+  | typeof MykoEvent.CommandError
+  | typeof MykoEvent.ReportError
+
 /** Error types from server */
 export type MykoError = {
-  event: string
+  event: MykoErrorEvent
   tx: string
   message: string
 }
@@ -280,7 +286,7 @@ export class MykoClient {
 
   /** Observable of all errors */
   get errors$(): Observable<MykoError> {
-    const toError = <T extends { event: string; data: { tx: string; message: string } }>(
+    const toError = <T extends { event: MykoErrorEvent; data: { tx: string; message: string } }>(
       e: T,
     ): MykoError => ({ event: e.event, tx: e.data.tx, message: e.data.message })
 
