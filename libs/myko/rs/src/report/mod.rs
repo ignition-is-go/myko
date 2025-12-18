@@ -4,6 +4,9 @@ pub mod stream;
 use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 use futures::Stream;
+
+/// Type alias for boxed report streams, reducing verbosity in handler signatures.
+pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 use serde::{Deserialize, Serialize, de::DeserializeOwned, ser::Error};
 use serde_json::Value;
 use ts_rs::TS;
@@ -16,6 +19,7 @@ use crate::{
 };
 
 pub use handler::{ReportContext, ReportHandler, ReportRunnerHandle, SubscriptionRequest};
+pub use stream::StateTransitionExt;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ReportRequest<R> - Generic wrapper that adds tx to any report params

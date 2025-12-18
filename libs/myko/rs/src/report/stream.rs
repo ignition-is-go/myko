@@ -850,6 +850,138 @@ macro_rules! combine_latest {
     };
 }
 
+// ============================================================================
+// StateTransitionExt - detect field value transitions
+// ============================================================================
+
+/// Extension trait for detecting state transitions in a stream.
+///
+/// Replaces verbose `.scan()/.filter()/.map()` chains (~15 lines) with a
+/// single `.on_transition()` call.
+///
+/// # Example
+///
+/// ```ignore
+/// // Emit when target's online status changes from false to true
+/// ctx.query(GetTargetsByIds { ids: vec![id.clone()] })
+///     .on_transition(
+///         |targets| targets.first().map(|t| t.online),
+///         Some(false),
+///         Some(true),
+///     )
+/// ```
+pub trait StateTransitionExt: Stream + Sized {
+    /// Emits the stream item when a field value transitions from `from` to `to`.
+    ///
+    /// - `extract`: Function to extract the field value from each stream item
+    /// - `from`: The previous value to match (use `None` for "any previous value")
+    /// - `to`: The new value to match (use `None` for "any new value")
+    ///
+    /// Only emits when the transition matches. First item is never emitted
+    /// (no previous state to compare against).
+    fn on_transition<F, V>(self, extract: F, from: Option<V>, to: Option<V>) -> OnTransition<Self, F, V>
+    where
+        F: FnMut(&Self::Item) -> Option<V>,
+        V: PartialEq + Clone,
+    {
+        OnTransition {
+            stream: self,
+            extract,
+            from,
+            to,
+            last_value: None,
+        }
+    }
+
+    /// Emits whenever the extracted field value changes from the previous emission.
+    ///
+    /// This is a simplified version of `on_transition` that triggers on any change.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.query(GetTargetsByIds { ids: vec![id.clone()] })
+    ///     .on_change(|targets| targets.first().map(|t| t.status.clone()))
+    /// ```
+    fn on_change<F, V>(self, extract: F) -> OnTransition<Self, F, V>
+    where
+        F: FnMut(&Self::Item) -> Option<V>,
+        V: PartialEq + Clone,
+    {
+        OnTransition {
+            stream: self,
+            extract,
+            from: None,
+            to: None,
+            last_value: None,
+        }
+    }
+}
+
+impl<S: Stream + Sized> StateTransitionExt for S {}
+
+pin_project! {
+    /// Stream that emits on state transitions.
+    pub struct OnTransition<S: Stream, F, V> {
+        #[pin]
+        stream: S,
+        extract: F,
+        from: Option<V>,
+        to: Option<V>,
+        last_value: Option<V>,
+    }
+}
+
+impl<S, F, V> Stream for OnTransition<S, F, V>
+where
+    S: Stream,
+    F: FnMut(&S::Item) -> Option<V>,
+    V: PartialEq + Clone,
+{
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    let new_value = (this.extract)(&item);
+
+                    // Check if this is a matching transition
+                    let matches = match (&this.last_value, &new_value) {
+                        (Some(prev), Some(curr)) => {
+                            // Both from and to must match (if specified)
+                            let from_matches = this.from.as_ref().is_none_or(|f| f == prev);
+                            let to_matches = this.to.as_ref().is_none_or(|t| t == curr);
+                            // Must actually be a change
+                            let is_change = prev != curr;
+                            from_matches && to_matches && is_change
+                        }
+                        (None, Some(_)) => {
+                            // First value - only emit if we have a specific `to` target
+                            // (not for on_change which has both from and to as None)
+                            this.to.is_some()
+                                && this.from.is_none()
+                                && this.to.as_ref().is_none_or(|t| new_value.as_ref() == Some(t))
+                        }
+                        _ => false,
+                    };
+
+                    *this.last_value = new_value;
+
+                    if matches {
+                        return Poll::Ready(Some(item));
+                    }
+                    // Not a matching transition, poll again
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1064,5 +1196,76 @@ mod tests {
         // Should complete when notifier emits
         // With sync streams, notifier emits immediately so we get nothing or first item
         assert!(results.len() <= 1);
+    }
+
+    #[tokio::test]
+    async fn test_on_transition_false_to_true() {
+        use super::StateTransitionExt;
+
+        // Simulate online status changes: false, false, true, true, false, true
+        let stream = futures::stream::iter(vec![false, false, true, true, false, true]);
+
+        let results: Vec<_> = stream
+            .on_transition(|&v| Some(v), Some(false), Some(true))
+            .collect()
+            .await;
+
+        // Should emit on false->true transitions: at index 2 and 5
+        assert_eq!(results, vec![true, true]);
+    }
+
+    #[tokio::test]
+    async fn test_on_transition_any_to_value() {
+        use super::StateTransitionExt;
+
+        // Emit when transitioning TO true (from any value)
+        let stream = futures::stream::iter(vec![false, true, false, true]);
+
+        let results: Vec<_> = stream
+            .on_transition(|&v| Some(v), None, Some(true))
+            .collect()
+            .await;
+
+        // Should emit on any->true transitions
+        assert_eq!(results, vec![true, true]);
+    }
+
+    #[tokio::test]
+    async fn test_on_change() {
+        use super::StateTransitionExt;
+
+        // Emit on any change
+        let stream = futures::stream::iter(vec![1, 1, 2, 2, 3, 1]);
+
+        let results: Vec<_> = stream.on_change(|&v| Some(v)).collect().await;
+
+        // Should emit on every change: 1->2, 2->3, 3->1
+        assert_eq!(results, vec![2, 3, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_on_transition_with_struct() {
+        use super::StateTransitionExt;
+
+        #[derive(Clone)]
+        struct Status {
+            online: bool,
+        }
+
+        let stream = futures::stream::iter(vec![
+            Status { online: false },
+            Status { online: true },
+            Status { online: true },
+            Status { online: false },
+        ]);
+
+        let results: Vec<_> = stream
+            .on_transition(|s| Some(s.online), Some(false), Some(true))
+            .collect()
+            .await;
+
+        // Should emit once when online goes false->true
+        assert_eq!(results.len(), 1);
+        assert!(results[0].online);
     }
 }
