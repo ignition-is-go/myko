@@ -321,56 +321,62 @@ impl Actor for MessageHandler {
                         // Direct reference to WS server (bypasses Server routing)
                         let ws_server_ref = self.ws_server.clone();
                         let client_id_clone = client_id.clone();
+                        let command_id_for_log = command_id.clone();
+                        let tx_for_log = tx.clone();
 
                         // Execute command using the tokio blocking thread pool
                         // This bounds the number of concurrent command executions
+                        debug!("[CMD:{}] Spawning command task for tx={}", command_id, tx);
                         self.tokio_handle.spawn(async move {
-                            let result = tokio::task::spawn_blocking(move || {
-                                command_manager.call(|r| CommandManagerMsg::Execute(
+                            debug!("[CMD:{}] Inside async task, calling command_manager for tx={}", command_id_for_log, tx_for_log);
+                            // Use block_in_place instead of spawn_blocking to avoid blocking thread pool exhaustion
+                            // when many reports are running (each report holds a blocking thread for channel recv)
+                            let result = tokio::task::block_in_place(|| {
+                                debug!("[CMD:{}] Inside block_in_place, calling command_manager for tx={}", command_id_for_log, tx_for_log);
+                                let res = command_manager.call(|r| CommandManagerMsg::Execute(
                                     wrapped_command,
                                     req,
                                     r
-                                ))
-                            }).await;
+                                ));
+                                debug!("[CMD:{}] command_manager.call returned for tx={}", command_id_for_log, tx_for_log);
+                                res
+                            });
+                            debug!("[CMD:{}] block_in_place completed for tx={}", command_id_for_log, tx_for_log);
 
+                            // block_in_place returns Result<Result<Value, CommandError>, CallError>
                             let response_message = match result {
-                                Ok(Ok(Ok(response))) => {
+                                Ok(Ok(response)) => {
                                     MykoMessage::CommandResponse(CommandResponse {
                                         response,
-                                        tx: tx.to_string(),
+                                        tx: tx_for_log.to_string(),
                                     })
                                 }
-                                Ok(Ok(Err(cmd_error))) => {
+                                Ok(Err(cmd_error)) => {
                                     MykoMessage::CommandError(cmd_error)
                                 }
-                                Ok(Err(e)) => {
+                                Err(e) => {
                                     error!("Failed to execute command: {}", e);
                                     MykoMessage::CommandError(CommandError {
-                                        tx: tx.to_string(),
-                                        command_id: command_id.clone(),
-                                        message: format!("Internal error: {}", e),
-                                    })
-                                }
-                                Err(e) => {
-                                    error!("Command task panicked: {}", e);
-                                    MykoMessage::CommandError(CommandError {
-                                        tx: tx.to_string(),
-                                        command_id: command_id.clone(),
-                                        message: format!("Internal error: {}", e),
+                                        tx: tx_for_log.to_string(),
+                                        command_id: command_id_for_log.clone(),
+                                        message: format!("Internal error: {:?}", e),
                                     })
                                 }
                             };
 
                             // Direct send to WebSocketServer (bypasses Server actor)
+                            debug!("[CMD:{}] Sending response to client {} for tx={}", command_id_for_log, client_id_clone, tx_for_log);
                             if let Err(e) = ws_server_ref.send_message(
                                 WebSocketServerMsg::SendToClient(
                                     SendToClientData {
-                                        client_id: client_id_clone,
+                                        client_id: client_id_clone.clone(),
                                         message: response_message,
                                     }
                                 )
                             ) {
                                 error!("Failed to send command response: {}", e);
+                            } else {
+                                debug!("[CMD:{}] Response sent successfully for tx={}", command_id_for_log, tx_for_log);
                             }
                         });
                     }
