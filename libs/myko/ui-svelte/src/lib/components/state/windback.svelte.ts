@@ -1,11 +1,11 @@
 import { myko as client } from '../../services/svelte-client.svelte.js';
-import { SetClientWindbackTime, WindbackStatus, type MItemStub } from '@myko/core';
+import { SetClientWindbackTime, WindbackStatus, type MItemStub } from '@myko/ts';
 import { DateTime } from 'luxon';
 
 export class WindbackState {
 	#ctx: Omit<MItemStub, 'hash'> | undefined = $state();
 
-	#liveWindbackTime: WindbackStatus['$reportResult'] = $state();
+	#liveWindbackTime: string | undefined = $state();
 
 	#localWindbackTime: DateTime | undefined = $state();
 

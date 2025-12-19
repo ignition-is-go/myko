@@ -108,7 +108,7 @@ export class SvelteMykoClient {
 
 			// Start/stop stats subscription based on connection
 			if (status === ConnectionStatus.Connected && !this.statsSubscription) {
-				this.statsSubscription = this.client.stats().subscribe((stats) => {
+				this.statsSubscription = this.client.stats().subscribe((stats: ClientStats) => {
 					this.#stats = stats;
 				});
 			} else if (status === ConnectionStatus.Disconnected && this.statsSubscription) {
@@ -223,14 +223,14 @@ export class SvelteMykoClient {
 			let resolved = $state(false);
 
 			const subscription = this.client.watchQueryDiff(queryFactory).subscribe({
-				next: (diff) => {
+				next: (diff: QueryDiff<Item>) => {
 					if (diff.sequence === 0n) {
 						items.clear();
 					}
 					for (const id of diff.deletes) {
 						items.delete(id);
 					}
-					for (const item of diff.upserts as Item[]) {
+					for (const item of diff.upserts) {
 						items.set(item.id, item);
 					}
 					resolved = true;

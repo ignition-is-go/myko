@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { myko as client } from '../../services/svelte-client.svelte.js';
-	import { ChildEntitiesAllTime, EventsForEntity, type EventContainer, type ID } from '@myko/core';
+	import { ChildEntitiesAllTime, EventsForEntity, type EventContainer, type ID } from '@myko/ts';
 	import { startWith } from 'rxjs';
 	import { getContext } from 'svelte';
 	import {
@@ -48,12 +48,12 @@
 	});
 
 	$effect(() => {
-		viewState.registerEvents($history.map((x) => x.event.createdAt));
+		viewState.registerEvents($history.map((x: EventContainer) => x.event.createdAt));
 	});
 
 	const visibleEvents = $derived(
 		$history.filter(
-			(x) => (start ? x.event.createdAt >= start : true) && (end ? x.event.createdAt <= end : true)
+			(x: EventContainer) => (start ? x.event.createdAt >= start : true) && (end ? x.event.createdAt <= end : true)
 		)
 	);
 
@@ -63,7 +63,7 @@
 	};
 
 	const visibleEventRenders: EventRenderInfo[] = $derived(
-		visibleEvents.map((x) => {
+		visibleEvents.map((x: EventContainer) => {
 			const timeMilis = $derived(isoToMillisMemo(x.event.createdAt));
 
 			const leftTimeMilis = $derived(timeMilis - viewState.leftTimeMilis);

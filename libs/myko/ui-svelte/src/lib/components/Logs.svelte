@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { startWith } from 'rxjs';
 	import { myko as client } from '../services/svelte-client.svelte.js';
-	import { Loggers, type ID } from '@myko/core';
+	import { Loggers, type ID } from '@myko/ts';
 
 	type Props = {
 		serverId: ID;
