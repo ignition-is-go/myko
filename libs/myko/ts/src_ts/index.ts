@@ -4,6 +4,8 @@
  * Browser-compatible WebSocket client with RxJS Observables.
  */
 
+import type { MEvent } from '@myko/rs'
+
 // Re-export all Rust-generated types from @myko/rs
 export * from '@myko/rs'
 
@@ -67,7 +69,7 @@ export {
   type QueryResult,
   type Report,
   type ReportResult,
-} from './client'
+} from './client.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core framework reports (compatibility layer for @myko/core types)
@@ -102,11 +104,14 @@ export class GetItemsByTypeAndIds {
 export class ChildEntities {
   static readonly reportId = 'ChildEntities'
   readonly reportId = 'ChildEntities'
+  readonly report: { parentType: string; parentId: ID }
 
-  constructor(
-    readonly parentType: string,
-    readonly parentId: ID,
-  ) {}
+  /** Phantom type marker for result inference */
+  readonly $res!: () => MItemStub[]
+
+  constructor(parentType: string, parentId: ID) {
+    this.report = { parentType, parentId }
+  }
 }
 
 /**
@@ -115,11 +120,14 @@ export class ChildEntities {
 export class FullChildEntities {
   static readonly reportId = 'FullChildEntities'
   readonly reportId = 'FullChildEntities'
+  readonly report: { parentType: string; parentId: ID }
 
-  constructor(
-    readonly parentType: string,
-    readonly parentId: ID,
-  ) {}
+  /** Phantom type marker for result inference */
+  readonly $res!: () => MItemStub[]
+
+  constructor(parentType: string, parentId: ID) {
+    this.report = { parentType, parentId }
+  }
 }
 
 /**
@@ -128,11 +136,14 @@ export class FullChildEntities {
 export class ChildEntitiesAllTime {
   static readonly reportId = 'ChildEntitiesAllTime'
   readonly reportId = 'ChildEntitiesAllTime'
+  readonly report: { parentType: string; parentId: ID }
 
-  constructor(
-    readonly parentType: string,
-    readonly parentId: ID,
-  ) {}
+  /** Phantom type marker for result inference */
+  readonly $res!: () => MItemStub[]
+
+  constructor(parentType: string, parentId: ID) {
+    this.report = { parentType, parentId }
+  }
 }
 
 /**
@@ -150,9 +161,176 @@ export type EntitySnapshotDifferenceData = {
 export class EntitySnapshotDifference {
   static readonly reportId = 'EntitySnapshotDifference'
   readonly reportId = 'EntitySnapshotDifference'
+  readonly report: { parentType: string; parentId: ID }
 
-  constructor(
-    readonly parentType: string,
-    readonly parentId: ID,
-  ) {}
+  /** Phantom type marker for result inference */
+  readonly $res!: () => EntitySnapshotDifferenceData
+
+  constructor(parentType: string, parentId: ID) {
+    this.report = { parentType, parentId }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Client windback support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Command to set the windback time for the current client.
+ */
+export class SetClientWindbackTime {
+  static readonly commandId = 'SetClientWindbackTime'
+  readonly commandId = 'SetClientWindbackTime'
+  readonly command: { windback: string }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => boolean
+
+  constructor(windback: string) {
+    this.command = { windback }
+  }
+}
+
+/**
+ * Report that returns the current windback status (ISO timestamp or undefined).
+ */
+export class WindbackStatus {
+  static readonly reportId = 'WindbackStatus'
+  readonly reportId = 'WindbackStatus'
+  readonly report = {}
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => string | undefined
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logging support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Log level enum for controlling logging verbosity.
+ */
+export enum LogLevel {
+  INFO = 'INFO',
+  WARN = 'WARN',
+  ERROR = 'ERROR',
+  DEBUG = 'DEBUG',
+  VERBOSE = 'VERBOSE',
+}
+
+/**
+ * Log levels ordered by severity (most severe first).
+ */
+export const LOG_RANK = [
+  LogLevel.ERROR,
+  LogLevel.WARN,
+  LogLevel.INFO,
+  LogLevel.DEBUG,
+  LogLevel.VERBOSE,
+]
+
+/**
+ * Report that returns the list of available logger names.
+ */
+export class Loggers {
+  static readonly reportId = 'Loggers'
+  readonly reportId = 'Loggers'
+  readonly report = {}
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => string[]
+}
+
+/**
+ * Report that returns the current log level for a server.
+ */
+export class ServerLogLevel {
+  static readonly reportId = 'ServerLogLevel'
+  readonly reportId = 'ServerLogLevel'
+  readonly report: { serverId: ID }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => LogLevel
+
+  constructor(serverId: ID) {
+    this.report = { serverId }
+  }
+}
+
+/**
+ * Command to set the log level for a server.
+ */
+export class SetLogLevel {
+  static readonly commandId = 'SetLogLevel'
+  readonly commandId = 'SetLogLevel'
+  readonly command: { serverId: ID; level: LogLevel }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => void
+
+  constructor(serverId: ID, level: LogLevel) {
+    this.command = { serverId, level }
+  }
+}
+
+/**
+ * Report that checks if a peer server is alive and returns ping time.
+ */
+export class PeerAlive {
+  static readonly reportId = 'PeerAlive'
+  readonly reportId = 'PeerAlive'
+  readonly report: { peerId: ID }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => number | false
+
+  constructor(peerId: ID) {
+    this.report = { peerId }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Event history support
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Container for an event with associated metadata.
+ */
+export type EventContainer = {
+  id: ID
+  event: MEvent
+}
+
+/**
+ * Report that returns events for a specific transaction.
+ */
+export class EventsForTransaction {
+  static readonly reportId = 'EventsForTransaction'
+  readonly reportId = 'EventsForTransaction'
+  readonly report: { transactionId: string }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => MEvent[]
+
+  constructor(transactionId: string) {
+    this.report = { transactionId }
+  }
+}
+
+/**
+ * Query that returns events for a specific entity.
+ */
+export class EventsForEntity {
+  static readonly queryId = 'EventsForEntity'
+  readonly queryId = 'EventsForEntity'
+  static readonly queryItemType = 'EventContainer'
+  readonly queryItemType = 'EventContainer'
+  readonly query: { entityId: string; start?: string; end?: string }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => EventContainer[]
+
+  constructor(entityId: string, start?: string, end?: string) {
+    this.query = { entityId, start, end }
+  }
 }
