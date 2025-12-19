@@ -121,7 +121,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::ReportHandler for #count_all_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
+            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::ReportStream<Self::Output> {
                 use futures::StreamExt;
 
                 // Use bare query params - ctx.query() wraps them automatically
@@ -143,14 +143,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
+            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::ReportStream<Self::Output> {
                 use futures::StreamExt;
 
-                // Parse the report params (which are the args now - no separate Args type)
-                let params: #count_report_ident = ctx.args().expect("Failed to parse count report params");
-
                 // Use bare query params - ctx.query() wraps them automatically
-                let query = #get_by_partial_ident(params.0);
+                let query = #get_by_partial_ident(self.0.clone());
                 let stream = ctx.query(query);
 
                 Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
@@ -170,12 +167,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::ReportHandler for #get_by_id_report_ident {
             type Output = Option<#name>;
 
-            fn compute(ctx: myko_rs::prelude::ReportContext) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
+            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::ReportStream<Self::Output> {
                 use futures::StreamExt;
 
-                // Parse the report params (which are the args now - no separate Args type)
-                let params: #get_by_id_report_ident = ctx.args().expect("Failed to parse get by id report params");
-                let id = params.id;
+                let id = self.id.clone();
 
                 // Use bare query params - ctx.query() wraps them automatically
                 let query = #get_by_ids_query_ident { ids: vec![id] };

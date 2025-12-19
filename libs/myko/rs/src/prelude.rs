@@ -17,7 +17,7 @@ pub use crate::{
     },
     report::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
-        ReportIdStatic, ReportOutputType, ReportRegistration, WrappedReport,
+        ReportIdStatic, ReportOutputType, ReportRegistration, ReportStream, WrappedReport,
     },
     search::{EntitySearch, EntitySearchResult, SearchableRegistration, iter_searchable},
     server::{MykoServer, MykoServerArgs},

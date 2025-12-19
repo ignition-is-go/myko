@@ -29,16 +29,14 @@ pub struct ClientStatus {
 impl ReportHandler for ClientStatus {
     type Output = ClientStatusOutput;
 
-    fn compute(
-        ctx: ReportContext,
-    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Self::Output> + Send>> {
-        let args: ClientStatus = ctx.args().expect("Failed to parse ClientStatus args");
+    fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
+        let client_id = self.client_id.clone();
 
         // Query all clients and check if one with our id exists
         let stream = ctx.query(GetAllClients {});
 
         Box::pin(stream.map(move |clients| {
-            let online = clients.iter().any(|c| c.id == args.client_id);
+            let online = clients.iter().any(|c| c.id == client_id);
             ClientStatusOutput { online }
         }))
     }

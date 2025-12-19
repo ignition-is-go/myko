@@ -375,13 +375,12 @@ impl<R: ReportParams> ReportFactory for R {
             |ctx: ReportContext,
              _report_value: Value|
              -> Result<Pin<Box<dyn Stream<Item = Value> + Send>>, String> {
-                // Validate args can be parsed before calling compute
-                // This matches how queries handle parse errors upstream
-                let _args: R = serde_json::from_value(ctx.report_args.clone())
+                // Parse args - framework handles parse errors
+                let args: R = serde_json::from_value(ctx.report_args.clone())
                     .map_err(|e| format!("Failed to parse report args: {}", e))?;
 
-                // Args valid - call compute (handler can use ctx.args().unwrap())
-                let stream = <R as ReportHandler>::compute(ctx);
+                // Call compute with parsed args as &self
+                let stream = args.compute(ctx);
 
                 // Map the output to Value
                 Ok(Box::pin(futures::stream::unfold(stream, |mut s| async move {

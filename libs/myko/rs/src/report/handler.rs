@@ -245,10 +245,10 @@ impl ReportContext {
 ///
 /// # Argument Parsing
 ///
-/// Report arguments are validated by the framework before `compute` is called.
+/// Report arguments are parsed by the framework before `compute` is called,
+/// and passed as `&self`. Fields are directly accessible (e.g., `self.target_id`).
 /// If argument parsing fails, an error is sent to the client and `compute` is
-/// never invoked. Handlers can safely use `ctx.args::<Self>().unwrap()` knowing
-/// the args have been pre-validated.
+/// never invoked.
 ///
 /// # Example
 ///
@@ -256,14 +256,15 @@ impl ReportContext {
 /// impl ReportHandler for GetParentTargets {
 ///     type Output = Vec<Target>;
 ///
-///     fn compute(ctx: ReportContext) -> ReportStream<Self::Output> {
-///         let args = ctx.args::<Self>().unwrap();
-///         ctx.query(GetTargetsByIds { ids: vec![args.target_id.clone()] })
+///     fn compute(&self, ctx: ReportContext) -> ReportStream<Self::Output> {
+///         let target_id = self.target_id.clone();
+///         let depth = self.depth;
+///         ctx.query(GetTargetsByIds { ids: vec![target_id.clone()] })
 ///             .flat_map(move |targets| {
 ///                 match targets.first().and_then(|t| t.parent_id.as_ref()) {
 ///                     Some(parent_id) => ctx.report(GetParentTargets {
 ///                         target_id: parent_id.clone(),
-///                         depth: args.depth - 1,
+///                         depth: depth - 1,
 ///                     }).boxed(),
 ///                     None => stream::once(async { vec![] }).boxed()
 ///                 }
@@ -279,7 +280,7 @@ pub trait ReportHandler: Sized + Send + Sync + 'static {
     /// This method is called once when the report is first subscribed to.
     /// The returned stream should emit whenever dependencies change.
     ///
-    /// Note: Report arguments are pre-validated by the framework before this
-    /// method is called. Use `ctx.args::<Self>().unwrap()` to access them.
-    fn compute(ctx: ReportContext) -> ReportStream<Self::Output>;
+    /// Report arguments are parsed by the framework and passed as `&self`,
+    /// so fields are directly accessible (e.g., `self.target_id`).
+    fn compute(&self, ctx: ReportContext) -> ReportStream<Self::Output>;
 }

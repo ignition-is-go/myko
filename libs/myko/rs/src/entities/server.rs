@@ -1,6 +1,4 @@
-use std::pin::Pin;
-
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 
 use crate::combine_latest;
 use crate::entities::client::GetAllClients;
@@ -79,30 +77,31 @@ pub struct ServerStats {}
 impl ReportHandler for ServerStats {
     type Output = ServerStatsOutput;
 
-    fn compute(ctx: ReportContext) -> Pin<Box<dyn Stream<Item = Self::Output> + Send>> {
+    fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
         // Combine server and client streams - emit whenever either changes
-            combine_latest!(
-                ctx.query(GetConnectedServer {}),
-                ctx.query(GetAllClients {}),
-            )
-            .map(|(servers, clients)| {
-                let server = servers.into_iter().next();
+        combine_latest!(
+            ctx.query(GetConnectedServer {}),
+            ctx.query(GetAllClients {}),
+        )
+        .map(|(servers, clients)| {
+            let server = servers.into_iter().next();
 
-                // Compute uptime if we have server info
-                let uptime_seconds = server.as_ref().and_then(|s| {
-                    chrono::DateTime::parse_from_rfc3339(&s.started_at)
-                        .ok()
-                        .map(|started| {
-                            let now = chrono::Utc::now();
-                            (now - started.with_timezone(&chrono::Utc)).num_seconds()
-                        })
-                });
+            // Compute uptime if we have server info
+            let uptime_seconds = server.as_ref().and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s.started_at)
+                    .ok()
+                    .map(|started| {
+                        let now = chrono::Utc::now();
+                        (now - started.with_timezone(&chrono::Utc)).num_seconds()
+                    })
+            });
 
-                ServerStatsOutput {
-                    server,
-                    client_count: clients.len(),
-                    uptime_seconds,
-                }
-            }).boxed()
+            ServerStatsOutput {
+                server,
+                client_count: clients.len(),
+                uptime_seconds,
+            }
+        })
+        .boxed()
     }
 }

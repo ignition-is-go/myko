@@ -18,10 +18,8 @@
 
 use {crate as myko_rs};
 
-use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::item::Eventable;
@@ -87,20 +85,14 @@ impl EntitySearch {
 impl ReportHandler for EntitySearch {
     type Output = EntitySearchResult;
 
-    fn compute(ctx: ReportContext) -> Pin<Box<dyn Stream<Item = Self::Output> + Send>> {
-        Box::pin(async_stream::stream! {
-            // Parse args
-            let args: EntitySearch = match ctx.args() {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("Failed to parse EntitySearch args: {}", e);
-                    yield EntitySearchResult { ids: vec![] };
-                    return;
-                }
-            };
+    fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
+        let entity_type = self.entity_type.clone();
+        let query = self.query.clone();
+        let limit = self.limit;
 
+        Box::pin(async_stream::stream! {
             // Perform search via server context (sync call)
-            let ids = ctx.server_ctx.search(&args.entity_type, &args.query, args.limit);
+            let ids = ctx.server_ctx.search(&entity_type, &query, limit);
 
             yield EntitySearchResult { ids };
 
