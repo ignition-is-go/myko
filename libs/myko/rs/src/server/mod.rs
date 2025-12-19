@@ -2,6 +2,7 @@ use crate::{
     actors::{
         command::command_manager::CommandManagerMsg,
         event::event_manager::EventManagerMsg,
+        message_handler::MessageHandlerMsg,
         query::query_manager::QueryManagerMsg,
         report::report_manager::ReportManagerMsg,
         search::SearchManagerMsg,
@@ -104,6 +105,8 @@ pub struct MykoServerCtx {
     pub search_manager: std::sync::OnceLock<ActorRef<SearchManagerMsg>>,
     /// Sync client for distributed timing (set during server startup if sync server available)
     pub sync_client: std::sync::OnceLock<Arc<SyncClient>>,
+    /// Message handler for windback cache updates (set during server startup)
+    pub message_handler: std::sync::OnceLock<ActorRef<MessageHandlerMsg>>,
     /// Shared tokio runtime handle for async operations
     /// This is used by actors that need to run async code from sync contexts
     pub tokio_handle: tokio::runtime::Handle,
@@ -121,6 +124,10 @@ impl std::fmt::Debug for MykoServerCtx {
             .field(
                 "sync_client",
                 &self.sync_client.get().map(|_| "SyncClient"),
+            )
+            .field(
+                "message_handler",
+                &self.message_handler.get().map(|_| "MessageHandler"),
             )
             .finish()
     }
@@ -143,6 +150,21 @@ impl MykoServerCtx {
             Err(e) => {
                 log::error!("Search call failed: {}", e);
                 vec![]
+            }
+        }
+    }
+
+    /// Update the windback cache for a client.
+    ///
+    /// Called by windback commands (SetClientWindbackTime, ClearClientWindbackTime)
+    /// after successfully updating the Client entity.
+    pub fn update_windback(&self, client_id: Arc<str>, windback: Option<Arc<str>>) {
+        if let Some(message_handler) = self.message_handler.get() {
+            if let Err(e) = message_handler.send_message(MessageHandlerMsg::UpdateWindback {
+                client_id,
+                windback,
+            }) {
+                log::error!("Failed to update windback cache: {}", e);
             }
         }
     }

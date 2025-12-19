@@ -46,6 +46,11 @@ pub struct RequestContext {
 
     /// ISO timestamp when the request started.
     pub created_at: String,
+
+    /// Windback timestamp for historical state viewing.
+    /// When set, queries should return state as of this ISO timestamp.
+    /// `None` means the client is viewing live state.
+    pub windback: Option<Arc<str>>,
 }
 
 impl RequestContext {
@@ -63,12 +68,14 @@ impl RequestContext {
             lineage,
             host_id,
             created_at,
+            windback: None,
         }
     }
 
     /// Create a context for a client-initiated request.
     ///
     /// Sets lineage to `["client"]` and created_at to current time.
+    /// Use `from_client_with_windback` to include windback state.
     pub fn from_client(tx: Arc<str>, client_id: Arc<str>, host_id: Uuid) -> Self {
         Self {
             tx,
@@ -76,6 +83,26 @@ impl RequestContext {
             lineage: vec![Arc::from("client")],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),
+            windback: None,
+        }
+    }
+
+    /// Create a context for a client-initiated request with windback state.
+    ///
+    /// Sets lineage to `["client"]` and created_at to current time.
+    pub fn from_client_with_windback(
+        tx: Arc<str>,
+        client_id: Arc<str>,
+        host_id: Uuid,
+        windback: Option<Arc<str>>,
+    ) -> Self {
+        Self {
+            tx,
+            client_id: Some(client_id),
+            lineage: vec![Arc::from("client")],
+            host_id,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            windback,
         }
     }
 
@@ -89,13 +116,14 @@ impl RequestContext {
             lineage: vec![Arc::from(origin)],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),
+            windback: None,
         }
     }
 
     /// Create a child context with extended lineage.
     ///
     /// Used when making sub-operations (nested commands, queries from reports, etc.)
-    /// to track the call chain.
+    /// to track the call chain. Preserves the parent's windback state.
     ///
     /// # Example
     ///
@@ -113,7 +141,18 @@ impl RequestContext {
             lineage,
             host_id: self.host_id,
             created_at: self.created_at.clone(),
+            windback: self.windback.clone(),
         }
+    }
+
+    /// Check if this context is in windback mode.
+    pub fn is_windback(&self) -> bool {
+        self.windback.is_some()
+    }
+
+    /// Get the windback timestamp if set.
+    pub fn windback(&self) -> Option<&str> {
+        self.windback.as_deref()
     }
 
     /// Get the transaction ID as a string slice.
@@ -147,6 +186,7 @@ impl Default for RequestContext {
             lineage: vec![Arc::from("unknown")],
             host_id: Uuid::nil(),
             created_at: chrono::Utc::now().to_rfc3339(),
+            windback: None,
         }
     }
 }

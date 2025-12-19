@@ -33,6 +33,9 @@ pub struct MessageHandler {
     /// Track active subscriptions per client for cleanup on disconnect
     /// Maps client_id -> set of (subscription_type, tx)
     client_subscriptions: HashMap<Arc<str>, HashSet<(SubscriptionType, Arc<str>)>>,
+    /// Cache of client windback times for efficient lookup
+    /// Maps client_id -> windback ISO timestamp (None = live mode)
+    client_windback: HashMap<Arc<str>, Option<Arc<str>>>,
 }
 
 pub struct MessageHandlerArgs {
@@ -72,6 +75,11 @@ pub enum MessageHandlerMsg {
         client_id: Arc<str>,
         server_id: Arc<str>,
     },
+    /// Update windback cache for a client (called when SetClientWindbackTime/ClearClientWindbackTime succeeds)
+    UpdateWindback {
+        client_id: Arc<str>,
+        windback: Option<Arc<str>>,
+    },
 }
 
 impl std::fmt::Debug for MessageHandlerMsg {
@@ -85,6 +93,9 @@ impl std::fmt::Debug for MessageHandlerMsg {
             }
             MessageHandlerMsg::ClientDisconnected { client_id, server_id } => {
                 write!(f, "ClientDisconnected(client={}, server={})", client_id, server_id)
+            }
+            MessageHandlerMsg::UpdateWindback { client_id, windback } => {
+                write!(f, "UpdateWindback(client={}, windback={:?})", client_id, windback)
             }
         }
     }
@@ -101,7 +112,18 @@ impl MessageHandler {
             host_id: args.host_id,
             tokio_handle: args.tokio_handle,
             client_subscriptions: HashMap::new(),
+            client_windback: HashMap::new(),
         }
+    }
+
+    /// Get the windback timestamp for a client (if in windback mode).
+    fn get_windback(&self, client_id: &Arc<str>) -> Option<Arc<str>> {
+        self.client_windback.get(client_id).cloned().flatten()
+    }
+
+    /// Update the windback cache for a client.
+    pub fn set_windback(&mut self, client_id: Arc<str>, windback: Option<Arc<str>>) {
+        self.client_windback.insert(client_id, windback);
     }
 }
 
@@ -188,11 +210,13 @@ impl Actor for MessageHandler {
                             .or_default()
                             .insert((SubscriptionType::Report, tx.clone()));
 
-                        // Create RequestContext for this report
-                        let req = RequestContext::from_client(
+                        // Create RequestContext for this report with windback state
+                        let windback = self.get_windback(&client_id);
+                        let req = RequestContext::from_client_with_windback(
                             tx.clone(),
                             client_id.clone(),
                             self.host_id,
+                            windback,
                         );
 
                         // Create channel for report outputs
@@ -284,11 +308,13 @@ impl Actor for MessageHandler {
 
                         trace!("Received command: {} with tx {}", command_id, tx);
 
-                        // Create RequestContext for this command
-                        let req = RequestContext::from_client(
+                        // Create RequestContext for this command with windback state
+                        let windback = self.get_windback(&client_id);
+                        let req = RequestContext::from_client_with_windback(
                             tx.clone(),
                             client_id.clone(),
                             self.host_id,
+                            windback,
                         );
 
                         let command_manager = self.command_manager.clone();
@@ -370,11 +396,15 @@ impl Actor for MessageHandler {
             MessageHandlerMsg::ClientConnected { client_id, server_id } => {
                 trace!("Client connected: {}", client_id);
 
+                // Initialize windback cache for this client (starts in live mode)
+                self.client_windback.insert(client_id.clone(), None);
+
                 // Publish Client entity
                 let client = Client {
                     id: client_id.clone(),
                     hash: uuid::Uuid::new_v4().to_string().into(),
                     server_id,
+                    windback: None,
                 };
 
                 let event = MEvent::from_item(&client, MEventType::SET, uuid::Uuid::new_v4().to_string());
@@ -392,6 +422,9 @@ impl Actor for MessageHandler {
             }
             MessageHandlerMsg::ClientDisconnected { client_id, server_id } => {
                 debug!("Client disconnected: {}, cancelling subscriptions", client_id);
+
+                // Remove from windback cache
+                self.client_windback.remove(&client_id);
 
                 // Cancel all subscriptions for this client
                 if let Some(subscriptions) = self.client_subscriptions.remove(&client_id) {
@@ -420,6 +453,7 @@ impl Actor for MessageHandler {
                     id: client_id.clone(),
                     hash: "".into(), // Hash doesn't matter for DEL
                     server_id,
+                    windback: None, // Doesn't matter for DEL
                 };
 
                 let event = MEvent::from_item(&client, MEventType::DEL, uuid::Uuid::new_v4().to_string());
@@ -434,6 +468,10 @@ impl Actor for MessageHandler {
                 ) {
                     error!("Failed to delete Client entity: {}", e);
                 }
+            }
+            MessageHandlerMsg::UpdateWindback { client_id, windback } => {
+                debug!("Updating windback for client {}: {:?}", client_id, windback);
+                self.client_windback.insert(client_id, windback);
             }
         }
     }

@@ -147,6 +147,7 @@ impl Server {
             event_bus: std::sync::OnceLock::new(),
             search_manager: std::sync::OnceLock::new(),
             sync_client: std::sync::OnceLock::new(),
+            message_handler: std::sync::OnceLock::new(),
             tokio_handle: tokio_runtime.handle().clone(),
         });
 
@@ -264,6 +265,9 @@ impl Server {
             tokio_handle: ctx.tokio_handle.clone(),
         })
         .actor_ref();
+
+        // Store MessageHandler in context for windback cache updates
+        let _ = ctx.message_handler.set(message_handler.clone());
 
         // 10. Spawn PeerManager for peer discovery and federation
         let peer_manager = PeerManager::spawn(PeerManagerArgs {

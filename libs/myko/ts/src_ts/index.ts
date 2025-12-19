@@ -172,38 +172,6 @@ export class EntitySnapshotDifference {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Client windback support
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Command to set the windback time for the current client.
- */
-export class SetClientWindbackTime {
-  static readonly commandId = 'SetClientWindbackTime'
-  readonly commandId = 'SetClientWindbackTime'
-  readonly command: { windback: string }
-
-  /** Phantom type marker for result inference */
-  readonly $res!: () => boolean
-
-  constructor(windback: string) {
-    this.command = { windback }
-  }
-}
-
-/**
- * Report that returns the current windback status (ISO timestamp or undefined).
- */
-export class WindbackStatus {
-  static readonly reportId = 'WindbackStatus'
-  readonly reportId = 'WindbackStatus'
-  readonly report = {}
-
-  /** Phantom type marker for result inference */
-  readonly $res!: () => string | undefined
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Logging support
 // ─────────────────────────────────────────────────────────────────────────────
 

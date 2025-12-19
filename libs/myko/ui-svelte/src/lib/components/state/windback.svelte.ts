@@ -1,18 +1,24 @@
 import { myko as client } from '../../services/svelte-client.svelte.js';
-import { SetClientWindbackTime, WindbackStatus, type MItemStub } from '@myko/ts';
+import {
+	ClearClientWindbackTime,
+	SetClientWindbackTime,
+	WindbackStatus,
+	type MItemStub,
+	type WindbackStatusOutput
+} from '@myko/ts';
 import { DateTime } from 'luxon';
 
 export class WindbackState {
 	#ctx: Omit<MItemStub, 'hash'> | undefined = $state();
 
-	#liveWindbackTime: string | undefined = $state();
+	#liveWindbackTime: string | null = $state(null);
 
 	#localWindbackTime: DateTime | undefined = $state();
 
 	constructor() {
-		client.watchReport(new WindbackStatus()).subscribe((result) => {
-			this.#liveWindbackTime = result;
-			this.#localWindbackTime = result ? DateTime.fromISO(result) : undefined;
+		client.watchReport(new WindbackStatus({})).subscribe((result: WindbackStatusOutput) => {
+			this.#liveWindbackTime = result.windback;
+			this.#localWindbackTime = result.windback ? DateTime.fromISO(result.windback) : undefined;
 		});
 	}
 
@@ -56,16 +62,18 @@ export class WindbackState {
 			console.error('Invalid time', this.#localWindbackTime);
 			return;
 		}
-		client.sendCommand(new SetClientWindbackTime(valid));
+		client.sendCommand(new SetClientWindbackTime({ windback: valid }));
 	}
 }
 
 export const windbackState = new WindbackState();
 
 export const startWindback = (root: Omit<MItemStub, 'hash'>) => {
-	client
-		.sendCommand(new SetClientWindbackTime(DateTime.utc().minus({ seconds: 5 }).toISO()))
+	const windback = DateTime.utc().minus({ seconds: 5 }).toISO();
+	if (!windback) return;
 
+	client
+		.sendCommand(new SetClientWindbackTime({ windback }))
 		.then((x) => {
 			if (!x) {
 				return;
@@ -76,5 +84,5 @@ export const startWindback = (root: Omit<MItemStub, 'hash'>) => {
 
 export const exitWindback = () => {
 	windbackState.ctx = undefined;
-	// client.sendCommand(new ClearClientWindbackTime());
+	client.sendCommand(new ClearClientWindbackTime({}));
 };
