@@ -23,6 +23,11 @@ import {
 import { SvelteMap } from 'svelte/reactivity';
 import { Subject, type Observable, type Subscription } from 'rxjs';
 
+/** Command sent event (before response) */
+export type CommandSent = {
+	commandId: string;
+};
+
 /** Command success event */
 export type CommandSuccess = {
 	commandId: string;
@@ -82,9 +87,13 @@ export class SvelteMykoClient {
 	// Shared reports by cache key
 	private sharedReports = new Map<string, SharedReport<unknown>>();
 
-	// Command outcome subjects
+	// Command lifecycle subjects
+	private commandSentSubject = new Subject<CommandSent>();
 	private commandSuccessSubject = new Subject<CommandSuccess>();
 	private commandErrorSubject = new Subject<CommandError>();
+
+	/** Observable of all commands when sent (before response) */
+	readonly commandSent$: Observable<CommandSent> = this.commandSentSubject.asObservable();
 
 	/** Observable of all command successes */
 	readonly commandSuccess$: Observable<CommandSuccess> = this.commandSuccessSubject.asObservable();
@@ -390,6 +399,7 @@ export class SvelteMykoClient {
 		commandFactory: C
 	): Promise<CommandResult<C>> {
 		const commandId = commandFactory.commandId;
+		this.commandSentSubject.next({ commandId });
 		try {
 			const response = await this.client.sendCommand(commandFactory);
 			this.commandSuccessSubject.next({ commandId, response });
