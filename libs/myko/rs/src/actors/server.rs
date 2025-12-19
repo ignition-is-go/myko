@@ -146,6 +146,7 @@ impl Server {
             host_id: Uuid::new_v4(),
             event_bus: std::sync::OnceLock::new(),
             search_manager: std::sync::OnceLock::new(),
+            sync_client: std::sync::OnceLock::new(),
             tokio_handle: tokio_runtime.handle().clone(),
         });
 

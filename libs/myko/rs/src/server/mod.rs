@@ -8,6 +8,7 @@ use crate::{
         server::{Server, ServerArgs, ServerMsg},
     },
     runtime::{Actor, ActorRef},
+    sync_client::SyncClient,
 };
 use anyhow::bail;
 use std::sync::Arc;
@@ -101,6 +102,8 @@ pub struct MykoServerCtx {
     pub event_bus: std::sync::OnceLock<crate::actors::event::EventBus>,
     /// Search manager for full-text search (set during server startup)
     pub search_manager: std::sync::OnceLock<ActorRef<SearchManagerMsg>>,
+    /// Sync client for distributed timing (set during server startup if sync server available)
+    pub sync_client: std::sync::OnceLock<Arc<SyncClient>>,
     /// Shared tokio runtime handle for async operations
     /// This is used by actors that need to run async code from sync contexts
     pub tokio_handle: tokio::runtime::Handle,
@@ -114,6 +117,10 @@ impl std::fmt::Debug for MykoServerCtx {
             .field(
                 "search_manager",
                 &self.search_manager.get().map(|_| "SearchManager"),
+            )
+            .field(
+                "sync_client",
+                &self.sync_client.get().map(|_| "SyncClient"),
             )
             .finish()
     }
