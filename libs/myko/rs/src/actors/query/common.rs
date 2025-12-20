@@ -6,7 +6,6 @@ use crate::{
     parsers::item::AnyItem,
     runtime::ActorRef,
 };
-use crossbeam::channel as crossbeam_channel;
 use log::error;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -44,14 +43,14 @@ pub trait QueryResultSink: Send + 'static {
     fn push(&mut self, update: QueryStreamUpdate) -> bool;
 }
 
-/// Sink that forwards updates to a crossbeam channel.
+/// Sink that forwards updates to a flume channel.
 /// Used for internal actor-to-actor query subscriptions.
 pub struct ChannelSink {
-    sender: crossbeam_channel::Sender<QueryStreamUpdate>,
+    sender: flume::Sender<QueryStreamUpdate>,
 }
 
 impl ChannelSink {
-    pub fn new(sender: crossbeam_channel::Sender<QueryStreamUpdate>) -> Self {
+    pub fn new(sender: flume::Sender<QueryStreamUpdate>) -> Self {
         Self { sender }
     }
 }
@@ -97,6 +96,7 @@ impl QueryResultSink for WebSocketSink {
         let message = match update {
             QueryStreamUpdate::Initial(entries) => {
                 self.sequence = 0;
+                let count = entries.len();
                 let upserts = entries
                     .values()
                     .map(|item| WrappedItem {
@@ -104,6 +104,10 @@ impl QueryResultSink for WebSocketSink {
                         item_type: self.item_type.clone(),
                     })
                     .collect::<Vec<_>>();
+                log::debug!(
+                    "WebSocketSink::push Initial tx={} items={} query_id={}",
+                    self.tx, count, self.query_id
+                );
                 MykoMessage::QueryResponse(QueryResponse {
                     sequence: 0,
                     deletes: vec![],
@@ -111,8 +115,12 @@ impl QueryResultSink for WebSocketSink {
                     tx: self.tx.clone(),
                 })
             }
-            QueryStreamUpdate::Upsert(_id, value) => {
+            QueryStreamUpdate::Upsert(id, value) => {
                 self.sequence += 1;
+                log::trace!(
+                    "WebSocketSink::push Upsert tx={} id={} seq={}",
+                    self.tx, id, self.sequence
+                );
                 let upserts = vec![WrappedItem {
                     item: value.to_value(),
                     item_type: self.item_type.clone(),
@@ -143,11 +151,14 @@ impl QueryResultSink for WebSocketSink {
             }
         };
 
-        self.ws_server
+        let result = self.ws_server
             .send_message(WebSocketServerMsg::SendToClient(SendToClientData {
                 client_id: self.client_id.clone(),
                 message,
-            }))
-            .is_ok()
+            }));
+        if result.is_err() {
+            log::warn!("WebSocketSink::push failed to send to client={} tx={}", self.client_id, self.tx);
+        }
+        result.is_ok()
     }
 }

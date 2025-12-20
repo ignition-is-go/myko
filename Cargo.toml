@@ -72,6 +72,7 @@ ts-rs = "11.1"
 # Misc utilities
 url = "2.5"
 crossbeam = "0.8"
+flume = "0.11"
 ordered-float = { version = "5.1", features = ["serde"] }
 partially = { version = "0.2", features = ["derive"] }
 regex = "1"

@@ -329,9 +329,9 @@ impl CommandContext {
         // Create a channel to receive report output
         let (output_tx, mut output_rx) = mpsc::channel::<ReportOutput>(1);
 
-        // Start the report
+        // Start the report (from command context, no parent token)
         self.report_manager
-            .send_message(ReportManagerMsg::StartReport(wrapped, child_req, output_tx))
+            .send_message(ReportManagerMsg::StartReport(wrapped, child_req, output_tx, None))
             .map_err(|e| CommandError {
                 tx: self.tx().to_string(),
                 command_id: self.command_id.to_string(),

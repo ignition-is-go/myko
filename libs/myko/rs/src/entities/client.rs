@@ -65,7 +65,7 @@ impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
     fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
-        let client_id = ctx.client_id().map(|s| Arc::from(s));
+        let client_id = ctx.client_id().map(Arc::from);
 
         // Query all clients and find the requesting client's windback status
         let stream = ctx.query(GetAllClients {});

@@ -61,6 +61,16 @@ impl<Q> QueryRequest<Q> {
             query,
         }
     }
+
+    /// Create a new query request with a specific tx.
+    /// Used by reports to share their tx with query subscriptions.
+    pub fn with_tx(query: Q, tx: Arc<str>) -> Self {
+        Self {
+            tx,
+            created_at: Utc::now().to_rfc3339().into(),
+            query,
+        }
+    }
 }
 
 impl<Q: Default> Default for QueryRequest<Q> {

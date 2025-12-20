@@ -16,7 +16,8 @@ use crate::{
     runtime::{Actor, ActorRef},
 };
 use log::{debug, error, trace};
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub struct MessageHandler {
@@ -30,9 +31,8 @@ pub struct MessageHandler {
     host_id: Uuid,
     /// Shared tokio runtime handle for async dispatch
     tokio_handle: tokio::runtime::Handle,
-    /// Track active subscriptions per client for cleanup on disconnect
-    /// Maps client_id -> set of (subscription_type, tx)
-    client_subscriptions: HashMap<Arc<str>, HashSet<(SubscriptionType, Arc<str>)>>,
+    /// CancellationToken per client - cancelled on disconnect to clean up all subscriptions
+    client_tokens: HashMap<Arc<str>, CancellationToken>,
     /// Cache of client windback times for efficient lookup
     /// Maps client_id -> windback ISO timestamp (None = live mode)
     client_windback: HashMap<Arc<str>, Option<Arc<str>>>,
@@ -49,13 +49,6 @@ pub struct MessageHandlerArgs {
     pub host_id: Uuid,
     /// Shared tokio runtime handle
     pub tokio_handle: tokio::runtime::Handle,
-}
-
-/// Type of subscription for tracking
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SubscriptionType {
-    Query,
-    Report,
 }
 
 pub struct ProcessTextData {
@@ -111,9 +104,18 @@ impl MessageHandler {
             ws_server: args.ws_server,
             host_id: args.host_id,
             tokio_handle: args.tokio_handle,
-            client_subscriptions: HashMap::new(),
+            client_tokens: HashMap::new(),
             client_windback: HashMap::new(),
         }
+    }
+
+    /// Get or create a CancellationToken for a client.
+    /// All subscriptions for this client will use child tokens of this parent.
+    fn get_client_token(&mut self, client_id: &Arc<str>) -> CancellationToken {
+        self.client_tokens
+            .entry(client_id.clone())
+            .or_default()
+            .clone()
     }
 
     /// Get the windback timestamp for a client (if in windback mode).
@@ -171,11 +173,8 @@ impl Actor for MessageHandler {
                             .unwrap_or("")
                             .into();
 
-                        // Track subscription for cleanup on disconnect
-                        self.client_subscriptions
-                            .entry(client_id.clone())
-                            .or_default()
-                            .insert((SubscriptionType::Query, tx.clone()));
+                        // Get or create client token - cancelling this cancels all client subscriptions
+                        let client_token = self.get_client_token(&client_id);
 
                         // Create a WebSocket sink that sends directly to the client
                         // No intermediate channel or async task needed
@@ -188,8 +187,10 @@ impl Actor for MessageHandler {
                         ));
 
                         // Start the query with direct WebSocket forwarding
+                        // Pass client token so query is cancelled when client disconnects
+                        // None lineage indicates external WebSocket client query
                         if let Err(e) = self.query_manager.send_message(
-                            QueryManagerMsg::WatchWrappedQueryWithSink(query, sink)
+                            QueryManagerMsg::WatchWrappedQueryWithSink(query, sink, client_token, None)
                         ) {
                             error!("Failed to start query: {}", e);
                         }
@@ -204,11 +205,8 @@ impl Actor for MessageHandler {
                             .unwrap_or("")
                             .into();
 
-                        // Track subscription for cleanup on disconnect
-                        self.client_subscriptions
-                            .entry(client_id.clone())
-                            .or_default()
-                            .insert((SubscriptionType::Report, tx.clone()));
+                        // Get or create client token - cancelling this cancels all client subscriptions
+                        let client_token = self.get_client_token(&client_id);
 
                         // Create RequestContext for this report with windback state
                         let windback = self.get_windback(&client_id);
@@ -223,9 +221,10 @@ impl Actor for MessageHandler {
                         let (output_tx, mut output_rx) =
                             tokio::sync::mpsc::channel::<ReportOutput>(16);
 
-                        // Start the report
+                        // Start the report with client token as parent
+                        // When client disconnects, token is cancelled and report stops
                         if let Err(e) = self.report_manager.send_message(
-                            ReportManagerMsg::StartReport(report, req, output_tx),
+                            ReportManagerMsg::StartReport(report, req, output_tx, Some(client_token)),
                         ) {
                             error!("Failed to start report: {}", e);
                             return;
@@ -402,6 +401,10 @@ impl Actor for MessageHandler {
             MessageHandlerMsg::ClientConnected { client_id, server_id } => {
                 trace!("Client connected: {}", client_id);
 
+                // Create CancellationToken for this client - cancelling this on disconnect
+                // will automatically cancel all queries and reports for this client
+                let _ = self.get_client_token(&client_id);
+
                 // Initialize windback cache for this client (starts in live mode)
                 self.client_windback.insert(client_id.clone(), None);
 
@@ -432,26 +435,10 @@ impl Actor for MessageHandler {
                 // Remove from windback cache
                 self.client_windback.remove(&client_id);
 
-                // Cancel all subscriptions for this client
-                if let Some(subscriptions) = self.client_subscriptions.remove(&client_id) {
-                    for (sub_type, tx) in subscriptions {
-                        match sub_type {
-                            SubscriptionType::Query => {
-                                if let Err(e) = self.query_manager.send_message(
-                                    QueryManagerMsg::CancelQuery(tx.clone())
-                                ) {
-                                    error!("Failed to cancel query {}: {}", tx, e);
-                                }
-                            }
-                            SubscriptionType::Report => {
-                                if let Err(e) = self.report_manager.send_message(
-                                    ReportManagerMsg::StopReport(tx.clone())
-                                ) {
-                                    error!("Failed to cancel report {}: {}", tx, e);
-                                }
-                            }
-                        }
-                    }
+                // Cancel client token - this automatically cancels all queries and reports
+                // that were started with this token as parent
+                if let Some(token) = self.client_tokens.remove(&client_id) {
+                    token.cancel();
                 }
 
                 // Delete Client entity

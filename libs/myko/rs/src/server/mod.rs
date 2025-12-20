@@ -103,6 +103,10 @@ pub struct MykoServerCtx {
     pub event_bus: std::sync::OnceLock<crate::actors::event::EventBus>,
     /// Search manager for full-text search (set during server startup)
     pub search_manager: std::sync::OnceLock<ActorRef<SearchManagerMsg>>,
+    /// Query manager for subscriptions (set during server startup)
+    pub query_manager: std::sync::OnceLock<ActorRef<QueryManagerMsg>>,
+    /// Report manager for sub-report subscriptions (set during server startup)
+    pub report_manager: std::sync::OnceLock<ActorRef<ReportManagerMsg>>,
     /// Sync client for distributed timing (set during server startup if sync server available)
     pub sync_client: std::sync::OnceLock<Arc<SyncClient>>,
     /// Message handler for windback cache updates (set during server startup)
@@ -120,6 +124,14 @@ impl std::fmt::Debug for MykoServerCtx {
             .field(
                 "search_manager",
                 &self.search_manager.get().map(|_| "SearchManager"),
+            )
+            .field(
+                "query_manager",
+                &self.query_manager.get().map(|_| "QueryManager"),
+            )
+            .field(
+                "report_manager",
+                &self.report_manager.get().map(|_| "ReportManager"),
             )
             .field(
                 "sync_client",
@@ -159,13 +171,13 @@ impl MykoServerCtx {
     /// Called by windback commands (SetClientWindbackTime, ClearClientWindbackTime)
     /// after successfully updating the Client entity.
     pub fn update_windback(&self, client_id: Arc<str>, windback: Option<Arc<str>>) {
-        if let Some(message_handler) = self.message_handler.get() {
-            if let Err(e) = message_handler.send_message(MessageHandlerMsg::UpdateWindback {
+        if let Some(message_handler) = self.message_handler.get()
+            && let Err(e) = message_handler.send_message(MessageHandlerMsg::UpdateWindback {
                 client_id,
                 windback,
-            }) {
-                log::error!("Failed to update windback cache: {}", e);
-            }
+            })
+        {
+            log::error!("Failed to update windback cache: {}", e);
         }
     }
 }

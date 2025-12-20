@@ -239,7 +239,7 @@ impl Actor for PeerManager {
                     // Subscribe to GetPeerServers for immediate discovery
                     let query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::new(GetPeerServers {}));
 
-                    let receiver = match query_manager.call(|r| QueryManagerMsg::WatchQuery(query, r)) {
+                    let receiver = match query_manager.call(|r| QueryManagerMsg::WatchQuery(query, r, Some(Arc::from("internal → PeerManager")))) {
                         Ok(rx) => rx,
                         Err(e) => {
                             warn!("Failed to subscribe to GetPeerServers: {:?}", e);

@@ -146,6 +146,8 @@ impl Server {
             host_id: Uuid::new_v4(),
             event_bus: std::sync::OnceLock::new(),
             search_manager: std::sync::OnceLock::new(),
+            query_manager: std::sync::OnceLock::new(),
+            report_manager: std::sync::OnceLock::new(),
             sync_client: std::sync::OnceLock::new(),
             message_handler: std::sync::OnceLock::new(),
             tokio_handle: tokio_runtime.handle().clone(),
@@ -170,6 +172,9 @@ impl Server {
         })
         .actor_ref();
 
+        // Store QueryManager in server context for direct subscription access
+        let _ = ctx.query_manager.set(query_manager.clone());
+
         // 3. Spawn EventManager (needs query_manager)
         let event_manager = EventManager::spawn(EventManagerArgs {
             server: server_ref.clone(),
@@ -185,12 +190,14 @@ impl Server {
             error!("Failed to set EventManager in QueryManager: {}", err);
         }
 
-        // 4. Spawn ReportManager (needs query_manager)
+        // 4. Spawn ReportManager
         let report_manager = ReportManager::spawn(ReportManagerArgs {
             ctx: ctx.clone(),
-            query_manager: query_manager.clone(),
         })
         .actor_ref();
+
+        // Store ReportManager in server context for direct subscription access
+        let _ = ctx.report_manager.set(report_manager.clone());
 
         // 5. Spawn CommandManager (needs event_manager, query_manager, report_manager)
         let command_manager = CommandManager::spawn(CommandManagerArgs {

@@ -189,14 +189,30 @@ impl Actor for CommandManager {
             CommandManagerMsg::Execute(command, req, reply) => {
                 let command_id = command.command_id.as_str();
                 let tx = req.tx().to_string();
-                trace!(
-                    "Executing command {} with tx {} (lineage: {})",
+                debug!(
+                    "[CMD:{}] CommandManager received Execute for tx={} (lineage: {})",
                     command_id,
                     tx,
                     req.lineage_string()
                 );
 
+                let start = std::time::Instant::now();
                 let result = self.execute_command_safe(&command, req, &tx);
+                let elapsed = start.elapsed();
+                if elapsed.as_millis() > 100 {
+                    log::warn!(
+                        "[CMD:{}] Slow command execution: {:?} for tx={}",
+                        command_id,
+                        elapsed,
+                        tx
+                    );
+                }
+                debug!(
+                    "[CMD:{}] CommandManager sending reply for tx={} (took {:?})",
+                    command_id,
+                    tx,
+                    elapsed
+                );
                 let _ = reply.send(result);
             }
             CommandManagerMsg::ExecuteNested(command, req, reply) => {

@@ -1,18 +1,56 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use crossbeam::channel as crossbeam_channel;
 use futures::Stream;
+use log::{error, warn};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::actors::query::query_manager::QueryManagerMsg;
+use crate::actors::query::subscription::create_subscription_stream;
+use crate::actors::report::report_manager::ReportManagerMsg;
+use crate::api::query::WrappedQuery;
 use crate::context::RequestContext;
 use crate::event::MEvent;
 use crate::query::QueryParams;
-use crate::report::{ReportOutput, ReportOutputType, ReportParams, ReportStream};
+use crate::report::{ReportOutput, ReportOutputType, ReportParams, ReportStream, WrappedReport};
+use crate::runtime::ActorRef;
 use crate::server::MykoServerCtx;
+
+/// Guard that stops a sub-report when dropped.
+/// This provides RAII-based cleanup - no explicit cancellation needed.
+struct SubReportGuard {
+    tx: Arc<str>,
+    report_manager: ActorRef<ReportManagerMsg>,
+}
+
+impl Drop for SubReportGuard {
+    fn drop(&mut self) {
+        log::debug!("SubReportGuard dropped, stopping tx={}", self.tx);
+        let _ = self
+            .report_manager
+            .send_message(ReportManagerMsg::StopReport(self.tx.clone()));
+    }
+}
+
+/// A stream wrapper that owns a guard and cleans up when dropped.
+/// This ensures the guard is dropped even when async_stream generators don't drop locals.
+struct GuardedSubReportStream<S> {
+    inner: S,
+    _guard: SubReportGuard,
+}
+
+impl<S: Stream + Unpin> Stream for GuardedSubReportStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -29,30 +67,9 @@ pub struct ReportContext {
     pub server_ctx: Arc<MykoServerCtx>,
     /// The report arguments as a JSON Value - handlers should parse this to their Args type
     pub report_args: Value,
-    pub(crate) runner: Arc<ReportRunnerHandle>,
-}
-
-/// Handle to the report runner for creating subscriptions
-pub struct ReportRunnerHandle {
-    // Channel to request new query/report subscriptions (crossbeam for sync)
-    pub(crate) subscription_tx: crossbeam_channel::Sender<SubscriptionRequest>,
-}
-
-#[derive(Debug)]
-pub enum SubscriptionRequest {
-    Query {
-        query: Value,
-        query_id: Arc<str>,
-        query_item_type: Arc<str>,
-        response_tx: crossbeam_channel::Sender<Vec<Value>>,
-    },
-    Report {
-        report: Value,
-        report_id: Arc<str>,
-        /// Request context to propagate to the sub-report
-        req: RequestContext,
-        response_tx: mpsc::Sender<ReportOutput>,
-    },
+    /// Cancellation token for this report - fires when the report should stop.
+    /// All subscriptions created via ctx.query() will be cancelled when this fires.
+    pub cancel_token: CancellationToken,
 }
 
 impl ReportContext {
@@ -95,8 +112,8 @@ impl ReportContext {
     /// Subscribe to a query dependency.
     ///
     /// Returns a stream that emits whenever the query results change.
-    /// The subscription is automatically managed - when the report is dropped,
-    /// the query subscription is cleaned up.
+    /// The subscription is automatically managed - when the stream is dropped,
+    /// the query subscription is cleaned up via RAII.
     ///
     /// Accepts bare query params (e.g., `GetServersByIds { ids: vec![...] }`)
     /// and automatically wraps them with transaction metadata.
@@ -106,44 +123,64 @@ impl ReportContext {
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
     {
         use crate::query::{QueryItemType, QueryRequest};
-        let runner = self.runner.clone();
+
+        // Check if the token is already cancelled - if so, return empty stream immediately.
+        // This prevents creating orphaned subscriptions when the report is already stopped.
+        if self.cancel_token.is_cancelled() {
+            log::debug!("Token already cancelled, skipping query {}", query.query_id());
+            return Box::pin(futures::stream::empty());
+        }
+
         let query_id = query.query_id();
         let query_item_type = QueryItemType::query_item_type(&query);
-        // Wrap with QueryRequest to add tx and created_at to the serialized value
+
+        // Each subscription gets its own unique tx for independent lifecycle management.
+        // Cleanup is handled via CancellationToken - when the parent report is stopped,
+        // all child query subscriptions are automatically cancelled.
         let wrapped = QueryRequest::new(query);
+        let tx: Arc<str> = wrapped.tx.clone();
         let query_value = serde_json::to_value(&wrapped).expect("Query should serialize");
 
-        // Create bounded channel for query responses with backpressure
-        // 64 items should handle normal query update bursts
-        let (sender, receiver) = crossbeam_channel::bounded::<Vec<Value>>(64);
+        // Get QueryManager from server context
+        let Some(query_manager) = self.server_ctx.query_manager.get() else {
+            warn!("QueryManager not initialized when subscribing to query");
+            return Box::pin(futures::stream::empty());
+        };
 
-        // Send subscription request to runner (sync send)
-        let _ = runner.subscription_tx.send(SubscriptionRequest::Query {
+        // Create a WrappedQuery and subscribe directly
+        let query_id_for_log = query_id.clone();
+        let wrapped_query = WrappedQuery {
             query: query_value,
             query_id,
             query_item_type,
-            response_tx: sender,
-        });
+        };
 
-        // Convert crossbeam channel to async stream
-        Box::pin(async_stream::stream! {
-            loop {
-                // Use spawn_blocking to avoid blocking the async runtime
-                let rx = receiver.clone();
-                let result = tokio::task::spawn_blocking(move || rx.recv()).await;
-
-                match result {
-                    Ok(Ok(items)) => {
-                        let parsed: Vec<Q::Item> = items
-                            .into_iter()
-                            .filter_map(|v| serde_json::from_value(v).ok())
-                            .collect();
-                        yield parsed;
-                    }
-                    _ => break, // Channel closed or error
-                }
+        // Get flume receiver for query updates
+        let lineage: Arc<str> = Arc::from(self.req.lineage_string());
+        let receiver = match query_manager.call(|r| QueryManagerMsg::WatchWrappedQuery(wrapped_query, r, Some(lineage))) {
+            Ok(rx) => rx,
+            Err(e) => {
+                error!("Failed to start query subscription: {}", e);
+                return Box::pin(futures::stream::empty());
             }
-        })
+        };
+
+        // Use create_subscription_stream with CancellationToken for cleanup.
+        // When the parent report is stopped, the token is cancelled and all
+        // child subscriptions are automatically cleaned up.
+        log::debug!(
+            "ReportContext::query creating subscription tx={} for {} | lineage: {}",
+            tx,
+            query_id_for_log,
+            self.req.lineage_string()
+        );
+        create_subscription_stream::<Q::Item>(
+            tx,
+            receiver,
+            query_manager.clone(),
+            self.cancel_token.clone(),
+            self.server_ctx.tokio_handle.clone(),
+        )
     }
 
     /// Subscribe to another report dependency.
@@ -162,25 +199,60 @@ impl ReportContext {
         <R as ReportOutputType>::Output: DeserializeOwned + Clone + Send + Sync + 'static,
     {
         use crate::report::ReportRequest;
-        let runner = self.runner.clone();
+
         let report_id: Arc<str> = R::report_id_static().into();
+
         // Wrap with ReportRequest to add tx to the serialized value
         let wrapped = ReportRequest::new(report);
         let report_value = serde_json::to_value(&wrapped).expect("Report should serialize");
-        let req = self.req.clone();
 
+        // Create child context with extended lineage
+        let child_req = self.req.child(&report_id);
+        let child_tx: Arc<str> = child_req.tx.clone();
+
+        // Check if the parent token is already cancelled - if so, don't start the sub-report.
+        // This prevents creating orphaned sub-reports when the parent report is already stopped.
+        if self.cancel_token.is_cancelled() {
+            log::debug!("Parent token already cancelled, skipping sub-report {}", report_id);
+            return Box::pin(futures::stream::empty());
+        }
+
+        // Get ReportManager from server context
+        let Some(report_manager) = self.server_ctx.report_manager.get() else {
+            warn!("ReportManager not initialized when subscribing to report");
+            return Box::pin(futures::stream::empty());
+        };
+
+        // Create wrapped report for StartReport
+        let wrapped_report = WrappedReport {
+            report: report_value,
+            report_id: report_id.to_string(),
+        };
+
+        // Create channel for report outputs
         let (sender, mut receiver) = mpsc::channel::<ReportOutput>(16);
 
-        // Send subscription request to runner (sync send)
-        let _ = runner.subscription_tx.send(SubscriptionRequest::Report {
-            report: report_value,
-            report_id,
-            req,
-            response_tx: sender,
-        });
+        // Start the sub-report with parent's cancel_token.
+        // ReportManager will create a child_token from it, so when parent is cancelled,
+        // cancellation automatically propagates to all children without needing background tasks.
+        if let Err(e) = report_manager.send_message(ReportManagerMsg::StartReport(
+            wrapped_report,
+            child_req,
+            sender,
+            Some(self.cancel_token.clone()),
+        )) {
+            error!("Failed to start sub-report: {}", e);
+            return Box::pin(futures::stream::empty());
+        }
 
-        // Convert channel to stream, deserializing output
-        Box::pin(async_stream::stream! {
+        // Create the guard that will stop the sub-report on drop (backup for when Drop works)
+        let guard = SubReportGuard {
+            tx: child_tx,
+            report_manager: report_manager.clone(),
+        };
+
+        // Create the inner stream that processes report outputs
+        let inner_stream = async_stream::stream! {
             while let Some(output) = receiver.recv().await {
                 match output {
                     ReportOutput::Value(value) => {
@@ -189,11 +261,17 @@ impl ReportContext {
                         }
                     }
                     ReportOutput::Error(err) => {
-                        log::error!("Sub-report error: {}", err);
+                        error!("Sub-report error: {}", err);
                         // Don't yield on error, just log and continue
                     }
                 }
             }
+        };
+
+        // Wrap in GuardedSubReportStream so the guard is dropped when the stream is dropped
+        Box::pin(GuardedSubReportStream {
+            inner: Box::pin(inner_stream),
+            _guard: guard,
         })
     }
 
@@ -222,7 +300,7 @@ impl ReportContext {
             Box::pin(event_bus.subscribe().into_stream())
         } else {
             // EventBus not yet initialized - return empty stream
-            log::warn!("ReportContext::events() called but EventBus not initialized");
+            warn!("ReportContext::events() called but EventBus not initialized");
             Box::pin(futures::stream::empty())
         }
     }

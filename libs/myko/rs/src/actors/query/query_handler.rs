@@ -18,7 +18,6 @@ use crate::{
     runtime::{Actor, ActorRef, RpcReplyPort},
     server::MykoServerCtx,
 };
-use crossbeam::channel as crossbeam_channel;
 use log::{debug, error, trace};
 use std::{
     collections::HashMap,
@@ -41,6 +40,8 @@ struct WatchSubscription {
     closure: QueryClosureType,
     ctx: Arc<MykoServerCtx>,
     query: Arc<dyn AnyQuery>,
+    /// Lineage string for debugging (e.g., "client → GetTargetById → GetTargetsByIds")
+    lineage: Option<Arc<str>>,
 }
 
 pub struct QueryHandler {
@@ -61,16 +62,19 @@ pub enum QueryHandlerMsg {
         Arc<dyn AnyQuery>,
         RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ),
-    /// Watch a query and receive updates via a crossbeam channel.
+    /// Watch a query and receive updates via a flume channel.
     /// Returns a receiver that emits QueryStreamUpdate messages.
     /// Used for internal actor-to-actor subscriptions.
+    /// The optional lineage string is for debugging subscription chains.
     WatchQuery(
         Arc<dyn AnyQuery>,
-        RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
+        RpcReplyPort<flume::Receiver<QueryStreamUpdate>>,
+        Option<Arc<str>>, // lineage
     ),
     /// Watch a query with a custom sink for results.
     /// Used for direct WebSocket forwarding without intermediate channels.
-    WatchQueryWithSink(Arc<dyn AnyQuery>, Box<dyn QueryResultSink>),
+    /// The optional lineage string is for debugging subscription chains.
+    WatchQueryWithSink(Arc<dyn AnyQuery>, Box<dyn QueryResultSink>, Option<Arc<str>>),
     /// Cancel a query subscription by transaction ID
     CancelQuery(Arc<str>),
 }
@@ -83,8 +87,12 @@ impl std::fmt::Debug for QueryHandlerMsg {
                 write!(f, "ProcessBatch({} updates)", updates.len())
             }
             QueryHandlerMsg::QuerySnapshot(_, _) => write!(f, "QuerySnapshot"),
-            QueryHandlerMsg::WatchQuery(_, _) => write!(f, "WatchQuery"),
-            QueryHandlerMsg::WatchQueryWithSink(_, _) => write!(f, "WatchQueryWithSink"),
+            QueryHandlerMsg::WatchQuery(_, _, lineage) => {
+                write!(f, "WatchQuery(lineage={:?})", lineage)
+            }
+            QueryHandlerMsg::WatchQueryWithSink(_, _, lineage) => {
+                write!(f, "WatchQueryWithSink(lineage={:?})", lineage)
+            }
             QueryHandlerMsg::CancelQuery(tx) => write!(f, "CancelQuery({})", tx),
         }
     }
@@ -137,6 +145,16 @@ impl QueryHandler {
     }
 
     fn handle_process_update(&mut self, data: ProcessUpdateData) {
+        let id = match &data {
+            ProcessUpdateData::Set(item) => item.id(),
+            ProcessUpdateData::Del(id) => id.clone(),
+        };
+        log::debug!(
+            "[QueryHandler {}] ProcessUpdate id={}, watchers={}",
+            self.query_item_type,
+            id,
+            self.watchers.len()
+        );
         self.notify_watchers(&data);
     }
 
@@ -152,6 +170,7 @@ impl QueryHandler {
         reply: RpcReplyPort<std::collections::BTreeMap<Arc<str>, Arc<dyn AnyItem + 'static>>>,
     ) {
         // One-shot query: get current state, filter, and return immediately
+        let start = std::time::Instant::now();
         let handler = match self.event_manager.call(|r| {
             EventManagerMsg::GetEventHandler(self.query_item_type.clone(), r)
         }) {
@@ -161,6 +180,7 @@ impl QueryHandler {
                 return;
             }
         };
+        let get_handler_time = start.elapsed();
 
         let mut snapshot = match handler.call(EventHandlerMessage::GetState) {
             Ok(s) => s,
@@ -169,6 +189,7 @@ impl QueryHandler {
                 return;
             }
         };
+        let get_state_time = start.elapsed();
 
         // Filter with panic catching
         let closure = &self.closure;
@@ -183,21 +204,33 @@ impl QueryHandler {
             }
         });
 
+        let total_time = start.elapsed();
+        if total_time.as_millis() > 50 {
+            debug!(
+                "Slow query snapshot [{}]: get_handler={:?}, get_state={:?}, total={:?}",
+                query.query_id(),
+                get_handler_time,
+                get_state_time - get_handler_time,
+                total_time
+            );
+        }
+
         let _ = reply.send(snapshot);
     }
 
     fn handle_watch_query(
         &mut self,
         query: Arc<dyn AnyQuery>,
-        reply: RpcReplyPort<crossbeam_channel::Receiver<QueryStreamUpdate>>,
+        reply: RpcReplyPort<flume::Receiver<QueryStreamUpdate>>,
+        lineage: Option<Arc<str>>,
     ) {
         // Create bounded channel for updates with backpressure
         // 256 items should handle normal update bursts while preventing memory exhaustion
-        let (sender, receiver) = crossbeam_channel::bounded(256);
+        let (sender, receiver) = flume::bounded(256);
         let sink = Box::new(ChannelSink::new(sender));
 
         // Delegate to the generic sink handler
-        if self.subscribe_with_sink(query, sink) {
+        if self.subscribe_with_sink(query, sink, lineage) {
             let _ = reply.send(receiver);
         }
     }
@@ -206,8 +239,9 @@ impl QueryHandler {
         &mut self,
         query: Arc<dyn AnyQuery>,
         sink: Box<dyn QueryResultSink>,
+        lineage: Option<Arc<str>>,
     ) {
-        self.subscribe_with_sink(query, sink);
+        self.subscribe_with_sink(query, sink, lineage);
     }
 
     /// Internal method to subscribe with any sink implementation.
@@ -216,6 +250,7 @@ impl QueryHandler {
         &mut self,
         query: Arc<dyn AnyQuery>,
         mut sink: Box<dyn QueryResultSink>,
+        lineage: Option<Arc<str>>,
     ) -> bool {
         // Get initial state
         let handler = match self.event_manager.call(|r| {
@@ -287,16 +322,36 @@ impl QueryHandler {
                 closure: self.closure.clone(),
                 ctx: self.ctx.clone(),
                 query,
+                lineage: lineage.clone(),
             },
         );
 
-        debug!("Created watch subscription with tx {}", tx);
+        log::debug!(
+            "[QueryHandler {}] Created subscription tx={}, total_watchers={}, lineage={}",
+            self.query_item_type,
+            tx,
+            self.watchers.len(),
+            lineage.as_deref().unwrap_or("(external)")
+        );
         true
     }
 
     fn handle_cancel_query(&mut self, tx: Arc<str>) {
-        if self.watchers.remove(&tx).is_some() {
-            trace!("Cancelled watch subscription for tx {}", tx);
+        if let Some(watcher) = self.watchers.remove(&tx) {
+            log::debug!(
+                "[QueryHandler {}] Cancelled subscription tx={}, remaining_watchers={}, lineage={}",
+                self.query_item_type,
+                tx,
+                self.watchers.len(),
+                watcher.lineage.as_deref().unwrap_or("(external)")
+            );
+        } else {
+            log::warn!(
+                "[QueryHandler {}] CancelQuery for unknown tx={}, watchers={}",
+                self.query_item_type,
+                tx,
+                self.watchers.len()
+            );
         }
     }
 
@@ -322,6 +377,11 @@ impl QueryHandler {
                     ) {
                         Ok(matches) => {
                             if matches {
+                                log::trace!(
+                                    "[QueryHandler] Upsert matches tx={} item={}",
+                                    tx,
+                                    item.id()
+                                );
                                 Some(QueryStreamUpdate::Upsert(item.id(), item.clone()))
                             } else {
                                 // Item doesn't match - send remove in case it was previously matching
@@ -345,11 +405,15 @@ impl QueryHandler {
                 }
             };
 
-            if let Some(update) = update
-                && !watcher.sink.push(update)
-            {
-                // Sink closed - mark for removal
-                dead_watchers.push(tx.clone());
+            if let Some(ref upd) = update {
+                let pushed = watcher.sink.push(upd.clone());
+                if !pushed {
+                    log::warn!(
+                        "[QueryHandler] sink.push failed for tx={}",
+                        tx
+                    );
+                    dead_watchers.push(tx.clone());
+                }
             }
         }
 
@@ -378,13 +442,14 @@ impl Actor for QueryHandler {
                 self.handle_process_batch(batch);
             }
             QueryHandlerMsg::QuerySnapshot(query, reply) => {
+                debug!("[QH:{}] Received QuerySnapshot", query.query_id());
                 self.handle_query_snapshot(query, reply);
             }
-            QueryHandlerMsg::WatchQuery(query, reply) => {
-                self.handle_watch_query(query, reply);
+            QueryHandlerMsg::WatchQuery(query, reply, lineage) => {
+                self.handle_watch_query(query, reply, lineage);
             }
-            QueryHandlerMsg::WatchQueryWithSink(query, sink) => {
-                self.handle_watch_query_with_sink(query, sink);
+            QueryHandlerMsg::WatchQueryWithSink(query, sink, lineage) => {
+                self.handle_watch_query_with_sink(query, sink, lineage);
             }
             QueryHandlerMsg::CancelQuery(tx) => {
                 self.handle_cancel_query(tx);

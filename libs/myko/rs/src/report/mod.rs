@@ -18,7 +18,7 @@ use crate::{
     common::with_transaction::WithTransaction,
 };
 
-pub use handler::{ReportContext, ReportHandler, ReportRunnerHandle, SubscriptionRequest};
+pub use handler::{ReportContext, ReportHandler};
 pub use stream::StateTransitionExt;
 
 // ─────────────────────────────────────────────────────────────────────────────
