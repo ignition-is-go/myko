@@ -147,6 +147,7 @@ export class MykoClient {
   // Subscription tracking
   private activeQueries = new Map<string, WrappedQuery>()
   private activeReports = new Map<string, WrappedReport>()
+  private sharedQueries = new Map<string, Observable<unknown>>()
   private sharedReports = new Map<string, Observable<unknown>>()
   private messageQueue: MykoMessage[] = []
 
@@ -370,11 +371,16 @@ export class MykoClient {
     return [tx, responses$]
   }
 
-  /** Watch a query and receive live updates */
+  /** Watch a query and receive live updates with automatic deduplication */
   watchQuery<Q extends Query<unknown>>(query: Q): Observable<QueryResult<Q>> {
+    const cacheKey = `query:${query.queryId}:${JSON.stringify(query.query)}`
+
+    const existing = this.sharedQueries.get(cacheKey)
+    if (existing) return existing as Observable<QueryResult<Q>>
+
     const [, responses$] = this.startQuery(query)
 
-    return responses$.pipe(
+    const shared$ = responses$.pipe(
       scan((acc, update) => {
         if (BigInt(update.data.sequence) === 0n) acc.clear()
         for (const id of update.data.deletes) acc.delete(id)
@@ -385,8 +391,14 @@ export class MykoClient {
         return acc
       }, new Map<string, WrappedItem<unknown>>()),
       map((items) => [...items.values()].map((w) => w.item) as QueryResult<Q>),
+      finalize(() => {
+        this.sharedQueries.delete(cacheKey)
+      }),
       shareReplay({ bufferSize: 1, refCount: true }),
     )
+
+    this.sharedQueries.set(cacheKey, shared$)
+    return shared$
   }
 
   /** Watch a query and receive raw diff events */
