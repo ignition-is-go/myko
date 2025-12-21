@@ -106,7 +106,6 @@ export class SocketGroup {
       : `ws://${host}:${port}/myko`
 
     if (this.allSockets.has(socketUrl)) {
-      console.log('Socket already exists', socketUrl)
       return
     }
 

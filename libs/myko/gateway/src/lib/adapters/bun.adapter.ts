@@ -55,6 +55,7 @@ export const bunAdapter: MykoWsAdapter = ({
 
   const s = Bun.serve({
     port,
+    hostname: '0.0.0.0', // Explicitly bind to all interfaces
     tls: tlsConfig,
     fetch: async (req, server) => {
       const url = new URL(req.url)
@@ -230,11 +231,14 @@ export const bunAdapter: MykoWsAdapter = ({
       return new Response('Upgrade Failed', { status: 500 })
     },
     websocket: {
+      // Enable per-message deflate compression for clients that use it (like Unreal Engine)
+      perMessageDeflate: true,
       message(ws: ServerWebSocket<BunWSClientData>, message) {
         try {
           const parsed = parse(ws.data.clientId, message)
           rx.next({ clientId: ws.data.clientId, data: parsed })
-        } catch (_e) {
+        } catch (e) {
+          console.error('[WS] Parse error:', e)
           ws.send('Error parsing message')
         }
       },
@@ -246,8 +250,25 @@ export const bunAdapter: MykoWsAdapter = ({
           randomUUID(),
         )
 
-        // Send initial ping
-        ws.ping()
+        // Send SetClientId command to trigger executor's SendAll()
+        // This also helps flush IXWebSocket's buffer by sending data immediately
+        const setClientIdCmd = JSON.stringify({
+          event: 'ws:m:command',
+          data: {
+            commandId: 'SetClientId',
+            command: {
+              tx: randomUUID(),
+              clientId: ws.data.clientId,
+            },
+          },
+        })
+        ws.send(setClientIdCmd)
+
+        // Send additional pings to ensure IXWebSocket buffer flushes
+        const pingMsg = () => JSON.stringify({ event: 'ws:m:ping', data: { ts: Date.now() } })
+        setTimeout(() => { try { ws.send(pingMsg()) } catch {} }, 100)
+        setTimeout(() => { try { ws.send(pingMsg()) } catch {} }, 500)
+        setTimeout(() => { try { ws.send(pingMsg()) } catch {} }, 1000)
 
         // Set up periodic pings to keep connection alive (every 25 seconds)
         const keepAliveInterval = setInterval(() => {
@@ -262,7 +283,9 @@ export const bunAdapter: MykoWsAdapter = ({
         // Store the interval so we can clean it up on close
         ;(ws as any).__keepAliveInterval = keepAliveInterval
       },
-      drain(_ws) {},
+      drain(_ws) {
+        // WebSocket buffer drained - ready for more data
+      },
       close(ws, _code, _message) {
         // Clean up keep-alive interval
         const keepAliveInterval = (ws as any).__keepAliveInterval
@@ -287,6 +310,8 @@ export const bunAdapter: MykoWsAdapter = ({
       },
     },
   })
+
+  logger.info(`Server listening on 0.0.0.0:${port}`)
 
   /**
    * Performance: Message batching for WebSocket
