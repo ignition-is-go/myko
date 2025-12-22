@@ -1,3 +1,4 @@
+pub mod cell;
 mod handler;
 pub mod stream;
 
