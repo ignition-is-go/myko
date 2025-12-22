@@ -45,6 +45,7 @@ tantivy = "0.22"
 crossbeam.workspace = true
 flume.workspace = true
 hypha.workspace = true
+dashmap.workspace = true
 
 [features]
 default = []

@@ -104,6 +104,7 @@ pub mod report;
 pub mod saga;
 pub mod search;
 pub mod server;
+pub mod store;
 pub mod sync_client;
 pub mod utils;
 
