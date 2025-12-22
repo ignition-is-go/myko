@@ -125,7 +125,11 @@ mod tests {
         }
     }
 
-    impl AnyItem for TestEntity {}
+    impl AnyItem for TestEntity {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
 
     #[test]
     fn test_entity_store_basic() {

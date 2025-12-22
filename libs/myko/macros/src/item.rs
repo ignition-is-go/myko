@@ -311,7 +311,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             }
         }
 
-        impl myko_rs::prelude::AnyItem for #name {}
+        impl myko_rs::prelude::AnyItem for #name {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
 
         impl myko_rs::prelude::WithId for #name {
             fn id(&self) -> std::sync::Arc<str> {

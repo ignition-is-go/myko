@@ -3,7 +3,10 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{any::Any, fmt::Debug, sync::Arc};
 
-pub trait AnyItem: WithId + ToValue + Any + Debug + Send + Sync + 'static {}
+pub trait AnyItem: WithId + ToValue + Any + Debug + Send + Sync + 'static {
+    /// Returns self as &dyn Any for downcasting.
+    fn as_any(&self) -> &dyn Any;
+}
 
 pub trait MykoItemParser: Send + Sync + 'static {
     fn parse(&self, input: Value) -> Result<Arc<dyn AnyItem>, anyhow::Error>;

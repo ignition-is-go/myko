@@ -1,3 +1,5 @@
+pub mod cell;
+
 use crate::{
     actors::query::query_manager::RegisterQueryData,
     client::MykoClient,
