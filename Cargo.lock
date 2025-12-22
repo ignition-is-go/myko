@@ -4062,6 +4062,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypha"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "criterion",
+ "crossbeam",
+ "dashmap",
+ "flume",
+ "futures-core",
+ "rayon",
+ "uuid",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5315,6 +5330,7 @@ dependencies = [
  "flume",
  "futures 0.3.31",
  "futures-util",
+ "hypha",
  "inventory",
  "log 0.4.29",
  "md5",

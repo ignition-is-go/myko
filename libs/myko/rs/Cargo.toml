@@ -44,6 +44,7 @@ dprint-plugin-typescript = "0.95.12"
 tantivy = "0.22"
 crossbeam.workspace = true
 flume.workspace = true
+hypha.workspace = true
 
 [features]
 default = []

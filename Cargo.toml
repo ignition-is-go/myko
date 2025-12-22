@@ -1,7 +1,5 @@
 [workspace]
 resolver = "2"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 members = [
   "apps/asset_store",
   "apps/link-cli",
@@ -20,7 +18,17 @@ members = [
   "libs/opencv",
   "libs/asset-store/core", "apps/server_rs", "libs/autosocket",
   "libs/entities/macros",
+  "libs/hypha/hypha",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Trevor"]
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.clippy]
+disallowed_types = "deny"
 
 [workspace.dependencies]
 # Core async runtime
@@ -73,6 +81,9 @@ ts-rs = "11.1"
 url = "2.5"
 crossbeam = "0.8"
 flume = "0.11"
+arc-swap = "1.7.1"
+dashmap = "6.1.0"
+futures-core = "0.3"
 ordered-float = { version = "5.1", features = ["serde"] }
 partially = { version = "0.2", features = ["derive"] }
 regex = "1"
@@ -94,3 +105,4 @@ rship-sdk = { version = "3.0.0-canary.809", path = "libs/sdk/rs" }
 autosocket = { version = "0.1.0", path = "libs/autosocket" }
 link = { version = "3.0.0-canary.809", path = "libs/link/core" }
 rship_sync_core = { version = "3.0.0-canary.809", path = "libs/sync/core" }
+hypha = { version = "0.1.0", path = "libs/hypha/hypha" }
