@@ -8376,6 +8376,7 @@ dependencies = [
  "futures 0.3.31",
  "log 0.4.29",
  "myko-rs",
+ "rship-entities",
  "tokio",
 ]
 
