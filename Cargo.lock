@@ -5326,6 +5326,7 @@ dependencies = [
  "chrono",
  "criterion",
  "crossbeam",
+ "dashmap",
  "dprint-plugin-typescript",
  "flume",
  "futures 0.3.31",
@@ -8375,7 +8376,6 @@ dependencies = [
  "futures 0.3.31",
  "log 0.4.29",
  "myko-rs",
- "rship-entities",
  "tokio",
 ]
 
