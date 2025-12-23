@@ -99,7 +99,7 @@ pub struct PeerRegistry {
     #[allow(dead_code)]
     host_id: Uuid,
     /// Channel for sending messages to the background task
-    sender: mpsc::UnboundedSender<PeerMessage>,
+    sender: mpsc::Sender<PeerMessage>,
     /// Shared state for status queries
     state: Arc<RwLock<SharedPeerState>>,
     /// Background task handle
@@ -129,7 +129,8 @@ impl PeerRegistry {
     /// - Monitors connection health
     pub fn new(ctx: CellServerCtx, config: PeerRegistryConfig) -> Self {
         let host_id = ctx.host_id;
-        let (sender, receiver) = mpsc::unbounded_channel();
+        // Bounded channel with high limit for backpressure safety
+        let (sender, receiver) = mpsc::channel(10_000);
         let state = Arc::new(RwLock::new(SharedPeerState {
             peers: HashMap::new(),
             connecting: HashSet::new(),
@@ -182,7 +183,9 @@ impl PeerRegistry {
                     let id = server.id.to_string();
                     if !known.contains(&id) {
                         debug!("Discovered new peer server: {}", id);
-                        let _ = query_sender.send(PeerMessage::Discovered(server.clone()));
+                        if let Err(e) = query_sender.try_send(PeerMessage::Discovered(server.clone())) {
+                            warn!("Peer message buffer full, dropping Discovered: {}", e);
+                        }
                     }
                 }
 
@@ -191,7 +194,9 @@ impl PeerRegistry {
                     if !current_ids.contains(id) {
                         debug!("Peer server removed: {}", id);
                         if let Ok(uuid) = Uuid::parse_str(id) {
-                            let _ = query_sender.send(PeerMessage::Removed { server_id: uuid });
+                            if let Err(e) = query_sender.try_send(PeerMessage::Removed { server_id: uuid }) {
+                                warn!("Peer message buffer full, dropping Removed: {}", e);
+                            }
                         }
                     }
                 }
@@ -203,7 +208,9 @@ impl PeerRegistry {
         // Process initial peer list
         for server in peer_servers_cell.get().iter() {
             known_peers.write().unwrap().insert(server.id.to_string());
-            let _ = sender.send(PeerMessage::Discovered(server.clone()));
+            if let Err(e) = sender.try_send(PeerMessage::Discovered(server.clone())) {
+                warn!("Peer message buffer full on init, dropping Discovered: {}", e);
+            }
         }
 
         let task_state = state.clone();
@@ -261,15 +268,17 @@ impl PeerRegistry {
 
     /// Shutdown the peer registry.
     pub fn shutdown(&self) {
-        let _ = self.sender.send(PeerMessage::Shutdown);
+        if let Err(e) = self.sender.try_send(PeerMessage::Shutdown) {
+            warn!("Peer message buffer full, could not send Shutdown: {}", e);
+        }
     }
 
     /// Background task that manages peer connections.
     async fn run_background_task(
         host_id: Uuid,
-        mut receiver: mpsc::UnboundedReceiver<PeerMessage>,
+        mut receiver: mpsc::Receiver<PeerMessage>,
         state: Arc<RwLock<SharedPeerState>>,
-        sender: mpsc::UnboundedSender<PeerMessage>,
+        sender: mpsc::Sender<PeerMessage>,
         ctx: CellServerCtx,
     ) {
         // Internal state for actual connections
@@ -429,7 +438,9 @@ impl PeerRegistry {
                         }
 
                         keepalive_client.close();
-                        let _ = keepalive_sender.send(PeerMessage::Disconnected { server_id });
+                        if let Err(e) = keepalive_sender.try_send(PeerMessage::Disconnected { server_id }) {
+                            warn!("Peer message buffer full, dropping Disconnected: {}", e);
+                        }
                     });
 
                     connections.insert(
@@ -470,7 +481,9 @@ impl PeerRegistry {
 
                     // Disconnect if connected
                     if connections.contains_key(&server_id) {
-                        let _ = sender.send(PeerMessage::Disconnected { server_id });
+                        if let Err(e) = sender.try_send(PeerMessage::Disconnected { server_id }) {
+                            warn!("Peer message buffer full, dropping Disconnected: {}", e);
+                        }
                     }
 
                     // Remove from state entirely

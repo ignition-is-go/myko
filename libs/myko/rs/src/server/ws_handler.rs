@@ -42,8 +42,9 @@ impl WsHandler {
         let ws_stream = accept_async(stream).await?;
         let (mut write, mut read) = ws_stream.split();
 
-        // Create a channel for sending messages to the client
-        let (tx, mut rx) = mpsc::unbounded_channel::<MykoMessage>();
+        // Create a bounded channel for sending messages to the client
+        // High limit (10k) since we have good memory availability
+        let (tx, mut rx) = mpsc::channel::<MykoMessage>(10_000);
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
@@ -138,7 +139,9 @@ impl WsHandler {
                     if text == SWITCH_TO_MSGPACK {
                         log::info!("Client {} switching to binary (msgpack) protocol", client_id);
                         // Send confirmation FIRST (still in JSON mode)
-                        let _ = tx.send(MykoMessage::ProtocolSwitch { protocol: "msgpack".into() });
+                        if let Err(e) = tx.try_send(MykoMessage::ProtocolSwitch { protocol: "msgpack".into() }) {
+                            log::warn!("WebSocket send buffer full, dropping ProtocolSwitch: {}", e);
+                        }
                         // Then switch to binary for subsequent messages
                         use_binary.store(true, Ordering::SeqCst);
                         continue;
@@ -199,7 +202,7 @@ impl WsHandler {
         registry: &Arc<StoreRegistry>,
         handler_registry: &Arc<HandlerRegistry>,
         ctx: &CellServerCtx,
-        tx: &mpsc::UnboundedSender<MykoMessage>,
+        tx: &mpsc::Sender<MykoMessage>,
         host_id: Uuid,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -337,7 +340,9 @@ impl WsHandler {
             MykoMessage::Ping(PingData { id, timestamp }) => {
                 // Echo back the ping data
                 let pong = MykoMessage::Ping(PingData { id, timestamp });
-                let _ = tx.send(pong);
+                if let Err(e) = tx.try_send(pong) {
+                    log::warn!("WebSocket send buffer full, dropping Ping response: {}", e);
+                }
             }
 
             // Response messages - these shouldn't come from clients
@@ -361,12 +366,15 @@ impl WsHandler {
 /// Sends messages through an mpsc channel which are then
 /// forwarded to the actual WebSocket.
 struct ChannelWriter {
-    tx: mpsc::UnboundedSender<MykoMessage>,
+    tx: mpsc::Sender<MykoMessage>,
 }
 
 impl WsWriter for ChannelWriter {
     fn send(&self, msg: MykoMessage) {
-        let _ = self.tx.send(msg);
+        // Use try_send since we're in sync context
+        if let Err(e) = self.tx.try_send(msg) {
+            log::warn!("WebSocket send buffer full, dropping message: {}", e);
+        }
     }
 }
 
@@ -376,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_channel_writer() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(10);
         let writer = ChannelWriter { tx };
 
         let msg = MykoMessage::Ping(PingData {
