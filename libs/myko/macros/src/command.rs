@@ -113,9 +113,8 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
             }
         }
 
-        // NOTE: To register this command for runtime dispatch, implement CommandHandler
-        // and call: myko_rs::register_command_handler!(#struct_name);
-        // For auto-generated commands (delete, setter), registration is handled automatically.
+        // Register command handler for runtime dispatch
+        myko_rs::register_command_handler!(#struct_name);
 
         // Register for ts-rs export
         myko_rs::register_ts_export!(#struct_name, #args_struct_name);

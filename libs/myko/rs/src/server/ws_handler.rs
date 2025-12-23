@@ -13,9 +13,11 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use uuid::Uuid;
 
+use crate::command::{CommandContext, CommandHandlerRegistration};
+use crate::context::RequestContext;
 use crate::entities::client::Client;
 use crate::store::StoreRegistry;
-use crate::wire::{CancelSubscription, MykoMessage, PingData};
+use crate::wire::{CancelSubscription, CommandError, CommandResponse, MykoMessage, PingData};
 
 use super::client_session::{ClientSession, WsWriter};
 
@@ -333,8 +335,64 @@ impl WsHandler {
 
                 log::debug!("Command {} (tx: {})", command_id, tx_id);
 
-                // TODO: Implement command handling
-                log::warn!("Command handling not yet implemented: {}", command_id);
+                // Look up the command handler via inventory
+                let mut handler_found = false;
+                for registration in inventory::iter::<CommandHandlerRegistration> {
+                    if registration.command_id == command_id {
+                        handler_found = true;
+                        let executor = (registration.factory)();
+
+                        // Create request context
+                        let req = RequestContext::from_client(
+                            tx_id.clone(),
+                            session.client_id.clone(),
+                            host_id,
+                        );
+
+                        // Create command context
+                        let cmd_ctx = CommandContext::new(
+                            req,
+                            command_id.as_str().into(),
+                            registry.clone(),
+                        );
+
+                        // Execute the command
+                        match executor.execute_from_value(wrapped.command.clone(), cmd_ctx) {
+                            Ok(result) => {
+                                let response = MykoMessage::CommandResponse(CommandResponse {
+                                    response: result,
+                                    tx: tx_id.to_string(),
+                                });
+                                if let Err(e) = tx.try_send(response) {
+                                    log::warn!("WebSocket send buffer full, dropping CommandResponse: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                let error = MykoMessage::CommandError(CommandError {
+                                    tx: tx_id.to_string(),
+                                    command_id: command_id.to_string(),
+                                    message: e.message,
+                                });
+                                if let Err(e) = tx.try_send(error) {
+                                    log::warn!("WebSocket send buffer full, dropping CommandError: {}", e);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                if !handler_found {
+                    log::warn!("No registered handler for command: {}", command_id);
+                    let error = MykoMessage::CommandError(CommandError {
+                        tx: tx_id.to_string(),
+                        command_id: command_id.to_string(),
+                        message: format!("Command handler not found: {}", command_id),
+                    });
+                    if let Err(e) = tx.try_send(error) {
+                        log::warn!("WebSocket send buffer full, dropping CommandError: {}", e);
+                    }
+                }
             }
 
             MykoMessage::Ping(PingData { id, timestamp }) => {
