@@ -1,0 +1,389 @@
+//! WebSocket handler for the cell-based server.
+//!
+//! Handles WebSocket connections using ClientSession for subscription management.
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use tokio_tungstenite::{accept_async, tungstenite::Message};
+use uuid::Uuid;
+
+use crate::api::message::{CancelSubscription, MykoMessage, PingData};
+use crate::entities::client::Client;
+use crate::store::StoreRegistry;
+use crate::ws::{ClientSession, WsWriter};
+
+use super::{CellServerCtx, HandlerRegistry, KafkaProducerHandle, RelationshipManager};
+
+/// Protocol switch message sent by client to enable binary (msgpack) encoding.
+/// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.
+const SWITCH_TO_MSGPACK: &str = "myko:switch-to-msgpack";
+
+/// WebSocket handler for a single client connection.
+pub struct WsHandler;
+
+impl WsHandler {
+    /// Handle a new WebSocket connection.
+    pub async fn handle_connection(
+        stream: TcpStream,
+        addr: SocketAddr,
+        host_id: Uuid,
+        registry: Arc<StoreRegistry>,
+        handler_registry: Arc<HandlerRegistry>,
+        relationship_manager: Arc<RelationshipManager>,
+        kafka_producer: Option<KafkaProducerHandle>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let ws_stream = accept_async(stream).await?;
+        let (mut write, mut read) = ws_stream.split();
+
+        // Create a channel for sending messages to the client
+        let (tx, mut rx) = mpsc::unbounded_channel::<MykoMessage>();
+
+        // Create client session with channel-based writer
+        let client_id: Arc<str> = Uuid::new_v4().to_string().into();
+        let writer = ChannelWriter { tx: tx.clone() };
+        let mut session = ClientSession::new(client_id.clone(), writer);
+
+        // Protocol: default to JSON, switch to binary only if client opts in
+        let use_binary = Arc::new(AtomicBool::new(false));
+        let use_binary_writer = use_binary.clone();
+
+        // Create server context
+        let ctx = CellServerCtx::new(
+            host_id,
+            registry.clone(),
+            handler_registry.clone(),
+            relationship_manager.clone(),
+            kafka_producer,
+        );
+
+        // Publish Client entity
+        let client_entity = Client {
+            id: client_id.clone(),
+            hash: client_id.clone(),
+            server_id: host_id.to_string().into(),
+            windback: None,
+        };
+        ctx.set(client_entity.clone());
+
+        log::info!("Client connected: {} from {}", client_id, addr);
+
+        // Spawn task to forward messages from channel to WebSocket
+        let write_task = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let ws_msg = if use_binary_writer.load(Ordering::SeqCst) {
+                    // Binary mode: use msgpack
+                    match rmp_serde::to_vec(&msg) {
+                        Ok(bytes) => Message::Binary(bytes),
+                        Err(e) => {
+                            log::error!("Failed to serialize message to msgpack: {}", e);
+                            continue;
+                        }
+                    }
+                } else {
+                    // JSON mode (default)
+                    match serde_json::to_string(&msg) {
+                        Ok(json) => Message::Text(json),
+                        Err(e) => {
+                            log::error!("Failed to serialize message to JSON: {}", e);
+                            continue;
+                        }
+                    }
+                };
+                if write.send(ws_msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Process incoming messages
+        while let Some(msg) = read.next().await {
+            let msg = match msg {
+                Ok(m) => m,
+                Err(e) => {
+                    log::error!("WebSocket error from {}: {}", client_id, e);
+                    break;
+                }
+            };
+
+            match msg {
+                Message::Binary(data) => {
+                    match rmp_serde::from_slice::<MykoMessage>(&data) {
+                        Ok(myko_msg) => {
+                            if let Err(e) = Self::handle_message(
+                                &mut session,
+                                &registry,
+                                &handler_registry,
+                                &ctx,
+                                &tx,
+                                host_id,
+                                myko_msg,
+                            ) {
+                                log::error!("Error handling message: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse message from {}: {}", client_id, e);
+                        }
+                    }
+                }
+                Message::Text(text) => {
+                    // Check for protocol switch request
+                    if text == SWITCH_TO_MSGPACK {
+                        log::info!("Client {} switching to binary (msgpack) protocol", client_id);
+                        // Send confirmation FIRST (still in JSON mode)
+                        let _ = tx.send(MykoMessage::ProtocolSwitch { protocol: "msgpack".into() });
+                        // Then switch to binary for subsequent messages
+                        use_binary.store(true, Ordering::SeqCst);
+                        continue;
+                    }
+
+                    match serde_json::from_str::<MykoMessage>(&text) {
+                        Ok(myko_msg) => {
+                            if let Err(e) = Self::handle_message(
+                                &mut session,
+                                &registry,
+                                &handler_registry,
+                                &ctx,
+                                &tx,
+                                host_id,
+                                myko_msg,
+                            ) {
+                                log::error!("Error handling message: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse JSON message from {}: {}", client_id, e);
+                        }
+                    }
+                }
+                Message::Ping(data) => {
+                    // Pong is sent automatically by tungstenite
+                    log::trace!("Ping from {}", client_id);
+                    let _ = data; // silence unused warning
+                }
+                Message::Pong(_) => {
+                    log::trace!("Pong from {}", client_id);
+                }
+                Message::Close(_) => {
+                    log::info!("Client {} disconnecting", client_id);
+                    break;
+                }
+                Message::Frame(_) => {
+                    // Raw frames - ignore
+                }
+            }
+        }
+
+        // Cleanup
+        drop(session); // Drops all subscription guards
+        write_task.abort();
+
+        // Delete Client entity
+        ctx.del(&client_entity);
+
+        log::info!("Client disconnected: {}", client_id);
+
+        Ok(())
+    }
+
+    /// Handle a parsed MykoMessage.
+    fn handle_message<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        registry: &Arc<StoreRegistry>,
+        handler_registry: &Arc<HandlerRegistry>,
+        ctx: &CellServerCtx,
+        tx: &mpsc::UnboundedSender<MykoMessage>,
+        host_id: Uuid,
+        msg: MykoMessage,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match msg {
+            MykoMessage::Query(wrapped) => {
+                // Extract tx from the query JSON
+                let tx_id: Arc<str> = wrapped
+                    .query
+                    .get("tx")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .into();
+                let query_id = &wrapped.query_id;
+                let entity_type = &wrapped.query_item_type;
+
+                log::debug!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
+
+                // Look up the query registration
+                if let Some(query_data) = handler_registry.get_query(query_id) {
+                    // Parse the query JSON to the concrete type
+                    let parsed = query_data.parser.parse(wrapped.query.clone());
+                    match parsed {
+                        Ok(any_query) => {
+                            // Create the cell using the factory (with host_id for server context)
+                            match (query_data.cell_factory)(any_query, registry.clone(), host_id) {
+                                Ok(filtered_cellmap) => {
+                                    session.subscribe_query(tx_id, filtered_cellmap);
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to create query cell for {}: {}", query_id, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to parse query {}: {}", query_id, e);
+                        }
+                    }
+                } else {
+                    // Fall back to select all for unknown queries
+                    log::warn!("No registered handler for query {}, falling back to select all", query_id);
+                    let cellmap = registry.get_or_create(entity_type).select(|_| true);
+                    session.subscribe_query(tx_id, cellmap);
+                }
+            }
+
+            MykoMessage::QueryCancel(CancelSubscription { tx: tx_id }) => {
+                log::debug!("Query cancel: {}", tx_id);
+                session.cancel(&tx_id.into());
+            }
+
+            MykoMessage::Report(wrapped) => {
+                // Extract tx from the report JSON
+                let tx_id: Arc<str> = wrapped
+                    .report
+                    .get("tx")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .into();
+                let report_id = &wrapped.report_id;
+
+                log::debug!("Report {} (tx: {})", report_id, tx_id);
+
+                // Look up the report registration
+                if let Some(report_data) = handler_registry.get_report(report_id) {
+                    // Parse the report JSON to the concrete type
+                    let parsed = report_data.parser.parse(wrapped.report.clone());
+                    match parsed {
+                        Ok(any_report) => {
+                            // Create the cell using the factory (with host_id for context)
+                            match (report_data.cell_factory)(any_report, registry.clone(), host_id) {
+                                Ok(cell) => {
+                                    session.subscribe_report(tx_id, report_id.as_str().into(), cell);
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to create report cell for {}: {}", report_id, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Failed to parse report {}: {}", report_id, e);
+                        }
+                    }
+                } else {
+                    log::warn!("No registered handler for report: {}", report_id);
+                }
+            }
+
+            MykoMessage::ReportCancel(CancelSubscription { tx: tx_id }) => {
+                log::debug!("Report cancel: {}", tx_id);
+                session.cancel(&tx_id.into());
+            }
+
+            MykoMessage::Event(event) => {
+                use crate::event::MEventType;
+
+                log::debug!("Event: {:?} {}", event.change_type(), event.item_type());
+
+                match event.change_type {
+                    MEventType::SET => {
+                        // Parse JSON to typed entity
+                        if let Some(item) = ctx.parse_item(&event.item_type, &event.item) {
+                            // Publish with default options (Reduce + Relationships + Persist)
+                            ctx.set_dyn(item);
+                        } else {
+                            log::warn!("Unknown entity type or parse error: {}", event.item_type);
+                        }
+                    }
+                    MEventType::DEL => {
+                        // For DEL, parse to get the entity (needed for relationships)
+                        if let Some(item) = ctx.parse_item(&event.item_type, &event.item) {
+                            ctx.del_dyn(item);
+                        } else {
+                            log::warn!("Unknown entity type or parse error for DEL: {}", event.item_type);
+                        }
+                    }
+                }
+            }
+
+            MykoMessage::Command(wrapped) => {
+                // Extract tx from the command JSON
+                let tx_id: Arc<str> = wrapped
+                    .command
+                    .get("tx")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .into();
+                let command_id = &wrapped.command_id;
+
+                log::debug!("Command {} (tx: {})", command_id, tx_id);
+
+                // TODO: Implement command handling
+                log::warn!("Command handling not yet implemented: {}", command_id);
+            }
+
+            MykoMessage::Ping(PingData { id, timestamp }) => {
+                // Echo back the ping data
+                let pong = MykoMessage::Ping(PingData { id, timestamp });
+                let _ = tx.send(pong);
+            }
+
+            // Response messages - these shouldn't come from clients
+            MykoMessage::QueryResponse(_)
+            | MykoMessage::QueryError(_)
+            | MykoMessage::ReportResponse(_)
+            | MykoMessage::ReportError(_)
+            | MykoMessage::CommandResponse(_)
+            | MykoMessage::CommandError(_)
+            | MykoMessage::ProtocolSwitch { .. } => {
+                log::warn!("Received unexpected response message from client");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Channel-based WebSocket writer.
+///
+/// Sends messages through an mpsc channel which are then
+/// forwarded to the actual WebSocket.
+struct ChannelWriter {
+    tx: mpsc::UnboundedSender<MykoMessage>,
+}
+
+impl WsWriter for ChannelWriter {
+    fn send(&self, msg: MykoMessage) {
+        let _ = self.tx.send(msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_channel_writer() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let writer = ChannelWriter { tx };
+
+        let msg = MykoMessage::Ping(PingData {
+            id: "test".to_string(),
+            timestamp: 0,
+        });
+        writer.send(msg);
+
+        let received = rx.try_recv().unwrap();
+        assert!(matches!(received, MykoMessage::Ping(_)));
+    }
+}

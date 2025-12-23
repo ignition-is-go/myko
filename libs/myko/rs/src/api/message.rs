@@ -1,0 +1,69 @@
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    api::query::{QueryError, QueryResponse, WrappedQuery},
+    command::{CommandError, CommandResponse, WrappedCommand},
+    event::MEvent,
+    report::{ReportError, ReportResponse, WrappedReport},
+};
+
+/// Cancel subscription payload - just the transaction ID
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CancelSubscription {
+    pub tx: String,
+}
+
+/// Ping payload for latency measurement
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PingData {
+    /// Unique identifier to correlate ping/pong
+    pub id: String,
+    /// Client-side timestamp when ping was sent (milliseconds since epoch)
+    pub timestamp: i64,
+}
+
+/// Registration for message event types - used for TypeScript codegen
+#[derive(Debug)]
+pub struct MessageEventRegistration {
+    pub variant_name: &'static str,
+    pub event_value: &'static str,
+}
+
+inventory::collect!(MessageEventRegistration);
+
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, myko_macros::MessageEvents)]
+#[ts(export)]
+#[serde(tag = "event", content = "data")]
+pub enum MykoMessage {
+    #[serde(rename = "ws:m:query")]
+    Query(WrappedQuery),
+    #[serde(rename = "ws:m:query-response")]
+    QueryResponse(QueryResponse),
+    #[serde(rename = "ws:m:query-cancel")]
+    QueryCancel(CancelSubscription),
+    #[serde(rename = "ws:m:report")]
+    Report(WrappedReport),
+    #[serde(rename = "ws:m:report-response")]
+    ReportResponse(ReportResponse),
+    #[serde(rename = "ws:m:report-cancel")]
+    ReportCancel(CancelSubscription),
+    #[serde(rename = "ws:m:report-error")]
+    ReportError(ReportError),
+    #[serde(rename = "ws:m:query-error")]
+    QueryError(QueryError),
+    #[serde(rename = "ws:m:event")]
+    Event(MEvent),
+    #[serde(rename = "ws:m:command")]
+    Command(WrappedCommand),
+    #[serde(rename = "ws:m:command-response")]
+    CommandResponse(CommandResponse),
+    #[serde(rename = "ws:m:command-error")]
+    CommandError(CommandError),
+    #[serde(rename = "ws:m:ping")]
+    Ping(PingData),
+    /// Protocol switch confirmation - sent by server when client requests binary mode
+    #[serde(rename = "ws:m:protocol-switch")]
+    ProtocolSwitch { protocol: String },
+}

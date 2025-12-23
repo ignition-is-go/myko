@@ -86,8 +86,8 @@
 //!
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
 
-pub mod actors;
 pub mod api;
+pub mod cell_server;
 pub mod runtime;
 pub mod client;
 pub mod command;
@@ -96,7 +96,6 @@ pub mod context;
 pub mod entities;
 pub mod event;
 pub mod item;
-pub mod message;
 pub mod parsers;
 pub mod query;
 pub mod relationship;
@@ -106,6 +105,7 @@ pub mod search;
 pub mod server;
 pub mod store;
 pub mod sync_client;
+pub mod ws;
 pub mod utils;
 
 pub mod prelude;
@@ -114,6 +114,7 @@ pub mod type_gen;
 #[cfg(feature = "bench")]
 pub mod bench_entities;
 // Re-export crates for use in macros
+pub use hypha;  // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit;  // For myko_rs::submit! macro
 pub use ts_rs;
