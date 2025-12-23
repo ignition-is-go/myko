@@ -87,7 +87,7 @@
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
 
 pub mod api;
-pub mod cell_server;
+pub mod server;
 pub mod runtime;
 pub mod client;
 pub mod command;
