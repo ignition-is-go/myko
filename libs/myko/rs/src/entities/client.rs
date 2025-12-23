@@ -84,12 +84,9 @@ pub struct SetClientWindbackTime {
     pub windback: Arc<str>,
 }
 
-impl SetClientWindbackTimeHandler {
-    pub async fn execute(
-        cmd: SetClientWindbackTime,
-        ctx: CommandContext,
-    ) -> Result<bool, CommandError> {
-        let client_id = ctx.client_id().ok_or_else(|| CommandError {
+impl crate::command::CommandHandler for SetClientWindbackTime {
+    fn execute(self, ctx: crate::command::CommandContext) -> Result<bool, crate::command::CommandError> {
+        let client_id = ctx.client_id().ok_or_else(|| crate::command::CommandError {
             tx: ctx.tx().to_string(),
             command_id: "SetClientWindbackTime".to_string(),
             message: "No client_id in context - windback requires a WebSocket connection"
@@ -100,9 +97,8 @@ impl SetClientWindbackTimeHandler {
         let client = ctx
             .query_one(&GetClientsByIds {
                 ids: vec![Arc::from(client_id)],
-            })
-            .await?
-            .ok_or_else(|| CommandError {
+            })?
+            .ok_or_else(|| crate::command::CommandError {
                 tx: ctx.tx().to_string(),
                 command_id: "SetClientWindbackTime".to_string(),
                 message: format!("Client {} not found", client_id),
@@ -113,13 +109,10 @@ impl SetClientWindbackTimeHandler {
             id: client.id.clone(),
             hash: Arc::from(Uuid::new_v4().to_string()),
             server_id: client.server_id,
-            windback: Some(cmd.windback),
+            windback: Some(self.windback.clone()),
         };
 
         ctx.emit_set(&updated_client)?;
-
-        // Windback is now persisted directly in the Client entity
-        // No separate cache needed
 
         Ok(true)
     }
@@ -130,12 +123,9 @@ impl SetClientWindbackTimeHandler {
 #[myko_command(bool)]
 pub struct ClearClientWindbackTime {}
 
-impl ClearClientWindbackTimeHandler {
-    pub async fn execute(
-        _cmd: ClearClientWindbackTime,
-        ctx: CommandContext,
-    ) -> Result<bool, CommandError> {
-        let client_id = ctx.client_id().ok_or_else(|| CommandError {
+impl crate::command::CommandHandler for ClearClientWindbackTime {
+    fn execute(self, ctx: crate::command::CommandContext) -> Result<bool, crate::command::CommandError> {
+        let client_id = ctx.client_id().ok_or_else(|| crate::command::CommandError {
             tx: ctx.tx().to_string(),
             command_id: "ClearClientWindbackTime".to_string(),
             message: "No client_id in context - windback requires a WebSocket connection"
@@ -146,9 +136,8 @@ impl ClearClientWindbackTimeHandler {
         let client = ctx
             .query_one(&GetClientsByIds {
                 ids: vec![Arc::from(client_id)],
-            })
-            .await?
-            .ok_or_else(|| CommandError {
+            })?
+            .ok_or_else(|| crate::command::CommandError {
                 tx: ctx.tx().to_string(),
                 command_id: "ClearClientWindbackTime".to_string(),
                 message: format!("Client {} not found", client_id),
@@ -163,9 +152,6 @@ impl ClearClientWindbackTimeHandler {
         };
 
         ctx.emit_set(&updated_client)?;
-
-        // Windback is now persisted directly in the Client entity
-        // No separate cache needed
 
         Ok(true)
     }
