@@ -97,15 +97,14 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
             let field_type = &setter.field_type;
 
             // Generate command name (with optional override)
-            let (command_name, handler_name, param_name) = if setter.is_rename {
+            let (command_name, param_name) = if setter.is_rename {
                 // #[myko_rename] or #[myko_rename("CustomName")]
                 let cmd_name = setter
                     .command_name_override
                     .as_ref()
                     .map(|s| format_ident!("{}", s))
                     .unwrap_or_else(|| format_ident!("Rename{}", entity_name));
-                let handler = format_ident!("{}Handler", cmd_name);
-                (cmd_name, handler, format_ident!("name"))
+                (cmd_name, format_ident!("name"))
             } else {
                 // #[myko_setter] or #[myko_setter("CustomName")]
                 let cmd_name = setter
@@ -116,22 +115,21 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
                         let field_pascal = to_pascal_case(&field_name.to_string());
                         format_ident!("Set{}{}", entity_name, field_pascal)
                     });
-                let handler = format_ident!("{}Handler", cmd_name);
-                (cmd_name, handler, field_name.clone())
+                (cmd_name, field_name.clone())
             };
 
             // For rename, the param is always "name" but field might be different
             let field_assignment = if setter.is_rename {
-                quote! { #field_name: cmd.name.to_string() }
+                quote! { #field_name: self.name.to_string() }
             } else {
                 // Handle the field type - if it's String, convert from Arc<str>
                 let type_str = quote!(#field_type).to_string();
                 if type_str.contains("String") && !type_str.contains("Option") {
-                    quote! { #field_name: cmd.#param_name.to_string() }
+                    quote! { #field_name: self.#param_name.to_string() }
                 } else if type_str.contains("Option") && type_str.contains("String") {
-                    quote! { #field_name: cmd.#param_name.map(|s| s.to_string()) }
+                    quote! { #field_name: self.#param_name.as_ref().map(|s| s.to_string()) }
                 } else {
-                    quote! { #field_name: cmd.#param_name.clone() }
+                    quote! { #field_name: self.#param_name.clone() }
                 }
             };
 
@@ -163,17 +161,17 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
                     #param_field,
                 }
 
-                impl #handler_name {
-                    pub async fn execute(
-                        cmd: #command_name,
+                impl myko_rs::command::CommandHandler for #command_name {
+                    fn execute(
+                        self,
                         ctx: myko_rs::prelude::CommandContext,
                     ) -> Result<(), myko_rs::prelude::CommandError> {
-                        let query = #get_by_ids_ident { ids: vec![cmd.id.clone()] };
-                        let entity = ctx.query_one(&query).await?.ok_or_else(|| {
+                        let query = #get_by_ids_ident { ids: vec![self.id.clone()] };
+                        let entity = ctx.query_one(&query)?.ok_or_else(|| {
                             myko_rs::prelude::CommandError {
                                 tx: ctx.tx().to_string(),
                                 command_id: ctx.command_id.to_string(),
-                                message: format!("{} {} not found", stringify!(#entity_ident), cmd.id),
+                                message: format!("{} {} not found", stringify!(#entity_ident), self.id),
                             }
                         })?;
 

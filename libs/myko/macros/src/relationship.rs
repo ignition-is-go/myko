@@ -14,6 +14,8 @@ pub struct BelongsToInfo {
     pub field_name_json: String,
     /// Foreign entity type name
     pub foreign_type: String,
+    /// Whether the field type is Option<T>
+    pub is_optional: bool,
 }
 
 /// Information about an owns_many relationship on a field
@@ -101,10 +103,21 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
         || path.is_ident("searchable")
 }
 
+/// Check if a type is Option<T>
+fn is_option_type(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "Option";
+        }
+    }
+    false
+}
+
 /// Parse belongs_to attribute from a field
 pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
     let field_name = field.ident.as_ref()?.to_string();
     let field_name_json = to_camel_case(&field_name);
+    let is_optional = is_option_type(&field.ty);
 
     for attr in &field.attrs {
         if attr.path().is_ident("belongs_to")
@@ -115,6 +128,7 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
                 field_name,
                 field_name_json,
                 foreign_type,
+                is_optional,
             });
         }
     }
@@ -342,16 +356,30 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         let field_ident = syn::Ident::new(&bt.field_name, proc_macro2::Span::call_site());
         let foreign_type = &bt.foreign_type;
 
+        // Generate different extract_fk code for optional vs non-optional fields
+        let extract_fk = if bt.is_optional {
+            quote! {
+                |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
+                    item.downcast_ref::<#local_type_ident>()
+                        .and_then(|e| e.#field_ident.as_ref().map(|s| std::sync::Arc::<str>::from(&**s)))
+                }
+            }
+        } else {
+            quote! {
+                |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
+                    item.downcast_ref::<#local_type_ident>()
+                        .map(|e| std::sync::Arc::<str>::from(&*e.#field_ident))
+                }
+            }
+        };
+
         registrations.push(quote! {
             myko_rs::submit! {
                 myko_rs::relationship::RelationRegistration {
                     relation: myko_rs::relationship::Relation::BelongsTo {
                         local_type: #local_type,
                         foreign_type: #foreign_type,
-                        extract_fk: |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
-                            item.downcast_ref::<#local_type_ident>()
-                                .map(|e| e.#field_ident.clone())
-                        },
+                        extract_fk: #extract_fk,
                     }
                 }
             }
@@ -371,12 +399,12 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                         foreign_type: #foreign_type,
                         extract_ids: |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
                             item.downcast_ref::<#local_type_ident>()
-                                .map(|e| e.#field_ident.clone())
+                                .map(|e| e.#field_ident.iter().map(|id| std::sync::Arc::<str>::from(&**id)).collect())
                         },
                         remove_id: |item: &dyn std::any::Any, id_to_remove: &str| -> Option<std::sync::Arc<dyn myko_rs::item::AnyItem>> {
                             item.downcast_ref::<#local_type_ident>().map(|e| {
                                 let mut updated = e.clone();
-                                updated.#field_ident.retain(|id| id.as_ref() != id_to_remove);
+                                updated.#field_ident.retain(|id| &**id != id_to_remove);
                                 std::sync::Arc::new(updated) as std::sync::Arc<dyn myko_rs::item::AnyItem>
                             })
                         },
@@ -398,7 +426,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                         foreign_type: #ft,
                         extract_fk: |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
                             item.downcast_ref::<#local_type_ident>()
-                                .map(|e| e.#field_ident.clone())
+                                .map(|e| std::sync::Arc::<str>::from(&*e.#field_ident))
                         },
                     }
                 }
@@ -407,6 +435,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
 
         // Generate make_entity function that creates entity with dependency IDs populated
         // The function takes &[Arc<str>] with IDs in the same order as dependencies
+        // Use .to_string() for compatibility with both String and Arc<str> fields
         let fk_field_assignments: Vec<_> = ef
             .dependencies
             .iter()
@@ -415,7 +444,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 let idx = syn::Index::from(i);
                 quote! {
-                    entity.#field_ident = dep_ids[#idx].clone();
+                    entity.#field_ident = dep_ids[#idx].to_string();
                 }
             })
             .collect();

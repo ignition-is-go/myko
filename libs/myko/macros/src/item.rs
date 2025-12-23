@@ -44,10 +44,19 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         named.push(hash_field);
     };
 
-    let derives = quote! {
-        #[derive(partially::Partial, PartialEq, Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
-        #[serde(rename_all = "camelCase")]
-        #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS), attribute(ts(optional_fields)))]
+    // Add Default derive if entity has ensure_for relationships (needed for make_entity)
+    let derives = if !rel_info.ensure_for_fields.is_empty() {
+        quote! {
+            #[derive(Default, partially::Partial, PartialEq, Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
+            #[serde(rename_all = "camelCase")]
+            #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS), attribute(ts(optional_fields)))]
+        }
+    } else {
+        quote! {
+            #[derive(partially::Partial, PartialEq, Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
+            #[serde(rename_all = "camelCase")]
+            #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS), attribute(ts(optional_fields)))]
+        }
     };
 
     let get_all_query_ident = format_ident!("GetAll{}s", name_str);
@@ -255,7 +264,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     // Generate Delete{Entity} command (single ID)
     let delete_command_ident = format_ident!("Delete{}", name_str);
-    let delete_command_handler_ident = format_ident!("Delete{}Handler", name_str);
     let delete_result_ident = format_ident!("Delete{}Result", name_str);
 
     let delete_command = quote! {
@@ -274,15 +282,13 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub id: std::sync::Arc<str>,
         }
 
-        impl #delete_command_handler_ident {
-            pub async fn execute(
-                cmd: #delete_command_ident,
+        impl myko_rs::command::CommandHandler for #delete_command_ident {
+            fn execute(
+                self,
                 ctx: myko_rs::prelude::CommandContext,
             ) -> Result<#delete_result_ident, myko_rs::prelude::CommandError> {
-                // Use bare query params - ctx.query_one wraps them automatically
-                let query = #get_by_ids_query_ident { ids: vec![cmd.id.clone()] };
-
-                let entity = ctx.query_one(&query).await?;
+                let query = #get_by_ids_query_ident { ids: vec![self.id.clone()] };
+                let entity = ctx.query_one(&query)?;
 
                 match entity {
                     Some(e) => {
@@ -292,7 +298,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                     None => Err(myko_rs::prelude::CommandError {
                         tx: ctx.tx().to_string(),
                         command_id: ctx.command_id.to_string(),
-                        message: format!("{} not found: {}", #name_str, cmd.id),
+                        message: format!("{} not found: {}", #name_str, self.id),
                     }),
                 }
             }
@@ -301,7 +307,6 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     // Generate Delete{Entity}s command (multiple IDs)
     let delete_many_command_ident = format_ident!("Delete{}s", name_str);
-    let delete_many_command_handler_ident = format_ident!("Delete{}sHandler", name_str);
     let delete_many_result_ident = format_ident!("Delete{}sResult", name_str);
 
     let delete_many_command = quote! {
@@ -320,19 +325,17 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub ids: Vec<std::sync::Arc<str>>,
         }
 
-        impl #delete_many_command_handler_ident {
-            pub async fn execute(
-                cmd: #delete_many_command_ident,
+        impl myko_rs::command::CommandHandler for #delete_many_command_ident {
+            fn execute(
+                self,
                 ctx: myko_rs::prelude::CommandContext,
             ) -> Result<#delete_many_result_ident, myko_rs::prelude::CommandError> {
                 let mut deleted_count = 0;
 
-                // For bulk delete, we iterate through the provided IDs and delete each found entity
-                for id in &cmd.ids {
-                    // Use bare query params - ctx.query_one wraps them automatically
+                for id in &self.ids {
                     let single_query = #get_by_ids_query_ident { ids: vec![id.clone()] };
 
-                    if let Some(entity) = ctx.query_one(&single_query).await? {
+                    if let Some(entity) = ctx.query_one(&single_query)? {
                         ctx.emit_del(&entity)?;
                         deleted_count += 1;
                     }

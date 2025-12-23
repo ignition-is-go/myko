@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ItemStruct, Path};
 
-/// Generates a command with its handler struct and registration.
+/// Generates command trait implementations and registers the command handler.
 ///
 /// # Usage
 ///
@@ -12,19 +12,16 @@ use syn::{ItemStruct, Path};
 ///     pub name: String,
 /// }
 ///
-/// // User must implement the handler:
-/// impl CreateMachineHandler {
-///     async fn execute(
-///         cmd: CreateMachine,
-///         ctx: myko_rs::prelude::CommandContext,
-///     ) -> Result<CreateMachineResult, myko_rs::prelude::CommandError> {
-///         // Handler logic
+/// // Implement CommandHandler directly on the command struct:
+/// impl myko_rs::command::CommandHandler for CreateMachine {
+///     fn execute(&self, ctx: myko_rs::command::CommandContext) -> Result<CreateMachineResult, myko_rs::command::CommandError> {
+///         // Handler logic - self is already the deserialized command
 ///     }
 /// }
+/// // Note: Handler registration is automatic via the macro
 /// ```
 pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) -> TokenStream {
     let struct_name = &input_struct.ident;
-    let handler_name = format_ident!("{}Handler", struct_name);
     let args_struct_name = format_ident!("{}Args", struct_name);
 
     // Create args struct (identical to main struct for backward compatibility)
@@ -81,9 +78,7 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
         }
 
         impl myko_rs::command::CommandIdStatic for #struct_name {
-            fn command_id_static() -> &'static str {
-                stringify!(#struct_name)
-            }
+            const COMMAND_ID: &'static str = stringify!(#struct_name);
         }
 
         impl myko_rs::command::CommandResultType for #struct_name {
@@ -108,49 +103,6 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
             }
         }
 
-        /// Generated handler struct - user must implement the execute method
-        pub struct #handler_name;
-
-        impl myko_rs::command::CommandHandler for #handler_name {
-            fn command_id(&self) -> &'static str {
-                stringify!(#struct_name)
-            }
-
-            fn execute(
-                &self,
-                command: serde_json::Value,
-                ctx: myko_rs::command::CommandContext,
-            ) -> myko_rs::command::BoxFuture<'_, Result<serde_json::Value, myko_rs::command::CommandError>> {
-                Box::pin(async move {
-                    let cmd: #struct_name = serde_json::from_value(command).map_err(|e| {
-                        myko_rs::command::CommandError {
-                            tx: ctx.tx().to_string(),
-                            command_id: ctx.command_id.to_string(),
-                            message: format!("Failed to parse command: {}", e),
-                        }
-                    })?;
-
-                    let result = #handler_name::execute(cmd, ctx).await?;
-
-                    serde_json::to_value(&result).map_err(|e| {
-                        myko_rs::command::CommandError {
-                            tx: String::new(),
-                            command_id: stringify!(#struct_name).to_string(),
-                            message: format!("Failed to serialize result: {}", e),
-                        }
-                    })
-                })
-            }
-        }
-
-        // Handler registration (for runtime execution)
-        myko_rs::submit! {
-            myko_rs::command::CommandHandlerRegistration {
-                command_id: stringify!(#struct_name),
-                factory: || Box::new(#handler_name) as Box<dyn myko_rs::command::CommandHandler>,
-            }
-        }
-
         // Command registration (for type generation)
         myko_rs::submit! {
             myko_rs::command::CommandRegistration {
@@ -160,6 +112,10 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
                 crate_name: module_path!(),
             }
         }
+
+        // NOTE: To register this command for runtime dispatch, implement CommandHandler
+        // and call: myko_rs::register_command_handler!(#struct_name);
+        // For auto-generated commands (delete, setter), registration is handled automatically.
 
         // Register for ts-rs export
         myko_rs::register_ts_export!(#struct_name, #args_struct_name);
