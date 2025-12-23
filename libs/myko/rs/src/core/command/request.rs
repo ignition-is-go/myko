@@ -90,9 +90,7 @@ impl<C: CommandId> CommandId for CommandRequest<C> {
 }
 
 impl<C: CommandIdStatic> CommandIdStatic for CommandRequest<C> {
-    fn command_id_static() -> &'static str {
-        C::command_id_static()
-    }
+    const COMMAND_ID: &'static str = C::COMMAND_ID;
 }
 
 impl<C: CommandResultType> CommandResultType for CommandRequest<C> {

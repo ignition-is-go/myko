@@ -17,7 +17,13 @@ pub trait CommandId {
 
 /// Static command ID for registration
 pub trait CommandIdStatic {
-    fn command_id_static() -> &'static str;
+    /// The command ID as a const string (usable in static contexts)
+    const COMMAND_ID: &'static str;
+
+    /// Get the command ID (convenience method, defaults to COMMAND_ID)
+    fn command_id_static() -> &'static str {
+        Self::COMMAND_ID
+    }
 }
 
 /// Result type for a command

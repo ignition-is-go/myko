@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use hypha::Gettable;
 use serde::de::DeserializeOwned;
@@ -179,7 +179,7 @@ impl CommandContext {
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
-    pub async fn query_one<Q>(&self, _query: &Q) -> Result<Option<Q::Item>, CommandError>
+    pub fn query_one<Q>(&self, _query: &Q) -> Result<Option<Q::Item>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
@@ -200,7 +200,7 @@ impl CommandContext {
     /// Execute a query and return all results.
     ///
     /// This performs a one-shot query against the store.
-    pub async fn query_all<Q>(&self, _query: &Q) -> Result<Vec<Q::Item>, CommandError>
+    pub fn query_all<Q>(&self, _query: &Q) -> Result<Vec<Q::Item>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
@@ -226,30 +226,30 @@ impl CommandContext {
     ///
     /// This allows command handlers to compose by calling other commands.
     /// The nested command shares the same transaction context.
-    pub async fn execute_command<C>(&self, cmd: C) -> Result<C::Result, CommandError>
-    where
-        C: crate::command::CommandParams + Clone,
-        C::Result: DeserializeOwned,
-    {
-        use crate::command::CommandRequest;
+    /// The command is consumed by execution, but the context is borrowed.
+    pub fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
+        let nested_ctx = CommandContext {
+            req: self.req.clone(),
+            command_id: C::command_id_static().into(),
+            registry: self.registry.clone(),
+            event_sink: self.event_sink.clone(),
+        };
 
-        // Create a request with the current tx
-        let request = CommandRequest::with_tx(cmd.clone(), self.req.tx.clone());
+        cmd.execute(nested_ctx)
+    }
 
-        // Find and execute the handler
-        // For now, we use a simplified approach - look up in inventory
-        let command_id = C::command_id_static();
-
-        for registration in inventory::iter::<crate::command::CommandHandlerRegistration> {
+    /// Execute a command by looking it up in the registry (dynamic dispatch).
+    ///
+    /// Use this when you have a command ID and JSON value at runtime.
+    pub fn execute_command_dyn(
+        &self,
+        command_id: &str,
+        command_value: Value,
+    ) -> Result<Value, CommandError> {
+        for registration in inventory::iter::<CommandHandlerRegistration> {
             if registration.command_id == command_id {
-                let handler = (registration.factory)();
-                let cmd_value = serde_json::to_value(&request).map_err(|e| CommandError {
-                    tx: self.tx().to_string(),
-                    command_id: command_id.to_string(),
-                    message: format!("Failed to serialize command: {}", e),
-                })?;
+                let executor = (registration.factory)();
 
-                // Create a new context for the nested command
                 let nested_ctx = CommandContext {
                     req: self.req.clone(),
                     command_id: command_id.into(),
@@ -257,12 +257,7 @@ impl CommandContext {
                     event_sink: self.event_sink.clone(),
                 };
 
-                let result = handler.execute(cmd_value, nested_ctx).await?;
-                return serde_json::from_value(result).map_err(|e| CommandError {
-                    tx: self.tx().to_string(),
-                    command_id: command_id.to_string(),
-                    message: format!("Failed to deserialize result: {}", e),
-                });
+                return executor.execute_from_value(command_value, nested_ctx);
             }
         }
 
@@ -295,47 +290,123 @@ impl CommandContext {
     }
 }
 
-/// A boxed future for object-safe async trait methods
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
 /// Trait for command handlers.
 ///
-/// Command handlers process mutations and can:
-/// - Emit events (SET/DEL)
-/// - Execute queries
+/// Implement this directly on your command params struct.
+/// The command is already deserialized when `execute` is called.
 ///
 /// # Example
 ///
 /// ```ignore
-/// impl CommandHandler for DeleteMachineHandler {
-///     fn command_id(&self) -> &'static str {
-///         "DeleteMachine"
-///     }
+/// #[myko_command(result = "()")]
+/// pub struct DeleteMachine {
+///     pub id: Arc<str>,
+/// }
 ///
-///     fn execute(&self, command: Value, ctx: CommandContext) -> BoxFuture<'_, Result<Value, CommandError>> {
-///         Box::pin(async move {
-///             let cmd: DeleteMachine = serde_json::from_value(command)?;
-///             ctx.emit_del(&machine)?;
-///             Ok(Value::Null)
-///         })
+/// impl CommandHandler for DeleteMachine {
+///     fn execute(&self, ctx: CommandContext) -> Result<(), CommandError> {
+///         let machine = ctx.registry()
+///             .get_or_create("Machine")
+///             .get_value(&self.id)
+///             .ok_or_else(|| CommandError {
+///                 tx: ctx.tx().to_string(),
+///                 command_id: "DeleteMachine".to_string(),
+///                 message: format!("Machine {} not found", self.id),
+///             })?;
+///         ctx.emit_del_dyn(machine)?;
+///         Ok(())
 ///     }
 /// }
 /// ```
-pub trait CommandHandler: Send + Sync + 'static {
-    /// The command ID this handler processes
-    fn command_id(&self) -> &'static str;
-
-    /// Execute the command
-    fn execute(&self, command: Value, ctx: CommandContext) -> BoxFuture<'_, Result<Value, CommandError>>;
+pub trait CommandHandler: crate::command::CommandParams {
+    /// Execute the command synchronously.
+    ///
+    /// `self` is the deserialized command parameters (owned, consumed by execution).
+    fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError>;
 }
 
-/// Type-erased command handler factory for inventory registration
-pub type CommandHandlerFactory = fn() -> Box<dyn CommandHandler>;
+/// Type-erased command executor for dynamic dispatch.
+///
+/// This is used internally by the registry to execute commands
+/// without knowing their concrete types at compile time.
+pub trait DynCommandExecutor: Send + Sync + 'static {
+    /// The command ID this executor handles
+    fn command_id(&self) -> &'static str;
+
+    /// Execute the command from a JSON value
+    fn execute_from_value(&self, command: Value, ctx: CommandContext) -> Result<Value, CommandError>;
+}
+
+/// Adapter that wraps a CommandHandler to provide DynCommandExecutor
+pub struct CommandExecutorAdapter<C: CommandHandler> {
+    _phantom: std::marker::PhantomData<C>,
+}
+
+impl<C: CommandHandler> CommandExecutorAdapter<C> {
+    pub fn new() -> Self {
+        Self {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<C: CommandHandler> Default for CommandExecutorAdapter<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
+    fn command_id(&self) -> &'static str {
+        C::command_id_static()
+    }
+
+    fn execute_from_value(&self, command: Value, ctx: CommandContext) -> Result<Value, CommandError> {
+        // Deserialize the command
+        let cmd: C = serde_json::from_value(command).map_err(|e| CommandError {
+            tx: ctx.tx().to_string(),
+            command_id: C::command_id_static().to_string(),
+            message: format!("Failed to deserialize command: {}", e),
+        })?;
+
+        // Execute the handler
+        let result = cmd.execute(ctx)?;
+
+        // Serialize the result
+        serde_json::to_value(result).map_err(|e| CommandError {
+            tx: String::new(),
+            command_id: C::command_id_static().to_string(),
+            message: format!("Failed to serialize result: {}", e),
+        })
+    }
+}
+
+/// Type-erased command executor factory for inventory registration
+pub type CommandExecutorFactory = fn() -> Box<dyn DynCommandExecutor>;
 
 /// Registration entry for command handlers
 pub struct CommandHandlerRegistration {
     pub command_id: &'static str,
-    pub factory: CommandHandlerFactory,
+    pub factory: CommandExecutorFactory,
 }
 
 inventory::collect!(CommandHandlerRegistration);
+
+/// Macro to register a command handler with the inventory.
+///
+/// # Example
+///
+/// ```ignore
+/// register_command_handler!(DeleteMachine);
+/// ```
+#[macro_export]
+macro_rules! register_command_handler {
+    ($cmd:ty) => {
+        $crate::inventory::submit! {
+            $crate::command::CommandHandlerRegistration {
+                command_id: <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
+                factory: || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),
+            }
+        }
+    };
+}

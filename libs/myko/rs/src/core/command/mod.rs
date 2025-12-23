@@ -7,7 +7,8 @@ mod traits;
 
 // Re-export handler types
 pub use handler::{
-    BoxFuture, CommandContext, CommandHandler, CommandHandlerFactory, CommandHandlerRegistration,
+    CommandContext, CommandExecutorAdapter, CommandExecutorFactory, CommandHandler,
+    CommandHandlerRegistration, DynCommandExecutor,
 };
 
 // Re-export registration types
