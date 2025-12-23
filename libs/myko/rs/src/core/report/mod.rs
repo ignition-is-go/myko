@@ -22,8 +22,7 @@ pub use crate::wire::{wrap_report, ReportError, ReportResponse, WrappedReport};
 
 // Re-export registration types
 pub use registration::{
-    AnyOutput, RegisterReportData, ReportCellFactory, ReportFactory, ReportFactoryFn,
-    ReportRegistration,
+    AnyOutput, ReportCellFactory, ReportFactory, ReportParseFn, ReportRegistration,
 };
 
 // Re-export request type

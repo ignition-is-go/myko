@@ -347,9 +347,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         myko_rs::prelude::ItemRegistration {
             entity_type: #name_str,
             crate_name: module_path!(),
-            factory: || -> myko_rs::item::RegisterItemData {
-                <#name as myko_rs::item::Eventable>::create_registration()
-            },
+            parse: <#name as myko_rs::item::Eventable>::parse,
         }
     };
 

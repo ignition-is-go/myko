@@ -1,8 +1,8 @@
 use crate::{
     command::{CommandId, CommandRequest},
     common::with_id::WithId,
+    core::item::Eventable,
     query::{QueryParams, QueryRequest},
-    registry::item::Eventable,
     report::{ReportIdStatic, ReportParams, ReportRequest},
     wire::{wrap_command_request, MEvent, MykoMessage, WrappedQuery, WrappedReport},
 };

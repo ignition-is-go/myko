@@ -7,7 +7,13 @@ use std::sync::Arc;
 
 use hypha::{Cell, CellImmutable, CellMap, Gettable, MapDiff, SelectExt, SubscriptionGuard};
 
-use crate::parsers::item::AnyItem;
+use crate::core::item::AnyItem;
+
+/// Type alias for entity diff cell (reduces complexity warnings).
+pub type EntityDiffCell = Cell<Option<MapDiff<Arc<str>, Arc<dyn AnyItem>>>, CellImmutable>;
+
+/// Type alias for entity entries cell (reduces complexity warnings).
+pub type EntityEntriesCell = Cell<Vec<(Arc<str>, Arc<dyn AnyItem>)>, CellImmutable>;
 
 /// A reactive entity store backed by hypha's CellMap.
 ///
@@ -61,14 +67,14 @@ impl EntityStore {
     /// Get a reactive cell for diffs (Insert/Update/Remove notifications).
     ///
     /// Subscribe to this cell to receive incremental updates.
-    pub fn diffs(&self) -> Cell<Option<MapDiff<Arc<str>, Arc<dyn AnyItem>>>, CellImmutable> {
+    pub fn diffs(&self) -> EntityDiffCell {
         self.inner.diffs()
     }
 
     /// Get a reactive cell containing all entries.
     ///
     /// This cell updates whenever any entity changes.
-    pub fn entries(&self) -> Cell<Vec<(Arc<str>, Arc<dyn AnyItem>)>, CellImmutable> {
+    pub fn entries(&self) -> EntityEntriesCell {
         self.inner.entries()
     }
 

@@ -1,18 +1,17 @@
 //! Query trait definitions.
 
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
 
 use crate::{
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
-    registry::{
-        item::{AnyItem, Eventable},
-        query::AnyQuery,
-    },
+    wire::WrappedQuery,
 };
 
+use super::super::item::{AnyItem, Eventable};
 use super::{context::MykoServerCtx, request::QueryRequest};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,5 +142,42 @@ where
         client: &MykoClient,
     ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>> {
         client.watch_query::<Q>(self)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AnyQuery - Type-erased query trait
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Type-erased query trait for dynamic dispatch.
+/// All queries implement this via the `#[myko_query]` macro.
+pub trait AnyQuery: WithTransaction + QueryId + Debug + Send + Sync + 'static {
+    /// Returns the item type this query targets (e.g., "Server", "Client").
+    fn query_item_type(&self) -> Arc<str>;
+
+    /// Serialize this query to a JSON Value.
+    fn to_value(&self) -> Value;
+}
+
+// Conversion from Arc<dyn AnyQuery> to WrappedQuery
+impl From<&dyn AnyQuery> for WrappedQuery {
+    fn from(query: &dyn AnyQuery) -> Self {
+        WrappedQuery {
+            query: query.to_value(),
+            query_id: query.query_id(),
+            query_item_type: query.query_item_type(),
+        }
+    }
+}
+
+impl From<Arc<dyn AnyQuery>> for WrappedQuery {
+    fn from(query: Arc<dyn AnyQuery>) -> Self {
+        WrappedQuery::from(query.as_ref())
+    }
+}
+
+impl From<&Arc<dyn AnyQuery>> for WrappedQuery {
+    fn from(query: &Arc<dyn AnyQuery>) -> Self {
+        WrappedQuery::from(query.as_ref())
     }
 }

@@ -6,7 +6,7 @@ use dprint_plugin_typescript::{
 };
 
 use crate::{
-    command::CommandRegistration, query::QueryRegistration, registry::item::ItemRegistration,
+    command::CommandRegistration, core::item::ItemRegistration, query::QueryRegistration,
     report::ReportRegistration, wire::MessageEventRegistration,
 };
 

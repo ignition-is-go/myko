@@ -28,10 +28,8 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
             query_id: stringify!(#struct_name),
             query_item_type: stringify!(#query_item_type),
             crate_name: module_path!(),
-            factory: || -> myko_rs::prelude::RegisterQueryData {
-                use myko_rs::prelude::QueryFactory;
-                #struct_name::create_registration()
-            },
+            parse: <#struct_name as myko_rs::query::QueryFactory>::parse,
+            cell_factory: <#struct_name as myko_rs::query::QueryFactory>::cell_factory,
         }
     };
 

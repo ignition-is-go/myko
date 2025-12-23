@@ -63,7 +63,6 @@
 //! | [`core`] | Core types: command, query, report, saga, item, relationship |
 //! | [`wire`] | Wire protocol types: MykoMessage, MEvent, responses, errors |
 //! | [`server`] | CellServer and server context |
-//! | [`registry`] | Item/query/report parsers and registration |
 //! | [`store`] | Entity store and registry |
 //!
 //! ## Performance
@@ -82,7 +81,6 @@ pub mod client;
 pub mod codegen;
 pub mod core;
 pub mod entities;
-pub mod registry;
 pub mod search;
 pub mod server;
 pub mod store;
@@ -95,16 +93,10 @@ pub mod prelude;
 pub mod bench_entities;
 
 // Re-export core modules at top level for backwards compatibility
-pub use core::{command, common, context, query, relationship, report, saga};
-
-// Re-export registry::item as item for backwards compatibility
-pub use registry::item;
+pub use core::{command, common, context, item, query, relationship, report, saga};
 
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event;
-
-// Re-export parsers as old name for backwards compatibility
-pub use registry as parsers;
 
 // Re-export crates for use in macros
 pub use hypha; // For cell-based queries/reports in #[myko_item]

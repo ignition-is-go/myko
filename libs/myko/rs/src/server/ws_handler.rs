@@ -219,7 +219,7 @@ impl WsHandler {
                 // Look up the query registration
                 if let Some(query_data) = handler_registry.get_query(query_id) {
                     // Parse the query JSON to the concrete type
-                    let parsed = query_data.parser.parse(wrapped.query.clone());
+                    let parsed = (query_data.parse)(wrapped.query.clone());
                     match parsed {
                         Ok(any_query) => {
                             // Create the cell using the factory (with host_id for server context)
@@ -264,7 +264,7 @@ impl WsHandler {
                 // Look up the report registration
                 if let Some(report_data) = handler_registry.get_report(report_id) {
                     // Parse the report JSON to the concrete type
-                    let parsed = report_data.parser.parse(wrapped.report.clone());
+                    let parsed = (report_data.parse)(wrapped.report.clone());
                     match parsed {
                         Ok(any_report) => {
                             // Create the cell using the factory (with host_id for context)

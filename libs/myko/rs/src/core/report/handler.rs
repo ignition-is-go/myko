@@ -133,7 +133,7 @@ impl ReportContext {
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
     {
         let query_item_type = Q::query_item_type_static();
-        let store = self.registry.get_or_create(&query_item_type.to_string());
+        let store = self.registry.get_or_create(query_item_type.as_ref());
 
         // Get the entries cell and map to typed items
         store.entries().map(move |items| {

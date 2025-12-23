@@ -11,8 +11,8 @@ use hypha::{Cell, CellImmutable, MapExt};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
+use crate::core::item::{AnyItem, Eventable};
 use crate::query::{MykoServerCtx, QueryHandler, QueryHandlerCtx, QueryParams};
-use crate::registry::item::{AnyItem, Eventable};
 use crate::store::StoreRegistry;
 use crate::wire::{EventOptions, MEvent, MEventType};
 
@@ -60,8 +60,8 @@ impl CellServerCtx {
     ///
     /// Returns None if the entity type is not registered or parsing fails.
     pub fn parse_item(&self, entity_type: &str, json: &serde_json::Value) -> Option<Arc<dyn AnyItem>> {
-        let parser = self.handler_registry.get_item_parser(entity_type)?;
-        parser.parse(json.clone()).ok()
+        let parse = self.handler_registry.get_item_parser(entity_type)?;
+        parse(json.clone()).ok()
     }
 
     // ─────────────────────────────────────────────────────────────────────────

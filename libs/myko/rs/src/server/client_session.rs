@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 
-use crate::registry::item::AnyItem;
+use crate::core::item::AnyItem;
 use crate::report::AnyOutput;
 use crate::wire::{MykoMessage, QueryResponse, ReportError, ReportResponse};
 

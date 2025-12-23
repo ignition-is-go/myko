@@ -7,10 +7,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::{
-    common::with_transaction::WithTransaction,
-    registry::query::AnyQuery,
-};
+use crate::common::with_transaction::WithTransaction;
+
+use super::traits::AnyQuery;
 
 use super::traits::{
     QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType, QueryParams,

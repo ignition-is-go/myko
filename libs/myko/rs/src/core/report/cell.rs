@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use hypha::{Cell, CellImmutable, MapExt};
 
-use crate::parsers::item::AnyItem;
+use super::super::item::AnyItem;
 use crate::store::StoreRegistry;
 
 /// Context for cell-based report handlers.

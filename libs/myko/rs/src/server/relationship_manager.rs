@@ -53,8 +53,8 @@ use std::sync::Arc;
 
 use log::{debug, info, trace};
 
+use crate::core::item::AnyItem;
 use crate::event::EventOptions;
-use crate::parsers::item::AnyItem;
 use crate::relationship::{
     iter_relations, ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor,
     Relation,
@@ -192,7 +192,7 @@ impl RelationshipManager {
                         local_type,
                         dependencies.iter().map(|d| d.foreign_type).collect::<Vec<_>>()
                     );
-                    let deps: Vec<_> = dependencies.iter().copied().collect();
+                    let deps: Vec<_> = dependencies.to_vec();
 
                     // Index by each dependency type
                     for dep in dependencies.iter() {

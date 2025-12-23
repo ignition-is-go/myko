@@ -123,7 +123,7 @@ impl CommandContext {
 
         // Update the store directly
         let store = self.registry.get_or_create(item.entity_type());
-        let id: Arc<str> = item.id().into();
+        let id: Arc<str> = item.id();
         store.set(id, Arc::new(item.clone()));
 
         // Optionally send to event sink for persistence
@@ -164,7 +164,7 @@ impl CommandContext {
 
         // Update the store directly
         let store = self.registry.get_or_create(item.entity_type());
-        let id: Arc<str> = item.id().into();
+        let id: Arc<str> = item.id();
         store.remove(&id);
 
         // Optionally send to event sink for persistence
@@ -183,7 +183,7 @@ impl CommandContext {
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
     {
-        let store = self.registry.get_or_create(&Q::query_item_type_static().to_string());
+        let store = self.registry.get_or_create(Q::query_item_type_static().as_ref());
 
         // Get all items and find the first match
         // In a real implementation, this would use the query's filter logic
@@ -204,7 +204,7 @@ impl CommandContext {
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
     {
-        let store = self.registry.get_or_create(&Q::query_item_type_static().to_string());
+        let store = self.registry.get_or_create(Q::query_item_type_static().as_ref());
 
         let items = store.snapshot();
         let mut results = Vec::new();
@@ -233,7 +233,7 @@ impl CommandContext {
         use crate::command::CommandRequest;
 
         // Create a request with the current tx
-        let request = CommandRequest::with_tx(cmd.clone(), self.req.tx.clone().into());
+        let request = CommandRequest::with_tx(cmd.clone(), self.req.tx.clone());
 
         // Find and execute the handler
         // For now, we use a simplified approach - look up in inventory

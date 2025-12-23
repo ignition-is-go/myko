@@ -4,18 +4,15 @@ use std::any::Any;
 use std::sync::Arc;
 
 use hypha::{Cell, CellImmutable, MapExt};
+use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{
-    common::to_value::ToValue,
-    parsers::report::{CapturedReportParser, MykoReportParser},
-    store::StoreRegistry,
-};
+use crate::{common::to_value::ToValue, store::StoreRegistry};
 
 use super::{
     handler::{ReportContext, ReportHandler},
     request::ReportRequest,
-    traits::{AnyReport, ReportIdStatic, ReportParams},
+    traits::{AnyReport, ReportParams},
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,8 +27,11 @@ pub trait AnyOutput: ToValue + Send + Sync + 'static {}
 impl<T: ToValue + Send + Sync + 'static> AnyOutput for T {}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Registration types
+// Type aliases for function pointers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Type alias for report parse function.
+pub type ReportParseFn = fn(Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 
 /// Type-erased cell factory for reports.
 /// Takes a typed report, registry, and host_id, returns a cell of type-erased output.
@@ -41,15 +41,11 @@ pub type ReportCellFactory = fn(
     Uuid, // host_id for context
 ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 
-/// Data needed to register a report.
-pub struct RegisterReportData {
-    pub report_id: Arc<str>,
-    pub parser: Arc<dyn MykoReportParser>,
-    pub cell_factory: ReportCellFactory,
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// ReportRegistration - inventory-based registration
+// ─────────────────────────────────────────────────────────────────────────────
 
-/// Type alias for the report factory function pointer.
-pub type ReportFactoryFn = fn() -> RegisterReportData;
+inventory::collect!(ReportRegistration);
 
 /// Registration entry for a report type.
 /// Collected via inventory for automatic discovery.
@@ -62,50 +58,62 @@ pub struct ReportRegistration {
     pub output_type: &'static str,
     /// Crate where the output type is defined
     pub output_type_crate: &'static str,
-    /// Factory function that creates the registration data
-    pub factory: ReportFactoryFn,
+    /// Parse function for deserializing report from JSON
+    pub parse: ReportParseFn,
+    /// Factory for creating reactive cell from report
+    pub cell_factory: ReportCellFactory,
 }
 
-inventory::collect!(ReportRegistration);
-
 // ─────────────────────────────────────────────────────────────────────────────
-// ReportFactory - Creates registration data for cell-based reports
+// ReportFactory - Static methods for report types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Factory trait for creating report registrations.
+/// Factory trait for creating report registration data.
 ///
 /// This trait has a blanket implementation for all types implementing `ReportParams`,
-/// so user-defined reports automatically get a `create_registration()` method.
+/// so user-defined reports automatically get `parse` and `cell_factory` methods.
 pub trait ReportFactory: ReportParams {
-    /// Create the registration data (cell factory) for this report type.
-    fn create_registration() -> RegisterReportData;
+    /// Parse JSON into this report type.
+    fn parse(value: Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
+
+    /// Create a reactive cell for this report.
+    fn cell_factory(
+        report: Arc<dyn AnyReport>,
+        registry: Arc<StoreRegistry>,
+        host_id: Uuid,
+    ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 }
 
 impl<R: ReportParams> ReportFactory for R {
-    fn create_registration() -> RegisterReportData {
-        // Use ReportRequest<R> for parsing since that's what implements AnyReport
-        let parser: Arc<dyn MykoReportParser> = Arc::new(CapturedReportParser::<ReportRequest<R>>::new());
+    fn parse(value: Value) -> Result<Arc<dyn AnyReport>, anyhow::Error> {
+        let report = serde_json::from_value::<ReportRequest<R>>(value)?;
+        Ok(Arc::new(report))
+    }
 
-        RegisterReportData {
-            report_id: <R as ReportIdStatic>::report_id_static().into(),
-            parser,
-            cell_factory: |any_report: Arc<dyn AnyReport>, registry: Arc<StoreRegistry>, host_id: Uuid| -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
-                // Downcast to the ReportRequest wrapper
-                let any_ref: &dyn Any = any_report.as_ref();
-                let request: ReportRequest<R> = any_ref
-                    .downcast_ref::<ReportRequest<R>>()
-                    .cloned()
-                    .ok_or_else(|| format!("Failed to downcast report to ReportRequest<{}>", R::report_id_static()))?;
+    fn cell_factory(
+        any_report: Arc<dyn AnyReport>,
+        registry: Arc<StoreRegistry>,
+        host_id: Uuid,
+    ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
+        // Downcast to the ReportRequest wrapper
+        let any_ref: &dyn Any = any_report.as_ref();
+        let request: ReportRequest<R> = any_ref
+            .downcast_ref::<ReportRequest<R>>()
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "Failed to downcast report to ReportRequest<{}>",
+                    R::report_id_static()
+                )
+            })?;
 
-                // Create a ReportContext with host_id - report args are accessed via &self in compute
-                let ctx = ReportContext::with_host_id(registry, host_id);
+        // Create a ReportContext with host_id - report args are accessed via &self in compute
+        let ctx = ReportContext::with_host_id(registry, host_id);
 
-                // Call the inner report's compute method
-                let cell = <R as ReportHandler>::compute(&request.report, ctx);
+        // Call the inner report's compute method
+        let cell = <R as ReportHandler>::compute(&request.report, ctx);
 
-                // Map to type-erased output (clone since map receives a reference)
-                Ok(cell.map(|output| Arc::new(output.clone()) as Arc<dyn AnyOutput>))
-            },
-        }
+        // Map to type-erased output (clone since map receives a reference)
+        Ok(cell.map(|output| Arc::new(output.clone()) as Arc<dyn AnyOutput>))
     }
 }

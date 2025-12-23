@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use hypha::{CellImmutable, CellMap};
 
-use crate::parsers::item::AnyItem;
+use super::super::item::AnyItem;
 
 /// Type alias for a filtered CellMap of entities.
 ///

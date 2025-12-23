@@ -62,7 +62,7 @@
 
 use std::sync::Arc;
 
-use crate::parsers::item::AnyItem;
+use super::item::AnyItem;
 
 /// Type alias for a function that extracts an FK value from an entity
 pub type FkExtractor = fn(&dyn std::any::Any) -> Option<Arc<str>>;

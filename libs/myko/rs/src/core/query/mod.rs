@@ -8,11 +8,9 @@ mod traits;
 
 // Re-export all public types
 pub use context::MykoServerCtx;
-pub use registration::{
-    QueryCellFactory, QueryFactory, QueryFactoryFn, QueryRegistration, RegisterQueryData,
-};
+pub use registration::{QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration};
 pub use request::QueryRequest;
 pub use traits::{
-    Query, QueryHandler, QueryHandlerCtx, QueryHandlerCtxAny, QueryId, QueryIdStatic,
+    AnyQuery, Query, QueryHandler, QueryHandlerCtx, QueryHandlerCtxAny, QueryId, QueryIdStatic,
     QueryItemType, QueryParams,
 };

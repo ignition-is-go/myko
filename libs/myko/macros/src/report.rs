@@ -29,10 +29,8 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
             crate_name: module_path!(),
             output_type: stringify!(#report_output_type),
             output_type_crate: module_path!(),
-            factory: || -> myko_rs::prelude::RegisterReportData {
-                use myko_rs::prelude::ReportFactory;
-                #struct_name::create_registration()
-            },
+            parse: <#struct_name as myko_rs::report::ReportFactory>::parse,
+            cell_factory: <#struct_name as myko_rs::report::ReportFactory>::cell_factory,
         }
     };
 
@@ -70,7 +68,7 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
         // Note: WithTransaction, AnyReport, and Report are implemented on ReportRequest<#struct_name>
         // via blanket impls in myko_rs. The user's struct just implements the identity traits.
         // ReportHandler must still be implemented by the user.
-        // ReportFactory is implemented via blanket impl and provides create_registration().
+        // ReportFactory is implemented via blanket impl and provides parse() and cell_factory().
     };
 
     expanded

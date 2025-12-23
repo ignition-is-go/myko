@@ -587,10 +587,10 @@ impl CellKafkaConsumer {
                                         // Parse → Reduce (no relationships, no persist)
                                         match event.change_type {
                                             MEventType::SET => {
-                                                if let Some(parser) =
+                                                if let Some(parse) =
                                                     handler_registry.get_item_parser(&event.item_type)
                                                 {
-                                                    match parser.parse(event.item.clone()) {
+                                                    match parse(event.item.clone()) {
                                                         Ok(item) => {
                                                             let store = registry.get_or_create(item.entity_type());
                                                             store.set(item.id(), item);

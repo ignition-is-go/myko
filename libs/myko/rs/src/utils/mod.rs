@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use crate::parsers::item::AnyItem;
+use crate::core::item::AnyItem;
 use serde_json::Value;
 
 /// Downcast an `Arc<dyn AnyItem>` to a concrete type.

@@ -9,7 +9,8 @@ use syn::{Attribute, Field, ItemStruct, Path};
 pub struct BelongsToInfo {
     /// Field name in Rust (snake_case)
     pub field_name: String,
-    /// Field name in JSON (camelCase)
+    /// Field name in JSON (camelCase) - reserved for future use
+    #[allow(dead_code)]
     pub field_name_json: String,
     /// Foreign entity type name
     pub foreign_type: String,
@@ -20,7 +21,8 @@ pub struct BelongsToInfo {
 pub struct OwnsManyInfo {
     /// Field name in Rust (snake_case)
     pub field_name: String,
-    /// Field name in JSON (camelCase)
+    /// Field name in JSON (camelCase) - reserved for future use
+    #[allow(dead_code)]
     pub field_name_json: String,
     /// Owned entity type name
     pub foreign_type: String,
@@ -49,6 +51,8 @@ pub struct EnsureForInfo {
 pub struct DefaultValueInfo {
     #[allow(dead_code)]
     pub field_name: String,
+    /// Field name in JSON (camelCase) - reserved for future use
+    #[allow(dead_code)]
     pub field_name_json: String,
     pub value_tokens: TokenStream,
 }
@@ -369,11 +373,11 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                             item.downcast_ref::<#local_type_ident>()
                                 .map(|e| e.#field_ident.clone())
                         },
-                        remove_id: |item: &dyn std::any::Any, id_to_remove: &str| -> Option<std::sync::Arc<dyn myko_rs::parsers::item::AnyItem>> {
+                        remove_id: |item: &dyn std::any::Any, id_to_remove: &str| -> Option<std::sync::Arc<dyn myko_rs::item::AnyItem>> {
                             item.downcast_ref::<#local_type_ident>().map(|e| {
                                 let mut updated = e.clone();
                                 updated.#field_ident.retain(|id| id.as_ref() != id_to_remove);
-                                std::sync::Arc::new(updated) as std::sync::Arc<dyn myko_rs::parsers::item::AnyItem>
+                                std::sync::Arc::new(updated) as std::sync::Arc<dyn myko_rs::item::AnyItem>
                             })
                         },
                     }
@@ -441,7 +445,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                             entity.hash = std::sync::Arc::from("");
                             #(#fk_field_assignments)*
                             #(#default_assignments)*
-                            std::sync::Arc::new(entity) as std::sync::Arc<dyn myko_rs::parsers::item::AnyItem>
+                            std::sync::Arc::new(entity) as std::sync::Arc<dyn myko_rs::item::AnyItem>
                         },
                     }
                 }
