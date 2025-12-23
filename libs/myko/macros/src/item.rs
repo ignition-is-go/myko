@@ -70,7 +70,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 &self,
                 registry: &myko_rs::store::StoreRegistry,
             ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
-                use myko_rs::hypha::MapExt;
+                use myko_rs::hypha::{MapExt, SelectExt};
                 registry
                     .get_or_create(#name_str)
                     .select(|_| true)
@@ -111,7 +111,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 &self,
                 registry: &myko_rs::store::StoreRegistry,
             ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
-                use myko_rs::hypha::MapExt;
+                use myko_rs::hypha::{MapExt, SelectExt};
                 let id_set: std::collections::HashSet<std::sync::Arc<str>> =
                     self.ids.iter().cloned().collect();
                 registry
@@ -151,7 +151,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                  &self,
                  registry: &myko_rs::store::StoreRegistry,
              ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
-                 use myko_rs::hypha::MapExt;
+                 use myko_rs::hypha::{MapExt, SelectExt};
                  let partial = self.0.clone();
                  registry
                      .get_or_create(#name_str)

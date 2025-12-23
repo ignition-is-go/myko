@@ -224,8 +224,8 @@ mod tests {
     fn test_subscribe_query_cellmap() {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
-        store.set("a".into(), make_entity("a", "Alice"));
-        store.set("b".into(), make_entity("b", "Bob"));
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
 
         let mock = Arc::new(MockWriter::new());
         let writer = ArcMockWriter(mock.clone());
@@ -238,7 +238,7 @@ mod tests {
         assert!(mock.message_count() >= 1);
 
         // Add an entity
-        store.set("c".into(), make_entity("c", "Charlie"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
         assert!(mock.message_count() >= 2);
     }
 
@@ -262,7 +262,7 @@ mod tests {
     fn test_session_drop_cleanup() {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
-        store.set("a".into(), make_entity("a", "Alice"));
+        store.insert("a".into(), make_entity("a", "Alice"));
 
         {
             let mock = Arc::new(MockWriter::new());
@@ -284,7 +284,7 @@ mod tests {
     fn test_subscribe_by_id() {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
-        store.set("a".into(), make_entity("a", "Alice"));
+        store.insert("a".into(), make_entity("a", "Alice"));
 
         let mock = Arc::new(MockWriter::new());
         let writer = ArcMockWriter(mock.clone());
@@ -298,7 +298,7 @@ mod tests {
         assert!(mock.message_count() >= 1);
 
         // Update the entity
-        store.set("a".into(), make_entity("a", "Alice Updated"));
+        store.insert("a".into(), make_entity("a", "Alice Updated"));
         assert!(mock.message_count() >= 2);
     }
 
@@ -308,8 +308,8 @@ mod tests {
 
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
-        store.set("a".into(), make_entity("a", "Alice"));
-        store.set("b".into(), make_entity("b", "Bob"));
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
 
         let mock = Arc::new(MockWriter::new());
         let writer = ArcMockWriter(mock.clone());

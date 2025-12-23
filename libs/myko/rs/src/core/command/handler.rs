@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use hypha::Gettable;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -124,7 +125,7 @@ impl CommandContext {
         // Update the store directly
         let store = self.registry.get_or_create(item.entity_type());
         let id: Arc<str> = item.id();
-        store.set(id, Arc::new(item.clone()));
+        store.insert(id, Arc::new(item.clone()));
 
         // Optionally send to event sink for persistence
         if let Some(ref sink) = self.event_sink {
@@ -187,7 +188,7 @@ impl CommandContext {
 
         // Get all items and find the first match
         // In a real implementation, this would use the query's filter logic
-        let items = store.snapshot();
+        let items = store.entries().get();
         for (_, item) in items {
             if let Some(typed) = item.as_any().downcast_ref::<Q::Item>() {
                 return Ok(Some(typed.clone()));
@@ -206,7 +207,7 @@ impl CommandContext {
     {
         let store = self.registry.get_or_create(Q::query_item_type_static().as_ref());
 
-        let items = store.snapshot();
+        let items = store.entries().get();
         let mut results = Vec::new();
         for (_, item) in items {
             if let Some(typed) = item.as_any().downcast_ref::<Q::Item>() {

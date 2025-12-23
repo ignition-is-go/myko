@@ -19,7 +19,7 @@ use super::EntityStore;
 ///
 /// // Get or create store for entity type
 /// let targets = registry.get_or_create("Target");
-/// targets.set(id, item);
+/// targets.insert(id, item);
 /// ```
 pub struct StoreRegistry {
     stores: DashMap<Arc<str>, Arc<EntityStore>>,

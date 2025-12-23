@@ -51,6 +51,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use hypha::Gettable;
 use log::{debug, info, trace};
 
 use crate::core::item::AnyItem;
@@ -320,7 +321,8 @@ impl RelationshipManager {
     ) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(lookup.local_type);
         store
-            .snapshot()
+            .entries()
+            .get()
             .into_iter()
             .filter(|(_, item)| {
                 (lookup.extract_fk)(item.as_any())
@@ -401,7 +403,8 @@ impl RelationshipManager {
     ) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(lookup.local_type);
         store
-            .snapshot()
+            .entries()
+            .get()
             .into_iter()
             .filter(|(_, item)| {
                 (lookup.extract_ids)(item.as_any())
@@ -665,13 +668,13 @@ impl RelationshipManager {
     /// Get an entity by ID
     fn get_by_id(&self, ctx: &CellServerCtx, entity_type: &str, id: &str) -> Option<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
-        store.get(&id.into())
+        store.get_value(&id.into())
     }
 
     /// Get all entities of a type
     fn get_all_items(&self, ctx: &CellServerCtx, entity_type: &str) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
-        store.snapshot().into_iter().map(|(_, item)| item).collect()
+        store.entries().get().into_iter().map(|(_, item)| item).collect()
     }
 
     /// Get all combinations of dependency entity IDs for EnsureFor
@@ -735,7 +738,7 @@ impl RelationshipManager {
         // Get all entities of the local type and filter by matching all FK values
         let store = ctx.registry.get_or_create(local_type);
 
-        store.snapshot().into_iter().find_map(|(_, item)| {
+        store.entries().get().into_iter().find_map(|(_, item)| {
             // Check if all dependency FKs match the combo values
             let all_match = dependencies.iter().zip(combo.iter()).all(|(dep, expected_id)| {
                 (dep.extract_fk)(item.as_any())
@@ -777,7 +780,7 @@ impl RelationshipManager {
 
         // Get the entity from the store
         let id_arc: Arc<str> = id.into();
-        if let Some(item) = ctx.registry.get_or_create(entity_type).get(&id_arc) {
+        if let Some(item) = ctx.registry.get_or_create(entity_type).get_value(&id_arc) {
             debug!(
                 "RelationshipManager: publish_del_cascade {} {} - entity found, deleting",
                 entity_type,

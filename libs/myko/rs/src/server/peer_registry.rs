@@ -452,7 +452,7 @@ impl PeerRegistry {
 
                     // Delete the Server entity so it doesn't appear stale to other peers
                     let server_id_str: Arc<str> = server_id.to_string().into();
-                    if let Some(server) = ctx.registry.get_or_create(Server::entity_name_static()).get(&server_id_str) {
+                    if let Some(server) = ctx.registry.get_or_create(Server::entity_name_static()).get_value(&server_id_str) {
                         ctx.del_dyn(server);
                     }
                     info!("Deleted Server entity for disconnected peer {}", server_id);

@@ -3,6 +3,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use hypha::SelectExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;

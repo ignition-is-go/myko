@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, MapExt};
+use hypha::{Cell, CellImmutable, MapExt, SelectExt};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -93,7 +93,7 @@ impl CellServerCtx {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
 
         // Reduce: update store
-        self.registry.get_or_create(entity_type).set(id.clone(), item.clone());
+        self.registry.get_or_create(entity_type).insert(id.clone(), item.clone());
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
@@ -166,7 +166,7 @@ impl CellServerCtx {
         let id = item.id();
 
         // Reduce: update store
-        self.registry.get_or_create(entity_type).set(id.clone(), item.clone());
+        self.registry.get_or_create(entity_type).insert(id.clone(), item.clone());
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {

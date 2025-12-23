@@ -593,7 +593,7 @@ impl CellKafkaConsumer {
                                                     match parse(event.item.clone()) {
                                                         Ok(item) => {
                                                             let store = registry.get_or_create(item.entity_type());
-                                                            store.set(item.id(), item);
+                                                            store.insert(item.id(), item);
                                                         }
                                                         Err(e) => {
                                                             error!(

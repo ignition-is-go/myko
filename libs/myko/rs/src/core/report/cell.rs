@@ -29,7 +29,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, MapExt};
+use hypha::{Cell, CellImmutable, MapExt, SelectExt};
 
 use super::super::item::AnyItem;
 use crate::store::StoreRegistry;
@@ -244,9 +244,9 @@ mod tests {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Target");
 
-        store.set("a".into(), make_target("a", "Alice", true));
-        store.set("b".into(), make_target("b", "Bob", false));
-        store.set("c".into(), make_target("c", "Charlie", true));
+        store.insert("a".into(), make_target("a", "Alice", true));
+        store.insert("b".into(), make_target("b", "Bob", false));
+        store.insert("c".into(), make_target("c", "Charlie", true));
 
         let ctx = CellReportContext::new(registry.clone());
         let online_count = ctx.report(OnlineTargetCount);
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(online_count.get(), 2);
 
         // Update Bob to online
-        store.set("b".into(), make_target("b", "Bob", true));
+        store.insert("b".into(), make_target("b", "Bob", true));
         assert_eq!(online_count.get(), 3);
 
         // Remove a target
@@ -267,8 +267,8 @@ mod tests {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Target");
 
-        store.set("a".into(), make_target("a", "Alice", true));
-        store.set("b".into(), make_target("b", "Bob", false));
+        store.insert("a".into(), make_target("a", "Alice", true));
+        store.insert("b".into(), make_target("b", "Bob", false));
 
         let ctx = CellReportContext::new(registry.clone());
         let names = ctx.report(TargetNames);
@@ -278,7 +278,7 @@ mod tests {
         assert_eq!(result, vec!["Alice", "Bob"]);
 
         // Add a target
-        store.set("c".into(), make_target("c", "Charlie", true));
+        store.insert("c".into(), make_target("c", "Charlie", true));
         let mut result = names.get();
         result.sort();
         assert_eq!(result, vec!["Alice", "Bob", "Charlie"]);
@@ -304,8 +304,8 @@ mod tests {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Target");
 
-        store.set("a".into(), make_target("a", "Alice", true));
-        store.set("b".into(), make_target("b", "Bob", true));
+        store.insert("a".into(), make_target("a", "Alice", true));
+        store.insert("b".into(), make_target("b", "Bob", true));
 
         let ctx = CellReportContext::new(registry.clone());
 
@@ -318,7 +318,7 @@ mod tests {
         assert!(!report.get());
 
         // Add another online target
-        store.set("c".into(), make_target("c", "Charlie", true));
+        store.insert("c".into(), make_target("c", "Charlie", true));
         // Now threshold 3 should be true
         assert!(report.get());
     }

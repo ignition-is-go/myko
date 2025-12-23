@@ -21,11 +21,11 @@
 //!
 //! # Key Types
 //!
-//! - [`EntityStore`]: Reactive storage for a single entity type
+//! - [`EntityStore`]: Type alias for `CellMap<Arc<str>, Arc<dyn AnyItem>>`
 //! - [`StoreRegistry`]: Central registry managing all entity stores
 
 mod entity_store;
 mod registry;
 
-pub use entity_store::EntityStore;
+pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
 pub use registry::StoreRegistry;

@@ -27,7 +27,7 @@ pub use crate::{
 };
 
 // Re-export hypha cell types for reports
-pub use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, Watchable};
+pub use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SelectExt, Watchable};
 
 pub use chrono::Utc;
 pub use myko_macros::*;
