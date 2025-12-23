@@ -1,10 +1,8 @@
-use futures::StreamExt;
-
-use crate::combine_latest;
 use crate::entities::client::GetAllClients;
 use crate::prelude::*;
 use crate::report::{ReportContext, ReportHandler};
 use crate::{self as myko_rs};
+use hypha::{Cell, CellImmutable, JoinExt, MapExt, flat};
 
 #[myko_item]
 pub struct Server {
@@ -77,31 +75,29 @@ pub struct ServerStats {}
 impl ReportHandler for ServerStats {
     type Output = ServerStatsOutput;
 
-    fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
-        // Combine server and client streams - emit whenever either changes
-        combine_latest!(
-            ctx.query(GetConnectedServer {}),
-            ctx.query(GetAllClients {}),
-        )
-        .map(|(servers, clients)| {
-            let server = servers.into_iter().next();
+    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+        // Combine server and client cells - emit whenever either changes
+        ctx.query(GetConnectedServer {})
+            .join(&ctx.query(GetAllClients {}))
+            .map(flat!(|servers, clients| {
+                // Clone from reference since map receives &(Vec, Vec)
+                let server = servers.first().cloned();
 
-            // Compute uptime if we have server info
-            let uptime_seconds = server.as_ref().and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(&s.started_at)
-                    .ok()
-                    .map(|started| {
-                        let now = chrono::Utc::now();
-                        (now - started.with_timezone(&chrono::Utc)).num_seconds()
-                    })
-            });
+                // Compute uptime if we have server info
+                let uptime_seconds = server.as_ref().and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(&s.started_at)
+                        .ok()
+                        .map(|started| {
+                            let now = chrono::Utc::now();
+                            (now - started.with_timezone(&chrono::Utc)).num_seconds()
+                        })
+                });
 
-            ServerStatsOutput {
-                server,
-                client_count: clients.len(),
-                uptime_seconds,
-            }
-        })
-        .boxed()
+                ServerStatsOutput {
+                    server,
+                    client_count: clients.len(),
+                    uptime_seconds,
+                }
+            }))
     }
 }

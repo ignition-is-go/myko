@@ -4,7 +4,7 @@ use crate::{
     common::with_id::WithId,
     event::MEvent,
     item::Eventable,
-    message::MykoMessage,
+    api::message::MykoMessage,
     query::{QueryParams, QueryRequest},
     report::{ReportIdStatic, ReportParams, ReportRequest, WrappedReport},
 };

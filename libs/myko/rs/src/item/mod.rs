@@ -34,8 +34,8 @@ pub struct WrappedItem<T> {
 }
 
 pub trait Eventable: AnyItem + Serialize + DeserializeOwned + Clone + Sized + Any {
-    fn entity_name(&self) -> String;
-    fn entity_name_static() -> String;
+    /// Static entity type name (use entity_type() from AnyItem for instance method).
+    fn entity_name_static() -> &'static str;
 
     /// Create the registration data (parser) for this entity type.
     fn create_registration() -> RegisterItemData {

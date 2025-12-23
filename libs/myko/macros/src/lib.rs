@@ -202,6 +202,12 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
         #input
 
         myko_rs::register_ts_export!(#name);
+
+        impl myko_rs::prelude::ToValue for #name {
+            fn to_value(&self) -> serde_json::Value {
+                serde_json::to_value(self).expect("Failed to serialize report output")
+            }
+        }
     };
 
     expanded.into()

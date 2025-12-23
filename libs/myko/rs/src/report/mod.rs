@@ -14,7 +14,6 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::{
-    actors::report::report_manager::RegisterReportData,
     client::MykoClient,
     common::with_transaction::WithTransaction,
 };
@@ -181,33 +180,6 @@ macro_rules! report_stream {
     };
 }
 
-inventory::collect!(ReportRegistration);
-
-/// Type alias for the report factory function pointer.
-/// Returns the data needed to register a report (compute_fn).
-pub type ReportFactoryFn = fn() -> RegisterReportData;
-
-pub struct ReportRegistration {
-    pub report_id: &'static str,
-    pub output_type: &'static str,
-    pub crate_name: &'static str,
-    /// The crate where the output type is defined (for filtering imports)
-    pub output_type_crate: &'static str,
-    /// Factory function that creates the registration data
-    pub factory: ReportFactoryFn,
-}
-
-impl std::fmt::Debug for ReportRegistration {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReportRegistration")
-            .field("report_id", &self.report_id)
-            .field("output_type", &self.output_type)
-            .field("crate_name", &self.crate_name)
-            .field("output_type_crate", &self.output_type_crate)
-            .finish()
-    }
-}
-
 /// Wrapper struct for count report outputs.
 /// Using a struct instead of a primitive ensures consistent TypeScript type generation via ts-rs.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -362,50 +334,101 @@ impl<R: ReportParams> Report for ReportRequest<R> {
     }
 }
 
-/// Extension trait for ReportParams to provide a factory function.
+// ─────────────────────────────────────────────────────────────────────────────
+// Report Registration (inventory-based)
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::parsers::report::MykoReportParser;
+use crate::store::StoreRegistry;
+use hypha::{Cell, CellImmutable};
+use std::any::Any;
+
+use crate::common::to_value::ToValue;
+
+/// Type-erased report output trait.
+/// Report outputs implement this to enable serialization at the WebSocket layer.
+pub trait AnyOutput: ToValue + Send + Sync + 'static {}
+
+/// Blanket implementation for any type that satisfies the bounds.
+impl<T: ToValue + Send + Sync + 'static> AnyOutput for T {}
+
+/// Type-erased cell factory for reports.
+/// Takes a typed report, registry, and host_id, returns a cell of type-erased output.
+pub type ReportCellFactory = fn(
+    Arc<dyn AnyReport>,
+    Arc<StoreRegistry>,
+    Uuid, // host_id for context
+) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
+
+/// Data needed to register a report.
+pub struct RegisterReportData {
+    pub report_id: Arc<str>,
+    pub parser: Arc<dyn MykoReportParser>,
+    pub cell_factory: ReportCellFactory,
+}
+
+/// Type alias for the report factory function pointer.
+pub type ReportFactoryFn = fn() -> RegisterReportData;
+
+/// Registration entry for a report type.
+/// Collected via inventory for automatic discovery.
+pub struct ReportRegistration {
+    /// Report identifier (e.g., "ServerStats")
+    pub report_id: &'static str,
+    /// Crate where this report is defined (for type_gen filtering)
+    pub crate_name: &'static str,
+    /// Output type name (e.g., "ServerStatsOutput")
+    pub output_type: &'static str,
+    /// Crate where the output type is defined
+    pub output_type_crate: &'static str,
+    /// Factory function that creates the registration data
+    pub factory: ReportFactoryFn,
+}
+
+inventory::collect!(ReportRegistration);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ReportFactory - Creates registration data for cell-based reports
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::parsers::report::CapturedReportParser;
+use hypha::MapExt;
+
+/// Factory trait for creating report registrations.
 ///
-/// This is implemented for all ReportParams types via blanket impl.
+/// This trait has a blanket implementation for all types implementing `ReportParams`,
+/// so user-defined reports automatically get a `create_registration()` method.
 pub trait ReportFactory: ReportParams {
-    /// Create the registration data (compute_fn) for this report type.
+    /// Create the registration data (cell factory) for this report type.
     fn create_registration() -> RegisterReportData;
 }
 
 impl<R: ReportParams> ReportFactory for R {
     fn create_registration() -> RegisterReportData {
-        let compute_fn = Arc::new(
-            |ctx: ReportContext,
-             _report_value: Value|
-             -> Result<Pin<Box<dyn Stream<Item = Value> + Send>>, String> {
-                // Parse args - framework handles parse errors
-                let args: R = serde_json::from_value(ctx.report_args.clone())
-                    .map_err(|e| format!("Failed to parse report args: {}", e))?;
-
-                // Call compute with parsed args as &self
-                let stream = args.compute(ctx);
-
-                // Map the output to Value
-                Ok(Box::pin(futures::stream::unfold(stream, |mut s| async move {
-                    use futures::StreamExt;
-                    match s.next().await {
-                        Some(output) => match serde_json::to_value(&output) {
-                            Ok(value) => {
-                                log::trace!("Report serialized output: {}", value);
-                                Some((value, s))
-                            }
-                            Err(e) => {
-                                log::error!("Failed to serialize report output: {}", e);
-                                None
-                            }
-                        },
-                        None => None,
-                    }
-                })))
-            },
-        );
+        // Use ReportRequest<R> for parsing since that's what implements AnyReport
+        let parser: Arc<dyn MykoReportParser> = Arc::new(CapturedReportParser::<ReportRequest<R>>::new());
 
         RegisterReportData {
             report_id: <R as ReportIdStatic>::report_id_static().into(),
-            compute_fn,
+            parser,
+            cell_factory: |any_report: Arc<dyn AnyReport>, registry: Arc<StoreRegistry>, host_id: Uuid| -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
+                // Downcast to the ReportRequest wrapper
+                let any_ref: &dyn Any = any_report.as_ref();
+                let request: ReportRequest<R> = any_ref
+                    .downcast_ref::<ReportRequest<R>>()
+                    .cloned()
+                    .ok_or_else(|| format!("Failed to downcast report to ReportRequest<{}>", R::report_id_static()))?;
+
+                // Create a ReportContext with host_id - report args are accessed via &self in compute
+                let ctx = ReportContext::with_host_id(registry, host_id);
+
+                // Call the inner report's compute method
+                let cell = <R as ReportHandler>::compute(&request.report, ctx);
+
+                // Map to type-erased output (clone since map receives a reference)
+                Ok(cell.map(|output| Arc::new(output.clone()) as Arc<dyn AnyOutput>))
+            },
         }
     }
 }
+

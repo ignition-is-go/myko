@@ -12,19 +12,25 @@ pub use crate::{
         query::AnyQuery,
     },
     query::{
-        Query, QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType,
-        QueryRegistration,
+        Query, QueryFactory, QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType,
+        QueryRegistration, RegisterQueryData,
     },
     report::{
-        AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
-        ReportIdStatic, ReportOutputType, ReportRegistration, ReportStream, WrappedReport,
+        AnyReport, CountResult, MykoReport, Report, ReportContext, ReportFactory, ReportHandler,
+        ReportId, ReportIdStatic, ReportOutputType, ReportRegistration, RegisterReportData,
+        WrappedReport,
     },
     search::{EntitySearch, EntitySearchResult, SearchableRegistration, iter_searchable},
-    server::{MykoServer, MykoServerArgs},
+    server::{MykoServer, MykoServerBuilder},
     sync_client::{RunnerInfo, SyncClient, ValueUpdated},
     type_gen::{generate_item_types, export_registered_ts_types, TsExportRegistration},
     utils::downcast_item,
+    api::message::*
 };
+
+// Re-export hypha cell types for reports
+pub use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, Watchable};
+
 pub use chrono::Utc;
 pub use myko_macros::*;
 pub use uuid::Uuid;

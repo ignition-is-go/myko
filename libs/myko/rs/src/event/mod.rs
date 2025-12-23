@@ -21,6 +21,10 @@ pub struct EventOptions {
     /// Used to prevent infinite loops during cascade processing.
     #[serde(default)]
     pub prevent_relationship_updates: bool,
+    /// When true, the event is not persisted to Kafka.
+    /// Used for events from Kafka (to avoid re-publishing).
+    #[serde(default)]
+    pub prevent_persist: bool,
     /// When true, this event was replicated from a peer server.
     /// Used to prevent re-broadcasting to peers and avoid cascade loops.
     #[serde(default)]
@@ -73,14 +77,14 @@ impl MEvent {
         self.item.clone()
     }
 
-    pub fn from_item(item: &impl Eventable, change_type: MEventType, tx: String) -> MEvent {
+    pub fn from_item(item: &impl Eventable, change_type: MEventType, source_id: &str) -> MEvent {
         MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type,
-            item_type: item.entity_name().to_string(),
+            item_type: item.entity_type().to_string(),
             created_at: Utc::now().to_rfc3339(),
-            tx,
-            source_id: None,
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: Some(source_id.to_string()),
             options: None,
         }
     }
@@ -89,17 +93,43 @@ impl MEvent {
     pub fn from_item_with_options(
         item: &impl Eventable,
         change_type: MEventType,
-        tx: String,
+        source_id: &str,
         options: Option<EventOptions>,
     ) -> MEvent {
         MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type,
-            item_type: item.entity_name().to_string(),
+            item_type: item.entity_type().to_string(),
             created_at: Utc::now().to_rfc3339(),
-            tx,
-            source_id: None,
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: Some(source_id.to_string()),
             options,
+        }
+    }
+
+    /// Create a DEL event for an entity type and ID
+    pub fn del(entity_type: &str, id: &str, source_id: &str) -> MEvent {
+        MEvent {
+            item: serde_json::json!({ "id": id }),
+            change_type: MEventType::DEL,
+            item_type: entity_type.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: Some(source_id.to_string()),
+            options: None,
+        }
+    }
+
+    /// Create a SET event from a JSON value
+    pub fn set_from_value(entity_type: &str, value: Value, source_id: &str) -> MEvent {
+        MEvent {
+            item: value,
+            change_type: MEventType::SET,
+            item_type: entity_type.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: Some(source_id.to_string()),
+            options: None,
         }
     }
 

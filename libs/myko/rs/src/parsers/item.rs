@@ -6,6 +6,9 @@ use std::{any::Any, fmt::Debug, sync::Arc};
 pub trait AnyItem: WithId + ToValue + Any + Debug + Send + Sync + 'static {
     /// Returns self as &dyn Any for downcasting.
     fn as_any(&self) -> &dyn Any;
+
+    /// Returns the entity type name (e.g., "Target", "Scene").
+    fn entity_type(&self) -> &'static str;
 }
 
 pub trait MykoItemParser: Send + Sync + 'static {

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use crate::report::{ReportContext, ReportHandler};
 use crate::{self as myko_rs};
-use futures::StreamExt;
+use hypha::{Cell, CellImmutable, MapExt};
 use myko_macros::{myko_command, myko_report, myko_report_output};
 use std::sync::Arc;
 
@@ -33,16 +33,14 @@ pub struct ClientStatus {
 impl ReportHandler for ClientStatus {
     type Output = ClientStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
+    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
         let client_id = self.client_id.clone();
 
         // Query all clients and check if one with our id exists
-        let stream = ctx.query(GetAllClients {});
-
-        Box::pin(stream.map(move |clients| {
+        ctx.query(GetAllClients {}).map(move |clients| {
             let online = clients.iter().any(|c| c.id == client_id);
             ClientStatusOutput { online }
-        }))
+        })
     }
 }
 
@@ -64,19 +62,17 @@ pub struct WindbackStatus {}
 impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> crate::report::ReportStream<Self::Output> {
+    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
         let client_id = ctx.client_id().map(Arc::from);
 
         // Query all clients and find the requesting client's windback status
-        let stream = ctx.query(GetAllClients {});
-
-        Box::pin(stream.map(move |clients| {
+        ctx.query(GetAllClients {}).map(move |clients| {
             let windback = client_id
                 .as_ref()
                 .and_then(|cid| clients.iter().find(|c| &c.id == cid))
                 .and_then(|c| c.windback.clone());
             WindbackStatusOutput { windback }
-        }))
+        })
     }
 }
 
@@ -112,8 +108,6 @@ impl SetClientWindbackTimeHandler {
                 message: format!("Client {} not found", client_id),
             })?;
 
-        let windback = cmd.windback.clone();
-
         // Update client with new windback time
         let updated_client = Client {
             id: client.id.clone(),
@@ -124,8 +118,8 @@ impl SetClientWindbackTimeHandler {
 
         ctx.emit_set(&updated_client)?;
 
-        // Update the windback cache in MessageHandler
-        ctx.server_ctx().update_windback(client.id, Some(windback));
+        // Windback is now persisted directly in the Client entity
+        // No separate cache needed
 
         Ok(true)
     }
@@ -170,8 +164,8 @@ impl ClearClientWindbackTimeHandler {
 
         ctx.emit_set(&updated_client)?;
 
-        // Update the windback cache in MessageHandler
-        ctx.server_ctx().update_windback(client.id, None);
+        // Windback is now persisted directly in the Client entity
+        // No separate cache needed
 
         Ok(true)
     }

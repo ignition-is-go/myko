@@ -331,11 +331,11 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
 /// Generate relationship registration code
 pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> TokenStream {
     let mut registrations = Vec::new();
+    let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
 
     // Generate BelongsTo registrations
     for bt in &info.belongs_to {
-        let local_key = &bt.field_name;
-        let local_key_json = &bt.field_name_json;
+        let field_ident = syn::Ident::new(&bt.field_name, proc_macro2::Span::call_site());
         let foreign_type = &bt.foreign_type;
 
         registrations.push(quote! {
@@ -343,9 +343,11 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 myko_rs::relationship::RelationRegistration {
                     relation: myko_rs::relationship::Relation::BelongsTo {
                         local_type: #local_type,
-                        local_key: #local_key,
-                        local_key_json: #local_key_json,
                         foreign_type: #foreign_type,
+                        extract_fk: |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
+                            item.downcast_ref::<#local_type_ident>()
+                                .map(|e| e.#field_ident.clone())
+                        },
                     }
                 }
             }
@@ -354,8 +356,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
 
     // Generate OwnsMany registrations
     for om in &info.owns_many {
-        let local_key = &om.field_name;
-        let local_key_json = &om.field_name_json;
+        let field_ident = syn::Ident::new(&om.field_name, proc_macro2::Span::call_site());
         let foreign_type = &om.foreign_type;
 
         registrations.push(quote! {
@@ -363,9 +364,18 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 myko_rs::relationship::RelationRegistration {
                     relation: myko_rs::relationship::Relation::OwnsMany {
                         local_type: #local_type,
-                        local_key: #local_key,
-                        local_key_json: #local_key_json,
                         foreign_type: #foreign_type,
+                        extract_ids: |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
+                            item.downcast_ref::<#local_type_ident>()
+                                .map(|e| e.#field_ident.clone())
+                        },
+                        remove_id: |item: &dyn std::any::Any, id_to_remove: &str| -> Option<std::sync::Arc<dyn myko_rs::parsers::item::AnyItem>> {
+                            item.downcast_ref::<#local_type_ident>().map(|e| {
+                                let mut updated = e.clone();
+                                updated.#field_ident.retain(|id| id.as_ref() != id_to_remove);
+                                std::sync::Arc::new(updated) as std::sync::Arc<dyn myko_rs::parsers::item::AnyItem>
+                            })
+                        },
                     }
                 }
             }
@@ -377,26 +387,44 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         let deps: Vec<_> = ef
             .dependencies
             .iter()
-            .map(|(ft, lk, lkj)| {
+            .map(|(ft, lk, _lkj)| {
+                let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 quote! {
                     myko_rs::relationship::EnsureForDependency {
                         foreign_type: #ft,
-                        local_key: #lk,
-                        local_key_json: #lkj,
+                        extract_fk: |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
+                            item.downcast_ref::<#local_type_ident>()
+                                .map(|e| e.#field_ident.clone())
+                        },
                     }
                 }
             })
             .collect();
 
-        // Generate make_default function based on default_values
-        let default_fields: Vec<_> = info
+        // Generate make_entity function that creates entity with dependency IDs populated
+        // The function takes &[Arc<str>] with IDs in the same order as dependencies
+        let fk_field_assignments: Vec<_> = ef
+            .dependencies
+            .iter()
+            .enumerate()
+            .map(|(i, (_, lk, _lkj))| {
+                let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
+                let idx = syn::Index::from(i);
+                quote! {
+                    entity.#field_ident = dep_ids[#idx].clone();
+                }
+            })
+            .collect();
+
+        // Generate default value assignments
+        let default_assignments: Vec<_> = info
             .default_values
             .iter()
             .map(|dv| {
-                let field_json = &dv.field_name_json;
+                let field_ident = syn::Ident::new(&dv.field_name, proc_macro2::Span::call_site());
                 let value = &dv.value_tokens;
                 quote! {
-                    obj.insert(#field_json.to_string(), serde_json::json!(#value));
+                    entity.#field_ident = #value.into();
                 }
             })
             .collect();
@@ -407,10 +435,13 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                     relation: myko_rs::relationship::Relation::EnsureFor {
                         local_type: #local_type,
                         dependencies: &[#(#deps),*],
-                        make_default: || {
-                            let mut obj = serde_json::Map::new();
-                            #(#default_fields)*
-                            serde_json::Value::Object(obj)
+                        make_entity: |dep_ids: &[std::sync::Arc<str>]| {
+                            let mut entity = #local_type_ident::default();
+                            entity.id = uuid::Uuid::new_v4().to_string().into();
+                            entity.hash = std::sync::Arc::from("");
+                            #(#fk_field_assignments)*
+                            #(#default_assignments)*
+                            std::sync::Arc::new(entity) as std::sync::Arc<dyn myko_rs::parsers::item::AnyItem>
                         },
                     }
                 }

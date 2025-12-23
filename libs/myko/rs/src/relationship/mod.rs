@@ -60,10 +60,24 @@
 //! - **BelongsTo**: Delete children whose FK points to a non-existent parent
 //! - **OwnsMany**: Delete children not referenced in any parent's array
 
-use serde_json::Value;
+use std::sync::Arc;
+
+use crate::parsers::item::AnyItem;
+
+/// Type alias for a function that extracts an FK value from an entity
+pub type FkExtractor = fn(&dyn std::any::Any) -> Option<Arc<str>>;
+
+/// Type alias for a function that extracts an array of IDs from an entity
+pub type ArrayExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
+
+/// Type alias for a function that removes an ID from a parent's array and returns the updated entity
+pub type ArrayRemover = fn(&dyn std::any::Any, &str) -> Option<Arc<dyn AnyItem>>;
+
+/// Type alias for a function that creates an EnsureFor entity with dependency IDs populated
+pub type EntityFactory = fn(&[Arc<str>]) -> Arc<dyn AnyItem>;
 
 /// Represents the different types of entity relationships
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Relation {
     /// Child entity has a foreign key pointing to parent.
     /// When parent is DEL'd -> cascade delete all children with matching FK.
@@ -73,12 +87,10 @@ pub enum Relation {
     BelongsTo {
         /// Entity type that has the foreign key (child)
         local_type: &'static str,
-        /// Field name on local entity holding the FK (snake_case)
-        local_key: &'static str,
-        /// Field name in JSON (camelCase)
-        local_key_json: &'static str,
         /// Entity type being referenced (parent)
         foreign_type: &'static str,
+        /// Function to extract the FK value from a child entity
+        extract_fk: FkExtractor,
     },
 
     /// Parent entity owns an array of child IDs.
@@ -91,12 +103,12 @@ pub enum Relation {
     OwnsMany {
         /// Entity type that owns the array (parent)
         local_type: &'static str,
-        /// Field name on local entity holding child IDs (snake_case)
-        local_key: &'static str,
-        /// Field name in JSON (camelCase)
-        local_key_json: &'static str,
         /// Entity type being owned (child)
         foreign_type: &'static str,
+        /// Function to extract owned IDs from a parent entity
+        extract_ids: ArrayExtractor,
+        /// Function to remove an ID from parent and return updated entity as Value
+        remove_id: ArrayRemover,
     },
 
     /// Auto-create entity for each combination of dependencies.
@@ -109,20 +121,62 @@ pub enum Relation {
         local_type: &'static str,
         /// Dependencies to create Cartesian product from
         dependencies: &'static [EnsureForDependency],
-        /// Factory function to create default entity value
-        make_default: fn() -> Value,
+        /// Factory function to create entity with dependency IDs populated.
+        /// Takes slice of dependency IDs in same order as dependencies array.
+        /// Returns complete entity with id, hash, FK fields, and default values.
+        make_entity: EntityFactory,
     },
 }
 
+impl std::fmt::Debug for Relation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Relation::BelongsTo {
+                local_type,
+                foreign_type,
+                ..
+            } => f
+                .debug_struct("BelongsTo")
+                .field("local_type", local_type)
+                .field("foreign_type", foreign_type)
+                .finish(),
+            Relation::OwnsMany {
+                local_type,
+                foreign_type,
+                ..
+            } => f
+                .debug_struct("OwnsMany")
+                .field("local_type", local_type)
+                .field("foreign_type", foreign_type)
+                .finish(),
+            Relation::EnsureFor {
+                local_type,
+                dependencies,
+                ..
+            } => f
+                .debug_struct("EnsureFor")
+                .field("local_type", local_type)
+                .field("dependencies", dependencies)
+                .finish(),
+        }
+    }
+}
+
 /// A dependency for EnsureFor relationships
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct EnsureForDependency {
     /// Entity type of the dependency
     pub foreign_type: &'static str,
-    /// Field on local entity pointing to dependency (snake_case)
-    pub local_key: &'static str,
-    /// Field name in JSON (camelCase)
-    pub local_key_json: &'static str,
+    /// Function to extract the FK value from the local entity
+    pub extract_fk: FkExtractor,
+}
+
+impl std::fmt::Debug for EnsureForDependency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnsureForDependency")
+            .field("foreign_type", &self.foreign_type)
+            .finish()
+    }
 }
 
 /// Registration entry for relationship discovery via inventory
@@ -170,20 +224,32 @@ pub fn iter_client_id_registrations() -> impl Iterator<Item = &'static ClientIdR
 mod tests {
     use super::*;
 
+    // Dummy extractors for testing
+    fn dummy_fk_extractor(_: &dyn std::any::Any) -> Option<Arc<str>> {
+        None
+    }
+
+    fn dummy_array_extractor(_: &dyn std::any::Any) -> Option<Vec<Arc<str>>> {
+        None
+    }
+
+    fn dummy_array_remover(_: &dyn std::any::Any, _: &str) -> Option<Arc<dyn AnyItem>> {
+        None
+    }
+
     #[test]
     fn test_relation_variants() {
         let belongs_to = Relation::BelongsTo {
             local_type: "Binding",
-            local_key: "scope_id",
-            local_key_json: "scopeId",
             foreign_type: "Scene",
+            extract_fk: dummy_fk_extractor,
         };
 
         let owns_many = Relation::OwnsMany {
             local_type: "Scene",
-            local_key: "node_ids",
-            local_key_json: "nodeIds",
             foreign_type: "BindingNode",
+            extract_ids: dummy_array_extractor,
+            remove_id: dummy_array_remover,
         };
 
         // Verify we can match on variants

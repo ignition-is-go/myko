@@ -22,13 +22,14 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
         }
     };
 
+    // Generate query registration using QueryFactory trait
     let query_registration = quote! {
         myko_rs::prelude::QueryRegistration {
             query_id: stringify!(#struct_name),
             query_item_type: stringify!(#query_item_type),
             crate_name: module_path!(),
-            factory: || -> myko_rs::actors::query::query_manager::RegisterQueryData {
-                use myko_rs::query::QueryFactory;
+            factory: || -> myko_rs::prelude::RegisterQueryData {
+                use myko_rs::prelude::QueryFactory;
                 #struct_name::create_registration()
             },
         }
@@ -76,6 +77,7 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
 
         // Note: WithTransaction, AnyQuery, and Query are implemented on QueryRequest<#struct_name>
         // via blanket impls in myko_rs. The user's struct just implements the identity traits.
+        // QueryFactory is implemented via blanket impl and provides create_registration().
     };
 
     expanded

@@ -26,12 +26,12 @@
 //! }
 //! ```
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable};
+use hypha::{Cell, CellImmutable, MapExt};
 
 use crate::parsers::item::AnyItem;
-use crate::query::cell::{query_all, query_by_id, query_by_ids, query_count, query_where};
 use crate::store::StoreRegistry;
 
 /// Context for cell-based report handlers.
@@ -52,8 +52,11 @@ impl CellReportContext {
     ///
     /// Returns a cell that updates whenever any entity of this type changes.
     pub fn query_all(&self, entity_type: &str) -> Cell<Vec<Arc<dyn AnyItem>>, CellImmutable> {
-        let store = self.registry.get_or_create(entity_type);
-        query_all(&store)
+        self.registry
+            .get_or_create(entity_type)
+            .select(|_| true)
+            .entries()
+            .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
     }
 
     /// Query entities by IDs.
@@ -64,8 +67,12 @@ impl CellReportContext {
         entity_type: &str,
         ids: Vec<Arc<str>>,
     ) -> Cell<Vec<Arc<dyn AnyItem>>, CellImmutable> {
-        let store = self.registry.get_or_create(entity_type);
-        query_by_ids(&store, ids)
+        let id_set: HashSet<Arc<str>> = ids.into_iter().collect();
+        self.registry
+            .get_or_create(entity_type)
+            .select(move |item| id_set.contains(&item.id()))
+            .entries()
+            .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
     }
 
     /// Query entities by predicate.
@@ -79,8 +86,11 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        let store = self.registry.get_or_create(entity_type);
-        query_where(&store, predicate)
+        self.registry
+            .get_or_create(entity_type)
+            .select(predicate)
+            .entries()
+            .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
     }
 
     /// Query a single entity by ID.
@@ -91,8 +101,11 @@ impl CellReportContext {
         entity_type: &str,
         id: Arc<str>,
     ) -> Cell<Option<Arc<dyn AnyItem>>, CellImmutable> {
-        let store = self.registry.get_or_create(entity_type);
-        query_by_id(&store, id)
+        self.registry
+            .get_or_create(entity_type)
+            .select(move |item| *item.id() == *id)
+            .entries()
+            .map(|entries| entries.iter().next().map(|(_, item)| item.clone()))
     }
 
     /// Count entities matching a predicate.
@@ -100,8 +113,7 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        let store = self.registry.get_or_create(entity_type);
-        query_count(&store, predicate)
+        self.registry.get_or_create(entity_type).select(predicate).len()
     }
 
     /// Execute a sub-report and get its reactive output.
@@ -177,6 +189,10 @@ mod tests {
     impl AnyItem for TestTarget {
         fn as_any(&self) -> &dyn std::any::Any {
             self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "TestTarget"
         }
     }
 

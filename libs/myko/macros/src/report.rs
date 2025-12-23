@@ -22,20 +22,15 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
         }
     };
 
-    // Convert the full output type path to a string for registration
-    // This preserves generics like Option<Server> -> "Option < Server >"
-    let output_type_str = quote!(#report_output_type).to_string();
-
+    // Generate report registration using ReportFactory trait
     let report_registration = quote! {
         myko_rs::prelude::ReportRegistration {
             report_id: stringify!(#struct_name),
-            output_type: #output_type_str,
             crate_name: module_path!(),
-            // Output type crate: use module_path!() since the output type is defined
-            // in the same crate as the report (either explicitly or via generated types)
+            output_type: stringify!(#report_output_type),
             output_type_crate: module_path!(),
-            factory: || -> myko_rs::actors::report::report_manager::RegisterReportData {
-                use myko_rs::report::ReportFactory;
+            factory: || -> myko_rs::prelude::RegisterReportData {
+                use myko_rs::prelude::ReportFactory;
                 #struct_name::create_registration()
             },
         }
@@ -75,6 +70,7 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
         // Note: WithTransaction, AnyReport, and Report are implemented on ReportRequest<#struct_name>
         // via blanket impls in myko_rs. The user's struct just implements the identity traits.
         // ReportHandler must still be implemented by the user.
+        // ReportFactory is implemented via blanket impl and provides create_registration().
     };
 
     expanded

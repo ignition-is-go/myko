@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use hypha::MapDiff;
 use serde::{Deserialize, Serialize, de::Error};
 use serde_json::Value;
 use ts_rs::TS;
 
 use crate::{
     item::WrappedItem,
+    parsers::item::AnyItem,
     query::{QueryId, QueryItemType},
 };
 
@@ -46,6 +48,43 @@ impl QueryResponse {
             upserts: vec![],
             deletes: vec![],
             tx,
+        }
+    }
+
+    /// Create a QueryResponse from a MapDiff.
+    pub fn from_diff(
+        diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        tx: Arc<str>,
+        sequence: u64,
+    ) -> QueryResponse {
+        match diff {
+            MapDiff::Initial { entries } => {
+                let upserts = entries
+                    .iter()
+                    .map(|(_, item)| WrappedItem {
+                        item: item.to_value(),
+                        item_type: item.entity_type().into(),
+                    })
+                    .collect();
+                QueryResponse { tx, sequence, upserts, deletes: vec![] }
+            }
+            MapDiff::Insert { key: _, value } => {
+                let upserts = vec![WrappedItem {
+                    item: value.to_value(),
+                    item_type: value.entity_type().into(),
+                }];
+                QueryResponse { tx, sequence, upserts, deletes: vec![] }
+            }
+            MapDiff::Update { key: _, old_value: _, new_value } => {
+                let upserts = vec![WrappedItem {
+                    item: new_value.to_value(),
+                    item_type: new_value.entity_type().into(),
+                }];
+                QueryResponse { tx, sequence, upserts, deletes: vec![] }
+            }
+            MapDiff::Remove { key, old_value: _ } => {
+                QueryResponse { tx, sequence, upserts: vec![], deletes: vec![key.clone()] }
+            }
         }
     }
 

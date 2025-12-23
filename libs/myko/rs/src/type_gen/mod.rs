@@ -5,7 +5,7 @@ use dprint_plugin_typescript::{
     configuration::{ConfigurationBuilder, TrailingCommas},
 };
 
-use crate::{command::CommandRegistration, item::ItemRegistration, message::MessageEventRegistration, query::QueryRegistration, report::ReportRegistration};
+use crate::{api::message::MessageEventRegistration, command::CommandRegistration, item::ItemRegistration, query::QueryRegistration, report::ReportRegistration};
 
 // ============================================================================
 // ts-rs Export Registration

@@ -64,6 +64,30 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             }
         }
 
+        impl #get_all_query_ident {
+            /// Create a reactive cell for this query.
+            pub fn cell(
+                &self,
+                registry: &myko_rs::store::StoreRegistry,
+            ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
+                use myko_rs::hypha::MapExt;
+                registry
+                    .get_or_create(#name_str)
+                    .select(|_| true)
+                    .entries()
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter_map(|(_, item)| {
+                                item.as_any()
+                                    .downcast_ref::<#name>()
+                                    .cloned()
+                            })
+                            .collect()
+                    })
+            }
+        }
+
     };
 
     let get_by_ids_query_ident = format_ident!("Get{}sByIds", name_str);
@@ -78,6 +102,32 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::QueryHandler for #get_by_ids_query_ident {
             fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
                 ctx.query.ids.contains(&ctx.item.id)
+            }
+        }
+
+        impl #get_by_ids_query_ident {
+            /// Create a reactive cell for this query.
+            pub fn cell(
+                &self,
+                registry: &myko_rs::store::StoreRegistry,
+            ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
+                use myko_rs::hypha::MapExt;
+                let id_set: std::collections::HashSet<std::sync::Arc<str>> =
+                    self.ids.iter().cloned().collect();
+                registry
+                    .get_or_create(#name_str)
+                    .select(move |item| id_set.contains(&item.id()))
+                    .entries()
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter_map(|(_, item)| {
+                                item.as_any()
+                                    .downcast_ref::<#name>()
+                                    .cloned()
+                            })
+                            .collect()
+                    })
             }
         }
     };
@@ -95,6 +145,37 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
              }
          }
 
+         impl #get_by_partial_ident {
+             /// Create a reactive cell for this query.
+             pub fn cell(
+                 &self,
+                 registry: &myko_rs::store::StoreRegistry,
+             ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
+                 use myko_rs::hypha::MapExt;
+                 let partial = self.0.clone();
+                 registry
+                     .get_or_create(#name_str)
+                     .select(move |item| {
+                         if let Some(entity) = item.as_any().downcast_ref::<#name>() {
+                             partial.matches(entity)
+                         } else {
+                             false
+                         }
+                     })
+                     .entries()
+                     .map(|entries| {
+                         entries
+                             .iter()
+                             .filter_map(|(_, item)| {
+                                 item.as_any()
+                                     .downcast_ref::<#name>()
+                                     .cloned()
+                             })
+                             .collect()
+                     })
+             }
+         }
+
     };
 
     // Generate per-entity count result type (e.g., TargetCount, InstanceCount)
@@ -102,13 +183,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let count_result_ident = format_ident!("{}Count", name_str);
 
     let count_result_type = quote! {
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
-        #[serde(rename_all = "camelCase")]
+        #[myko_macros::myko_report_output]
         pub struct #count_result_ident {
             pub count: usize,
         }
-
-        myko_rs::register_ts_export!(#count_result_ident);
     };
 
     // Generate CountAll report
@@ -121,14 +199,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::ReportHandler for #count_all_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::ReportStream<Self::Output> {
-                use futures::StreamExt;
+            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::Cell<Self::Output, myko_rs::prelude::CellImmutable> {
+                use myko_rs::prelude::MapExt;
 
-                // Use bare query params - ctx.query() wraps them automatically
+                // Query all items and count them
                 let query = #get_all_query_ident {};
-                let stream = ctx.query(query);
-
-                Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
+                ctx.query(query).map(|items| #count_result_ident { count: items.len() })
             }
         }
     };
@@ -143,14 +219,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::ReportStream<Self::Output> {
-                use futures::StreamExt;
+            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::Cell<Self::Output, myko_rs::prelude::CellImmutable> {
+                use myko_rs::prelude::MapExt;
 
-                // Use bare query params - ctx.query() wraps them automatically
+                // Query by partial filter and count results
                 let query = #get_by_partial_ident(self.0.clone());
-                let stream = ctx.query(query);
-
-                Box::pin(stream.map(|items| #count_result_ident { count: items.len() }))
+                ctx.query(query).map(|items| #count_result_ident { count: items.len() })
             }
         }
     };
@@ -167,16 +241,14 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         impl myko_rs::prelude::ReportHandler for #get_by_id_report_ident {
             type Output = Option<#name>;
 
-            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::ReportStream<Self::Output> {
-                use futures::StreamExt;
+            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::Cell<Self::Output, myko_rs::prelude::CellImmutable> {
+                use myko_rs::prelude::MapExt;
 
                 let id = self.id.clone();
 
-                // Use bare query params - ctx.query() wraps them automatically
+                // Query by ID and return the first match (clone from reference)
                 let query = #get_by_ids_query_ident { ids: vec![id] };
-                let stream = ctx.query(query);
-
-                Box::pin(stream.map(|items| items.into_iter().next()))
+                ctx.query(query).map(|items| items.first().cloned())
             }
         }
     };
@@ -290,6 +362,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let expanded = quote! {
 
         use myko_rs::prelude::Query;
+        use myko_rs::hypha::MapExt as _HyphaMapExt;
 
         #derives
         #input_struct
@@ -302,18 +375,18 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         }
 
         impl myko_rs::item::Eventable for #name {
-            fn entity_name(&self) -> String {
-                #name_str.to_string()
-            }
-
-            fn entity_name_static() -> String {
-                #name_str.to_string()
+            fn entity_name_static() -> &'static str {
+                #name_str
             }
         }
 
         impl myko_rs::prelude::AnyItem for #name {
             fn as_any(&self) -> &dyn std::any::Any {
                 self
+            }
+
+            fn entity_type(&self) -> &'static str {
+                #name_str
             }
         }
 
@@ -352,6 +425,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         // Relationship registrations (belongs_to, owns_many, ensure_for)
         #relationship_registrations
+
+        // Note: Auto-generated queries (GetAll*, Get*sByIds, Get*sByQuery) and reports
+        // (CountAll*, Count*, Get*ById) are registered via their #[myko_query] and
+        // #[myko_report] macro attributes which emit inventory registrations.
 
     };
 

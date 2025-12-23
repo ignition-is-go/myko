@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, CellMap, Gettable, MapDiff};
+use hypha::{Cell, CellImmutable, CellMap, Gettable, MapDiff, SelectExt, SubscriptionGuard};
 
 use crate::parsers::item::AnyItem;
 
@@ -86,6 +86,35 @@ impl EntityStore {
     pub fn contains(&self, id: &Arc<str>) -> bool {
         self.inner.contains_key(id)
     }
+
+    /// Get a snapshot of all entities.
+    ///
+    /// This returns the current state of all entities as a Vec.
+    pub fn snapshot(&self) -> Vec<(Arc<str>, Arc<dyn AnyItem>)> {
+        self.inner.entries().get()
+    }
+
+    /// Create a filtered view of the store.
+    ///
+    /// Returns an immutable CellMap containing only entities matching the predicate.
+    /// The filtered view automatically updates when the store changes.
+    pub fn select<F>(&self, predicate: F) -> CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>
+    where
+        F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
+    {
+        self.inner.select(predicate)
+    }
+
+    /// Subscribe to diffs with an initial snapshot.
+    ///
+    /// The callback is first called with `MapDiff::Initial` containing all current
+    /// entries, then called with subsequent diffs as the store changes.
+    pub fn subscribe_diffs<F>(&self, callback: F) -> SubscriptionGuard
+    where
+        F: Fn(&MapDiff<Arc<str>, Arc<dyn AnyItem>>) + Send + Sync + 'static,
+    {
+        self.inner.subscribe_diffs(callback)
+    }
 }
 
 impl Default for EntityStore {
@@ -128,6 +157,10 @@ mod tests {
     impl AnyItem for TestEntity {
         fn as_any(&self) -> &dyn std::any::Any {
             self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "TestEntity"
         }
     }
 
