@@ -66,7 +66,7 @@ struct ProduceEvent {
 /// via a channel. It is `Clone + Send + Sync`.
 #[derive(Clone)]
 pub struct KafkaProducerHandle {
-    sender: mpsc::UnboundedSender<ProduceEvent>,
+    sender: mpsc::Sender<ProduceEvent>,
     host_id: Uuid,
 }
 
@@ -80,8 +80,8 @@ impl KafkaProducerHandle {
             event.source_id = Some(self.host_id.to_string());
         }
 
-        if let Err(e) = self.sender.send(ProduceEvent { event }) {
-            error!("Failed to send event to Kafka producer: {}", e);
+        if let Err(e) = self.sender.try_send(ProduceEvent { event }) {
+            error!("Kafka producer buffer full (50k), dropping event: {}", e);
         }
     }
 
@@ -105,8 +105,8 @@ struct ProducerState {
     admin_client: AdminClient<rdkafka::client::DefaultClientContext>,
     /// Topics that have been created
     created_topics: HashSet<String>,
-    /// Per-topic sender channels
-    topic_senders: HashMap<String, mpsc::UnboundedSender<ProduceTask>>,
+    /// Per-topic sender channels (50k buffer per topic)
+    topic_senders: HashMap<String, mpsc::Sender<ProduceTask>>,
     /// Runtime handle for spawning per-topic tasks
     rt_handle: tokio::runtime::Handle,
 }
@@ -140,12 +140,13 @@ impl ProducerState {
     }
 
     /// Get or create a per-topic sender channel.
-    fn get_or_create_sender(&mut self, topic: &str) -> mpsc::UnboundedSender<ProduceTask> {
+    fn get_or_create_sender(&mut self, topic: &str) -> mpsc::Sender<ProduceTask> {
         if let Some(sender) = self.topic_senders.get(topic) {
             return sender.clone();
         }
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<ProduceTask>();
+        // 50k buffer per topic for high throughput
+        let (tx, mut rx) = mpsc::channel::<ProduceTask>(50_000);
         let producer = self.producer.clone();
         let topic_name = topic.to_string();
 
@@ -201,8 +202,8 @@ impl ProducerState {
 
         // Get sender and queue the event
         let sender = self.get_or_create_sender(&topic);
-        if let Err(err) = sender.send(ProduceTask { event_json, key }) {
-            error!("Failed to queue event for {}: {}", topic, err);
+        if let Err(err) = sender.try_send(ProduceTask { event_json, key }) {
+            error!("Kafka topic {} buffer full (50k), dropping event: {}", topic, err);
         }
     }
 }
@@ -224,8 +225,8 @@ impl CellKafkaProducer {
     pub fn new(config: &KafkaConfig, host_id: Uuid) -> Result<Self, rdkafka::error::KafkaError> {
         let bootstrap_servers = config.bootstrap_servers.join(",");
 
-        // Create channel for receiving events
-        let (tx, mut rx) = mpsc::unbounded_channel::<ProduceEvent>();
+        // Create bounded channel for receiving events (50k buffer)
+        let (tx, mut rx) = mpsc::channel::<ProduceEvent>(50_000);
 
         let handle = KafkaProducerHandle {
             sender: tx,
@@ -345,8 +346,8 @@ impl CatchUpStatus {
 /// 3. Filters out events from this server (source_id == host_id)
 /// 4. Forwards non-self events to EventProcessor
 pub struct CellKafkaConsumer {
-    /// Sender for registering new topics
-    topic_sender: mpsc::UnboundedSender<ConsumerMessage>,
+    /// Sender for registering new topics (100k buffer)
+    topic_sender: mpsc::Sender<ConsumerMessage>,
     /// Catch-up status (shared with consumer thread)
     catch_up_status: Arc<CatchUpStatus>,
     /// Handle to the consumer thread
@@ -366,7 +367,8 @@ impl CellKafkaConsumer {
         handler_registry: Arc<HandlerRegistry>,
         registry: Arc<StoreRegistry>,
     ) -> Result<Self, rdkafka::error::KafkaError> {
-        let (topic_sender, mut topic_receiver) = mpsc::unbounded_channel::<ConsumerMessage>();
+        // 100k buffer for consumer messages
+        let (topic_sender, mut topic_receiver) = mpsc::channel::<ConsumerMessage>(100_000);
         let catch_up_status = Arc::new(CatchUpStatus::new());
         let catch_up_status_clone = catch_up_status.clone();
 
@@ -669,9 +671,12 @@ impl CellKafkaConsumer {
     /// Call this for each entity type to consume events for.
     /// The topic name is the entity type name (e.g., "Target", "Scene").
     pub fn register_topic(&self, entity_type: &str) {
-        let _ = self
+        if let Err(e) = self
             .topic_sender
-            .send(ConsumerMessage::RegisterTopic(entity_type.to_string()));
+            .try_send(ConsumerMessage::RegisterTopic(entity_type.to_string()))
+        {
+            error!("Kafka consumer buffer full (100k), failed to register topic {}: {}", entity_type, e);
+        }
     }
 
     /// Register multiple topics at once.
@@ -686,9 +691,15 @@ impl CellKafkaConsumer {
     /// After calling this, topics registered previously become "initial topics"
     /// and the consumer will track when all of them are caught up.
     pub fn finish_initial_registration(&self) {
-        let _ = self
+        if let Err(e) = self
             .topic_sender
-            .send(ConsumerMessage::InitialRegistrationComplete);
+            .try_send(ConsumerMessage::InitialRegistrationComplete)
+        {
+            error!(
+                "Kafka consumer buffer full, failed to signal registration complete: {}",
+                e
+            );
+        }
     }
 
     /// Get the catch-up status.
