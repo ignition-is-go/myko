@@ -11,10 +11,9 @@ use std::sync::Arc;
 
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 
-use super::protocol::MykoMessage;
-use crate::api::query::QueryResponse;
-use crate::parsers::item::AnyItem;
-use crate::report::{AnyOutput, ReportError, ReportResponse};
+use crate::registry::item::AnyItem;
+use crate::report::AnyOutput;
+use crate::wire::{MykoMessage, QueryResponse, ReportError, ReportResponse};
 
 /// Trait for sending WebSocket messages.
 ///

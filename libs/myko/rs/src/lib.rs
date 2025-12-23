@@ -18,23 +18,18 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────────────┐
-//! │                             MykoServer                                    │
-//! │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-//! │  │EventManager │  │QueryManager │  │ReportManager│  │ CommandManager  │  │
-//! │  │             │  │             │  │             │  │                 │  │
-//! │  │ EventHandler│  │QueryHandler │  │ReportHandler│  │ CommandHandler  │  │
-//! │  │ EventHandler│  │QueryRunner  │  │ReportRunner │  │ (user-defined)  │  │
-//! │  │ ...         │  │...          │  │...          │  │                 │  │
-//! │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────────┘  │
-//! │                          │                                               │
-//! │                    ┌─────┴─────┐                                         │
-//! │                    │ EventBus  │ ← Lock-free broadcast                   │
-//! │                    └─────┬─────┘                                         │
-//! │            ┌─────────────┼─────────────┐                                 │
-//! │            ▼             ▼             ▼                                 │
-//! │     ┌──────────┐  ┌──────────┐  ┌────────────────────┐                   │
-//! │     │SagaRunner│  │SagaRunner│  │RelationshipManager │                   │
-//! │     └──────────┘  └──────────┘  └────────────────────┘                   │
+//! │                             CellServer                                   │
+//! │                                                                          │
+//! │  WebSocket ──► WsHandler ──► CellServerCtx ──► StoreRegistry             │
+//! │      │              │             │                   │                  │
+//! │      │              │             │             CellMap<id, item>        │
+//! │      │              ▼             │                   │                  │
+//! │      │        KafkaProducer       │                   ▼                  │
+//! │      │              │             │         Query/Report cells           │
+//! │      │              ▼             │                   │                  │
+//! │      │           Kafka ◄─────────────── KafkaConsumer                    │
+//! │      │                                                                   │
+//! │      ◄────────────────────── (subscription updates)                      │
 //! └──────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -64,67 +59,65 @@
 //!
 //! | Module | Purpose |
 //! |--------|---------|
-//! | [`actors`] | Actor system: event, query, report, command managers |
 //! | [`client`] | WebSocket client for connecting to Myko servers |
-//! | [`command`] | Command types and traits |
-//! | [`event`] | Event types (`MEvent`, `MEventType`) |
-//! | [`item`] | Base item trait and types |
-//! | [`query`] | Query types and traits |
-//! | [`relationship`] | Entity relationship system (`#[belongs_to]`, `#[owns_many]`, `#[ensure_for]`) |
-//! | [`report`] | Report types and traits |
-//! | [`saga`] | Reactive event processors with stream operators |
-//! | [`server`] | Server context and configuration |
+//! | [`core`] | Core types: command, query, report, saga, item, relationship |
+//! | [`wire`] | Wire protocol types: MykoMessage, MEvent, responses, errors |
+//! | [`server`] | CellServer and server context |
+//! | [`registry`] | Item/query/report parsers and registration |
+//! | [`store`] | Entity store and registry |
 //!
 //! ## Performance
 //!
 //! Myko-rs is optimized for high-throughput, low-latency scenarios:
 //!
-//! - **Direct actor references**: EventHandlers bypass Server routing for O(1) message delivery
-//! - **Lock-free EventBus**: Broadcast to sagas without blocking event processing
+//! - **Hypha cells**: Reactive queries and reports using the hypha cell library
+//! - **Lock-free stores**: CellMap for concurrent entity access
 //! - **MessagePack serialization**: Binary format for efficient WebSocket communication
 //! - **Optional Kafka**: Run in-memory for development, add Kafka for production persistence
 //!
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
 
-pub mod api;
-pub mod server;
-pub mod runtime;
+// Main module structure
 pub mod client;
-pub mod command;
-pub mod common;
-pub mod context;
+pub mod codegen;
+pub mod core;
 pub mod entities;
-pub mod event;
-pub mod item;
-pub mod parsers;
-pub mod query;
-pub mod relationship;
-pub mod report;
-pub mod saga;
+pub mod registry;
 pub mod search;
 pub mod server;
 pub mod store;
-pub mod sync_client;
-pub mod ws;
 pub mod utils;
+pub mod wire;
 
 pub mod prelude;
-pub mod type_gen;
 
 #[cfg(feature = "bench")]
 pub mod bench_entities;
+
+// Re-export core modules at top level for backwards compatibility
+pub use core::{command, common, context, query, relationship, report, saga};
+
+// Re-export registry::item as item for backwards compatibility
+pub use registry::item;
+
+// Re-export wire types at top level for backwards compatibility
+pub use wire::event;
+
+// Re-export parsers as old name for backwards compatibility
+pub use registry as parsers;
+
 // Re-export crates for use in macros
-pub use hypha;  // For cell-based queries/reports in #[myko_item]
+pub use hypha; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
-pub use inventory::submit;  // For myko_rs::submit! macro
+pub use inventory::submit; // For myko_rs::submit! macro
 pub use ts_rs;
-pub use ts_rs::TS;  // For #[derive(myko_rs::TS)]
+pub use ts_rs::TS; // For #[derive(myko_rs::TS)]
 
 /// Helper macro for submitting message event registrations
 #[macro_export]
 macro_rules! submit_message_event {
     ($variant:ident, $event:expr) => {
-        inventory::submit!($crate::message::MessageEventRegistration {
+        inventory::submit!($crate::wire::MessageEventRegistration {
             variant_name: stringify!($variant),
             event_value: $event,
         });

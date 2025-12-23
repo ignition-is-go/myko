@@ -12,10 +12,11 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use uuid::Uuid;
 
-use crate::api::message::{CancelSubscription, MykoMessage, PingData};
 use crate::entities::client::Client;
 use crate::store::StoreRegistry;
-use crate::ws::{ClientSession, WsWriter};
+use crate::wire::{CancelSubscription, MykoMessage, PingData};
+
+use super::client_session::{ClientSession, WsWriter};
 
 use super::{CellServerCtx, HandlerRegistry, KafkaProducerHandle, RelationshipManager};
 

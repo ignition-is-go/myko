@@ -26,7 +26,7 @@ pub fn derive_message_events_impl(input: DeriveInput) -> TokenStream {
                 let event_value = lit_str.value();
                 // Use inventory directly since we can't reference myko_rs from within myko_rs
                 return Some(quote! {
-                    inventory::submit!(crate::api::message::MessageEventRegistration {
+                    inventory::submit!(crate::wire::MessageEventRegistration {
                         variant_name: #variant_name_str,
                         event_value: #event_value,
                     });

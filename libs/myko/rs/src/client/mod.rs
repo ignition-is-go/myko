@@ -1,12 +1,10 @@
 use crate::{
-    api::query::WrappedQuery,
-    command::{CommandId, CommandRequest, wrap_command_request},
+    command::{CommandId, CommandRequest},
     common::with_id::WithId,
-    event::MEvent,
-    item::Eventable,
-    api::message::MykoMessage,
     query::{QueryParams, QueryRequest},
-    report::{ReportIdStatic, ReportParams, ReportRequest, WrappedReport},
+    registry::item::Eventable,
+    report::{ReportIdStatic, ReportParams, ReportRequest},
+    wire::{wrap_command_request, MEvent, MykoMessage, WrappedQuery, WrappedReport},
 };
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
 use log::{debug, error, info, trace, warn};
@@ -78,7 +76,7 @@ impl MykoClient {
             .map_err(|err| err.to_string())
     }
 
-    pub fn send_query(&self, query: crate::api::query::WrappedQuery) -> Result<(), String> {
+    pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
         let myko_msg = MykoMessage::Query(query);
 
         let val = json!(myko_msg);
@@ -602,7 +600,7 @@ impl MykoClient {
     /// Returns a cancel function that stops the query when called.
     pub fn watch_query_callback<F>(
         &self,
-        query: crate::api::query::WrappedQuery,
+        query: WrappedQuery,
         callback: F,
     ) -> impl Fn() + Send + Sync
     where

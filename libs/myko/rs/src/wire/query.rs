@@ -5,11 +5,9 @@ use serde::{Deserialize, Serialize, de::Error};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::{
-    item::WrappedItem,
-    parsers::item::AnyItem,
-    query::{QueryId, QueryItemType},
-};
+use crate::{core::query::{QueryId, QueryItemType}, registry::item::AnyItem};
+
+use super::item::WrappedItem;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

@@ -396,11 +396,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             }
         }
 
-        impl myko_rs::prelude::ToValue for #name {
-            fn to_value(&self) -> serde_json::Value {
-                serde_json::to_value(self).expect("Failed to serialize")
-            }
-        }
+        // ToValue is implemented via blanket impl for all Serialize types
 
         #get_all_query
 

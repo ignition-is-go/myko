@@ -5,7 +5,10 @@ use dprint_plugin_typescript::{
     configuration::{ConfigurationBuilder, TrailingCommas},
 };
 
-use crate::{api::message::MessageEventRegistration, command::CommandRegistration, item::ItemRegistration, query::QueryRegistration, report::ReportRegistration};
+use crate::{
+    command::CommandRegistration, query::QueryRegistration, registry::item::ItemRegistration,
+    report::ReportRegistration, wire::MessageEventRegistration,
+};
 
 // ============================================================================
 // ts-rs Export Registration
@@ -27,7 +30,7 @@ inventory::collect!(TsExportRegistration);
 macro_rules! register_ts_export {
     ($ty:ty) => {
         $crate::inventory::submit! {
-            $crate::type_gen::TsExportRegistration {
+            $crate::codegen::TsExportRegistration {
                 type_name: stringify!($ty),
                 export_fn: || <$ty as $crate::ts_rs::TS>::export(),
             }

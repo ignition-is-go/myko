@@ -1,12 +1,10 @@
 //! Wire protocol types for reports.
 
-use std::sync::Arc;
-
 use serde::{ser::Error, Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::report::ReportId;
+use crate::core::report::ReportId;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

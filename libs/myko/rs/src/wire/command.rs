@@ -1,12 +1,10 @@
 //! Wire protocol types for commands.
 
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::command::{CommandId, CommandRequest};
+use crate::core::command::{CommandId, CommandRequest};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

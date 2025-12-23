@@ -2,9 +2,9 @@
 //!
 //! Re-exports and helpers for the existing wire protocol.
 
-pub use crate::api::message::{CancelSubscription, MykoMessage};
-pub use crate::api::query::{QueryError, QueryResponse};
-pub use crate::report::{ReportError, ReportResponse};
+pub use crate::wire::{
+    CancelSubscription, MykoMessage, QueryError, QueryResponse, ReportError, ReportResponse,
+};
 
 /// Serialize a MykoMessage to MessagePack bytes.
 pub fn message_to_msgpack(msg: &MykoMessage) -> Result<Vec<u8>, rmp_serde::encode::Error> {

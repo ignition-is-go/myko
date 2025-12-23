@@ -1,7 +1,7 @@
 use crate::{
-    api::query::WrappedQuery,
-    prelude::WithTransaction,
+    common::with_transaction::WithTransaction,
     query::{Query, QueryId},
+    wire::WrappedQuery,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;

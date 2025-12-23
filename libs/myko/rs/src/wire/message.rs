@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    api::query::{QueryError, QueryResponse, WrappedQuery},
+use super::{
     command::{CommandError, CommandResponse, WrappedCommand},
     event::MEvent,
+    query::{QueryError, QueryResponse, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
 };
 

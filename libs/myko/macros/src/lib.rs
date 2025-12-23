@@ -196,18 +196,13 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
     let input = parse_macro_input!(input as syn::ItemStruct);
     let name = &input.ident;
 
+    // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
         #[serde(rename_all = "camelCase")]
         #input
 
         myko_rs::register_ts_export!(#name);
-
-        impl myko_rs::prelude::ToValue for #name {
-            fn to_value(&self) -> serde_json::Value {
-                serde_json::to_value(self).expect("Failed to serialize report output")
-            }
-        }
     };
 
     expanded.into()
