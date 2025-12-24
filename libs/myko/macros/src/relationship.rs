@@ -463,23 +463,23 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .collect();
 
         registrations.push(quote! {
-            myko_rs::submit! {
-                myko_rs::relationship::RelationRegistration {
-                    relation: myko_rs::relationship::Relation::EnsureFor {
-                        local_type: #local_type,
-                        dependencies: &[#(#deps),*],
-                        make_entity: |dep_ids: &[std::sync::Arc<str>]| {
-                            let mut entity = #local_type_ident::default();
-                            entity.id = uuid::Uuid::new_v4().to_string().into();
-                            entity.hash = std::sync::Arc::from("");
-                            #(#fk_field_assignments)*
-                            #(#default_assignments)*
-                            std::sync::Arc::new(entity) as std::sync::Arc<dyn myko_rs::item::AnyItem>
-                        },
-                    }
+        myko_rs::submit! {
+            myko_rs::relationship::RelationRegistration {
+                relation: myko_rs::relationship::Relation::EnsureFor {
+                    local_type: #local_type,
+                    dependencies: &[#(#deps),*],
+                    make_entity: |dep_ids: &[std::sync::Arc<str>]| {
+                        let mut entity = #local_type_ident::default();
+                        entity.id = uuid::Uuid::new_v4().to_string().into();
+                        entity.hash = std::sync::Arc::from("");
+                        #(#fk_field_assignments)*
+                        #(#default_assignments)*
+                        std::sync::Arc::new(entity) as std::sync::Arc<dyn myko_rs::item::AnyItem>
+                    },
                 }
             }
-        });
+        }
+    });
     }
 
     // Generate ClientId registration if present

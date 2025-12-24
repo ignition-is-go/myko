@@ -13,7 +13,7 @@ use syn::{Field, ItemStruct, Lit, Meta};
 pub struct SetterField {
     pub field_name: syn::Ident,
     pub field_type: syn::Type,
-    pub is_rename: bool,           // true for #[myko_rename], false for #[myko_setter]
+    pub is_rename: bool, // true for #[myko_rename], false for #[myko_setter]
     pub command_name_override: Option<String>, // Optional custom command name
 }
 
@@ -91,102 +91,102 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
     let get_by_id_ident = format_ident!("Get{}ById", entity_name);
 
     let commands: Vec<TokenStream> = setters
-        .iter()
-        .map(|setter| {
-            let field_name = &setter.field_name;
-            let field_type = &setter.field_type;
+    .iter()
+    .map(|setter| {
+      let field_name = &setter.field_name;
+      let field_type = &setter.field_type;
 
-            // Generate command name (with optional override)
-            let (command_name, param_name) = if setter.is_rename {
-                // #[myko_rename] or #[myko_rename("CustomName")]
-                let cmd_name = setter
-                    .command_name_override
-                    .as_ref()
-                    .map(|s| format_ident!("{}", s))
-                    .unwrap_or_else(|| format_ident!("Rename{}", entity_name));
-                (cmd_name, format_ident!("name"))
-            } else {
-                // #[myko_setter] or #[myko_setter("CustomName")]
-                let cmd_name = setter
-                    .command_name_override
-                    .as_ref()
-                    .map(|s| format_ident!("{}", s))
-                    .unwrap_or_else(|| {
-                        let field_pascal = to_pascal_case(&field_name.to_string());
-                        format_ident!("Set{}{}", entity_name, field_pascal)
-                    });
-                (cmd_name, field_name.clone())
-            };
+      // Generate command name (with optional override)
+      let (command_name, param_name) = if setter.is_rename {
+        // #[myko_rename] or #[myko_rename("CustomName")]
+        let cmd_name = setter
+          .command_name_override
+          .as_ref()
+          .map(|s| format_ident!("{}", s))
+          .unwrap_or_else(|| format_ident!("Rename{}", entity_name));
+        (cmd_name, format_ident!("name"))
+      } else {
+        // #[myko_setter] or #[myko_setter("CustomName")]
+        let cmd_name = setter
+          .command_name_override
+          .as_ref()
+          .map(|s| format_ident!("{}", s))
+          .unwrap_or_else(|| {
+            let field_pascal = to_pascal_case(&field_name.to_string());
+            format_ident!("Set{}{}", entity_name, field_pascal)
+          });
+        (cmd_name, field_name.clone())
+      };
 
-            // For rename, the param is always "name" but field might be different
-            let field_assignment = if setter.is_rename {
-                quote! { #field_name: self.name.to_string() }
-            } else {
-                // Handle the field type - if it's String, convert from Arc<str>
-                let type_str = quote!(#field_type).to_string();
-                if type_str.contains("String") && !type_str.contains("Option") {
-                    quote! { #field_name: self.#param_name.to_string() }
-                } else if type_str.contains("Option") && type_str.contains("String") {
-                    quote! { #field_name: self.#param_name.as_ref().map(|s| s.to_string()) }
-                } else {
-                    quote! { #field_name: self.#param_name.clone() }
-                }
-            };
+      // For rename, the param is always "name" but field might be different
+      let field_assignment = if setter.is_rename {
+        quote! { #field_name: self.name.to_string() }
+      } else {
+        // Handle the field type - if it's String, convert from Arc<str>
+        let type_str = quote!(#field_type).to_string();
+        if type_str.contains("String") && !type_str.contains("Option") {
+          quote! { #field_name: self.#param_name.to_string() }
+        } else if type_str.contains("Option") && type_str.contains("String") {
+          quote! { #field_name: self.#param_name.as_ref().map(|s| s.to_string()) }
+        } else {
+          quote! { #field_name: self.#param_name.clone() }
+        }
+      };
 
-            // Determine the command param type
-            // For String fields, use Arc<str> in the command for efficiency
-            let param_type = {
-                let type_str = quote!(#field_type).to_string();
-                if type_str == "String" {
-                    quote! { std::sync::Arc<str> }
-                } else if type_str.contains("Option < String >") || type_str.contains("Option<String>") {
-                    quote! { Option<std::sync::Arc<str>> }
-                } else {
-                    quote! { #field_type }
-                }
-            };
+      // Determine the command param type
+      // For String fields, use Arc<str> in the command for efficiency
+      let param_type = {
+        let type_str = quote!(#field_type).to_string();
+        if type_str == "String" {
+          quote! { std::sync::Arc<str> }
+        } else if type_str.contains("Option < String >") || type_str.contains("Option<String>") {
+          quote! { Option<std::sync::Arc<str>> }
+        } else {
+          quote! { #field_type }
+        }
+      };
 
-            // For rename commands, param is always "name"
-            let param_field = if setter.is_rename {
-                quote! { pub name: std::sync::Arc<str> }
-            } else {
-                quote! { pub #param_name: #param_type }
-            };
+      // For rename commands, param is always "name"
+      let param_field = if setter.is_rename {
+        quote! { pub name: std::sync::Arc<str> }
+      } else {
+        quote! { pub #param_name: #param_type }
+      };
 
-            quote! {
-                /// Auto-generated setter command
-                #[myko_macros::myko_command]
-                pub struct #command_name {
-                    pub id: std::sync::Arc<str>,
-                    #param_field,
-                }
+      quote! {
+          /// Auto-generated setter command
+          #[myko_macros::myko_command]
+          pub struct #command_name {
+              pub id: std::sync::Arc<str>,
+              #param_field,
+          }
 
-                impl myko_rs::command::CommandHandler for #command_name {
-                    fn execute(
-                        self,
-                        ctx: myko_rs::prelude::CommandContext,
-                    ) -> Result<(), myko_rs::prelude::CommandError> {
-                        let report = #get_by_id_ident { id: self.id.clone() };
-                        let entity = ctx.exec_report(report)?.ok_or_else(|| {
-                            myko_rs::prelude::CommandError {
-                                tx: ctx.tx().to_string(),
-                                command_id: ctx.command_id.to_string(),
-                                message: format!("{} {} not found", stringify!(#entity_ident), self.id),
-                            }
-                        })?;
+          impl myko_rs::command::CommandHandler for #command_name {
+              fn execute(
+                  self,
+                  ctx: myko_rs::prelude::CommandContext,
+              ) -> Result<(), myko_rs::prelude::CommandError> {
+                  let report = #get_by_id_ident { id: self.id.clone() };
+                  let entity = ctx.exec_report(report)?.ok_or_else(|| {
+                      myko_rs::prelude::CommandError {
+                          tx: ctx.tx().to_string(),
+                          command_id: ctx.command_id.to_string(),
+                          message: format!("{} {} not found", stringify!(#entity_ident), self.id),
+                      }
+                  })?;
 
-                        let updated = #entity_ident {
-                            #field_assignment,
-                            ..entity
-                        };
+                  let updated = #entity_ident {
+                      #field_assignment,
+                      ..entity
+                  };
 
-                        ctx.emit_set(&updated)?;
-                        Ok(())
-                    }
-                }
-            }
-        })
-        .collect();
+                  ctx.emit_set(&updated)?;
+                  Ok(())
+              }
+          }
+      }
+    })
+    .collect();
 
     quote! {
         #(#commands)*

@@ -2,8 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Field, FieldsNamed, ItemStruct};
 
-use crate::relationship;
-use crate::setter;
+use crate::{relationship, setter};
 
 pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     // Collect relationship information BEFORE stripping attributes
@@ -206,7 +205,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 ctx: myko_rs::prelude::CommandContext,
             ) -> Result<#delete_result_ident, myko_rs::prelude::CommandError> {
 
-            	let report = #get_by_id_report_ident { id: self.id.clone() };
+                let report = #get_by_id_report_ident { id: self.id.clone() };
 
                 let entity = ctx.exec_report(report)?;
 
