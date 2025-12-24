@@ -1,9 +1,13 @@
-use crate::prelude::*;
-use crate::report::{ReportContext, ReportHandler};
-use crate::{self as myko_rs};
+use std::sync::Arc;
+
 use hypha::{Cell, CellImmutable, MapExt};
 use myko_macros::{myko_command, myko_report, myko_report_output};
-use std::sync::Arc;
+
+use crate::{
+    prelude::*,
+    report::{ReportContext, ReportHandler},
+    {self as myko_rs},
+};
 
 #[myko_item]
 pub struct Client {

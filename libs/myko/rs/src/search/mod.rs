@@ -30,7 +30,6 @@
 mod entity_search;
 
 pub use entity_search::{EntitySearch, EntitySearchResult};
-
 use serde_json::Value;
 
 /// Registration for searchable entity types.
@@ -74,8 +73,9 @@ pub fn extract_searchable_text(item: &Value, fields: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn test_extract_searchable_text() {

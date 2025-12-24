@@ -5,14 +5,16 @@ use std::{fmt::Debug, sync::Arc};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
+use super::{
+    super::item::{AnyItem, Eventable},
+    context::QueryContext,
+    request::QueryRequest,
+};
 use crate::{
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
     wire::WrappedQuery,
 };
-
-use super::super::item::{AnyItem, Eventable};
-use super::{context::QueryContext, request::QueryRequest};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Query Traits

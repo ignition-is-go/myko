@@ -1,18 +1,16 @@
 //! Report registration via inventory.
 
-use std::any::Any;
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 use hypha::{Cell, CellImmutable, MapExt};
 use serde_json::Value;
-
-use crate::{common::to_value::ToValue, request::RequestContext, server::CellServerCtx};
 
 use super::{
     handler::{ReportContext, ReportHandler},
     request::ReportRequest,
     traits::{AnyReport, ReportParams},
 };
+use crate::{common::to_value::ToValue, request::RequestContext, server::CellServerCtx};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AnyOutput - Type-erased output for the WebSocket layer

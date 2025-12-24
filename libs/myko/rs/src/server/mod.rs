@@ -33,6 +33,15 @@ mod protocol;
 mod relationship_manager;
 mod ws_handler;
 
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
 pub use client_session::{ClientSession, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
@@ -42,14 +51,8 @@ pub use kafka::{
 pub use peer_registry::{PeerRegistry, PeerRegistryConfig, PeerStatus};
 pub use protocol::{message_to_json, message_to_msgpack};
 pub use relationship_manager::RelationshipManager;
-pub use ws_handler::WsHandler;
-
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
-
 use uuid::Uuid;
+pub use ws_handler::WsHandler;
 
 use crate::store::StoreRegistry;
 

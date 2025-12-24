@@ -1,22 +1,19 @@
 //! Query registration via inventory.
 
-use std::any::Any;
-use std::sync::Arc;
+use std::{any::Any, sync::Arc};
 
 use hypha::SelectExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::request::RequestContext;
-use crate::{common::with_id::WithId, store::StoreRegistry};
-
-use super::super::item::Eventable;
 use super::{
+    super::item::Eventable,
     cell::FilteredCellMap,
     context::QueryContext,
     request::QueryRequest,
     traits::{AnyQuery, QueryParams, QueryTestCtx},
 };
+use crate::{common::with_id::WithId, request::RequestContext, store::StoreRegistry};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type aliases for function pointers

@@ -95,15 +95,13 @@ pub mod bench_entities;
 // Re-export core modules at top level for backwards compatibility
 pub use core::{command, common, item, query, relationship, report, request, saga};
 
-// Re-export wire types at top level for backwards compatibility
-pub use wire::event;
-
 // Re-export crates for use in macros
 pub use hypha; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko_rs::submit! macro
-pub use ts_rs;
-pub use ts_rs::TS; // For #[derive(myko_rs::TS)]
+pub use ts_rs::{self, TS};
+// Re-export wire types at top level for backwards compatibility
+pub use wire::event; // For #[derive(myko_rs::TS)]
 
 /// Helper macro for submitting message event registrations
 #[macro_export]

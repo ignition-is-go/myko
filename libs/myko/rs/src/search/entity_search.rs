@@ -16,12 +16,13 @@
 //! ```
 //!
 
-use crate as myko_rs;
-
 use std::sync::Arc;
 
-use crate::item::Eventable;
-use crate::report::{ReportContext, ReportHandler};
+use crate as myko_rs;
+use crate::{
+    item::Eventable,
+    report::{ReportContext, ReportHandler},
+};
 
 /// Result of an entity search.
 #[myko_macros::myko_report_output]

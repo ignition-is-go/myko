@@ -7,9 +7,10 @@
 //! - Command-to-query-update latency
 //! - Event throughput under load
 
+use std::{sync::Arc, time::Duration};
+
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use futures::StreamExt;
-use futures::stream;
+use futures::{StreamExt, stream};
 use futures_signals::signal_map::MapDiff;
 use myko_rs::{
     actors::{
@@ -32,7 +33,6 @@ use myko_rs::{
     server::{ManagerRefs, MykoServer, MykoServerArgs},
     utils::signal_stream::SignalMapStream,
 };
-use std::{sync::Arc, time::Duration};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 

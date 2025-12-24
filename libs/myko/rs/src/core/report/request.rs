@@ -7,9 +7,8 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::common::with_transaction::WithTransaction;
-
 use super::traits::{AnyReport, ReportId, ReportIdStatic, ReportOutputType, ReportParams};
+use crate::common::with_transaction::WithTransaction;
 
 /// Wraps report parameters with transaction metadata.
 ///

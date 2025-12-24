@@ -8,6 +8,8 @@
 
 #![cfg(feature = "bench")]
 
+use std::{sync::Arc, time::Duration};
+
 use futures::StreamExt;
 use myko_rs::{
     actors::command::command_manager::CommandManagerMsg,
@@ -20,7 +22,6 @@ use myko_rs::{
     item::Eventable,
     server::{MykoServer, MykoServerArgs},
 };
-use std::{sync::Arc, time::Duration};
 use tokio::time::timeout;
 
 /// Helper to create a test server (no WebSocket binding needed for direct tests)
@@ -52,11 +53,13 @@ async fn emit_bench_item(server: &MykoServer, item: &BenchItem) {
     let managers = server.get_managers();
     let event = MEvent::from_item(item, MEventType::SET, uuid::Uuid::new_v4().to_string());
 
-    use myko_rs::actors::event::{
-        common::{PersistEvent, ProcessEventData},
-        event_manager::EventManagerMsg,
+    use myko_rs::{
+        actors::event::{
+            common::{PersistEvent, ProcessEventData},
+            event_manager::EventManagerMsg,
+        },
+        prelude::AnyItem,
     };
-    use myko_rs::prelude::AnyItem;
 
     let parsed_item: Arc<dyn AnyItem> = Arc::new(item.clone());
     managers

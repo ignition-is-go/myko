@@ -13,13 +13,12 @@ pub mod message;
 pub mod query;
 pub mod report;
 
+// Re-export deprecated function for backwards compat
+#[allow(deprecated)]
+pub use command::wrap_command;
 pub use command::{CommandError, CommandResponse, WrappedCommand, wrap_command_request};
 pub use event::{EventOptions, MEvent, MEventType};
 pub use item::WrappedItem;
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
 pub use query::{QueryError, QueryResponse, QueryResult, WrappedQuery, wrap_query};
 pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
-
-// Re-export deprecated function for backwards compat
-#[allow(deprecated)]
-pub use command::wrap_command;

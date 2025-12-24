@@ -19,25 +19,32 @@
 //! - Filtered: skip events where source_id == host_id (our own events)
 //! - Non-self events: Parse → Reduce only (no relationships, no persist)
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use log::{error, info, trace, warn};
-use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
-use rdkafka::config::FromClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::producer::FutureProducer;
-use rdkafka::util::Timeout;
-use rdkafka::{ClientConfig, Message};
+use rdkafka::{
+    ClientConfig, Message,
+    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
+    config::FromClientConfig,
+    consumer::{Consumer, StreamConsumer},
+    producer::FutureProducer,
+    util::Timeout,
+};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::event::{MEvent, MEventType};
-use crate::store::StoreRegistry;
-
 use super::HandlerRegistry;
+use crate::{
+    event::{MEvent, MEventType},
+    store::StoreRegistry,
+};
 
 /// Kafka configuration.
 #[derive(Debug, Clone)]

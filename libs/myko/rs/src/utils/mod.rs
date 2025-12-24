@@ -1,10 +1,8 @@
-use std::any::Any;
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::Arc;
+use std::{any::Any, collections::HashMap, hash::Hash, sync::Arc};
+
+use serde_json::Value;
 
 use crate::core::item::AnyItem;
-use serde_json::Value;
 
 /// Downcast an `Arc<dyn AnyItem>` to a concrete type.
 /// Returns `Some(T)` if the downcast succeeds, `None` otherwise.

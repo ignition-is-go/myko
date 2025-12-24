@@ -3,12 +3,13 @@
 //! Collects all Item, Query, and Report registrations from inventory
 //! and provides lookup by type/id.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use crate::item::{ItemParseFn, ItemRegistration};
-use crate::query::{QueryCellFactory, QueryParseFn, QueryRegistration};
-use crate::report::{ReportCellFactory, ReportParseFn, ReportRegistration};
+use crate::{
+    item::{ItemParseFn, ItemRegistration},
+    query::{QueryCellFactory, QueryParseFn, QueryRegistration},
+    report::{ReportCellFactory, ReportParseFn, ReportRegistration},
+};
 
 /// Stored query registration data.
 pub struct StoredQueryData {

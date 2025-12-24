@@ -1,3 +1,16 @@
+use std::{collections::HashMap, sync::Arc};
+
+use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
+use log::{debug, error, info, trace, warn};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+use tokio_stream::{
+    StreamExt,
+    wrappers::{BroadcastStream, WatchStream},
+};
+use tokio_tungstenite::tungstenite::protocol::Message;
+use url::Url;
+
 use crate::{
     command::{CommandId, CommandRequest},
     common::with_id::WithId,
@@ -6,14 +19,6 @@ use crate::{
     report::{ReportIdStatic, ReportParams, ReportRequest},
     wire::{MEvent, MykoMessage, WrappedQuery, WrappedReport, wrap_command_request},
 };
-use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
-use log::{debug, error, info, trace, warn};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
-use std::{collections::HashMap, sync::Arc};
-use tokio_stream::{StreamExt, wrappers::BroadcastStream, wrappers::WatchStream};
-use tokio_tungstenite::tungstenite::protocol::Message;
-use url::Url;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]

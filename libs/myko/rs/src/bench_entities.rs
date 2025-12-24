@@ -12,10 +12,13 @@
 //!
 //! We add a custom `GetBenchItemsByCategory` for category-based filtering.
 
-use crate::prelude::*;
-use crate::{self as myko_rs};
 use partially::Partial;
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    prelude::*,
+    {self as myko_rs},
+};
 
 /// A simple entity for benchmarking with category-based filtering.
 #[myko_item]

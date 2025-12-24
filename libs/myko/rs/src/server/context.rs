@@ -11,14 +11,15 @@ use hypha::{Cell, CellImmutable, MapExt, SelectExt};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-use crate::core::item::{AnyItem, Eventable};
-use crate::query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx};
-use crate::report::{ReportContext, ReportHandler};
-use crate::request::RequestContext;
-use crate::store::StoreRegistry;
-use crate::wire::{EventOptions, MEvent, MEventType};
-
 use super::{HandlerRegistry, KafkaProducerHandle, RelationshipManager};
+use crate::{
+    core::item::{AnyItem, Eventable},
+    query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx},
+    report::{ReportContext, ReportHandler},
+    request::RequestContext,
+    store::StoreRegistry,
+    wire::{EventOptions, MEvent, MEventType},
+};
 
 /// Context providing capabilities to server modules.
 ///

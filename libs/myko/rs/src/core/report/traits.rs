@@ -6,10 +6,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use ts_rs::TS;
 
+use super::{handler::ReportHandler, request::ReportRequest};
 use crate::{client::MykoClient, common::with_transaction::WithTransaction, wire::WrappedReport};
-
-use super::handler::ReportHandler;
-use super::request::ReportRequest;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Report Traits

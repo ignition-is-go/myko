@@ -10,13 +10,10 @@ pub use handler::{
     CommandContext, CommandExecutorAdapter, CommandExecutorFactory, CommandHandler,
     CommandHandlerRegistration, DynCommandExecutor,
 };
-
 // Re-export registration types
 pub use registration::CommandRegistration;
-
 // Re-export request type
 pub use request::CommandRequest;
-
 // Re-export traits
 pub use traits::{
     AnyCommand, CommandId, CommandIdStatic, CommandParams, CommandResultType, MykoCommand,

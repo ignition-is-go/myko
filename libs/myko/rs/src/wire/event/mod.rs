@@ -1,10 +1,12 @@
-use crate::{item::Eventable, utils::remove_whitespace};
+use std::io::Cursor;
+
 use chrono::Utc;
 use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::Cursor;
 use ts_rs::TS;
+
+use crate::{item::Eventable, utils::remove_whitespace};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub enum MEventType {

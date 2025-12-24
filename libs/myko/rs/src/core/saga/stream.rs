@@ -6,8 +6,10 @@
 //! - `pairwise()` - Compare prev/current for transitions
 //! - And more...
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -255,10 +257,10 @@ pub fn is_change_type(change_type: MEventType) -> impl Fn(&MEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use futures::StreamExt;
-    use futures::stream;
+    use futures::{StreamExt, stream};
     use serde_json::json;
+
+    use super::*;
 
     fn make_event(item_type: &str, change_type: MEventType) -> MEvent {
         MEvent {

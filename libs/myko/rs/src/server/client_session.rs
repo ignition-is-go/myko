@@ -5,15 +5,21 @@
 //! - Message sending to the client
 //! - Automatic cleanup on disconnect
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 
-use crate::core::item::AnyItem;
-use crate::report::AnyOutput;
-use crate::wire::{MykoMessage, QueryResponse, ReportError, ReportResponse};
+use crate::{
+    core::item::AnyItem,
+    report::AnyOutput,
+    wire::{MykoMessage, QueryResponse, ReportError, ReportResponse},
+};
 
 /// Trait for sending WebSocket messages.
 ///
@@ -134,13 +140,16 @@ impl<W: WsWriter> Drop for ClientSession<W> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::common::to_value::ToValue;
-    use crate::common::with_id::WithId;
-    use crate::store::StoreRegistry;
+    use std::sync::Mutex;
+
     use hypha::SelectExt;
     use serde_json::Value;
-    use std::sync::Mutex;
+
+    use super::*;
+    use crate::{
+        common::{to_value::ToValue, with_id::WithId},
+        store::StoreRegistry,
+    };
 
     // Mock writer that collects messages
     struct MockWriter {

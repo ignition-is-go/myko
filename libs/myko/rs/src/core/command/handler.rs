@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use hypha::Gettable;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use uuid::Uuid;
 

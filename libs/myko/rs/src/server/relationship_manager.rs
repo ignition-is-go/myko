@@ -48,20 +48,23 @@
 //! }
 //! ```
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use hypha::Gettable;
 use log::{debug, info, trace};
 
-use crate::core::item::AnyItem;
-use crate::event::EventOptions;
-use crate::relationship::{
-    ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
-    iter_relations,
-};
-
 use super::CellServerCtx;
+use crate::{
+    core::item::AnyItem,
+    event::EventOptions,
+    relationship::{
+        ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
+        iter_relations,
+    },
+};
 
 /// Lookup info for BelongsTo cascades
 #[derive(Clone)]

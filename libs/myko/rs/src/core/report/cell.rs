@@ -26,8 +26,7 @@
 //! }
 //! ```
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use hypha::{Cell, CellImmutable, MapExt, SelectExt};
 
@@ -159,11 +158,11 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::common::to_value::ToValue;
-    use crate::common::with_id::WithId;
     use hypha::{Gettable, MapExt};
     use serde_json::Value;
+
+    use super::*;
+    use crate::common::{to_value::ToValue, with_id::WithId};
 
     // Test entity
     #[derive(Debug, Clone)]

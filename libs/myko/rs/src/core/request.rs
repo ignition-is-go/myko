@@ -20,6 +20,7 @@
 //! ```
 
 use std::sync::Arc;
+
 use uuid::Uuid;
 
 /// Context that propagates through request processing.

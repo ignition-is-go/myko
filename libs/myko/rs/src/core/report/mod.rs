@@ -6,31 +6,29 @@ mod registration;
 mod request;
 mod traits;
 
-use futures::Stream;
 use std::pin::Pin;
+
+use futures::Stream;
 
 /// Type alias for boxed report streams, reducing verbosity in handler signatures.
 pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 
 // Re-export handler types
 pub use handler::{ReportContext, ReportHandler};
-
-// Re-export wire types for backwards compatibility
-pub use crate::wire::{ReportError, ReportResponse, WrappedReport, wrap_report};
-
 // Re-export registration types
 pub use registration::{
     AnyOutput, ReportCellFactory, ReportFactory, ReportParseFn, ReportRegistration,
 };
-
 // Re-export request type
 pub use request::ReportRequest;
-
 // Re-export traits
 pub use traits::{
     AnyReport, CountResult, MykoReport, Report, ReportId, ReportIdStatic, ReportOutput,
     ReportOutputType, ReportParams,
 };
+
+// Re-export wire types for backwards compatibility
+pub use crate::wire::{ReportError, ReportResponse, WrappedReport, wrap_report};
 
 /// Convenience macro for creating report streams.
 ///

@@ -1,8 +1,11 @@
-use crate::entities::client::GetAllClients;
-use crate::prelude::*;
-use crate::report::{ReportContext, ReportHandler};
-use crate::{self as myko_rs};
 use hypha::{Cell, CellImmutable, JoinExt, MapExt, flat};
+
+use crate::{
+    entities::client::GetAllClients,
+    prelude::*,
+    report::{ReportContext, ReportHandler},
+    {self as myko_rs},
+};
 
 #[myko_item]
 pub struct Server {

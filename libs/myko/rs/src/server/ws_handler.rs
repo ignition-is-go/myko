@@ -2,25 +2,30 @@
 //!
 //! Handles WebSocket connections using ClientSession for subscription management.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use futures_util::{SinkExt, StreamExt};
 use hypha::SelectExt;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use uuid::Uuid;
 
-use crate::command::{CommandContext, CommandHandlerRegistration};
-use crate::entities::client::Client;
-use crate::request::RequestContext;
-use crate::wire::{CancelSubscription, CommandError, CommandResponse, MykoMessage, PingData};
-
-use super::client_session::{ClientSession, WsWriter};
-
-use super::CellServerCtx;
+use super::{
+    CellServerCtx,
+    client_session::{ClientSession, WsWriter},
+};
+use crate::{
+    command::{CommandContext, CommandHandlerRegistration},
+    entities::client::Client,
+    request::RequestContext,
+    wire::{CancelSubscription, CommandError, CommandResponse, MykoMessage, PingData},
+};
 
 /// Protocol switch message sent by client to enable binary (msgpack) encoding.
 /// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.

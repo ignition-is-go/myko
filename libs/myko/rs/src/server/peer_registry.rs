@@ -21,9 +21,11 @@
 //!   Connection monitor ──► detects disconnect, cleans up
 //! ```
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, RwLock},
+    time::{Duration, Instant},
+};
 
 use hypha::{Gettable, Signal, SubscriptionGuard, Watchable};
 use log::{debug, info, trace, warn};
@@ -31,12 +33,13 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
-use crate::client::{ConnectionStatus, MykoClient};
-use crate::entities::server::{GetAllServers, GetConnectedServer, GetPeerServers, Server};
-use crate::item::Eventable;
-use crate::query::QueryRequest;
-
 use super::CellServerCtx;
+use crate::{
+    client::{ConnectionStatus, MykoClient},
+    entities::server::{GetAllServers, GetConnectedServer, GetPeerServers, Server},
+    item::Eventable,
+    query::QueryRequest,
+};
 
 /// Status of a peer connection.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

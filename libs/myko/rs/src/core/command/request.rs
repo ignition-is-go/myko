@@ -7,9 +7,8 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::common::with_transaction::WithTransaction;
-
 use super::traits::{AnyCommand, CommandId, CommandIdStatic, CommandParams, CommandResultType};
+use crate::common::with_transaction::WithTransaction;
 
 /// Wraps command parameters with transaction metadata.
 ///
