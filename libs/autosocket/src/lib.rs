@@ -1,9 +1,8 @@
+use std::{sync::Arc, time::Duration};
+
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::select;
-use tokio::sync::watch;
+use tokio::{select, sync::watch};
 use tokio_tungstenite::connect_async;
 use tokio_util::sync::CancellationToken;
 use tungstenite::Message;
