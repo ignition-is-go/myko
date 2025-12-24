@@ -28,7 +28,7 @@ async fn create_test_server() -> Arc<MykoServer> {
     let server = MykoServer::init(MykoServerArgs {
         bind_addr: "127.0.0.1".to_string(),
         bind_path: "/".to_string(),
-        bind_port: 0, // Don't bind
+        bind_port: 0,       // Don't bind
         kafka_config: None, // In-memory mode
         public_host_address: "127.0.0.1".to_string(),
     })

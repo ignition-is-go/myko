@@ -6,8 +6,8 @@
 //! - Automatic cleanup on disconnect
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 
@@ -138,6 +138,7 @@ mod tests {
     use crate::common::to_value::ToValue;
     use crate::common::with_id::WithId;
     use crate::store::StoreRegistry;
+    use hypha::SelectExt;
     use serde_json::Value;
     use std::sync::Mutex;
 
@@ -159,10 +160,6 @@ mod tests {
 
         fn last_message(&self) -> Option<MykoMessage> {
             self.messages.lock().unwrap().last().cloned()
-        }
-
-        fn messages(&self) -> Vec<MykoMessage> {
-            self.messages.lock().unwrap().clone()
         }
     }
 
@@ -304,8 +301,6 @@ mod tests {
 
     #[test]
     fn test_delete_sends_deletes_not_upserts() {
-        use crate::api::query::QueryResponse;
-
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -328,9 +323,15 @@ mod tests {
 
         // Find the delete message (it should be the last one)
         let last_msg = mock.last_message().unwrap();
-        if let MykoMessage::QueryResponse(QueryResponse { deletes, upserts, .. }) = last_msg {
+        if let MykoMessage::QueryResponse(QueryResponse {
+            deletes, upserts, ..
+        }) = last_msg
+        {
             // The delete message should have "a" in deletes and empty upserts
-            assert!(deletes.iter().any(|id| id.as_ref() == "a"), "Delete should contain 'a'");
+            assert!(
+                deletes.iter().any(|id| id.as_ref() == "a"),
+                "Delete should contain 'a'"
+            );
             assert!(upserts.is_empty(), "Upserts should be empty for delete");
         } else {
             panic!("Expected QueryResponse");

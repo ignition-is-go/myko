@@ -435,24 +435,10 @@ impl CellServer {
 
             log::debug!("New connection from {}", addr);
 
-            let host_id = self.host_id;
-            let registry = self.registry.clone();
-            let handler_registry = self.handler_registry.clone();
-            let relationship_manager = self.relationship_manager.clone();
-            let kafka_producer = self.kafka_producer.clone();
+            let ctx = self.ctx();
 
             tokio::spawn(async move {
-                if let Err(e) = WsHandler::handle_connection(
-                    stream,
-                    addr,
-                    host_id,
-                    registry,
-                    handler_registry,
-                    relationship_manager,
-                    kafka_producer,
-                )
-                .await
-                {
+                if let Err(e) = WsHandler::handle_connection(stream, addr, Arc::new(ctx)).await {
                     log::error!("Connection error from {}: {}", addr, e);
                 }
             });

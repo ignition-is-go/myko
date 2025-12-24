@@ -93,7 +93,7 @@ pub mod prelude;
 pub mod bench_entities;
 
 // Re-export core modules at top level for backwards compatibility
-pub use core::{command, common, context, item, query, relationship, report, saga};
+pub use core::{command, common, item, query, relationship, report, request, saga};
 
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event;

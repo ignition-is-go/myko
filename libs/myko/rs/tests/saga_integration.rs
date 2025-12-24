@@ -104,8 +104,16 @@ async fn test_saga_filter_chain() {
         .await;
 
     assert_eq!(filtered.len(), 2);
-    assert!(filtered.iter().all(|e: &MEvent| e.item_type() == "BenchItem"));
-    assert!(filtered.iter().all(|e: &MEvent| e.change_type() == MEventType::SET));
+    assert!(
+        filtered
+            .iter()
+            .all(|e: &MEvent| e.item_type() == "BenchItem")
+    );
+    assert!(
+        filtered
+            .iter()
+            .all(|e: &MEvent| e.change_type() == MEventType::SET)
+    );
 }
 
 #[tokio::test]

@@ -20,8 +20,8 @@
 //! - Non-self events: Parse → Reduce only (no relationships, no persist)
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use log::{error, info, trace, warn};
@@ -203,7 +203,10 @@ impl ProducerState {
         // Get sender and queue the event
         let sender = self.get_or_create_sender(&topic);
         if let Err(err) = sender.try_send(ProduceTask { event_json, key }) {
-            error!("Kafka topic {} buffer full (50k), dropping event: {}", topic, err);
+            error!(
+                "Kafka topic {} buffer full (50k), dropping event: {}",
+                topic, err
+            );
         }
     }
 }
@@ -422,31 +425,32 @@ impl CellKafkaConsumer {
                 let mut initial_registration_done = false;
 
                 // Helper to check and signal catch-up
-                let check_all_caught_up = |initial_topics: &HashSet<String>,
-                                           caught_up: &HashSet<String>,
-                                           initial_done: bool,
-                                           status: &CatchUpStatus| {
-                    if !initial_done {
-                        return;
-                    }
-                    if initial_topics.is_empty() {
-                        // No topics registered, consider caught up
-                        if !status.is_caught_up() {
-                            info!("No Kafka topics registered, marking as caught up");
+                let check_all_caught_up =
+                    |initial_topics: &HashSet<String>,
+                     caught_up: &HashSet<String>,
+                     initial_done: bool,
+                     status: &CatchUpStatus| {
+                        if !initial_done {
+                            return;
+                        }
+                        if initial_topics.is_empty() {
+                            // No topics registered, consider caught up
+                            if !status.is_caught_up() {
+                                info!("No Kafka topics registered, marking as caught up");
+                                status.caught_up.store(true, Ordering::SeqCst);
+                            }
+                            return;
+                        }
+                        // Check if all initial topics are caught up
+                        let all_caught_up = initial_topics.iter().all(|t| caught_up.contains(t));
+                        if all_caught_up && !status.is_caught_up() {
+                            info!(
+                                "All {} initial Kafka topics caught up",
+                                initial_topics.len()
+                            );
                             status.caught_up.store(true, Ordering::SeqCst);
                         }
-                        return;
-                    }
-                    // Check if all initial topics are caught up
-                    let all_caught_up = initial_topics.iter().all(|t| caught_up.contains(t));
-                    if all_caught_up && !status.is_caught_up() {
-                        info!(
-                            "All {} initial Kafka topics caught up",
-                            initial_topics.len()
-                        );
-                        status.caught_up.store(true, Ordering::SeqCst);
-                    }
-                };
+                    };
 
                 loop {
                     // Check for new topic registrations
@@ -589,12 +593,13 @@ impl CellKafkaConsumer {
                                         // Parse → Reduce (no relationships, no persist)
                                         match event.change_type {
                                             MEventType::SET => {
-                                                if let Some(parse) =
-                                                    handler_registry.get_item_parser(&event.item_type)
+                                                if let Some(parse) = handler_registry
+                                                    .get_item_parser(&event.item_type)
                                                 {
                                                     match parse(event.item.clone()) {
                                                         Ok(item) => {
-                                                            let store = registry.get_or_create(item.entity_type());
+                                                            let store = registry
+                                                                .get_or_create(item.entity_type());
                                                             store.insert(item.id(), item);
                                                         }
                                                         Err(e) => {
@@ -616,7 +621,8 @@ impl CellKafkaConsumer {
                                                 if let Some(id) =
                                                     event.item.get("id").and_then(|v| v.as_str())
                                                 {
-                                                    let store = registry.get_or_create(&event.item_type);
+                                                    let store =
+                                                        registry.get_or_create(&event.item_type);
                                                     store.remove(&id.into());
                                                 } else {
                                                     error!(
@@ -637,7 +643,10 @@ impl CellKafkaConsumer {
                             if !caught_up.contains(&topic) {
                                 let high_water = high_water_marks.get(&topic).copied().unwrap_or(0);
                                 if offset >= high_water - 1 || high_water == 0 {
-                                    info!("{}: Caught up at offset {}/{}", topic, offset, high_water);
+                                    info!(
+                                        "{}: Caught up at offset {}/{}",
+                                        topic, offset, high_water
+                                    );
                                     caught_up.insert(topic.clone());
                                     check_all_caught_up(
                                         &initial_topics,
@@ -675,7 +684,10 @@ impl CellKafkaConsumer {
             .topic_sender
             .try_send(ConsumerMessage::RegisterTopic(entity_type.to_string()))
         {
-            error!("Kafka consumer buffer full (100k), failed to register topic {}: {}", entity_type, e);
+            error!(
+                "Kafka consumer buffer full (100k), failed to register topic {}: {}",
+                entity_type, e
+            );
         }
     }
 

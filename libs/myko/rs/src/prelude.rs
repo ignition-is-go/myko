@@ -9,14 +9,14 @@ pub use crate::{
     common::{to_value::ToValue, with_id::WithId, with_transaction::WithTransaction},
     core::item::{AnyItem, Eventable, ItemParseFn, ItemRegistration},
     query::{
-        AnyQuery, Query, QueryFactory, QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic,
-        QueryItemType, QueryParseFn, QueryRegistration,
+        AnyQuery, Query, QueryFactory, QueryHandler, QueryId, QueryIdStatic, QueryItemType,
+        QueryParseFn, QueryRegistration, QueryTestCtx,
     },
     report::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportFactory, ReportHandler,
         ReportId, ReportIdStatic, ReportOutputType, ReportParseFn, ReportRegistration,
     },
-    search::{iter_searchable, EntitySearch, EntitySearchResult, SearchableRegistration},
+    search::{EntitySearch, EntitySearchResult, SearchableRegistration, iter_searchable},
     server::{CellServer, CellServerBuilder, CellServerCtx},
     utils::downcast_item,
     wire::{
@@ -27,7 +27,9 @@ pub use crate::{
 };
 
 // Re-export hypha cell types for reports
-pub use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SelectExt, Watchable};
+pub use hypha::{
+    Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SelectExt, Watchable,
+};
 
 pub use chrono::Utc;
 pub use myko_macros::*;

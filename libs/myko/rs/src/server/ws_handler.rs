@@ -3,8 +3,8 @@
 //! Handles WebSocket connections using ClientSession for subscription management.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::{SinkExt, StreamExt};
 use hypha::SelectExt;
@@ -14,14 +14,13 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use uuid::Uuid;
 
 use crate::command::{CommandContext, CommandHandlerRegistration};
-use crate::context::RequestContext;
 use crate::entities::client::Client;
-use crate::store::StoreRegistry;
+use crate::request::RequestContext;
 use crate::wire::{CancelSubscription, CommandError, CommandResponse, MykoMessage, PingData};
 
 use super::client_session::{ClientSession, WsWriter};
 
-use super::{CellServerCtx, HandlerRegistry, KafkaProducerHandle, RelationshipManager};
+use super::CellServerCtx;
 
 /// Protocol switch message sent by client to enable binary (msgpack) encoding.
 /// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.
@@ -32,15 +31,14 @@ pub struct WsHandler;
 
 impl WsHandler {
     /// Handle a new WebSocket connection.
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_connection(
         stream: TcpStream,
         addr: SocketAddr,
-        host_id: Uuid,
-        registry: Arc<StoreRegistry>,
-        handler_registry: Arc<HandlerRegistry>,
-        relationship_manager: Arc<RelationshipManager>,
-        kafka_producer: Option<KafkaProducerHandle>,
+        ctx: Arc<CellServerCtx>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let host_id = ctx.host_id;
+
         let ws_stream = accept_async(stream).await?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -57,15 +55,6 @@ impl WsHandler {
         let use_binary = Arc::new(AtomicBool::new(false));
         let use_binary_writer = use_binary.clone();
 
-        // Create server context
-        let ctx = CellServerCtx::new(
-            host_id,
-            registry.clone(),
-            handler_registry.clone(),
-            relationship_manager.clone(),
-            kafka_producer,
-        );
-
         // Publish Client entity
         let client_entity = Client {
             id: client_id.clone(),
@@ -73,12 +62,15 @@ impl WsHandler {
             server_id: host_id.to_string().into(),
             windback: None,
         };
-        ctx.set(client_entity.clone());
+        ctx.set(&client_entity);
 
         log::info!("Client connected: {} from {}", client_id, addr);
 
+        let write_ctx = ctx.clone();
+
         // Spawn task to forward messages from channel to WebSocket
         let write_task = tokio::spawn(async move {
+            let _ctx = write_ctx;
             while let Some(msg) = rx.recv().await {
                 let ws_msg = if use_binary_writer.load(Ordering::SeqCst) {
                     // Binary mode: use msgpack
@@ -107,6 +99,7 @@ impl WsHandler {
 
         // Process incoming messages
         while let Some(msg) = read.next().await {
+            let ctx = ctx.clone();
             let msg = match msg {
                 Ok(m) => m,
                 Err(e) => {
@@ -116,33 +109,31 @@ impl WsHandler {
             };
 
             match msg {
-                Message::Binary(data) => {
-                    match rmp_serde::from_slice::<MykoMessage>(&data) {
-                        Ok(myko_msg) => {
-                            if let Err(e) = Self::handle_message(
-                                &mut session,
-                                &registry,
-                                &handler_registry,
-                                &ctx,
-                                &tx,
-                                host_id,
-                                myko_msg,
-                            ) {
-                                log::error!("Error handling message: {}", e);
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to parse message from {}: {}", client_id, e);
+                Message::Binary(data) => match rmp_serde::from_slice::<MykoMessage>(&data) {
+                    Ok(myko_msg) => {
+                        if let Err(e) = Self::handle_message(&mut session, ctx, &tx, myko_msg) {
+                            log::error!("Error handling message: {}", e);
                         }
                     }
-                }
+                    Err(e) => {
+                        log::warn!("Failed to parse message from {}: {}", client_id, e);
+                    }
+                },
                 Message::Text(text) => {
                     // Check for protocol switch request
                     if text == SWITCH_TO_MSGPACK {
-                        log::info!("Client {} switching to binary (msgpack) protocol", client_id);
+                        log::info!(
+                            "Client {} switching to binary (msgpack) protocol",
+                            client_id
+                        );
                         // Send confirmation FIRST (still in JSON mode)
-                        if let Err(e) = tx.try_send(MykoMessage::ProtocolSwitch { protocol: "msgpack".into() }) {
-                            log::warn!("WebSocket send buffer full, dropping ProtocolSwitch: {}", e);
+                        if let Err(e) = tx.try_send(MykoMessage::ProtocolSwitch {
+                            protocol: "msgpack".into(),
+                        }) {
+                            log::warn!(
+                                "WebSocket send buffer full, dropping ProtocolSwitch: {}",
+                                e
+                            );
                         }
                         // Then switch to binary for subsequent messages
                         use_binary.store(true, Ordering::SeqCst);
@@ -151,15 +142,7 @@ impl WsHandler {
 
                     match serde_json::from_str::<MykoMessage>(&text) {
                         Ok(myko_msg) => {
-                            if let Err(e) = Self::handle_message(
-                                &mut session,
-                                &registry,
-                                &handler_registry,
-                                &ctx,
-                                &tx,
-                                host_id,
-                                myko_msg,
-                            ) {
+                            if let Err(e) = Self::handle_message(&mut session, ctx, &tx, myko_msg) {
                                 log::error!("Error handling message: {}", e);
                             }
                         }
@@ -201,13 +184,16 @@ impl WsHandler {
     /// Handle a parsed MykoMessage.
     fn handle_message<W: WsWriter>(
         session: &mut ClientSession<W>,
-        registry: &Arc<StoreRegistry>,
-        handler_registry: &Arc<HandlerRegistry>,
-        ctx: &CellServerCtx,
+        ctx: Arc<CellServerCtx>,
         tx: &mpsc::Sender<MykoMessage>,
-        host_id: Uuid,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let handler_registry = ctx.handler_registry.clone();
+
+        let registry = ctx.registry.clone();
+
+        let host_id = ctx.host_id;
+
         match msg {
             MykoMessage::Query(wrapped) => {
                 // Extract tx from the query JSON
@@ -222,6 +208,12 @@ impl WsHandler {
 
                 log::debug!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
 
+                let request_context = Arc::new(RequestContext::from_client(
+                    tx_id.clone(),
+                    session.client_id.clone(),
+                    host_id,
+                ));
+
                 // Look up the query registration
                 if let Some(query_data) = handler_registry.get_query(query_id) {
                     // Parse the query JSON to the concrete type
@@ -229,12 +221,20 @@ impl WsHandler {
                     match parsed {
                         Ok(any_query) => {
                             // Create the cell using the factory (with host_id for server context)
-                            match (query_data.cell_factory)(any_query, registry.clone(), host_id) {
+                            match (query_data.cell_factory)(
+                                any_query,
+                                registry.clone(),
+                                request_context.clone(),
+                            ) {
                                 Ok(filtered_cellmap) => {
                                     session.subscribe_query(tx_id, filtered_cellmap);
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to create query cell for {}: {}", query_id, e);
+                                    log::error!(
+                                        "Failed to create query cell for {}: {}",
+                                        query_id,
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -244,7 +244,10 @@ impl WsHandler {
                     }
                 } else {
                     // Fall back to select all for unknown queries
-                    log::warn!("No registered handler for query {}, falling back to select all", query_id);
+                    log::warn!(
+                        "No registered handler for query {}, falling back to select all",
+                        query_id
+                    );
                     let cellmap = registry.get_or_create(entity_type).select(|_| true);
                     session.subscribe_query(tx_id, cellmap);
                 }
@@ -273,13 +276,27 @@ impl WsHandler {
                     let parsed = (report_data.parse)(wrapped.report.clone());
                     match parsed {
                         Ok(any_report) => {
+                            let request_context = Arc::new(RequestContext::from_client(
+                                tx_id.clone(),
+                                session.client_id.clone(),
+                                host_id,
+                            ));
+
                             // Create the cell using the factory (with host_id for context)
-                            match (report_data.cell_factory)(any_report, registry.clone(), host_id) {
+                            match (report_data.cell_factory)(any_report, request_context, ctx) {
                                 Ok(cell) => {
-                                    session.subscribe_report(tx_id, report_id.as_str().into(), cell);
+                                    session.subscribe_report(
+                                        tx_id,
+                                        report_id.as_str().into(),
+                                        cell,
+                                    );
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to create report cell for {}: {}", report_id, e);
+                                    log::error!(
+                                        "Failed to create report cell for {}: {}",
+                                        report_id,
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -317,7 +334,10 @@ impl WsHandler {
                         if let Some(item) = ctx.parse_item(&event.item_type, &event.item) {
                             ctx.del_dyn(item);
                         } else {
-                            log::warn!("Unknown entity type or parse error for DEL: {}", event.item_type);
+                            log::warn!(
+                                "Unknown entity type or parse error for DEL: {}",
+                                event.item_type
+                            );
                         }
                     }
                 }
@@ -331,6 +351,7 @@ impl WsHandler {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .into();
+
                 let command_id = &wrapped.command_id;
 
                 log::debug!("Command {} (tx: {})", command_id, tx_id);
@@ -343,18 +364,16 @@ impl WsHandler {
                         let executor = (registration.factory)();
 
                         // Create request context
-                        let req = RequestContext::from_client(
+                        let req = Arc::new(RequestContext::from_client(
                             tx_id.clone(),
                             session.client_id.clone(),
                             host_id,
-                        );
+                        ));
+
+                        let cmd_id: Arc<str> = Arc::from(wrapped.command_id.clone());
 
                         // Create command context
-                        let cmd_ctx = CommandContext::new(
-                            req,
-                            command_id.as_str().into(),
-                            registry.clone(),
-                        );
+                        let cmd_ctx = CommandContext::new(cmd_id, req, ctx.clone());
 
                         // Execute the command
                         match executor.execute_from_value(wrapped.command.clone(), cmd_ctx) {
@@ -364,7 +383,10 @@ impl WsHandler {
                                     tx: tx_id.to_string(),
                                 });
                                 if let Err(e) = tx.try_send(response) {
-                                    log::warn!("WebSocket send buffer full, dropping CommandResponse: {}", e);
+                                    log::warn!(
+                                        "WebSocket send buffer full, dropping CommandResponse: {}",
+                                        e
+                                    );
                                 }
                             }
                             Err(e) => {
@@ -374,7 +396,10 @@ impl WsHandler {
                                     message: e.message,
                                 });
                                 if let Err(e) = tx.try_send(error) {
-                                    log::warn!("WebSocket send buffer full, dropping CommandError: {}", e);
+                                    log::warn!(
+                                        "WebSocket send buffer full, dropping CommandError: {}",
+                                        e
+                                    );
                                 }
                             }
                         }

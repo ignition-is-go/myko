@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize, de::Error};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::core::{item::AnyItem, query::{QueryId, QueryItemType}};
+use crate::core::{
+    item::AnyItem,
+    query::{QueryId, QueryItemType},
+};
 
 use super::item::WrappedItem;
 
@@ -64,25 +67,47 @@ impl QueryResponse {
                         item_type: item.entity_type().into(),
                     })
                     .collect();
-                QueryResponse { tx, sequence, upserts, deletes: vec![] }
+                QueryResponse {
+                    tx,
+                    sequence,
+                    upserts,
+                    deletes: vec![],
+                }
             }
             MapDiff::Insert { key: _, value } => {
                 let upserts = vec![WrappedItem {
                     item: value.to_value(),
                     item_type: value.entity_type().into(),
                 }];
-                QueryResponse { tx, sequence, upserts, deletes: vec![] }
+                QueryResponse {
+                    tx,
+                    sequence,
+                    upserts,
+                    deletes: vec![],
+                }
             }
-            MapDiff::Update { key: _, old_value: _, new_value } => {
+            MapDiff::Update {
+                key: _,
+                old_value: _,
+                new_value,
+            } => {
                 let upserts = vec![WrappedItem {
                     item: new_value.to_value(),
                     item_type: new_value.entity_type().into(),
                 }];
-                QueryResponse { tx, sequence, upserts, deletes: vec![] }
+                QueryResponse {
+                    tx,
+                    sequence,
+                    upserts,
+                    deletes: vec![],
+                }
             }
-            MapDiff::Remove { key, old_value: _ } => {
-                QueryResponse { tx, sequence, upserts: vec![], deletes: vec![key.clone()] }
-            }
+            MapDiff::Remove { key, old_value: _ } => QueryResponse {
+                tx,
+                sequence,
+                upserts: vec![],
+                deletes: vec![key.clone()],
+            },
         }
     }
 

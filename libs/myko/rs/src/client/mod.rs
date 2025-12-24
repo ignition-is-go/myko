@@ -4,7 +4,7 @@ use crate::{
     core::item::Eventable,
     query::{QueryParams, QueryRequest},
     report::{ReportIdStatic, ReportParams, ReportRequest},
-    wire::{wrap_command_request, MEvent, MykoMessage, WrappedQuery, WrappedReport},
+    wire::{MEvent, MykoMessage, WrappedQuery, WrappedReport, wrap_command_request},
 };
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
 use log::{debug, error, info, trace, warn};
@@ -93,10 +93,7 @@ impl MykoClient {
     }
 
     /// Send a raw wrapped command (for federation forwarding)
-    pub fn send_command_raw(
-        &self,
-        command: crate::command::WrappedCommand,
-    ) -> Result<(), String> {
+    pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
 
         let str = serde_json::to_string(&myko_msg).map_err(|e| e.to_string())?;
@@ -222,9 +219,7 @@ impl MykoClient {
 
         tokio::spawn(async move {
             while let Some(val) = msgs.next().await {
-                let parsed = serde_json::from_value::<MykoMessage>(
-                    val.clone(),
-                );
+                let parsed = serde_json::from_value::<MykoMessage>(val.clone());
                 let Ok(MykoMessage::Command(wrapped)) = parsed else {
                     continue;
                 };
@@ -307,8 +302,7 @@ impl MykoClient {
                             Ok(v) => v,
                             Err(_) => return None,
                         };
-                        let parsed =
-                            serde_json::from_value::<MykoMessage>(data.clone()).ok()?;
+                        let parsed = serde_json::from_value::<MykoMessage>(data.clone()).ok()?;
                         match parsed {
                             MykoMessage::CommandResponse(resp) => {
                                 if resp.tx != tx {

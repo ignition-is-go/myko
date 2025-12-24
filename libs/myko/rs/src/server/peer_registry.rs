@@ -72,10 +72,7 @@ enum PeerMessage {
     /// A peer server was removed
     Removed { server_id: Uuid },
     /// A peer connection was established
-    Connected {
-        server_id: Uuid,
-        client: MykoClient,
-    },
+    Connected { server_id: Uuid, client: MykoClient },
     /// A peer connection was lost
     Disconnected { server_id: Uuid },
     /// Update peer health metrics
@@ -137,7 +134,7 @@ impl PeerRegistry {
         }));
 
         // Clean up stale servers with the same address and port (e.g., from a previous crash)
-        let all_servers = ctx.query(GetAllServers {});
+        let all_servers = ctx.query(GetAllServers {}, ctx.new_server_transaction());
         for server in all_servers.get().iter() {
             if server.address == config.address
                 && server.port == config.port
@@ -161,12 +158,15 @@ impl PeerRegistry {
             started_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        ctx.set(this_server.clone());
-        info!("Published server {} at {}:{}", host_id, config.address, config.port);
+        ctx.set(&this_server);
+        info!(
+            "Published server {} at {}:{}",
+            host_id, config.address, config.port
+        );
 
         // Subscribe to GetPeerServers query for reactive peer discovery
         let query_sender = sender.clone();
-        let peer_servers_cell = ctx.query(GetPeerServers {});
+        let peer_servers_cell = ctx.query(GetPeerServers {}, ctx.new_server_transaction());
 
         // Track known peers to detect additions/removals
         let known_peers: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
@@ -176,14 +176,17 @@ impl PeerRegistry {
         let subscription_guard = peer_servers_cell.subscribe(move |signal| {
             if let Signal::Value(servers) = signal {
                 let mut known = known_peers_clone.write().unwrap();
-                let current_ids: HashSet<String> = servers.iter().map(|s| s.id.to_string()).collect();
+                let current_ids: HashSet<String> =
+                    servers.iter().map(|s| s.id.to_string()).collect();
 
                 // Find new peers
                 for server in servers.iter() {
                     let id = server.id.to_string();
                     if !known.contains(&id) {
                         debug!("Discovered new peer server: {}", id);
-                        if let Err(e) = query_sender.try_send(PeerMessage::Discovered(server.clone())) {
+                        if let Err(e) =
+                            query_sender.try_send(PeerMessage::Discovered(server.clone()))
+                        {
                             warn!("Peer message buffer full, dropping Discovered: {}", e);
                         }
                     }
@@ -193,10 +196,11 @@ impl PeerRegistry {
                 for id in known.iter() {
                     if !current_ids.contains(id) {
                         debug!("Peer server removed: {}", id);
-                        if let Ok(uuid) = Uuid::parse_str(id) {
-                            if let Err(e) = query_sender.try_send(PeerMessage::Removed { server_id: uuid }) {
-                                warn!("Peer message buffer full, dropping Removed: {}", e);
-                            }
+                        if let Ok(uuid) = Uuid::parse_str(id)
+                            && let Err(e) =
+                                query_sender.try_send(PeerMessage::Removed { server_id: uuid })
+                        {
+                            warn!("Peer message buffer full, dropping Removed: {}", e);
                         }
                     }
                 }
@@ -209,7 +213,10 @@ impl PeerRegistry {
         for server in peer_servers_cell.get().iter() {
             known_peers.write().unwrap().insert(server.id.to_string());
             if let Err(e) = sender.try_send(PeerMessage::Discovered(server.clone())) {
-                warn!("Peer message buffer full on init, dropping Discovered: {}", e);
+                warn!(
+                    "Peer message buffer full on init, dropping Discovered: {}",
+                    e
+                );
             }
         }
 
@@ -347,7 +354,7 @@ impl PeerRegistry {
                         if !connected {
                             warn!("Connection timeout: {} at {}", server_id, peer_address);
                             client.close();
-                            let _ = sender_clone.send(PeerMessage::Disconnected { server_id });
+                            drop(sender_clone.send(PeerMessage::Disconnected { server_id }));
                             return;
                         }
 
@@ -391,11 +398,11 @@ impl PeerRegistry {
 
                         if verified {
                             debug!("Verified peer {} at {}", server_id, peer_address);
-                            let _ = sender_clone.send(PeerMessage::Connected { server_id, client });
+                            drop(sender_clone.send(PeerMessage::Connected { server_id, client }));
                         } else {
                             warn!("Server ID verification failed for {}", server_id);
                             client.close();
-                            let _ = sender_clone.send(PeerMessage::Disconnected { server_id });
+                            drop(sender_clone.send(PeerMessage::Disconnected { server_id }));
                         }
                     });
                 }
@@ -438,7 +445,9 @@ impl PeerRegistry {
                         }
 
                         keepalive_client.close();
-                        if let Err(e) = keepalive_sender.try_send(PeerMessage::Disconnected { server_id }) {
+                        if let Err(e) =
+                            keepalive_sender.try_send(PeerMessage::Disconnected { server_id })
+                        {
                             warn!("Peer message buffer full, dropping Disconnected: {}", e);
                         }
                     });
@@ -463,7 +472,11 @@ impl PeerRegistry {
 
                     // Delete the Server entity so it doesn't appear stale to other peers
                     let server_id_str: Arc<str> = server_id.to_string().into();
-                    if let Some(server) = ctx.registry.get_or_create(Server::entity_name_static()).get_value(&server_id_str) {
+                    if let Some(server) = ctx
+                        .registry
+                        .get_or_create(Server::entity_name_static())
+                        .get_value(&server_id_str)
+                    {
                         ctx.del_dyn(server);
                     }
                     info!("Deleted Server entity for disconnected peer {}", server_id);
@@ -480,10 +493,10 @@ impl PeerRegistry {
                     trace!("Peer {} removed", server_id);
 
                     // Disconnect if connected
-                    if connections.contains_key(&server_id) {
-                        if let Err(e) = sender.try_send(PeerMessage::Disconnected { server_id }) {
-                            warn!("Peer message buffer full, dropping Disconnected: {}", e);
-                        }
+                    if connections.contains_key(&server_id)
+                        && let Err(e) = sender.try_send(PeerMessage::Disconnected { server_id })
+                    {
+                        warn!("Peer message buffer full, dropping Disconnected: {}", e);
                     }
 
                     // Remove from state entirely

@@ -94,7 +94,6 @@ impl HandlerRegistry {
             format_list(report_data.keys()),
         );
 
-
         Self {
             item_parsers,
             query_data,

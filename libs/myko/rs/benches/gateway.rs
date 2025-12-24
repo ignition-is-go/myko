@@ -7,9 +7,9 @@
 //! - Command-to-query-update latency
 //! - Event throughput under load
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use futures::stream;
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use futures::StreamExt;
+use futures::stream;
 use futures_signals::signal_map::MapDiff;
 use myko_rs::{
     actors::{
@@ -52,7 +52,7 @@ impl BenchHarness {
         let server = MykoServer::init(MykoServerArgs {
             bind_addr: "127.0.0.1".to_string(),
             bind_path: "/".to_string(),
-            bind_port: 0, // Don't actually bind
+            bind_port: 0,       // Don't actually bind
             kafka_config: None, // In-memory mode
             public_host_address: "127.0.0.1".to_string(),
         })
@@ -61,7 +61,8 @@ impl BenchHarness {
 
         // Register benchmark entities
         BenchItem::register(&server).expect("Failed to register BenchItem");
-        GetBenchItemsByCategory::register(&server).expect("Failed to register GetBenchItemsByCategory");
+        GetBenchItemsByCategory::register(&server)
+            .expect("Failed to register GetBenchItemsByCategory");
 
         // Get manager refs for direct access (now synchronous)
         let managers = server.get_managers();
@@ -113,8 +114,12 @@ impl BenchHarness {
 
     /// Start a query and get initial result count
     async fn start_query(&self, query: WrappedQuery) -> usize {
-        let signal = ractor::call!(self.managers.query_manager, QueryManagerMsg::StartQuery, query)
-            .expect("Failed to start query");
+        let signal = ractor::call!(
+            self.managers.query_manager,
+            QueryManagerMsg::StartQuery,
+            query
+        )
+        .expect("Failed to start query");
 
         let mut stream = SignalMapStream::new(signal);
         if let Some(diff) = stream.next().await {
@@ -349,22 +354,18 @@ fn saga_stream_benchmarks(c: &mut Criterion) {
 
         // Benchmark of_item_type filter
         let events = make_events(*size);
-        group.bench_with_input(
-            BenchmarkId::new("of_item_type", size),
-            size,
-            |b, _size| {
-                b.to_async(Runtime::new().unwrap()).iter(|| {
-                    let events = events.clone();
-                    async move {
-                        let filtered: Vec<_> = stream::iter(events)
-                            .of_item_type("BenchItem")
-                            .collect()
-                            .await;
-                        black_box(filtered.len())
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("of_item_type", size), size, |b, _size| {
+            b.to_async(Runtime::new().unwrap()).iter(|| {
+                let events = events.clone();
+                async move {
+                    let filtered: Vec<_> = stream::iter(events)
+                        .of_item_type("BenchItem")
+                        .collect()
+                        .await;
+                    black_box(filtered.len())
+                }
+            });
+        });
 
         // Benchmark of_change_type filter
         let events = make_events(*size);
@@ -426,7 +427,11 @@ fn saga_stream_benchmarks(c: &mut Criterion) {
                     let counts: Vec<_> = stream::iter(events)
                         .accumulate(0i64, |acc, event| {
                             // Simulate state accumulation
-                            *acc + event.item_json().get("value").and_then(|v| v.as_i64()).unwrap_or(0)
+                            *acc + event
+                                .item_json()
+                                .get("value")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0)
                         })
                         .collect()
                         .await;
@@ -437,24 +442,20 @@ fn saga_stream_benchmarks(c: &mut Criterion) {
 
         // Benchmark full saga pipeline (typical use case)
         let events = make_events(*size);
-        group.bench_with_input(
-            BenchmarkId::new("full_pipeline", size),
-            size,
-            |b, _size| {
-                b.to_async(Runtime::new().unwrap()).iter(|| {
-                    let events = events.clone();
-                    async move {
-                        let result: Vec<_> = stream::iter(events)
-                            .of_item_type("BenchItem")
-                            .of_change_type(MEventType::SET)
-                            .pairwise()
-                            .collect()
-                            .await;
-                        black_box(result.len())
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("full_pipeline", size), size, |b, _size| {
+            b.to_async(Runtime::new().unwrap()).iter(|| {
+                let events = events.clone();
+                async move {
+                    let result: Vec<_> = stream::iter(events)
+                        .of_item_type("BenchItem")
+                        .of_change_type(MEventType::SET)
+                        .pairwise()
+                        .collect()
+                        .await;
+                    black_box(result.len())
+                }
+            });
+        });
     }
 
     group.finish();

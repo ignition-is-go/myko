@@ -16,7 +16,7 @@
 //! ```
 //!
 
-use {crate as myko_rs};
+use crate as myko_rs;
 
 use std::sync::Arc;
 

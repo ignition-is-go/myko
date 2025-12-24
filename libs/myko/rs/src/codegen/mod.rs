@@ -61,7 +61,10 @@ pub fn export_registered_ts_types() -> Result<(), anyhow::Error> {
         }
     }
 
-    println!("ts-rs export complete: {} succeeded, {} failed", success_count, error_count);
+    println!(
+        "ts-rs export complete: {} succeeded, {} failed",
+        success_count, error_count
+    );
 
     if error_count > 0 {
         anyhow::bail!("{} ts-rs exports failed", error_count);
@@ -142,17 +145,23 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     let binding_types = collect_binding_types(directory_path);
     let subdir_types = collect_subdir_types(directory_path);
 
-    let items: Vec<_> =
-        inventory::iter::<ItemRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
-    let queries: Vec<_> =
-        inventory::iter::<QueryRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
-    let reports: Vec<_> =
-        inventory::iter::<ReportRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
-    let commands: Vec<_> =
-        inventory::iter::<CommandRegistration>().filter(|x| x.crate_name.contains(&crate_name)).collect();
+    let items: Vec<_> = inventory::iter::<ItemRegistration>()
+        .filter(|x| x.crate_name.contains(&crate_name))
+        .collect();
+    let queries: Vec<_> = inventory::iter::<QueryRegistration>()
+        .filter(|x| x.crate_name.contains(&crate_name))
+        .collect();
+    let reports: Vec<_> = inventory::iter::<ReportRegistration>()
+        .filter(|x| x.crate_name.contains(&crate_name))
+        .collect();
+    let commands: Vec<_> = inventory::iter::<CommandRegistration>()
+        .filter(|x| x.crate_name.contains(&crate_name))
+        .collect();
 
     // Collect query/report/command type names (these will be classes, not re-exported types)
-    let class_type_names: HashSet<&str> = queries.iter().map(|q| q.query_id)
+    let class_type_names: HashSet<&str> = queries
+        .iter()
+        .map(|q| q.query_id)
         .chain(reports.iter().map(|r| r.report_id))
         .chain(commands.iter().map(|c| c.command_id))
         .collect();
@@ -180,12 +189,18 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     for query in &queries {
         entity_types.insert(query.query_item_type.to_string());
     }
-    for report in reports.iter().filter(|r| r.output_type_crate.contains(&crate_name)) {
+    for report in reports
+        .iter()
+        .filter(|r| r.output_type_crate.contains(&crate_name))
+    {
         for t in extract_importable_types(report.output_type) {
             entity_types.insert(t);
         }
     }
-    for command in commands.iter().filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()") {
+    for command in commands
+        .iter()
+        .filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()")
+    {
         for t in extract_importable_types(command.result_type) {
             entity_types.insert(t);
         }
@@ -390,9 +405,8 @@ fn rust_type_to_ts(rust_type: &str) -> String {
     match trimmed {
         "str" | "String" => "string".to_string(),
         "bool" => "boolean".to_string(),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
-        "f32" | "f64" => "number".to_string(),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" | "f32" | "f64" => "number".to_string(),
         "()" => "void".to_string(),
         _ => trimmed.to_string(),
     }
@@ -437,10 +451,8 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
 
     // Filter out Rust primitive types that don't need imports
     let primitives = [
-        "str", "String", "bool", "()",
-        "i8", "i16", "i32", "i64", "i128", "isize",
-        "u8", "u16", "u32", "u64", "u128", "usize",
-        "f32", "f64",
+        "str", "String", "bool", "()", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16",
+        "u32", "u64", "u128", "usize", "f32", "f64",
     ];
 
     if primitives.contains(&trimmed) {

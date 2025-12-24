@@ -12,7 +12,9 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::core::item::{AnyItem, Eventable};
-use crate::query::{MykoServerCtx, QueryHandler, QueryHandlerCtx, QueryParams};
+use crate::query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx};
+use crate::report::{ReportContext, ReportHandler};
+use crate::request::RequestContext;
 use crate::store::StoreRegistry;
 use crate::wire::{EventOptions, MEvent, MEventType};
 
@@ -59,7 +61,11 @@ impl CellServerCtx {
     /// Parse JSON to a typed entity using the registered item parser.
     ///
     /// Returns None if the entity type is not registered or parsing fails.
-    pub fn parse_item(&self, entity_type: &str, json: &serde_json::Value) -> Option<Arc<dyn AnyItem>> {
+    pub fn parse_item(
+        &self,
+        entity_type: &str,
+        json: &serde_json::Value,
+    ) -> Option<Arc<dyn AnyItem>> {
         let parse = self.handler_registry.get_item_parser(entity_type)?;
         parse(json.clone()).ok()
     }
@@ -71,7 +77,7 @@ impl CellServerCtx {
     /// Publish an entity (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn set<T>(&self, entity: T)
+    pub fn set<T>(&self, entity: &T)
     where
         T: Eventable + 'static,
     {
@@ -83,7 +89,7 @@ impl CellServerCtx {
     /// Options control:
     /// - `prevent_relationship_updates`: skip cascade processing
     /// - `prevent_persist`: skip Kafka
-    pub fn set_with_options<T>(&self, entity: T, options: Option<EventOptions>)
+    pub fn set_with_options<T>(&self, entity: &T, options: Option<EventOptions>)
     where
         T: Eventable + 'static,
     {
@@ -93,7 +99,9 @@ impl CellServerCtx {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
 
         // Reduce: update store
-        self.registry.get_or_create(entity_type).insert(id.clone(), item.clone());
+        self.registry
+            .get_or_create(entity_type)
+            .insert(id.clone(), item.clone());
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
@@ -102,7 +110,7 @@ impl CellServerCtx {
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_set(&entity);
+            self.produce_set(entity);
         }
 
         log::trace!("Published SET {}", id);
@@ -156,17 +164,15 @@ impl CellServerCtx {
     }
 
     /// Publish a dynamic item (SET) with options.
-    pub fn set_dyn_with_options(
-        &self,
-        item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
-    ) {
+    pub fn set_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
 
         // Reduce: update store
-        self.registry.get_or_create(entity_type).insert(id.clone(), item.clone());
+        self.registry
+            .get_or_create(entity_type)
+            .insert(id.clone(), item.clone());
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
@@ -189,11 +195,7 @@ impl CellServerCtx {
     }
 
     /// Delete a dynamic item (DEL) with options.
-    pub fn del_dyn_with_options(
-        &self,
-        item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
-    ) {
+    pub fn del_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
@@ -232,7 +234,6 @@ impl CellServerCtx {
         }
     }
 
-
     fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) {
         if let Some(ref producer) = self.kafka_producer {
             let event = MEvent::set_from_value(
@@ -259,7 +260,11 @@ impl CellServerCtx {
     /// let peer_servers = ctx.query(GetPeerServers {});
     /// // peer_servers is Cell<Vec<Server>, CellImmutable>
     /// ```
-    pub fn query<Q>(&self, query: Q) -> Cell<Vec<Q::Item>, CellImmutable>
+    pub fn query<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+    ) -> Cell<Vec<Q::Item>, CellImmutable>
     where
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
@@ -268,17 +273,19 @@ impl CellServerCtx {
         let store = self.registry.get_or_create(&query_item_type);
 
         // Create a MykoServerCtx for query compatibility
-        let server_ctx = Arc::new(MykoServerCtx::new(self.host_id, self.registry.clone()));
+        let query_context = Arc::new(QueryContext {
+            req: request.clone(),
+        });
         let query = Arc::new(query);
 
         // Filter using the query's test_entity
         store
             .select(move |item| {
                 if let Some(typed_item) = item.as_any().downcast_ref::<Q::Item>() {
-                    let ctx = QueryHandlerCtx {
+                    let ctx = QueryTestCtx {
                         item: Arc::new(typed_item.clone()),
                         query: query.clone(),
-                        server_ctx: server_ctx.clone(),
+                        query_context: query_context.clone(),
                     };
                     Q::test_entity(ctx)
                 } else {
@@ -294,19 +301,36 @@ impl CellServerCtx {
             })
     }
 
-    /// Get the server context for use with queries.
-    ///
-    /// This is useful when you need to pass the server context to
-    /// query handlers directly.
-    pub fn server_ctx(&self) -> Arc<MykoServerCtx> {
-        Arc::new(MykoServerCtx::new(self.host_id, self.registry.clone()))
+    pub fn report<R>(
+        &self,
+        report: R,
+        request: Arc<RequestContext>,
+    ) -> Cell<R::Output, CellImmutable>
+    where
+        R: ReportHandler + Clone + 'static,
+    {
+        let report = Arc::new(report);
+
+        // Create a nested context - sub-report args are accessed via &self in compute
+        let nested_ctx = ReportContext::new(request.clone(), Arc::new(self.clone()));
+
+        report.compute(nested_ctx)
+    }
+
+    pub fn new_server_transaction(&self) -> Arc<RequestContext> {
+        Arc::new(RequestContext {
+            tx: Arc::<str>::from(Uuid::new_v4().to_string()),
+            client_id: None,
+            lineage: vec![],
+            host_id: self.host_id,
+            created_at: chrono::Utc::now().to_string(),
+            windback: None,
+        })
     }
 }
 
 impl std::fmt::Debug for CellServerCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CellServerCtx")
-            .field("host_id", &self.host_id)
-            .finish()
+        f.debug_struct("CellServerCtx").finish()
     }
 }

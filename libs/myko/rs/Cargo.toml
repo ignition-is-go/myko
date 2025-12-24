@@ -59,7 +59,3 @@ num_cpus = "1.16"
 name = "gateway"
 harness = false
 required-features = ["bench"]
-
-[[bench]]
-name = "runtime"
-harness = false

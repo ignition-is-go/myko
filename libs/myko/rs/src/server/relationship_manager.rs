@@ -57,8 +57,8 @@ use log::{debug, info, trace};
 use crate::core::item::AnyItem;
 use crate::event::EventOptions;
 use crate::relationship::{
-    iter_relations, ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor,
-    Relation,
+    ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
+    iter_relations,
 };
 
 use super::CellServerCtx;
@@ -140,8 +140,7 @@ impl RelationshipManager {
                 } => {
                     trace!(
                         "RelationshipManager: Registered BelongsTo {} -> {}",
-                        local_type,
-                        foreign_type
+                        local_type, foreign_type
                     );
                     let lookup = BelongsToLookup {
                         local_type,
@@ -165,8 +164,7 @@ impl RelationshipManager {
                 } => {
                     trace!(
                         "RelationshipManager: Registered OwnsMany {} ->> {}",
-                        local_type,
-                        foreign_type
+                        local_type, foreign_type
                     );
                     let lookup = OwnsManyLookup {
                         local_type,
@@ -191,7 +189,10 @@ impl RelationshipManager {
                     trace!(
                         "RelationshipManager: Registered EnsureFor {} for {:?}",
                         local_type,
-                        dependencies.iter().map(|d| d.foreign_type).collect::<Vec<_>>()
+                        dependencies
+                            .iter()
+                            .map(|d| d.foreign_type)
+                            .collect::<Vec<_>>()
                     );
                     let deps: Vec<_> = dependencies.to_vec();
 
@@ -210,10 +211,12 @@ impl RelationshipManager {
             }
         }
 
-        let relation_count = belongs_to_by_foreign.len()
-            + owns_many_by_local.len()
-            + ensure_for_by_dependency.len();
-        debug!("RelationshipManager: {} relation types indexed", relation_count);
+        let relation_count =
+            belongs_to_by_foreign.len() + owns_many_by_local.len() + ensure_for_by_dependency.len();
+        debug!(
+            "RelationshipManager: {} relation types indexed",
+            relation_count
+        );
 
         Self {
             belongs_to_by_foreign,
@@ -357,8 +360,7 @@ impl RelationshipManager {
                 if self.get_by_id(ctx, lookup.foreign_type, child_id).is_some() {
                     trace!(
                         "RelationshipManager: Cascade delete owned {} {}",
-                        lookup.foreign_type,
-                        child_id
+                        lookup.foreign_type, child_id
                     );
                     self.publish_del_cascade(ctx, lookup.foreign_type, child_id);
                 }
@@ -428,7 +430,12 @@ impl RelationshipManager {
 
             for combo in combinations {
                 // Check if derived entity already exists
-                let existing = self.find_ensure_for_entity(ctx, lookup.local_type, &lookup.dependencies, &combo);
+                let existing = self.find_ensure_for_entity(
+                    ctx,
+                    lookup.local_type,
+                    &lookup.dependencies,
+                    &combo,
+                );
 
                 if existing.is_none() {
                     // Create the derived entity using the factory
@@ -436,8 +443,7 @@ impl RelationshipManager {
 
                     trace!(
                         "RelationshipManager: Creating ensured {} for {:?}",
-                        lookup.local_type,
-                        combo
+                        lookup.local_type, combo
                     );
 
                     self.publish_set_cascade(ctx, lookup.local_type, entity);
@@ -467,8 +473,7 @@ impl RelationshipManager {
             for lookup in lookups {
                 // Get all parent IDs that exist
                 let parents = self.get_all_items(ctx, lookup.foreign_type);
-                let parent_ids: HashSet<Arc<str>> =
-                    parents.iter().map(|p| p.id()).collect();
+                let parent_ids: HashSet<Arc<str>> = parents.iter().map(|p| p.id()).collect();
 
                 debug!(
                     "RelationshipManager: {} -> {}: Found {} parents in store",
@@ -519,11 +524,7 @@ impl RelationshipManager {
 
                 info!(
                     "RelationshipManager: {} -> {}: {} orphans deleted, {} valid, {} no FK",
-                    child_type,
-                    lookup.foreign_type,
-                    orphan_count,
-                    valid_count,
-                    no_fk_count
+                    child_type, lookup.foreign_type, orphan_count, valid_count, no_fk_count
                 );
             }
         }
@@ -608,10 +609,7 @@ impl RelationshipManager {
 
                 info!(
                     "RelationshipManager: {} ->> {}: {} orphans deleted, {} valid",
-                    parent_type,
-                    lookup.foreign_type,
-                    orphan_count,
-                    valid_count
+                    parent_type, lookup.foreign_type, orphan_count, valid_count
                 );
             }
         }
@@ -666,7 +664,12 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Get an entity by ID
-    fn get_by_id(&self, ctx: &CellServerCtx, entity_type: &str, id: &str) -> Option<Arc<dyn AnyItem>> {
+    fn get_by_id(
+        &self,
+        ctx: &CellServerCtx,
+        entity_type: &str,
+        id: &str,
+    ) -> Option<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
         store.get_value(&id.into())
     }
@@ -674,7 +677,12 @@ impl RelationshipManager {
     /// Get all entities of a type
     fn get_all_items(&self, ctx: &CellServerCtx, entity_type: &str) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
-        store.entries().get().into_iter().map(|(_, item)| item).collect()
+        store
+            .entries()
+            .get()
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect()
     }
 
     /// Get all combinations of dependency entity IDs for EnsureFor
@@ -740,17 +748,16 @@ impl RelationshipManager {
 
         store.entries().get().into_iter().find_map(|(_, item)| {
             // Check if all dependency FKs match the combo values
-            let all_match = dependencies.iter().zip(combo.iter()).all(|(dep, expected_id)| {
-                (dep.extract_fk)(item.as_any())
-                    .map(|fk| fk == *expected_id)
-                    .unwrap_or(false)
-            });
+            let all_match = dependencies
+                .iter()
+                .zip(combo.iter())
+                .all(|(dep, expected_id)| {
+                    (dep.extract_fk)(item.as_any())
+                        .map(|fk| fk == *expected_id)
+                        .unwrap_or(false)
+                });
 
-            if all_match {
-                Some(item)
-            } else {
-                None
-            }
+            if all_match { Some(item) } else { None }
         })
     }
 
@@ -783,15 +790,13 @@ impl RelationshipManager {
         if let Some(item) = ctx.registry.get_or_create(entity_type).get_value(&id_arc) {
             debug!(
                 "RelationshipManager: publish_del_cascade {} {} - entity found, deleting",
-                entity_type,
-                id
+                entity_type, id
             );
             ctx.del_dyn_with_options(item, Some(options));
         } else {
             debug!(
                 "RelationshipManager: publish_del_cascade {} {} - entity NOT found in store",
-                entity_type,
-                id
+                entity_type, id
             );
         }
     }
