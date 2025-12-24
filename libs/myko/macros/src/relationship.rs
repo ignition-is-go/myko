@@ -105,10 +105,10 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
 
 /// Check if a type is Option<T>
 fn is_option_type(ty: &syn::Type) -> bool {
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            return segment.ident == "Option";
-        }
+    if let syn::Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+    {
+        return segment.ident == "Option";
     }
     false
 }

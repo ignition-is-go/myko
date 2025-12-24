@@ -88,7 +88,7 @@ fn to_pascal_case(s: &str) -> String {
 /// Generate setter commands for all annotated fields
 pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> TokenStream {
     let entity_ident = format_ident!("{}", entity_name);
-    let get_by_ids_ident = format_ident!("Get{}sByIds", entity_name);
+    let get_by_id_ident = format_ident!("Get{}ById", entity_name);
 
     let commands: Vec<TokenStream> = setters
         .iter()
@@ -166,8 +166,8 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
                         self,
                         ctx: myko_rs::prelude::CommandContext,
                     ) -> Result<(), myko_rs::prelude::CommandError> {
-                        let query = #get_by_ids_ident { ids: vec![self.id.clone()] };
-                        let entity = ctx.query_one(&query)?.ok_or_else(|| {
+                        let report = #get_by_id_ident { id: self.id.clone() };
+                        let entity = ctx.exec_report(report)?.ok_or_else(|| {
                             myko_rs::prelude::CommandError {
                                 tx: ctx.tx().to_string(),
                                 command_id: ctx.command_id.to_string(),

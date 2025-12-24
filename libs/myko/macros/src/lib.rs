@@ -18,21 +18,157 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
     partial_matches::derive_partial_matches_impl(input).into()
 }
 
-/// Implements a number of traits automatically, as well as adds
+/// Marks a struct as a Myko entity, generating queries, reports, commands, and supporting types.
 ///
-/// `pub id: Arc<str>`
+/// # Struct Modifications
 ///
-/// `pub hash: Arc<str>`
+/// Adds two required fields automatically:
+/// - `pub id: Arc<str>` - Unique identifier for the entity
+/// - `pub hash: Arc<str>` - Hash for change detection (defaults to empty)
 ///
-/// Derives:
+/// # Derives
 ///
-/// `Partial, PartialEq, Clone, Serialize, Deserialize, Debug`
+/// On the entity:
+/// - `Partial`, `PartialEq`, `Clone`, `Serialize`, `Deserialize`, `Debug`, `TS`
+/// - `Default` (only if `#[ensure_for]` attributes are present)
 ///
-/// Derives for Partial:
+/// On the generated `Partial{Entity}`:
+/// - `Clone`, `Serialize`, `Deserialize`, `Debug`, `Default`, `PartialMatches`, `TS`
 ///
-/// `Clone, Serialize, Deserialize, Default`
+/// # Generated Queries
 ///
-/// All fields added manually must implement at least `Clone, Serialize, Deserialize`
+/// | Query | Description |
+/// |-------|-------------|
+/// | `GetAll{Entity}s` | Returns all entities of this type |
+/// | `Get{Entity}sByIds { ids: Vec<Arc<str>> }` | Returns entities matching the given IDs |
+/// | `Get{Entity}sByQuery(Partial{Entity})` | Returns entities matching partial field values |
+///
+/// # Generated Reports
+///
+/// | Report | Output Type | Description |
+/// |--------|-------------|-------------|
+/// | `Get{Entity}ById { id: Arc<str> }` | `Option<{Entity}>` | Returns a single entity by ID |
+/// | `CountAll{Entity}s` | `{Entity}Count` | Returns total count of all entities |
+/// | `Count{Entity}s(Partial{Entity})` | `{Entity}Count` | Returns count matching partial filter |
+///
+/// # Generated Commands
+///
+/// | Command | Result Type | Description |
+/// |---------|-------------|-------------|
+/// | `Delete{Entity} { id: Arc<str> }` | `Delete{Entity}Result` | Deletes a single entity |
+/// | `Delete{Entity}s { ids: Vec<Arc<str>> }` | `Delete{Entity}sResult` | Deletes multiple entities |
+///
+/// # Generated Types
+///
+/// | Type | Description |
+/// |------|-------------|
+/// | `Partial{Entity}` | Partial version with all fields optional, for filtering |
+/// | `{Entity}Count` | Count result with `count: usize` field |
+/// | `Delete{Entity}Result` | Single delete result with `deleted: bool` field |
+/// | `Delete{Entity}sResult` | Bulk delete result with `deleted_count: usize` field |
+///
+/// # Field Attributes
+///
+/// ## `#[myko_rename]`
+/// Generates a `Rename{Entity} { id, name }` command that updates the annotated field.
+/// The field is typically named `name` but can be any `String` field.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Target {
+///     #[myko_rename]
+///     pub name: String,
+/// }
+/// // Generates: RenameTarget { id: Arc<str>, name: Arc<str> }
+/// ```
+///
+/// ## `#[myko_setter]` / `#[myko_setter("CustomName")]`
+/// Generates a setter command for the field. Without an argument, generates
+/// `Set{Entity}{Field}`. With a string argument, uses that as the command name.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Scene {
+///     #[myko_setter]
+///     pub is_active: bool,
+///     #[myko_setter("ToggleSceneVisibility")]
+///     pub visible: bool,
+/// }
+/// // Generates: SetSceneIsActive { id, is_active }
+/// // Generates: ToggleSceneVisibility { id, visible }
+/// ```
+///
+/// ## `#[belongs_to(ParentEntity)]`
+/// Declares a parent-child relationship. When the parent is deleted, the child
+/// is cascade-deleted. The field should contain the parent's ID.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Binding {
+///     #[belongs_to(Scene)]
+///     pub scene_id: String,
+/// }
+/// // When Scene is deleted, all Bindings with that scene_id are deleted
+/// ```
+///
+/// ## `#[owns_many(ChildEntity)]`
+/// Declares ownership of child entities via an ID list. When the parent is deleted,
+/// children are deleted. When a child is deleted, its ID is removed from the list.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Scene {
+///     #[owns_many(BindingNode)]
+///     pub node_ids: Vec<String>,
+/// }
+/// ```
+///
+/// ## `#[ensure_for(DependencyEntity)]`
+/// Auto-creates one entity instance per dependency. Multiple `ensure_for` attributes
+/// on different fields create a Cartesian product.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct BundleStatus {
+///     #[ensure_for(Session)]
+///     pub session_id: String,
+///     #[ensure_for(Bundle)]
+///     pub bundle_id: String,
+/// }
+/// // Creates one BundleStatus per Session×Bundle combination
+/// ```
+///
+/// ## `#[myko_client_id]`
+/// Server auto-populates this field with the WebSocket client ID that sent the event.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Instance {
+///     #[myko_client_id]
+///     pub client_id: Option<String>,
+/// }
+/// ```
+///
+/// ## `#[searchable]`
+/// Marks a field for full-text search indexing.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Target {
+///     #[searchable]
+///     pub name: String,
+///     #[searchable]
+///     pub description: String,
+///     pub internal_id: String,  // not searchable
+/// }
+/// ```
+///
+/// ## `#[default_value(expr)]`
+/// Sets a default value for the field when auto-creating via `ensure_for`.
+///
+/// # Requirements
+///
+/// All manually-added fields must implement `Clone`, `Serialize`, and `Deserialize`.
 #[proc_macro_attribute]
 pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);

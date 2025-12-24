@@ -66,34 +66,9 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #[myko_macros::myko_query(#name)]
         pub struct #get_all_query_ident {}
 
-
         impl myko_rs::prelude::QueryHandler for #get_all_query_ident {
-            fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
+            fn test_entity(ctx: myko_rs::prelude::QueryTestCtx<Self>) -> bool {
                 true
-            }
-        }
-
-        impl #get_all_query_ident {
-            /// Create a reactive cell for this query.
-            pub fn cell(
-                &self,
-                registry: &myko_rs::store::StoreRegistry,
-            ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
-                use myko_rs::hypha::{MapExt, SelectExt};
-                registry
-                    .get_or_create(#name_str)
-                    .select(|_| true)
-                    .entries()
-                    .map(|entries| {
-                        entries
-                            .iter()
-                            .filter_map(|(_, item)| {
-                                item.as_any()
-                                    .downcast_ref::<#name>()
-                                    .cloned()
-                            })
-                            .collect()
-                    })
             }
         }
 
@@ -107,38 +82,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub ids: Vec<std::sync::Arc<str>>,
         }
 
-
         impl myko_rs::prelude::QueryHandler for #get_by_ids_query_ident {
-            fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
+            fn test_entity(ctx: myko_rs::prelude::QueryTestCtx<Self>) -> bool {
                 ctx.query.ids.contains(&ctx.item.id)
             }
         }
 
-        impl #get_by_ids_query_ident {
-            /// Create a reactive cell for this query.
-            pub fn cell(
-                &self,
-                registry: &myko_rs::store::StoreRegistry,
-            ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
-                use myko_rs::hypha::{MapExt, SelectExt};
-                let id_set: std::collections::HashSet<std::sync::Arc<str>> =
-                    self.ids.iter().cloned().collect();
-                registry
-                    .get_or_create(#name_str)
-                    .select(move |item| id_set.contains(&item.id()))
-                    .entries()
-                    .map(|entries| {
-                        entries
-                            .iter()
-                            .filter_map(|(_, item)| {
-                                item.as_any()
-                                    .downcast_ref::<#name>()
-                                    .cloned()
-                            })
-                            .collect()
-                    })
-            }
-        }
     };
 
     let get_by_partial_ident = format_ident!("Get{}sByQuery", name_str);
@@ -149,39 +98,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
          pub struct #get_by_partial_ident(pub #partial_ident);
 
          impl myko_rs::prelude::QueryHandler for #get_by_partial_ident {
-             fn test_entity(ctx: myko_rs::prelude::QueryHandlerCtx<Self>) -> bool {
+             fn test_entity(ctx: myko_rs::prelude::QueryTestCtx<Self>) -> bool {
                  ctx.query.0.matches(&ctx.item)
-             }
-         }
-
-         impl #get_by_partial_ident {
-             /// Create a reactive cell for this query.
-             pub fn cell(
-                 &self,
-                 registry: &myko_rs::store::StoreRegistry,
-             ) -> myko_rs::hypha::Cell<Vec<#name>, myko_rs::hypha::CellImmutable> {
-                 use myko_rs::hypha::{MapExt, SelectExt};
-                 let partial = self.0.clone();
-                 registry
-                     .get_or_create(#name_str)
-                     .select(move |item| {
-                         if let Some(entity) = item.as_any().downcast_ref::<#name>() {
-                             partial.matches(entity)
-                         } else {
-                             false
-                         }
-                     })
-                     .entries()
-                     .map(|entries| {
-                         entries
-                             .iter()
-                             .filter_map(|(_, item)| {
-                                 item.as_any()
-                                     .downcast_ref::<#name>()
-                                     .cloned()
-                             })
-                             .collect()
-                     })
              }
          }
 
@@ -287,8 +205,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 self,
                 ctx: myko_rs::prelude::CommandContext,
             ) -> Result<#delete_result_ident, myko_rs::prelude::CommandError> {
-                let query = #get_by_ids_query_ident { ids: vec![self.id.clone()] };
-                let entity = ctx.query_one(&query)?;
+
+            	let report = #get_by_id_report_ident { id: self.id.clone() };
+
+                let entity = ctx.exec_report(report)?;
 
                 match entity {
                     Some(e) => {
@@ -332,13 +252,14 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             ) -> Result<#delete_many_result_ident, myko_rs::prelude::CommandError> {
                 let mut deleted_count = 0;
 
-                for id in &self.ids {
-                    let single_query = #get_by_ids_query_ident { ids: vec![id.clone()] };
 
-                    if let Some(entity) = ctx.query_one(&single_query)? {
-                        ctx.emit_del(&entity)?;
-                        deleted_count += 1;
-                    }
+                let q = #get_by_ids_query_ident { ids: self.ids.clone() };
+
+                let entities = ctx.exec_query(q)?;
+
+                for entity in entities {
+                    ctx.emit_del(&entity)?;
+                    deleted_count += 1;
                 }
 
                 Ok(#delete_many_result_ident { deleted_count })
