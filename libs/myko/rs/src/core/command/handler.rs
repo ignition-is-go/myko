@@ -1,18 +1,14 @@
 use std::sync::Arc;
 
 use hypha::Gettable;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    command::CommandError,
-    context::RequestContext,
-    event::{MEvent, MEventType, EventOptions},
-    item::Eventable,
-    query::QueryParams,
-    store::StoreRegistry,
+    command::CommandError, event::EventOptions, item::Eventable, query::QueryParams,
+    request::RequestContext, server::CellServerCtx,
 };
 
 /// Context provided to command handlers for accessing dependencies.
@@ -21,47 +17,28 @@ use crate::{
 /// - Emit SET/DEL events
 /// - Execute queries against the store
 /// - Access request context (tx, client_id, lineage, host_id)
+#[derive(Clone)]
 pub struct CommandContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
-    pub req: RequestContext,
+    pub req: Arc<RequestContext>,
 
     /// The command ID being executed (for error reporting).
     pub command_id: Arc<str>,
 
-    /// Store registry for queries
-    pub(crate) registry: Arc<StoreRegistry>,
-
-    /// Event sink for publishing events (optional, for persistence)
-    pub(crate) event_sink: Option<flume::Sender<MEvent>>,
+    server_ctx: Arc<CellServerCtx>,
 }
 
 impl CommandContext {
     /// Create a new CommandContext.
     pub fn new(
-        req: RequestContext,
         command_id: Arc<str>,
-        registry: Arc<StoreRegistry>,
+        req: Arc<RequestContext>,
+        server_ctx: Arc<CellServerCtx>,
     ) -> Self {
         Self {
             req,
             command_id,
-            registry,
-            event_sink: None,
-        }
-    }
-
-    /// Create a new CommandContext with an event sink.
-    pub fn with_event_sink(
-        req: RequestContext,
-        command_id: Arc<str>,
-        registry: Arc<StoreRegistry>,
-        event_sink: flume::Sender<MEvent>,
-    ) -> Self {
-        Self {
-            req,
-            command_id,
-            registry,
-            event_sink: Some(event_sink),
+            server_ctx,
         }
     }
 
@@ -70,8 +47,8 @@ impl CommandContext {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Get the transaction ID.
-    pub fn tx(&self) -> &str {
-        &self.req.tx
+    pub fn tx(&self) -> Arc<str> {
+        self.req.tx.clone()
     }
 
     /// Get the client ID if present.
@@ -108,29 +85,7 @@ impl CommandContext {
         item: &T,
         options: EventOptions,
     ) -> Result<(), CommandError> {
-        let event = MEvent {
-            item: serde_json::to_value(item).map_err(|e| CommandError {
-                tx: self.tx().to_string(),
-                command_id: self.command_id.to_string(),
-                message: format!("Failed to serialize item: {}", e),
-            })?,
-            change_type: MEventType::SET,
-            item_type: item.entity_type().to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            tx: self.tx().to_string(),
-            source_id: self.req.client_id.as_ref().map(|s| s.to_string()),
-            options: Some(options),
-        };
-
-        // Update the store directly
-        let store = self.registry.get_or_create(item.entity_type());
-        let id: Arc<str> = item.id();
-        store.insert(id, Arc::new(item.clone()));
-
-        // Optionally send to event sink for persistence
-        if let Some(ref sink) = self.event_sink {
-            let _ = sink.send(event);
-        }
+        self.server_ctx.set_with_options(item, Some(options));
 
         Ok(())
     }
@@ -149,29 +104,7 @@ impl CommandContext {
         item: &T,
         options: EventOptions,
     ) -> Result<(), CommandError> {
-        let event = MEvent {
-            item: serde_json::to_value(item).map_err(|e| CommandError {
-                tx: self.tx().to_string(),
-                command_id: self.command_id.to_string(),
-                message: format!("Failed to serialize item: {}", e),
-            })?,
-            change_type: MEventType::DEL,
-            item_type: item.entity_type().to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            tx: self.tx().to_string(),
-            source_id: self.req.client_id.as_ref().map(|s| s.to_string()),
-            options: Some(options),
-        };
-
-        // Update the store directly
-        let store = self.registry.get_or_create(item.entity_type());
-        let id: Arc<str> = item.id();
-        store.remove(&id);
-
-        // Optionally send to event sink for persistence
-        if let Some(ref sink) = self.event_sink {
-            let _ = sink.send(event);
-        }
+        self.server_ctx.del_with_options(item, Some(options));
 
         Ok(())
     }
@@ -179,47 +112,27 @@ impl CommandContext {
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
-    pub fn query_one<Q>(&self, _query: &Q) -> Result<Option<Q::Item>, CommandError>
+    pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Q::Item>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
     {
-        let store = self.registry.get_or_create(Q::query_item_type_static().as_ref());
-
-        // Get all items and find the first match
-        // In a real implementation, this would use the query's filter logic
-        let items = store.entries().get();
-        for (_, item) in items {
-            if let Some(typed) = item.as_any().downcast_ref::<Q::Item>() {
-                return Ok(Some(typed.clone()));
-            }
-        }
-        Ok(None)
+        Ok(self
+            .server_ctx
+            .query(query.clone(), self.req.clone())
+            .get()
+            .first()
+            .cloned())
     }
-
     /// Execute a query and return all results.
     ///
     /// This performs a one-shot query against the store.
-    pub fn query_all<Q>(&self, _query: &Q) -> Result<Vec<Q::Item>, CommandError>
+    pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Q::Item>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
     {
-        let store = self.registry.get_or_create(Q::query_item_type_static().as_ref());
-
-        let items = store.entries().get();
-        let mut results = Vec::new();
-        for (_, item) in items {
-            if let Some(typed) = item.as_any().downcast_ref::<Q::Item>() {
-                results.push(typed.clone());
-            }
-        }
-        Ok(results)
-    }
-
-    /// Get the store registry for direct access.
-    pub fn registry(&self) -> &Arc<StoreRegistry> {
-        &self.registry
+        Ok(self.server_ctx.query(query, self.req.clone()).get())
     }
 
     /// Execute another command within this context.
@@ -228,65 +141,22 @@ impl CommandContext {
     /// The nested command shares the same transaction context.
     /// The command is consumed by execution, but the context is borrowed.
     pub fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
-        let nested_ctx = CommandContext {
-            req: self.req.clone(),
-            command_id: C::command_id_static().into(),
-            registry: self.registry.clone(),
-            event_sink: self.event_sink.clone(),
-        };
-
-        cmd.execute(nested_ctx)
-    }
-
-    /// Execute a command by looking it up in the registry (dynamic dispatch).
-    ///
-    /// Use this when you have a command ID and JSON value at runtime.
-    pub fn execute_command_dyn(
-        &self,
-        command_id: &str,
-        command_value: Value,
-    ) -> Result<Value, CommandError> {
-        for registration in inventory::iter::<CommandHandlerRegistration> {
-            if registration.command_id == command_id {
-                let executor = (registration.factory)();
-
-                let nested_ctx = CommandContext {
-                    req: self.req.clone(),
-                    command_id: command_id.into(),
-                    registry: self.registry.clone(),
-                    event_sink: self.event_sink.clone(),
-                };
-
-                return executor.execute_from_value(command_value, nested_ctx);
-            }
-        }
-
-        Err(CommandError {
-            tx: self.tx().to_string(),
-            command_id: command_id.to_string(),
-            message: format!("Command handler not found: {}", command_id),
-        })
+        cmd.execute(self.clone())
     }
 
     /// Execute a report and return the current value.
     ///
     /// This allows command handlers to query reports for decision making.
-    pub fn report_one<R>(&self, request: &crate::report::ReportRequest<R>) -> Result<<R as crate::report::ReportHandler>::Output, CommandError>
+    pub fn exec_report<R>(
+        &self,
+        report: R,
+    ) -> Result<<R as crate::report::ReportHandler>::Output, CommandError>
     where
         R: crate::report::ReportParams + Clone,
     {
         use hypha::Gettable;
 
-        // Create a report context
-        let report_ctx = crate::report::ReportContext::new(
-            self.req.clone(),
-            self.registry.clone(),
-            serde_json::to_value(&request.report).unwrap_or(Value::Null),
-        );
-
-        // Compute the report cell and get current value
-        let cell = request.report.compute(report_ctx);
-        Ok(cell.get())
+        Ok(self.server_ctx.report(report, self.req.clone()).get())
     }
 }
 
@@ -334,7 +204,11 @@ pub trait DynCommandExecutor: Send + Sync + 'static {
     fn command_id(&self) -> &'static str;
 
     /// Execute the command from a JSON value
-    fn execute_from_value(&self, command: Value, ctx: CommandContext) -> Result<Value, CommandError>;
+    fn execute_from_value(
+        &self,
+        command: Value,
+        ctx: CommandContext,
+    ) -> Result<Value, CommandError>;
 }
 
 /// Adapter that wraps a CommandHandler to provide DynCommandExecutor
@@ -361,7 +235,11 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         C::command_id_static()
     }
 
-    fn execute_from_value(&self, command: Value, ctx: CommandContext) -> Result<Value, CommandError> {
+    fn execute_from_value(
+        &self,
+        command: Value,
+        ctx: CommandContext,
+    ) -> Result<Value, CommandError> {
         // Deserialize the command
         let cmd: C = serde_json::from_value(command).map_err(|e| CommandError {
             tx: ctx.tx().to_string(),

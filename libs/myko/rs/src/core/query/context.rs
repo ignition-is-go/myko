@@ -1,9 +1,8 @@
 //! Minimal server context for query handlers.
 
 use std::sync::Arc;
-use uuid::Uuid;
 
-use crate::store::StoreRegistry;
+use crate::request::RequestContext;
 
 /// Minimal server context provided to query handlers.
 ///
@@ -12,22 +11,7 @@ use crate::store::StoreRegistry;
 /// - Entity stores (`registry`)
 ///
 /// For more capabilities (publishing, relationships), use `CellServerCtx`.
-#[derive(Clone)]
-pub struct MykoServerCtx {
-    pub host_id: Uuid,
-    pub registry: Arc<StoreRegistry>,
-}
-
-impl MykoServerCtx {
-    pub fn new(host_id: Uuid, registry: Arc<StoreRegistry>) -> Self {
-        Self { host_id, registry }
-    }
-}
-
-impl std::fmt::Debug for MykoServerCtx {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MykoServerCtx")
-            .field("host_id", &self.host_id)
-            .finish()
-    }
+#[derive(Clone, Debug)]
+pub struct QueryContext {
+    pub req: Arc<RequestContext>,
 }

@@ -58,10 +58,7 @@ pub trait Saga: Send + Sync + 'static {
     ///
     /// This method receives a stream of all events and should filter/transform
     /// them into commands to execute.
-    fn build(
-        events: EventStream,
-        ctx: Arc<super::context::SagaContext>,
-    ) -> CommandStream
+    fn build(events: EventStream, ctx: Arc<super::context::SagaContext>) -> CommandStream
     where
         Self: Sized;
 }

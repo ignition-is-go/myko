@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::super::item::{AnyItem, Eventable};
-use super::{context::MykoServerCtx, request::QueryRequest};
+use super::{context::QueryContext, request::QueryRequest};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Query Traits
@@ -43,20 +43,21 @@ pub trait QueryItemType {
 ///
 /// Any deduplication of changes to this query are handled upstream in the handler logic.
 pub trait QueryHandler: QueryItemType + Sized {
-    fn test_entity(ctx: QueryHandlerCtx<Self>) -> bool;
+    fn test_entity(ctx: QueryTestCtx<Self>) -> bool;
 }
 
-pub struct QueryHandlerCtx<TQuery: QueryItemType> {
+pub struct QueryTestCtx<TQuery: QueryItemType> {
     pub item: Arc<TQuery::Item>,
     pub query: Arc<TQuery>,
-    pub server_ctx: Arc<MykoServerCtx>,
+    pub query_context: Arc<QueryContext>,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct QueryHandlerCtxAny {
     pub item: Arc<dyn AnyItem>,
     pub query: Arc<dyn AnyQuery>,
-    pub ctx: Arc<MykoServerCtx>,
+    pub ctx: Arc<QueryContext>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,7 +134,8 @@ pub trait Query:
 // Blanket impl of Query for QueryRequest<Q>
 impl<Q: QueryParams + Clone> Query for QueryRequest<Q>
 where
-    Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    Q::Item:
+        Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     type Params = Q;
 

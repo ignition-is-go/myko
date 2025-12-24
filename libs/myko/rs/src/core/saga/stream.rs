@@ -295,7 +295,11 @@ mod tests {
 
         let filtered: Vec<_> = events.of_change_type(MEventType::SET).collect().await;
         assert_eq!(filtered.len(), 2);
-        assert!(filtered.iter().all(|e: &MEvent| e.change_type() == MEventType::SET));
+        assert!(
+            filtered
+                .iter()
+                .all(|e: &MEvent| e.change_type() == MEventType::SET)
+        );
     }
 
     #[tokio::test]

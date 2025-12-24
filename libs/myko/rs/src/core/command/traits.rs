@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{client::MykoClient, common::with_transaction::WithTransaction, wire::WrappedCommand};

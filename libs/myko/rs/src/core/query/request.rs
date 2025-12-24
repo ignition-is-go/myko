@@ -12,7 +12,7 @@ use crate::common::with_transaction::WithTransaction;
 use super::traits::AnyQuery;
 
 use super::traits::{
-    QueryHandler, QueryHandlerCtx, QueryId, QueryIdStatic, QueryItemType, QueryParams,
+    QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
 };
 
 /// Wraps query parameters with transaction metadata.
@@ -117,13 +117,13 @@ impl<Q: QueryItemType> QueryItemType for QueryRequest<Q> {
 }
 
 impl<Q: QueryHandler + Clone> QueryHandler for QueryRequest<Q> {
-    fn test_entity(ctx: QueryHandlerCtx<Self>) -> bool {
+    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
         // Delegate to inner query's test_entity
         // We need to create a QueryHandlerCtx for the inner type
-        Q::test_entity(QueryHandlerCtx {
+        Q::test_entity(QueryTestCtx {
             item: ctx.item,
             query: Arc::new(ctx.query.query.clone()),
-            server_ctx: ctx.server_ctx,
+            query_context: ctx.query_context,
         })
     }
 }

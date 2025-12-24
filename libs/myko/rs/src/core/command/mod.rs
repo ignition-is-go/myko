@@ -23,4 +23,4 @@ pub use traits::{
 };
 
 // Re-export wire types for backwards compatibility
-pub use crate::wire::{wrap_command_request, CommandError, CommandResponse, WrappedCommand};
+pub use crate::wire::{CommandError, CommandResponse, WrappedCommand, wrap_command_request};

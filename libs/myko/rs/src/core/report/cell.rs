@@ -113,7 +113,10 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        self.registry.get_or_create(entity_type).select(predicate).len()
+        self.registry
+            .get_or_create(entity_type)
+            .select(predicate)
+            .len()
     }
 
     /// Execute a sub-report and get its reactive output.

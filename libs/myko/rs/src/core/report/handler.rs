@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, MapExt};
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::Value;
+use hypha::{Cell, CellImmutable};
+use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 use crate::common::to_value::ToValue;
-use crate::context::RequestContext;
 use crate::query::QueryParams;
-use crate::store::StoreRegistry;
+use crate::request::RequestContext;
+use crate::server::CellServerCtx;
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -19,75 +18,18 @@ use crate::store::StoreRegistry;
 #[derive(Clone)]
 pub struct ReportContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
-    pub req: RequestContext,
-    /// Store registry for queries
-    pub registry: Arc<StoreRegistry>,
-    /// The report arguments as a JSON Value - handlers should parse this to their Args type
-    pub report_args: Value,
+    pub req: Arc<RequestContext>,
+    server_ctx: Arc<CellServerCtx>,
 }
 
 impl ReportContext {
-    /// Create a new ReportContext.
-    pub fn new(req: RequestContext, registry: Arc<StoreRegistry>, report_args: Value) -> Self {
-        Self {
-            req,
-            registry,
-            report_args,
-        }
-    }
-
-    /// Create a minimal ReportContext for cell-based server.
-    /// Uses a default RequestContext with generated tx.
-    pub fn minimal(registry: Arc<StoreRegistry>) -> Self {
-        Self {
-            req: RequestContext {
-                tx: Uuid::new_v4().to_string().into(),
-                client_id: None,
-                lineage: vec![],
-                host_id: Uuid::nil(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                windback: None,
-            },
-            registry,
-            report_args: Value::Null,
-        }
-    }
-
-    /// Create a ReportContext with a specific host_id.
-    pub fn with_host_id(registry: Arc<StoreRegistry>, host_id: Uuid) -> Self {
-        Self {
-            req: RequestContext {
-                tx: Uuid::new_v4().to_string().into(),
-                client_id: None,
-                lineage: vec![],
-                host_id,
-                created_at: chrono::Utc::now().to_rfc3339(),
-                windback: None,
-            },
-            registry,
-            report_args: Value::Null,
-        }
-    }
-
-    /// Create a ReportContext with just registry and args.
-    pub fn with_args(registry: Arc<StoreRegistry>, report_args: Value) -> Self {
-        Self {
-            req: RequestContext {
-                tx: Uuid::new_v4().to_string().into(),
-                client_id: None,
-                lineage: vec![],
-                host_id: Uuid::nil(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                windback: None,
-            },
-            registry,
-            report_args,
-        }
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // Convenience accessors for request context
     // ─────────────────────────────────────────────────────────────────────────
+
+    pub fn new(req: Arc<RequestContext>, server_ctx: Arc<CellServerCtx>) -> Self {
+        Self { req, server_ctx }
+    }
 
     /// Get the transaction ID.
     pub fn tx(&self) -> &str {
@@ -113,40 +55,18 @@ impl ReportContext {
     // Report-specific methods
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Parse the report arguments to the expected Args type.
-    ///
-    /// This is a convenience method to deserialize the report_args Value
-    /// to the specific Args struct for the report.
-    pub fn args<A: serde::de::DeserializeOwned>(&self) -> Result<A, serde_json::Error> {
-        serde_json::from_value(self.report_args.clone())
-    }
-
     /// Subscribe to a query dependency.
     ///
     /// Returns a cell that updates whenever the query results change.
     /// Uses cell-based reactive queries.
     ///
     /// Accepts bare query params (e.g., `GetServersByIds { ids: vec![...] }`)
-    pub fn query<Q>(&self, _query: Q) -> Cell<Vec<Q::Item>, CellImmutable>
+    pub fn query<Q>(&self, query: Q) -> Cell<Vec<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        let query_item_type = Q::query_item_type_static();
-        let store = self.registry.get_or_create(query_item_type.as_ref());
-
-        // Get the entries cell and map to typed items
-        store.entries().map(move |items| {
-            items
-                .iter()
-                .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
-                .collect()
-        })
-    }
-
-    /// Get the store registry for direct access.
-    pub fn store_registry(&self) -> &Arc<StoreRegistry> {
-        &self.registry
+        self.server_ctx.query(query, self.req.clone())
     }
 
     /// Search for entities matching a query string.
@@ -166,11 +86,8 @@ impl ReportContext {
     where
         R: ReportHandler + Clone + 'static,
     {
-        // Create a nested context - sub-report args are accessed via &self in compute
-        let nested_ctx = ReportContext::minimal(self.registry.clone());
-
         // Compute the sub-report
-        report.compute(nested_ctx)
+        report.compute(self.clone())
     }
 }
 

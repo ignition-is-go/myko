@@ -174,19 +174,3 @@ impl RequestContext {
             .join(" → ")
     }
 }
-
-impl Default for RequestContext {
-    /// Create a default context with a new transaction ID.
-    ///
-    /// Useful for testing or when context isn't available.
-    fn default() -> Self {
-        Self {
-            tx: Arc::from(Uuid::new_v4().to_string()),
-            client_id: None,
-            lineage: vec![Arc::from("unknown")],
-            host_id: Uuid::nil(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            windback: None,
-        }
-    }
-}

@@ -5,9 +5,8 @@ use std::sync::Arc;
 
 use hypha::{Cell, CellImmutable, MapExt};
 use serde_json::Value;
-use uuid::Uuid;
 
-use crate::{common::to_value::ToValue, store::StoreRegistry};
+use crate::{common::to_value::ToValue, request::RequestContext, server::CellServerCtx};
 
 use super::{
     handler::{ReportContext, ReportHandler},
@@ -37,8 +36,8 @@ pub type ReportParseFn = fn(Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 /// Takes a typed report, registry, and host_id, returns a cell of type-erased output.
 pub type ReportCellFactory = fn(
     Arc<dyn AnyReport>,
-    Arc<StoreRegistry>,
-    Uuid, // host_id for context
+    Arc<RequestContext>,
+    Arc<CellServerCtx>,
 ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,8 +78,8 @@ pub trait ReportFactory: ReportParams {
     /// Create a reactive cell for this report.
     fn cell_factory(
         report: Arc<dyn AnyReport>,
-        registry: Arc<StoreRegistry>,
-        host_id: Uuid,
+        request_ctx: Arc<RequestContext>,
+        server_ctx: Arc<CellServerCtx>,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 }
 
@@ -92,8 +91,8 @@ impl<R: ReportParams> ReportFactory for R {
 
     fn cell_factory(
         any_report: Arc<dyn AnyReport>,
-        registry: Arc<StoreRegistry>,
-        host_id: Uuid,
+        request_ctx: Arc<RequestContext>,
+        server_ctx: Arc<CellServerCtx>,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
         // Downcast to the ReportRequest wrapper
         let any_ref: &dyn Any = any_report.as_ref();
@@ -108,7 +107,7 @@ impl<R: ReportParams> ReportFactory for R {
             })?;
 
         // Create a ReportContext with host_id - report args are accessed via &self in compute
-        let ctx = ReportContext::with_host_id(registry, host_id);
+        let ctx = ReportContext::new(request_ctx, server_ctx);
 
         // Call the inner report's compute method
         let cell = <R as ReportHandler>::compute(&request.report, ctx);

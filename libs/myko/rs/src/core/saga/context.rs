@@ -23,10 +23,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::{
-    event::MEvent,
-    store::StoreRegistry,
-};
+use crate::{event::MEvent, store::StoreRegistry};
 
 /// Error type for saga operations.
 ///
@@ -67,10 +64,7 @@ pub struct SagaContext {
 
 impl SagaContext {
     /// Create a new SagaContext
-    pub fn new(
-        host_id: Uuid,
-        registry: Arc<StoreRegistry>,
-    ) -> Self {
+    pub fn new(host_id: Uuid, registry: Arc<StoreRegistry>) -> Self {
         Self {
             host_id,
             registry,

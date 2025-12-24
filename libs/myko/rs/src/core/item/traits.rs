@@ -2,7 +2,7 @@
 
 use std::{any::Any, fmt::Debug, sync::Arc};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::common::{to_value::ToValue, with_id::WithId};

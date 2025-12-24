@@ -6,14 +6,16 @@ use std::sync::Arc;
 use hypha::SelectExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use uuid::Uuid;
 
+use crate::request::RequestContext;
 use crate::{common::with_id::WithId, store::StoreRegistry};
 
 use super::super::item::Eventable;
 use super::{
-    cell::FilteredCellMap, context::MykoServerCtx, request::QueryRequest,
-    traits::{AnyQuery, QueryHandlerCtx, QueryParams},
+    cell::FilteredCellMap,
+    context::QueryContext,
+    request::QueryRequest,
+    traits::{AnyQuery, QueryParams, QueryTestCtx},
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ pub type QueryParseFn = fn(Value) -> Result<Arc<dyn AnyQuery>, anyhow::Error>;
 pub type QueryCellFactory = fn(
     Arc<dyn AnyQuery>,
     Arc<StoreRegistry>,
-    Uuid, // host_id for server context
+    Arc<RequestContext>,
 ) -> Result<FilteredCellMap, String>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,7 +70,7 @@ pub trait QueryFactory: QueryParams {
     fn cell_factory(
         query: Arc<dyn AnyQuery>,
         registry: Arc<StoreRegistry>,
-        host_id: Uuid,
+        request_ctx: Arc<RequestContext>,
     ) -> Result<FilteredCellMap, String>;
 }
 
@@ -85,7 +87,7 @@ where
     fn cell_factory(
         any_query: Arc<dyn AnyQuery>,
         registry: Arc<StoreRegistry>,
-        host_id: Uuid,
+        request_ctx: Arc<RequestContext>,
     ) -> Result<FilteredCellMap, String> {
         // Downcast to the QueryRequest wrapper
         let any_ref: &dyn Any = any_query.as_ref();
@@ -108,19 +110,21 @@ where
         log::debug!(
             "Creating query cell for {} with host_id={}",
             Q::query_id_static(),
-            host_id
+            request_ctx.host_id
         );
 
         // Create server context with actual host_id for test_entity
-        let server_ctx = Arc::new(MykoServerCtx::new(host_id, registry.clone()));
+        let query_ctx = Arc::new(QueryContext {
+            req: request_ctx.clone(),
+        });
 
         // Use store.select() to get a FilteredCellMap of matching items
         Ok(store.select(move |item| {
             if let Some(typed_item) = item.as_any().downcast_ref::<Q::Item>() {
-                let ctx = QueryHandlerCtx {
+                let ctx = QueryTestCtx {
                     item: Arc::new(typed_item.clone()),
                     query: query.clone(),
-                    server_ctx: server_ctx.clone(),
+                    query_context: query_ctx.clone(),
                 };
                 Q::test_entity(ctx)
             } else {
