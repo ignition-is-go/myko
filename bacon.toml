@@ -65,6 +65,10 @@ command = [
 need_stdout = true
 analyzer = "nextest"
 
+[jobs.fmt]
+command = ["cargo", "+nightly", "fmt"]
+need_stdout = true
+
 [jobs.doc]
 command = ["cargo", "doc", "--no-deps"]
 need_stdout = false
