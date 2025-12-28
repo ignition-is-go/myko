@@ -31,7 +31,9 @@ use std::{
 use log::{error, info, trace, warn};
 use rdkafka::{
     ClientConfig, Message,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
+    admin::{
+        AdminClient, AdminOptions, AlterConfig, NewTopic, ResourceSpecifier, TopicReplication,
+    },
     config::FromClientConfig,
     consumer::{Consumer, StreamConsumer},
     producer::FutureProducer,
@@ -88,7 +90,7 @@ impl KafkaProducerHandle {
         }
 
         if let Err(e) = self.sender.try_send(ProduceEvent { event }) {
-            error!("Kafka producer buffer full (50k), dropping event: {}", e);
+            error!("Kafka producer buffer full (50k), dropping event: {e}");
         }
     }
 
@@ -132,15 +134,15 @@ impl ProducerState {
                 &[NewTopic {
                     num_partitions: 1,
                     replication: TopicReplication::Fixed(3),
-                    config: vec![("retention.ms", "-1"), ("cleanup.policy", "compact")],
+                    config: vec![("retention.ms", "-1"), ("cleanup.policy", "delete")],
                     name: &topic_owned,
                 }],
                 &AdminOptions::new(),
             )
             .await
         {
-            Ok(_) => trace!("Created Kafka topic: {}", topic_owned),
-            Err(err) => trace!("Topic creation result for {}: {:?}", topic_owned, err),
+            Ok(_) => trace!("Created Kafka topic: {topic_owned}"),
+            Err(err) => trace!("Topic creation result for {topic_owned}: {err:?}"),
         }
 
         self.created_topics.insert(topic.to_string());
@@ -174,8 +176,8 @@ impl ProducerState {
                     .await;
 
                 match result {
-                    Ok(_) => trace!("Produced event to Kafka topic {}", topic_name),
-                    Err(err) => error!("{}: Failed to produce event: {}", topic_name, err.0),
+                    Ok(_) => trace!("Produced event to Kafka topic {topic_name}"),
+                    Err(err) => error!("{topic_name}: Failed to produce event: {}", err.0),
                 }
             }
         });
@@ -199,7 +201,7 @@ impl ProducerState {
         let event_json = match serde_json::to_string(&event) {
             Ok(s) => s,
             Err(err) => {
-                error!("Failed to serialize event: {}", err);
+                error!("Failed to serialize event: {err}");
                 return;
             }
         };
@@ -210,10 +212,7 @@ impl ProducerState {
         // Get sender and queue the event
         let sender = self.get_or_create_sender(&topic);
         if let Err(err) = sender.try_send(ProduceTask { event_json, key }) {
-            error!(
-                "Kafka topic {} buffer full (50k), dropping event: {}",
-                topic, err
-            );
+            error!("Kafka topic {topic} buffer full (50k), dropping event: {err}");
         }
     }
 }
@@ -243,10 +242,7 @@ impl CellKafkaProducer {
             host_id,
         };
 
-        info!(
-            "CellKafkaProducer created with bootstrap servers: {}",
-            bootstrap_servers
-        );
+        info!("CellKafkaProducer created with bootstrap servers: {bootstrap_servers}");
 
         // Spawn dedicated thread with its own runtime
         // The thread owns everything - when the channel closes, it exits and cleans up
@@ -266,7 +262,7 @@ impl CellKafkaProducer {
                 {
                     Ok(p) => p,
                     Err(e) => {
-                        error!("Failed to create Kafka producer: {}", e);
+                        error!("Failed to create Kafka producer: {e}");
                         return;
                     }
                 };
@@ -276,7 +272,7 @@ impl CellKafkaProducer {
                 ) {
                     Ok(c) => c,
                     Err(e) => {
-                        error!("Failed to create Kafka admin client: {}", e);
+                        error!("Failed to create Kafka admin client: {e}");
                         return;
                     }
                 };
@@ -312,17 +308,31 @@ enum ConsumerMessage {
     InitialRegistrationComplete,
 }
 
+/// Progress info for a topic that's catching up.
+#[derive(Debug, Clone)]
+pub struct TopicProgress {
+    /// Topic name
+    pub topic: String,
+    /// High water mark (target offset)
+    pub high_water: i64,
+    /// Current offset received
+    pub current_offset: i64,
+}
+
 /// Shared state for tracking catch-up status.
 #[derive(Debug)]
 pub struct CatchUpStatus {
     /// Whether all initial topics have caught up
     caught_up: AtomicBool,
+    /// Topics still pending catch-up with progress info
+    pending_topics: std::sync::RwLock<Vec<TopicProgress>>,
 }
 
 impl CatchUpStatus {
     fn new() -> Self {
         Self {
             caught_up: AtomicBool::new(false),
+            pending_topics: std::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -331,17 +341,47 @@ impl CatchUpStatus {
         self.caught_up.load(Ordering::SeqCst)
     }
 
+    /// Get topics still pending catch-up with progress.
+    pub fn pending_topics(&self) -> Vec<TopicProgress> {
+        self.pending_topics.read().unwrap().clone()
+    }
+
+    /// Update the list of pending topics with progress.
+    fn set_pending_topics(&self, topics: Vec<TopicProgress>) {
+        *self.pending_topics.write().unwrap() = topics;
+    }
+
     /// Block until caught up or timeout.
     ///
     /// Returns true if caught up, false if timed out.
     pub fn wait_until_caught_up(&self, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         let poll_interval = Duration::from_millis(50);
+        let log_interval = Duration::from_secs(5);
+        let mut last_log = std::time::Instant::now() - log_interval; // Log immediately on first check
 
         while !self.is_caught_up() {
             if start.elapsed() >= timeout {
                 return false;
             }
+
+            // Log pending topics periodically
+            if last_log.elapsed() >= log_interval {
+                let pending = self.pending_topics();
+                if !pending.is_empty() {
+                    let details: Vec<String> = pending
+                        .iter()
+                        .map(|p| format!("{} ({}/{})", p.topic, p.current_offset, p.high_water))
+                        .collect();
+                    info!(
+                        "Waiting for {} topic(s) to catch up: {}",
+                        pending.len(),
+                        details.join(", ")
+                    );
+                }
+                last_log = std::time::Instant::now();
+            }
+
             std::thread::sleep(poll_interval);
         }
         true
@@ -402,7 +442,7 @@ impl CellKafkaConsumer {
                 {
                     Ok(c) => c,
                     Err(err) => {
-                        error!("Failed to create Kafka consumer: {}", err);
+                        error!("Failed to create Kafka consumer: {err}");
                         return;
                     }
                 };
@@ -413,18 +453,16 @@ impl CellKafkaConsumer {
                 ) {
                     Ok(c) => c,
                     Err(err) => {
-                        error!("Failed to create Kafka admin client: {}", err);
+                        error!("Failed to create Kafka admin client: {err}");
                         return;
                     }
                 };
 
-                info!(
-                    "CellKafkaConsumer started with bootstrap servers: {}",
-                    bootstrap_servers
-                );
+                info!("CellKafkaConsumer started with bootstrap servers: {bootstrap_servers}");
 
                 let mut subscribed_topics: Vec<String> = Vec::new();
                 let mut high_water_marks: HashMap<String, i64> = HashMap::new();
+                let mut current_offsets: HashMap<String, i64> = HashMap::new();
                 let mut caught_up: HashSet<String> = HashSet::new();
                 // Topics registered during initial registration phase
                 let mut initial_topics: HashSet<String> = HashSet::new();
@@ -435,6 +473,8 @@ impl CellKafkaConsumer {
                 let check_all_caught_up =
                     |initial_topics: &HashSet<String>,
                      caught_up: &HashSet<String>,
+                     high_water_marks: &HashMap<String, i64>,
+                     current_offsets: &HashMap<String, i64>,
                      initial_done: bool,
                      status: &CatchUpStatus| {
                         if !initial_done {
@@ -444,13 +484,26 @@ impl CellKafkaConsumer {
                             // No topics registered, consider caught up
                             if !status.is_caught_up() {
                                 info!("No Kafka topics registered, marking as caught up");
+                                status.set_pending_topics(Vec::new());
                                 status.caught_up.store(true, Ordering::SeqCst);
                             }
                             return;
                         }
+
+                        // Build pending topics list with progress info
+                        let pending: Vec<TopicProgress> = initial_topics
+                            .iter()
+                            .filter(|t| !caught_up.contains(*t))
+                            .map(|t| TopicProgress {
+                                topic: t.clone(),
+                                high_water: high_water_marks.get(t).copied().unwrap_or(0),
+                                current_offset: current_offsets.get(t).copied().unwrap_or(-1),
+                            })
+                            .collect();
+                        status.set_pending_topics(pending.clone());
+
                         // Check if all initial topics are caught up
-                        let all_caught_up = initial_topics.iter().all(|t| caught_up.contains(t));
-                        if all_caught_up && !status.is_caught_up() {
+                        if pending.is_empty() && !status.is_caught_up() {
                             info!(
                                 "All {} initial Kafka topics caught up",
                                 initial_topics.len()
@@ -468,7 +521,7 @@ impl CellKafkaConsumer {
                                     continue;
                                 }
 
-                                info!("Consumer registering topic: {}", topic);
+                                info!("Consumer registering topic: {topic}");
 
                                 // Track as initial topic if registration not done
                                 if !initial_registration_done {
@@ -483,7 +536,7 @@ impl CellKafkaConsumer {
                                             replication: TopicReplication::Fixed(3),
                                             config: vec![
                                                 ("retention.ms", "-1"),
-                                                ("cleanup.policy", "compact"),
+                                                ("cleanup.policy", "delete"),
                                             ],
                                             name: &topic,
                                         }],
@@ -491,13 +544,34 @@ impl CellKafkaConsumer {
                                     )
                                     .await;
 
+                                // Ensure topic has correct retention config (fixes existing topics)
+                                let alter_config =
+                                    AlterConfig::new(ResourceSpecifier::Topic(&topic))
+                                        .set("retention.ms", "-1")
+                                        .set("cleanup.policy", "delete");
+                                match admin_client
+                                    .alter_configs([&alter_config], &AdminOptions::new())
+                                    .await
+                                {
+                                    Ok(results) => {
+                                        for result in results {
+                                            if let Err(e) = result {
+                                                warn!("{topic}: Failed to alter config: {e:?}");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("{topic}: Failed to alter config: {e:?}");
+                                    }
+                                }
+
                                 subscribed_topics.push(topic.clone());
 
                                 // Resubscribe with updated topic list
                                 let topic_refs: Vec<&str> =
-                                    subscribed_topics.iter().map(|s| s.as_str()).collect();
+                                    subscribed_topics.iter().map(String::as_str).collect();
                                 if let Err(err) = consumer.subscribe(&topic_refs) {
-                                    error!("Failed to subscribe to topics: {}", err);
+                                    error!("Failed to subscribe to topics: {err}");
                                 } else {
                                     trace!("Subscribed to {} topics", subscribed_topics.len());
                                 }
@@ -510,27 +584,31 @@ impl CellKafkaConsumer {
                                 ) {
                                     Ok((low, high)) => {
                                         high_water_marks.insert(topic.clone(), high);
-                                        info!("{}: Watermarks low={} high={}", topic, low, high);
+                                        info!("{topic}: Watermarks low={low} high={high}");
 
                                         if high == 0 {
-                                            info!("{}: Empty topic, caught up immediately", topic);
+                                            info!("{topic}: Empty topic, caught up immediately");
                                             caught_up.insert(topic);
                                             check_all_caught_up(
                                                 &initial_topics,
                                                 &caught_up,
+                                                &high_water_marks,
+                                                &current_offsets,
                                                 initial_registration_done,
                                                 &catch_up_status_clone,
                                             );
                                         }
                                     }
                                     Err(err) => {
-                                        warn!("{}: Failed to fetch watermarks: {}", topic, err);
+                                        warn!("{topic}: Failed to fetch watermarks: {err}");
                                         // Assume empty
                                         high_water_marks.insert(topic.clone(), 0);
                                         caught_up.insert(topic);
                                         check_all_caught_up(
                                             &initial_topics,
                                             &caught_up,
+                                            &high_water_marks,
+                                            &current_offsets,
                                             initial_registration_done,
                                             &catch_up_status_clone,
                                         );
@@ -546,6 +624,8 @@ impl CellKafkaConsumer {
                                 check_all_caught_up(
                                     &initial_topics,
                                     &caught_up,
+                                    &high_water_marks,
+                                    &current_offsets,
                                     initial_registration_done,
                                     &catch_up_status_clone,
                                 );
@@ -565,18 +645,15 @@ impl CellKafkaConsumer {
                             let topic = message.topic().to_string();
                             let offset = message.offset();
 
-                            let payload = match message.payload() {
-                                Some(p) => p,
-                                None => {
-                                    error!("Received message with no payload on topic {}", topic);
-                                    continue;
-                                }
+                            let Some(payload) = message.payload() else {
+                                error!("Received message with no payload on topic {topic}");
+                                continue;
                             };
 
                             let str = match std::str::from_utf8(payload) {
                                 Ok(s) => s,
                                 Err(err) => {
-                                    error!("Error decoding message payload: {}", err);
+                                    error!("Error decoding message payload: {err}");
                                     continue;
                                 }
                             };
@@ -611,8 +688,8 @@ impl CellKafkaConsumer {
                                                         }
                                                         Err(e) => {
                                                             error!(
-                                                                "Failed to parse {}: {}",
-                                                                event.item_type, e
+                                                                "Failed to parse {}: {e}",
+                                                                event.item_type
                                                             );
                                                         }
                                                     }
@@ -642,30 +719,33 @@ impl CellKafkaConsumer {
                                     }
                                 }
                                 Err(err) => {
-                                    error!("Invalid message on {}: {}", topic, err);
+                                    error!("Invalid message on {topic}: {err}");
                                 }
                             }
+
+                            // Track current offset for progress reporting
+                            current_offsets.insert(topic.clone(), offset);
 
                             // Check if caught up
                             if !caught_up.contains(&topic) {
                                 let high_water = high_water_marks.get(&topic).copied().unwrap_or(0);
                                 if offset >= high_water - 1 || high_water == 0 {
-                                    info!(
-                                        "{}: Caught up at offset {}/{}",
-                                        topic, offset, high_water
-                                    );
+                                    info!("{topic}: Caught up at offset {offset}/{high_water}");
                                     caught_up.insert(topic.clone());
-                                    check_all_caught_up(
-                                        &initial_topics,
-                                        &caught_up,
-                                        initial_registration_done,
-                                        &catch_up_status_clone,
-                                    );
                                 }
+                                // Always update pending topics progress
+                                check_all_caught_up(
+                                    &initial_topics,
+                                    &caught_up,
+                                    &high_water_marks,
+                                    &current_offsets,
+                                    initial_registration_done,
+                                    &catch_up_status_clone,
+                                );
                             }
                         }
                         Ok(Err(err)) => {
-                            error!("Error receiving message: {:?}", err);
+                            error!("Error receiving message: {err:?}");
                         }
                         Err(_) => {
                             // Timeout - continue
@@ -692,8 +772,7 @@ impl CellKafkaConsumer {
             .try_send(ConsumerMessage::RegisterTopic(entity_type.to_string()))
         {
             error!(
-                "Kafka consumer buffer full (100k), failed to register topic {}: {}",
-                entity_type, e
+                "Kafka consumer buffer full (100k), failed to register topic {entity_type}: {e}"
             );
         }
     }
@@ -714,10 +793,7 @@ impl CellKafkaConsumer {
             .topic_sender
             .try_send(ConsumerMessage::InitialRegistrationComplete)
         {
-            error!(
-                "Kafka consumer buffer full, failed to signal registration complete: {}",
-                e
-            );
+            error!("Kafka consumer buffer full, failed to signal registration complete: {e}");
         }
     }
 
