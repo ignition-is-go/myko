@@ -5,6 +5,7 @@
 **Rust-first monorepo** with UI in Svelte. TypeScript libraries exist to support the legacy implementation but are being phased out.
 
 This repo contains:
+
 - **Myko**: An event-sourcing CQRS framework (the reusable library)
 - **Rship** (Rocketship): A control platform for orchestrating reactive event relationships in multimedia systems (the main product, built on Myko)
 
@@ -35,6 +36,14 @@ pnpm --filter @rship/entities gen     # Generate TS types from Rust entities
 pnpm dev --filter @rship/server       # Bun server (MYKO_PORT=5155)
 ```
 
+## Cargo
+
+Always use `--target-dir target/claude` for all cargo commands (check, clippy, build, run, test, etc.) to avoid lock contention with other tools.
+
+## Clippy
+
+Check `.bacon-locations` for current clippy errors before running clippy or cargo check yourself. Bacon keeps this file updated. always fix errors in order, since errors later in the list may be resolved by fixing the first
+
 ## Architecture
 
 ### Myko Framework (`/libs/myko/`)
@@ -42,10 +51,12 @@ pnpm dev --filter @rship/server       # Bun server (MYKO_PORT=5155)
 Event-sourcing CQRS framework. Pattern: **Commands → Events → State → Queries**
 
 **Rust (primary)**:
+
 - **@myko/rs**: Rust server/client with `ractor` actors - the canonical implementation
 - **@myko/macros**: `#[myko_item]` generates queries, reports, commands
 
 **TypeScript (legacy/UI support)**:
+
 - **@myko/core**: MItem, MEvent, MCommand, MQuery, MSaga - being superseded by Rust
 - **@myko/ws**: WebSocket + MessagePack client
 - **@myko/ui-svelte**: Svelte 5 reactive bindings for Myko queries/reports
@@ -108,7 +119,7 @@ Include initials: `// TODO(ts): ...` or `// NOTE(ts): ...`
 - Rust: `rustfmt`
 - JS/TS: `prettier` with `prettier-plugin-organize-imports`
 - Lines under 120 chars
-- Comments explain *why*, not *what*
+- Comments explain _why_, not _what_
 
 ### Naming
 
@@ -161,9 +172,11 @@ Auto-generates: `GetAllTargets`, `GetTargetsByIds`, `GetTargetsByQuery`, `CountA
 ### Respect Opt-In Patterns
 
 Use env guards for diagnostic features, even debug-only:
+
 ```typescript
 if (process.env['MEMORY_MONITOR'] !== 'true') return
 ```
+
 Guards prevent overhead when disabled, not just log filtering.
 
 ### Commit Organization
@@ -185,6 +198,7 @@ Diagnostic features: opt-in via env vars, debug log levels, minimal overhead whe
 ### URL Path Design
 
 Use query params for identifiers with special chars (reverse proxies decode `%2F` in paths):
+
 ```
 GET /asset?key=folder%2Ffile.png  # Correct
 GET /assets/folder%2Ffile.png     # Breaks with Traefik
@@ -201,6 +215,7 @@ GET /assets/folder%2Ffile.png     # Breaks with Traefik
 ### Cross-Language Code Generation
 
 When types or logic need to exist in multiple languages:
+
 1. Define the canonical version in Rust
 2. Use code generation to produce TypeScript equivalents
 3. Never manually duplicate - if generation doesn't exist, add it
@@ -217,6 +232,7 @@ This project uses Beads for issue tracking. Follow these rules:
 - **Separate concerns**: Commit code changes separately from beads changes
 
 When completing work:
+
 ```bash
 git add <only-task-files>           # Stage only files for this task
 git commit -m "feat(scope): ..."    # Commit code changes
