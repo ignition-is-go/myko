@@ -39,9 +39,6 @@ export const longestName = new Cell<number>(0)
 
 export const logsPreventedEntities = new Set<string>()
 
-<<<<<<< HEAD
-export const logFilter = new Cell<LogLevel>(LogLevel.INFO)
-
 /**
  * Log output format.
  * - 'human': Human-readable format with aligned columns (default for development)
@@ -56,12 +53,8 @@ export type LogFormat = 'human' | 'json'
 export const logFormat = new Cell<LogFormat>(
   typeof process !== 'undefined' && process.env?.LOG_FORMAT === 'json' ? 'json' : 'human',
 )
-=======
 const getDefaultLogLevel = (): LogLevel => {
-  const envLevel =
-    (typeof process !== 'undefined' &&
-      process.env?.['MYKO_INITIAL_LOG_LEVEL']) ||
-    undefined
+  const envLevel = (typeof process !== 'undefined' && process.env?.['MYKO_INITIAL_LOG_LEVEL']) || undefined
   if (!envLevel) return LogLevel.INFO
 
   const normalized = envLevel.toUpperCase()
@@ -85,4 +78,3 @@ const getDefaultLogLevel = (): LogLevel => {
 }
 
 export const logFilter = new Cell<LogLevel>(getDefaultLogLevel())
->>>>>>> origin/dev

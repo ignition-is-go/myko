@@ -18,7 +18,10 @@
     "msgpackr": "npm:msgpackr@^1.10.2"
   },
   "publish": {
-    "exclude": ["node_modules", "package.json"]
+    "exclude": [
+      "node_modules",
+      "package.json"
+    ]
   },
   "nodeModulesDir": "auto"
 }

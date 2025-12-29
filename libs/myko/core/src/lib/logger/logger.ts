@@ -6,7 +6,6 @@ import { Log } from './log.type'
 import { levelShouldPrint, LogLevel } from './logLevel.type'
 import { addName, logFilter, logFormat, longestName } from './registry'
 
-<<<<<<< HEAD
 /**
  * Structured logger with configurable output format.
  *
@@ -27,7 +26,6 @@ import { addName, logFilter, logFormat, longestName } from './registry'
  * // JSON output:  {"timestamp":"2024-11-29T10:30:00.000Z","level":"INFO","logger":"MyService","message":"Server started","data":{"port":3000}}
  * ```
  */
-=======
 const colorForLevel = (lvl: LogLevel): string => {
   switch (lvl) {
     case LogLevel.ERROR:
@@ -62,7 +60,6 @@ const addColor = (str: string, level: LogLevel): string => {
   return levelColor + str + '\x1b[0m'
 }
 
->>>>>>> origin/dev
 export class MykoLogger {
   constructor(private name: string = '') {
     addName(name)
@@ -72,7 +69,6 @@ export class MykoLogger {
     }
   }
 
-<<<<<<< HEAD
   /**
    * Format log entry for human-readable output.
    */
@@ -87,17 +83,6 @@ export class MykoLogger {
       '|',
       message,
     ].join(' ')
-=======
-  private fmt(level: LogLevel, args: string) {
-    const dateStr = new Date().toLocaleDateString()
-    const timeStr = new Date().toLocaleTimeString()
-    const nameStr = this.name ? `${this.name.padEnd(longestName.get())}` : ``
-    const coloredLevel = addColor(level.padEnd(5), level)
-
-    return [dateStr, timeStr, '|', coloredLevel, '|', nameStr, '|', args].join(
-      ' ',
-    )
->>>>>>> origin/dev
   }
 
   /**

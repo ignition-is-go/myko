@@ -15,7 +15,10 @@
     "zod": "npm:zod@^3.24.1"
   },
   "publish": {
-    "exclude": ["node_modules", "package.json"]
+    "exclude": [
+      "node_modules",
+      "package.json"
+    ]
   },
   "nodeModulesDir": "auto"
 }
