@@ -281,6 +281,8 @@ export const bunAdapter: MykoWsAdapter = ({
         // WebSocket buffer drained - ready for more data
       },
       close(ws, _code, _message) {
+        logger.warn(`Client ${ws.data.clientId} closed, ${_message}, ${_code}`)
+
         // Clean up keep-alive interval
         const keepAliveInterval = (ws as any).__keepAliveInterval
         if (keepAliveInterval) {

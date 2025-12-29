@@ -1,6 +1,6 @@
 {
   "name": "@myko/core",
-  "version": "3.0.0-canary.790",
+  "version": "3.0.0-canary.810",
   "exports": "./src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
@@ -16,5 +16,6 @@
   },
   "publish": {
     "exclude": ["node_modules", "package.json"]
-  }
+  },
+  "nodeModulesDir": "auto"
 }

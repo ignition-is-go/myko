@@ -3,7 +3,7 @@ import type { ContextPhantom } from './base'
 import type { MCommand } from './command'
 import type { MEvent } from './events'
 import type { MItem } from './item'
-import type { Stream } from './stream'
+import type { MEventStream } from './stream'
 
 /**
  * Represents a saga function that processes events and produces commands.
@@ -21,5 +21,5 @@ export interface MSagaHandler {
    * @param query - The query to execute.
    * @returns The live query result as an Observable.
    */
-  execute(stream: Stream<MItem>): Observable<MCommand & ContextPhantom>
+  execute(stream: MEventStream<MItem>): Observable<MCommand & ContextPhantom>
 }

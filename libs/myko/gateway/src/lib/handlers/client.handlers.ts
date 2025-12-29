@@ -3,6 +3,7 @@ import {
   Client,
   ClientCommand,
   ClientStatus,
+  ContextPhantom,
   DeleteClientsByServerId,
   eventBus,
   GetClientsByIds,
@@ -12,22 +13,43 @@ import {
   liveRepo,
   makeDel,
   makeSet,
+  MCommand,
+  MEventType,
+  MItem,
+  MSagaHandler,
   MykoCommandError,
   MykoCommandHandler,
   MykoLogger,
   MykoQueryHandler,
   MykoReportHandler,
+  MykoSaga,
+  ofItems,
+  ofType,
   queryBus,
   SetClientWindbackTime,
   WindbackStatus,
   type MCommandHandler,
+  type MEventStream,
   type MLiveReportResult,
   type MQueryHandler,
   type MReportHandler,
 } from '@myko/core'
 import { wrapCommandOnlyWS } from '@myko/ws'
-import { ok } from 'node:assert'
-import { filter, firstValueFrom, map, takeUntil, tap, timeout, TimeoutError, type Observable } from 'rxjs'
+import { ok } from 'assert'
+import {
+  EMPTY,
+  filter,
+  firstValueFrom,
+  map,
+  shareReplay,
+  switchMap,
+  take,
+  takeUntil,
+  tap,
+  timeout,
+  TimeoutError,
+  type Observable,
+} from 'rxjs'
 import { getRx, getTx, peers } from '../registry'
 import { clientCommandMonitor as ccm } from '../telemetry/client_command.monitor'
 
@@ -137,6 +159,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       .pipe(
         map((x) => !!x),
         filter((x) => !x),
+        take(1), // Complete after first disconnect to prevent subscription leak
         tap(() => {
           ccm.disconnected(effectiveCommand.tx)
           logger.verbose('client-command:client-disconnected', {
@@ -145,6 +168,7 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
             clientId: command.client.id,
           })
         }),
+        shareReplay(1), // Share subscription across takeUntil usages
       )
 
     const _disconnectLogged$ = disconnect$.pipe(
@@ -343,5 +367,19 @@ export class WindbackStatusHandler implements MReportHandler<WindbackStatus> {
           return client?.windback
         }),
       )
+  }
+}
+
+// Clean up inflight tracking when clients disconnect to prevent memory leak
+@MykoSaga()
+export class ClientInflightCleanupSaga implements MSagaHandler {
+  execute(stream: MEventStream<MItem>): Observable<MCommand & ContextPhantom> {
+    return stream.pipe(
+      ofItems(Client),
+      ofType(MEventType.DEL),
+      tap((e) => inflightByClient.delete(e.item.id)),
+      filter((_) => false),
+      switchMap(() => EMPTY),
+    )
   }
 }

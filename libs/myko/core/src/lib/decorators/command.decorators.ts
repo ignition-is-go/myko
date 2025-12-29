@@ -5,7 +5,12 @@
 
 import { commandBus } from '../busses'
 import { MYKO_COMMAND_ID_KEY, MYKO_HANDLER_COMMAND_ID_KEY } from '../constants'
-import { addCommandDoc, commandHandlers, commands, noAuthCommands } from '../registry'
+import {
+  addCommandDoc,
+  commandHandlers,
+  commands,
+  noAuthCommands,
+} from '../registry'
 import { allowedDuringWindback } from '../registry/windback.registry'
 import type { MCommand, MCommandHandler, MCommandResponse } from '../types'
 

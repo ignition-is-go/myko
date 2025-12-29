@@ -6,6 +6,7 @@ import { Log } from './log.type'
 import { levelShouldPrint, LogLevel } from './logLevel.type'
 import { addName, logFilter, logFormat, longestName } from './registry'
 
+<<<<<<< HEAD
 /**
  * Structured logger with configurable output format.
  *
@@ -26,6 +27,42 @@ import { addName, logFilter, logFormat, longestName } from './registry'
  * // JSON output:  {"timestamp":"2024-11-29T10:30:00.000Z","level":"INFO","logger":"MyService","message":"Server started","data":{"port":3000}}
  * ```
  */
+=======
+const colorForLevel = (lvl: LogLevel): string => {
+  switch (lvl) {
+    case LogLevel.ERROR:
+      return '\x1b[31m' // red
+    case LogLevel.WARN:
+      return '\x1b[33m' // yellow
+    case LogLevel.INFO:
+      return '\x1b[36m' // cyan
+    case LogLevel.DEBUG:
+      return '\x1b[35m' // magenta
+    case LogLevel.VERBOSE:
+      return '\x1b[90m' // gray
+    default:
+      return ''
+  }
+}
+
+// Colorize console output based on log level by returning early with a colored string.
+// This prevents the uncolored fallback return below from executing.
+const supportsColor =
+  typeof process !== 'undefined' &&
+  !!process.stdout &&
+  typeof process.stdout.isTTY === 'boolean' &&
+  process.stdout.isTTY
+
+const addColor = (str: string, level: LogLevel): string => {
+  if (!supportsColor) {
+    return str
+  }
+
+  const levelColor = colorForLevel(level)
+  return levelColor + str + '\x1b[0m'
+}
+
+>>>>>>> origin/dev
 export class MykoLogger {
   constructor(private name: string = '') {
     addName(name)
@@ -35,6 +72,7 @@ export class MykoLogger {
     }
   }
 
+<<<<<<< HEAD
   /**
    * Format log entry for human-readable output.
    */
@@ -49,6 +87,17 @@ export class MykoLogger {
       '|',
       message,
     ].join(' ')
+=======
+  private fmt(level: LogLevel, args: string) {
+    const dateStr = new Date().toLocaleDateString()
+    const timeStr = new Date().toLocaleTimeString()
+    const nameStr = this.name ? `${this.name.padEnd(longestName.get())}` : ``
+    const coloredLevel = addColor(level.padEnd(5), level)
+
+    return [dateStr, timeStr, '|', coloredLevel, '|', nameStr, '|', args].join(
+      ' ',
+    )
+>>>>>>> origin/dev
   }
 
   /**
