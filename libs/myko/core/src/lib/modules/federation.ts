@@ -1,12 +1,5 @@
 import { MykoCommand, MykoQuery, MykoReport } from '../decorators'
-import {
-  type ID,
-  MCommand,
-  MItem,
-  MQuery,
-  MReport,
-  type MReportType,
-} from '../types'
+import { type ID, MCommand, MItem, MQuery, MReport, type MReportType } from '../types'
 
 @MykoQuery(MItem)
 export class PeerQuery extends MQuery<MItem> {
@@ -29,9 +22,7 @@ export class PeerCommand extends MCommand {
 }
 
 @MykoReport()
-export class PeerReport<T extends MReport<unknown>> extends MReport<
-  MReportType<T>
-> {
+export class PeerReport<T extends MReport<unknown>> extends MReport<MReportType<T>> {
   constructor(
     readonly report: T,
     readonly peerId: ID,

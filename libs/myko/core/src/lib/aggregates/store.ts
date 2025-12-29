@@ -106,9 +106,7 @@ export class Store<T extends MItem> extends Map<ID, T> {
       throw new Error()
     }
 
-    return [...(propIndex?.get(value)?.values() ?? [])]
-      .map((id) => this.get(id))
-      .filter((x) => !!x) as T[]
+    return [...(propIndex?.get(value)?.values() ?? [])].map((id) => this.get(id)).filter((x) => !!x) as T[]
   }
 
   private addToIndeces(el: T) {
@@ -121,9 +119,7 @@ export class Store<T extends MItem> extends Map<ID, T> {
   }
 
   private removeFromIndeces(key: ID) {
-    ;[...this.indeces.values()].forEach((propIndex) =>
-      [...propIndex.values()].forEach((set) => set.delete(key)),
-    )
+    ;[...this.indeces.values()].forEach((propIndex) => [...propIndex.values()].forEach((set) => set.delete(key)))
   }
 
   /**

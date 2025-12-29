@@ -12,14 +12,7 @@ import {
   transactionResultGuage,
   transactionTotalTime,
 } from './meters'
-import {
-  callLineageCounts,
-  eventCounts,
-  lineageResults,
-  tagCounts,
-  tagResults,
-  tagTimes,
-} from './state'
+import { callLineageCounts, eventCounts, lineageResults, tagCounts, tagResults, tagTimes } from './state'
 
 export const exportMetrics = (args: MykoGatewayBootstrapOptions) => {
   let lastTime = performance.now()

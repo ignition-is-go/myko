@@ -1,9 +1,7 @@
 import type { Server } from '@myko/core'
 import * as dns from 'node:dns/promises'
 
-export const startDockerDiscovery = (
-  onDiscovered: (server: Pick<Server, 'address' | 'port'>) => void,
-) => {
+export const startDockerDiscovery = (onDiscovered: (server: Pick<Server, 'address' | 'port'>) => void) => {
   const serviceName = process.env.MYKO_SERVICE_NAME
   const POLL_INTERVAL = process.env.MYKO_DOCKER_POLL_INTERVAL || 15000
 
@@ -11,18 +9,12 @@ export const startDockerDiscovery = (
     throw new Error('Service Name Not Specified')
   }
 
-  setInterval(
-    () => discoverPeers(serviceName, onDiscovered),
-    Number(POLL_INTERVAL),
-  )
+  setInterval(() => discoverPeers(serviceName, onDiscovered), Number(POLL_INTERVAL))
 }
 
 let peers: string[] = []
 
-async function discoverPeers(
-  serviceName: string,
-  onDiscovered: Parameters<typeof startDockerDiscovery>[0],
-) {
+async function discoverPeers(serviceName: string, onDiscovered: Parameters<typeof startDockerDiscovery>[0]) {
   try {
     // Resolve all A records for tasks.<service_name>
     const records = await dns.resolve4(`tasks.${serviceName}`)

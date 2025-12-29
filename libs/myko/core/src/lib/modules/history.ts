@@ -23,8 +23,7 @@ export class EventsInRange extends MReport<MEvent[]> {
 }
 
 @MykoReport()
-export class AllTransactions extends MReport<ID[]> {
-}
+export class AllTransactions extends MReport<ID[]> {}
 
 @MykoReport()
 export class EventsForTransaction extends MReport<MEvent[]> {

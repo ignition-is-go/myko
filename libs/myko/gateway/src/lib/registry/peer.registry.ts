@@ -12,14 +12,7 @@ import {
   type ID,
 } from '@myko/core'
 import { WSMClient } from '@myko/ws'
-import {
-  Subject,
-  filter,
-  firstValueFrom,
-  map,
-  startWith,
-  takeUntil,
-} from 'rxjs'
+import { Subject, filter, firstValueFrom, map, startWith, takeUntil } from 'rxjs'
 
 import { v4 as uuid } from 'uuid'
 import { peerBus } from '../bus/peer.bus'
@@ -89,40 +82,34 @@ export class PeerClientRegistry {
           this.logger.info(l.join(' '))
         },
         onServerConnect: (_url) => {
-          firstValueFrom(
-            client
-              .watchQuery(new GetConnectedServer())
-              .pipe(filter((x) => x.length > 0)),
-          ).then(async (s) => {
-            const connectedServer = s.shift()
+          firstValueFrom(client.watchQuery(new GetConnectedServer()).pipe(filter((x) => x.length > 0))).then(
+            async (s) => {
+              const connectedServer = s.shift()
 
-            if (!connectedServer) {
-              this.logger.error(
-                `Connected Server Not Found - ${address}:${port}`,
-              )
-              client.disconnect()
+              if (!connectedServer) {
+                this.logger.error(`Connected Server Not Found - ${address}:${port}`)
+                client.disconnect()
 
-              return
-            }
+                return
+              }
 
-            if (connectedServer.id !== id) {
-              this.logger.error(
-                `Connected Server ID Mismatch - ${address}:${port}`,
-              )
-              client.disconnect()
+              if (connectedServer.id !== id) {
+                this.logger.error(`Connected Server ID Mismatch - ${address}:${port}`)
+                client.disconnect()
 
-              eventBus.publishDel(server, 'server-is-old')
+                eventBus.publishDel(server, 'server-is-old')
 
-              return
-            }
+                return
+              }
 
-            this.logger.info(`Found Peer @ ${address}:${port}`)
+              this.logger.info(`Found Peer @ ${address}:${port}`)
 
-            this.peerClients.set(connectedServer.id, client)
-            this.clientSets.next({ serverId: connectedServer.id, client })
+              this.peerClients.set(connectedServer.id, client)
+              this.clientSets.next({ serverId: connectedServer.id, client })
 
-            this.assertPeerEventListener(connectedServer)
-          })
+              this.assertPeerEventListener(connectedServer)
+            },
+          )
         },
       },
       { secure: false, reconnect: false, singleSocket: true },

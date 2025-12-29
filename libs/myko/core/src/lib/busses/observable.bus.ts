@@ -9,13 +9,9 @@ import type { ID, WithContext } from '../types'
 export class ObservableBus<T> {
   protected _subject$: Subject<T> = new Subject()
 
-  protected on_prepare:
-    | ((mContext: WithContext, callId: ID) => void)
-    | undefined
+  protected on_prepare: ((mContext: WithContext, callId: ID) => void) | undefined
   protected on_result: ((mContext: WithContext, callId: ID) => void) | undefined
-  protected on_follow_up:
-    | ((mContext: WithContext, callId: ID) => void)
-    | undefined
+  protected on_follow_up: ((mContext: WithContext, callId: ID) => void) | undefined
 
   /**
    * Gets the subject of the observable bus.

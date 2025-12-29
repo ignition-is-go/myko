@@ -1,7 +1,11 @@
 import {
   GetClientsByQuery,
   getHostId,
+  type MCommandHandler,
+  type MLiveQueryResult,
+  type MQueryHandler,
   type MReport,
+  type MReportHandler,
   MykoCommandError,
   MykoCommandHandler,
   MykoLogger,
@@ -12,10 +16,6 @@ import {
   PeerReport,
   queryBus,
   reportBus,
-  type MCommandHandler,
-  type MLiveQueryResult,
-  type MQueryHandler,
-  type MReportHandler,
 } from '@myko/core'
 import { distinctUntilChanged, EMPTY, type Observable, switchMap } from 'rxjs'
 import { peers } from '../registry/peer.registry'
@@ -50,15 +50,10 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
   async execute(command: PeerCommand): Promise<void> {
     const peer = peers.getPeer(command.peerId)
     if (!peer) {
-      throw new MykoCommandError(
-        command.tx,
-        `Peer Not Found for ${command.command.getTag()}`,
-      )
+      throw new MykoCommandError(command.tx, `Peer Not Found for ${command.command.getTag()}`)
     }
 
-    const clients = await queryBus.execute(
-      new GetClientsByQuery({ serverId: getHostId() }).withContext(command),
-    )
+    const clients = await queryBus.execute(new GetClientsByQuery({ serverId: getHostId() }).withContext(command))
 
     if (!clients.find((x) => x.id === command.commandClientId)) {
       return
@@ -68,9 +63,7 @@ export class PeerCommandHandler implements MCommandHandler<PeerCommand> {
   }
 }
 @MykoReportHandler(PeerReport)
-export class PeerReportHandler
-  implements MReportHandler<PeerReport<MReport<unknown>>>
-{
+export class PeerReportHandler implements MReportHandler<PeerReport<MReport<unknown>>> {
   execute(report: PeerReport<MReport<unknown>>): Observable<unknown> {
     if (report.peerId === getHostId()) {
       return reportBus.watch(report.report.withContext(report))
@@ -84,9 +77,7 @@ export class PeerReportHandler
       distinctUntilChanged(),
       switchMap((peer) => {
         if (!peer) {
-          logger.warn(
-            `Peer Not Found, returning empty stream for ${report.report.getTag()}`,
-          )
+          logger.warn(`Peer Not Found, returning empty stream for ${report.report.getTag()}`)
           return EMPTY
         }
         logger.info(`returning report for ${report.report.getTag()}`)

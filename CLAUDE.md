@@ -63,12 +63,14 @@ Information reveals itself based on context and user needs. Design UI with these
 Design UI to support these distinct operational modes:
 
 **Compose Mode** (Planning/Designing):
+
 - Feels like sketching, wireframing, drafting
 - Low stakes, freely exploring ideas
 - Infinite canvas, visual placement, frames, placeholders
 - Maximum previsualization and simulation
 
 **Refine Mode** (Editing/Finetuning):
+
 - Major structure exists, now polish
 - Data visualization, smoothing, tweening, ranging
 - Instant feedback loop for edits
@@ -76,6 +78,7 @@ Design UI to support these distinct operational modes:
 - Entity cross-relations visible to prevent unwanted consequences
 
 **Operate Mode** (Live/Show):
+
 - Show is live, mostly observing and monitoring
 - UI elements are bigger, less dense for fast readability
 - Manual cues and realtime parameter editing
@@ -122,6 +125,7 @@ Surface relevant information automatically:
 ## Development Commands
 
 ### JavaScript/TypeScript
+
 ```bash
 pnpm install                          # Install dependencies
 pnpm dev --filter @rship/server       # Run server in watch mode (MYKO_PORT=5155)
@@ -133,6 +137,7 @@ pnpm format:all                       # Format all code with prettier
 ```
 
 ### Rust
+
 ```bash
 cargo build --release                 # Build release
 cargo test                            # Run all tests
@@ -142,6 +147,7 @@ cargo clippy -- -D warnings           # Lint with clippy
 ```
 
 ### Python
+
 ```bash
 uv pip install -e .                   # Install package in editable mode
 pytest                                # Run all tests
@@ -149,6 +155,7 @@ pytest -k <test_name>                 # Run single test
 ```
 
 ### Multi-language Publishing
+
 ```bash
 pnpm jsr:publish                      # Publish TypeScript to JSR
 pnpm py:publish                       # Publish Python packages
@@ -157,6 +164,7 @@ pnpm cs:publish                       # Publish C# packages
 ```
 
 ### Versioning
+
 ```bash
 pnpm versionstamp                     # Generate version metadata
 pnpm versionwrite                     # Update versions across packages
@@ -175,7 +183,6 @@ Event-sourcing CQRS framework powering rship's reactive architecture:
   - `MCommand`: Command specifications (intent)
   - `MQuery`: State snapshots
   - `MSaga`: Observable-based event processors
-  
 - **@myko/ws**: Real-time bidirectional WebSocket with MessagePack encoding
 - **@myko/gateway**: Server bootstrap, Auth0 integration, OpenTelemetry tracing
 - **@myko/kafka**: Kafka-based event persistence
@@ -203,6 +210,7 @@ Multi-language executor development kit:
 - **Rust, Python, C#, Swift**: Multi-language support for executor development
 
 Executors use the SDK to:
+
 1. Connect to rship server via WebSocket
 2. Declare Instances, Targets, Emitters, Actions
 3. Push Pulses (real-time data from Emitters)
@@ -241,6 +249,7 @@ Persistence (Kafka Event Log)
 ```
 
 **WebSocket Message Types**:
+
 1. **Commands**: `MWrappedCommand` with transaction ID
 2. **Events**: SET (create/update) or DEL (delete) with timestamp
 3. **Pulses**: Real-time emitter data (not persisted)
@@ -254,12 +263,10 @@ Persistence (Kafka Event Log)
   - Entry: `/apps/server/src/main.ts`
   - Bootstraps Myko gateway, loads entity handlers, sets up persistence
   - Environment variables: `KAFKA_BROKERS`, `MYKO_HOST_ADDRESS`, `RSHIP_CLUSTER_SECRET`, `AUTH_0_DOMAIN`, `MYKO_PORT`
-  
 - **ui**: Svelte 5 + SvelteKit web UI
   - Real-time editor, 3D visualization (Threlte + Three.js)
   - Schema-based forms, Auth0 authentication
   - Cross-platform: Web, iOS/Android via Capacitor
-  
 - **execs**: Executor implementations
   - Ableton, Pixera, Disguise, Dirigera, Ventuz, Viewpoint, Protocol Router, etc.
   - Each integrates a specific external system with rship
@@ -286,6 +293,7 @@ This is production software used in live entertainment, broadcast, and installat
 **CRITICAL**: Rship is global infrastructure for controlling distributed multimedia systems. Every feature must be built with massive scale in mind from day one:
 
 **Scale targets to always consider:**
+
 - **Thousands of nodes** in a single scene graph
 - **Thousands of machines** connected simultaneously
 - **Thousands of lights/fixtures** being controlled in real-time
@@ -304,6 +312,7 @@ This is production software used in live entertainment, broadcast, and installat
 - **Scene graphs**: Node operations must scale. Avoid full graph traversals. Use incremental updates. Consider graph partitioning for very large scenes.
 
 **Questions to ask before implementing:**
+
 1. What happens when there are 10,000 items instead of 10?
 2. What happens when 100 clients are connected instead of 1?
 3. What happens when updates arrive at 1000/sec instead of 1/sec?
@@ -311,6 +320,7 @@ This is production software used in live entertainment, broadcast, and installat
 5. Does this require loading all data before showing anything?
 
 **Anti-patterns to avoid:**
+
 - Loading all entities into memory at startup
 - Rendering all items in a list regardless of viewport
 - Full state synchronization on every change
@@ -335,12 +345,14 @@ This is production software used in live entertainment, broadcast, and installat
 - **RxJS 7**: Used extensively for reactive streams. Check `@myko/` packages for observable patterns.
 
 **When uncertain about an API:**
+
 - Search the codebase for existing usage: `grep -r "functionName" --include="*.ts"`
 - Check the package version: `cat package.json | grep "package-name"`
 - Consult current docs (use web search if needed)
 - Ask the user if multiple approaches seem valid
 
 **Common outdated patterns to avoid:**
+
 - Svelte 4 reactive statements (`$:`) → Use Svelte 5 runes (`$derived`, `$effect`)
 - Svelte stores (`writable`, `readable`) → Use Svelte 5 `$state` in `.svelte.ts` files
 - `on:click` → Use `onclick` (Svelte 5 event handlers)
@@ -403,6 +415,7 @@ When building or modifying UI:
 ### Commits
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
 - `feat(scope): description` - New features
 - `fix(scope): description` - Bug fixes
 - `chore(scope): description` - Maintenance tasks
@@ -412,6 +425,7 @@ Commits drive release notes and CI workflows.
 ### Comments
 
 TODO & NOTE comments should include author's initials:
+
 ```typescript
 // TODO(ts): need to implement
 // NOTE(ts): informational message
@@ -422,7 +436,7 @@ TODO & NOTE comments should include author's initials:
 - **JS/TS**: Use `prettier` with `prettier-plugin-organize-imports`
 - **Rust**: Use `rustfmt`
 - Lines under 120 characters
-- Comments explain *why*, not *what*
+- Comments explain _why_, not _what_
 
 ### Naming Conventions
 
@@ -457,6 +471,7 @@ TODO & NOTE comments should include author's initials:
 ### Event Sourcing + CQRS
 
 All state changes flow through immutable events:
+
 1. UI/Executor sends Command
 2. Entity handler validates and generates Events
 3. Events persisted to Kafka
@@ -472,12 +487,11 @@ Heavy use of Observables for real-time data flow. Entity handlers and UI compone
 These patterns cause infinite loops, memory leaks, and frozen UIs. **Never do these:**
 
 #### 1. Never Create Observables Inside `$derived`
+
 ```typescript
 // BAD: Creates new Observable on every evaluation → infinite loop
 const targets = $derived(
-  $currentSession
-    ? client.watchQuery(new GetTargets($currentSession.id)).pipe(startWith([]))
-    : of([])
+  $currentSession ? client.watchQuery(new GetTargets($currentSession.id)).pipe(startWith([])) : of([]),
 )
 
 // GOOD: Use switchMap to react to changes
@@ -490,14 +504,15 @@ const targets = currentSession.pipe(
       catchError((err) => {
         console.warn('Failed to fetch targets:', err)
         return of([])
-      })
-    )
+      }),
+    ),
   ),
-  shareReplay(1)
+  shareReplay(1),
 )
 ```
 
 #### 2. Always Return Cleanup in `$effect` with Subscriptions
+
 ```typescript
 // BAD: Subscriptions accumulate on every effect re-run
 $effect(() => {
@@ -507,15 +522,13 @@ $effect(() => {
 
 // GOOD: Store and cleanup subscriptions
 $effect(() => {
-  const subs = [
-    observable1.subscribe((v) => (state1 = v)),
-    observable2.subscribe((v) => (state2 = v)),
-  ]
+  const subs = [observable1.subscribe((v) => (state1 = v)), observable2.subscribe((v) => (state2 = v))]
   return () => subs.forEach((sub) => sub.unsubscribe())
 })
 ```
 
 #### 3. Always Add `catchError` to `watchQuery` Calls
+
 ```typescript
 // BAD: Query failure hangs UI forever (combineLatest stops emitting)
 const data$ = client.watchQuery(new GetData()).pipe(startWith([]))
@@ -526,11 +539,12 @@ const data$ = client.watchQuery(new GetData()).pipe(
   catchError((err) => {
     console.warn('Query failed:', err)
     return of([])
-  })
+  }),
 )
 ```
 
 #### 4. Clean Up Document/Window Event Listeners
+
 ```typescript
 // BAD: Listeners persist after component unmount
 document.addEventListener('pointermove', handler)
@@ -545,24 +559,24 @@ return () => {
 ```
 
 #### 5. Use `startWith` Inside `switchMap`, Not After
+
 ```typescript
 // BAD: Race condition - startWith emits before switchMap resolves
-sessionId$.pipe(
-  switchMap((id) => client.watchQuery(new GetData(id)))
-).pipe(startWith([]))  // WRONG PLACEMENT
+sessionId$.pipe(switchMap((id) => client.watchQuery(new GetData(id)))).pipe(startWith([])) // WRONG PLACEMENT
 
 // GOOD: startWith inside switchMap for each source
 sessionId$.pipe(
   switchMap((id) =>
     client.watchQuery(new GetData(id)).pipe(
-      startWith([]),  // CORRECT: Inside switchMap
-      catchError(() => of([]))
-    )
-  )
+      startWith([]), // CORRECT: Inside switchMap
+      catchError(() => of([])),
+    ),
+  ),
 )
 ```
 
 #### 6. Use O(1) Lookups, Not O(n) Array Searches
+
 ```typescript
 // BAD: O(n) lookup in render loop or $derived
 const item = items.find((i) => i.id === selectedId)

@@ -36,7 +36,7 @@ const detectProtocol = (data: any): MykoProtocol => {
     if (bytes.length > 0) {
       const firstByte = bytes[0]
       // JSON starts with '{' (0x7B) or '[' (0x5B)
-      if (firstByte === 0x7B || firstByte === 0x5B) {
+      if (firstByte === 0x7b || firstByte === 0x5b) {
         return MykoProtocol.JSON
       }
       // Otherwise assume msgpack

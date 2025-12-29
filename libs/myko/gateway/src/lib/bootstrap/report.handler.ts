@@ -1,25 +1,6 @@
-import {
-  MReport,
-  MykoLogger,
-  reportBus,
-  type ID,
-  type MWrappedReport,
-} from '@myko/core'
-import {
-  MREPORT_ERROR_EVENT,
-  wrapReportResponseWS,
-  type WSMMessage,
-  type WSMReportError,
-} from '@myko/ws'
-import {
-  catchError,
-  filter,
-  map,
-  merge,
-  of,
-  takeUntil,
-  type Subject,
-} from 'rxjs'
+import { MReport, MykoLogger, reportBus, type ID, type MWrappedReport } from '@myko/core'
+import { MREPORT_ERROR_EVENT, wrapReportResponseWS, type WSMMessage, type WSMReportError } from '@myko/ws'
+import { catchError, filter, map, merge, of, takeUntil, type Subject } from 'rxjs'
 import { clientDisconnect, unsub } from './common'
 
 export const handleReport = (
@@ -49,12 +30,7 @@ export const handleReport = (
           event: MREPORT_ERROR_EVENT,
         } satisfies WSMReportError)
       }),
-      takeUntil(
-        merge(
-          clientDisconnect(clientId),
-          unsub.pipe(filter((u) => u === report.tx)),
-        ),
-      ),
+      takeUntil(merge(clientDisconnect(clientId), unsub.pipe(filter((u) => u === report.tx)))),
     )
 
     response.subscribe((x) => {

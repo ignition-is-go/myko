@@ -11,8 +11,6 @@ import {
   ImportItems,
   liveRepoName,
   makeSet,
-  type MItem,
-  type MReportHandler,
   MykoCommandHandler,
   MykoReportHandler,
   relationRegistry,
@@ -22,25 +20,17 @@ import {
   wrapItem,
   type EntitySnapshotDifferenceData,
   type MCommandHandler,
+  type MItem,
   type MItemStub,
   type MLiveReportResult,
+  type MReportHandler,
   type MWrappedItem,
 } from '@myko/core'
 import { uniqBy } from 'ramda'
-import {
-  combineLatest,
-  distinctUntilChanged,
-  from,
-  map,
-  of,
-  switchMap,
-  type Observable,
-} from 'rxjs'
+import { combineLatest, distinctUntilChanged, from, map, of, switchMap, type Observable } from 'rxjs'
 
 @MykoReportHandler(GetItemsByTypeAndIds)
-export class GetItemByTypeAndIdHandler
-  implements MReportHandler<GetItemsByTypeAndIds>
-{
+export class GetItemByTypeAndIdHandler implements MReportHandler<GetItemsByTypeAndIds> {
   execute(query: GetItemsByTypeAndIds) {
     return repoName(query.type, query)
       .watchIds(query.ids)
@@ -64,13 +54,9 @@ export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
 }
 
 @MykoReportHandler(FullChildEntities)
-export class FullChildEntitiesHandler
-  implements MReportHandler<FullChildEntities>
-{
+export class FullChildEntitiesHandler implements MReportHandler<FullChildEntities> {
   execute(report: FullChildEntities): Observable<MItemStub[]> {
-    const myChildren = reportBus.watch(
-      new ChildEntities(report.parentType, report.parentId).withContext(report),
-    )
+    const myChildren = reportBus.watch(new ChildEntities(report.parentType, report.parentId).withContext(report))
 
     return myChildren.pipe(
       switchMap((children) =>
@@ -79,11 +65,7 @@ export class FullChildEntitiesHandler
           : combineLatest(
               children.map((child) =>
                 reportBus
-                  .watch(
-                    new FullChildEntities(child.itemType, child.id).withContext(
-                      report,
-                    ),
-                  )
+                  .watch(new FullChildEntities(child.itemType, child.id).withContext(report))
                   .pipe(map((x) => [...x, child])),
               ),
             ).pipe(map((x) => x.flat())),
@@ -114,16 +96,11 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
         )
 
         const ensuredFor = relValues.map((x) => {
-          if (
-            x.type !== 'ensure-for' ||
-            !x.dependencies.some((y) => y.foreignType === report.parentType)
-          ) {
+          if (x.type !== 'ensure-for' || !x.dependencies.some((y) => y.foreignType === report.parentType)) {
             return of([])
           }
 
-          const dep = x.dependencies.find(
-            (y) => y.foreignType === report.parentType,
-          )!
+          const dep = x.dependencies.find((y) => y.foreignType === report.parentType)!
 
           return repoName(x.localType, report).watch({
             [dep.localKey]: item[dep.foreignKey],
@@ -181,12 +158,8 @@ export class ChildEntitiesHandler implements MReportHandler<ChildEntities> {
 }
 
 @MykoReportHandler(ChildEntitiesAllTime)
-export class ChildEntitiesAllTimeHandler
-  implements MReportHandler<ChildEntitiesAllTime>
-{
-  execute(
-    report: ChildEntitiesAllTime,
-  ): MLiveReportResult<ChildEntitiesAllTime> {
+export class ChildEntitiesAllTimeHandler implements MReportHandler<ChildEntitiesAllTime> {
+  execute(report: ChildEntitiesAllTime): MLiveReportResult<ChildEntitiesAllTime> {
     const item = liveRepoName(report.parentType).watchId(report.parentId)
 
     const relValues = [...relationRegistry.values()]
@@ -199,53 +172,34 @@ export class ChildEntitiesAllTimeHandler
 
         const ownsMany = Promise.all(
           relValues.map((rel) => {
-            return rel.type === 'owns-many' &&
-              rel.localType === report.parentType
+            return rel.type === 'owns-many' && rel.localType === report.parentType
               ? getHistoryProvider()
                   .getAllEntitiesNoDeletes(rel.foreignType)
-                  .then((items) =>
-                    items.filter(
-                      (y) => y[rel.foreignKey] === item[rel.localKey],
-                    ),
-                  )
+                  .then((items) => items.filter((y) => y[rel.foreignKey] === item[rel.localKey]))
               : []
           }),
         ).then((x) => x.flat())
 
         const ensuredFor = Promise.all(
           relValues.map((rel) => {
-            if (
-              rel.type !== 'ensure-for' ||
-              !rel.dependencies.some(
-                (dep) => dep.foreignType === report.parentType,
-              )
-            ) {
+            if (rel.type !== 'ensure-for' || !rel.dependencies.some((dep) => dep.foreignType === report.parentType)) {
               return [] as MItem[]
             }
 
-            const dep = rel.dependencies.find(
-              (dep) => dep.foreignType === report.parentType,
-            )!
+            const dep = rel.dependencies.find((dep) => dep.foreignType === report.parentType)!
 
             return getHistoryProvider()
               .getAllEntitiesNoDeletes(rel.localType)
-              .then((items) =>
-                items.filter((y) => y[dep.localKey] === item[dep.foreignKey]),
-              )
+              .then((items) => items.filter((y) => y[dep.localKey] === item[dep.foreignKey]))
           }),
         ).then((x) => x.flat())
 
         const belongsToThis = Promise.all(
           relValues.map((rel) => {
-            return rel.type === 'belongs-to' &&
-              rel.foreignType === report.parentType
+            return rel.type === 'belongs-to' && rel.foreignType === report.parentType
               ? getHistoryProvider()
                   .getAllEntitiesNoDeletes(rel.localType)
-                  .then((items) =>
-                    items.filter(
-                      (y) => y[rel.localKey] === item[rel.foreignKey],
-                    ),
-                  )
+                  .then((items) => items.filter((y) => y[rel.localKey] === item[rel.foreignKey]))
               : []
           }),
         ).then((x) => x.flat())
@@ -288,15 +242,9 @@ export class ChildEntitiesAllTimeHandler
 }
 
 @MykoReportHandler(EntitySnapshotDifference)
-export class EntitySnapshotDifferenceHandler
-  implements MReportHandler<EntitySnapshotDifference>
-{
-  execute(
-    report: EntitySnapshotDifference,
-  ): Observable<EntitySnapshotDifferenceData> {
-    const pinned = reportBus.watch(
-      new ChildEntities(report.parentType, report.parentId).withContext(report),
-    )
+export class EntitySnapshotDifferenceHandler implements MReportHandler<EntitySnapshotDifference> {
+  execute(report: EntitySnapshotDifference): Observable<EntitySnapshotDifferenceData> {
+    const pinned = reportBus.watch(new ChildEntities(report.parentType, report.parentId).withContext(report))
 
     const upToDate = reportBus.watch(
       new ChildEntities(report.parentType, report.parentId).withContext({
@@ -338,9 +286,7 @@ export class ImportItemsHandler implements MCommandHandler<ImportItems> {
   async execute(command: ImportItems) {
     const events = command.items
       .map((item) => unwrapItem(item))
-      .map((item) =>
-        makeSet(item, command.tx, { preventRelationshipUpdates: true }),
-      )
+      .map((item) => makeSet(item, command.tx, { preventRelationshipUpdates: true }))
 
     eventBus.publishAll(events)
   }

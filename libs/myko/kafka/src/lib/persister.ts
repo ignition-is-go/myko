@@ -1,21 +1,7 @@
-import {
-  type MItem,
-  MykoLogger,
-  Persister,
-  getHostId,
-  type MEvent,
-  type PersisterOutputEvent,
-} from '@myko/core'
+import { MykoLogger, Persister, getHostId, type MEvent, type MItem, type PersisterOutputEvent } from '@myko/core'
 import { unpack as decode } from 'msgpackr'
 
-import {
-  Kafka,
-  logLevel,
-  type ConsumerConfig,
-  type KafkaConfig,
-  type Message,
-  type ProducerConfig,
-} from 'kafkajs'
+import { Kafka, logLevel, type ConsumerConfig, type KafkaConfig, type Message, type ProducerConfig } from 'kafkajs'
 import type { Subject } from 'rxjs'
 import { makeSafeTopic } from './util/helpers'
 import { KafkaTopicConsumer } from './util/kafka.topicConsumer'
@@ -55,14 +41,7 @@ export const buildKafkaPersister = <KafkaPersisterOptions, T extends MItem>(
     groupId: getHostId(),
   }
 
-  return new KafkaEntityPersister<T>(
-    entity,
-    opts,
-    conf,
-    prodConf,
-    consConf,
-    new MykoLogger(entity),
-  )
+  return new KafkaEntityPersister<T>(entity, opts, conf, prodConf, consConf, new MykoLogger(entity))
 }
 
 abstract class KafkaPersister<T extends MItem> extends Persister<T> {
@@ -126,9 +105,7 @@ const getKafka = (options: KafkaConfig) => {
   const key = JSON.stringify(options)
 
   if (!kafkaCache.has(key)) {
-    new MykoLogger('Kafka Persister').info(
-      `Connecting Kafka at ${options.brokers}`,
-    )
+    new MykoLogger('Kafka Persister').info(`Connecting Kafka at ${options.brokers}`)
     kafkaCache.set(key, new Kafka(options))
   }
   return kafkaCache.get(key) as Kafka
@@ -187,11 +164,8 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
       },
     )
 
-    this.prod = new KafkaTopicProducer(
-      kafka,
-      this.entity,
-      { ...this.config, ...this.prodConfig },
-      (msg) => this.logger.info(this.entity, 'KafkaTopicProducer', msg),
+    this.prod = new KafkaTopicProducer(kafka, this.entity, { ...this.config, ...this.prodConfig }, (msg) =>
+      this.logger.info(this.entity, 'KafkaTopicProducer', msg),
     )
   }
 

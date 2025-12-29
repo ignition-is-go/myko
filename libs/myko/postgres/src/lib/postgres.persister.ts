@@ -67,8 +67,6 @@ export class PostgrestPersister<T extends MItem> extends Persister<T> {
   }
 }
 
-export const postgresPersisterFactory: PersisterFactory = <T extends MItem>(
-  itemName: string,
-) => {
+export const postgresPersisterFactory: PersisterFactory = <T extends MItem>(itemName: string) => {
   return new PostgrestPersister<T>(itemName)
 }

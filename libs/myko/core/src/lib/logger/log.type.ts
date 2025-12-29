@@ -1,10 +1,4 @@
-import {
-  doc,
-  MykoCommand,
-  MykoItem,
-  MykoQuery,
-  MykoReport,
-} from '../decorators'
+import { doc, MykoCommand, MykoItem, MykoQuery, MykoReport } from '../decorators'
 import { MCommand, MItem, MQuery, MReport, type ID } from '../types'
 import type { LogLevel } from './logLevel.type'
 
@@ -34,8 +28,7 @@ export class GetLogs extends MQuery<Log> {
 }
 
 @MykoReport()
-export class Loggers extends MReport<string[]> {
-}
+export class Loggers extends MReport<string[]> {}
 
 @MykoReport()
 export class ServerLogLevel extends MReport<LogLevel> {

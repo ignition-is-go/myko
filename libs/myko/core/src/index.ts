@@ -2,10 +2,7 @@ import 'reflect-metadata'
 import { Observable } from 'rxjs'
 export * from './lib'
 
-export function subCount<T>(
-  source: Observable<T>,
-  description: string,
-): Observable<T> {
+export function subCount<T>(source: Observable<T>, description: string): Observable<T> {
   let counter = 0
 
   return new Observable<T>((subscriber) => {

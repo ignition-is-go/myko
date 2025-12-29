@@ -1,12 +1,4 @@
-import type {
-  MCommand,
-  MQuery,
-  MReport,
-  MykoCommandError,
-  ID,
-  MEvent,
-  MWrappedCommand,
-} from '@myko/core'
+import type { ID, MCommand, MEvent, MQuery, MReport, MWrappedCommand, MykoCommandError } from '@myko/core'
 import {
   MCOMMAND_ERROR_EVENT,
   MCOMMAND_EVENT,
@@ -62,10 +54,7 @@ export const wrapEventWS = (event: MEvent): WSMEvent => ({
 //   tx,
 // })
 
-export const wrapCommandResponseWS = (
-  tx: ID,
-  response: unknown,
-): WSMCommandResponse => ({
+export const wrapCommandResponseWS = (tx: ID, response: unknown): WSMCommandResponse => ({
   event: MCOMMAND_RESPONSE_EVENT,
   data: {
     tx,
@@ -73,9 +62,7 @@ export const wrapCommandResponseWS = (
   },
 })
 
-export const wrapCommandErrorWS = (
-  error: MykoCommandError,
-): WSMCommandError => ({
+export const wrapCommandErrorWS = (error: MykoCommandError): WSMCommandError => ({
   event: MCOMMAND_ERROR_EVENT,
   data: {
     tx: error.tx,
@@ -101,10 +88,7 @@ export const wrapReportWS = (report: MReport<any>): WSMReport => ({
   event: MREPORT_EVENT,
 })
 
-export const wrapReportResponseWS = (
-  tx: ID,
-  response: unknown,
-): WSMReportResponse => ({
+export const wrapReportResponseWS = (tx: ID, response: unknown): WSMReportResponse => ({
   event: MREPORT_RESPONSE_EVENT,
   data: {
     response,

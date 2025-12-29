@@ -1,7 +1,4 @@
-const timeCache = new Map<
-  string,
-  { totalTime: number; numCalls: number; avgTime: number }
->()
+const timeCache = new Map<string, { totalTime: number; numCalls: number; avgTime: number }>()
 
 let interval: ReturnType<typeof setInterval> | undefined
 
@@ -95,10 +92,7 @@ export function Measure() {
           console.log(
             [...timeCache.entries()]
               .sort(([_, val], [__, val2]) => val2.avgTime - val.avgTime)
-              .map(
-                ([id, val]) =>
-                  `${id} - avg: ${val.avgTime} - numCalls: ${val.numCalls} - total: ${val.totalTime}`,
-              )
+              .map(([id, val]) => `${id} - avg: ${val.avgTime} - numCalls: ${val.numCalls} - total: ${val.totalTime}`)
               .slice(0, 10),
           )
         } catch (e) {

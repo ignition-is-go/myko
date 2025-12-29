@@ -54,8 +54,7 @@ export type MReportResult<T> = T extends MReport<infer R> ? Promise<R> : never
  * Represents the live result type of a report.
  * @template T - The type of the report.
  */
-export type MLiveReportResult<T> =
-  T extends MReport<infer R> ? Observable<R> : never
+export type MLiveReportResult<T> = T extends MReport<infer R> ? Observable<R> : never
 
 /**
  * Represents a report handler.

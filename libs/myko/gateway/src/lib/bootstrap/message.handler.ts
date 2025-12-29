@@ -19,8 +19,7 @@ import { handleQuery } from './query.handler'
 import { handleReport } from './report.handler'
 
 export const handleMessage =
-  (tx: Subject<{ clientId: ID; data: WSMMessage }>) =>
-  async (x: { clientId: ID; data: WSMMessage }) => {
+  (tx: Subject<{ clientId: ID; data: WSMMessage }>) => async (x: { clientId: ID; data: WSMMessage }) => {
     switch (x.data.event) {
       case MCOMMAND_EVENT: {
         await handleCommand(x.clientId, x.data.data, tx)

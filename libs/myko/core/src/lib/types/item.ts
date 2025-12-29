@@ -14,13 +14,9 @@ export type IMItem = {
  */
 export type DynamicItem = IMItem & Record<string, unknown>
 
-export type MItemConstructor<T extends IMItem> = (new (
-  args: PartialBy<T, 'hash'>,
-) => MItem<T>) & { name: string }
+export type MItemConstructor<T extends IMItem> = (new (args: PartialBy<T, 'hash'>) => MItem<T>) & { name: string }
 
-export const getItemName = <T extends IMItem = IMItem>(
-  item: MItemConstructor<T>,
-): string => {
+export const getItemName = <T extends IMItem = IMItem>(item: MItemConstructor<T>): string => {
   const itemName = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
   if (!itemName) {
     throw new Error('No item name found')
@@ -39,18 +35,14 @@ export class MItem<T extends IMItem = IMItem> {
   }
 }
 
-export const recalculateHash = <T extends IMItem = IMItem>(
-  item: PartialBy<T, 'hash'>,
-): T => {
+export const recalculateHash = <T extends IMItem = IMItem>(item: PartialBy<T, 'hash'>): T => {
   Reflect.deleteProperty(item, 'hash')
   const hash = ObjectHash.MD5(item)
   Reflect.set(item, 'hash', hash)
   return item as T
 }
 
-export const addMissingHash = <T extends IMItem = IMItem>(
-  item: PartialBy<T, 'hash'>,
-): T => {
+export const addMissingHash = <T extends IMItem = IMItem>(item: PartialBy<T, 'hash'>): T => {
   if (!item.hash) {
     return recalculateHash(item)
   }

@@ -41,7 +41,9 @@ export class KafkaTopicConsumer {
           // This handles edge cases like decode errors, network issues, or batch timing problems
           setTimeout(() => {
             if (!this.caughtUp) {
-              console.warn(`[KafkaTopicConsumer] ${topic}: Timeout waiting for catch-up (high=${high}), forcing completion`)
+              console.warn(
+                `[KafkaTopicConsumer] ${topic}: Timeout waiting for catch-up (high=${high}), forcing completion`,
+              )
               this.caughtUp = true
               this.onCaughtUp?.()
             }

@@ -15,9 +15,7 @@ export interface MWrappedCommand {
  * @throws {CommandUnwrapError} If the command does not have a command ID.
  * @deprecated use MCommand.wrap instead.
  */
-export const wrapCommand = <T extends MCommand<unknown>>(
-  command: T,
-): MWrappedCommand => {
+export const wrapCommand = <T extends MCommand<unknown>>(command: T): MWrappedCommand => {
   return command.wrap()
 }
 

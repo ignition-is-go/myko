@@ -113,9 +113,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
       setAuth(args.ws.authService)
     }
 
-    const maxLineLength = Math.max(
-      ...startupReport.flatMap((x) => x.lines.map((y) => y.length)),
-    )
+    const maxLineLength = Math.max(...startupReport.flatMap((x) => x.lines.map((y) => y.length)))
 
     for (const entry of startupReport) {
       console.log('='.repeat(maxLineLength))
@@ -138,33 +136,15 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
     const unhandledCommands = commands.difference(commandHandlers)
 
     if (unhandledQueries.size > 0) {
-      console.error(
-        [
-          'Unhandled Queries',
-          ...[...unhandledQueries.values()].map((x) => ` - ${x}`),
-          '',
-        ].join('\n'),
-      )
+      console.error(['Unhandled Queries', ...[...unhandledQueries.values()].map((x) => ` - ${x}`), ''].join('\n'))
     }
 
     if (unhandledReports.size > 0) {
-      console.error(
-        [
-          'Unhandled Reports',
-          ...[...unhandledReports.values()].map((x) => ` - ${x}`),
-          '',
-        ].join('\n'),
-      )
+      console.error(['Unhandled Reports', ...[...unhandledReports.values()].map((x) => ` - ${x}`), ''].join('\n'))
     }
 
     if (unhandledCommands.size > 0) {
-      console.error(
-        [
-          'Unhandled Commands',
-          ...[...unhandledCommands.values()].map((x) => ` - ${x}`),
-          '',
-        ].join('\n'),
-      )
+      console.error(['Unhandled Commands', ...[...unhandledCommands.values()].map((x) => ` - ${x}`), ''].join('\n'))
     }
   })
 
@@ -186,10 +166,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
         bufferTime(1000),
       )
       .subscribe((events) => {
-        const groupedByType = groupBy(
-          (x) => `${x.changeType} - ${x.itemType}`,
-          events,
-        )
+        const groupedByType = groupBy((x) => `${x.changeType} - ${x.itemType}`, events)
 
         for (const [itemType, items] of Object.entries(groupedByType)) {
           if (!items?.length) {

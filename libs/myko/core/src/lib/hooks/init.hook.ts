@@ -1,14 +1,7 @@
 const isRegistered: Set<string> = new Set()
 const isInit: Set<string> = new Set()
 
-const initWatchers: Set<
-  (
-    entity: string,
-    egistered: string[],
-    inited: string[],
-    uninited: string[],
-  ) => void
-> = new Set()
+const initWatchers: Set<(entity: string, egistered: string[], inited: string[], uninited: string[]) => void> = new Set()
 
 /**
  * Checks if all registered item types are initialized.
@@ -44,20 +37,8 @@ export const leftToInit = (): string[] => {
  * @param cb - The callback to call when the initialization status changes.
  */
 export const watchInit: (
-  cb: (
-    entity: string,
-    registered: string[],
-    inited: string[],
-    uninited: string[],
-  ) => void,
-) => void = (
-  cb: (
-    entity: string,
-    registered: string[],
-    inited: string[],
-    uninited: string[],
-  ) => void,
-) => {
+  cb: (entity: string, registered: string[], inited: string[], uninited: string[]) => void,
+) => void = (cb: (entity: string, registered: string[], inited: string[], uninited: string[]) => void) => {
   initWatchers.add(cb)
 }
 
@@ -73,9 +54,7 @@ export const fireInit = (itemType: string) => {
 
   isInit.add(itemType)
 
-  initWatchers.forEach((cb) =>
-    cb(itemType, [...isRegistered], [...isInit], leftToInit()),
-  )
+  initWatchers.forEach((cb) => cb(itemType, [...isRegistered], [...isInit], leftToInit()))
 
   if (isAllInit().done) {
     allInitCallbacks.forEach((cb) => cb())

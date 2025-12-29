@@ -1,4 +1,4 @@
-import type { MItem, MEvent } from '../types'
+import type { MEvent, MItem } from '../types'
 import { Persister, type PersisterFactory } from './persister'
 
 export class NullPersister<T extends MItem> extends Persister<T> {

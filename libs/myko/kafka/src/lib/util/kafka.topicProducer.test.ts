@@ -24,9 +24,7 @@ describe('KafkaTopicProducer', () => {
     producer.publish(Buffer.from('data'), 'key')
 
     await waitFor(() => {
-      expect(log).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to send message to topic'),
-      )
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('Failed to send message to topic'))
     })
   })
 })

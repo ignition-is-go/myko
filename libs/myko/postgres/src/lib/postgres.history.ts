@@ -1,10 +1,4 @@
-import {
-  HistoryProvider,
-  MEventType,
-  unwrapItem,
-  type MEvent,
-  type MItem,
-} from '@myko/core'
+import { HistoryProvider, MEventType, unwrapItem, type MEvent, type MItem } from '@myko/core'
 import { from, map, scan, startWith, switchMap, type Observable } from 'rxjs'
 import {
   create_index_myko_events_created_at,
@@ -43,11 +37,7 @@ export class PostgresHistory extends HistoryProvider {
     await get_db_size()
   }
 
-  async getItemAsOfTime<T extends MItem>(
-    id: string,
-    itemType: string,
-    time: string,
-  ): Promise<T | null> {
+  async getItemAsOfTime<T extends MItem>(id: string, itemType: string, time: string): Promise<T | null> {
     const result = await sql<EventCols[]>`
       SELECT * FROM myko_events WHERE entity_id = ${id} AND item_type = ${itemType} AND created_at < ${time}
       ORDER BY created_at DESC
@@ -77,10 +67,7 @@ export class PostgresHistory extends HistoryProvider {
   //   throw new Error('getItemsByQueryAsOfTime not implemented')
   // }
 
-  async getAllItemsAsOfTime<T extends MItem>(
-    itemType: string,
-    time: string,
-  ): Promise<T[]> {
+  async getAllItemsAsOfTime<T extends MItem>(itemType: string, time: string): Promise<T[]> {
     const result = await sql<EventCols[]>`
       SELECT DISTINCT ON (entity_id) *
       FROM myko_events
@@ -95,11 +82,7 @@ export class PostgresHistory extends HistoryProvider {
       .map(unwrapItem) as T[]
   }
 
-  getEntityHistory(
-    id: string,
-    start?: string,
-    end?: string,
-  ): Observable<MEvent[]> {
+  getEntityHistory(id: string, start?: string, end?: string): Observable<MEvent[]> {
     // get all events for entity
 
     const init =
@@ -128,13 +111,7 @@ export class PostgresHistory extends HistoryProvider {
       switchMap((init) => {
         return stream.pipe(
           scan((acc, event) => {
-            if (
-              event.item.id === id &&
-              start &&
-              event.createdAt >= start &&
-              end &&
-              event.createdAt <= end
-            ) {
+            if (event.item.id === id && start && event.createdAt >= start && end && event.createdAt <= end) {
               return [event, ...acc]
             }
             return acc
@@ -145,10 +122,7 @@ export class PostgresHistory extends HistoryProvider {
     )
   }
 
-  async getEntitiesAsOf<T extends MItem>(
-    time: string,
-    entity_type: string,
-  ): Promise<T[]> {
+  async getEntitiesAsOf<T extends MItem>(time: string, entity_type: string): Promise<T[]> {
     // get all entities as of time
     const mostRecentEventsRows = await get_entities_as_of(entity_type, time)
 
@@ -157,18 +131,12 @@ export class PostgresHistory extends HistoryProvider {
     }
     const mostRecentEvents = mostRecentEventsRows.map(rowToEvent)
 
-    const mostRecentItems = mostRecentEvents
-      .filter((x) => x.changeType !== MEventType.DEL)
-      .map(unwrapItem)
+    const mostRecentItems = mostRecentEvents.filter((x) => x.changeType !== MEventType.DEL).map(unwrapItem)
 
     return mostRecentItems as T[]
   }
 
-  async getEntitySnapshot<T extends MItem>(
-    id: string,
-    entity_type: string,
-    time: string,
-  ): Promise<T | undefined> {
+  async getEntitySnapshot<T extends MItem>(id: string, entity_type: string, time: string): Promise<T | undefined> {
     // get most recent event before time
 
     const item = await sql`
@@ -202,11 +170,7 @@ export class PostgresHistory extends HistoryProvider {
     `.then((res) => res.map(rowToEvent))
   }
 
-  getTransactionsInTimeRange(
-    excludeEntities: string[],
-    start: string,
-    end?: string,
-  ): Observable<string[]> {
+  getTransactionsInTimeRange(excludeEntities: string[], start: string, end?: string): Observable<string[]> {
     const stream = get_event_stream()
 
     // Build the query based on whether excludeEntities is empty
@@ -254,8 +218,7 @@ export class PostgresHistory extends HistoryProvider {
               if (
                 event.createdAt >= start &&
                 (end === undefined || event.createdAt <= end) &&
-                (excludeEntities.length === 0 ||
-                  !excludeEntities.includes(event.itemType))
+                (excludeEntities.length === 0 || !excludeEntities.includes(event.itemType))
               ) {
                 return [event.tx, ...acc]
               }
@@ -282,10 +245,7 @@ export class PostgresHistory extends HistoryProvider {
       .then(uniq)
   }
 
-  async recordUserTransaction(
-    userId: string,
-    transactionId: string,
-  ): Promise<void> {
+  async recordUserTransaction(userId: string, transactionId: string): Promise<void> {
     await sql`
       INSERT INTO myko_transactions (id, user_id) VALUES (${transactionId}, ${userId})
     `.catch((e) => {

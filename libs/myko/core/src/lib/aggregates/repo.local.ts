@@ -1,11 +1,4 @@
-import {
-  MEventType,
-  type MItem,
-  addMissingHash,
-  type DeepPartial,
-  type ID,
-  type MEvent,
-} from '../types'
+import { MEventType, addMissingHash, type DeepPartial, type ID, type MEvent, type MItem } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Repo, buildFilter, toArray, type RepoOptions } from './repo.abstract'
 import { Store } from './store'
@@ -71,11 +64,7 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
     try {
       return this.store.getIndex(index, value)
     } catch (_e) {
-      console.warn(
-        `No index crated on ${index.toString()} for ${
-          this.entity
-        } - falling back`,
-      )
+      console.warn(`No index crated on ${index.toString()} for ${this.entity} - falling back`)
       return this.getFilter((el) => el[index] === value)
     }
   }

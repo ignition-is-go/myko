@@ -21,13 +21,7 @@ import {
 } from 'rxjs'
 import { beforeInit, fireInit } from '../hooks'
 import type { Persister } from '../persisters'
-import {
-  MEventType,
-  type MItem,
-  type DeepPartial,
-  type ID,
-  type MEvent,
-} from '../types'
+import { type DeepPartial, type ID, type MEvent, MEventType, type MItem } from '../types'
 import { unwrapItem } from '../wrappers'
 
 export interface RepoOptions<T extends MItem> {
@@ -52,10 +46,7 @@ export interface RepoOptions<T extends MItem> {
   peerQuery?: (ids: ID[]) => Observable<T[]>
 }
 
-export type RepoFactory = <T extends MItem>(
-  itemName: string,
-  options: RepoOptions<T>,
-) => Repo<T>
+export type RepoFactory = <T extends MItem>(itemName: string, options: RepoOptions<T>) => Repo<T>
 
 /**
  * Represents an abstract repository for managing items of type T.
@@ -101,9 +92,7 @@ export abstract class Repo<T extends MItem> {
             return
           }
 
-          new MykoLogger(entity).info(
-            `Loading [${bar}${space}] ${Math.floor(last * 100)}%`,
-          )
+          new MykoLogger(entity).info(`Loading [${bar}${space}] ${Math.floor(last * 100)}%`)
         })
       })
 
@@ -211,12 +200,7 @@ export abstract class Repo<T extends MItem> {
     // Use cached observables with shareReplay to prevent subscription explosion
     const observables = ids.map((id) => {
       if (!this.watchCache.has(id)) {
-        this.watchCache.set(
-          id,
-          this.watchId(id).pipe(
-            shareReplay({ bufferSize: 1, refCount: true }),
-          ),
-        )
+        this.watchCache.set(id, this.watchId(id).pipe(shareReplay({ bufferSize: 1, refCount: true })))
       }
       return this.watchCache.get(id)!
     })
@@ -245,17 +229,11 @@ export abstract class Repo<T extends MItem> {
                 acc.lookup.delete(event.item.id)
                 acc.changed = true
               }
-              if (
-                event.changeType === MEventType.SET &&
-                filterFunc(event.item)
-              ) {
+              if (event.changeType === MEventType.SET && filterFunc(event.item)) {
                 acc.lookup.set(event.item.id, unwrapItem(event) as T)
                 acc.changed = true
               }
-              if (
-                event.changeType === MEventType.SET &&
-                !filterFunc(event.item)
-              ) {
+              if (event.changeType === MEventType.SET && !filterFunc(event.item)) {
                 if (acc.lookup.has(event.item.id)) {
                   acc.lookup.delete(event.item.id)
                   acc.changed = true
@@ -298,11 +276,9 @@ export abstract class Repo<T extends MItem> {
    * @returns An array of items that match the query.
    */
   async getSearch(query: string): Promise<T[]> {
-    return Promise.all(
-      this.search
-        .search(query.toLocaleLowerCase())
-        .map((x) => this.getId(x.toString())),
-    ).then((x) => x.filter((x) => x !== null))
+    return Promise.all(this.search.search(query.toLocaleLowerCase()).map((x) => this.getId(x.toString()))).then((x) =>
+      x.filter((x) => x !== null),
+    )
   }
 
   watchSearch(
@@ -321,17 +297,13 @@ export abstract class Repo<T extends MItem> {
 
     return this.searchObs.pipe(
       startWith(this.search),
-      map((s) =>
-        s
-          .search(query.toLocaleLowerCase(), Infinity, { suggest: true })
-          .flatMap((x) => x.result),
-      ),
+      map((s) => s.search(query.toLocaleLowerCase(), Infinity, { suggest: true }).flatMap((x) => x.result)),
       map(uniq),
       switchMap((ids) =>
         ids.length === 0
           ? of([])
-          // Use watchIds for cached subscriptions - prevents subscription explosion
-          : this.watchIds(ids.map((id) => id.toString())),
+          : // Use watchIds for cached subscriptions - prevents subscription explosion
+            this.watchIds(ids.map((id) => id.toString())),
       ),
       map((x) => x.filter(filterFunc)),
     )
@@ -352,9 +324,7 @@ export abstract class Repo<T extends MItem> {
    * @returns An array of objects with the specified IDs.
    */
   async getIds(ids: ID[]): Promise<T[]> {
-    return await Promise.all(ids.map((id) => this.getId(id))).then((x) =>
-      x.filter((x) => x !== null),
-    )
+    return await Promise.all(ids.map((id) => this.getId(id))).then((x) => x.filter((x) => x !== null))
   }
 
   /**
@@ -414,9 +384,7 @@ export const objectFilter = (query: object, ent: object): boolean => {
     }
 
     if (Array.isArray(querySide) && Array.isArray(entSide)) {
-      return entSide.every((item, index) =>
-        objectFilter(querySide[index], item),
-      )
+      return entSide.every((item, index) => objectFilter(querySide[index], item))
     }
 
     try {
@@ -433,7 +401,4 @@ export const objectFilter = (query: object, ent: object): boolean => {
   })
 }
 
-export type IRepo<T extends MItem> = Omit<
-  Repo<T>,
-  'entity' | 'safeLog' | 'subject' | 'search' | 'searchObs' | 'save'
->
+export type IRepo<T extends MItem> = Omit<Repo<T>, 'entity' | 'safeLog' | 'subject' | 'search' | 'searchObs' | 'save'>

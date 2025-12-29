@@ -17,11 +17,7 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
     return this.getClient(this.ctx.commandClientId).pipe(
       switchMap((client) => {
         if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).watchId(id)
+          return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).watchId(id)
         } else {
           return this.baseRepo.watchId(id)
         }
@@ -33,11 +29,7 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
     return this.getClient(this.ctx.commandClientId).pipe(
       switchMap((client) => {
         if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).watchIds(ids)
+          return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).watchIds(ids)
         } else {
           return this.baseRepo.watchIds(ids)
         }
@@ -49,11 +41,7 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
     return this.getClient(this.ctx.commandClientId).pipe(
       switchMap((client) => {
         if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).watchFilter(filterFunc)
+          return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).watchFilter(filterFunc)
         } else {
           return this.baseRepo.watchFilter(filterFunc)
         }
@@ -65,11 +53,7 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
     return this.getClient(this.ctx.commandClientId).pipe(
       switchMap((client) => {
         if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).watch(query)
+          return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).watch(query)
         } else {
           return this.baseRepo.watch(query)
         }
@@ -78,19 +62,13 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
   }
 
   getSearch(query: string): Promise<T[]> {
-    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then(
-      (client) => {
-        if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).getSearch(query)
-        } else {
-          return this.baseRepo.getSearch(query)
-        }
-      },
-    )
+    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then((client) => {
+      if (client?.windback) {
+        return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).getSearch(query)
+      } else {
+        return this.baseRepo.getSearch(query)
+      }
+    })
   }
 
   watchSearch(
@@ -104,11 +82,11 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
     return this.getClient(this.ctx.commandClientId).pipe(
       switchMap((client) => {
         if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).watchSearch(query, opts, filters)
+          return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).watchSearch(
+            query,
+            opts,
+            filters,
+          )
         } else {
           return this.baseRepo.watchSearch(query, opts, filters)
         }
@@ -118,83 +96,53 @@ export class RepoWithHistory<T extends IMItem> implements IRepo<T> {
     throw new Error('Method not implemented.')
   }
   getId(id: ID): Promise<T | null> {
-    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then(
-      (client) => {
-        if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).getId(id)
-        } else {
-          return this.baseRepo.getId(id)
-        }
-      },
-    )
+    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then((client) => {
+      if (client?.windback) {
+        return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).getId(id)
+      } else {
+        return this.baseRepo.getId(id)
+      }
+    })
   }
 
   getIds(ids: ID[]): Promise<T[]> {
-    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then(
-      (client) => {
-        if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).getIds(ids)
-        } else {
-          return this.baseRepo.getIds(ids)
-        }
-      },
-    )
+    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then((client) => {
+      if (client?.windback) {
+        return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).getIds(ids)
+      } else {
+        return this.baseRepo.getIds(ids)
+      }
+    })
   }
 
   getIndex(index: keyof T, value: any): Promise<T[]> {
-    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then(
-      (client) => {
-        if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).getIndex(index, value)
-        } else {
-          return this.baseRepo.getIndex(index, value)
-        }
-      },
-    )
+    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then((client) => {
+      if (client?.windback) {
+        return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).getIndex(index, value)
+      } else {
+        return this.baseRepo.getIndex(index, value)
+      }
+    })
   }
 
   get(query: DeepPartial<T>): Promise<T[]> {
-    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then(
-      (client) => {
-        if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).get(query)
-        } else {
-          return this.baseRepo.get(query)
-        }
-      },
-    )
+    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then((client) => {
+      if (client?.windback) {
+        return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).get(query)
+      } else {
+        return this.baseRepo.get(query)
+      }
+    })
   }
 
   getFilter(filterFunc: (ent: T) => boolean): Promise<T[]> {
-    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then(
-      (client) => {
-        if (client?.windback) {
-          return new HistoryRepo<T>(
-            this.entity,
-            getHistoryProvider(),
-            client.windback,
-          ).getFilter(filterFunc)
-        } else {
-          return this.baseRepo.getFilter(filterFunc)
-        }
-      },
-    )
+    return firstValueFrom(this.getClient(this.ctx.commandClientId)).then((client) => {
+      if (client?.windback) {
+        return new HistoryRepo<T>(this.entity, getHistoryProvider(), client.windback).getFilter(filterFunc)
+      } else {
+        return this.baseRepo.getFilter(filterFunc)
+      }
+    })
   }
 
   getItemCount(): Promise<number> {

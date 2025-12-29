@@ -1,18 +1,7 @@
 import { queryBus } from '../busses'
-import {
-  MYKO_HANDLER_QUERY_ID_KEY,
-  MYKO_ITEM_TYPE,
-  MYKO_QUERY_ID_KEY,
-  MYKO_QUERY_ITEM_TYPE_KEY,
-} from '../constants'
+import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_ITEM_TYPE, MYKO_QUERY_ID_KEY, MYKO_QUERY_ITEM_TYPE_KEY } from '../constants'
 import { addQueryDoc, queries, queryHandlers } from '../registry'
-import type {
-  IMItem,
-  MItem,
-  MQuery,
-  MQueryConstructor,
-  MQueryHandlerConstructor,
-} from '../types'
+import type { IMItem, MItem, MQuery, MQueryConstructor, MQueryHandlerConstructor } from '../types'
 
 /**
  * Decorator for defining a Myko query.
@@ -29,9 +18,7 @@ export const MykoQuery: <U extends MItem<IMItem>>(
 
     const queryName = Object.getOwnPropertyDescriptors(original)?.name.value
 
-    const paramtypes =
-      Reflect.getMetadata('design:paramtypes', original)?.map((x: { name: string }) => x.name) ??
-      []
+    const paramtypes = Reflect.getMetadata('design:paramtypes', original)?.map((x: { name: string }) => x.name) ?? []
 
     const queryId = queryName
 
@@ -65,9 +52,7 @@ export const MykoQuery: <U extends MItem<IMItem>>(
 
 export const MykoQueryHandler: <T extends MQuery<MItem<IMItem>>>(
   query: MQueryConstructor<T>,
-) => (handlerClass: MQueryHandlerConstructor<T>) => void = <T extends MQuery>(
-  query: MQueryConstructor<T>,
-) => {
+) => (handlerClass: MQueryHandlerConstructor<T>) => void = <T extends MQuery>(query: MQueryConstructor<T>) => {
   const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, query)
 
   if (!queryId) {

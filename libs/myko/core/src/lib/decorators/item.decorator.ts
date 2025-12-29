@@ -46,8 +46,7 @@ export const MykoItem =
   }): ClassDecorator =>
   (target) => {
     const original: any = target
-    const autoItemType =
-      Object.getOwnPropertyDescriptors(original).name.value
+    const autoItemType = Object.getOwnPropertyDescriptors(original).name.value
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 
@@ -122,9 +121,7 @@ export const MykoItem =
           propertyDefaults.set(itemType, new Map())
         }
 
-        propertyDefaults
-          .get(itemType)!
-          .set(propertyKey, Reflect.getMetadata(key, original))
+        propertyDefaults.get(itemType)!.set(propertyKey, Reflect.getMetadata(key, original))
       }
 
       if (key.startsWith(MYKO_CLIENT_ID_KEY)) {
@@ -134,9 +131,7 @@ export const MykoItem =
       }
     })
 
-    const ensureKeys = metaKeys.filter((key) =>
-      key.startsWith(MYKO_ITEM_ENSURE_KEY),
-    )
+    const ensureKeys = metaKeys.filter((key) => key.startsWith(MYKO_ITEM_ENSURE_KEY))
 
     if (ensureKeys.length > 0) {
       relationRegistry.add({
@@ -189,9 +184,7 @@ export const ownsMany = (depType: new (...args: any[]) => MItem): PropertyDecora
   return (target, propertyKey) => {
     if (
       !target ||
-      Object.keys(propertyKey as any).includes(
-        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-      )
+      Object.keys(propertyKey as any).includes('addInitializer' satisfies keyof ClassMethodDecoratorContext)
     ) {
       showWarning()
       return
@@ -200,11 +193,7 @@ export const ownsMany = (depType: new (...args: any[]) => MItem): PropertyDecora
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
     doc(`Owns many ${itemType}`)(target, propertyKey as unknown as string)
 
-    Reflect.defineMetadata(
-      makeOwnsKey(propertyKey.toString()),
-      itemType,
-      target.constructor,
-    )
+    Reflect.defineMetadata(makeOwnsKey(propertyKey.toString()), itemType, target.constructor)
   }
 }
 
@@ -218,9 +207,7 @@ export const belongsTo = (depType: new (...args: any[]) => MItem): PropertyDecor
   return (target, propertyKey) => {
     if (
       !target ||
-      Object.keys(propertyKey as any).includes(
-        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-      )
+      Object.keys(propertyKey as any).includes('addInitializer' satisfies keyof ClassMethodDecoratorContext)
     ) {
       showWarning()
       return
@@ -229,11 +216,7 @@ export const belongsTo = (depType: new (...args: any[]) => MItem): PropertyDecor
 
     doc(`Belongs to ${foreignItemType}`)(target, propertyKey)
 
-    Reflect.defineMetadata(
-      makeDepkey(propertyKey.toString()),
-      foreignItemType,
-      target.constructor,
-    )
+    Reflect.defineMetadata(makeDepkey(propertyKey.toString()), foreignItemType, target.constructor)
   }
 }
 
@@ -246,9 +229,7 @@ export const defaultValue = (value: any): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
-      Object.keys(propertyKey as any).includes(
-        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-      )
+      Object.keys(propertyKey as any).includes('addInitializer' satisfies keyof ClassMethodDecoratorContext)
     ) {
       showWarning()
       return
@@ -256,11 +237,7 @@ export const defaultValue = (value: any): PropertyDecorator => {
 
     doc(`Defaults to ${value}`)(target, propertyKey)
 
-    Reflect.defineMetadata(
-      makeDefaultValueKey(propertyKey.toString()),
-      value,
-      target.constructor,
-    )
+    Reflect.defineMetadata(makeDefaultValueKey(propertyKey.toString()), value, target.constructor)
   }
 }
 
@@ -273,9 +250,7 @@ export const ensureFor = (depType: new (...args: any[]) => MItem): PropertyDecor
   return (target, propertyKey) => {
     if (
       !target ||
-      Object.keys(propertyKey as any).includes(
-        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-      )
+      Object.keys(propertyKey as any).includes('addInitializer' satisfies keyof ClassMethodDecoratorContext)
     ) {
       showWarning()
       return
@@ -284,11 +259,7 @@ export const ensureFor = (depType: new (...args: any[]) => MItem): PropertyDecor
     const foreignItemType = Reflect.getMetadata(MYKO_ITEM_TYPE, depType)
     doc(`Ensured for ${foreignItemType}`)(target, propertyKey)
 
-    Reflect.defineMetadata(
-      makeEnsureKey(propertyKey.toString()),
-      foreignItemType,
-      target.constructor,
-    )
+    Reflect.defineMetadata(makeEnsureKey(propertyKey.toString()), foreignItemType, target.constructor)
   }
 }
 
@@ -296,20 +267,14 @@ export const searchable = (): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
-      Object.keys(propertyKey as any).includes(
-        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-      )
+      Object.keys(propertyKey as any).includes('addInitializer' satisfies keyof ClassMethodDecoratorContext)
     ) {
       showWarning()
       return
     }
     doc(`Searchable`)(target, propertyKey)
 
-    Reflect.defineMetadata(
-      makeSearchKey(propertyKey.toString()),
-      true,
-      target.constructor,
-    )
+    Reflect.defineMetadata(makeSearchKey(propertyKey.toString()), true, target.constructor)
   }
 }
 
@@ -317,65 +282,53 @@ export const mykoClientId = (): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
-      Object.keys(propertyKey as any).includes(
-        'addInitializer' satisfies keyof ClassMethodDecoratorContext,
-      )
+      Object.keys(propertyKey as any).includes('addInitializer' satisfies keyof ClassMethodDecoratorContext)
     ) {
       showWarning()
       return
     }
     doc(`Auto Client ID`)(target, propertyKey)
 
-    Reflect.defineMetadata(
-      makeClientIdKey(propertyKey.toString()),
-      true,
-      target.constructor,
-    )
+    Reflect.defineMetadata(makeClientIdKey(propertyKey.toString()), true, target.constructor)
   }
 }
 
-const makeOwnsKey = (propertyKey: string): string =>
-  `${MYKO_ITEM_OWNS_MANY_KEY}:${propertyKey}`
+const makeOwnsKey = (propertyKey: string): string => `${MYKO_ITEM_OWNS_MANY_KEY}:${propertyKey}`
 
 const decodeOwnsKey = (ownsKey: string): string => {
   const [_, propertyKey] = ownsKey.split(':')
   return propertyKey
 }
 
-const makeDepkey = (propertyKey: string): string =>
-  `${MYKO_ITEM_BELONGS_TO_KEY}:${propertyKey}`
+const makeDepkey = (propertyKey: string): string => `${MYKO_ITEM_BELONGS_TO_KEY}:${propertyKey}`
 
 const decodeDepkey = (depKey: string): string => {
   const [_, propertyKey] = depKey.split(':')
   return propertyKey
 }
 
-const makeEnsureKey = (propertyKey: string): string =>
-  `${MYKO_ITEM_ENSURE_KEY}:${propertyKey}`
+const makeEnsureKey = (propertyKey: string): string => `${MYKO_ITEM_ENSURE_KEY}:${propertyKey}`
 
 const decodeEnsureKey = (EnsureKey: string): string => {
   const [_, propertyKey] = EnsureKey.split(':')
   return propertyKey
 }
 
-const makeDefaultValueKey = (propertyKey: string): string =>
-  `${MYKO_ITEM_DEFAULT_VALUE_KEY}:${propertyKey}`
+const makeDefaultValueKey = (propertyKey: string): string => `${MYKO_ITEM_DEFAULT_VALUE_KEY}:${propertyKey}`
 
 const decodeDefaultValueKey = (DefaultValueKey: string): string => {
   const [_, propertyKey] = DefaultValueKey.split(':')
   return propertyKey
 }
 
-const makeSearchKey = (propertyKey: string): string =>
-  `${MYKO_ITEM_SEARCH_KEY}:${propertyKey}`
+const makeSearchKey = (propertyKey: string): string => `${MYKO_ITEM_SEARCH_KEY}:${propertyKey}`
 
 const decodeSearchKey = (SearchKey: string): string => {
   const [_, propertyKey] = SearchKey.split(':')
   return propertyKey
 }
 
-const makeClientIdKey = (propertyKey: string): string =>
-  `${MYKO_CLIENT_ID_KEY}:${propertyKey}`
+const makeClientIdKey = (propertyKey: string): string => `${MYKO_CLIENT_ID_KEY}:${propertyKey}`
 
 const decodeClientIdKey = (clientIdKey: string): string => {
   const [_, propertyKey] = clientIdKey.split(':')

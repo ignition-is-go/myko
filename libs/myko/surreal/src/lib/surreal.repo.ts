@@ -1,12 +1,12 @@
 import {
   addMissingHash,
+  type DeepPartial,
+  type ID,
+  type MEvent,
   type MItem,
   MykoLogger,
   Repo,
   unwrapItem,
-  type DeepPartial,
-  type ID,
-  type MEvent,
 } from '@myko/core'
 import { surrealdbWasmEngines } from '@surrealdb/wasm'
 import { map, type Observable, Subject, tap } from 'rxjs'
@@ -28,11 +28,9 @@ export class SurrealRepo<T extends MItem> extends Repo<T> {
         database: 'myko',
       })
       .then((_x) => {
-        return this.db
-          .query(`DEFINE TABLE OVERWRITE ${this.entity} CHANGEFEED 1000y`)
-          .catch((_e) => {
-            console.log('Table already exists')
-          })
+        return this.db.query(`DEFINE TABLE OVERWRITE ${this.entity} CHANGEFEED 1000y`).catch((_e) => {
+          console.log('Table already exists')
+        })
       })
   }
 
@@ -70,13 +68,8 @@ export class SurrealRepo<T extends MItem> extends Repo<T> {
   }
 
   watchFilter(filterFunc: (ent: T) => boolean): Observable<T[]> {
-    console.warn(
-      'watchFilter is not fast in implemented for SurrealRepo',
-      this.entity,
-    )
-    return this.watch({} as DeepPartial<T>).pipe(
-      map((x) => x.filter(filterFunc)),
-    )
+    console.warn('watchFilter is not fast in implemented for SurrealRepo', this.entity)
+    return this.watch({} as DeepPartial<T>).pipe(map((x) => x.filter(filterFunc)))
   }
 
   watchIds(ids: ID[]): Observable<T[]> {
@@ -145,18 +138,12 @@ export class SurrealRepo<T extends MItem> extends Repo<T> {
     })
   }
   getFilter(filterFunc: (ent: T) => boolean): Promise<T[]> {
-    console.warn(
-      'getFilter is not fast in implemented for SurrealRepo',
-      this.entity,
-    )
+    console.warn('getFilter is not fast in implemented for SurrealRepo', this.entity)
     return this.get({} as DeepPartial<T>).then((x) => x.filter(filterFunc))
   }
 }
 
-const liveQueryObs = <T extends MItem>(
-  db: Surreal,
-  query: string,
-): Observable<T[]> => {
+const liveQueryObs = <T extends MItem>(db: Surreal, query: string): Observable<T[]> => {
   const subject = new Subject<T[]>()
   const state = new Map<string, T>()
 

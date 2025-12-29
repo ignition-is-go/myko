@@ -53,5 +53,5 @@ export type LogFormat = 'human' | 'json'
  * Can also be set via LOG_FORMAT environment variable.
  */
 export const logFormat = new Cell<LogFormat>(
-  (typeof process !== 'undefined' && process.env?.LOG_FORMAT === 'json') ? 'json' : 'human'
+  typeof process !== 'undefined' && process.env?.LOG_FORMAT === 'json' ? 'json' : 'human',
 )

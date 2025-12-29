@@ -6,13 +6,13 @@ import {
   getHostId,
   liveRepoName,
   MEventType,
-  type MItem,
   MykoCommandHandler,
   MykoLogger,
   MykoSaga,
   onAllInit,
   ReballanceItem,
   type MCommandHandler,
+  type MItem,
   type MSagaHandler,
   type Stream,
 } from '@myko/core'
@@ -44,9 +44,7 @@ export class AutoBallanceSaga implements MSagaHandler {
 
         return merge(
           ...foreignReballance.map((info) => {
-            return from(
-              liveRepoName(info.local).get({ [info.propName]: event.item.id }),
-            ).pipe(
+            return from(liveRepoName(info.local).get({ [info.propName]: event.item.id })).pipe(
               switchMap((items) => {
                 return of(
                   ...items.map((item) =>
@@ -100,9 +98,7 @@ export class RebalanceItemHandler implements MCommandHandler<ReballanceItem> {
     }
 
     if (foreigns.length === 0) {
-      this.logger.warn(
-        `No ${reballanceInfo.foreignType}s found durring reballance`,
-      )
+      this.logger.warn(`No ${reballanceInfo.foreignType}s found durring reballance`)
       return
     }
 

@@ -47,10 +47,7 @@ export class ReconnectSocket {
         return
       }
 
-      if (
-        this.opts.reconnect &&
-        this.opts.reconnect.maxAttempts > this.attempts
-      ) {
+      if (this.opts.reconnect && this.opts.reconnect.maxAttempts > this.attempts) {
         this.attempts++
         setTimeout(() => {
           this.opts.onReconnecting(url)

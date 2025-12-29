@@ -1,23 +1,13 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { groupBy } from 'ramda'
-import {
-  docRegistry,
-  type CommandDocInfo,
-  type ItemDocInfo,
-  type PropDocInfo,
-  type QueryDocInfo,
-} from '../registry'
+import { docRegistry, type CommandDocInfo, type ItemDocInfo, type PropDocInfo, type QueryDocInfo } from '../registry'
 
 export class MykoDocsService {
-
   async writeDocs(path: string) {
     await mkdir(path, { recursive: true })
     await writeFile(`${path}/README.md`, this.generateDocs())
     await mkdir(`${path}/docs`, { recursive: true })
-    await writeFile(
-      `${path}/docs/myko.json`,
-      JSON.stringify(docRegistry, null, 2),
-    )
+    await writeFile(`${path}/docs/myko.json`, JSON.stringify(docRegistry, null, 2))
   }
 
   private generateDocs() {
@@ -29,11 +19,7 @@ export class MykoDocsService {
 
     return [
       '### Table of Contents',
-      list(
-        link('Entities', '#entities'),
-        link('Queries', '#queries'),
-        link('Commands', '#commands'),
-      ),
+      list(link('Entities', '#entities'), link('Queries', '#queries'), link('Commands', '#commands')),
       '# Entities',
       ...entityDocs,
       '# Queries',
@@ -44,9 +30,7 @@ export class MykoDocsService {
   }
 
   private makeCommandDocs() {
-    const commands = docRegistry.filter(
-      (x) => x.type === 'command',
-    ) as CommandDocInfo[]
+    const commands = docRegistry.filter((x) => x.type === 'command') as CommandDocInfo[]
 
     commands.map((command) => {
       return [h2(command.commandName)].join('\n')
@@ -62,20 +46,14 @@ export class MykoDocsService {
       return [
         h2(command.commandName),
         command.props.length > 0
-          ? code(
-              object(
-                [`commandId: '${command.commandId}'`, object(props)].join('\n'),
-              ),
-            )
+          ? code(object([`commandId: '${command.commandId}'`, object(props)].join('\n')))
           : 'No Props',
       ].join('\n')
     })
   }
 
   private makeQueryDocs() {
-    const queries = docRegistry.filter(
-      (x) => x.type === 'query',
-    ) as QueryDocInfo[]
+    const queries = docRegistry.filter((x) => x.type === 'query') as QueryDocInfo[]
 
     queries.map((query) => {
       return [h2(query.queryName)].join('\n')
@@ -91,38 +69,23 @@ export class MykoDocsService {
       return [
         h2(query.queryName),
         query.queryReturnType &&
-          `Returns: ${link(
-            `${query.queryReturnType}[]`,
-            `#${query.queryReturnType?.toLocaleLowerCase()}`,
-          )}`,
-        query.props.length > 0
-          ? code(
-              object(
-                [`queryId: '${query.queryId}' `, object(props)].join('\n'),
-              ),
-            )
-          : 'No Props',
+          `Returns: ${link(`${query.queryReturnType}[]`, `#${query.queryReturnType?.toLocaleLowerCase()}`)}`,
+        query.props.length > 0 ? code(object([`queryId: '${query.queryId}' `, object(props)].join('\n'))) : 'No Props',
       ].join('\n')
     })
   }
 
   private makeEntityDocs() {
-    const entities = docRegistry.filter(
-      (x) => x.type === 'item' && x.preventDocs !== true,
-    ) as ItemDocInfo[]
+    const entities = docRegistry.filter((x) => x.type === 'item' && x.preventDocs !== true) as ItemDocInfo[]
 
     return entities
       .sort((a, b) => a.entityType.localeCompare(b.entityType))
       .map((entity) => {
         const entityType = entity.entityType
 
-        const propEntries = docRegistry.filter(
-          (x) => x.type === 'prop' && x.entityType === entityType,
-        ) as PropDocInfo[]
+        const propEntries = docRegistry.filter((x) => x.type === 'prop' && x.entityType === entityType) as PropDocInfo[]
 
-        const itemEntries = docRegistry.filter(
-          (x) => x.type === 'item' && x.entityType === entityType,
-        ) as ItemDocInfo[]
+        const itemEntries = docRegistry.filter((x) => x.type === 'item' && x.entityType === entityType) as ItemDocInfo[]
 
         const byProp = groupBy((e) => e.propName, propEntries)
 
@@ -153,22 +116,15 @@ export class MykoDocsService {
           })
           .join('\n')
 
-        const notes = itemEntries.some((x) => !!x.deprecated)
-          ? ['WARNING: deprecated']
-          : []
+        const notes = itemEntries.some((x) => !!x.deprecated) ? ['WARNING: deprecated'] : []
 
         const queries = docRegistry.filter(
           (r) => r.type === 'query' && r.queryReturnType === entityType,
         ) as QueryDocInfo[]
 
-        const queryStrings = list(
-          ...queries.map((x) =>
-            link(x.queryName, `#${x.queryName.toLowerCase()}`),
-          ),
-        )
+        const queryStrings = list(...queries.map((x) => link(x.queryName, `#${x.queryName.toLowerCase()}`)))
 
-        const queryString =
-          queries.length > 0 ? [h3('Queries'), queryStrings, ''] : []
+        const queryString = queries.length > 0 ? [h3('Queries'), queryStrings, ''] : []
 
         const parents = itemEntries
           .map((i) => i.extends)
@@ -179,12 +135,9 @@ export class MykoDocsService {
 
         const children = docRegistry
           .filter((x) => x.type === 'item' && x.extends === entityType)
-          .map((x: ItemDocInfo) =>
-            listItem(link(x.entityType, `#${x.entityType.toLowerCase()}`)),
-          )
+          .map((x: ItemDocInfo) => listItem(link(x.entityType, `#${x.entityType.toLowerCase()}`)))
 
-        const childrenString =
-          children.length > 0 ? [h3('Extended By'), ...children, ''] : []
+        const childrenString = children.length > 0 ? [h3('Extended By'), ...children, ''] : []
 
         return [
           h2(entityType),

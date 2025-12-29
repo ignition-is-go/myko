@@ -1,11 +1,4 @@
-import {
-  metrics,
-  trace,
-  type Gauge,
-  type Histogram,
-  type Meter,
-  type Tracer,
-} from '@opentelemetry/api'
+import { metrics, trace, type Gauge, type Histogram, type Meter, type Tracer } from '@opentelemetry/api'
 
 let _meter: Meter | null
 
@@ -20,9 +13,7 @@ export const meter = () => {
 let _transactionDurationHist: Histogram | null = null
 export const transactionDurationHist = () => {
   if (!_transactionDurationHist) {
-    _transactionDurationHist = meter().createHistogram(
-      'myko.gateway.client.transaction.duration.hist',
-    )
+    _transactionDurationHist = meter().createHistogram('myko.gateway.client.transaction.duration.hist')
   }
   return _transactionDurationHist
 }
@@ -30,9 +21,7 @@ export const transactionDurationHist = () => {
 let _transactionDurationGauge: Gauge | null = null
 export const transactionDurationGauge = () => {
   if (!_transactionDurationGauge) {
-    _transactionDurationGauge = meter().createGauge(
-      'myko.gateway.client.transaction.duration',
-    )
+    _transactionDurationGauge = meter().createGauge('myko.gateway.client.transaction.duration')
   }
   return _transactionDurationGauge
 }
@@ -40,9 +29,7 @@ export const transactionDurationGauge = () => {
 let _transactioncountGuage: Gauge | null = null
 export const transactioncountGuage = () => {
   if (!_transactioncountGuage) {
-    _transactioncountGuage = meter().createGauge(
-      'myko.gateway.client.transaction.rate',
-    )
+    _transactioncountGuage = meter().createGauge('myko.gateway.client.transaction.rate')
   }
   return _transactioncountGuage
 }
@@ -50,9 +37,7 @@ export const transactioncountGuage = () => {
 let _transactionTotalTime: Gauge | null = null
 export const transactionTotalTime = () => {
   if (!_transactionTotalTime) {
-    _transactionTotalTime = meter().createGauge(
-      'myko.gateway.client.transaction.duration.total',
-    )
+    _transactionTotalTime = meter().createGauge('myko.gateway.client.transaction.duration.total')
   }
   return _transactionTotalTime
 }
@@ -60,9 +45,7 @@ export const transactionTotalTime = () => {
 let _transactionLineageGuage: Gauge | null = null
 export const transactionLineageGuage = () => {
   if (!_transactionLineageGuage) {
-    _transactionLineageGuage = meter().createGauge(
-      'myko.gateway.client.transaction.lineage.rate',
-    )
+    _transactionLineageGuage = meter().createGauge('myko.gateway.client.transaction.lineage.rate')
   }
   return _transactionLineageGuage
 }
@@ -78,9 +61,7 @@ export const eventCountGuage = () => {
 let _transactionResultGuage: Gauge | null = null
 export const transactionResultGuage = () => {
   if (!_transactionResultGuage) {
-    _transactionResultGuage = meter().createGauge(
-      'myko.gateway.client.transaction.result.total',
-    )
+    _transactionResultGuage = meter().createGauge('myko.gateway.client.transaction.result.total')
   }
   return _transactionResultGuage
 }
@@ -88,9 +69,7 @@ export const transactionResultGuage = () => {
 let _transactionLineageResultsGuage: Gauge | null = null
 export const transactionLineageResultsGuage = () => {
   if (!_transactionLineageResultsGuage) {
-    _transactionLineageResultsGuage = meter().createGauge(
-      'myko.gateway.client.transaction.lineage.result.total',
-    )
+    _transactionLineageResultsGuage = meter().createGauge('myko.gateway.client.transaction.lineage.result.total')
   }
   return _transactionLineageResultsGuage
 }

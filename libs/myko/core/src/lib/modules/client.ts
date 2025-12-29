@@ -1,10 +1,4 @@
-import {
-  MykoCommand,
-  MykoItem,
-  MykoQuery,
-  MykoReport,
-  belongsTo,
-} from '../decorators'
+import { MykoCommand, MykoItem, MykoQuery, MykoReport, belongsTo } from '../decorators'
 import { MCommand, MReport, type ID } from '../types'
 import { MItem } from '../types/item'
 import { MQuery } from '../types/query'
@@ -71,9 +65,7 @@ export class SetClientWindbackTime extends MCommand<boolean> {
 @MykoCommand({
   allowDuringWindback: true,
 })
-export class ClearClientWindbackTime extends MCommand {
-}
+export class ClearClientWindbackTime extends MCommand {}
 
 @MykoReport()
-export class WindbackStatus extends MReport<string | undefined> {
-}
+export class WindbackStatus extends MReport<string | undefined> {}

@@ -16,9 +16,7 @@ export const dockerAddress = async (): Promise<string> => {
   const records = await dns.resolve4(`tasks.${SERVICE_NAME}`)
 
   while (true) {
-    const tasks = records.map((record) =>
-      getServerIp(record, Number(MYKO_PORT), getHostId()),
-    )
+    const tasks = records.map((record) => getServerIp(record, Number(MYKO_PORT), getHostId()))
 
     const results = await Promise.allSettled(tasks)
 
@@ -37,11 +35,7 @@ export const dockerAddress = async (): Promise<string> => {
   }
 }
 
-const getServerIp = async (
-  record: string,
-  port: number,
-  searchId: ID,
-): Promise<string | undefined> => {
+const getServerIp = async (record: string, port: number, searchId: ID): Promise<string | undefined> => {
   const url = `http://${record}:${port}/server`
 
   const serverId = await fetch(url)

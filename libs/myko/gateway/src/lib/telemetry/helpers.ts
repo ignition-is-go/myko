@@ -1,10 +1,5 @@
 import { getHostId, type ID, type MEvent, type WithContext } from '@myko/core'
-import {
-  MCOMMAND_EVENT,
-  MQUERY_EVENT,
-  MREPORT_EVENT,
-  type WSMMessage,
-} from '@myko/ws'
+import { MCOMMAND_EVENT, MQUERY_EVENT, MREPORT_EVENT, type WSMMessage } from '@myko/ws'
 import {
   // tracer,
   // tracer,
@@ -72,11 +67,7 @@ export const beginTraceTransaction = (
   tagCounts.set(tag, newCount)
 }
 
-export const endTraceTransaction = (
-  mContext: WithContext,
-  event: 'm:query' | 'm:command' | 'm:report',
-  callId: ID,
-) => {
+export const endTraceTransaction = (mContext: WithContext, event: 'm:query' | 'm:command' | 'm:report', callId: ID) => {
   const startTime = callStartTimes.get(callId)
   const endTime = performance.now()
   const duration = startTime ? endTime - startTime : undefined
@@ -105,11 +96,7 @@ export const endTraceTransaction = (
   spansByCall.delete(callId)
 }
 
-export const countResults = (
-  mContext: WithContext,
-  _event: 'm:query' | 'm:report',
-  _callId: ID,
-) => {
+export const countResults = (mContext: WithContext, _event: 'm:query' | 'm:report', _callId: ID) => {
   const tag = mContext.getTag()
   const count = tagResults.get(tag) ?? 0
   const newCount = count + 1
