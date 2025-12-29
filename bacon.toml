@@ -1,14 +1,45 @@
-default_job = "clippy"
+default_job = "clippy-all"
+
+[jobs.check]
+command = ["cargo", "check", "--target-dir", "target/bacon", "--color", "always"]
+need_stdout = false
 
 [jobs.clippy]
+command = ["cargo", "clippy", "--target-dir", "target/bacon", "--color", "always"]
+need_stdout = false
+
+[jobs.clippy-all]
+command = ["cargo", "clippy", "--target-dir", "target/bacon", "--color", "always", "--all-targets"]
+need_stdout = false
+key = "c"
+
+[jobs.clippy-pedantic]
 command = ["cargo", "clippy", "--target-dir", "target/bacon", "--color", "always", "--all-targets", "--", "-W", "clippy::pedantic"]
+need_stdout = false
+key = "p"
+
+[jobs.test]
+command = ["cargo", "test", "--target-dir", "target/bacon", "--color", "always"]
+need_stdout = true
+
+[jobs.doc]
+command = ["cargo", "doc", "--target-dir", "target/bacon", "--color", "always", "--no-deps"]
+need_stdout = false
+
+[jobs.doc-open]
+command = ["cargo", "doc", "--target-dir", "target/bacon", "--color", "always", "--no-deps", "--open"]
+need_stdout = false
+
+[jobs.run]
+command = ["cargo", "run", "--target-dir", "target/bacon", "--color", "always"]
+need_stdout = true
+allow_warnings = true
+background = true
+
+[jobs.fmt]
+command = ["cargo", "+nightly", "fmt"]
 need_stdout = false
 
 [exports.locations]
 auto = true
 path = ".bacon-locations"
-
-
-[jobs.fmt]
-command = ["cargo", "+nightly", "fmt"]
-need_stdout = false

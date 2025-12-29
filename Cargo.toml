@@ -11,8 +11,7 @@ members = [
   "libs/myko/macros",
   "libs/entities/rs",
   "libs/sdk/rs",
-  "libs/sync/core",
-  "libs/sync/ffi",
+  "libs/sync",
   "apps/sync_server",
   "libs/rs-macros",
   "libs/opencv",
@@ -104,5 +103,5 @@ rship-entities-macros = { version = "3.0.0-canary.809", path = "libs/entities/ma
 rship-sdk = { version = "3.0.0-canary.809", path = "libs/sdk/rs" }
 autosocket = { version = "0.1.0", path = "libs/autosocket" }
 link = { version = "3.0.0-canary.809", path = "libs/link/core" }
-rship_sync_core = { version = "3.0.0-canary.809", path = "libs/sync/core" }
+rship-sync = { version = "3.0.0-canary.809", path = "libs/sync" }
 hypha = { version = "0.1.0", path = "libs/hypha/hypha" }
