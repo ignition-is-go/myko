@@ -76,6 +76,7 @@ const proceed = async (
 ) => {
   const txId = command.command.tx
   const userToken = command.command.userToken
+  const logger = new MykoLogger('CommandAuth')
 
   const auth = getAuth()
 
@@ -90,15 +91,18 @@ const proceed = async (
   }
 
   if (!userToken) {
+    logger.warn(`Command ${command.commandId} rejected: No user token provided`, { clientId, txId })
     fail()
     return false
   }
-  const res = await auth.canActivate(userToken).catch((_) => {
+  const res = await auth.canActivate(userToken).catch((error) => {
+    logger.error(`Command ${command.commandId} auth failed: ${error.message}`, { clientId, txId, stack: error.stack })
     fail()
     return false
   })
 
   if (!res) {
+    logger.warn(`Command ${command.commandId} rejected: canActivate returned false`, { clientId, txId })
     fail()
     return
   }
