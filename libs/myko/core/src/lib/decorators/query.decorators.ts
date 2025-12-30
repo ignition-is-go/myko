@@ -35,7 +35,7 @@ export const MykoQuery: <U extends MItem<IMItem>>(
     )
 
     if (!queryId) {
-      throw new Error('commandId is undefined')
+      throw new Error('queryId is undefined')
     }
 
     // Use regular function (not arrow) to be callable with `new`
