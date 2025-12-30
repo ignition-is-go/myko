@@ -9075,14 +9075,15 @@ dependencies = [
 name = "rship-studio"
 version = "3.0.0-canary.790"
 dependencies = [
+ "axum 0.7.9",
  "base64 0.22.1",
  "clap",
  "display-core",
  "display-nvidia",
- "display-output",
  "env_logger",
  "log 0.4.28",
  "rand 0.8.5",
+ "raw-window-handle",
  "reqwest 0.12.24",
  "serde",
  "serde_json",
@@ -9094,11 +9095,14 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tauri-specta",
  "tokio",
+ "tower 0.5.2",
  "url 2.5.7",
  "urlencoding",
+ "wgpu",
 ]
 
 [[package]]
@@ -10774,6 +10778,21 @@ dependencies = [
  "thiserror 2.0.17",
  "url 2.5.7",
  "windows 0.61.3",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd707f8c86b4e3004e2c141fa24351f1909ba40ce1b8437e30d5ed5277dd3710"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.17",
+ "tracing",
+ "windows-sys 0.60.2",
  "zbus",
 ]
 
