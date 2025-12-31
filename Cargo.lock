@@ -9080,6 +9080,7 @@ dependencies = [
  "clap",
  "display-core",
  "display-nvidia",
+ "dotenv",
  "env_logger",
  "log 0.4.28",
  "rand 0.8.5",
