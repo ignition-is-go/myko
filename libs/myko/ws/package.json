@@ -18,5 +18,5 @@
   "scripts": {
     "build": "tsc --noEmit"
   },
-  "version": "3.0.0-canary.810"
+  "version": "3.0.0-canary.811"
 }
