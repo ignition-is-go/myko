@@ -1,6 +1,6 @@
 {
   "name": "@myko/core",
-  "version": "3.0.0-canary.812",
+  "version": "3.0.0-canary.813",
   "exports": "./src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {
@@ -15,7 +15,10 @@
     "zod": "npm:zod@^3.24.1"
   },
   "publish": {
-    "exclude": ["node_modules", "package.json"]
+    "exclude": [
+      "node_modules",
+      "package.json"
+    ]
   },
   "nodeModulesDir": "auto"
 }
