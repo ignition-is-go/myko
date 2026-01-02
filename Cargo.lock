@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "asset_store"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "anyhow",
  "dotenv",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "backplane"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "futures-util",
  "myko-rs",
@@ -1530,9 +1530,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.53"
+version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9e340e012a1bf4935f5282ed1436d1489548e8f72308207ea5df0e23d2d03f8"
+checksum = "c6e6ff9dcd79cff5cd969a17a545d79e84ab086e444102a591e288a8aa3ce394"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -1540,9 +1540,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.53"
+version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d76b5d13eaa18c901fd2f7fca939fefe3a0727a953561fefdf3b2922b8569d00"
+checksum = "fa42cf4d2b7a41bc8f663a7cab4031ebafa1bf3875705bfaf8466dc60ab52c00"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "core"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "async-trait",
  "myko-macros",
@@ -4325,7 +4325,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "anyhow",
  "crossbeam",
@@ -4372,7 +4372,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "clap",
  "link-rpc",
@@ -4383,7 +4383,7 @@ dependencies = [
 
 [[package]]
 name = "link-rpc"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "link",
  "log 0.4.29",
@@ -4397,7 +4397,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "cfg-match",
  "dotenv",
@@ -4426,7 +4426,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -4822,7 +4822,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "myko-macros"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "quote",
  "syn 2.0.112",
@@ -4830,7 +4830,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5545,7 +5545,7 @@ dependencies = [
 
 [[package]]
 name = "opencv_napi"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "anyhow",
  "napi 3.8.1",
@@ -7010,7 +7010,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7022,7 +7022,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -7043,7 +7043,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "env_logger",
  "log 0.4.29",
@@ -7060,7 +7060,7 @@ dependencies = [
 
 [[package]]
 name = "rship_asset_store_core"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7098,7 +7098,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync-ffi"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "chrono",
  "derive_more 2.1.1",
@@ -7111,7 +7111,7 @@ dependencies = [
 
 [[package]]
 name = "rship_sync_core"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "anyhow",
  "cargo-util",
@@ -8096,7 +8096,7 @@ dependencies = [
 
 [[package]]
 name = "sync_server"
-version = "3.0.0-canary.811"
+version = "3.0.0-canary.812"
 dependencies = [
  "rship_sync_core",
  "tokio",
