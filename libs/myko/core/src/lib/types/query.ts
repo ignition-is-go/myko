@@ -9,7 +9,7 @@ import { WithContext } from './base'
  * Represents a query object used for retrieving data.
  * @template T - The type of the query result.
  */
-export class MQuery<T extends MItem = MItem> extends WithContext {
+export class MQuery<out T extends MItem = MItem> extends WithContext {
   /**
    * The result of the query.
    */
@@ -73,7 +73,7 @@ export type MLiveQueryResult<Q> =
  * Represents a query handler that can execute a query and return a live query result.
  * @template H - The type of the query.
  */
-export interface MQueryHandler<H> {
+export interface MQueryHandler<out H> {
   /**
    * Executes the specified query and returns a live query result.
    * @param query - The query to execute.

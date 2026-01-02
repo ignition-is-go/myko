@@ -8,7 +8,7 @@ import { WithContext } from './base'
 /**
  * The base class for Myko commands.
  */
-export class MCommand<T = void> extends WithContext {
+export class MCommand<out T = void> extends WithContext {
   /**
    * The result of the command execution.
    */
@@ -68,7 +68,7 @@ export type MCommandResponse<T> = T extends MCommand<infer R> ? R : never
 /**
  * Represents a command handler that can execute a specific command.
  */
-export interface MCommandHandler<T extends MCommand<MCommandResponse<T>>> {
+export interface MCommandHandler<out T extends MCommand<MCommandResponse<T>>> {
   /**
    * Executes the given command and returns the result.
    * @param command The command to execute.

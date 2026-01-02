@@ -7,7 +7,7 @@ import { WithContext } from './base'
  * Represents a generic report.
  * @template T - The type of the report result.
  */
-export class MReport<T> extends WithContext {
+export class MReport<out T> extends WithContext {
   /**
    * The result of the report.
    */
@@ -64,7 +64,7 @@ export type MLiveReportResult<T> =
  * Represents a report handler.
  * @template H - The type of the report.
  */
-export interface MReportHandler<H> {
+export interface MReportHandler<out H> {
   /**
    * Executes the report and returns the live report result.
    * @param report - The report to execute.
