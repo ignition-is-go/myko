@@ -51,10 +51,15 @@ export type LogFormat = 'human' | 'json'
  * Can also be set via LOG_FORMAT environment variable.
  */
 export const logFormat = new Cell<LogFormat>(
-  typeof process !== 'undefined' && process.env?.LOG_FORMAT === 'json' ? 'json' : 'human',
+  typeof process !== 'undefined' && process.env?.LOG_FORMAT === 'json'
+    ? 'json'
+    : 'human',
 )
 const getDefaultLogLevel = (): LogLevel => {
-  const envLevel = (typeof process !== 'undefined' && process.env?.['MYKO_INITIAL_LOG_LEVEL']) || undefined
+  const envLevel =
+    (typeof process !== 'undefined' &&
+      process.env?.['MYKO_INITIAL_LOG_LEVEL']) ||
+    undefined
   if (!envLevel) return LogLevel.INFO
 
   const normalized = envLevel.toUpperCase()

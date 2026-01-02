@@ -10,13 +10,21 @@ import {
   queryBus,
   type ID,
 } from '@myko/core'
-import { MCOMMAND_ERROR_EVENT, MCOMMAND_EVENT, MCOMMAND_RESPONSE_EVENT } from '@myko/ws'
+import {
+  MCOMMAND_ERROR_EVENT,
+  MCOMMAND_EVENT,
+  MCOMMAND_RESPONSE_EVENT,
+} from '@myko/ws'
 import type { ServerWebSocket } from 'bun'
 import { randomUUID } from 'node:crypto'
 import { filter, firstValueFrom } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 import { parse, serialize } from '../compression/client.protocols'
-import type { MykoWsAdapter, MykoWsAdapterOptions, MykoWsAdapterResult } from './types'
+import type {
+  MykoWsAdapter,
+  MykoWsAdapterOptions,
+  MykoWsAdapterResult,
+} from './types'
 
 type BunWSClientData = {
   clientId: ID
@@ -97,7 +105,8 @@ export const bunAdapter: MykoWsAdapter = ({
               filter((x) => x.clientId === clientId),
               filter((x) =>
                 parsed.event === MCOMMAND_EVENT
-                  ? x.data.event === MCOMMAND_RESPONSE_EVENT && x.data.data.tx === parsed.data.command.tx
+                  ? x.data.event === MCOMMAND_RESPONSE_EVENT &&
+                    x.data.data.tx === parsed.data.command.tx
                   : false,
               ),
             ),
@@ -107,7 +116,8 @@ export const bunAdapter: MykoWsAdapter = ({
               filter((x) => x.clientId === clientId),
               filter((x) =>
                 parsed.event === MCOMMAND_EVENT
-                  ? x.data.event === MCOMMAND_ERROR_EVENT && x.data.data.tx === parsed.data.command.tx
+                  ? x.data.event === MCOMMAND_ERROR_EVENT &&
+                    x.data.data.tx === parsed.data.command.tx
                   : false,
               ),
             ),
@@ -117,21 +127,32 @@ export const bunAdapter: MykoWsAdapter = ({
           const response = await Promise.race([successPromise, errorPromise])
           return new Response(JSON.stringify(response.data), {
             status: response.data.event === MCOMMAND_ERROR_EVENT ? 400 : 200,
-            statusText: response.data.event === MCOMMAND_ERROR_EVENT ? response.data.data.message : 'OK',
+            statusText:
+              response.data.event === MCOMMAND_ERROR_EVENT
+                ? response.data.data.message
+                : 'OK',
           })
         }
       }
 
       // Feedback frustration endpoint - accepts anonymous feedback
-      if (url.pathname === '/api/feedback/frustration' && req.method === 'POST') {
+      if (
+        url.pathname === '/api/feedback/frustration' &&
+        req.method === 'POST'
+      ) {
         try {
           const body = await req.json().catch(() => null)
 
-          if (!body || typeof body.rawText !== 'string' || typeof body.route !== 'string') {
+          if (
+            !body ||
+            typeof body.rawText !== 'string' ||
+            typeof body.route !== 'string'
+          ) {
             return new Response(
               JSON.stringify({
                 success: false,
-                error: 'Missing required fields: rawText and route are required',
+                error:
+                  'Missing required fields: rawText and route are required',
               }),
               {
                 status: 400,
@@ -153,7 +174,8 @@ export const bunAdapter: MykoWsAdapter = ({
             userContext: body.userContext,
             screenshotUrl: body.screenshotUrl,
             metadata: body.metadata,
-            browserInfo: body.browserInfo || req.headers.get('user-agent') || undefined,
+            browserInfo:
+              body.browserInfo || req.headers.get('user-agent') || undefined,
             environment: body.environment,
             viewport: body.viewport,
             featureFlags: body.featureFlags,
@@ -177,7 +199,8 @@ export const bunAdapter: MykoWsAdapter = ({
               success: true,
               feedbackId,
               correlationId,
-              message: 'Thank you for your feedback. We take every report seriously.',
+              message:
+                'Thank you for your feedback. We take every report seriously.',
             }),
             {
               status: 201,
@@ -208,7 +231,9 @@ export const bunAdapter: MykoWsAdapter = ({
 
         const clientId = randomUUID()
 
-        if (server.upgrade(req, { data: { clientId } satisfies BunWSClientData })) {
+        if (
+          server.upgrade(req, { data: { clientId } satisfies BunWSClientData })
+        ) {
           return new Response('Upgrade Success', { status: 101 })
         }
       }
@@ -230,7 +255,10 @@ export const bunAdapter: MykoWsAdapter = ({
       open(ws: ServerWebSocket<BunWSClientData>) {
         ws.subscribe(ws.data.clientId)
 
-        eventBus.publishSet(new Client({ id: ws.data.clientId, serverId }), randomUUID())
+        eventBus.publishSet(
+          new Client({ id: ws.data.clientId, serverId }),
+          randomUUID(),
+        )
 
         // Send SetClientId command to trigger executor's SendAll()
         // This also helps flush IXWebSocket's buffer by sending data immediately
@@ -247,7 +275,8 @@ export const bunAdapter: MykoWsAdapter = ({
         ws.send(setClientIdCmd)
 
         // Send additional pings to ensure IXWebSocket buffer flushes
-        const pingMsg = () => JSON.stringify({ event: 'ws:m:ping', data: { ts: Date.now() } })
+        const pingMsg = () =>
+          JSON.stringify({ event: 'ws:m:ping', data: { ts: Date.now() } })
         setTimeout(() => {
           try {
             ws.send(pingMsg())

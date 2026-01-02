@@ -1,4 +1,13 @@
-import { distinctUntilChanged, finalize, firstValueFrom, map, ReplaySubject, share, tap, throwError } from 'rxjs'
+import {
+  distinctUntilChanged,
+  finalize,
+  firstValueFrom,
+  map,
+  ReplaySubject,
+  share,
+  tap,
+  throwError,
+} from 'rxjs'
 import { v4 } from 'uuid'
 import { MYKO_HANDLER_QUERY_ID_KEY, MYKO_QUERY_ID_KEY } from '../constants'
 import {
@@ -30,7 +39,10 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * @param handler The query handler to bind.
    * @param id The identifier for the query handler.
    */
-  protected bind<T extends MItem>(handler: MQueryHandler<MQuery<T>>, id: string): void {
+  protected bind<T extends MItem>(
+    handler: MQueryHandler<MQuery<T>>,
+    id: string,
+  ): void {
     this.handlers.set(id, handler)
   }
 
@@ -124,7 +136,9 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
    * Registers a query handler.
    * @param handler The query handler to register.
    */
-  abstract registerHandler(handler: MQueryHandlerConstructor<MQuery<MItem>>): void
+  abstract registerHandler(
+    handler: MQueryHandlerConstructor<MQuery<MItem>>,
+  ): void
 }
 
 export class MQueryBus extends AMykoQueryBus {

@@ -16,11 +16,17 @@ import {
 import { from, map, type Observable } from 'rxjs'
 
 @MykoReportHandler(TransactionsInRange)
-export class TransactionsInRangeHandler implements MReportHandler<TransactionsInRange> {
+export class TransactionsInRangeHandler
+  implements MReportHandler<TransactionsInRange>
+{
   execute(report: TransactionsInRange): Observable<string[]> {
     const history = getHistoryProvider()
 
-    return history.getTransactionsInTimeRange(report.excludeEntities, report.start, report.end)
+    return history.getTransactionsInTimeRange(
+      report.excludeEntities,
+      report.start,
+      report.end,
+    )
   }
 }
 
@@ -43,7 +49,9 @@ export class AllTransactionsHandler implements MReportHandler<AllTransactions> {
 }
 
 @MykoReportHandler(EventsForTransaction)
-export class EventsForTransactionHandler implements MReportHandler<EventsForTransaction> {
+export class EventsForTransactionHandler
+  implements MReportHandler<EventsForTransaction>
+{
   execute(report: EventsForTransaction): Observable<MEvent[]> {
     const history = getHistoryProvider()
 
@@ -56,16 +64,18 @@ export class EventsForEntityHandler implements MQueryHandler<EventsForEntity> {
   execute(report: EventsForEntity): MLiveQueryResult<EventsForEntity> {
     const history = getHistoryProvider()
 
-    return history.getEntityHistory(report.entityId, report.start, report.end).pipe(
-      map((events) => {
-        return events.map(
-          (x) =>
-            new EventContainer({
-              event: x,
-              id: `${x.tx}-${x.itemType}-${x.item.id}`,
-            }),
-        )
-      }),
-    )
+    return history
+      .getEntityHistory(report.entityId, report.start, report.end)
+      .pipe(
+        map((events) => {
+          return events.map(
+            (x) =>
+              new EventContainer({
+                event: x,
+                id: `${x.tx}-${x.itemType}-${x.item.id}`,
+              }),
+          )
+        }),
+      )
   }
 }

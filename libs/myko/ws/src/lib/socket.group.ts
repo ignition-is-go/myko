@@ -101,7 +101,9 @@ export class SocketGroup {
   }
 
   private createSocket(host: string, port: number) {
-    const socketUrl = this.groupOpts.secure ? `wss://${host}:${port}/myko` : `ws://${host}:${port}/myko`
+    const socketUrl = this.groupOpts.secure
+      ? `wss://${host}:${port}/myko`
+      : `ws://${host}:${port}/myko`
 
     if (this.allSockets.has(socketUrl)) {
       return

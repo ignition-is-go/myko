@@ -2,7 +2,13 @@ import { v4 } from 'uuid'
 import { MYKO_COMMAND_ID_KEY } from '../constants'
 
 // import { MykoLogger } from '../logger'
-import type { ContextPhantom, MCommand, MCommandHandler, MCommandResponse, Type } from '../types'
+import type {
+  ContextPhantom,
+  MCommand,
+  MCommandHandler,
+  MCommandResponse,
+  Type,
+} from '../types'
 import { ObservableBus } from './observable.bus'
 
 export type MCommandHandlerType = Type<MCommandHandler<MCommand<unknown>>>
@@ -19,7 +25,9 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
    * @returns A promise that resolves to the command response.
    * @throws If a handler is not provided for the command.
    */
-  async execute<T extends MCommand<MCommandResponse<T>> & ContextPhantom>(command: T): Promise<MCommandResponse<T>> {
+  async execute<T extends MCommand<MCommandResponse<T>> & ContextPhantom>(
+    command: T,
+  ): Promise<MCommandResponse<T>> {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command)
     const handler = this.handlers.get(commandId)
 
@@ -42,7 +50,8 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     })) as MCommandResponse<T>
   }
 
-  protected handlers: Map<string, MCommandHandler<MCommand<unknown>>> = new Map()
+  protected handlers: Map<string, MCommandHandler<MCommand<unknown>>> =
+    new Map()
 
   /**
    * Binds a command handler to the specified ID.
@@ -52,7 +61,10 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
    * @param {string} id - The ID to bind the command handler to.
    * @returns {void}
    */
-  bind<T extends MCommand<MCommandResponse<T>>>(handler: MCommandHandler<T>, id: string): void {
+  bind<T extends MCommand<MCommandResponse<T>>>(
+    handler: MCommandHandler<T>,
+    id: string,
+  ): void {
     this.handlers.set(id, handler)
   }
 

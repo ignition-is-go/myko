@@ -34,7 +34,9 @@ vi.mock('./util/kafka.topicConsumer', () => ({
 }))
 
 vi.mock('./util/kafka.topicProducer', async () => {
-  const actual = await vi.importActual<typeof import('./util/kafka.topicProducer.ts')>('./util/kafka.topicProducer.ts')
+  const actual = await vi.importActual<
+    typeof import('./util/kafka.topicProducer.ts')
+  >('./util/kafka.topicProducer.ts')
   return actual
 })
 

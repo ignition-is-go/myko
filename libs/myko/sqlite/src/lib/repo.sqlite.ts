@@ -36,7 +36,9 @@ export class SQLiteRepo<T extends MItem> extends Repo<T> {
     this.db.exec(`DROP TABLE IF EXISTS ${this.tableName}`)
     this.db.exec(`DROP TABLE IF EXISTS ${this.eventTableName}`)
 
-    this.db.exec(`CREATE TABLE ${this.tableName} (id TEXT PRIMARY KEY, data TEXT)`)
+    this.db.exec(
+      `CREATE TABLE ${this.tableName} (id TEXT PRIMARY KEY, data TEXT)`,
+    )
     this.db.exec(
       `CREATE TABLE ${this.eventTableName} (id INTEGER PRIMARY KEY, tx TEXT, createdAt TEXT, sourceId TEXT, changeType TEXT, data TEXT)`,
     )
@@ -50,10 +52,15 @@ export class SQLiteRepo<T extends MItem> extends Repo<T> {
       [event.tx, event.createdAt, event.sourceId!, event.changeType, data],
     )
     if (event.changeType === MEventType.SET) {
-      this.db.exec(`INSERT OR REPLACE INTO ${this.tableName} (id, data) VALUES (?, ?)`, [event.item.id, data])
+      this.db.exec(
+        `INSERT OR REPLACE INTO ${this.tableName} (id, data) VALUES (?, ?)`,
+        [event.item.id, data],
+      )
     }
     if (event.changeType === MEventType.DEL) {
-      this.db.exec(`DELETE FROM ${this.tableName} WHERE id = ?`, [event.item.id])
+      this.db.exec(`DELETE FROM ${this.tableName} WHERE id = ?`, [
+        event.item.id,
+      ])
     }
     return event
   }

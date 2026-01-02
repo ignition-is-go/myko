@@ -40,7 +40,11 @@ export type QueryDocInfo = {
   ctor: new (...args: any[]) => any
 }
 
-export type DocTypeEntry = PropDocInfo | ItemDocInfo | CommandDocInfo | QueryDocInfo
+export type DocTypeEntry =
+  | PropDocInfo
+  | ItemDocInfo
+  | CommandDocInfo
+  | QueryDocInfo
 
 export const docRegistry: DocTypeEntry[] = []
 
@@ -91,10 +95,10 @@ export const addCommandDoc: (
  * @returns void
  */
 
-export const addQueryDoc: (item: Omit<QueryDocInfo, 'type' | 'props'>, paramTypes: unknown[]) => void = (
-  item,
-  paramTypes,
-) => {
+export const addQueryDoc: (
+  item: Omit<QueryDocInfo, 'type' | 'props'>,
+  paramTypes: unknown[],
+) => void = (item, paramTypes) => {
   const props = makeProps(['String'], paramTypes, item.ctor)
 
   docRegistry.push({ ...item, props, type: 'query' })
@@ -108,7 +112,11 @@ export const addQueryDoc: (item: Omit<QueryDocInfo, 'type' | 'props'>, paramType
  * @returns An array of prop info objects.
  */
 
-function makeProps(inherited: string[], paramTypes: unknown[], ctor: new (...args: any[]) => any): BasicPropInfo[] {
+function makeProps(
+  inherited: string[],
+  paramTypes: unknown[],
+  ctor: new (...args: any[]) => any,
+): BasicPropInfo[] {
   const allParaams = [...inherited, ...paramTypes]
 
   const fakeArgs = allParaams.map((x) => {

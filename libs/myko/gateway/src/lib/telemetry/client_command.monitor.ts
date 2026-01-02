@@ -84,7 +84,9 @@ const addLatency = (h: Hist, ms: number) => {
   if (ms < h.min) h.min = ms
   if (ms > h.max) h.max = ms
   const idx =
-    h.thresholds.findIndex((t) => ms < t) === -1 ? h.buckets.length - 1 : h.thresholds.findIndex((t) => ms < t)
+    h.thresholds.findIndex((t) => ms < t) === -1
+      ? h.buckets.length - 1
+      : h.thresholds.findIndex((t) => ms < t)
   h.buckets[idx]++
 }
 
@@ -103,7 +105,8 @@ const approxPercentile = (h: Hist, p: number): number | null => {
   return h.max
 }
 
-const fmtMs = (ms: number | null | undefined) => (ms == null ? '-' : `${Math.round(ms)}ms`)
+const fmtMs = (ms: number | null | undefined) =>
+  ms == null ? '-' : `${Math.round(ms)}ms`
 
 const safeNowIso = () => {
   try {
@@ -152,12 +155,14 @@ class ClientCommandMonitor {
   private tagPeriod = new Map<string, TagPeriod>()
 
   constructor() {
-    const e = (name: string) => (typeof process !== 'undefined' && process.env?.[name]) || undefined
+    const e = (name: string) =>
+      (typeof process !== 'undefined' && process.env?.[name]) || undefined
 
     this.enabled =
       (e('MYKO_CCMD_MONITOR') || '').toString().toLowerCase() === '1' ||
       (e('MYKO_CCMD_MONITOR') || '').toString().toLowerCase() === 'true'
-    this.intervalMs = Number(e('MYKO_CCMD_MONITOR_INTERVAL_MS')) || /* default */ 2000
+    this.intervalMs =
+      Number(e('MYKO_CCMD_MONITOR_INTERVAL_MS')) || /* default */ 2000
     this.topN = Number(e('MYKO_CCMD_MONITOR_TOP')) || 8
     const tagsEnv = (e('MYKO_CCMD_MONITOR_TAGS') || '').toLowerCase()
     this.enableTags = tagsEnv ? tagsEnv === '1' || tagsEnv === 'true' : true
@@ -341,7 +346,8 @@ class ClientCommandMonitor {
     // Optional per-tag breakdown (top N)
     if (this.enableTags && this.tagPeriod.size > 0) {
       const entries = Array.from(this.tagPeriod.entries()).map(([tag, v]) => {
-        const avgMs = v.avgMsCount > 0 ? Math.round(v.avgMsSum / v.avgMsCount) : null
+        const avgMs =
+          v.avgMsCount > 0 ? Math.round(v.avgMsSum / v.avgMsCount) : null
         const score = v.dispatched // sort by dispatched in this period
         return {
           tag,

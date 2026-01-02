@@ -1,9 +1,14 @@
-import type { MykoWsAdapterOptions, MykoWsAdapterResult } from '../adapters/types'
+import type {
+  MykoWsAdapterOptions,
+  MykoWsAdapterResult,
+} from '../adapters/types'
 
 let tx: MykoWsAdapterOptions['tx'] | null
 let rx: MykoWsAdapterOptions['rx'] | null
 
-export const setAdapterBusses = (args: Pick<MykoWsAdapterOptions, 'rx' | 'tx'>) => {
+export const setAdapterBusses = (
+  args: Pick<MykoWsAdapterOptions, 'rx' | 'tx'>,
+) => {
   if (tx) {
     throw new Error('tx bus already set')
   }

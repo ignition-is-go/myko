@@ -11,7 +11,10 @@ export const spansByTx = new Map<ID, Span>()
 export const spansByCall = new Map<ID, Span>()
 
 export const callStartTimes = new Map<ID, number>()
-export const transactionAttributes = new Map<ID, { [key: string]: string | number }>()
+export const transactionAttributes = new Map<
+  ID,
+  { [key: string]: string | number }
+>()
 
 export const tagResults = new Map<ID, number>()
 

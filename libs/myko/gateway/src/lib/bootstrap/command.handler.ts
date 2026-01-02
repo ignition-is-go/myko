@@ -11,7 +11,12 @@ import {
   type MWrappedCommand,
 } from '@myko/core'
 import { allowedDuringWindback } from '@myko/core/src/lib/registry/windback.registry'
-import { wrapCommandErrorWS, wrapCommandResponseWS, wrapError, type WSMMessage } from '@myko/ws'
+import {
+  wrapCommandErrorWS,
+  wrapCommandResponseWS,
+  wrapError,
+  type WSMMessage,
+} from '@myko/ws'
 import type { Subject } from 'rxjs'
 import { CommandNotAuthorized } from '../exceptions'
 import { getAuth } from '../registry'
@@ -51,7 +56,11 @@ export const handleCommand = async (
       })
     })
     .catch((e) => {
-      new MykoLogger(command.commandId).error(e.message, e.stack, command.command.tx)
+      new MykoLogger(command.commandId).error(
+        e.message,
+        e.stack,
+        command.command.tx,
+      )
       if (e instanceof MykoCommandError) {
         const wrapped = wrapCommandErrorWS(e)
         respond.next({
@@ -91,18 +100,28 @@ const proceed = async (
   }
 
   if (!userToken) {
-    logger.warn(`Command ${command.commandId} rejected: No user token provided`, { clientId, txId })
+    logger.warn(
+      `Command ${command.commandId} rejected: No user token provided`,
+      { clientId, txId },
+    )
     fail()
     return false
   }
   const res = await auth.canActivate(userToken).catch((error) => {
-    logger.error(`Command ${command.commandId} auth failed: ${error.message}`, { clientId, txId, stack: error.stack })
+    logger.error(`Command ${command.commandId} auth failed: ${error.message}`, {
+      clientId,
+      txId,
+      stack: error.stack,
+    })
     fail()
     return false
   })
 
   if (!res) {
-    logger.warn(`Command ${command.commandId} rejected: canActivate returned false`, { clientId, txId })
+    logger.warn(
+      `Command ${command.commandId} rejected: canActivate returned false`,
+      { clientId, txId },
+    )
     fail()
     return
   }
@@ -128,7 +147,9 @@ const proceed = async (
   if (!!client.windback && !allowedDuringWindback.has(command.commandId)) {
     respond.next({
       clientId,
-      data: wrapCommandErrorWS(new MykoCommandError(txId, 'Client is in windback mode')),
+      data: wrapCommandErrorWS(
+        new MykoCommandError(txId, 'Client is in windback mode'),
+      ),
     })
     return
   }

@@ -13,7 +13,9 @@ import type { MEventStream } from './stream'
  * @param events$ An observable stream of events.
  * @returns An observable stream of commands.
  */
-export type MSaga<E extends MEvent = MEvent, C extends MCommand = MCommand> = (events$: Observable<E>) => Observable<C>
+export type MSaga<E extends MEvent = MEvent, C extends MCommand = MCommand> = (
+  events$: Observable<E>,
+) => Observable<C>
 
 export interface MSagaHandler {
   /**

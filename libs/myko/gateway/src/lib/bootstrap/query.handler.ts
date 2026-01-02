@@ -1,4 +1,11 @@
-import { MQuery, MykoLogger, queryBus, wrapItem, type ID, type MWrappedQuery } from '@myko/core'
+import {
+  MQuery,
+  MykoLogger,
+  queryBus,
+  wrapItem,
+  type ID,
+  type MWrappedQuery,
+} from '@myko/core'
 import {
   MQUERY_ERROR_EVENT,
   MQUERY_RESPONSE_EVENT,
@@ -6,7 +13,16 @@ import {
   type WSMQueryError,
   type WSMQueryResponse,
 } from '@myko/ws'
-import { catchError, filter, map, merge, of, takeUntil, type Observable, type Subject } from 'rxjs'
+import {
+  catchError,
+  filter,
+  map,
+  merge,
+  of,
+  takeUntil,
+  type Observable,
+  type Subject,
+} from 'rxjs'
 import { clientDisconnect, unsub } from './common'
 
 export const handleQuery = (
@@ -33,7 +49,11 @@ export const handleQuery = (
         const currMap = new Map(curr.map((x) => [x.id, x]))
 
         const upserts = curr.filter(
-          (x) => x.hash == null || x.hash === undefined || !asSent.has(x.id) || asSent.get(x.id) !== x.hash,
+          (x) =>
+            x.hash == null ||
+            x.hash === undefined ||
+            !asSent.has(x.id) ||
+            asSent.get(x.id) !== x.hash,
         )
         const deletes = Array.from(asSent.keys()).filter((x) => !currMap.has(x))
 
@@ -54,7 +74,12 @@ export const handleQuery = (
         } satisfies WSMQueryResponse
       }),
 
-      filter((x) => x.data.deletes.length > 0 || x.data.upserts.length > 0 || sequence === 0),
+      filter(
+        (x) =>
+          x.data.deletes.length > 0 ||
+          x.data.upserts.length > 0 ||
+          sequence === 0,
+      ),
       catchError((e) => {
         const logger = new MykoLogger(wrappedQuery.queryId)
 
@@ -68,7 +93,12 @@ export const handleQuery = (
           event: MQUERY_ERROR_EVENT,
         } as WSMQueryError)
       }),
-      takeUntil(merge(clientDisconnect(clientId), unsub.pipe(filter((u) => u === query.tx)))),
+      takeUntil(
+        merge(
+          clientDisconnect(clientId),
+          unsub.pipe(filter((u) => u === query.tx)),
+        ),
+      ),
     ) as Observable<WSMQueryResponse>
 
     response.subscribe((x) => {

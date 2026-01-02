@@ -80,8 +80,11 @@ export interface MCommandHandler<out T extends MCommand<MCommandResponse<T>>> {
  */
 export const ofCommand: <T extends MCommand<void>>(
   filterCommand: new (...args: any[]) => T,
-) => OperatorFunction<MCommand<void>, T> = <T extends MCommand>(filterCommand: new (...args: any[]) => T) =>
+) => OperatorFunction<MCommand<void>, T> = <T extends MCommand>(
+  filterCommand: new (...args: any[]) => T,
+) =>
   filter(
     (command: MCommand): command is T =>
-      Reflect.getMetadata(MYKO_COMMAND_ID_KEY, filterCommand) === Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command),
+      Reflect.getMetadata(MYKO_COMMAND_ID_KEY, filterCommand) ===
+      Reflect.getMetadata(MYKO_COMMAND_ID_KEY, command),
   )

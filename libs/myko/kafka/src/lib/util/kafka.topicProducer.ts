@@ -21,7 +21,9 @@ export class KafkaTopicProducer {
 
       if (this.sendQueue.size > 0) {
         log(`Sending ${this.sendQueue.size} queued messages`)
-        ;[...this.sendQueue.entries()].forEach(([key, buf]) => this.send(buf, key))
+        ;[...this.sendQueue.entries()].forEach(([key, buf]) =>
+          this.send(buf, key),
+        )
         this.sendQueue.clear()
       }
     })

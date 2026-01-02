@@ -27,7 +27,9 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
   }
 
   getIds(ids: ID[]): Promise<T[]> {
-    return Promise.all(ids.map((id) => this.getId(id))).then((res) => res.filter(Boolean) as T[])
+    return Promise.all(ids.map((id) => this.getId(id))).then(
+      (res) => res.filter(Boolean) as T[],
+    )
   }
 
   getId(id: ID): Promise<T | null> {
@@ -37,11 +39,15 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
   get(query: DeepPartial<T>): Promise<T[]> {
     const filterFunc = buildFilter(query)
 
-    return this.history.getAllItemsAsOfTime<T>(this.entity, this.windbackTime).then((res) => res.filter(filterFunc))
+    return this.history
+      .getAllItemsAsOfTime<T>(this.entity, this.windbackTime)
+      .then((res) => res.filter(filterFunc))
   }
 
   getFilter(filterFunc: (ent: T) => boolean): Promise<T[]> {
-    return this.history.getAllItemsAsOfTime<T>(this.entity, this.windbackTime).then((res) => res.filter(filterFunc))
+    return this.history
+      .getAllItemsAsOfTime<T>(this.entity, this.windbackTime)
+      .then((res) => res.filter(filterFunc))
   }
 
   getIndex(_index: keyof T, _value: any): Promise<T[]> {
@@ -66,7 +72,10 @@ export class HistoryRepo<T extends MItem> implements IRepo<T> {
   }
 
   async getItemCount(): Promise<number> {
-    const res = await this.history.getAllItemsAsOfTime(this.entity, this.windbackTime)
+    const res = await this.history.getAllItemsAsOfTime(
+      this.entity,
+      this.windbackTime,
+    )
     return res.length
   }
 }

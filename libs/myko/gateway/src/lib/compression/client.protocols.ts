@@ -31,7 +31,11 @@ const detectProtocol = (data: any): MykoProtocol => {
   }
 
   // If it's a Buffer/ArrayBuffer/Uint8Array, check the first byte
-  if (data instanceof Buffer || data instanceof Uint8Array || data instanceof ArrayBuffer) {
+  if (
+    data instanceof Buffer ||
+    data instanceof Uint8Array ||
+    data instanceof ArrayBuffer
+  ) {
     const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data
     if (bytes.length > 0) {
       const firstByte = bytes[0]

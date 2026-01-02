@@ -23,9 +23,13 @@ export const MykoCommand: (opts?: {
   noHandler?: boolean
   allowDuringWindback?: boolean
   noAuth?: boolean
-}) => <T extends MCommand<MCommandResponse<T>>>(target: new (...args: any[]) => T) => any =
+}) => <T extends MCommand<MCommandResponse<T>>>(
+  target: new (...args: any[]) => T,
+) => any =
   (opts) =>
-  <T extends MCommand<MCommandResponse<T>>>(target: new (...args: any[]) => T) => {
+  <T extends MCommand<MCommandResponse<T>>>(
+    target: new (...args: any[]) => T,
+  ) => {
     const original: any = target
 
     const commandName = Object.getOwnPropertyDescriptors(original)?.name.value
@@ -44,7 +48,10 @@ export const MykoCommand: (opts?: {
       allowedDuringWindback.add(commandId)
     }
 
-    const paramtypes = Reflect.getMetadata('design:paramtypes', original)?.map((x: { name: string }) => x.name) ?? []
+    const paramtypes =
+      Reflect.getMetadata('design:paramtypes', original)?.map(
+        (x: { name: string }) => x.name,
+      ) ?? []
 
     addCommandDoc(
       {
@@ -76,7 +83,9 @@ export const MykoCommand: (opts?: {
  */
 export const MykoCommandHandler: <T extends MCommand<MCommandResponse<T>>>(
   command: new (...args: any[]) => T,
-) => (target: new (...args: any[]) => MCommandHandler<T>) => void = <T extends MCommand<MCommandResponse<T>>>(
+) => (target: new (...args: any[]) => MCommandHandler<T>) => void = <
+  T extends MCommand<MCommandResponse<T>>,
+>(
   command: new (...args: any[]) => T,
 ) => {
   return (target: new (...args: any[]) => MCommandHandler<T>) => {

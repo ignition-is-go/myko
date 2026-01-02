@@ -1,4 +1,10 @@
-import { doc, MykoCommand, MykoItem, MykoQuery, MykoReport } from '../decorators'
+import {
+  doc,
+  MykoCommand,
+  MykoItem,
+  MykoQuery,
+  MykoReport,
+} from '../decorators'
 import { MCommand, MItem, MQuery, MReport, type ID } from '../types'
 import type { LogLevel } from './logLevel.type'
 

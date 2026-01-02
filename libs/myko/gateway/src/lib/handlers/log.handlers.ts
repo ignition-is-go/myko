@@ -26,7 +26,9 @@ export class GetLogsHandler implements MQueryHandler<GetLogs> {
   execute(query: GetLogs): Observable<Log[]> {
     return liveRepo(Log)
       .watch({ serverId: query.serverId })
-      .pipe(map((x) => x.sort((a, b) => a.timestamp.localeCompare(b.timestamp))))
+      .pipe(
+        map((x) => x.sort((a, b) => a.timestamp.localeCompare(b.timestamp))),
+      )
   }
 }
 
@@ -45,7 +47,9 @@ export class SetLogLevelHandler implements MCommandHandler<SetLogLevel> {
       return
     }
 
-    commandBus.execute(new PeerCommand(command, command.serverId).withContext(command))
+    commandBus.execute(
+      new PeerCommand(command, command.serverId).withContext(command),
+    )
   }
 }
 
@@ -56,6 +60,8 @@ export class ServerLogLevelHandler implements MReportHandler<ServerLogLevel> {
       return logFilter.stream()
     }
 
-    return reportBus.watch(new PeerReport(report, report.serverId).withContext(report)) as Observable<LogLevel>
+    return reportBus.watch(
+      new PeerReport(report, report.serverId).withContext(report),
+    ) as Observable<LogLevel>
   }
 }

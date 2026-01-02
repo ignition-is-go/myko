@@ -144,7 +144,9 @@ export class WSMClient {
   private commandResponses: Subject<WSMCommandResponse>
   private reportResponses: Subject<WSMReportResponse>
 
-  private errorSubject: Subject<WSMQueryError | WSMCommandError | WSMReportError>
+  private errorSubject: Subject<
+    WSMQueryError | WSMCommandError | WSMReportError
+  >
   private successSubject: Subject<string>
 
   private pingSubject: Subject<WSPingEvent>
@@ -263,7 +265,9 @@ export class WSMClient {
 
     this.hooks?.onLog?.('Watching for Additional servers')
     servers.subscribe((s) => {
-      this.socketGroup.addServers(s.map((s) => ({ host: s.address, port: s.port })))
+      this.socketGroup.addServers(
+        s.map((s) => ({ host: s.address, port: s.port })),
+      )
     })
   }
 
@@ -324,7 +328,9 @@ export class WSMClient {
     this.pendingCommmandSubject.next([...this.pendingCommands.values()])
   }
 
-  sendCommand<T extends MCommand<unknown>>(command: T): Promise<MCommandResponse<T> | undefined> {
+  sendCommand<T extends MCommand<unknown>>(
+    command: T,
+  ): Promise<MCommandResponse<T> | undefined> {
     if (this.userToken) {
       command.userToken = this.userToken
     }
@@ -333,9 +339,15 @@ export class WSMClient {
     this.setCommandPending(wrapped)
     this.send(wrapped)
     return firstValueFrom(
-      merge(this.commandResponses, this.errorSubject.pipe(filter((x) => x.event === MCOMMAND_ERROR_EVENT))).pipe(
+      merge(
+        this.commandResponses,
+        this.errorSubject.pipe(filter((x) => x.event === MCOMMAND_ERROR_EVENT)),
+      ).pipe(
         filter(
-          (c) => (c.event === MCOMMAND_ERROR_EVENT || c.event === MCOMMAND_RESPONSE_EVENT) && c.data.tx === command.tx,
+          (c) =>
+            (c.event === MCOMMAND_ERROR_EVENT ||
+              c.event === MCOMMAND_RESPONSE_EVENT) &&
+            c.data.tx === command.tx,
         ),
         map((e) => {
           if (e.event === MCOMMAND_ERROR_EVENT) {
@@ -343,7 +355,9 @@ export class WSMClient {
             if (!this.clientOpts.preventThrowing) throw e
             return
           }
-          this.successSubject.next(wrapped.data.commandId.split(':').reverse().join(' '))
+          this.successSubject.next(
+            wrapped.data.commandId.split(':').reverse().join(' '),
+          )
           this.setCommandComplete(wrapped)
           return e.data.response as MCommandResponse<T>
         }),
@@ -456,7 +470,10 @@ export class WSMClient {
     )
 
     const stats = combineLatest([p, mpsDown, mpsUp]).pipe(
-      map(([ping, mpsDown, mpsUp]) => ({ ping, mpsDown, mpsUp }) satisfies ClientStats),
+      map(
+        ([ping, mpsDown, mpsUp]) =>
+          ({ ping, mpsDown, mpsUp }) satisfies ClientStats,
+      ),
     )
 
     return stats
@@ -467,7 +484,10 @@ export class WSMClient {
   }
 
   private resendMessages(_path: string) {
-    if (this.protocol !== MykoProtocol.MSGPACK && !this.clientOpts.disableMsgPack) {
+    if (
+      this.protocol !== MykoProtocol.MSGPACK &&
+      !this.clientOpts.disableMsgPack
+    ) {
       // this.switchToMessagePack()
     }
 

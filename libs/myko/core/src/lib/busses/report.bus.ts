@@ -1,4 +1,12 @@
-import { finalize, firstValueFrom, map, ReplaySubject, share, tap, throwError } from 'rxjs'
+import {
+  finalize,
+  firstValueFrom,
+  map,
+  ReplaySubject,
+  share,
+  tap,
+  throwError,
+} from 'rxjs'
 import { v4 } from 'uuid'
 import { MYKO_HANDLER_REPORT_ID_KEY, MYKO_REPORT_ID_KEY } from '../constants'
 import {
@@ -19,7 +27,9 @@ export type MykoReportHandlerType = Type<MReportHandler<MReport<unknown>>>
  * @template T - The type of report.
  */
 export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
-  constructor(private options: { disableCache?: boolean } = { disableCache: false }) {
+  constructor(
+    private options: { disableCache?: boolean } = { disableCache: false },
+  ) {
     super()
   }
 
@@ -52,7 +62,9 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    */
   private cache = new Map<string, MLiveReportResult<MReport<unknown>>>()
 
-  watch<T extends MReport<unknown> & ContextPhantom>(report: T): MLiveReportResult<T> {
+  watch<T extends MReport<unknown> & ContextPhantom>(
+    report: T,
+  ): MLiveReportResult<T> {
     const reportId = Reflect.getMetadata(MYKO_REPORT_ID_KEY, report)
     const handler = this.handlers.get(reportId)
 
@@ -105,7 +117,9 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    * @param report - The report to execute.
    * @returns The report result.
    */
-  execute<U, T extends MReport<U> & ContextPhantom>(report: T): MReportResult<T> {
+  execute<U, T extends MReport<U> & ContextPhantom>(
+    report: T,
+  ): MReportResult<T> {
     return firstValueFrom(this.watch(report)) as MReportResult<T>
   }
 

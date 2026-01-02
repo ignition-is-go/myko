@@ -498,7 +498,9 @@ These patterns cause infinite loops, memory leaks, and frozen UIs. **Never do th
 ```typescript
 // BAD: Creates new Observable on every evaluation → infinite loop
 const targets = $derived(
-  $currentSession ? client.watchQuery(new GetTargets($currentSession.id)).pipe(startWith([])) : of([]),
+  $currentSession
+    ? client.watchQuery(new GetTargets($currentSession.id)).pipe(startWith([]))
+    : of([]),
 )
 
 // GOOD: Use switchMap to react to changes
@@ -529,7 +531,10 @@ $effect(() => {
 
 // GOOD: Store and cleanup subscriptions
 $effect(() => {
-  const subs = [observable1.subscribe((v) => (state1 = v)), observable2.subscribe((v) => (state2 = v))]
+  const subs = [
+    observable1.subscribe((v) => (state1 = v)),
+    observable2.subscribe((v) => (state2 = v)),
+  ]
   return () => subs.forEach((sub) => sub.unsubscribe())
 })
 ```
@@ -569,7 +574,9 @@ return () => {
 
 ```typescript
 // BAD: Race condition - startWith emits before switchMap resolves
-sessionId$.pipe(switchMap((id) => client.watchQuery(new GetData(id)))).pipe(startWith([])) // WRONG PLACEMENT
+sessionId$
+  .pipe(switchMap((id) => client.watchQuery(new GetData(id))))
+  .pipe(startWith([])) // WRONG PLACEMENT
 
 // GOOD: startWith inside switchMap for each source
 sessionId$.pipe(

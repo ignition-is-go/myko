@@ -20,7 +20,9 @@ export const create_table_transactions = async () =>
 
 export const create_index_userId = async () =>
   await sql`
-      CREATE INDEX IF NOT EXISTS myko_transactions_user_id ON myko_transactions(user_id)`.catch((_e) => {})
+      CREATE INDEX IF NOT EXISTS myko_transactions_user_id ON myko_transactions(user_id)`.catch(
+    (_e) => {},
+  )
 
 export const get_entities_as_of = async (itemType: string, timestamp: string) =>
   await sql<EventCols[]>`
@@ -48,15 +50,21 @@ export const create_table_events = async () =>
 
 export const create_index_myko_events_entityId = async () =>
   await sql`
-      CREATE INDEX IF NOT EXISTS myko_events_entity_id ON myko_events(entity_id)`.catch((_e) => {})
+      CREATE INDEX IF NOT EXISTS myko_events_entity_id ON myko_events(entity_id)`.catch(
+    (_e) => {},
+  )
 
 export const create_index_myko_events_tx = async () =>
   await sql`
-      CREATE INDEX IF NOT EXISTS myko_events_tx ON myko_events(tx)`.catch((_e) => {})
+      CREATE INDEX IF NOT EXISTS myko_events_tx ON myko_events(tx)`.catch(
+    (_e) => {},
+  )
 
 export const create_index_myko_events_created_at = async () =>
   await sql`
-      CREATE INDEX IF NOT EXISTS myko_events_created_at ON myko_events(created_at)`.catch((_e) => {})
+      CREATE INDEX IF NOT EXISTS myko_events_created_at ON myko_events(created_at)`.catch(
+    (_e) => {},
+  )
 
 export const create_notify_myko_events = async () => {
   await sql`
@@ -81,7 +89,10 @@ export const create_notify_myko_events = async () => {
     `.catch((_e) => {})
 }
 
-export const listen_notify_myko_events = async (cb: (payload: string) => void, onListen?: () => void) => {
+export const listen_notify_myko_events = async (
+  cb: (payload: string) => void,
+  onListen?: () => void,
+) => {
   const d = await sql.listen('myko_events_notify', cb, onListen)
 
   return () => {

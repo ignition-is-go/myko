@@ -116,9 +116,17 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
           tx: effectiveCommand.tx,
           peerServerId: command.client.serverId,
         })
-        throw new MykoCommandError(command.tx, `Peer Not Found for ${command.command.commandId}`)
+        throw new MykoCommandError(
+          command.tx,
+          `Peer Not Found for ${command.command.commandId}`,
+        )
       }
-      ccm.forward(innerWrappedCommand.commandId, effectiveCommand.tx, getHostId(), command.client.serverId)
+      ccm.forward(
+        innerWrappedCommand.commandId,
+        effectiveCommand.tx,
+        getHostId(),
+        command.client.serverId,
+      )
       return peer.sendCommand(command)
     }
 
@@ -127,7 +135,11 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       tx: effectiveCommand.tx,
       clientId: command.client.id,
     })
-    ccm.begin(innerWrappedCommand.commandId, effectiveCommand.tx, command.client.id)
+    ccm.begin(
+      innerWrappedCommand.commandId,
+      effectiveCommand.tx,
+      command.client.id,
+    )
     // Per-client in-flight gating
     const _maxInflight = getMaxInflightPerClient()
     const _clientId = command.client.id
@@ -135,7 +147,10 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       const _curr = inflightByClient.get(_clientId) ?? 0
       if (_curr >= _maxInflight) {
         ccm.err(effectiveCommand.tx, 'Backpressure')
-        throw new MykoCommandError(command.tx, 'Client Backpressure: too many in-flight')
+        throw new MykoCommandError(
+          command.tx,
+          'Client Backpressure: too many in-flight',
+        )
       }
       inflightByClient.set(_clientId, _curr + 1)
     }
@@ -195,7 +210,8 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
       filter((x) => x.clientId === command.client.id),
       filter(
         (x) =>
-          (x.data.event === 'ws:m:command-response' || x.data.event === 'ws:m:command-error') &&
+          (x.data.event === 'ws:m:command-response' ||
+            x.data.event === 'ws:m:command-error') &&
           x.data.data.tx === effectiveCommand.tx,
       ),
       tap((x) =>
@@ -246,7 +262,10 @@ export class ClientCommandHandler implements MCommandHandler<ClientCommand> {
         clientId: command.client.id,
       })
       _decInflight()
-      throw new MykoCommandError(command.tx, timedOut ? 'Client Timed Out' : 'Client Disconnected')
+      throw new MykoCommandError(
+        command.tx,
+        timedOut ? 'Client Timed Out' : 'Client Disconnected',
+      )
     }
 
     if (res.data.event === 'ws:m:command-error') {
@@ -287,14 +306,18 @@ export class GetClientsByIdsHandler implements MQueryHandler<GetClientsByIds> {
 }
 
 @MykoQueryHandler(GetClientsByQuery)
-export class GetClientsByQueryHandler implements MQueryHandler<GetClientsByQuery> {
+export class GetClientsByQueryHandler
+  implements MQueryHandler<GetClientsByQuery>
+{
   execute(query: GetClientsByQuery): Observable<any> {
     return liveRepo(Client).watch(query.partial)
   }
 }
 
 @MykoCommandHandler(DeleteClientsByServerId)
-export class DeleteClientsByServerIdHandler implements MCommandHandler<DeleteClientsByServerId> {
+export class DeleteClientsByServerIdHandler
+  implements MCommandHandler<DeleteClientsByServerId>
+{
   async execute(command: DeleteClientsByServerId): Promise<void> {
     const clients = await liveRepo(Client).get({ serverId: command.serverId })
     eventBus.publishAll(clients.map((c) => makeDel(c, command.tx)))
@@ -315,12 +338,17 @@ export class ClientStatusHandler implements MReportHandler<ClientStatus> {
 }
 
 @MykoCommandHandler(SetClientWindbackTime)
-export class SetClientWindbackTimeHandler implements MCommandHandler<SetClientWindbackTime> {
+export class SetClientWindbackTimeHandler
+  implements MCommandHandler<SetClientWindbackTime>
+{
   async execute(command: SetClientWindbackTime): Promise<true> {
     try {
       getHistoryProvider()
     } catch (_e) {
-      throw new MykoCommandError(command.tx, 'History not provided. No Undo Functionality')
+      throw new MykoCommandError(
+        command.tx,
+        'History not provided. No Undo Functionality',
+      )
     }
 
     console.log('Setting windback time', command.windback)
@@ -341,7 +369,9 @@ export class SetClientWindbackTimeHandler implements MCommandHandler<SetClientWi
 }
 
 @MykoCommandHandler(ClearClientWindbackTime)
-export class ClearClientWindbackTimeHandler implements MCommandHandler<ClearClientWindbackTime> {
+export class ClearClientWindbackTimeHandler
+  implements MCommandHandler<ClearClientWindbackTime>
+{
   async execute(command: ClearClientWindbackTime): Promise<void> {
     const existing = await liveRepo(Client).getId(command.commandClientId)
 

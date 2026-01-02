@@ -30,7 +30,9 @@ export class MQuery<out T extends MItem = MItem> extends WithContext {
     }
   }
 
-  static fromWrappedQuery<R extends MItem>(wrappedQuery: MWrappedQuery): MQuery<R> {
+  static fromWrappedQuery<R extends MItem>(
+    wrappedQuery: MWrappedQuery,
+  ): MQuery<R> {
     const { query: queryInner, queryId } = wrappedQuery
     const query = new MQuery<R>()
 
@@ -57,7 +59,8 @@ export type MQueryResult<Q> = Q extends MQuery<infer R> ? Promise<R[]> : never
  * Represents the live query result type of a query.
  * @template Q - The type of the query.
  */
-export type MLiveQueryResult<Q> = Q extends MQuery<infer R> ? Observable<R[]> : never
+export type MLiveQueryResult<Q> =
+  Q extends MQuery<infer R> ? Observable<R[]> : never
 
 /**
  * Represents a query handler that can execute a query and return a live query result.
@@ -72,6 +75,10 @@ export interface MQueryHandler<out H> {
   execute(query: H): MLiveQueryResult<H>
 }
 
-export type MQueryHandlerConstructor<T extends MQuery<MItem<IMItem>>> = new (...args: any[]) => MQueryHandler<T>
+export type MQueryHandlerConstructor<T extends MQuery<MItem<IMItem>>> = new (
+  ...args: any[]
+) => MQueryHandler<T>
 
-export type MQueryConstructor<T extends MQuery<MItem<IMItem>>> = new (...args: any[]) => T
+export type MQueryConstructor<T extends MQuery<MItem<IMItem>>> = new (
+  ...args: any[]
+) => T

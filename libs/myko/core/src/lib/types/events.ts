@@ -31,7 +31,10 @@ export type MEventOptions = {
 /**
  * Type representing an event with a specific item and change type.
  */
-export type MEvent<T extends MItem = MItem, C extends MEventType = MEventType> = IMEvent & {
+export type MEvent<
+  T extends MItem = MItem,
+  C extends MEventType = MEventType,
+> = IMEvent & {
   readonly item: T
   readonly changeType: C
   readonly options?: MEventOptions
@@ -47,8 +50,11 @@ export const makeSet: <T extends MItem<IMItem>>(
   item: T,
   tx: ID,
   options?: MEventOptions,
-) => MEvent<T, MEventType.SET> = <T extends MItem>(item: T, tx: ID, options?: MEventOptions) =>
-  makeMykoEvent(item, MEventType.SET, tx, undefined, undefined, options)
+) => MEvent<T, MEventType.SET> = <T extends MItem>(
+  item: T,
+  tx: ID,
+  options?: MEventOptions,
+) => makeMykoEvent(item, MEventType.SET, tx, undefined, undefined, options)
 
 /**
  * Creates a "DEL" event for the given item and transaction ID.
@@ -60,8 +66,11 @@ export const makeDel: <T extends MItem<IMItem>>(
   item: T,
   tx: ID,
   options?: MEventOptions,
-) => MEvent<T, MEventType.DEL> = <T extends MItem>(item: T, tx: ID, options?: MEventOptions) =>
-  makeMykoEvent(item, MEventType.DEL, tx, undefined, undefined, options)
+) => MEvent<T, MEventType.DEL> = <T extends MItem>(
+  item: T,
+  tx: ID,
+  options?: MEventOptions,
+) => makeMykoEvent(item, MEventType.DEL, tx, undefined, undefined, options)
 
 /**
  * Creates a custom event for the given item, change type, and transaction ID.
@@ -106,9 +115,14 @@ const makeMykoEvent = <T extends MItem, U extends MEventType>(
  */
 export const ofItems: <T extends MItem>(
   ...filterTypes: MItemConstructor<T>[]
-) => MonoTypeOperatorFunction<MEvent<T, MEventType>> = <T extends MItem>(...filterTypes: MItemConstructor<T>[]) =>
+) => MonoTypeOperatorFunction<MEvent<T, MEventType>> = <T extends MItem>(
+  ...filterTypes: MItemConstructor<T>[]
+) =>
   filter((event: MEvent<T, MEventType>) =>
-    filterTypes.some((filterType) => Reflect.getMetadata(MYKO_ITEM_TYPE, filterType) === event.itemType),
+    filterTypes.some(
+      (filterType) =>
+        Reflect.getMetadata(MYKO_ITEM_TYPE, filterType) === event.itemType,
+    ),
   )
 
 /**
@@ -118,8 +132,12 @@ export const ofItems: <T extends MItem>(
  */
 export const ofType: <T extends MItem, C extends MEventType>(
   filterType: C,
-) => MonoTypeOperatorFunction<MEvent<T, C>> = <T extends MItem, C extends MEventType>(filterType: C) =>
-  filter((event: MEvent<T, C>) => filterType === event.changeType)
+) => MonoTypeOperatorFunction<MEvent<T, C>> = <
+  T extends MItem,
+  C extends MEventType,
+>(
+  filterType: C,
+) => filter((event: MEvent<T, C>) => filterType === event.changeType)
 
 /**
  * Represents a container for events to allow them to be queried.

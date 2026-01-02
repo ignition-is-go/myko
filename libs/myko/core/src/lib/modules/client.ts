@@ -1,4 +1,10 @@
-import { MykoCommand, MykoItem, MykoQuery, MykoReport, belongsTo } from '../decorators'
+import {
+  MykoCommand,
+  MykoItem,
+  MykoQuery,
+  MykoReport,
+  belongsTo,
+} from '../decorators'
 import { MCommand, MReport, type ID } from '../types'
 import { MItem } from '../types/item'
 import { MQuery } from '../types/query'

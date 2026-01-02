@@ -25,6 +25,8 @@ export const wrapReport = (report: MReport<unknown>): MWrappedReport => {
  * @returns The unwrapped report.
  * @deprecated use MReport.fromWrappedReport instead.
  */
-export const unwrapReport = (wrappedQuery: MWrappedReport): MReport<unknown> => {
+export const unwrapReport = (
+  wrappedQuery: MWrappedReport,
+): MReport<unknown> => {
   return MReport.fromWrappedReport(wrappedQuery)
 }
