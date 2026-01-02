@@ -1,6 +1,6 @@
 {
   "name": "@myko/core",
-  "version": "3.0.0-alpha.20",
+  "version": "3.0.0",
   "exports": "./src/index.ts",
   "license": "GPL-3.0-only",
   "imports": {

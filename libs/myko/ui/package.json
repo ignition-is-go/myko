@@ -1,6 +1,6 @@
 {
   "name": "@myko/ui",
-  "version": "3.0.0-alpha.20",
+  "version": "3.0.0",
   "scripts": {
     "dev": "vite dev",
     "build": "vite build && svelte-kit sync && svelte-package && publint",
