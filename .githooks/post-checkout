@@ -1,2 +1,2 @@
 #!/bin/sh
-cargo run -p release --quiet -- --sync
+cargo run -p release --quiet -- --sync --no-format
