@@ -9,7 +9,7 @@
     "cs:version": "./tools/scripts/cs-update-versions.sh",
     "cs:publish": "./tools/scripts/cs-publish.sh",
     "preinstall": "git submodule update --init --recursive --remote",
-    "postinstall": "bun run ./tools/scripts/version-stamp.js && bun run ./tools/scripts/jsr-import-map.ts",
+    "postinstall": "bun run ./tools/scripts/version-stamp.js && cargo run -p release --quiet -- --sync-imports",
     "versionstamp": "bun run ./tools/scripts/version-stamp.js",
     "versionecho": "bun run ./tools/scripts/version-echo.ts",
     "gen": "bun run ./tools/scaffold/generate.js && bun run ./tools/scripts/generate-entity-index.js",
