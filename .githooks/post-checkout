@@ -1,10 +1,2 @@
 #!/bin/sh
-BUN_INSTALL="$HOME/.bun"
-PATH="$BUN_INSTALL/bin:$PATH"
-
-if ! command -v bun >/dev/null 2>&1; then
-  echo "bun is not installed. Skipping versionstamp."
-  exit 0
-fi
-
-bun run versionstamp
+cargo run -p release --quiet -- --sync

@@ -62,6 +62,7 @@ jsoneditor.js
 
 # svelte output
 **/.svelte-kit
+**/build
 
 # svelte input
 **/.svelte

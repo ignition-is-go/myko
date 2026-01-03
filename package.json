@@ -71,7 +71,7 @@
     "jsr:publish": "bun run ./tools/scripts/publish-all-jsr.ts",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "postinstall": "bun run ./tools/scripts/version-stamp.js && cargo run -p release --quiet -- --sync-imports",
+    "postinstall": "cargo run -p release --quiet -- --sync",
     "preinstall": "git submodule update --init --recursive --remote",
     "prepare": "git config --local core.hooksPath .githooks",
     "py": "./tools/scripts/py.sh",
@@ -82,8 +82,7 @@
     "typecheck-handlers": "tsc --noEmit --skipLibCheck --project libs/entities/ts/handlers/tsconfig.json",
     "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
     "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
-    "versionecho": "bun run ./tools/scripts/version-echo.ts",
-    "versionstamp": "bun run ./tools/scripts/version-stamp.js"
+    "versionecho": "bun run ./tools/scripts/version-echo.ts"
   },
   "trustedDependencies": [
     "@serialport/bindings-cpp",

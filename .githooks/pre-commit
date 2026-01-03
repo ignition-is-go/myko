@@ -1,4 +1,2 @@
 #!/bin/sh
-BUN_INSTALL="$HOME/.bun"
-PATH="$BUN_INSTALL/bin:$PATH"
-pnpm versionstamp
+cargo run -p release --quiet -- --sync
