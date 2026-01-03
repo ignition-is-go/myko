@@ -8,7 +8,7 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{mpsc::Receiver, Mutex};
+use tokio::sync::{Mutex, mpsc::Receiver};
 
 pub struct RepoStruct<T: Eventable<T, PT>, PT: Clone> {
     subs: Vec<Arc<Mutex<Subscription<T, PT>>>>,
