@@ -88,7 +88,7 @@
       "workerd"
     ]
   },
-  "version": "3.1.0-canary.2",
+  "version": "3.1.0-canary.3",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@types/ws": "^8.18.1",
