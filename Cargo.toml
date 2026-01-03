@@ -61,4 +61,6 @@ members = [
   "apps/execs/network-discovery",
   # Node Agent
   "apps/node-agent",
+  # Tools
+  "tools/release",
 ]
