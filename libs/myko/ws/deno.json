@@ -3,16 +3,16 @@
   "exports": "./src/index.ts",
   "imports": {
     "reflect-metadata": "npm:reflect-metadata@^0.1.14",
-    "@myko/core": "jsr:@myko/core@3.1.0-canary.6",
-    "colors": "npm:colors@^1.4.0",
+    "flexsearch": "npm:flexsearch@^0.7",
+    "ramda": "npm:ramda@^0.29.1",
     "luxon": "npm:luxon@^3.5.0",
     "object-hash": "npm:object-hash@^3.0.0",
-    "zod": "npm:zod@^3.24.1",
-    "ramda": "npm:ramda@^0.29.1",
+    "uuid": "npm:uuid@^9.0.1",
     "rxjs": "npm:rxjs@^7.8.1",
     "msgpackr": "npm:msgpackr@^1.10.2",
-    "uuid": "npm:uuid@^9.0.1",
-    "flexsearch": "npm:flexsearch@^0.7"
+    "zod": "npm:zod@^3.24.1",
+    "@myko/core": "jsr:@myko/core@3.1.0-canary.7",
+    "colors": "npm:colors@^1.4.0"
   },
   "license": "GPL-3.0-only",
   "name": "@myko/ws",
@@ -23,5 +23,5 @@
       "package.json"
     ]
   },
-  "version": "3.1.0-canary.6"
+  "version": "3.1.0-canary.7"
 }
