@@ -129,11 +129,17 @@ Surface relevant information automatically:
 ```bash
 pnpm install                          # Install dependencies
 pnpm dev --filter @rship/server       # Run server in watch mode (MYKO_PORT=5155)
-pnpm dev --filter @rship/ui           # Run UI dev server
+pnpm dev --filter @rship/ui           # Run UI dev server (MUST run on port 4200)
 pnpm typecheck-sdk                    # Type check SDK
 pnpm typecheck-postgres               # Type check postgres lib
 pnpm build --filter <package>         # Build specific package
 pnpm format:all                       # Format all code with prettier
+```
+
+**IMPORTANT**: The UI dev server MUST run on port 4200. If port 4200 is in use, kill the existing process before starting:
+```bash
+lsof -ti :4200 | xargs kill 2>/dev/null  # Kill process on port 4200
+pnpm dev --filter @rship/ui               # Then start UI
 ```
 
 ### Rust
