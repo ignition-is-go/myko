@@ -2,17 +2,17 @@
   "$schema": "https://json.schemastore.org/package",
   "exports": "./src/index.ts",
   "imports": {
-    "ramda": "npm:ramda@^0.29.1",
-    "flexsearch": "npm:flexsearch@^0.7",
     "uuid": "npm:uuid@^9.0.1",
-    "luxon": "npm:luxon@^3.5.0",
     "object-hash": "npm:object-hash@^3.0.0",
-    "reflect-metadata": "npm:reflect-metadata@^0.1.14",
+    "@myko/core": "jsr:@myko/core@3.1.0-canary.6",
     "msgpackr": "npm:msgpackr@^1.10.2",
+    "reflect-metadata": "npm:reflect-metadata@^0.1.14",
     "rxjs": "npm:rxjs@^7.8.1",
+    "luxon": "npm:luxon@^3.5.0",
+    "flexsearch": "npm:flexsearch@^0.7",
     "zod": "npm:zod@^3.24.1",
-    "colors": "npm:colors@^1.4.0",
-    "@myko/core": "jsr:@myko/core@3.1.0-canary.6"
+    "ramda": "npm:ramda@^0.29.1",
+    "colors": "npm:colors@^1.4.0"
   },
   "license": "GPL-3.0-only",
   "name": "@myko/ws",

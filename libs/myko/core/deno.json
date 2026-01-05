@@ -2,14 +2,14 @@
   "exports": "./src/index.ts",
   "imports": {
     "colors": "npm:colors@^1.4.0",
+    "reflect-metadata": "npm:reflect-metadata@^0.1.14",
     "luxon": "npm:luxon@^3.4.4",
     "flexsearch": "npm:flexsearch@^0.7",
-    "reflect-metadata": "npm:reflect-metadata@^0.1.14",
+    "object-hash": "npm:object-hash@^3.0.0",
     "rxjs": "npm:rxjs@^7.8.1",
-    "uuid": "npm:uuid@^9.0.1",
     "zod": "npm:zod@^3.24.1",
-    "ramda": "npm:ramda@^0.29.1",
-    "object-hash": "npm:object-hash@^3.0.0"
+    "uuid": "npm:uuid@^9.0.1",
+    "ramda": "npm:ramda@^0.29.1"
   },
   "license": "GPL-3.0-only",
   "name": "@myko/core",
