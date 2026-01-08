@@ -71,7 +71,7 @@
     "jsr:publish": "bun run ./tools/scripts/publish-all-jsr.ts",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "postinstall": "command -v cargo >/dev/null 2>&1 && cargo run -p release --quiet -- --sync --no-format || true",
+    "postinstall": "cargo run -p release --quiet -- --sync --no-format || exit 0",
     "preinstall": "git submodule update --init --recursive --remote",
     "prepare": "git config --local core.hooksPath .githooks",
     "py": "./tools/scripts/py.sh",
