@@ -12,5 +12,5 @@
   },
   "main": "./src/index.ts",
   "name": "@myko/postgres",
-  "version": "3.1.0-canary.11"
+  "version": "3.1.0-canary.12"
 }

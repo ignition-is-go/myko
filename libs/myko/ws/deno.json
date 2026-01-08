@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/package",
   "exports": "./src/index.ts",
   "imports": {
-    "@myko/core": "jsr:@myko/core@3.1.0-canary.11",
+    "@myko/core": "jsr:@myko/core@3.1.0-canary.12",
     "colors": "npm:colors@^1.4.0",
     "flexsearch": "npm:flexsearch@^0.7",
     "luxon": "npm:luxon@^3.5.0",
@@ -23,5 +23,5 @@
       "package.json"
     ]
   },
-  "version": "3.1.0-canary.11"
+  "version": "3.1.0-canary.12"
 }
