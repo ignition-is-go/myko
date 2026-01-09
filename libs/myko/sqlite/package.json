@@ -19,5 +19,5 @@
   "main": "./src/index.ts",
   "name": "@myko/sqlite",
   "types": "./src/index.ts",
-  "version": "3.1.0-canary.15"
+  "version": "3.1.0-canary.16"
 }
