@@ -32,7 +32,7 @@ export const beginTraceTransaction = (
   const tx = mContext.tx
 
   // console.log(tag, mContext.lineage.join('>'))
-  const t = mContext.lineage.join('>')
+  const t = mContext.lineage?.join('>') ?? tag
   callLineageCounts.set(t, (callLineageCounts.get(t) ?? 0) + 1)
 
   const startTime = performance.now()
@@ -115,7 +115,7 @@ export const countResults = (
   const newCount = count + 1
   tagResults.set(tag, newCount)
 
-  const lineageTag = mContext.lineage.join('>')
+  const lineageTag = mContext.lineage?.join('>') ?? tag
   lineageResults.set(lineageTag, (lineageResults.get(lineageTag) ?? 0) + 1)
 }
 
