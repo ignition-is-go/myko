@@ -101,8 +101,9 @@ export class SocketGroup {
   }
 
   private createSocket(host: string, port: number) {
+    // When secure, omit port (reverse proxy on 443 handles routing)
     const socketUrl = this.groupOpts.secure
-      ? `wss://${host}:${port}/myko`
+      ? `wss://${host}/myko`
       : `ws://${host}:${port}/myko`
 
     if (this.allSockets.has(socketUrl)) {
