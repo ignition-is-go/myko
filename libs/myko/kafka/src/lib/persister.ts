@@ -156,6 +156,9 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
     const admin = kafka.admin()
     const topicName = makeSafeTopic(entity)
 
+    const EXPECTED_PARTITIONS = 1
+    const EXPECTED_REPLICATION = 3
+
     const retentionConfig = [
       { name: 'cleanup.policy', value: 'delete' },
       { name: 'retention.ms', value: '-1' },
@@ -167,8 +170,8 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
         topics: [
           {
             topic: topicName,
-            numPartitions: 1,
-            replicationFactor: 1,
+            numPartitions: EXPECTED_PARTITIONS,
+            replicationFactor: EXPECTED_REPLICATION,
             configEntries: retentionConfig,
           },
         ],
@@ -199,6 +202,64 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
         entity,
         'KafkaPersister',
         `Topic config update skipped: ${e.message}`,
+      )
+    }
+
+    // Validate and fix partition count and replication factor for existing topics
+    try {
+      const [metadata, cluster] = await Promise.all([
+        admin.fetchTopicMetadata({ topics: [topicName] }),
+        admin.describeCluster(),
+      ])
+      const topicMeta = metadata.topics.find((t) => t.name === topicName)
+      const brokerIds = cluster.brokers.map((b) => b.nodeId).sort((a, b) => a - b)
+
+      if (topicMeta) {
+        const partitionCount = topicMeta.partitions.length
+        const currentReplication = topicMeta.partitions[0]?.replicas?.length ?? 0
+
+        // Partitions can only be increased, not decreased - warn if wrong
+        if (partitionCount !== EXPECTED_PARTITIONS) {
+          this.logger.error(
+            entity,
+            'KafkaPersister',
+            `Topic ${topicName} has ${partitionCount} partitions, expected ${EXPECTED_PARTITIONS}. Cannot decrease partitions - manual recreation required.`,
+          )
+        }
+
+        // Fix replication factor if wrong and we have enough brokers
+        if (currentReplication !== EXPECTED_REPLICATION) {
+          if (brokerIds.length < EXPECTED_REPLICATION) {
+            this.logger.error(
+              entity,
+              'KafkaPersister',
+              `Topic ${topicName} has replication factor ${currentReplication}, expected ${EXPECTED_REPLICATION}. Only ${brokerIds.length} brokers available.`,
+            )
+          } else {
+            this.logger.info(
+              entity,
+              'KafkaPersister',
+              `Updating ${topicName} replication factor from ${currentReplication} to ${EXPECTED_REPLICATION}`,
+            )
+
+            // Assign replicas to first N brokers for each partition
+            const replicaBrokers = brokerIds.slice(0, EXPECTED_REPLICATION)
+            const reassignments = topicMeta.partitions.map((p) => ({
+              partition: p.partitionId,
+              replicas: replicaBrokers,
+            }))
+
+            await admin.alterPartitionReassignments({
+              topics: [{ topic: topicName, partitionAssignment: reassignments }],
+            })
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.warn(
+        entity,
+        'KafkaPersister',
+        `Topic validation/fix skipped: ${e.message}`,
       )
     } finally {
       await admin.disconnect()
