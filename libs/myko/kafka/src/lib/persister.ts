@@ -9,6 +9,7 @@ import {
 import { unpack as decode } from 'msgpackr'
 
 import {
+  ConfigResourceTypes,
   Kafka,
   logLevel,
   type ConsumerConfig,
@@ -152,20 +153,23 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
 
   async init(entity: string) {
     const kafka = getKafka(this.config)
-
     const admin = kafka.admin()
+    const topicName = makeSafeTopic(entity)
+
+    const retentionConfig = [
+      { name: 'cleanup.policy', value: 'delete' },
+      { name: 'retention.ms', value: '-1' },
+      { name: 'retention.bytes', value: '-1' },
+    ]
 
     try {
       await admin.createTopics({
         topics: [
           {
-            topic: makeSafeTopic(entity),
+            topic: topicName,
             numPartitions: 1,
             replicationFactor: 1,
-            configEntries: [
-              { name: 'retention.ms', value: '-1' },
-              { name: 'cleanup.policy', value: 'compact' },
-            ],
+            configEntries: retentionConfig,
           },
         ],
       })
@@ -175,6 +179,26 @@ export class KafkaEntityPersister<T extends MItem> extends KafkaPersister<T> {
         entity,
         'KafkaPersister',
         `Topic creation skipped: ${e.message}`,
+      )
+    }
+
+    // Always ensure retention config is correct for existing topics
+    try {
+      await admin.alterConfigs({
+        validateOnly: false,
+        resources: [
+          {
+            type: ConfigResourceTypes.TOPIC,
+            name: topicName,
+            configEntries: retentionConfig,
+          },
+        ],
+      })
+    } catch (e) {
+      this.logger.warn(
+        entity,
+        'KafkaPersister',
+        `Topic config update skipped: ${e.message}`,
       )
     } finally {
       await admin.disconnect()
