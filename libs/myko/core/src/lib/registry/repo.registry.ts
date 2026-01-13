@@ -1,18 +1,22 @@
 import { filter } from 'rxjs'
 import type { IRepo, Repo, RepoFactory } from '../aggregates/repo.abstract'
-import { eventBus } from '../busses'
 import { MYKO_ITEM_TYPE } from '../constants'
-import { RepoWithHistory } from '../history/repo.manager'
 import type { Client } from '../modules'
 import type { Persister, PersisterFactory } from '../persisters'
-import {
-  getItemName,
-  type IContext,
-  type MEvent,
-  type MItem,
-  type MItemConstructor,
-} from '../types'
+import type { IContext, MEvent, MItem, MItemConstructor } from '../types'
 import { relationRegistry } from './relation.registry'
+
+// Lazy imports to avoid circular initialization during bundling.
+// The import chain: repo.registry -> history/repo.manager -> aggregates/repo.abstract -> types -> events
+// triggers @MykoItem decorators which call initRepo before defaultOpts is initialized.
+const getRepoWithHistory = () =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  (require('../history/repo.manager') as typeof import('../history/repo.manager'))
+    .RepoWithHistory
+
+const getItemName = (entity: MItemConstructor<MItem>) =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  (require('../types') as typeof import('../types')).getItemName(entity)
 
 const repos = new Map<string, Repo<MItem>>()
 const searchKeys = new Map<string, string[]>()
@@ -78,6 +82,7 @@ export const repoName = <T extends MItem>(
 ): IRepo<T> => {
   const base = liveRepoName<T>(itemName)
 
+  const RepoWithHistory = getRepoWithHistory()
   const withHistory = new RepoWithHistory(ctx, itemName, base, (clientId) =>
     liveRepoName<Client>('Client').watchId(clientId),
   )
@@ -115,6 +120,12 @@ export const liveRepoName = <T extends MItem>(itemName: string): Repo<T> => {
   throw new Error(err)
 }
 
+// Lazy import to break circular dependency with busses module
+// (eventBus imports from registry, registry imports eventBus)
+const getEventBus = () =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../busses').eventBus as import('../busses').EventBus
+
 const createRepo = <T extends MItem>(itemName: string) => {
   const persisterFactory =
     defaultOpts.persisterOverrides?.find((x) => x.itemName === itemName)
@@ -140,8 +151,8 @@ const createRepo = <T extends MItem>(itemName: string) => {
     searchIndeces: buildSerachKeys(itemName),
   })
   if (persister) {
-    eventBus.subject$
-      .pipe(filter((x) => x.itemType === itemName))
+    getEventBus()
+      .subject$.pipe(filter((x) => x.itemType === itemName))
       .subscribe((e) => persister.persist(e as MEvent<T>))
   }
 
