@@ -26,6 +26,10 @@
     ".": {
       "types": "./src/lib/index.ts",
       "svelte": "./src/lib/index.ts"
+    },
+    "./runes": {
+      "types": "./src/lib/runes/index.ts",
+      "svelte": "./src/lib/runes/index.ts"
     }
   },
   "name": "@myko/ui",
