@@ -36,19 +36,9 @@ export class KafkaTopicConsumer {
         if (!high || high === '0') {
           this.caughtUp = true
           this.onCaughtUp?.()
-        } else {
-          // Topic has data - set a timeout fallback in case consumer doesn't catch up normally
-          // This handles edge cases like decode errors, network issues, or batch timing problems
-          setTimeout(() => {
-            if (!this.caughtUp) {
-              console.warn(
-                `[KafkaTopicConsumer] ${topic}: Timeout waiting for catch-up (high=${high}), forcing completion`,
-              )
-              this.caughtUp = true
-              this.onCaughtUp?.()
-            }
-          }, 10000) // 10 second timeout
         }
+        // Topic has data - catch-up will complete when consumer reaches high watermark
+        // No timeout: catch-up can legitimately take a long time for large topics
       })
       .catch(() => {
         // Topic doesn't exist yet or other error - treat as empty/caught up
