@@ -58,7 +58,8 @@
       "workerd"
     ],
     "overrides": {
-      "@types/three": "^0.181.0"
+      "@types/three": "^0.181.0",
+      "rxjs": "7.8.2"
     }
   },
   "private": true,
@@ -97,28 +98,5 @@
     "node-rdkafka",
     "svelte-preprocess"
   ],
-  "pnpm": {
-    "overrides": {
-      "rxjs": "7.8.2"
-    },
-    "onlyBuiltDependencies": [
-      "@serialport/bindings-cpp",
-      "@sveltejs/kit",
-      "@tailwindcss/oxide",
-      "bufferutil",
-      "bun",
-      "core-js",
-      "electron",
-      "electron-winstaller",
-      "esbuild",
-      "grpc-tools",
-      "msgpackr-extract",
-      "protobufjs",
-      "sharp",
-      "svelte-preprocess",
-      "utf-8-validate",
-      "workerd"
-    ]
-  },
   "version": "3.1.0-canary.23"
 }
