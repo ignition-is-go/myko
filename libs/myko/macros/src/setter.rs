@@ -124,7 +124,10 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
       } else {
         // Handle the field type - if it's String, convert from Arc<str>
         let type_str = quote!(#field_type).to_string();
-        if type_str.contains("String") && !type_str.contains("Option") {
+        if type_str.contains("Vec") && type_str.contains("String") {
+          // Vec<String> - convert from Vec<Arc<str>>
+          quote! { #field_name: self.#param_name.iter().map(|s| s.to_string()).collect() }
+        } else if type_str.contains("String") && !type_str.contains("Option") {
           quote! { #field_name: self.#param_name.to_string() }
         } else if type_str.contains("Option") && type_str.contains("String") {
           quote! { #field_name: self.#param_name.as_ref().map(|s| s.to_string()) }
@@ -137,7 +140,9 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
       // For String fields, use Arc<str> in the command for efficiency
       let param_type = {
         let type_str = quote!(#field_type).to_string();
-        if type_str == "String" {
+        if type_str.contains("Vec < String >") || type_str.contains("Vec<String>") {
+          quote! { Vec<std::sync::Arc<str>> }
+        } else if type_str == "String" {
           quote! { std::sync::Arc<str> }
         } else if type_str.contains("Option < String >") || type_str.contains("Option<String>") {
           quote! { Option<std::sync::Arc<str>> }
