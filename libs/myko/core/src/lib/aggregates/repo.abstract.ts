@@ -10,7 +10,7 @@ import {
   finalize,
   from,
   map,
-  Observable,
+  type Observable,
   of,
   scan,
   shareReplay,
@@ -22,11 +22,11 @@ import {
 import { beforeInit, fireInit } from '../hooks'
 import type { Persister } from '../persisters'
 import {
-  MEventType,
-  MItem,
   type DeepPartial,
   type ID,
   type MEvent,
+  MEventType,
+  type MItem,
 } from '../types'
 import { unwrapItem } from '../wrappers'
 
@@ -202,9 +202,15 @@ export abstract class Repo<T extends MItem> {
     return this.watchIdCache.get(id)!
   }
 
+  // Performance optimization: Cache watchId observables to prevent subscription explosion
+  private watchCache = new Map<ID, Observable<T | null>>()
+
   /**
    * Watches multiple IDs and returns an Observable of the corresponding values.
    * If the provided array of IDs is empty or null, an empty array is returned.
+   *
+   * Performance optimized: Uses shareReplay to cache individual ID subscriptions,
+   * preventing exponential subscription growth when watching many IDs.
    *
    * @param ids - An array of IDs to watch.
    * @returns An Observable that emits an array of values corresponding to the watched IDs.
@@ -216,7 +222,19 @@ export abstract class Repo<T extends MItem> {
     if (ids.length === 0) {
       return of([])
     }
-    return combineLatest(ids.map((id) => this.watchId(id).pipe())).pipe(
+
+    // Use cached observables with shareReplay to prevent subscription explosion
+    const observables = ids.map((id) => {
+      if (!this.watchCache.has(id)) {
+        this.watchCache.set(
+          id,
+          this.watchId(id).pipe(shareReplay({ bufferSize: 1, refCount: true })),
+        )
+      }
+      return this.watchCache.get(id)!
+    })
+
+    return combineLatest(observables).pipe(
       map((x) => x.filter((y) => y !== null)),
     )
   }
@@ -327,9 +345,9 @@ export abstract class Repo<T extends MItem> {
       switchMap((ids) =>
         ids.length === 0
           ? of([])
-          : combineLatest(ids.map((id) => this.watchId(id.toString()).pipe())),
+          : // Use watchIds for cached subscriptions - prevents subscription explosion
+            this.watchIds(ids.map((id) => id.toString())),
       ),
-      map((x) => x.filter((x) => x !== null)),
       map((x) => x.filter(filterFunc)),
     )
   }
@@ -427,7 +445,7 @@ export const objectFilter = (
 
     if (Array.isArray(querySide) && Array.isArray(entSide)) {
       return entSide.every((item, index) =>
-        objectFilter(querySide[index], item, visited),
+        objectFilter(querySide[index], item),
       )
     }
 
@@ -435,7 +453,7 @@ export const objectFilter = (
       if (typeof querySide === 'object' && typeof entSide === 'object') {
         return objectFilter(querySide, entSide, visited)
       }
-    } catch (e) {
+    } catch (_e) {
       throw Error(
         `Error filtering object: query: ${JSON.stringify(querySide)}: ${typeof querySide}, ent: ${JSON.stringify(entSide)}: ${typeof entSide}`,
       )

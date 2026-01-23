@@ -82,8 +82,8 @@ export const exportMetrics = (args: MykoGatewayBootstrapOptions) => {
       })
     }
 
-    let now = performance.now()
-    let diff = now - lastTime
+    const now = performance.now()
+    const diff = now - lastTime
     lastTime = now
     lagGuage().record(diff, {
       hostId: getHostId(),

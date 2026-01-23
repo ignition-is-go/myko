@@ -1,12 +1,13 @@
-import { filter, Subscription } from 'rxjs'
+import { filter, type Subscription } from 'rxjs'
 import {
   makeDel,
   makeSet,
   MEventType,
-  MItem,
   recalculateHash,
+  type DynamicItem,
   type ID,
   type MEvent,
+  type MItem,
   type MSaga,
   type Type,
 } from '../types'
@@ -65,7 +66,8 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               }
 
               const affected = await ff(
-                (item) => item[relation.localKey] === e.item.id,
+                (item) =>
+                  (item as DynamicItem)[relation.localKey] === e.item.id,
               )
 
               affected.forEach((item) => {
@@ -98,12 +100,15 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
           }
 
           const allParents = await getParentsFilter(() => true)
-          const allChildrenIds = allParents.flatMap(
-            (parent) => parent[relation.localKey],
+          // Use Set for O(1) lookup instead of O(n) includes() - avoids O(n²) orphan check
+          const allChildrenIds = new Set(
+            allParents.flatMap(
+              (parent) => (parent as DynamicItem)[relation.localKey] as ID[],
+            ),
           )
 
           const orphans = await getChildrenFilter(
-            (child) => !allChildrenIds.includes(child.id),
+            (child) => !allChildrenIds.has(child.id),
           )
 
           if (orphans.length > 0) {
@@ -137,7 +142,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                 throw new Error(`No getIds for ${relation.foreignType}`)
               }
 
-              const affected = await ids(e.item[relation.localKey])
+              const affected = await ids(
+                (e.item as DynamicItem)[relation.localKey] as ID[],
+              )
 
               affected.forEach((item) => {
                 this.publishDel(item, e.tx)
@@ -160,15 +167,18 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               const ff: typeof localRepo.getFilter =
                 localRepo.getFilter.bind(localRepo)
               const affected = await ff((e) =>
-                e[relation.localKey].includes(event.item.id),
+                ((e as DynamicItem)[relation.localKey] as ID[]).includes(
+                  event.item.id,
+                ),
               )
 
               affected.forEach((item) => {
-                const newIds = item[relation.localKey].filter(
-                  (id) => id !== event.item.id,
+                const dynamicItem = item as DynamicItem
+                const newIds = (dynamicItem[relation.localKey] as ID[]).filter(
+                  (id: ID) => id !== event.item.id,
                 )
 
-                item[relation.localKey] = newIds
+                dynamicItem[relation.localKey] = newIds
 
                 recalculateHash(item)
 
@@ -226,7 +236,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
               const exists = await getLocal((item) =>
                 dependencies.every(
                   (d) =>
-                    item[d.localKey] ===
+                    (item as DynamicItem)[d.localKey] ===
                     combination[d.foreignType][d.foreignKey],
                 ),
               )
@@ -243,7 +253,9 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
                     props[propertyKey] = value
                   })
 
-                const newItem = new relation.makeDefault({
+                const newItem = new (relation.makeDefault as unknown as new (
+                  props: any,
+                ) => any)({
                   id: uuid(),
                   ...props,
                 })
@@ -315,7 +327,7 @@ export abstract class AMykoEventBus extends ObservableBus<MEvent> {
 const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
   const result: any[] = []
 
-  function helper(current, index) {
+  function helper(current: Record<string, MItem>, index: number) {
     if (index === arrays.length) {
       result.push(current)
     } else {
@@ -335,10 +347,6 @@ const getCombinations = (arrays: { name: string; values: MItem[] }[]) => {
 }
 
 export class EventBus extends AMykoEventBus {
-  constructor() {
-    super()
-  }
-
   getServerId(): ID {
     return getHostId()
   }

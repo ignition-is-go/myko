@@ -1,5 +1,8 @@
+<<<<<<< HEAD:libs/myko/rs/src/wire/report.rs
 //! Wire protocol types for reports.
 
+=======
+>>>>>>> feat/muti-action:libs/myko/rs/src/report.rs
 use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
 use ts_rs::TS;

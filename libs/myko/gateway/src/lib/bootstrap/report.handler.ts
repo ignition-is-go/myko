@@ -37,7 +37,7 @@ export const handleReport = (
     const response = reportBus.watch(report).pipe(
       map((r) => wrapReportResponseWS(report.tx, r)),
       catchError((e) => {
-        let logger = new MykoLogger(wrappedReport.reportId)
+        const logger = new MykoLogger(wrappedReport.reportId)
 
         logger.error(e.message, e, report.tx)
 

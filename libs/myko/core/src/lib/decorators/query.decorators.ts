@@ -27,11 +27,12 @@ export const MykoQuery: <U extends MItem<IMItem>>(
     const itemType = Reflect.getMetadata(MYKO_ITEM_TYPE, item)
     const original: any = target
 
-    const queryName = Object.getOwnPropertyDescriptors(original)?.['name'].value
+    const queryName = Object.getOwnPropertyDescriptors(original)?.['name']?.value
 
     const paramtypes =
-      Reflect.getMetadata('design:paramtypes', original)?.map((x) => x.name) ??
-      []
+      Reflect.getMetadata('design:paramtypes', original)?.map(
+        (x: { name: string }) => x.name,
+      ) ?? []
 
     const queryId = queryName
 
@@ -48,10 +49,11 @@ export const MykoQuery: <U extends MItem<IMItem>>(
     )
 
     if (!queryId) {
-      throw new Error('commandId is undefined')
+      throw new Error('queryId is undefined')
     }
 
-    const withType: any = function (...args: any[]) {
+    // Use regular function (not arrow) to be callable with `new`
+    function withType(this: any, ...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_QUERY_ID_KEY, queryId, typed)
       Reflect.defineMetadata(MYKO_QUERY_ITEM_TYPE_KEY, itemType, typed)

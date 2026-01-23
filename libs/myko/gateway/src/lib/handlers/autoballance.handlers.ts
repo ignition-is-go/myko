@@ -6,7 +6,6 @@ import {
   getHostId,
   liveRepoName,
   MEventType,
-  MItem,
   MykoCommandHandler,
   MykoLogger,
   MykoSaga,

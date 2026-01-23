@@ -12,16 +12,12 @@ export class MCommand<out T = void> extends WithContext {
   /**
    * The result of the command execution.
    */
-  $commandResult: T
+  $commandResult!: T
 
   /**
    * The user token associated with the command.
    */
   userToken: string | undefined
-
-  constructor() {
-    super()
-  }
 
   /**
    * Wraps the command in a command wrapper.

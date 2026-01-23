@@ -1,30 +1,15 @@
 {
-  "name": "rship",
-  "license": "MIT",
-  "scripts": {
-    "py": "./tools/scripts/py.sh",
-    "py:publish": "./tools/scripts/py-publish.sh",
-    "rust:publish": "./tools/scripts/rust-publish.sh",
-    "jsr:publish": "bun run ./tools/scripts/publish-all-jsr.ts",
-    "cs:version": "./tools/scripts/cs-update-versions.sh",
-    "cs:publish": "./tools/scripts/cs-publish.sh",
-    "preinstall": "git submodule update --init --recursive --remote",
-    "postinstall": "bun run ./tools/scripts/version-stamp.js && bun run ./tools/scripts/jsr-import-map.ts",
-    "versionstamp": "bun run ./tools/scripts/version-stamp.js",
-    "versionwrite": "bun run ./tools/scripts/version-write.ts && bun run ./tools/scripts/jsr-import-map.ts",
-    "versionecho": "bun run ./tools/scripts/version-echo.ts",
-    "gen": "bun run ./tools/scaffold/generate.js && bun run ./tools/scripts/generate-entity-index.js",
-    "clean": "./tools/scripts/clean.sh",
-    "sync": "git submodule update --init --recursive --remote",
-    "format:all": "prettier --write .",
-    "prepare": "git config --local core.hooksPath .githooks",
-    "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
-    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
-    "typecheck-handlers": "tsc --noEmit --skipLibCheck --project libs/entities/ts/handlers/tsconfig.json"
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@types/ws": "^8.18.1",
+    "html2canvas": "^1.4.1",
+    "msgpackr": "^1.11.0",
+    "openai": "^4.104.0",
+    "socket.io-client": "^4.8.1",
+    "ws": "^8.18.3"
   },
-  "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
-  "private": true,
   "devDependencies": {
+    "@biomejs/biome": "^2.3.8",
     "@capacitor/cli": "^5.7.8",
     "@capacitor/core": "^5.7.8",
     "@tsconfig/bun": "^1.0.7",
@@ -40,12 +25,66 @@
     "nodemon": "^3.1.7",
     "pkg": "^5.8.1",
     "pnpm": "^10.3.0",
-    "prettier": "^3.5.1",
+    "prettier": "3.5.3",
     "prettier-plugin-organize-imports": "^3.2.4",
-    "prettier-plugin-svelte": "^3.2.7",
+    "prettier-plugin-svelte": "3.4.1",
+    "prettier-plugin-tailwindcss": "^0.6.14",
     "tsc-watch": "^6.2.1",
     "tslib": "^2.8.0",
     "typescript": "^5.8.2"
+  },
+  "license": "MIT",
+  "name": "rship",
+  "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@serialport/bindings-cpp",
+      "@sveltejs/kit",
+      "@tailwindcss/oxide",
+      "browser-tabs-lock",
+      "bufferutil",
+      "bun",
+      "core-js",
+      "electron",
+      "electron-winstaller",
+      "esbuild",
+      "ffmpeg-static",
+      "grpc-tools",
+      "msgpackr-extract",
+      "protobufjs",
+      "sharp",
+      "svelte-preprocess",
+      "utf-8-validate",
+      "workerd"
+    ],
+    "overrides": {
+      "@types/three": "^0.181.0"
+    }
+  },
+  "private": true,
+  "scripts": {
+    "clean": "./tools/scripts/clean.sh",
+    "cs:publish": "./tools/scripts/cs-publish.sh",
+    "cs:version": "./tools/scripts/cs-update-versions.sh",
+    "format:all": "prettier --write .",
+    "gen": "bun run ./tools/scaffold/generate.js && bun run ./tools/scripts/generate-entity-index.js",
+    "jsr:publish": "bun run ./tools/scripts/publish-all-jsr.ts",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "postinstall": "cargo run -p release --quiet -- --sync --no-format || exit 0",
+    "preinstall": "git submodule update --init --recursive --remote",
+    "prepare": "git config --local core.hooksPath .githooks",
+    "py": "./tools/scripts/py.sh",
+    "py:publish": "./tools/scripts/py-publish.sh",
+    "rust:publish": "./tools/scripts/rust-publish.sh",
+    "sync": "git submodule update --init --recursive --remote",
+    "test:smoke": "bun run ./tools/scripts/smoke-test.ts",
+    "typecheck": "pnpm typecheck-sdk && pnpm typecheck-core && pnpm typecheck-handlers",
+    "typecheck-core": "tsc --noEmit --skipLibCheck --project libs/entities/ts/core/tsconfig.json",
+    "typecheck-handlers": "tsc --noEmit --skipLibCheck --project libs/entities/ts/handlers/tsconfig.json",
+    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
+    "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
+    "versionecho": "bun run ./tools/scripts/version-echo.ts"
   },
   "trustedDependencies": [
     "@serialport/bindings-cpp",
@@ -58,6 +97,7 @@
     "node-rdkafka",
     "svelte-preprocess"
   ],
+<<<<<<< HEAD
   "pnpm": {
     "overrides": {
       "rxjs": "7.8.2"
@@ -82,4 +122,7 @@
     ]
   },
   "version": "3.0.0-canary.809"
+=======
+  "version": "3.1.0-canary.23"
+>>>>>>> feat/muti-action
 }

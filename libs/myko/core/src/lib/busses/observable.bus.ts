@@ -1,6 +1,8 @@
 import { Subject } from 'rxjs'
 import type { ID, WithContext } from '../types'
 
+type BusCallback = (mContext: WithContext, callId: ID) => void
+
 /**
  * Represents an observable bus that allows subscribing and emitting values of type T.
  *
@@ -9,15 +11,9 @@ import type { ID, WithContext } from '../types'
 export class ObservableBus<T> {
   protected _subject$: Subject<T> = new Subject()
 
-  protected on_prepare:
-    | ((mContext: WithContext, callId: ID) => void)
-    | undefined
-  protected on_result: ((mContext: WithContext, callId: ID) => void) | undefined
-  protected on_follow_up:
-    | ((mContext: WithContext, callId: ID) => void)
-    | undefined
-
-  constructor() {}
+  protected on_prepare_callbacks: BusCallback[] = []
+  protected on_result_callbacks: BusCallback[] = []
+  protected on_follow_up_callbacks: BusCallback[] = []
 
   /**
    * Gets the subject of the observable bus.
@@ -28,24 +24,33 @@ export class ObservableBus<T> {
     return this._subject$
   }
 
-  onPrepare(cb: (mContext: WithContext, callId: ID) => void): void {
-    if (this.on_prepare) {
-      throw new Error('Prepare callback already set')
-    }
-    this.on_prepare = cb
+  onPrepare(cb: BusCallback): void {
+    this.on_prepare_callbacks.push(cb)
   }
 
-  onResult(cb: (mContext: WithContext, callId: ID) => void): void {
-    if (this.on_result) {
-      throw new Error('Result callback already set')
-    }
-    this.on_result = cb
+  onResult(cb: BusCallback): void {
+    this.on_result_callbacks.push(cb)
   }
 
-  onFollowUp(cb: (mContext: WithContext, callId: ID) => void): void {
-    if (this.on_follow_up) {
-      throw new Error('Result callback already set')
+  onFollowUp(cb: BusCallback): void {
+    this.on_follow_up_callbacks.push(cb)
+  }
+
+  protected callPrepareCallbacks(ctx: WithContext, callId: ID): void {
+    for (const cb of this.on_prepare_callbacks) {
+      cb(ctx, callId)
     }
-    this.on_follow_up = cb
+  }
+
+  protected callResultCallbacks(ctx: WithContext, callId: ID): void {
+    for (const cb of this.on_result_callbacks) {
+      cb(ctx, callId)
+    }
+  }
+
+  protected callFollowUpCallbacks(ctx: WithContext, callId: ID): void {
+    for (const cb of this.on_follow_up_callbacks) {
+      cb(ctx, callId)
+    }
   }
 }

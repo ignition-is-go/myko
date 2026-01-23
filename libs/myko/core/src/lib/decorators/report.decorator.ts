@@ -8,11 +8,12 @@ export const MykoReport =
   <T extends MReport<R>>(target: new (...args: any[]) => T): any => {
     const original: any = target
     const reportId = Object.getOwnPropertyDescriptors(original)['name']
-      .value as string
+      ?.value as string
 
     reports.add(reportId)
 
-    const withType: any = function (...args: any[]) {
+    // Use regular function (not arrow) to be callable with `new`
+    function withType(this: any, ...args: any[]) {
       const typed = new original(...args)
       Reflect.defineMetadata(MYKO_REPORT_ID_KEY, reportId, typed)
       return typed

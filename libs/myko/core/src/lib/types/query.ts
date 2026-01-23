@@ -13,14 +13,7 @@ export class MQuery<out T extends MItem = MItem> extends WithContext {
   /**
    * The result of the query.
    */
-  $queryResult: T[]
-
-  /**
-   * Creates a new instance of the MQuery class.
-   */
-  constructor() {
-    super()
-  }
+  $queryResult!: T[]
 
   wrap(): MWrappedQuery {
     const queryId = Reflect.getMetadata(MYKO_QUERY_ID_KEY, this)

@@ -7,6 +7,13 @@ export type IMItem = {
   hash: string
 }
 
+/**
+ * Type for items that may be accessed with dynamic string keys.
+ * Used in event.bus.ts for relationship handling where property names
+ * come from relation configuration.
+ */
+export type DynamicItem = IMItem & Record<string, unknown>
+
 export type MItemConstructor<T extends IMItem> = (new (
   args: PartialBy<T, 'hash'>,
 ) => MItem<T>) & { name: string }

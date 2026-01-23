@@ -3,7 +3,7 @@ export type ReconnectSocketOpts = {
   onReconnecting: (url: string) => void
   onClosed: () => void
   onMessage: (data: MessageEvent) => void
-  onError: (error) => void
+  onError: (error: Event | string) => void
   onTerminated: () => void
   reconnect?: {
     interval: number
@@ -12,7 +12,7 @@ export type ReconnectSocketOpts = {
 }
 
 export class ReconnectSocket {
-  private socket: WebSocket
+  private socket!: WebSocket
 
   private attempts = 0
 
@@ -35,6 +35,7 @@ export class ReconnectSocket {
     this.socket.binaryType = 'arraybuffer'
 
     this.socket.onopen = () => {
+      this.attempts = 0
       this.opts.onConnected(url)
     }
 
@@ -64,6 +65,10 @@ export class ReconnectSocket {
 
     this.socket.onmessage = (event) => {
       this.opts.onMessage(event)
+    }
+
+    this.socket.onerror = (err) => {
+      this.opts.onError(err)
     }
   }
 

@@ -1,6 +1,6 @@
 [package]
 name = "myko-macros"
-version = "3.0.0-canary.809"
+version = "3.1.0-canary.23"
 edition = "2024"
 description = "myko macros"
 license = "AGPL-3.0-or-later"
@@ -12,6 +12,11 @@ documentation = "https://docs.rs/myko-macros"
 proc-macro = true
 
 [dependencies]
+<<<<<<< HEAD
 proc-macro2.workspace = true
 syn.workspace = true
 quote.workspace = true
+=======
+syn = {version="2.0.48", features=["full"]}
+quote = "1.0.35"
+>>>>>>> feat/muti-action

@@ -19,10 +19,6 @@ export type MCommandHandlerType = Type<MCommandHandler<MCommand<unknown>>>
  * Subclasses of this class should implement the `registerHandler` method to bind command handlers.
  */
 export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
-  constructor() {
-    super()
-  }
-
   /**
    * Executes a command and returns the command response.
    * @param command - The command to be executed.
@@ -47,9 +43,9 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
     const callId = v4()
 
     // new MykoLogger('CommandBus').info(`${commandId}`)
-    this.on_prepare?.(command, callId)
+    this.callPrepareCallbacks(command, callId)
     return (await handler.execute(command).then((x) => {
-      this.on_result?.(command, callId)
+      this.callResultCallbacks(command, callId)
       return x
     })) as MCommandResponse<T>
   }
@@ -90,10 +86,6 @@ export abstract class AMykoCommandBus extends ObservableBus<MCommand> {
 }
 
 export class MCommandBus extends AMykoCommandBus {
-  constructor() {
-    super()
-  }
-
   protected registerHandler(handler: MCommandHandlerType): void {
     const commandId = Reflect.getMetadata(MYKO_COMMAND_ID_KEY, handler)
     this.bind(new handler(), commandId)

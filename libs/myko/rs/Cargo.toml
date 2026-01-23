@@ -1,6 +1,6 @@
 [package]
 name = "myko-rs"
-version = "3.0.0-canary.809"
+version = "3.1.0-canary.23"
 edition = "2024"
 description = "myko in rust"
 license = "AGPL-3.0-or-later"
@@ -12,6 +12,7 @@ repository = "https://github.com/ignition-is-go/rship"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+<<<<<<< HEAD
 serde.workspace = true
 serde_json.workspace = true
 uuid = { workspace = true, features = ["js"] }
@@ -25,10 +26,25 @@ tokio-tungstenite.workspace = true
 async-trait.workspace = true
 rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 myko-macros.workspace = true
+=======
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["serde", "v4", "js"] }
+partially = { version = "0.2.1", features = ["derive"] }
+futures-signals = "0.3.33"
+futures-util = "0.3.30"
+tokio = { version = "1", features = ["full"] }
+tungstenite = "0.21.0"
+tokio-tungstenite = { version = "0.21.0", features = ["native-tls"] }
+async-trait = "0.1.77"
+#rdkafka = {version = "0.36.2", features=["cmake-build"]}
+myko-macros = { version= "3.1.0-canary.4", path = "../macros" }
+>>>>>>> feat/muti-action
 openssl = { version = "0.10.35", features = ["vendored"] }
 rmp.workspace = true
 rmp-serde.workspace = true
 md5 = "0.7.0"
+<<<<<<< HEAD
 tokio-util.workspace = true
 tokio-stream.workspace = true
 pin-project-lite.workspace = true
@@ -59,3 +75,10 @@ num_cpus = "1.16"
 name = "gateway"
 harness = false
 required-features = ["bench"]
+=======
+tokio-util = "0.7.10"
+tokio-stream = { version = "0.1.15", features = ["sync"] }
+url = "2.5.0"
+chrono = "0.4.39"
+log = "0.4"
+>>>>>>> feat/muti-action

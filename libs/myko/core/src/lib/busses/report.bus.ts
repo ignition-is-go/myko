@@ -22,6 +22,9 @@ import { ObservableBus } from './observable.bus'
 
 export type MykoReportHandlerType = Type<MReportHandler<MReport<unknown>>>
 
+// Grace period before removing cached observables after last unsubscribe
+const CACHE_GRACE_PERIOD_MS = 1000
+
 /**
  * Abstract class representing a report bus in the Myko core library.
  * @template T - The type of report.
@@ -37,6 +40,7 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
    * Map containing the registered report handlers.
    */
   protected handlers: Map<string, MReportHandler<MReport<unknown>>> = new Map()
+  private pendingDeletes: Map<string, ReturnType<typeof setTimeout>> = new Map()
 
   /**
    * Binds a report handler to a specific ID.
@@ -74,36 +78,53 @@ export abstract class AMykoReportBus extends ObservableBus<MReport<unknown>> {
       return throwError(() => new Error(err)) as unknown as MLiveReportResult<T>
     }
 
-    const clone: MReport<unknown> = {
-      ...report,
-      tx: undefined,
-    }
+    // Use toJSON() if available to allow reports to customize cache key serialization
+    // (e.g., to exclude large data from iteration contexts)
+    // Exclude `tx`, `lineage`, and `createdAt` as they vary per call but don't affect the result
+    const baseForCacheKey =
+      'toJSON' in report && typeof report.toJSON === 'function'
+        ? report.toJSON()
+        : { ...report }
 
-    const hash = JSON.stringify(clone)
+    const { tx, lineage, createdAt, commandClientId, ...forCacheKey } =
+      baseForCacheKey as Record<string, unknown>
+
+    const hash = JSON.stringify(forCacheKey)
 
     const cacheKey = `${reportId}:${hash}`
 
     if (this.cache.has(cacheKey) && !this.options?.disableCache) {
+      // Cancel any pending delete since we're reusing this observable
+      const pendingDelete = this.pendingDeletes.get(cacheKey)
+      if (pendingDelete) {
+        clearTimeout(pendingDelete)
+        this.pendingDeletes.delete(cacheKey)
+      }
       return this.cache.get(cacheKey)!.pipe() as MLiveReportResult<T>
     }
 
     const callId = v4()
 
-    this.on_prepare?.(report, callId)
+    this.callPrepareCallbacks(report, callId)
     const obs = handler.execute(report).pipe(
-      tapN(1, () => this.on_result?.(report, callId)),
+      tapN(1, () => this.callResultCallbacks(report, callId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
-      tap(() => this.on_follow_up?.(report, callId)),
+      tap(() => this.callFollowUpCallbacks(report, callId)),
       map((x) => {
         // clone the object
-        if (x instanceof Array) return x.slice()
+        if (Array.isArray(x)) return x.slice()
         if (x instanceof Object) return { ...x }
         return x
       }),
       finalize(() => {
-        this.cache.delete(cacheKey)
+        // Delay cache removal to handle rapid unsubscribe/resubscribe cycles
+        const timeoutId = setTimeout(() => {
+          this.cache.delete(cacheKey)
+          this.pendingDeletes.delete(cacheKey)
+        }, CACHE_GRACE_PERIOD_MS)
+        this.pendingDeletes.set(cacheKey, timeoutId)
       }),
     ) as MLiveReportResult<T>
 

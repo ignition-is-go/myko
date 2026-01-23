@@ -9,7 +9,7 @@ import {
   interval,
   map,
   merge,
-  Observable,
+  type Observable,
   ReplaySubject,
   scan,
   share,
@@ -28,6 +28,7 @@ import {
   MREPORT_ERROR_EVENT,
   MREPORT_EVENT,
   MREPORT_RESPONSE_EVENT,
+  type QueryDelta,
   type WSMCommand,
   type WSMCommandError,
   type WSMCommandResponse,
@@ -52,22 +53,22 @@ import {
 
 import {
   GetPeerServers,
-  MCommand,
-  MQuery,
-  MReport,
+  type ID,
+  type MCommand,
+  type MCommandResponse,
+  type MEvent,
+  type MLiveQueryResult,
+  type MLiveReportResult,
+  type MQuery,
+  type MReport,
+  type MReportResult,
+  type MWrappedItem,
   MykoProtocol,
   ProtocolMessages,
   unwrapCommand,
   unwrapItem,
   unwrapQuery,
   unwrapReport,
-  type ID,
-  type MCommandResponse,
-  type MEvent,
-  type MLiveQueryResult,
-  type MLiveReportResult,
-  type MReportResult,
-  type MWrappedItem,
 } from '@myko/core'
 import { DateTime } from 'luxon'
 import { pack, unpack } from 'msgpackr'
@@ -411,6 +412,38 @@ export class WSMClient {
     ) as MLiveQueryResult<T>
   }
 
+  /**
+   * Watch query results as raw deltas without accumulation.
+   * Used by ReactiveClient to apply updates directly to SvelteMap.
+   *
+   * Unlike watchQuery which accumulates state via scan(), this returns
+   * each delta as-is so the caller can manage their own state store.
+   */
+  watchQueryDeltas<T extends MQuery>(
+    query: T,
+  ): Observable<QueryDelta<T['$queryResult'][number]>> {
+    const wrappedQuery = wrapQueryWS(query)
+    this.resendQueries.set(query.tx, wrappedQuery)
+    this.send(wrappedQuery)
+
+    return this.queryResponses.pipe(
+      filter((r) => r.data.tx === query.tx),
+      map((update) => ({
+        sequence: update.data.sequence,
+        upserts: update.data.upserts.map((u) => unwrapItem(u)),
+        deletes: update.data.deletes,
+        isReset: update.data.sequence === 0,
+      })),
+      share({
+        connector: () => new ReplaySubject(1),
+      }),
+      finalize(() => {
+        this.resendQueries.delete(query.tx)
+        this.send(wrapQueryCancel(query.tx))
+      }),
+    ) as Observable<QueryDelta<T['$queryResult'][number]>>
+  }
+
   watchReport<T extends MReport<any>>(report: T): MLiveReportResult<T> {
     const wrappedReport = wrapReportWS(report)
     this.resendReports.set(report.tx, wrappedReport)
@@ -428,7 +461,7 @@ export class WSMClient {
       }),
       map((x) => {
         // clone the object
-        if (x instanceof Array) return x.slice()
+        if (Array.isArray(x)) return x.slice()
         if (x instanceof Object) return { ...x }
         return x
       }),
@@ -529,22 +562,25 @@ export class WSMClient {
     const message: WSMMessage = decoder(dataPrepper(body))
 
     switch (message.event) {
-      case MCOMMAND_EVENT:
+      case MCOMMAND_EVENT: {
         const cmd = unwrapCommand(message.data)
         this.commandSubject.next(cmd)
 
         this.send(wrapCommandResponseWS(cmd.tx, cmd))
         break
+      }
 
-      case MQUERY_EVENT:
+      case MQUERY_EVENT: {
         const query = unwrapQuery(message.data)
         this.querySubject.next(query)
         break
+      }
 
-      case MEVENT_EVENT:
+      case MEVENT_EVENT: {
         const evt = message.data
         this.eventSubject.next(evt)
         break
+      }
 
       case MQUERY_ERROR_EVENT:
         this.errorSubject.next(message)
@@ -561,10 +597,11 @@ export class WSMClient {
         this.commandResponses.next(message)
         break
 
-      case MREPORT_EVENT:
+      case MREPORT_EVENT: {
         const report = unwrapReport(message.data)
         this.reportSubject.next(report)
         break
+      }
 
       case MREPORT_ERROR_EVENT:
         this.errorSubject.next(message)

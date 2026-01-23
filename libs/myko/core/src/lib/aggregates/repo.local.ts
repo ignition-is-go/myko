@@ -1,10 +1,10 @@
 import {
   MEventType,
-  MItem,
   addMissingHash,
   type DeepPartial,
   type ID,
   type MEvent,
+  type MItem,
 } from '../types'
 import { unwrapItem } from '../wrappers'
 import { Repo, buildFilter, toArray, type RepoOptions } from './repo.abstract'
@@ -34,13 +34,14 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
 
   async save(event: MEvent<T>): Promise<MEvent<T>> {
     switch (event.changeType) {
-      case MEventType.SET:
+      case MEventType.SET: {
         const item = unwrapItem(event) as T
 
         const hashedItem = addMissingHash(item) as T
 
         this.store.set(event.item.id, hashedItem)
         break
+      }
       case MEventType.DEL:
         this.store.delete(event.item.id)
         break
@@ -69,11 +70,9 @@ export class LocalRepo<T extends MItem> extends Repo<T> {
   async getIndex(index: keyof T, value: any): Promise<T[]> {
     try {
       return this.store.getIndex(index, value)
-    } catch (e) {
+    } catch (_e) {
       console.warn(
-        `No index crated on ${index.toString()} for ${
-          this.entity
-        } - falling back`,
+        `No index crated on ${index.toString()} for ${this.entity} - falling back`,
       )
       return this.getFilter((el) => el[index] === value)
     }

@@ -22,6 +22,9 @@ import {
 } from '../types'
 import { ObservableBus } from './observable.bus'
 
+// Grace period before removing cached observables after last unsubscribe
+const CACHE_GRACE_PERIOD_MS = 1000
+
 /**
  * Abstract class representing a query bus in the Myko framework.
  * A query bus is responsible for handling queries and returning query results.
@@ -33,6 +36,7 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
   }
 
   protected handlers: Map<string, MQueryHandler<MQuery>> = new Map()
+  private pendingDeletes: Map<string, ReturnType<typeof setTimeout>> = new Map()
 
   /**
    * Binds a query handler to an identifier.
@@ -72,39 +76,57 @@ export abstract class AMykoQueryBus extends ObservableBus<MQuery> {
       return throwError(() => new Error(err)) as unknown as MLiveQueryResult<T>
     }
 
-    let clone: MQuery = {
-      ...query,
-      tx: undefined,
-    }
+    // Exclude context fields that vary per call but don't affect the result
+    const { tx, lineage, createdAt, commandClientId, ...forCacheKey } =
+      query as Record<string, unknown>
 
-    const hash = JSON.stringify(clone)
+    const hash = JSON.stringify(forCacheKey)
 
     const cacheKey = `${queryId}:${hash}`
 
     if (this.cache.has(cacheKey) && !this.options?.disableCache) {
+      // Cancel any pending delete since we're reusing this observable
+      const pendingDelete = this.pendingDeletes.get(cacheKey)
+      if (pendingDelete) {
+        clearTimeout(pendingDelete)
+        this.pendingDeletes.delete(cacheKey)
+      }
       return this.cache.get(cacheKey) as MLiveQueryResult<T>
     }
 
     const callId = v4()
 
-    this.on_prepare?.(query, callId)
+    this.callPrepareCallbacks(query, callId)
 
     const obs = handler.execute(query).pipe(
-      tapN(1, () => this.on_result?.(query, callId)),
+      tapN(1, () => this.callResultCallbacks(query, callId)),
       share({
         connector: () => new ReplaySubject(1),
       }),
-      tap(() => this.on_follow_up?.(query, callId)),
+      tap(() => this.callFollowUpCallbacks(query, callId)),
       distinctUntilChanged((a, b) => {
-        const aHash = new Set(a.map(x => x.hash))
-        const bHash = new Set(b.map(x => x.hash))
-
-        return a.length === b.length && aHash.symmetricDifference(bHash).size === 0
+        // Performance fix: avoid creating Sets on every emission
+        // Use sorted hash comparison instead - O(n log n) vs O(n) Set creation
+        if (a.length !== b.length) return false
+        const aHashes = a
+          .map((x) => x.hash)
+          .sort()
+          .join(',')
+        const bHashes = b
+          .map((x) => x.hash)
+          .sort()
+          .join(',')
+        return aHashes === bHashes
       }),
       // clone the array so subsequent mutations dont ruin it for everyone else
       map((x) => x.slice()),
       finalize(() => {
-        this.cache.delete(cacheKey)
+        // Delay cache removal to handle rapid unsubscribe/resubscribe cycles
+        const timeoutId = setTimeout(() => {
+          this.cache.delete(cacheKey)
+          this.pendingDeletes.delete(cacheKey)
+        }, CACHE_GRACE_PERIOD_MS)
+        this.pendingDeletes.set(cacheKey, timeoutId)
       }),
     ) as MLiveQueryResult<T>
 

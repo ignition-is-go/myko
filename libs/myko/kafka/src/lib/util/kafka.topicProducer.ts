@@ -42,14 +42,13 @@ export class KafkaTopicProducer {
   private send(msg: Buffer, key: string) {
     const streamKey = makeSafeTopic(this.topic)
 
-    try {
-      this.prod.send({
+    this.prod
+      .send({
         messages: [{ key, value: msg }],
         topic: streamKey,
       })
-    } catch (e) {
-      if (e instanceof Error && e.message === 'Local: Queue full') {
-      }
-    }
+      .catch((err) => {
+        this.log(`Failed to send message to ${streamKey}: ${err}`)
+      })
   }
 }

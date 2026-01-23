@@ -1,5 +1,21 @@
 {
-  "enabledPlugins": {
-    "chrome-devtools-mcp@chrome-devtools-plugins": true
+  "permissions": {
+    "allow": [
+      "Bash(bd:*)",
+      "Bash(bd ready:*)",
+      "Bash(bd list:*)",
+      "Bash(bd show:*)",
+      "Bash(bd create:*)",
+      "Bash(bd update:*)",
+      "Bash(bd close:*)",
+      "Bash(bd dep:*)",
+      "Bash(bd blocked:*)",
+      "Bash(bd sync:*)",
+      "Bash(bd stats:*)",
+      "Bash(bd doctor:*)",
+      "Bash(bd prime:*)",
+      "Bash(bd config:*)",
+      "Bash(bd hooks:*)"
+    ]
   }
 }

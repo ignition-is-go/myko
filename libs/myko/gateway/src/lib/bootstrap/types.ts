@@ -5,7 +5,7 @@ import type {
   RepoFactory,
   RepoOverrideData,
 } from '@myko/core'
-import type { MykoWsAdapter } from '../adapters'
+import type { MykoTlsOptions, MykoWsAdapter } from '../adapters'
 import type { MykoAuthService } from '../auth/types'
 
 export type MykoGatewayBootstrapOptions = {
@@ -20,6 +20,7 @@ export type MykoGatewayBootstrapOptions = {
     port: number
     wsAdapter: MykoWsAdapter
     authService?: MykoAuthService
+    tls?: MykoTlsOptions
   }
   modules: any[]
   docPath?: string

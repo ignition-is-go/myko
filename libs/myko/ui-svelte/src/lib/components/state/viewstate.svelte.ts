@@ -1,8 +1,8 @@
-import { DateTime, Duration } from 'luxon';
+import { DateTime, type Duration } from 'luxon';
 import { memoizeWith, uniq } from 'ramda';
 import { SvelteSet } from 'svelte/reactivity';
 import { resolutions, type Resolution } from './resolutions.js';
-import { WindbackState } from './windback.svelte.js';
+import type { WindbackState } from './windback.svelte.js';
 
 export class TransactionsViewState {
 	#visibleEvents = new SvelteSet<string>();

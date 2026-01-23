@@ -7,8 +7,8 @@ export enum SocketSendMode {
 export type SocketGroupOpts = {
   onConnected: (url: string) => void
   onClosed: () => void
-  onError: (error: string) => void
-  onLog: (...log: any[]) => void
+  onError: (error: Event | string) => void
+  onLog: (...log: unknown[]) => void
   onMessage: (data: MessageEvent) => void
   onMainServerChange: (url: string) => void
   onMainSocketReconnecting: (url: string) => void
@@ -101,12 +101,12 @@ export class SocketGroup {
   }
 
   private createSocket(host: string, port: number) {
+    // When secure, omit port (reverse proxy on 443 handles routing)
     const socketUrl = this.groupOpts.secure
       ? `wss://${host}/myko`
       : `ws://${host}:${port}/myko`
 
     if (this.allSockets.has(socketUrl)) {
-      console.log('Socket already exists', socketUrl)
       return
     }
 

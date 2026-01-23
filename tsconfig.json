@@ -7,7 +7,9 @@
     "experimentalDecorators": true,
     "strict": false,
     "strictNullChecks": true,
-    "verbatimModuleSyntax": false
+    "verbatimModuleSyntax": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
   },
   "include": ["apps", "libs"],
   "exclude": [

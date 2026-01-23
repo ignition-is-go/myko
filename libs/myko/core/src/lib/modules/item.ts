@@ -2,10 +2,10 @@ import { MykoCommand, MykoReport } from '../decorators'
 import {
   getItemName,
   MCommand,
-  MItem,
   MReport,
   type DeepPartial,
   type ID,
+  type MItem,
   type MItemConstructor,
 } from '../types'
 import type { MWrappedItem } from '../wrappers'

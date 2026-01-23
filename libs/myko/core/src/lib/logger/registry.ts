@@ -1,4 +1,4 @@
-import { BehaviorSubject, Observable, shareReplay } from 'rxjs'
+import { BehaviorSubject, type Observable, shareReplay } from 'rxjs'
 import { LogLevel } from './logLevel.type'
 
 const names = new Map<string, {}>()
@@ -39,6 +39,22 @@ export const longestName = new Cell<number>(0)
 
 export const logsPreventedEntities = new Set<string>()
 
+/**
+ * Log output format.
+ * - 'human': Human-readable format with aligned columns (default for development)
+ * - 'json': Structured JSON format (default for production)
+ */
+export type LogFormat = 'human' | 'json'
+
+/**
+ * Configure the log output format.
+ * Can also be set via LOG_FORMAT environment variable.
+ */
+export const logFormat = new Cell<LogFormat>(
+  typeof process !== 'undefined' && process.env?.['LOG_FORMAT'] === 'json'
+    ? 'json'
+    : 'human',
+)
 const getDefaultLogLevel = (): LogLevel => {
   const envLevel =
     (typeof process !== 'undefined' &&

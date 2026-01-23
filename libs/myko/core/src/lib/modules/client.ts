@@ -16,7 +16,7 @@ import { Server } from './server'
 })
 export class Client extends MItem<Client> {
   @belongsTo(Server)
-  readonly serverId: string
+  readonly serverId!: string
 
   readonly windback?: string
 }
@@ -71,15 +71,7 @@ export class SetClientWindbackTime extends MCommand<boolean> {
 @MykoCommand({
   allowDuringWindback: true,
 })
-export class ClearClientWindbackTime extends MCommand {
-  constructor() {
-    super()
-  }
-}
+export class ClearClientWindbackTime extends MCommand {}
 
 @MykoReport()
-export class WindbackStatus extends MReport<string | undefined> {
-  constructor() {
-    super()
-  }
-}
+export class WindbackStatus extends MReport<string | undefined> {}

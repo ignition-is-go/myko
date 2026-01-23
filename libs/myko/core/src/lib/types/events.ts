@@ -149,9 +149,10 @@ export const ofType: <T extends MItem, C extends MEventType>(
 export class EventContainer extends MItem<EventContainer> {
   /**
    * The event associated with the container.
+   * Definite assignment assertion as value is set via Object.assign in parent constructor
    */
   @doc(undefined, 'MEvent')
-  readonly event: MEvent
+  readonly event!: MEvent
 }
 
 /**

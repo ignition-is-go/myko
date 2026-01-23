@@ -1,4 +1,4 @@
-import { map, Observable, Subject } from 'rxjs'
+import { map, type Observable, Subject } from 'rxjs'
 import type { MEvent, MItem } from '../types'
 
 export type PersisterOutputEvent<T extends MItem> = {

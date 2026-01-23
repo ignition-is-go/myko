@@ -46,8 +46,7 @@ export const MykoItem =
   }): ClassDecorator =>
   (target) => {
     const original: any = target
-    const autoItemType =
-      Object.getOwnPropertyDescriptors(original)['name'].value
+    const autoItemType = Object.getOwnPropertyDescriptors(original)['name']?.value
 
     const itemType = opts?.itemTypeOverride ?? autoItemType
 
@@ -55,7 +54,8 @@ export const MykoItem =
       throw new Error('itemType is undefined')
     }
 
-    const withType: any = function (...args: any[]) {
+    // Use regular function (not arrow) to be callable with `new`
+    function withType(this: any, ...args: any[]) {
       const typed = new original(...args)
       args.forEach((arg) => Object.assign(typed, arg))
       Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, typed)
@@ -66,7 +66,7 @@ export const MykoItem =
 
     Reflect.defineMetadata(MYKO_ITEM_TYPE, itemType, withType)
 
-    constructorRegistry.set(itemType, withType)
+    constructorRegistry.set(itemType, withType as any)
 
     docEntity(opts?.doc, itemType, opts?.deprecated, opts?.preventDoc)(target)
 
@@ -149,14 +149,14 @@ export const MykoItem =
             localKey: propertyKey,
           }
         }),
-        makeDefault: withType,
+        makeDefault: withType as any,
         localType: itemType,
       })
     }
 
-    initRepo(withType)
+    initRepo(withType as any)
 
-    return withType
+    return withType as any
   }
 
 //
@@ -184,7 +184,9 @@ const showWarning = () => {
  * @param depType The constructor function of the dependency type.
  * @returns The property decorator function.
  */
-export const ownsMany = (depType: new (...args: any[]) => MItem) => {
+export const ownsMany = (
+  depType: new (...args: any[]) => MItem,
+): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
@@ -213,7 +215,9 @@ export const ownsMany = (depType: new (...args: any[]) => MItem) => {
  * @returns The property decorator function.
  *
  */
-export const belongsTo = (depType: new (...args: any[]) => MItem) => {
+export const belongsTo = (
+  depType: new (...args: any[]) => MItem,
+): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
@@ -241,7 +245,7 @@ export const belongsTo = (depType: new (...args: any[]) => MItem) => {
  * @param value The default value for the property.
  * @returns The property decorator function.
  */
-export const defaultValue = (value: any) => {
+export const defaultValue = (value: any): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
@@ -268,7 +272,9 @@ export const defaultValue = (value: any) => {
  * @param depType The constructor function of the dependency type.
  * @returns The property decorator function.
  */
-export const ensureFor = (depType: new (...args: any[]) => MItem) => {
+export const ensureFor = (
+  depType: new (...args: any[]) => MItem,
+): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
@@ -291,7 +297,7 @@ export const ensureFor = (depType: new (...args: any[]) => MItem) => {
   }
 }
 
-export const searchable = () => {
+export const searchable = (): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||
@@ -312,7 +318,7 @@ export const searchable = () => {
   }
 }
 
-export const mykoClientId = () => {
+export const mykoClientId = (): PropertyDecorator => {
   return (target, propertyKey) => {
     if (
       !target ||

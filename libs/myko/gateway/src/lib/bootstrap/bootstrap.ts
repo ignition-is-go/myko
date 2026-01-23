@@ -25,6 +25,7 @@ import { DateTime } from 'luxon'
 import { groupBy } from 'ramda'
 import { bufferTime, filter, Subject } from 'rxjs'
 import { setAdapterBusses, setAdapterResult, setAuth } from '../registry'
+import { initCallRateMonitor } from '../telemetry/call_rate.monitor'
 import { initTracing } from '../telemetry/instrumentation'
 import { handleMessage } from './message.handler'
 import type { MykoGatewayBootstrapOptions, StartupReportEntry } from './types'
@@ -56,6 +57,9 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
     startupReport.push(report)
   }
 
+  // Initialize call rate monitoring (enabled via MYKO_CALL_RATE_LOGGING=true)
+  initCallRateMonitor()
+
   if (args.ws) {
     const { host, port, wsAdapter } = args.ws
 
@@ -86,6 +90,7 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
       rx,
       tx,
       serverId,
+      tls: args.ws.tls,
     })
 
     setAdapterResult(res)
@@ -98,7 +103,8 @@ export const bootstrap = async (args: MykoGatewayBootstrapOptions) => {
       version: args.version,
     })
 
-    const lines = [`Listening: ${host}:${port}`]
+    const protocol = args.ws.tls ? 'wss' : 'ws'
+    const lines = [`Listening: ${protocol}://${host}:${port}`]
 
     startupReport.push({
       lines,

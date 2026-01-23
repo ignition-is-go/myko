@@ -11,8 +11,6 @@ import {
   ImportItems,
   liveRepoName,
   makeSet,
-  MItem,
-  MReportHandler,
   MykoCommandHandler,
   MykoReportHandler,
   relationRegistry,
@@ -22,13 +20,16 @@ import {
   wrapItem,
   type EntitySnapshotDifferenceData,
   type MCommandHandler,
+  type MItem,
   type MItemStub,
   type MLiveReportResult,
+  type MReportHandler,
   type MWrappedItem,
 } from '@myko/core'
 import { uniqBy } from 'ramda'
 import {
   combineLatest,
+  debounceTime,
   distinctUntilChanged,
   from,
   map,
@@ -37,11 +38,13 @@ import {
   type Observable,
 } from 'rxjs'
 
+// Debounce time for search queries - not in hot path
+const SEARCH_DEBOUNCE_MS = 100
+
 @MykoReportHandler(GetItemsByTypeAndIds)
 export class GetItemByTypeAndIdHandler
   implements MReportHandler<GetItemsByTypeAndIds>
 {
-  constructor() {}
   execute(query: GetItemsByTypeAndIds) {
     return repoName(query.type, query)
       .watchIds(query.ids)
@@ -52,15 +55,17 @@ export class GetItemByTypeAndIdHandler
 @MykoReportHandler(EntitySearch)
 export class EntitySearchHandler implements MReportHandler<EntitySearch<any>> {
   execute(report: EntitySearch<any>): Observable<any> {
-    return repoName(report.entityType, report).watchSearch(
-      report.query,
-      {
-        showAllOnEmpty: report.opts?.showAllOnEmpty,
-      },
-      {
-        query: report.filter,
-      },
-    )
+    return repoName(report.entityType, report)
+      .watchSearch(
+        report.query,
+        {
+          showAllOnEmpty: report.opts?.showAllOnEmpty,
+        },
+        {
+          query: report.filter,
+        },
+      )
+      .pipe(debounceTime(SEARCH_DEBOUNCE_MS))
   }
 }
 
@@ -75,7 +80,7 @@ export class FullChildEntitiesHandler
 
     return myChildren.pipe(
       switchMap((children) =>
-        children.length == 0
+        children.length === 0
           ? of([] as MItemStub[])
           : combineLatest(
               children.map((child) =>
@@ -308,8 +313,12 @@ export class EntitySnapshotDifferenceHandler
 
     return combineLatest([pinned, upToDate]).pipe(
       map(([pinned, upToDate]) => {
-        const pinnedIds = new Set(pinned.map((x) => x.id))
-        const upToDateIds = new Set(upToDate.map((x) => x.id))
+        // Build O(1) lookup maps to avoid O(n²) find() calls
+        const pinnedMap = new Map(pinned.map((x) => [x.id, x]))
+        const upToDateMap = new Map(upToDate.map((x) => [x.id, x]))
+
+        const pinnedIds = new Set(pinnedMap.keys())
+        const upToDateIds = new Set(upToDateMap.keys())
 
         const addedIds = pinnedIds.difference(upToDateIds)
         const removedIds = upToDateIds.difference(pinnedIds)
@@ -317,18 +326,13 @@ export class EntitySnapshotDifferenceHandler
         const potentiallyChanged = pinnedIds.intersection(upToDateIds)
 
         const changed = [...potentiallyChanged].filter((id) => {
-          const p = pinned.find((x) => x.id === id)!
-          const u = upToDate.find((x) => x.id === id)!
-
-          return p.hash !== u.hash
+          return pinnedMap.get(id)!.hash !== upToDateMap.get(id)!.hash
         })
 
         return {
-          added: [...addedIds].map((id) => upToDate.find((x) => x.id === id)!),
-          removed: [...removedIds].map(
-            (id) => pinned.find((x) => x.id === id)!,
-          ),
-          changed: changed.map((id) => pinned.find((x) => x.id === id)!),
+          added: [...addedIds].map((id) => upToDateMap.get(id)!),
+          removed: [...removedIds].map((id) => pinnedMap.get(id)!),
+          changed: changed.map((id) => pinnedMap.get(id)!),
         } satisfies EntitySnapshotDifferenceData
       }),
     )

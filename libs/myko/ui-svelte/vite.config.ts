@@ -2,6 +2,6 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-	// @ts-ignore
+	// @ts-expect-error
 	plugins: [sveltekit()]
 });

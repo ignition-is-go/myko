@@ -1,0 +1,72 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedVariables": "warn",
+        "noUnusedImports": "warn",
+        "noUnusedFunctionParameters": "off",
+        "useExhaustiveDependencies": "off",
+        "noEmptyPattern": "warn",
+        "noUnreachable": "warn",
+        "noInnerDeclarations": "warn"
+      },
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noConfusingVoidType": "off",
+        "noAssignInExpressions": "off",
+        "useIterableCallbackReturn": "off",
+        "noImplicitAnyLet": "warn",
+        "noThenProperty": "off",
+        "noPrototypeBuiltins": "warn",
+        "noSelfCompare": "warn",
+        "noShadowRestrictedNames": "warn",
+        "useBiomeIgnoreFolder": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off",
+        "useConst": "warn",
+        "noParameterAssign": "off"
+      },
+      "complexity": {
+        "noBannedTypes": "off",
+        "noForEach": "off",
+        "noArguments": "warn",
+        "noStaticOnlyClass": "off"
+      },
+      "performance": {
+        "noAccumulatingSpread": "off"
+      },
+      "security": {
+        "noGlobalEval": "warn"
+      }
+    }
+  },
+  "files": {
+    "includes": [
+      "apps/**/*.ts",
+      "apps/**/*.tsx",
+      "apps/**/*.js",
+      "apps/**/*.jsx",
+      "libs/**/*.ts",
+      "libs/**/*.tsx",
+      "libs/**/*.js",
+      "libs/**/*.jsx",
+      "!apps/labs/scratch/**",
+      "!libs/ableton/src/lib/max4node/**",
+      "!libs/svelte-schema-form/**",
+      "!libs/mediamtx/generated/**"
+    ],
+    "ignoreUnknown": true
+  },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  }
+}

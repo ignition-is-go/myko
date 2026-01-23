@@ -2,6 +2,10 @@ import type {
   ID,
   MEvent,
   MWrappedCommand,
+<<<<<<< HEAD
+=======
+  MWrappedItem,
+>>>>>>> feat/muti-action
   MWrappedQuery,
   MWrappedReport,
 } from '@myko/core'
@@ -28,6 +32,18 @@ export type {
   WrappedReport,
 } from '@myko/rs'
 
+/**
+ * Raw delta from a query subscription before accumulation.
+ * Used by ReactiveClient to apply updates directly to SvelteMap.
+ */
+export type QueryDelta<T> = {
+  sequence: number
+  upserts: T[]
+  deletes: ID[]
+  /** True when sequence === 0, indicating a full reset */
+  isReset: boolean
+}
+
 export const MEVENT_EVENT = 'ws:m:event'
 export const MCOMMAND_EVENT = 'ws:m:command'
 export const MCOMMAND_RESPONSE_EVENT = 'ws:m:command-response'
@@ -41,6 +57,7 @@ export const MREPORT_RESPONSE_EVENT = 'ws:m:report-response'
 export const MREPORT_ERROR_EVENT = 'ws:m:report-error'
 export const MREPORT_CANCEL = 'ws:m:report-cancel'
 export const MPING_EVENT = 'ws:m:ping'
+export const MBATCH_EVENT = 'ws:m:batch'
 
 export const MYKO_WS_PORT = 5155
 
@@ -119,6 +136,12 @@ export type WSMCommandError = {
   event: typeof MCOMMAND_ERROR_EVENT
 }
 
+// BATCH - for bundling multiple messages in a single frame
+export type WSMBatch = {
+  event: typeof MBATCH_EVENT
+  data: WSMMessage[]
+}
+
 export type WSMMessage =
   | WSMQuery
   | WSMCommand
@@ -133,3 +156,4 @@ export type WSMMessage =
   | WSMReportCancel
   | WSMReportError
   | WSPingEvent
+  | WSMBatch

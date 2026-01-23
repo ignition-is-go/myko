@@ -81,13 +81,14 @@ export class Store<T extends MItem> extends Map<ID, T> {
    * @returns A map containing the filtered entries from the store.
    */
   getFilter(filterFunc: (el: T) => boolean): Map<ID, T> {
-    const map = [...this.entries()]
-      .filter(([_, val]) => filterFunc(val))
-      .reduce((m, [key, val]) => {
-        m.set(key, val)
-        return m
-      }, new Map())
-    return map
+    // Avoid intermediate array allocations - iterate directly
+    const result = new Map<ID, T>()
+    for (const [key, val] of this) {
+      if (filterFunc(val)) {
+        result.set(key, val)
+      }
+    }
+    return result
   }
 
   /**

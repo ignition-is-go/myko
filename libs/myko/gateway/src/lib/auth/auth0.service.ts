@@ -34,7 +34,7 @@ export class Auth0UserService implements MykoAuthService {
   async getUserId(token: string): Promise<string | undefined> {
     try {
       return jose.decodeJwt(token).sub
-    } catch (e) {
+    } catch (_e) {
       return undefined
     }
   }

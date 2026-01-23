@@ -31,9 +31,9 @@ export const isAllInit = (): {
  * @returns An array of item types that are registered but not initialized.
  */
 export const leftToInit = (): string[] => {
-  let registered = new Set(isRegistered)
+  const registered = new Set(isRegistered)
 
-  for (let i of isInit) {
+  for (const i of isInit) {
     registered.delete(i)
   }
   return [...registered]

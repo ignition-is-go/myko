@@ -1,8 +1,5 @@
 {
-  "name": "@myko/core",
-  "version": "3.0.0-canary.809",
   "exports": "./src/index.ts",
-  "license": "GPL-3.0-only",
   "imports": {
     "colors": "npm:colors@^1.4.0",
     "flexsearch": "npm:flexsearch@^0.7",
@@ -14,11 +11,14 @@
     "uuid": "npm:uuid@^9.0.1",
     "zod": "npm:zod@^3.24.1"
   },
+  "license": "GPL-3.0-only",
+  "name": "@myko/core",
+  "nodeModulesDir": "auto",
   "publish": {
     "exclude": [
       "node_modules",
       "package.json"
     ]
   },
-  "nodeModulesDir": "auto"
+  "version": "3.1.0-canary.23"
 }

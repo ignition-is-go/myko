@@ -1,9 +1,9 @@
 import { getHostId, type ID } from '@myko/core'
-import * as dns from 'dns/promises'
+import * as dns from 'node:dns/promises'
 
 export const dockerAddress = async (): Promise<string> => {
-  const SERVICE_NAME = process.env['MYKO_SERVICE_NAME']
-  const MYKO_PORT = process.env['MYKO_PORT']
+  const SERVICE_NAME = process.env.MYKO_SERVICE_NAME
+  const MYKO_PORT = process.env.MYKO_PORT
 
   if (!MYKO_PORT) {
     throw new Error('MYKO_PORT not specified')
