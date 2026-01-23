@@ -12,11 +12,6 @@ documentation = "https://docs.rs/myko-macros"
 proc-macro = true
 
 [dependencies]
-<<<<<<< HEAD
 proc-macro2.workspace = true
 syn.workspace = true
 quote.workspace = true
-=======
-syn = {version="2.0.48", features=["full"]}
-quote = "1.0.35"
->>>>>>> feat/muti-action

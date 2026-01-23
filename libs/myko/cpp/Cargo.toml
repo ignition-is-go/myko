@@ -1,6 +1,6 @@
 [package]
 name = "myko-cpp"
-version = "3.0.0-canary.809"
+version = "3.1.0-canary.23"
 edition = "2024"
 description = "C++ bindings for myko-rs"
 license = "AGPL-3.0-or-later"
@@ -13,7 +13,7 @@ name = "myko_cpp"
 crate-type = ["staticlib"]
 
 [dependencies]
-myko-rs = { version = "3.0.0-canary.809", path = "../rs" }
+myko-rs = { version = "3.1.0-canary.23", path = "../rs" }
 cxx = "1.0"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }

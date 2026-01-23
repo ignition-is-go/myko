@@ -6,25 +6,21 @@ members = [
   "apps/link-ui/src-tauri",
   "apps/ui/src-tauri",
   "apps/linkd",
+  "apps/server_rs",
+  "apps/sync_server",
   "libs/myko/rs",
+  "libs/myko/macros",
   "libs/link/core",
   "libs/link/rpc/rs",
-  "libs/myko/macros",
   "libs/entities/rs",
-  "libs/sdk/rs",
-  "libs/sync",
-  "apps/sync_server",
-  "libs/rs-macros",
-  "libs/opencv",
-  "libs/asset-store/core", "apps/server_rs", "libs/autosocket",
   "libs/entities/macros",
-  "libs/hypha/hypha",
-  "libs/sync/core",
-  "libs/sync/ffi",
-  "apps/sync_server",
+  "libs/sdk/rs",
   "libs/rs-macros",
+  "libs/sync",
   "libs/opencv",
   "libs/asset-store/core",
+  "libs/autosocket",
+  "libs/hypha/hypha",
   "libs/display/core",
   "libs/display/output",
   "libs/display/nvidia",
@@ -144,12 +140,13 @@ napi-derive = "2.12"
 napi-build = "2.0"
 
 # Internal crates
-myko-rs = { version = "3.0.0-canary.809", path = "libs/myko/rs" }
-myko-macros = { version = "3.0.0-canary.809", path = "libs/myko/macros" }
-rship-entities = { version = "3.0.0-canary.809", path = "libs/entities/rs" }
-rship-entities-macros = { version = "3.0.0-canary.809", path = "libs/entities/macros" }
-rship-sdk = { version = "3.0.0-canary.809", path = "libs/sdk/rs" }
+myko-rs = { version = "3.1.0-canary.23", path = "libs/myko/rs" }
+myko-macros = { version = "3.1.0-canary.23", path = "libs/myko/macros" }
+rship-entities = { version = "3.1.0-canary.23", path = "libs/entities/rs" }
+rship-entities-macros = { version = "3.1.0-canary.23", path = "libs/entities/macros" }
+rship-sdk = { version = "3.1.0-canary.23", path = "libs/sdk/rs" }
 autosocket = { version = "0.1.0", path = "libs/autosocket" }
-link = { version = "3.0.0-canary.809", path = "libs/link/core" }
-rship-sync = { version = "3.0.0-canary.809", path = "libs/sync" }
+link = { version = "3.1.0-canary.23", path = "libs/link/core" }
+rship-sync = { version = "3.1.0-canary.23", path = "libs/sync" }
+rs-macros = { version = "3.1.0-canary.23", path = "libs/rs-macros" }
 hypha = { version = "0.1.0", path = "libs/hypha/hypha" }
