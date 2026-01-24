@@ -20,7 +20,7 @@
   "main": "./src/index.ts",
   "name": "@myko/core",
   "scripts": {
-    "build": "tsc --noEmit"
+    "check": "tsc --noEmit --skipLibCheck"
   },
   "types": "./src/index.ts",
   "version": "3.1.0-canary.23"

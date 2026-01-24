@@ -80,11 +80,7 @@
     "rust:publish": "./tools/scripts/rust-publish.sh",
     "sync": "git submodule update --init --recursive --remote",
     "test:smoke": "bun run ./tools/scripts/smoke-test.ts",
-    "typecheck": "pnpm typecheck-sdk && pnpm typecheck-core && pnpm typecheck-handlers",
-    "typecheck-core": "tsc --noEmit --skipLibCheck --project libs/entities/ts/core/tsconfig.json",
-    "typecheck-handlers": "tsc --noEmit --skipLibCheck --project libs/entities/ts/handlers/tsconfig.json",
-    "typecheck-postgres": "tsc --noEmit --skipLibCheck --project libs/myko/postgres/tsconfig.json",
-    "typecheck-sdk": "tsc --noEmit --skipLibCheck --project libs/sdk/ts/tsconfig.json",
+    "check": "pnpm run -r check",
     "versionecho": "bun run ./tools/scripts/version-echo.ts"
   },
   "trustedDependencies": [

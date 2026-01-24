@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "check": "tsc --noEmit --skipLibCheck",
     "test": "echo 'no tests yet'"
   },
   "dependencies": {

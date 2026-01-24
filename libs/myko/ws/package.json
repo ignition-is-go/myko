@@ -17,7 +17,7 @@
   "main": "./src/index.ts",
   "name": "@myko/ws",
   "scripts": {
-    "build": "tsc --noEmit"
+    "check": "tsc --noEmit --skipLibCheck"
   },
   "version": "3.1.0-canary.23"
 }
