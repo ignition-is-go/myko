@@ -17,6 +17,7 @@ import {
   type WrappedQuery,
   type WrappedReport,
 } from '@myko/rs'
+import { pack, unpack } from 'msgpackr'
 import {
   bufferCount,
   bufferTime,
@@ -64,6 +65,12 @@ export enum ConnectionStatus {
   Connected = 'Connected',
   Disconnected = 'Disconnected',
   Connecting = 'Connecting',
+}
+
+/** Wire protocol for encoding messages */
+export enum MykoProtocol {
+  JSON = 'JSON',
+  MSGPACK = 'MSGPACK',
 }
 
 /** Query class interface */
@@ -161,9 +168,17 @@ export class MykoClient {
   private peerDiscoverySubscription: Subscription | null = null
   private useSecureWebSocket = false
 
+  // Protocol - defaults to MSGPACK for better performance, server auto-detects
+  private protocol: MykoProtocol = MykoProtocol.MSGPACK
+
   constructor() {
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
     this.currentServerSubject.next(null)
+  }
+
+  /** Set the wire protocol (JSON or MSGPACK). Default is MSGPACK. */
+  setProtocol(protocol: MykoProtocol): void {
+    this.protocol = protocol
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -552,6 +567,7 @@ export class MykoClient {
     if (this.sockets.has(address)) return
 
     const ws = new WebSocket(address)
+    ws.binaryType = 'arraybuffer' // Receive binary messages as ArrayBuffer for msgpack
     const managed: ManagedSocket = { ws, address }
     this.sockets.set(address, managed)
 
@@ -625,36 +641,57 @@ export class MykoClient {
   // ─────────────────────────────────────────────────────────────────────────────
 
   private onMessage(data: string | ArrayBuffer | Blob): void {
-    if (typeof data !== 'string') return
     this.downMsgCounter.next()
 
     try {
-      const message = JSON.parse(data) as MykoMessage
-      switch (message.event) {
-        case MykoEvent.QueryResponse:
-          this.queryResponses.next(message)
-          break
-        case MykoEvent.ReportResponse:
-          this.reportResponses.next(message)
-          break
-        case MykoEvent.CommandResponse:
-          this.commandResponses.next(message as CommandResponseMessage)
-          break
-        case MykoEvent.CommandError:
-          this.commandErrors.next(message as CommandErrorMessage)
-          break
-        case MykoEvent.QueryError:
-          this.queryErrors.next(message as QueryErrorMessage)
-          break
-        case MykoEvent.ReportError:
-          this.reportErrors.next(message as ReportErrorMessage)
-          break
-        case MykoEvent.Ping:
-          this.pingResponses.next(message as PingMessage)
-          break
+      let message: MykoMessage
+
+      if (typeof data === 'string') {
+        // JSON text message
+        message = JSON.parse(data) as MykoMessage
+      } else if (data instanceof ArrayBuffer) {
+        // Binary msgpack message
+        message = unpack(new Uint8Array(data)) as MykoMessage
+      } else if (data instanceof Blob) {
+        // Handle Blob asynchronously - convert to ArrayBuffer first
+        data.arrayBuffer().then((buffer) => {
+          const decoded = unpack(new Uint8Array(buffer)) as MykoMessage
+          this.routeMessage(decoded)
+        })
+        return
+      } else {
+        return
       }
+
+      this.routeMessage(message)
     } catch {
       // Ignore parse errors
+    }
+  }
+
+  private routeMessage(message: MykoMessage): void {
+    switch (message.event) {
+      case MykoEvent.QueryResponse:
+        this.queryResponses.next(message)
+        break
+      case MykoEvent.ReportResponse:
+        this.reportResponses.next(message)
+        break
+      case MykoEvent.CommandResponse:
+        this.commandResponses.next(message as CommandResponseMessage)
+        break
+      case MykoEvent.CommandError:
+        this.commandErrors.next(message as CommandErrorMessage)
+        break
+      case MykoEvent.QueryError:
+        this.queryErrors.next(message as QueryErrorMessage)
+        break
+      case MykoEvent.ReportError:
+        this.reportErrors.next(message as ReportErrorMessage)
+        break
+      case MykoEvent.Ping:
+        this.pingResponses.next(message as PingMessage)
+        break
     }
   }
 
@@ -662,7 +699,9 @@ export class MykoClient {
     if (this.currentServer) {
       const managed = this.sockets.get(this.currentServer)
       if (managed?.ws.readyState === WebSocket.OPEN) {
-        managed.ws.send(JSON.stringify(message))
+        const encoded =
+          this.protocol === MykoProtocol.MSGPACK ? pack(message) : JSON.stringify(message)
+        managed.ws.send(encoded)
         this.upMsgCounter.next()
         return
       }

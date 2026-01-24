@@ -58,6 +58,7 @@ export type { WrappedItem as MWrappedItem } from '@myko/rs'
 export {
   ConnectionStatus,
   MykoClient,
+  MykoProtocol,
   type ClientStats,
   type Command,
   type CommandResult,
