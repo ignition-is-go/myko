@@ -1,9 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::{AtomicU8, Ordering}},
+};
 
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio_stream::{
     StreamExt,
     wrappers::{BroadcastStream, WatchStream},
@@ -20,6 +23,24 @@ use crate::{
     wire::{MEvent, MykoMessage, WrappedQuery, WrappedReport, wrap_command_request},
 };
 
+/// Wire protocol for encoding messages.
+/// Defaults to MSGPACK for better performance - server auto-detects binary frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub enum MykoProtocol {
+    JSON = 0,
+    MSGPACK = 1,
+}
+
+impl From<u8> for MykoProtocol {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => MykoProtocol::JSON,
+            _ => MykoProtocol::MSGPACK,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase", tag = "type", content = "data")]
@@ -31,6 +52,8 @@ pub enum ConnectionStatus {
 #[derive(Clone)]
 pub struct MykoClient {
     socket: Arc<AutoReconnectSocket>,
+    /// Wire protocol for encoding messages (defaults to MSGPACK)
+    protocol: Arc<AtomicU8>,
 }
 
 impl Default for MykoClient {
@@ -42,8 +65,43 @@ impl Default for MykoClient {
 impl MykoClient {
     pub fn new() -> MykoClient {
         let socket = Arc::new(AutoReconnectSocket::new());
+        // Default to MSGPACK for better performance - server auto-detects binary frames
+        let protocol = Arc::new(AtomicU8::new(MykoProtocol::MSGPACK as u8));
 
-        MykoClient { socket }
+        MykoClient { socket, protocol }
+    }
+
+    /// Set the wire protocol (JSON or MSGPACK). Default is MSGPACK.
+    pub fn set_protocol(&self, protocol: MykoProtocol) {
+        self.protocol.store(protocol as u8, Ordering::SeqCst);
+    }
+
+    /// Get the current wire protocol.
+    pub fn get_protocol(&self) -> MykoProtocol {
+        MykoProtocol::from(self.protocol.load(Ordering::SeqCst))
+    }
+
+    /// Encode a message according to the current protocol.
+    fn encode_message<T: Serialize>(&self, msg: &T) -> Result<Message, String> {
+        match self.get_protocol() {
+            MykoProtocol::JSON => {
+                let json = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+                Ok(Message::Text(json))
+            }
+            MykoProtocol::MSGPACK => {
+                let bytes = rmp_serde::to_vec(msg).map_err(|e| e.to_string())?;
+                Ok(Message::Binary(bytes))
+            }
+        }
+    }
+
+    /// Decode a WebSocket message according to its type.
+    fn decode_message(msg: &Message) -> Option<Value> {
+        match msg {
+            Message::Text(content) => serde_json::from_str::<Value>(content).ok(),
+            Message::Binary(bytes) => rmp_serde::from_slice::<Value>(bytes).ok(),
+            _ => None,
+        }
     }
 
     /// Get a stream of connection status changes
@@ -67,12 +125,7 @@ impl MykoClient {
 
     pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
         let myko_msg = MykoMessage::Event(event);
-
-        let val = json!(myko_msg);
-
-        let str = serde_json::to_string(&val).expect("Could not serialize message");
-
-        let msg = Message::Text(str);
+        let msg = self.encode_message(&myko_msg)?;
 
         self.socket
             .outgoing
@@ -83,12 +136,7 @@ impl MykoClient {
 
     pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
         let myko_msg = MykoMessage::Query(query);
-
-        let val = json!(myko_msg);
-
-        let str = serde_json::to_string(&val).expect("Could not serialize message");
-
-        let msg = Message::Text(str);
+        let msg = self.encode_message(&myko_msg)?;
 
         self.socket
             .outgoing
@@ -100,10 +148,7 @@ impl MykoClient {
     /// Send a raw wrapped command (for federation forwarding)
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
-
-        let str = serde_json::to_string(&myko_msg).map_err(|e| e.to_string())?;
-
-        let msg = Message::Text(str);
+        let msg = self.encode_message(&myko_msg)?;
 
         self.socket
             .outgoing
@@ -115,10 +160,7 @@ impl MykoClient {
     /// Send a raw wrapped report (for federation forwarding)
     pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
         let myko_msg = MykoMessage::Report(report);
-
-        let str = serde_json::to_string(&myko_msg).map_err(|e| e.to_string())?;
-
-        let msg = Message::Text(str);
+        let msg = self.encode_message(&myko_msg)?;
 
         self.socket
             .outgoing
@@ -131,13 +173,7 @@ impl MykoClient {
         let stream = BroadcastStream::new(self.socket.incoming.clone().subscribe());
 
         stream.filter_map(|x| match x {
-            Ok(Message::Text(content)) => {
-                let d = serde_json::from_str::<Value>(content.as_str());
-
-                let data = d.expect("did not parse data @ get_messages");
-
-                Some(data)
-            }
+            Ok(msg) => Self::decode_message(&msg),
             _ => None,
         })
     }
@@ -215,9 +251,10 @@ impl MykoClient {
         Fut: std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static,
     {
         let outgoing = self.socket.clone();
+        let protocol = self.protocol.clone();
         let mut msgs = BroadcastStream::new(self.socket.incoming.clone().subscribe()).filter_map(
             |x| match x {
-                Ok(Message::Text(s)) => serde_json::from_str::<serde_json::Value>(&s).ok(),
+                Ok(ref msg) => Self::decode_message(msg),
                 _ => None,
             },
         );
@@ -241,6 +278,14 @@ impl MykoClient {
                     continue;
                 }
 
+                // Helper to encode response based on protocol
+                let encode_response = |msg: &MykoMessage| -> Option<Message> {
+                    match MykoProtocol::from(protocol.load(Ordering::SeqCst)) {
+                        MykoProtocol::JSON => serde_json::to_string(msg).ok().map(Message::Text),
+                        MykoProtocol::MSGPACK => rmp_serde::to_vec(msg).ok().map(Message::Binary),
+                    }
+                };
+
                 // try to deserialize to requested command type; if it fails, it's not for this handler
                 match serde_json::from_value::<C>(wrapped.command.clone()) {
                     Ok(cmd) => {
@@ -256,8 +301,8 @@ impl MykoClient {
                                     response,
                                 };
                                 let msg = MykoMessage::CommandResponse(resp);
-                                if let Ok(s) = serde_json::to_string(&msg) {
-                                    let _ = outgoing.outgoing.send(Message::Text(s));
+                                if let Some(encoded) = encode_response(&msg) {
+                                    let _ = outgoing.outgoing.send(encoded);
                                 }
                             }
                             Err(message) => {
@@ -267,8 +312,8 @@ impl MykoClient {
                                     message,
                                 };
                                 let msg = MykoMessage::CommandError(err);
-                                if let Ok(s) = serde_json::to_string(&msg) {
-                                    let _ = outgoing.outgoing.send(Message::Text(s));
+                                if let Some(encoded) = encode_response(&msg) {
+                                    let _ = outgoing.outgoing.send(encoded);
                                 }
                             }
                         }
@@ -292,22 +337,15 @@ impl MykoClient {
         let wrapped = wrap_command_request(&request).map_err(|e| e.to_string())?;
 
         let msg = MykoMessage::Command(wrapped);
-
-        let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
-
-        let ws_msg = Message::Text(json);
+        let ws_msg = self.encode_message(&msg)?;
 
         // listen for matching response/error
         let mut stream =
             BroadcastStream::new(self.socket.incoming.clone().subscribe()).filter_map(move |x| {
                 match x {
-                    Ok(Message::Text(content)) => {
-                        let d = serde_json::from_str::<serde_json::Value>(content.as_str());
-                        let data = match d {
-                            Ok(v) => v,
-                            Err(_) => return None,
-                        };
-                        let parsed = serde_json::from_value::<MykoMessage>(data.clone()).ok()?;
+                    Ok(ref msg) => {
+                        let data = Self::decode_message(msg)?;
+                        let parsed = serde_json::from_value::<MykoMessage>(data).ok()?;
                         match parsed {
                             MykoMessage::CommandResponse(resp) => {
                                 if resp.tx != tx {
@@ -421,8 +459,7 @@ impl MykoClient {
         });
 
         let msg = MykoMessage::Report(wrapped);
-
-        let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
+        let msg = self.encode_message(&msg).expect("Could not serialize message");
 
         let report_send_socket = self.socket.clone();
         let report_send_self = self.clone();
@@ -540,8 +577,7 @@ impl MykoClient {
         });
 
         let msg = MykoMessage::Query(wrapped);
-
-        let msg = Message::Text(serde_json::to_string(&msg).expect("Could not serialize message"));
+        let msg = self.encode_message(&msg).expect("Could not serialize message");
 
         let query_send_socket = self.socket.clone();
         let query_send_self = self.clone();
@@ -728,6 +764,10 @@ impl MykoClient {
 
         let report_id = report.report_id.clone();
 
+        // Pre-encode message before spawning
+        let msg = MykoMessage::Report(report);
+        let encoded_msg = self.encode_message(&msg).expect("Could not serialize report");
+
         tokio::spawn(async move {
             // Get message stream
             let mut stream = client.get_messages();
@@ -739,10 +779,7 @@ impl MykoClient {
                 }
                 let status = client.get_connection_status().await;
                 if let ConnectionStatus::Connected(_) = status {
-                    let msg = MykoMessage::Report(report.clone());
-                    let msg_str = serde_json::to_string(&msg).expect("Could not serialize report");
-                    let msg = Message::Text(msg_str);
-                    if let Err(e) = client.socket.outgoing.send(msg) {
+                    if let Err(e) = client.socket.outgoing.send(encoded_msg.clone()) {
                         error!("Failed to send report: {}", e);
                     } else {
                         debug!("Watching report {}", report_id);
