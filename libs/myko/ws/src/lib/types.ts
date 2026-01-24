@@ -2,10 +2,6 @@ import type {
   ID,
   MEvent,
   MWrappedCommand,
-<<<<<<< HEAD
-=======
-  MWrappedItem,
->>>>>>> feat/muti-action
   MWrappedQuery,
   MWrappedReport,
 } from '@myko/core'
