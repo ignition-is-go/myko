@@ -3,7 +3,7 @@ import type { IRepo, Repo, RepoFactory } from '../aggregates/repo.abstract'
 import { MYKO_ITEM_TYPE } from '../constants'
 import type { Client } from '../modules'
 import type { Persister, PersisterFactory } from '../persisters'
-import type { IContext, MEvent, MItem, MItemConstructor } from '../types'
+import type { IContext, IMItem, MEvent, MItem, MItemConstructor } from '../types'
 import { relationRegistry } from './relation.registry'
 
 // Lazy imports to avoid circular initialization during bundling.
@@ -196,20 +196,20 @@ export type RepoOverrideData = {
   repo: RepoFactory
 }
 
-export const persisterOverride = <T extends MItem>(
+export const persisterOverride = <T extends IMItem>(
   entity: MItemConstructor<T>,
   persister: PersisterFactory,
 ): PersisterOverrideData =>
   ({
-    itemName: getItemName(entity),
+    itemName: getItemName(entity as MItemConstructor<IMItem>),
     persister,
   }) satisfies PersisterOverrideData
 
-export const repoOverride = <T extends MItem>(
+export const repoOverride = <T extends IMItem>(
   entity: MItemConstructor<T>,
   repo: RepoFactory,
 ): RepoOverrideData =>
   ({
-    itemName: getItemName(entity),
+    itemName: getItemName(entity as MItemConstructor<IMItem>),
     repo,
   }) satisfies RepoOverrideData

@@ -232,7 +232,7 @@ export class SvelteMykoClient {
 			let resolved = $state(false);
 
 			const subscription = this.client.watchQueryDiff(queryFactory).subscribe({
-				next: (diff: QueryDiff<Item>) => {
+				next: (diff) => {
 					if (diff.sequence === 0n) {
 						items.clear();
 					}
@@ -240,7 +240,7 @@ export class SvelteMykoClient {
 						items.delete(id);
 					}
 					for (const item of diff.upserts) {
-						items.set(item.id, item);
+						const typedItem = item as Item; items.set(typedItem.id, typedItem);
 					}
 					resolved = true;
 				}
