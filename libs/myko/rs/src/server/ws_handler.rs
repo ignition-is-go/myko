@@ -114,16 +114,27 @@ impl WsHandler {
             };
 
             match msg {
-                Message::Binary(data) => match rmp_serde::from_slice::<MykoMessage>(&data) {
-                    Ok(myko_msg) => {
-                        if let Err(e) = Self::handle_message(&mut session, ctx, &tx, myko_msg) {
-                            log::error!("Error handling message: {}", e);
+                Message::Binary(data) => {
+                    // Auto-detect: receiving binary means client wants binary responses
+                    if !use_binary.load(Ordering::SeqCst) {
+                        log::info!(
+                            "Client {} auto-switching to binary (msgpack) protocol",
+                            client_id
+                        );
+                        use_binary.store(true, Ordering::SeqCst);
+                    }
+
+                    match rmp_serde::from_slice::<MykoMessage>(&data) {
+                        Ok(myko_msg) => {
+                            if let Err(e) = Self::handle_message(&mut session, ctx, &tx, myko_msg) {
+                                log::error!("Error handling message: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to parse message from {}: {}", client_id, e);
                         }
                     }
-                    Err(e) => {
-                        log::warn!("Failed to parse message from {}: {}", client_id, e);
-                    }
-                },
+                }
                 Message::Text(text) => {
                     // Check for protocol switch request
                     if text == SWITCH_TO_MSGPACK {

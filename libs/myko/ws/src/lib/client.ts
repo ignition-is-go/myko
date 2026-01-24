@@ -219,6 +219,11 @@ export class WSMClient {
       ...opts,
     }
 
+    // Auto-enable msgpack protocol unless disabled - server auto-detects binary frames
+    if (!this.clientOpts.disableMsgPack) {
+      this.protocol = MykoProtocol.MSGPACK
+    }
+
     this.socketGroup = new SocketGroup(
       this.makeSocket,
 
@@ -480,10 +485,6 @@ export class WSMClient {
     this.userToken = token
   }
 
-  // private switchToMessagePack() {
-  //   this.protocolReady = false
-  //   this.forceSend({ event: ProtocolMessages.SwitchToMSGPACK })
-  // }
 
   stats(): Observable<ClientStats> {
     const p = interval(1000).pipe(
@@ -517,13 +518,6 @@ export class WSMClient {
   }
 
   private resendMessages(_path: string) {
-    if (
-      this.protocol !== MykoProtocol.MSGPACK &&
-      !this.clientOpts.disableMsgPack
-    ) {
-      // this.switchToMessagePack()
-    }
-
     this.processQueue()
     ;[...this.resendQueries.values()].forEach((q) => {
       this.send(q)
