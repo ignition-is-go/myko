@@ -9484,6 +9484,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures 0.3.31",
+ "hypha",
  "js-sys",
  "log 0.4.29",
  "myko-macros",
@@ -9493,6 +9494,7 @@ dependencies = [
  "paste",
  "regex",
  "rship-entities-macros",
+ "rship-sync",
  "schemars 1.2.0",
  "serde",
  "serde_json",
@@ -11056,6 +11058,7 @@ dependencies = [
 name = "sync_server"
 version = "3.1.0-canary.23"
 dependencies = [
+ "dotenv",
  "env_logger",
  "log 0.4.29",
  "myko-rs",
