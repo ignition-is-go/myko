@@ -163,7 +163,12 @@ impl WsHandler {
                             }
                         }
                         Err(e) => {
-                            log::warn!("Failed to parse JSON message from {}: {}", client_id, e);
+                            log::warn!(
+                                "Failed to parse JSON message from {}: {} | raw: {}",
+                                client_id,
+                                e,
+                                if text.len() > 1000 { &text[..1000] } else { &text }
+                            );
                         }
                     }
                 }
@@ -255,7 +260,12 @@ impl WsHandler {
                             }
                         }
                         Err(e) => {
-                            log::error!("Failed to parse query {}: {}", query_id, e);
+                            log::error!(
+                                "Failed to parse query {}: {} | payload: {}",
+                                query_id,
+                                e,
+                                serde_json::to_string(&wrapped.query).unwrap_or_default()
+                            );
                         }
                     }
                 } else {
@@ -317,7 +327,12 @@ impl WsHandler {
                             }
                         }
                         Err(e) => {
-                            log::error!("Failed to parse report {}: {}", report_id, e);
+                            log::error!(
+                                "Failed to parse report {}: {} | payload: {}",
+                                report_id,
+                                e,
+                                serde_json::to_string(&wrapped.report).unwrap_or_default()
+                            );
                         }
                     }
                 } else {
