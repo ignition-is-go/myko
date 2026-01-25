@@ -115,12 +115,30 @@ export type QueryDiff<T> = {
 }
 
 // Message type aliases
-type QueryResponseMessage = Extract<MykoMessage, { event: typeof MykoEvent.QueryResponse }>
-type ReportResponseMessage = Extract<MykoMessage, { event: typeof MykoEvent.ReportResponse }>
-type CommandResponseMessage = Extract<MykoMessage, { event: typeof MykoEvent.CommandResponse }>
-type CommandErrorMessage = Extract<MykoMessage, { event: typeof MykoEvent.CommandError }>
-type QueryErrorMessage = Extract<MykoMessage, { event: typeof MykoEvent.QueryError }>
-type ReportErrorMessage = Extract<MykoMessage, { event: typeof MykoEvent.ReportError }>
+type QueryResponseMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.QueryResponse }
+>
+type ReportResponseMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.ReportResponse }
+>
+type CommandResponseMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.CommandResponse }
+>
+type CommandErrorMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.CommandError }
+>
+type QueryErrorMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.QueryError }
+>
+type ReportErrorMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.ReportError }
+>
 type PingMessage = Extract<MykoMessage, { event: typeof MykoEvent.Ping }>
 
 interface ManagedSocket {
@@ -169,7 +187,7 @@ export class MykoClient {
   private useSecureWebSocket = false
 
   // Protocol - defaults to MSGPACK for better performance, server auto-detects
-  private protocol: MykoProtocol = MykoProtocol.MSGPACK
+  private protocol: MykoProtocol = MykoProtocol.JSON
 
   constructor() {
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
@@ -243,7 +261,8 @@ export class MykoClient {
   getConnectionStatus(): ConnectionStatus {
     if (this.currentServer) return ConnectionStatus.Connected
     for (const m of this.sockets.values()) {
-      if (m.ws.readyState === WebSocket.CONNECTING) return ConnectionStatus.Connecting
+      if (m.ws.readyState === WebSocket.CONNECTING)
+        return ConnectionStatus.Connecting
     }
     return ConnectionStatus.Disconnected
   }
@@ -272,18 +291,18 @@ export class MykoClient {
 
   private startPeerDiscovery(): void {
     this.peerDiscoverySubscription?.unsubscribe()
-    this.peerDiscoverySubscription = this.watchQuery(new GetPeerServers({})).subscribe(
-      (servers: Server[]) => {
-        const addresses = servers.map((s) =>
-          this.useSecureWebSocket
-            ? `wss://${s.address}/myko`
-            : `ws://${s.address}:${s.port}/myko`,
-        )
-        if (addresses.length > 0) {
-          this.addServers(addresses)
-        }
-      },
-    )
+    this.peerDiscoverySubscription = this.watchQuery(
+      new GetPeerServers({}),
+    ).subscribe((servers: Server[]) => {
+      const addresses = servers.map((s) =>
+        this.useSecureWebSocket
+          ? `wss://${s.address}/myko`
+          : `ws://${s.address}:${s.port}/myko`,
+      )
+      if (addresses.length > 0) {
+        this.addServers(addresses)
+      }
+    })
   }
 
   private stopPeerDiscovery(): void {
@@ -302,7 +321,12 @@ export class MykoClient {
 
   /** Observable of all errors */
   get errors$(): Observable<MykoError> {
-    const toError = <T extends { event: MykoErrorEvent; data: { tx: string; message: string } }>(
+    const toError = <
+      T extends {
+        event: MykoErrorEvent
+        data: { tx: string; message: string }
+      },
+    >(
       e: T,
     ): MykoError => ({ event: e.event, tx: e.data.tx, message: e.data.message })
 
@@ -417,20 +441,26 @@ export class MykoClient {
   }
 
   /** Watch a query and receive raw diff events */
-  watchQueryDiff<Q extends Query<unknown>>(query: Q): Observable<QueryDiff<QueryItem<Q>>> {
+  watchQueryDiff<Q extends Query<unknown>>(
+    query: Q,
+  ): Observable<QueryDiff<QueryItem<Q>>> {
     const [, responses$] = this.startQuery(query)
 
     return responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
         deletes: r.data.deletes,
-        upserts: r.data.upserts.map((w: WrappedItem<JsonValue>) => w.item) as QueryItem<Q>[],
+        upserts: r.data.upserts.map(
+          (w: WrappedItem<JsonValue>) => w.item,
+        ) as QueryItem<Q>[],
       })),
     )
   }
 
   /** Watch a report with automatic deduplication */
-  watchReport<R extends Report<unknown>>(report: R): Observable<ReportResult<R>> {
+  watchReport<R extends Report<unknown>>(
+    report: R,
+  ): Observable<ReportResult<R>> {
     const cacheKey = `report:${report.reportId}:${JSON.stringify(report.report)}`
 
     const existing = this.sharedReports.get(cacheKey)
@@ -470,7 +500,9 @@ export class MykoClient {
   }
 
   /** Send a command and wait for response */
-  sendCommand<C extends Command<unknown>>(command: C): Promise<CommandResult<C>> {
+  sendCommand<C extends Command<unknown>>(
+    command: C,
+  ): Promise<CommandResult<C>> {
     const tx = uuid()
 
     const wrappedCommand = {
@@ -539,7 +571,11 @@ export class MykoClient {
   private parseAddress(address: string): { host: string; port: number } | null {
     try {
       const url = new URL(address)
-      const port = url.port ? parseInt(url.port, 10) : url.protocol === 'wss:' ? 443 : 80
+      const port = url.port
+        ? parseInt(url.port, 10)
+        : url.protocol === 'wss:'
+          ? 443
+          : 80
       return { host: url.hostname, port }
     } catch {
       return null
@@ -700,7 +736,9 @@ export class MykoClient {
       const managed = this.sockets.get(this.currentServer)
       if (managed?.ws.readyState === WebSocket.OPEN) {
         const encoded =
-          this.protocol === MykoProtocol.MSGPACK ? pack(message) : JSON.stringify(message)
+          this.protocol === MykoProtocol.MSGPACK
+            ? pack(message)
+            : JSON.stringify(message)
         managed.ws.send(encoded)
         this.upMsgCounter.next()
         return

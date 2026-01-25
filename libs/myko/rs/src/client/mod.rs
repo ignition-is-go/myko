@@ -105,7 +105,7 @@ impl MykoClient {
     }
 
     /// Get a stream of connection status changes
-    pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> {
+    pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> + 'static {
         let rx = self.socket.subscribe_status();
         WatchStream::new(rx).map(|status| match status {
             SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
@@ -169,7 +169,7 @@ impl MykoClient {
             .map_err(|err| err.to_string())
     }
 
-    pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> {
+    pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> + 'static {
         let stream = BroadcastStream::new(self.socket.incoming.clone().subscribe());
 
         stream.filter_map(|x| match x {
@@ -413,7 +413,7 @@ impl MykoClient {
     pub fn watch_report<R, O>(
         &self,
         report: impl Into<ReportRequest<R>>,
-    ) -> impl tokio_stream::Stream<Item = O>
+    ) -> impl tokio_stream::Stream<Item = O> + 'static
     where
         R: ReportParams + ReportIdStatic + Clone,
         O: DeserializeOwned + 'static,
@@ -504,7 +504,7 @@ impl MykoClient {
     pub fn watch_query<Q>(
         &self,
         query: impl Into<QueryRequest<Q>>,
-    ) -> impl tokio_stream::Stream<Item = Vec<Q::Item>>
+    ) -> impl tokio_stream::Stream<Item = Vec<Q::Item>> + 'static
     where
         Q: QueryParams + Clone,
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
