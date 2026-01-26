@@ -348,7 +348,7 @@ impl WsHandler {
             MykoMessage::Event(event) => {
                 use crate::event::MEventType;
 
-                log::debug!("Event: {:?} {}", event.change_type(), event.item_type());
+                // log::debug!("Event: {:?} {}", event.change_type(), event.item_type());
 
                 match event.change_type {
                     MEventType::SET => {
