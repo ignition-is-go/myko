@@ -8,13 +8,11 @@ documentation = "https://docs.rs/myko-rs"
 homepage = "https://docs.rs/myko-rs"
 repository = "https://github.com/ignition-is-go/rship"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-uuid = { workspace = true, features = ["js"] }
+uuid.workspace = true
 partially.workspace = true
 futures.workspace = true
 futures-util.workspace = true

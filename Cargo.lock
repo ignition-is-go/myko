@@ -9485,7 +9485,6 @@ dependencies = [
  "chrono",
  "futures 0.3.31",
  "hypha",
- "js-sys",
  "log 0.4.29",
  "myko-macros",
  "myko-rs",
