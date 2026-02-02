@@ -4,16 +4,11 @@
  * Browser-compatible WebSocket client with RxJS Observables.
  */
 
-import type { MEvent } from '@myko/rs'
+import type { ID, MEvent, WrappedItem } from '@myko/rs'
 
 // Re-export all Rust-generated types from @myko/rs
+// This includes the ID type alias (ID = string)
 export * from '@myko/rs'
-
-/**
- * ID type alias for entity identifiers.
- * In the Rust system, IDs are Arc<str> which serialize as strings.
- */
-export type ID = string
 
 /**
  * Get the item type name from an entity type or query class.
@@ -46,7 +41,7 @@ export function getItemName(
  * Compatibility alias for MWrappedItem.
  * In the new system, use WrappedItem<T> from @myko/rs.
  */
-export type { WrappedItem as MWrappedItem } from '@myko/rs'
+export type MWrappedItem<T = unknown> = WrappedItem<T>
 
 /**
  * GetEventLog is now ServerEventLog in the Rust system.
@@ -92,11 +87,14 @@ export type MItemStub = {
 export class GetItemsByTypeAndIds {
   static readonly reportId = 'GetItemsByTypeAndIds'
   readonly reportId = 'GetItemsByTypeAndIds'
+  readonly report: { type: string; ids: ID[] }
 
-  constructor(
-    public type: string,
-    public ids: ID[],
-  ) {}
+  /** Phantom type marker for result inference */
+  readonly $res!: () => unknown[]
+
+  constructor(type: string, ids: ID[]) {
+    this.report = { type, ids }
+  }
 }
 
 /**
@@ -257,6 +255,57 @@ export class PeerAlive {
     this.report = { peerId }
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy stubs (need Rust implementation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Import items command.
+ * @deprecated TODO: Implement in Rust server
+ */
+export class ImportItems {
+  static readonly commandId = 'ImportItems'
+  readonly commandId = 'ImportItems'
+  readonly command: { items: MWrappedItem[] }
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => void
+
+  constructor(items: MWrappedItem[]) {
+    this.command = { items }
+  }
+}
+
+/**
+ * Client entity type stub.
+ * @deprecated TODO: Implement Client entity in Rust
+ */
+export type Client = {
+  id: string
+  serverId: string
+  name?: string
+}
+
+/**
+ * Query to get clients by query parameters.
+ * @deprecated TODO: Implement in Rust server
+ */
+export class GetClientsByQuery {
+  static readonly queryId = 'GetClientsByQuery'
+  readonly queryId = 'GetClientsByQuery'
+  static readonly queryItemType = 'Client'
+  readonly queryItemType = 'Client'
+  readonly query: Record<string, unknown>
+
+  /** Phantom type marker for result inference */
+  readonly $res!: () => Client[]
+
+  constructor(query: Record<string, unknown> = {}) {
+    this.query = query
+  }
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Event history support
