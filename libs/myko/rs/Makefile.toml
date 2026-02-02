@@ -1,8 +1,8 @@
 
 [tasks.gen]
 command = "cargo"
-args = ["run", "--bin", "typegen"]
+args = ["run", "--bin", "typegen", "--target-dir", "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/typegen"]
 
 [tasks.gen-watch]
 command = "cargo"
-args = ["watch", "-x", "run --bin typegen"]
+args = ["watch", "-i", "bindings/", "-x", "run --bin typegen --target-dir ${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/target/typegen"]

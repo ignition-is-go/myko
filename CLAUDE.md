@@ -29,8 +29,8 @@ pnpm dev --filter @rship/ui           # UI dev server
 pnpm build --filter <package>         # Build package
 pnpm format:all                       # Prettier
 
-# Type generation (Rust → TypeScript)
-pnpm --filter @rship/entities gen     # Generate TS types from Rust entities
+# Type generation (Rust → TypeScript, run from respective directories)
+cargo make gen                        # In libs/myko/rs or libs/entities/rs
 
 # Legacy server (being replaced)
 pnpm dev --filter @rship/server       # Bun server (MYKO_PORT=5155)
@@ -162,7 +162,7 @@ Auto-generates: `GetAllTargets`, `GetTargetsByIds`, `GetTargetsByQuery`, `CountA
 
 - **Rust First**: New logic belongs in Rust. TypeScript is for UI and legacy support only.
 - **Generated Types**: Never manually maintain duplicate types - generate TS from Rust definitions.
-- **Type Generation**: `pnpm --filter @rship/entities gen` generates TS bindings from Rust.
+- **Type Generation**: `cargo make gen` in `libs/myko/rs/` or `libs/entities/rs/` generates TS bindings.
 - **JS Runtime**: Bun, not Node.js (for legacy server and tooling).
 - **Package Manager**: pnpm workspaces
 - **Submodules**: Auto-updated via preinstall hook

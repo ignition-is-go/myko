@@ -7,9 +7,6 @@
   "exports": {
     ".": "./bindings/index.ts"
   },
-  "scripts": {
-    "gen": "cargo test --lib"
-  },
   "files": [
     "bindings"
   ]
