@@ -13,6 +13,38 @@ members = [
   "libs/myko/macros",
   "libs/link/core",
   "libs/link/rpc/rs",
+  "libs/entities/foundation",
+  "libs/entities/core",
+  "libs/entities/tags",
+  "libs/entities/teams",
+  "libs/entities/machine",
+  "libs/entities/physical",
+  "libs/entities/link",
+  "libs/entities/audit",
+  "libs/entities/status",
+  "libs/entities/runtime",
+  "libs/entities/external",
+  "libs/entities/assignment",
+  "libs/entities/feedback",
+  "libs/entities/variables",
+  "libs/entities/timing",
+  "libs/entities/scheduling",
+  "libs/entities/nmos",
+  "libs/entities/networking",
+  "libs/entities/assets",
+  "libs/entities/media",
+  "libs/entities/infrastructure",
+  "libs/entities/sequencing",
+  "libs/entities/visualization",
+  "libs/entities/vfx",
+  "libs/entities/lighting",
+  "libs/entities/color",
+  "libs/entities/compositing",
+  "libs/entities/rive",
+  "libs/entities/cameras",
+  "libs/entities/surfaces",
+  "libs/entities/ui",
+  "libs/entities/nodes",
   "libs/entities/rs",
   "libs/entities/macros",
   "libs/sdk/rs",
@@ -146,6 +178,38 @@ myko-rs = { version = "3.1.0-canary.23", path = "libs/myko/rs" }
 myko-macros = { version = "3.1.0-canary.23", path = "libs/myko/macros" }
 rship-entities = { version = "3.1.0-canary.23", path = "libs/entities/rs" }
 rship-entities-macros = { version = "3.1.0-canary.23", path = "libs/entities/macros" }
+rship-entities-foundation = { version = "3.1.0-canary.23", path = "libs/entities/foundation" }
+rship-entities-core = { version = "3.1.0-canary.23", path = "libs/entities/core" }
+rship-entities-tags = { version = "3.1.0-canary.23", path = "libs/entities/tags" }
+rship-entities-teams = { version = "3.1.0-canary.23", path = "libs/entities/teams" }
+rship-entities-machine = { version = "3.1.0-canary.23", path = "libs/entities/machine" }
+rship-entities-physical = { version = "3.1.0-canary.23", path = "libs/entities/physical" }
+rship-entities-link = { version = "3.1.0-canary.23", path = "libs/entities/link" }
+rship-entities-audit = { version = "3.1.0-canary.23", path = "libs/entities/audit" }
+rship-entities-status = { version = "3.1.0-canary.23", path = "libs/entities/status" }
+rship-entities-runtime = { version = "3.1.0-canary.23", path = "libs/entities/runtime" }
+rship-entities-external = { version = "3.1.0-canary.23", path = "libs/entities/external" }
+rship-entities-assignment = { version = "3.1.0-canary.23", path = "libs/entities/assignment" }
+rship-entities-feedback = { version = "3.1.0-canary.23", path = "libs/entities/feedback" }
+rship-entities-variables = { version = "3.1.0-canary.23", path = "libs/entities/variables" }
+rship-entities-timing = { version = "3.1.0-canary.23", path = "libs/entities/timing" }
+rship-entities-scheduling = { version = "3.1.0-canary.23", path = "libs/entities/scheduling" }
+rship-entities-nmos = { version = "3.1.0-canary.23", path = "libs/entities/nmos" }
+rship-entities-networking = { version = "3.1.0-canary.23", path = "libs/entities/networking" }
+rship-entities-assets = { version = "3.1.0-canary.23", path = "libs/entities/assets" }
+rship-entities-media = { version = "3.1.0-canary.23", path = "libs/entities/media" }
+rship-entities-infrastructure = { version = "3.1.0-canary.23", path = "libs/entities/infrastructure" }
+rship-entities-sequencing = { version = "3.1.0-canary.23", path = "libs/entities/sequencing" }
+rship-entities-visualization = { version = "3.1.0-canary.23", path = "libs/entities/visualization" }
+rship-entities-vfx = { version = "3.1.0-canary.23", path = "libs/entities/vfx" }
+rship-entities-lighting = { version = "3.1.0-canary.23", path = "libs/entities/lighting" }
+rship-entities-color = { version = "3.1.0-canary.23", path = "libs/entities/color" }
+rship-entities-compositing = { version = "3.1.0-canary.23", path = "libs/entities/compositing" }
+rship-entities-rive = { version = "3.1.0-canary.23", path = "libs/entities/rive" }
+rship-entities-cameras = { version = "3.1.0-canary.23", path = "libs/entities/cameras" }
+rship-entities-surfaces = { version = "3.1.0-canary.23", path = "libs/entities/surfaces" }
+rship-entities-ui = { version = "3.1.0-canary.23", path = "libs/entities/ui" }
+rship-entities-nodes = { version = "3.1.0-canary.23", path = "libs/entities/nodes" }
 rship-sdk = { version = "3.1.0-canary.23", path = "libs/sdk/rs" }
 autosocket = { version = "0.1.0", path = "libs/autosocket" }
 link = { version = "3.1.0-canary.23", path = "libs/link/core" }

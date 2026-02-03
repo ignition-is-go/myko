@@ -9492,7 +9492,39 @@ dependencies = [
  "partially",
  "paste",
  "regex",
+ "rship-entities-assets",
+ "rship-entities-assignment",
+ "rship-entities-audit",
+ "rship-entities-cameras",
+ "rship-entities-color",
+ "rship-entities-compositing",
+ "rship-entities-core",
+ "rship-entities-external",
+ "rship-entities-feedback",
+ "rship-entities-foundation",
+ "rship-entities-infrastructure",
+ "rship-entities-lighting",
+ "rship-entities-link",
+ "rship-entities-machine",
  "rship-entities-macros",
+ "rship-entities-media",
+ "rship-entities-networking",
+ "rship-entities-nmos",
+ "rship-entities-nodes",
+ "rship-entities-physical",
+ "rship-entities-rive",
+ "rship-entities-runtime",
+ "rship-entities-scheduling",
+ "rship-entities-sequencing",
+ "rship-entities-status",
+ "rship-entities-surfaces",
+ "rship-entities-tags",
+ "rship-entities-teams",
+ "rship-entities-timing",
+ "rship-entities-ui",
+ "rship-entities-variables",
+ "rship-entities-vfx",
+ "rship-entities-visualization",
  "rship-sync",
  "schemars 1.2.0",
  "serde",
@@ -9506,6 +9538,182 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship-entities-assets"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-assignment"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-external",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-audit"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-cameras"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-color"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-compositing"
+version = "3.1.0-canary.23"
+dependencies = [
+ "chrono",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-core"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-external"
+version = "3.1.0-canary.23"
+dependencies = [
+ "hypha",
+ "log 0.4.29",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-feedback"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-foundation"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-rs",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-infrastructure"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-lighting"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-link"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "specta",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-machine"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "rship-entities-macros"
 version = "3.1.0-canary.23"
 dependencies = [
@@ -9513,6 +9721,266 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "rship-entities-media"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-networking"
+version = "3.1.0-canary.23"
+dependencies = [
+ "chrono",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-nmos"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-nodes"
+version = "3.1.0-canary.23"
+dependencies = [
+ "async-stream",
+ "chrono",
+ "futures 0.3.31",
+ "hypha",
+ "log 0.4.29",
+ "myko-macros",
+ "myko-rs",
+ "ordered-float",
+ "partially",
+ "paste",
+ "regex",
+ "rship-entities-core",
+ "rship-entities-external",
+ "rship-entities-foundation",
+ "rship-entities-macros",
+ "rship-entities-tags",
+ "rship-entities-timing",
+ "rship-sync",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "tokio",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-physical"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-rive"
+version = "3.1.0-canary.23"
+dependencies = [
+ "chrono",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-compositing",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-runtime"
+version = "3.1.0-canary.23"
+dependencies = [
+ "chrono",
+ "log 0.4.29",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-core",
+ "rship-entities-nodes",
+ "rship-entities-sequencing",
+ "rship-entities-timing",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-scheduling"
+version = "3.1.0-canary.23"
+dependencies = [
+ "chrono",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-sequencing"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-timing",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-status"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-surfaces"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-tags"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-core",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-teams"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-timing"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "ordered-float",
+ "partially",
+ "rship-entities-foundation",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-ui"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-variables"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-external",
+ "rship-entities-foundation",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "rship-entities-vfx"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-visualization"
+version = "3.1.0-canary.23"
+dependencies = [
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "rship-entities-core",
+ "serde",
+ "serde_json",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]
