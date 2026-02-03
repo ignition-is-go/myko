@@ -114,6 +114,7 @@ libs/generated/version.ts
 # rust
 
 /target/
+**/target/claude
 
 # pnpm-store
 
