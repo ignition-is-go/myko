@@ -1,7 +1,7 @@
 <script lang="ts">
 	import {
 		LOG_RANK,
-		LogLevel,
+		type LogLevel,
 		PeerAlive,
 		ServerLogLevel,
 		SetLogLevel,
