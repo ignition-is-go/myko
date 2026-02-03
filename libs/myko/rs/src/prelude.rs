@@ -12,6 +12,7 @@ pub use uuid::Uuid;
 
 pub use crate::{
     client::MykoClient,
+    mcp::McpServer,
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,

@@ -104,7 +104,7 @@ where
         // Get the store for this entity type
         let store = registry.get_or_create(&Q::query_item_type_static());
 
-        log::debug!(
+        log::trace!(
             "Creating query cell for {} with host_id={}",
             Q::query_id_static(),
             request_ctx.host_id

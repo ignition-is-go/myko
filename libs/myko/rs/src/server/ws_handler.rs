@@ -227,7 +227,7 @@ impl WsHandler {
                 let query_id = &wrapped.query_id;
                 let entity_type = &wrapped.query_item_type;
 
-                log::debug!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
+                log::trace!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
 
                 let request_context = Arc::new(RequestContext::from_client(
                     tx_id.clone(),
@@ -280,7 +280,7 @@ impl WsHandler {
             }
 
             MykoMessage::QueryCancel(CancelSubscription { tx: tx_id }) => {
-                log::debug!("Query cancel: {}", tx_id);
+                log::trace!("Query cancel: {}", tx_id);
                 session.cancel(&tx_id.into());
             }
 
@@ -294,7 +294,7 @@ impl WsHandler {
                     .into();
                 let report_id = &wrapped.report_id;
 
-                log::debug!("Report {} (tx: {})", report_id, tx_id);
+                log::trace!("Report {} (tx: {})", report_id, tx_id);
 
                 // Look up the report registration
                 if let Some(report_data) = handler_registry.get_report(report_id) {
@@ -341,7 +341,7 @@ impl WsHandler {
             }
 
             MykoMessage::ReportCancel(CancelSubscription { tx: tx_id }) => {
-                log::debug!("Report cancel: {}", tx_id);
+                log::trace!("Report cancel: {}", tx_id);
                 session.cancel(&tx_id.into());
             }
 
