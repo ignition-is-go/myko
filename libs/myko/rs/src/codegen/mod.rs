@@ -210,7 +210,15 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     let entity_imports = entity_types
         .iter()
         .filter(|t| !class_type_names.contains(t.as_str()))
-        .map(|t| format!("import type {{ {} }} from './{t}';", t))
+        .map(|t| {
+            // Handle special import paths
+            let import_path = if t == "JsonValue" {
+                "./serde_json/JsonValue".to_string()
+            } else {
+                format!("./{t}")
+            };
+            format!("import type {{ {} }} from '{}';", t, import_path)
+        })
         .collect::<Vec<String>>()
         .join("\n");
 
@@ -412,6 +420,8 @@ fn rust_type_to_ts(rust_type: &str) -> String {
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
         | "usize" | "f32" | "f64" => "number".to_string(),
         "()" => "void".to_string(),
+        // serde_json::Value maps to JsonValue in ts-rs
+        "Value" | "serde_json::Value" => "JsonValue".to_string(),
         _ => trimmed.to_string(),
     }
 }
@@ -461,6 +471,11 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
 
     if primitives.contains(&trimmed) {
         return vec![];
+    }
+
+    // Map serde_json::Value to JsonValue
+    if trimmed == "Value" || trimmed == "serde_json::Value" {
+        return vec!["JsonValue".to_string()];
     }
 
     let clean_type = trimmed.replace(" ", "");
