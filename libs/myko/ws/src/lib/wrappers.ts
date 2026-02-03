@@ -32,6 +32,7 @@ import {
   type WSMReportCancel,
   type WSMReportResponse,
 } from './types'
+import type { JsonValue } from '@myko/rs'
 
 export const wrapQueryWS = (query: MQuery): WSMQuery => ({
   data: query.wrap(),
@@ -69,7 +70,7 @@ export const wrapCommandResponseWS = (
   event: MCOMMAND_RESPONSE_EVENT,
   data: {
     tx,
-    response,
+    response: response as JsonValue,
   },
 })
 
@@ -107,7 +108,7 @@ export const wrapReportResponseWS = (
 ): WSMReportResponse => ({
   event: MREPORT_RESPONSE_EVENT,
   data: {
-    response,
+    response: response as JsonValue,
     tx,
   },
 })

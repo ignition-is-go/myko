@@ -35,8 +35,8 @@
 	const history = client.watchQuery(new EventsForEntity(id)).pipe(startWith([]));
 
 	const name = $derived(
-		$history.length > 0 && 'name' in $history[0].event.item
-			? $history[0].event.item.name
+		$history.length > 0 && $history[0].event.item && typeof $history[0].event.item === 'object' && 'name' in $history[0].event.item
+			? $history[0].event.item['name']
 			: `Unknown ${itemType}`
 	);
 

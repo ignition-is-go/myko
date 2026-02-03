@@ -264,13 +264,13 @@ export class VueMykoClient {
 			this.sharedReports.set(cacheKey, shared as SharedReport<unknown>);
 		}
 
-		// Increment reference count
-		shared.refCount++;
+		// Increment reference count (shared is guaranteed to be defined here)
+		shared!.refCount++;
 
 		let released = false;
 
 		return {
-			value: shared.value,
+			value: shared!.value,
 			release: () => {
 				if (released) return;
 				released = true;

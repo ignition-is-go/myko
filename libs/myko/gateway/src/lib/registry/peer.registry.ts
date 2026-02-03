@@ -129,7 +129,10 @@ export class PeerClientRegistry {
     )
 
     client.connect(address, port)
-    client.setUser(getAuth().getPeerToken())
+    const auth = getAuth()
+    if (auth) {
+      client.setUser(auth.getPeerToken())
+    }
   }
 
   private clientSets = new Subject<{
