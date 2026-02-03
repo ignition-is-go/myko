@@ -81,6 +81,7 @@ pub mod client;
 pub mod codegen;
 pub mod core;
 pub mod entities;
+pub mod mcp;
 pub mod search;
 pub mod server;
 pub mod store;

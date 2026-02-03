@@ -9646,6 +9646,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship_mcp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "inventory",
+ "myko-rs",
+ "rship-entities",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "uuid",
+]
+
+[[package]]
 name = "rumqttc"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

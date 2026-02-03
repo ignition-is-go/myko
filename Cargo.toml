@@ -6,6 +6,7 @@ members = [
   "apps/link-ui/src-tauri",
   "apps/ui/src-tauri",
   "apps/linkd",
+  "apps/rship_mcp",
   "apps/server_rs",
   "apps/sync_server",
   "libs/myko/rs",
