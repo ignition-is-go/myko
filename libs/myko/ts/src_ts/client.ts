@@ -205,6 +205,7 @@ export class MykoClient {
 
   /** Set a single server address, clearing any existing connections */
   setAddress(address: string | null): void {
+    this.shouldReconnect = true // Re-enable autoreconnect when setting new address
     this.closeAllSockets()
     if (address) {
       this.createSocket(address)
@@ -213,6 +214,7 @@ export class MykoClient {
 
   /** Set multiple server addresses, clearing any existing connections */
   setAddresses(addresses: string[]): void {
+    this.shouldReconnect = true // Re-enable autoreconnect when setting new addresses
     this.closeAllSockets()
     for (const addr of addresses) {
       this.createSocket(addr)
@@ -221,6 +223,7 @@ export class MykoClient {
 
   /** Add additional servers (connects immediately) */
   addServers(addresses: string[]): void {
+    this.shouldReconnect = true // Re-enable autoreconnect when adding servers
     for (const addr of addresses) {
       if (!this.hasConnectionTo(addr)) {
         this.createSocket(addr)
