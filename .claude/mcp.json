@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "rship": {
+      "command": "cargo",
+      "args": ["run", "--target-dir", "target/claude", "-p", "rship_mcp"],
+      "cwd": "/home/trevor/Code/rship",
+      "env": {
+        "MYKO_ADDRESS": "ws://localhost:5155"
+      }
+    }
+  }
+}
