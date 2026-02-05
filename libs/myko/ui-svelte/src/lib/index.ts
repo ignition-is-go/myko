@@ -10,8 +10,8 @@ export { myko, myko as client, getMykoClient } from './services/svelte-client.sv
 export {
 	createMykoClient,
 	SvelteMykoClient,
-	type ReactiveQuery,
-	type ReactiveReport
+	type LiveQuery,
+	type LiveReport
 } from './services/svelte-client.svelte.js';
 
 // Re-export useful types from @myko/ts

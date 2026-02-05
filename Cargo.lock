@@ -9768,11 +9768,13 @@ version = "3.1.0-canary.23"
 dependencies = [
  "async-stream",
  "chrono",
+ "dashmap",
  "futures 0.3.31",
  "hypha",
  "log 0.4.29",
  "myko-macros",
  "myko-rs",
+ "once_cell",
  "ordered-float",
  "partially",
  "paste",
@@ -9783,11 +9785,13 @@ dependencies = [
  "rship-entities-macros",
  "rship-entities-tags",
  "rship-entities-timing",
+ "rship-entities-variables",
  "rship-sync",
  "serde",
  "serde_json",
  "strum 0.27.2",
  "tokio",
+ "tokio-stream",
  "ts-rs",
  "uuid",
 ]
@@ -10845,6 +10849,7 @@ dependencies = [
  "myko-rs",
  "rship-entities",
  "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

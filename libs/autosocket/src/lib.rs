@@ -78,6 +78,7 @@ impl AutoReconnectSocket {
 
         // Start new connection if address provided
         if let Some(addr) = addr {
+            println!(">>> AutoSocket setting up connection to {addr}");
             info!("Setting up connection to {addr}");
             self.build(addr);
         }
@@ -121,6 +122,7 @@ impl AutoReconnectSocket {
                 }
                 _ = async {
                     loop {
+                        println!(">>> AutoSocket connecting to {addr}");
                         info!("Connecting to {addr}");
 
                         // Parse URL with fallback to ws:// scheme
@@ -134,7 +136,8 @@ impl AutoReconnectSocket {
 
                         let ws_stream = match connect_async(&url).await {
                             Ok((ws_stream, _)) => ws_stream,
-                            Err(_) => {
+                            Err(e) => {
+                                warn!("Failed to connect to {}: {}", url, e);
                                 tokio::time::sleep(Duration::from_secs(1)).await;
                                 continue;
                             }
