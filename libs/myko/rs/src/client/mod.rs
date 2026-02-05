@@ -4,6 +4,7 @@ use std::{
 };
 
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
+use hypha::{Cell, CellImmutable, Mutable};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -187,29 +188,23 @@ impl MykoClient {
 
         let addr = addr.unwrap();
 
-        let parsed = Url::parse(addr.as_str());
-
-        let mut parsed = match parsed {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Could not parse url: {e:?} - attempting to add ws://");
-
+        // Try to parse as URL, but only accept if it has a valid ws/wss scheme
+        // Otherwise, treat as host:port and prepend ws://
+        let mut parsed = match Url::parse(addr.as_str()) {
+            Ok(url) if url.scheme() == "ws" || url.scheme() == "wss" => url,
+            _ => {
+                // No valid scheme, treat as host:port
                 let add_ws = format!("ws://{addr}");
-
                 match Url::parse(add_ws.as_str()) {
                     Ok(c) => c,
-                    Err(_e) => {
-                        info!("Setting Url to None");
+                    Err(e) => {
+                        warn!("Could not parse url: {e:?}");
                         self.socket.set_addr(None);
                         return;
                     }
                 }
             }
         };
-
-        if parsed.scheme() != "ws" {
-            let _ = parsed.set_scheme("ws");
-        }
 
         if parsed.path() != "/myko" {
             parsed.set_path("/myko");
@@ -219,6 +214,7 @@ impl MykoClient {
             let _ = parsed.set_port(Some(5155));
         }
 
+        info!("MykoClient connecting to {}", parsed);
         self.socket.set_addr(Some(parsed.to_string()));
     }
 
@@ -487,6 +483,45 @@ impl MykoClient {
         });
 
         stream
+    }
+
+    /// Watch a report and receive updates as a reactive Cell.
+    ///
+    /// Similar to `watch_report`, but returns a hypha Cell instead of a stream.
+    /// The cell is updated whenever a new report value is received.
+    ///
+    /// # Arguments
+    /// * `report` - The report parameters
+    /// * `initial` - Initial value for the cell before any data is received
+    ///
+    /// # Example
+    /// ```ignore
+    /// let cell = client.watch_report_cell::<WatchSyncValue, SyncValueUpdateOutput>(
+    ///     WatchSyncValue { key: "timer".into(), rate: None, init: None },
+    ///     SyncValueUpdateOutput::default(),
+    /// );
+    /// ```
+    pub fn watch_report_cell<R, O>(
+        &self,
+        report: impl Into<ReportRequest<R>>,
+        initial: O,
+    ) -> Cell<O, CellImmutable>
+    where
+        R: ReportParams + ReportIdStatic + Clone,
+        O: DeserializeOwned + Clone + Send + Sync + 'static,
+    {
+        let cell = Cell::new(initial);
+        let cell_clone = cell.clone();
+
+        let mut stream = self.watch_report::<R, O>(report);
+
+        tokio::spawn(async move {
+            while let Some(value) = stream.next().await {
+                cell_clone.set(value);
+            }
+        });
+
+        cell.lock()
     }
 
     /// Watch a query and receive updates as a stream.

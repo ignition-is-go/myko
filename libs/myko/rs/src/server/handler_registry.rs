@@ -6,6 +6,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    command::CommandHandlerRegistration,
     item::{ItemParseFn, ItemRegistration},
     query::{QueryCellFactory, QueryParseFn, QueryRegistration},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
@@ -75,6 +76,12 @@ impl HandlerRegistry {
             report_data.insert(data.report_id.clone(), data);
         }
 
+        // Collect command handler names for logging
+        let mut command_ids: Vec<&str> = inventory::iter::<CommandHandlerRegistration>()
+            .map(|r| r.command_id)
+            .collect();
+        command_ids.sort_unstable();
+
         fn format_list<'a>(keys: impl Iterator<Item = &'a Arc<str>>) -> String {
             let mut items: Vec<&str> = keys.map(|k| k.as_ref()).collect();
             items.sort_unstable();
@@ -85,14 +92,24 @@ impl HandlerRegistry {
             }
         }
 
+        fn format_str_list(items: &[&str]) -> String {
+            if items.is_empty() {
+                "(none)".to_string()
+            } else {
+                items.join(", ")
+            }
+        }
+
         log::info!(
-            "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Reports ({}):\n    {}",
+            "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
             format_list(item_parsers.keys()),
             query_data.len(),
             format_list(query_data.keys()),
             report_data.len(),
             format_list(report_data.keys()),
+            command_ids.len(),
+            format_str_list(&command_ids),
         );
 
         Self {
