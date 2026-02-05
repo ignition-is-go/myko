@@ -8,8 +8,8 @@ export {
 	SvelteMykoClient,
 	type CommandError,
 	type CommandSuccess,
-	type ReactiveQuery,
-	type ReactiveReport
+	type LiveQuery,
+	type LiveReport
 } from './svelte-client.svelte.js';
 
 export { default as ConnectionStats } from '../components/ConnectionStats.svelte';

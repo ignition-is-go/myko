@@ -1,13 +1,7 @@
 <script lang="ts" generics="T extends { id: string }">
-	import { EntitySearch, type Query, type Report, type EntitySearchResult } from '@myko/ts';
-	import {
-		getMykoClient,
-		type ReactiveReport,
-		type ReactiveQuery,
-		type SvelteMykoClient
-	} from '../services/svelte-client.svelte.js';
+	import { EntitySearch, type Query } from '@myko/ts';
+	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
 	import type { Snippet } from 'svelte';
-	import { onDestroy } from 'svelte';
 
 	interface Props {
 		/** Entity type to search (e.g., "Target", "Scene") */
@@ -44,85 +38,34 @@
 
 	const resolvedClient = client ?? getMykoClient();
 
-	// Build EntitySearch report
-	function buildSearchReport(q: string): EntitySearch {
-		return new EntitySearch({ entityType, query: q, limit });
-	}
+	// Subscribe to EntitySearch report when we have a query
+	const searchResult = resolvedClient.liveReport(() =>
+		query?.trim() ? new EntitySearch({ entityType, query, limit }) : null,
+	);
 
-	// Track current subscriptions for cleanup
-	let currentSearchReport: ReactiveReport<Report<EntitySearchResult>> | null = null;
-	let currentItemsQuery: ReactiveQuery<Query<T>> | null = null;
+	// Get the matching IDs from search result
+	const searchIds = $derived(searchResult.value?.ids ?? []);
 
-	// Reactive search results
-	let searchResult = $state<EntitySearchResult | undefined>(undefined);
-	let items = $state<Map<string, T>>(new Map());
-	let isLoading = $state(true);
-
-	// Effect to update search when query changes
-	$effect(() => {
-		// Clean up previous subscriptions
-		currentSearchReport?.release();
-		currentItemsQuery?.release();
-
-		if (!query || query.trim() === '') {
-			// Empty query - use showAllOnEmpty if provided
-			if (showAllOnEmpty) {
-				isLoading = true;
-				currentItemsQuery = resolvedClient.query(showAllOnEmpty);
-
-				$effect(() => {
-					if (currentItemsQuery) {
-						items = new Map(currentItemsQuery.items);
-						isLoading = !currentItemsQuery.resolved;
-					}
-				});
-			} else {
-				searchResult = { ids: [] };
-				items = new Map();
-				isLoading = false;
-			}
-			return;
+	// Subscribe to items - either by search IDs, showAllOnEmpty, or nothing
+	const itemsResult = resolvedClient.liveQuery(() => {
+		if (query?.trim()) {
+			// Have a search query - fetch by search result IDs
+			return searchIds.length > 0 ? queryByIds(searchIds) : null;
+		} else if (showAllOnEmpty) {
+			// Empty query with showAllOnEmpty - fetch all
+			return showAllOnEmpty;
 		}
-
-		isLoading = true;
-
-		// Subscribe to EntitySearch report
-		const report = buildSearchReport(query);
-		currentSearchReport = resolvedClient.report(report);
-
-		// Watch the search result and update items query
-		$effect(() => {
-			const result = currentSearchReport?.value;
-			if (result) {
-				searchResult = result;
-
-				// Clean up previous items query
-				currentItemsQuery?.release();
-
-				if (result.ids.length > 0) {
-					// Fetch actual items by IDs
-					const itemsQueryFactory = queryByIds(result.ids);
-					currentItemsQuery = resolvedClient.query(itemsQueryFactory);
-
-					// Watch items query
-					$effect(() => {
-						if (currentItemsQuery) {
-							items = new Map(currentItemsQuery.items);
-							isLoading = !currentItemsQuery.resolved;
-						}
-					});
-				} else {
-					items = new Map();
-					isLoading = false;
-				}
-			}
-		});
+		return null;
 	});
 
-	onDestroy(() => {
-		currentSearchReport?.release();
-		currentItemsQuery?.release();
-	});
+	// Derived loading state
+	const isLoading = $derived(
+		query?.trim()
+			? !searchResult.value || (searchIds.length > 0 && !itemsResult.resolved)
+			: showAllOnEmpty
+				? !itemsResult.resolved
+				: false,
+	);
 </script>
 
 {#if isLoading}
@@ -131,12 +74,12 @@
 	{:else}
 		<span class="search-loading">Searching...</span>
 	{/if}
-{:else if items.size === 0}
+{:else if itemsResult.items.size === 0}
 	{#if empty}
 		{@render empty()}
 	{/if}
 {:else}
-	{#each [...items.values()] as item (item.id)}
+	{#each [...itemsResult.items.values()] as item (item.id)}
 		{@render children(item)}
 	{/each}
 {/if}

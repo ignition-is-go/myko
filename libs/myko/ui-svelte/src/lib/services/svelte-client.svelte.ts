@@ -40,52 +40,31 @@ export type CommandError = {
 	error: Error;
 };
 
-/** Reactive query result using SvelteMap - generic over the Query class type */
-export type ReactiveQuery<Q extends Query<unknown>> = {
+/** Live report result with automatic lifecycle management */
+export type LiveReport<R extends Report<unknown>> = {
+	/** Current value (reactive via $state) */
+	readonly value: ReportResult<R> | undefined;
+	/** Current error if any */
+	readonly error: Error | undefined;
+};
+
+/** Live query result with automatic lifecycle management */
+export type LiveQuery<Q extends Query<unknown>> = {
 	/** Reactive map of items by ID */
 	readonly items: SvelteMap<string, QueryItem<Q> & { id: string }>;
 	/** Whether the query has received its first response */
 	readonly resolved: boolean;
-	/** Release this consumer's reference (unsubscribes when last consumer releases) */
-	release: () => void;
-};
-
-/** Reactive report result - generic over the Report class type */
-export type ReactiveReport<R extends Report<unknown>> = {
-	/** Current value (reactive via $state) */
-	readonly value: ReportResult<R> | undefined;
-	/** Release this consumer's reference (unsubscribes when last consumer releases) */
-	release: () => void;
-};
-
-/** Internal state for a shared query */
-type SharedQuery<T extends { id: string }> = {
-	items: SvelteMap<string, T>;
-	getResolved: () => boolean;
-	subscription: Subscription;
-	refCount: number;
-};
-
-/** Internal state for a shared report */
-type SharedReport<T> = {
-	getValue: () => T | undefined;
-	subscription: Subscription;
-	refCount: number;
+	/** Current error if any */
+	readonly error: Error | undefined;
 };
 
 /**
  * Svelte-friendly Myko client
  *
- * Wraps MykoClient to provide reactive Svelte state with automatic deduplication.
+ * Wraps MykoClient to provide reactive Svelte state with automatic lifecycle management.
  */
 export class SvelteMykoClient {
 	private client: MykoClient;
-
-	// Shared queries by cache key
-	private sharedQueries = new Map<string, SharedQuery<{ id: string }>>();
-
-	// Shared reports by cache key
-	private sharedReports = new Map<string, SharedReport<unknown>>();
 
 	// Command lifecycle subjects
 	private commandSentSubject = new Subject<CommandSent>();
@@ -128,21 +107,6 @@ export class SvelteMykoClient {
 		});
 	}
 
-	/** Create a stable cache key from a query/report factory */
-	private getCacheKey(
-		type: 'query' | 'report',
-		factory: {
-			query?: Record<string, unknown>;
-			report?: Record<string, unknown>;
-			queryId?: string;
-			reportId?: string;
-		}
-	): string {
-		const id = type === 'query' ? factory.queryId : factory.reportId;
-		const args = type === 'query' ? factory.query : factory.report;
-		return `${type}:${id}:${JSON.stringify(args)}`;
-	}
-
 	/** Current connection status (reactive) */
 	get connectionStatus(): ConnectionStatus {
 		return this.#connectionStatus;
@@ -179,18 +143,6 @@ export class SvelteMykoClient {
 
 	/** Disconnect from the server */
 	disconnect(): void {
-		// Unsubscribe all shared queries
-		for (const shared of this.sharedQueries.values()) {
-			shared.subscription.unsubscribe();
-		}
-		this.sharedQueries.clear();
-
-		// Unsubscribe all shared reports
-		for (const shared of this.sharedReports.values()) {
-			shared.subscription.unsubscribe();
-		}
-		this.sharedReports.clear();
-
 		// Unsubscribe stats
 		if (this.statsSubscription) {
 			this.statsSubscription.unsubscribe();
@@ -202,36 +154,117 @@ export class SvelteMykoClient {
 	}
 
 	/**
-	 * Watch a query with reactive SvelteMap updates.
+	 * Create a live report subscription with automatic lifecycle management.
 	 *
-	 * Multiple calls with the same query args share the same SvelteMap,
-	 * and the subscription is only cancelled when all consumers release.
+	 * The subscription automatically:
+	 * - Re-subscribes when dependencies in the factory function change
+	 * - Cleans up when the component unmounts
+	 * - No manual release() call needed
+	 *
+	 * If the factory returns null/undefined, no subscription is created and value remains undefined.
+	 *
+	 * IMPORTANT: Must be called during component initialization (in the <script> block),
+	 * not inside event handlers or other callbacks.
 	 *
 	 * @example
 	 * ```svelte
 	 * <script>
-	 *   const { items, release } = client.query(new GetAllTargets({}))
-	 *   onDestroy(release)
+	 *   let { nodeId, sessionId } = $props()
+	 *   const output = client.liveReport(() =>
+	 *     sessionId ? new BindingNodeOutputValue({ nodeId, sessionId }) : null
+	 *   )
 	 * </script>
 	 *
-	 * {#each [...items.values()] as target}
-	 *   <div>{target.name}</div>
+	 * <div>{output.value?.datagram.data}</div>
+	 * ```
+	 */
+	liveReport<R extends Report<unknown>>(factory: () => R | null | undefined): LiveReport<R> {
+		type Result = ReportResult<R>;
+		let value = $state<Result | undefined>(undefined);
+		let error = $state<Error | undefined>(undefined);
+
+		$effect(() => {
+			const report = factory();
+
+			// If factory returns null/undefined, don't subscribe
+			if (!report) {
+				value = undefined;
+				error = undefined;
+				return;
+			}
+
+			error = undefined;
+
+			const subscription = this.client.watchReport(report).subscribe({
+				next: (result: Result) => {
+					value = result;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
+				}
+			});
+
+			return () => subscription.unsubscribe();
+		});
+
+		return {
+			get value() {
+				return value;
+			},
+			get error() {
+				return error;
+			}
+		};
+	}
+
+	/**
+	 * Create a live query subscription with automatic lifecycle management.
+	 *
+	 * The subscription automatically:
+	 * - Re-subscribes when dependencies in the factory function change
+	 * - Cleans up when the component unmounts
+	 * - No manual release() call needed
+	 *
+	 * If the factory returns null/undefined, no subscription is created and items map is cleared.
+	 *
+	 * IMPORTANT: Must be called during component initialization (in the <script> block),
+	 * not inside event handlers or other callbacks.
+	 *
+	 * @example
+	 * ```svelte
+	 * <script>
+	 *   let { sceneId } = $props()
+	 *   const nodes = client.liveQuery(() =>
+	 *     sceneId ? new GetBindingNodesByQuery({ sceneId }) : null
+	 *   )
+	 * </script>
+	 *
+	 * {#each [...nodes.items.values()] as node}
+	 *   <div>{node.name}</div>
 	 * {/each}
 	 * ```
 	 */
-	query<Q extends Query<unknown>>(queryFactory: Q): ReactiveQuery<Q> {
+	liveQuery<Q extends Query<unknown>>(factory: () => Q | null | undefined): LiveQuery<Q> {
 		type Item = QueryItem<Q> & { id: string };
-		const cacheKey = this.getCacheKey('query', queryFactory);
+		const items = new SvelteMap<string, Item>();
+		let resolved = $state(false);
+		let error = $state<Error | undefined>(undefined);
 
-		// Return existing shared query if available
-		let shared = this.sharedQueries.get(cacheKey) as SharedQuery<Item> | undefined;
+		$effect(() => {
+			const query = factory();
 
-		if (!shared) {
-			// Create new shared query
-			const items = new SvelteMap<string, Item>();
-			let resolved = $state(false);
+			// If factory returns null/undefined, clear and don't subscribe
+			if (!query) {
+				items.clear();
+				resolved = false;
+				error = undefined;
+				return;
+			}
 
-			const subscription = this.client.watchQueryDiff(queryFactory).subscribe({
+			error = undefined;
+
+			const subscription = this.client.watchQueryDiff(query).subscribe({
 				next: (diff) => {
 					if (diff.sequence === 0n) {
 						items.clear();
@@ -240,105 +273,31 @@ export class SvelteMykoClient {
 						items.delete(id);
 					}
 					for (const item of diff.upserts) {
-						const typedItem = item as Item; items.set(typedItem.id, typedItem);
+						const typedItem = item as Item;
+						items.set(typedItem.id, typedItem);
 					}
 					resolved = true;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
 				}
 			});
 
-			shared = { items, getResolved: () => resolved, subscription, refCount: 0 };
-			this.sharedQueries.set(cacheKey, shared as SharedQuery<{ id: string }>);
-		}
-
-		// Increment reference count
-		shared.refCount++;
-
-		let released = false;
-		const getResolved = shared.getResolved;
-
-		return {
-			items: shared.items,
-			get resolved() {
-				return getResolved();
-			},
-			release: () => {
-				if (released) return;
-				released = true;
-
-				const s = this.sharedQueries.get(cacheKey);
-				if (s) {
-					s.refCount--;
-					if (s.refCount <= 0) {
-						s.subscription.unsubscribe();
-						this.sharedQueries.delete(cacheKey);
-					}
-				}
-			}
-		};
-	}
-
-	/**
-	 * Watch a report with reactive value updates.
-	 *
-	 * Multiple calls with the same report args share the same subscription,
-	 * and the subscription is only cancelled when all consumers release.
-	 *
-	 * @example
-	 * ```svelte
-	 * <script>
-	 *   const count = client.report(new CountAllTargets({}))
-	 *   onDestroy(count.release)
-	 * </script>
-	 *
-	 * <div>Count: {count.value?.count ?? 'loading...'}</div>
-	 * ```
-	 */
-	report<R extends Report<unknown>>(reportFactory: R): ReactiveReport<R> {
-		type Result = ReportResult<R>;
-		const cacheKey = this.getCacheKey('report', reportFactory);
-
-		// Return existing shared report if available
-		let shared = this.sharedReports.get(cacheKey) as SharedReport<Result> | undefined;
-
-		if (!shared) {
-			// Create new shared report with reactive state
-			let value = $state<Result | undefined>(undefined);
-			const subscription = this.client.watchReport(reportFactory).subscribe({
-				next: (result: Result) => {
-					value = result;
-				}
-			});
-
-			shared = {
-				getValue: () => value,
-				subscription,
-				refCount: 0
+			return () => {
+				subscription.unsubscribe();
+				items.clear();
+				resolved = false;
 			};
-			this.sharedReports.set(cacheKey, shared as SharedReport<unknown>);
-		}
-
-		// Increment reference count
-		shared.refCount++;
-
-		let released = false;
-		const getValue = shared.getValue;
+		});
 
 		return {
-			get value() {
-				return getValue();
+			items,
+			get resolved() {
+				return resolved;
 			},
-			release: () => {
-				if (released) return;
-				released = true;
-
-				const s = this.sharedReports.get(cacheKey);
-				if (s) {
-					s.refCount--;
-					if (s.refCount <= 0) {
-						s.subscription.unsubscribe();
-						this.sharedReports.delete(cacheKey);
-					}
-				}
+			get error() {
+				return error;
 			}
 		};
 	}
@@ -347,16 +306,11 @@ export class SvelteMykoClient {
 	 * Watch a query with Observable-based updates.
 	 *
 	 * Returns an Observable that emits the full array of items whenever
-	 * the result set changes. For Svelte-optimized reactive state, use
-	 * the `query()` method instead.
+	 * the result set changes.
 	 *
-	 * @example
-	 * ```svelte
-	 * <script>
-	 *   const targets$ = client.watchQuery(new GetAllTargets({}))
-	 *   targets$.subscribe(targets => console.log('Got', targets.length, 'targets'))
-	 * </script>
-	 * ```
+	 * @deprecated Use `liveQuery()` for component usage. This method requires manual
+	 * subscription management and doesn't integrate with Svelte's lifecycle.
+	 * Only use for non-component contexts (e.g., context classes).
 	 */
 	watchQuery<Q extends Query<unknown>>(queryFactory: Q): Observable<QueryResult<Q>> {
 		return this.client.watchQuery(queryFactory);
@@ -366,15 +320,10 @@ export class SvelteMykoClient {
 	 * Watch a report with Observable-based updates.
 	 *
 	 * Returns an Observable that emits whenever the report result changes.
-	 * For Svelte-optimized reactive state, use the `report()` method instead.
 	 *
-	 * @example
-	 * ```svelte
-	 * <script>
-	 *   const count$ = client.watchReport(new CountAllTargets({}))
-	 *   count$.subscribe(result => console.log('Count:', result.count))
-	 * </script>
-	 * ```
+	 * @deprecated Use `liveReport()` for component usage. This method requires manual
+	 * subscription management and doesn't integrate with Svelte's lifecycle.
+	 * Only use for non-component contexts (e.g., context classes).
 	 */
 	watchReport<R extends Report<unknown>>(reportFactory: R): Observable<ReportResult<R>> {
 		return this.client.watchReport(reportFactory);
