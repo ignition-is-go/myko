@@ -38,10 +38,6 @@ pub fn mask_filter(filter: &Value, candidate: &Value) -> bool {
     }
 }
 
-pub fn remove_whitespace(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
 pub fn assert_default_for_key<K, V>(hash_map: &mut HashMap<K, V>, key: &K)
 where
     K: Hash + Eq + Clone,

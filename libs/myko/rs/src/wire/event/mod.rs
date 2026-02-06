@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::{item::Eventable, utils::remove_whitespace};
+use crate::item::Eventable;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub enum MEventType {
@@ -65,8 +65,13 @@ fn utc_now_iso() -> String {
 }
 
 impl MEvent {
+    /// Parse an MEvent from a JSON string.
+    ///
+    /// NOTE: The name `from_str_trim` is historical - it no longer trims whitespace from
+    /// the input. JSON parsers handle structural whitespace correctly, and blindly removing
+    /// whitespace was destroying string values (e.g., "hello world" → "helloworld").
     pub fn from_str_trim(s: &str) -> Result<MEvent, serde_json::Error> {
-        serde_json::from_str(&remove_whitespace(s))
+        serde_json::from_str(s)
     }
 
     pub fn from_mp(s: &[u8]) -> Result<MEvent, rmp_serde::decode::Error> {
