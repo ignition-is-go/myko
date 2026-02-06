@@ -23,6 +23,7 @@ use super::{
 use crate::{
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::Client,
+    relationship::iter_client_id_registrations,
     request::RequestContext,
     wire::{CancelSubscription, CommandError, CommandResponse, MykoMessage, PingData},
 };
@@ -345,13 +346,26 @@ impl WsHandler {
                 session.cancel(&tx_id.into());
             }
 
-            MykoMessage::Event(event) => {
+            MykoMessage::Event(mut event) => {
                 use crate::event::MEventType;
 
                 // log::debug!("Event: {:?} {}", event.change_type(), event.item_type());
 
                 match event.change_type {
                     MEventType::SET => {
+                        // Auto-populate #[myko_client_id] fields with the connection's client_id
+                        for reg in iter_client_id_registrations() {
+                            if reg.entity_type == event.item_type {
+                                if let Some(obj) = event.item.as_object_mut() {
+                                    obj.insert(
+                                        reg.field_name_json.to_string(),
+                                        serde_json::Value::String(session.client_id.to_string()),
+                                    );
+                                }
+                                break;
+                            }
+                        }
+
                         // Parse JSON to typed entity
                         if let Some(item) = ctx.parse_item(&event.item_type, &event.item) {
                             // Publish with default options (Reduce + Relationships + Persist)

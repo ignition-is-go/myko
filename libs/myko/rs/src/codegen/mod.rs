@@ -11,6 +11,99 @@ use crate::{
 };
 
 // ============================================================================
+// TypeScript Constant Registration
+// ============================================================================
+
+/// Value types for TypeScript constant generation.
+pub enum TsConstValue {
+    Str(&'static str),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+}
+
+/// Registration for a Rust constant to be exported as a TypeScript constant.
+pub struct TsConstRegistration {
+    pub name: &'static str,
+    pub value: TsConstValue,
+    pub crate_name: &'static str,
+}
+
+inventory::collect!(TsConstRegistration);
+
+/// Define a Rust constant and register it for TypeScript export.
+///
+/// Usage:
+/// ```ignore
+/// myko_rs::ts_const!(pub MY_CONST: &str = "value");
+/// myko_rs::ts_const!(MY_PRIVATE: i64 = 42);
+/// myko_rs::ts_const!(pub IS_ENABLED: bool = true);
+/// ```
+#[macro_export]
+macro_rules! ts_const {
+    (pub $name:ident : &str = $value:expr) => {
+        pub const $name: &str = $value;
+        $crate::inventory::submit! {
+            $crate::codegen::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen::TsConstValue::Str($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($name:ident : &str = $value:expr) => {
+        const $name: &str = $value;
+        $crate::inventory::submit! {
+            $crate::codegen::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen::TsConstValue::Str($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    (pub $name:ident : i64 = $value:expr) => {
+        pub const $name: i64 = $value;
+        $crate::inventory::submit! {
+            $crate::codegen::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen::TsConstValue::Int($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($name:ident : i64 = $value:expr) => {
+        const $name: i64 = $value;
+        $crate::inventory::submit! {
+            $crate::codegen::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen::TsConstValue::Int($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    (pub $name:ident : bool = $value:expr) => {
+        pub const $name: bool = $value;
+        $crate::inventory::submit! {
+            $crate::codegen::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen::TsConstValue::Bool($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($name:ident : bool = $value:expr) => {
+        const $name: bool = $value;
+        $crate::inventory::submit! {
+            $crate::codegen::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen::TsConstValue::Bool($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+}
+
+// ============================================================================
 // ts-rs Export Registration
 // ============================================================================
 
@@ -258,6 +351,32 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .join(",\n");
     let item_ctor_obj = format!("export const items = {{\n{}\n}};", item_ctors);
 
+    // Shared constants
+    let consts: Vec<_> = inventory::iter::<TsConstRegistration>()
+        .filter(|x| x.crate_name.contains(&crate_name))
+        .collect();
+
+    let mut seen_const_names = HashSet::new();
+    for c in &consts {
+        if !seen_const_names.insert(c.name) {
+            anyhow::bail!("Duplicate ts_const name: {}", c.name);
+        }
+    }
+
+    let const_exports = consts
+        .iter()
+        .map(|c| {
+            let ts_value = match &c.value {
+                TsConstValue::Str(s) => format!("'{}'", s),
+                TsConstValue::Int(n) => n.to_string(),
+                TsConstValue::Float(f) => f.to_string(),
+                TsConstValue::Bool(b) => b.to_string(),
+            };
+            format!("export const {} = {} as const", c.name, ts_value)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     // Message event constants
     let message_event_entries = inventory::iter::<MessageEventRegistration>()
         .map(|r| format!("  {}: '{}',", r.variant_name, r.event_value))
@@ -301,6 +420,9 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
         "".to_string(),
         "// Message events".to_string(),
         message_events,
+        "".to_string(),
+        "// Shared constants".to_string(),
+        const_exports,
     ]
     .join("\n");
 
