@@ -24,6 +24,7 @@
 //! └─────────────────────────────────────────────────────────────────────────┘
 //! ```
 
+pub mod client_registry;
 mod client_session;
 mod context;
 mod handler_registry;
@@ -42,6 +43,7 @@ use std::{
     time::Duration,
 };
 
+pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
@@ -70,12 +72,24 @@ pub struct CellServerConfig {
 }
 
 /// Builder for creating a CellServer.
-#[derive(Default)]
 pub struct CellServerBuilder {
     bind_addr: Option<SocketAddr>,
     host_id: Option<Uuid>,
     kafka: Option<KafkaConfig>,
     peer_registry: Option<PeerRegistryConfig>,
+    after_init: Option<Box<dyn FnOnce(&CellServer) + Send>>,
+}
+
+impl Default for CellServerBuilder {
+    fn default() -> Self {
+        Self {
+            bind_addr: None,
+            host_id: None,
+            kafka: None,
+            peer_registry: None,
+            after_init: None,
+        }
+    }
 }
 
 impl CellServerBuilder {
@@ -108,18 +122,28 @@ impl CellServerBuilder {
         self
     }
 
+    /// Register a callback to run after Kafka catch-up and relation establishment,
+    /// but before the WebSocket accept loop starts. Use this for starting subsystems
+    /// that need entity data (e.g., scene engine).
+    pub fn after_init(mut self, f: impl FnOnce(&CellServer) + Send + 'static) -> Self {
+        self.after_init = Some(Box::new(f));
+        self
+    }
+
     /// Build the server.
     pub fn build(self) -> CellServer {
         let bind_addr = self
             .bind_addr
             .unwrap_or_else(|| "127.0.0.1:5155".parse().unwrap());
 
-        CellServer::new(CellServerConfig {
+        let mut server = CellServer::new(CellServerConfig {
             bind_addr,
             kafka: self.kafka,
             host_id: self.host_id,
             peer_registry: self.peer_registry,
-        })
+        });
+        server.after_init = std::sync::Mutex::new(self.after_init);
+        server
     }
 }
 
@@ -147,6 +171,8 @@ pub struct CellServer {
     ready: Arc<AtomicBool>,
     /// Peer registry for federation (initialized after Kafka catch-up)
     peer_registry: RwLock<Option<PeerRegistry>>,
+    /// Callback to run after init (Kafka catch-up + relations) but before WS loop
+    after_init: std::sync::Mutex<Option<Box<dyn FnOnce(&CellServer) + Send>>>,
 }
 
 impl CellServer {
@@ -161,6 +187,9 @@ impl CellServer {
         let registry = Arc::new(StoreRegistry::new());
         let handler_registry = Arc::new(HandlerRegistry::new());
         let relationship_manager = Arc::new(RelationshipManager::new());
+
+        // Initialize the client registry for WebSocket client message dispatch
+        init_client_registry();
 
         // Initialize Kafka if configured
         let (kafka_producer_owner, kafka_producer, kafka_consumer) =
@@ -208,6 +237,7 @@ impl CellServer {
             kafka_consumer,
             ready,
             peer_registry: RwLock::new(None),
+            after_init: std::sync::Mutex::new(None),
         }
     }
 
@@ -399,6 +429,16 @@ impl CellServer {
         // Start peer registry if configured
         if self.config.peer_registry.is_some() {
             self.start_peer_registry(None);
+        }
+
+        // Run after_init hook (e.g., scene engine startup)
+        if let Some(hook) = self
+            .after_init
+            .lock()
+            .expect("after_init mutex poisoned")
+            .take()
+        {
+            hook(self);
         }
 
         log::info!("Server started");

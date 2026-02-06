@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::{
     CellServerCtx,
+    client_registry::try_client_registry,
     client_session::{ClientSession, WsWriter},
 };
 use crate::{
@@ -55,6 +56,13 @@ impl WsHandler {
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
         let writer = ChannelWriter { tx: tx.clone() };
+
+        // Register writer in the global client registry (if initialized)
+        let writer_arc: Arc<dyn WsWriter> = Arc::new(ChannelWriter { tx: tx.clone() });
+        if let Some(registry) = try_client_registry() {
+            registry.register(client_id.clone(), writer_arc);
+        }
+
         let mut session = ClientSession::new(client_id.clone(), writer);
 
         // Protocol: default to JSON, switch to binary only if client opts in
@@ -168,7 +176,11 @@ impl WsHandler {
                                 "Failed to parse JSON message from {}: {} | raw: {}",
                                 client_id,
                                 e,
-                                if text.len() > 1000 { &text[..1000] } else { &text }
+                                if text.len() > 1000 {
+                                    &text[..1000]
+                                } else {
+                                    &text
+                                }
                             );
                         }
                     }
@@ -194,6 +206,11 @@ impl WsHandler {
         // Cleanup
         drop(session); // Drops all subscription guards
         write_task.abort();
+
+        // Unregister from client registry
+        if let Some(registry) = try_client_registry() {
+            registry.unregister(&client_id);
+        }
 
         // Delete Client entity
         ctx.del(&client_entity);

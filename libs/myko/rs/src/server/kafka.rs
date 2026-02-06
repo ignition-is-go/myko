@@ -687,8 +687,16 @@ impl CellKafkaConsumer {
                                                             store.insert(item.id(), item);
                                                         }
                                                         Err(e) => {
+                                                            let msg = e.to_string();
+                                                            // Truncate long serde errors that list all valid variants
+                                                            let short = match msg
+                                                                .find(", expected one of")
+                                                            {
+                                                                Some(pos) => &msg[..pos],
+                                                                None => &msg,
+                                                            };
                                                             error!(
-                                                                "Failed to parse {}: {e}",
+                                                                "Failed to parse {}: {short}",
                                                                 event.item_type
                                                             );
                                                         }

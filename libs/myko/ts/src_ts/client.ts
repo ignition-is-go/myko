@@ -140,6 +140,10 @@ type ReportErrorMessage = Extract<
   { event: typeof MykoEvent.ReportError }
 >
 type PingMessage = Extract<MykoMessage, { event: typeof MykoEvent.Ping }>
+type CommandIncomingMessage = Extract<
+  MykoMessage,
+  { event: typeof MykoEvent.Command }
+>
 
 interface ManagedSocket {
   ws: WebSocket
@@ -164,6 +168,7 @@ export class MykoClient {
   private queryErrors = new Subject<QueryErrorMessage>()
   private reportErrors = new Subject<ReportErrorMessage>()
   private pingResponses = new Subject<PingMessage>()
+  private commandIncoming = new Subject<CommandIncomingMessage>()
 
   // State observables
   private connectionStatusSubject = new ReplaySubject<ConnectionStatus>(1)
@@ -273,6 +278,11 @@ export class MykoClient {
   /** Observable of connection status changes */
   get connectionStatus$(): Observable<ConnectionStatus> {
     return this.connectionStatusSubject.asObservable()
+  }
+
+  /** Observable of incoming command messages (ws:m:command) from the server */
+  get commandIncoming$(): Observable<CommandIncomingMessage> {
+    return this.commandIncoming.asObservable()
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -730,6 +740,9 @@ export class MykoClient {
         break
       case MykoEvent.Ping:
         this.pingResponses.next(message as PingMessage)
+        break
+      case MykoEvent.Command:
+        this.commandIncoming.next(message as CommandIncomingMessage)
         break
     }
   }
