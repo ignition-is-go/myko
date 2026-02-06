@@ -25,14 +25,6 @@ pub struct StoreRegistry {
     stores: DashMap<Arc<str>, Arc<EntityStore>>,
 }
 
-impl std::fmt::Debug for StoreRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StoreRegistry")
-            .field("stores", &format!("({} entries)", self.stores.len()))
-            .finish()
-    }
-}
-
 impl StoreRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {

@@ -113,7 +113,6 @@ where
         // Create server context with actual host_id for test_entity
         let query_ctx = Arc::new(QueryContext {
             req: request_ctx.clone(),
-            registry: Some(registry.clone()),
         });
 
         // Use store.select() to get a FilteredCellMap of matching items

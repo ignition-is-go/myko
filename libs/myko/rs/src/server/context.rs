@@ -276,7 +276,6 @@ impl CellServerCtx {
         // Create a MykoServerCtx for query compatibility
         let query_context = Arc::new(QueryContext {
             req: request.clone(),
-            registry: Some(self.registry.clone()),
         });
         let query = Arc::new(query);
 
