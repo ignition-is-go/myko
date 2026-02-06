@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::request::RequestContext;
+use crate::{request::RequestContext, store::StoreRegistry};
 
 /// Minimal server context provided to query handlers.
 ///
@@ -14,4 +14,6 @@ use crate::request::RequestContext;
 #[derive(Clone, Debug)]
 pub struct QueryContext {
     pub req: Arc<RequestContext>,
+    /// Optional access to the entity store registry for cross-entity queries.
+    pub registry: Option<Arc<StoreRegistry>>,
 }
