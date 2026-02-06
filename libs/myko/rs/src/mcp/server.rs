@@ -5,11 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
+use super::types::*;
 use crate::{
     client::{ConnectionStatus, MykoClient},
     command::CommandRegistration,
@@ -17,8 +18,6 @@ use crate::{
     report::ReportRegistration,
     wire::{MykoMessage, WrappedCommand, WrappedQuery, WrappedReport},
 };
-
-use super::types::*;
 
 /// MCP Server for Myko.
 ///
@@ -63,9 +62,7 @@ impl McpServer {
         // Build a tokio runtime for async operations
         let rt = tokio::runtime::Runtime::new()?;
 
-        rt.block_on(async {
-            self.run_stdio_async().await
-        })
+        rt.block_on(async { self.run_stdio_async().await })
     }
 
     async fn run_stdio_async(&self) -> io::Result<()> {
@@ -132,7 +129,8 @@ impl McpServer {
                     Ok(r) => r,
                     Err(e) => {
                         eprintln!("[myko-mcp] Parse error: {}", e);
-                        let response = McpResponse::error(Value::Null, McpError::parse_error(e.to_string()));
+                        let response =
+                            McpResponse::error(Value::Null, McpError::parse_error(e.to_string()));
                         let _ = response_tx_clone.blocking_send(response);
                         continue;
                     }
@@ -224,7 +222,8 @@ impl RequestHandler {
                 let _ = response_tx.blocking_send(self.handle_resources_list(request.id));
             }
             "resources/read" => {
-                let _ = response_tx.blocking_send(self.handle_resources_read(request.id, request.params));
+                let _ = response_tx
+                    .blocking_send(self.handle_resources_read(request.id, request.params));
             }
             _ => {
                 let _ = response_tx.blocking_send(McpResponse::error(
@@ -502,11 +501,18 @@ async fn execute_query(
     for reg in inventory::iter::<QueryRegistration> {
         if reg.query_id == query_id {
             let tx = Uuid::new_v4().to_string();
-            let mut query_json = if arguments.is_object() { arguments.clone() } else { json!({}) };
+            let mut query_json = if arguments.is_object() {
+                arguments.clone()
+            } else {
+                json!({})
+            };
 
             if let Some(obj) = query_json.as_object_mut() {
                 obj.insert("tx".to_string(), json!(tx));
-                obj.insert("createdAt".to_string(), json!(chrono::Utc::now().to_rfc3339()));
+                obj.insert(
+                    "createdAt".to_string(),
+                    json!(chrono::Utc::now().to_rfc3339()),
+                );
             }
 
             let wrapped = WrappedQuery {
@@ -548,7 +554,11 @@ async fn execute_report(
     for reg in inventory::iter::<ReportRegistration> {
         if reg.report_id == report_id {
             let tx = Uuid::new_v4().to_string();
-            let mut report_json = if arguments.is_object() { arguments.clone() } else { json!({}) };
+            let mut report_json = if arguments.is_object() {
+                arguments.clone()
+            } else {
+                json!({})
+            };
 
             if let Some(obj) = report_json.as_object_mut() {
                 obj.insert("tx".to_string(), json!(tx));
@@ -608,7 +618,11 @@ async fn execute_command(
     }
 
     let tx = Uuid::new_v4().to_string();
-    let mut command_json = if arguments.is_object() { arguments.clone() } else { json!({}) };
+    let mut command_json = if arguments.is_object() {
+        arguments.clone()
+    } else {
+        json!({})
+    };
 
     if let Some(obj) = command_json.as_object_mut() {
         obj.insert("tx".to_string(), json!(tx.clone()));
@@ -619,7 +633,9 @@ async fn execute_command(
         command_id: command_id.to_string(),
     };
 
-    client.send_command_raw(wrapped).map_err(|e| format!("Failed to send: {}", e))?;
+    client
+        .send_command_raw(wrapped)
+        .map_err(|e| format!("Failed to send: {}", e))?;
 
     let tx_clone = tx.clone();
     let mut stream = client.get_messages();

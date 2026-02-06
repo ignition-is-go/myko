@@ -268,11 +268,11 @@ impl RelationshipManager {
     /// 3. EnsureFor initialization: Create missing entities for all dependency combinations
     pub fn establish_relations(&self, ctx: &CellServerCtx) {
         info!("RelationshipManager: Establishing relations on startup");
-        info!(
+        debug!(
             "RelationshipManager: BelongsTo relations by local: {:?}",
             self.belongs_to_by_local.keys().collect::<Vec<_>>()
         );
-        info!(
+        debug!(
             "RelationshipManager: OwnsMany relations by local: {:?}",
             self.owns_many_by_local.keys().collect::<Vec<_>>()
         );
@@ -525,7 +525,7 @@ impl RelationshipManager {
                     }
                 }
 
-                info!(
+                debug!(
                     "RelationshipManager: {} -> {}: {} orphans deleted, {} valid, {} no FK",
                     child_type, lookup.foreign_type, orphan_count, valid_count, no_fk_count
                 );

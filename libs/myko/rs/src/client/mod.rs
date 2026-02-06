@@ -1,6 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, atomic::{AtomicU8, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
@@ -106,7 +109,9 @@ impl MykoClient {
     }
 
     /// Get a stream of connection status changes
-    pub fn watch_connection_status(&self) -> impl tokio_stream::Stream<Item = ConnectionStatus> + 'static {
+    pub fn watch_connection_status(
+        &self,
+    ) -> impl tokio_stream::Stream<Item = ConnectionStatus> + 'static {
         let rx = self.socket.subscribe_status();
         WatchStream::new(rx).map(|status| match status {
             SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
@@ -455,7 +460,9 @@ impl MykoClient {
         });
 
         let msg = MykoMessage::Report(wrapped);
-        let msg = self.encode_message(&msg).expect("Could not serialize message");
+        let msg = self
+            .encode_message(&msg)
+            .expect("Could not serialize message");
 
         let report_send_socket = self.socket.clone();
         let report_send_self = self.clone();
@@ -612,7 +619,9 @@ impl MykoClient {
         });
 
         let msg = MykoMessage::Query(wrapped);
-        let msg = self.encode_message(&msg).expect("Could not serialize message");
+        let msg = self
+            .encode_message(&msg)
+            .expect("Could not serialize message");
 
         let query_send_socket = self.socket.clone();
         let query_send_self = self.clone();
@@ -801,7 +810,9 @@ impl MykoClient {
 
         // Pre-encode message before spawning
         let msg = MykoMessage::Report(report);
-        let encoded_msg = self.encode_message(&msg).expect("Could not serialize report");
+        let encoded_msg = self
+            .encode_message(&msg)
+            .expect("Could not serialize report");
 
         tokio::spawn(async move {
             // Get message stream

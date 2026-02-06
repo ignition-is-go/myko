@@ -11,7 +11,9 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use crate::{
-    self as myko_rs, report::{ReportContext, ReportHandler}, wire::{MEvent, WrappedItem},
+    self as myko_rs,
+    report::{ReportContext, ReportHandler},
+    wire::{MEvent, WrappedItem},
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
