@@ -72,24 +72,13 @@ pub struct CellServerConfig {
 }
 
 /// Builder for creating a CellServer.
+#[derive(Default)]
 pub struct CellServerBuilder {
     bind_addr: Option<SocketAddr>,
     host_id: Option<Uuid>,
     kafka: Option<KafkaConfig>,
     peer_registry: Option<PeerRegistryConfig>,
     after_init: Option<Box<dyn FnOnce(&CellServer) + Send>>,
-}
-
-impl Default for CellServerBuilder {
-    fn default() -> Self {
-        Self {
-            bind_addr: None,
-            host_id: None,
-            kafka: None,
-            peer_registry: None,
-            after_init: None,
-        }
-    }
 }
 
 impl CellServerBuilder {
