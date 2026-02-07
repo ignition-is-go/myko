@@ -56,7 +56,7 @@ pub use relationship_manager::RelationshipManager;
 use uuid::Uuid;
 pub use ws_handler::WsHandler;
 
-use crate::store::StoreRegistry;
+use crate::{search::SearchIndex, store::StoreRegistry};
 
 /// Cell-based Myko server configuration.
 #[derive(Debug, Clone)]
@@ -159,6 +159,8 @@ pub struct CellServer {
     pub relationship_manager: Arc<RelationshipManager>,
     /// Optional Kafka producer handle
     pub kafka_producer: Option<KafkaProducerHandle>,
+    /// Full-text search index
+    pub search_index: Arc<SearchIndex>,
     /// Server host ID
     pub host_id: Uuid,
     /// Server configuration
@@ -226,11 +228,15 @@ impl CellServer {
         // If no Kafka, server is immediately ready
         let ready = Arc::new(AtomicBool::new(kafka_consumer.is_none()));
 
+        // Initialize full-text search index
+        let search_index = Arc::new(SearchIndex::new());
+
         Self {
             registry,
             handler_registry,
             relationship_manager,
             kafka_producer,
+            search_index,
             host_id,
             config,
             _kafka_producer_owner: kafka_producer_owner,
@@ -288,6 +294,7 @@ impl CellServer {
             self.handler_registry.clone(),
             self.relationship_manager.clone(),
             self.kafka_producer.clone(),
+            self.search_index.clone(),
         )
     }
 
@@ -421,6 +428,10 @@ impl CellServer {
                 );
             }
         }
+
+        // Build search index from store data (after Kafka catch-up)
+        log::info!("Building search index...");
+        self.search_index.build_from_registry(&self.registry);
 
         // Establish relations (cleanup orphans, ensure required entities)
         log::info!("Establishing relations...");

@@ -71,10 +71,9 @@ impl ReportContext {
     /// Search for entities matching a query string.
     ///
     /// Returns matching entity IDs (up to `limit` results).
-    /// Note: Full-text search requires tantivy integration (not yet implemented in cell-based server).
-    pub fn search(&self, _entity_type: &str, _query: &str, _limit: usize) -> Vec<Arc<str>> {
-        // Search not yet implemented in cell-based server
-        vec![]
+    /// Uses tantivy full-text search on fields marked with `#[searchable]`.
+    pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
+        self.server_ctx.search_index().search(entity_type, query, limit)
     }
 
     /// Subscribe to a sub-report dependency.

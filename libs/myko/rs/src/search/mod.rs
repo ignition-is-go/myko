@@ -1,8 +1,8 @@
 //! Full-text search infrastructure for Myko entities.
 //!
 //! This module provides full-text search capabilities using tantivy with RAM directory
-//! for in-memory indexing. Entities can mark fields as `#[searchable]` and SearchManager
-//! indexes them automatically by subscribing to EventBus.
+//! for in-memory indexing. Entities can mark fields as `#[searchable]` and the search
+//! index is updated automatically when entities are stored or removed.
 //!
 //! ## Usage
 //!
@@ -22,19 +22,23 @@
 //! ## Architecture
 //!
 //! ```text
-//! EventBus → SearchManager → tantivy index
-//!                ↓
-//!          EntitySearch report → returns matching IDs
+//! CellServerCtx (set/del) --> SearchIndex --> tantivy RAM index
+//!                                  |
+//!                            SearchableRegistration (inventory)
+//!                                  |
+//!                         EntitySearch report --> returns matching IDs
 //! ```
 
 mod entity_search;
+mod index;
 
 pub use entity_search::{EntitySearch, EntitySearchResult};
+pub use index::SearchIndex;
 use serde_json::Value;
 
 /// Registration for searchable entity types.
 ///
-/// This is collected via `inventory` and used by SearchManager to build indices.
+/// This is collected via `inventory` and used by SearchIndex to know which fields to index.
 pub struct SearchableRegistration {
     /// Entity type name (e.g., "Target")
     pub entity_type: &'static str,

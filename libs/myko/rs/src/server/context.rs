@@ -17,6 +17,7 @@ use crate::{
     query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx},
     report::{ReportContext, ReportHandler},
     request::RequestContext,
+    search::SearchIndex,
     store::StoreRegistry,
     wire::{EventOptions, MEvent, MEventType},
 };
@@ -39,6 +40,8 @@ pub struct CellServerCtx {
     relationship_manager: Arc<RelationshipManager>,
     /// Optional Kafka producer for persistence
     kafka_producer: Option<KafkaProducerHandle>,
+    /// Full-text search index
+    search_index: Arc<SearchIndex>,
 }
 
 impl CellServerCtx {
@@ -49,6 +52,7 @@ impl CellServerCtx {
         handler_registry: Arc<HandlerRegistry>,
         relationship_manager: Arc<RelationshipManager>,
         kafka_producer: Option<KafkaProducerHandle>,
+        search_index: Arc<SearchIndex>,
     ) -> Self {
         Self {
             host_id,
@@ -56,7 +60,13 @@ impl CellServerCtx {
             handler_registry,
             relationship_manager,
             kafka_producer,
+            search_index,
         }
+    }
+
+    /// Get the search index.
+    pub fn search_index(&self) -> &Arc<SearchIndex> {
+        &self.search_index
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -104,6 +114,9 @@ impl CellServerCtx {
             .get_or_create(entity_type)
             .insert(id.clone(), item.clone());
 
+        // Search: index searchable fields
+        self.search_index.index_item(&item);
+
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
             self.relationship_manager.forward_set(item, self);
@@ -140,6 +153,9 @@ impl CellServerCtx {
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
 
+        // Search: remove from index
+        self.search_index.remove_entity(&id);
+
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
             self.relationship_manager.forward_del(item, self);
@@ -175,6 +191,9 @@ impl CellServerCtx {
             .get_or_create(entity_type)
             .insert(id.clone(), item.clone());
 
+        // Search: index searchable fields
+        self.search_index.index_item(&item);
+
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
             self.relationship_manager.forward_set(item.clone(), self);
@@ -203,6 +222,9 @@ impl CellServerCtx {
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
+
+        // Search: remove from index
+        self.search_index.remove_entity(&id);
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
