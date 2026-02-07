@@ -27,7 +27,9 @@ pub use crate::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportFactory, ReportHandler,
         ReportId, ReportIdStatic, ReportOutputType, ReportParseFn, ReportRegistration,
     },
-    search::{EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable},
+    search::{
+        EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
+    },
     server::{CellServer, CellServerBuilder, CellServerCtx},
     utils::downcast_item,
     wire::{

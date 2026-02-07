@@ -73,7 +73,9 @@ impl ReportContext {
     /// Returns matching entity IDs (up to `limit` results).
     /// Uses tantivy full-text search on fields marked with `#[searchable]`.
     pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
-        self.server_ctx.search_index().search(entity_type, query, limit)
+        self.server_ctx
+            .search_index()
+            .search(entity_type, query, limit)
     }
 
     /// Subscribe to a sub-report dependency.

@@ -9,7 +9,7 @@ use tantivy::{
     Index, IndexReader, IndexWriter, TantivyDocument,
     collector::TopDocs,
     query::QueryParser,
-    schema::{Field, OwnedValue, Schema, STORED, STRING, TEXT},
+    schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT},
 };
 
 use super::{extract_searchable_text, iter_searchable};
