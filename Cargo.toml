@@ -45,6 +45,12 @@ members = [
   "libs/entities/surfaces",
   "libs/entities/ui",
   "libs/entities/nodes",
+  "libs/entities/math",
+  "libs/entities/logic",
+  "libs/entities/lists",
+  "libs/entities/objects",
+  "libs/entities/string",
+  "libs/entities/generators",
   "libs/entities/rs",
   "libs/entities/macros",
   "libs/sdk/rs",
@@ -210,6 +216,12 @@ rship-entities-cameras = { version = "3.1.0-canary.23", path = "libs/entities/ca
 rship-entities-surfaces = { version = "3.1.0-canary.23", path = "libs/entities/surfaces" }
 rship-entities-ui = { version = "3.1.0-canary.23", path = "libs/entities/ui" }
 rship-entities-nodes = { version = "3.1.0-canary.23", path = "libs/entities/nodes" }
+rship-entities-math = { version = "3.1.0-canary.23", path = "libs/entities/math" }
+rship-entities-logic = { version = "3.1.0-canary.23", path = "libs/entities/logic" }
+rship-entities-lists = { version = "3.1.0-canary.23", path = "libs/entities/lists" }
+rship-entities-objects = { version = "3.1.0-canary.23", path = "libs/entities/objects" }
+rship-entities-string = { version = "3.1.0-canary.23", path = "libs/entities/string" }
+rship-entities-generators = { version = "3.1.0-canary.23", path = "libs/entities/generators" }
 rship-sdk = { version = "3.1.0-canary.23", path = "libs/sdk/rs" }
 autosocket = { version = "0.1.0", path = "libs/autosocket" }
 link = { version = "3.1.0-canary.23", path = "libs/link/core" }

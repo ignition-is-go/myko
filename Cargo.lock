@@ -9550,21 +9550,27 @@ dependencies = [
  "rship-entities-external",
  "rship-entities-feedback",
  "rship-entities-foundation",
+ "rship-entities-generators",
  "rship-entities-infrastructure",
  "rship-entities-lighting",
  "rship-entities-link",
+ "rship-entities-lists",
+ "rship-entities-logic",
  "rship-entities-machine",
  "rship-entities-macros",
+ "rship-entities-math",
  "rship-entities-media",
  "rship-entities-networking",
  "rship-entities-nmos",
  "rship-entities-nodes",
+ "rship-entities-objects",
  "rship-entities-physical",
  "rship-entities-rive",
  "rship-entities-runtime",
  "rship-entities-scheduling",
  "rship-entities-sequencing",
  "rship-entities-status",
+ "rship-entities-string",
  "rship-entities-surfaces",
  "rship-entities-tags",
  "rship-entities-teams",
@@ -9589,9 +9595,12 @@ dependencies = [
 name = "rship-entities-assets"
 version = "3.1.0-canary.23"
 dependencies = [
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",
@@ -9634,9 +9643,12 @@ dependencies = [
 name = "rship-entities-cameras"
 version = "3.1.0-canary.23"
 dependencies = [
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",
@@ -9660,9 +9672,12 @@ name = "rship-entities-compositing"
 version = "3.1.0-canary.23"
 dependencies = [
  "chrono",
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",
@@ -9724,6 +9739,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship-entities-generators"
+version = "3.1.0-canary.23"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "dashmap",
+ "hypha",
+ "myko-rs",
+ "noise",
+ "once_cell",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "rship-sync",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rship-entities-infrastructure"
 version = "3.1.0-canary.23"
 dependencies = [
@@ -9739,9 +9773,12 @@ dependencies = [
 name = "rship-entities-lighting"
 version = "3.1.0-canary.23"
 dependencies = [
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",
@@ -9758,6 +9795,33 @@ dependencies = [
  "serde_json",
  "specta",
  "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-lists"
+version = "3.1.0-canary.23"
+dependencies = [
+ "hypha",
+ "log 0.4.29",
+ "myko-rs",
+ "once_cell",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rship-entities-logic"
+version = "3.1.0-canary.23"
+dependencies = [
+ "hypha",
+ "myko-rs",
+ "once_cell",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -9780,6 +9844,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "rship-entities-math"
+version = "3.1.0-canary.23"
+dependencies = [
+ "hypha",
+ "myko-rs",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -9853,12 +9929,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship-entities-objects"
+version = "3.1.0-canary.23"
+dependencies = [
+ "hypha",
+ "myko-rs",
+ "once_cell",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rship-entities-physical"
 version = "3.1.0-canary.23"
 dependencies = [
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-foundation",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",
@@ -9869,10 +9962,13 @@ name = "rship-entities-rive"
 version = "3.1.0-canary.23"
 dependencies = [
  "chrono",
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
  "rship-entities-compositing",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",
@@ -9942,6 +10038,19 @@ dependencies = [
  "serde_json",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "rship-entities-string"
+version = "3.1.0-canary.23"
+dependencies = [
+ "hypha",
+ "myko-rs",
+ "regex",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -10056,10 +10165,13 @@ dependencies = [
 name = "rship-entities-visualization"
 version = "3.1.0-canary.23"
 dependencies = [
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
  "rship-entities-core",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
  "serde_json",
  "ts-rs",

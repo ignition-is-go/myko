@@ -1,4 +1,8 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+};
 
 use dprint_plugin_typescript::{
     FormatTextOptions,
@@ -15,6 +19,7 @@ use crate::{
 // ============================================================================
 
 /// Value types for TypeScript constant generation.
+#[derive(Debug, PartialEq)]
 pub enum TsConstValue {
     Str(&'static str),
     Int(i64),
@@ -356,14 +361,28 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
         .filter(|x| x.crate_name.contains(&crate_name))
         .collect();
 
-    let mut seen_const_names = HashSet::new();
+    // Deduplicate constants by name — allow duplicates with the same value,
+    // but bail on conflicting values for the same name.
+    let mut seen_consts: HashMap<&str, &TsConstValue> = HashMap::new();
+    let mut deduped_consts: Vec<&TsConstRegistration> = Vec::new();
     for c in &consts {
-        if !seen_const_names.insert(c.name) {
-            anyhow::bail!("Duplicate ts_const name: {}", c.name);
+        if let Some(existing) = seen_consts.get(c.name) {
+            if !c.value.eq(existing) {
+                anyhow::bail!(
+                    "Conflicting ts_const values for '{}': {:?} vs {:?}",
+                    c.name,
+                    existing,
+                    c.value
+                );
+            }
+            // Same name + same value — skip duplicate
+            continue;
         }
+        seen_consts.insert(c.name, &c.value);
+        deduped_consts.push(c);
     }
 
-    let const_exports = consts
+    let const_exports = deduped_consts
         .iter()
         .map(|c| {
             let ts_value = match &c.value {
