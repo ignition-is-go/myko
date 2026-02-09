@@ -220,6 +220,36 @@ pub fn iter_client_id_registrations() -> impl Iterator<Item = &'static ClientIdR
     inventory::iter::<ClientIdRegistration>()
 }
 
+/// Registration for a field that should fall back to the entity's own `id` if null/missing.
+///
+/// When a SET event is processed, if this field is null or absent in the JSON,
+/// it will be populated with the entity's `id` value before parsing.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct Instance {
+///     #[fallback_to_id]
+///     pub cluster_id: Option<String>,
+/// }
+/// ```
+pub struct FallbackToIdRegistration {
+    /// Entity type that has the fallback field
+    pub entity_type: &'static str,
+    /// Field name in JSON (camelCase)
+    pub field_name_json: &'static str,
+}
+
+// Collect all fallback_to_id registrations at compile time
+inventory::collect!(FallbackToIdRegistration);
+
+/// Iterator over all registered fallback_to_id fields
+pub fn iter_fallback_to_id_registrations(
+) -> impl Iterator<Item = &'static FallbackToIdRegistration> {
+    inventory::iter::<FallbackToIdRegistration>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
