@@ -25,7 +25,7 @@ pub trait ReportIdStatic {
 
 /// Output type for a report
 pub trait ReportOutputType {
-    type Output: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
+    type Output: Serialize + DeserializeOwned + Clone + Debug + Send + Sync + 'static;
 }
 
 pub trait MykoReport<T> {

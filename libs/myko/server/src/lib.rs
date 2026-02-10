@@ -137,6 +137,8 @@ pub struct CellServer {
     peer_registry_instance: RwLock<Option<peer_registry::PeerRegistry>>,
     /// Callback to run after init (Kafka catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
+    /// Hypha cell inspector server (kept alive for the lifetime of the server)
+    _inspector: hypha::server::InspectorServer,
 }
 
 impl CellServer {
@@ -193,6 +195,10 @@ impl CellServer {
         // Initialize full-text search index
         let search_index = Arc::new(SearchIndex::new());
 
+        // Start the hypha cell inspector server
+        let inspector = hypha::server::start_server("myko");
+        log::info!("Hypha inspector on port {}", inspector.port());
+
         Self {
             registry,
             handler_registry,
@@ -206,6 +212,7 @@ impl CellServer {
             ready,
             peer_registry_instance: RwLock::new(None),
             after_init: std::sync::Mutex::new(None),
+            _inspector: inspector,
         }
     }
 

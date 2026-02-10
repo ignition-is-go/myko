@@ -30,7 +30,7 @@ pub trait QueryIdStatic {
 }
 
 pub trait QueryItemType {
-    type Item: Send + Sync;
+    type Item: std::fmt::Debug + Send + Sync;
     fn query_item_type(&self) -> Arc<str>;
     fn query_item_type_static() -> Arc<str>;
 }

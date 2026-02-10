@@ -15,7 +15,7 @@ use super::{HandlerRegistry, RelationshipManager, persister::Persister};
 use crate::{
     core::item::{AnyItem, Eventable},
     query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx},
-    report::{ReportContext, ReportHandler},
+    report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
     search::SearchIndex,
     store::StoreRegistry,
@@ -290,7 +290,7 @@ impl CellServerCtx {
     ) -> Cell<Vec<Q::Item>, CellImmutable>
     where
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
@@ -302,6 +302,8 @@ impl CellServerCtx {
         let query = Arc::new(query);
 
         // Filter using the query's test_entity
+        let query_id = Q::query_id_static();
+        let query_name = format!("query:{}", query_id);
         store
             .select(move |item| {
                 if let Some(typed_item) = item.as_any().downcast_ref::<Q::Item>() {
@@ -322,6 +324,7 @@ impl CellServerCtx {
                     .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
                     .collect()
             })
+            .with_name(query_name.as_str())
     }
 
     pub fn report<R>(
@@ -330,14 +333,19 @@ impl CellServerCtx {
         request: Arc<RequestContext>,
     ) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + Clone + 'static,
+        R: ReportHandler + ReportId + Clone + 'static,
     {
-        let report = Arc::new(report);
+        let report_name = format!("report:{}", report.report_id());
 
         // Create a nested context - sub-report args are accessed via &self in compute
-        let nested_ctx = ReportContext::new(request.clone(), Arc::new(self.clone()));
+        let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
 
-        report.compute(nested_ctx)
+        // Wrap the compute result in a named relay so the inspector
+        // shows the report as a parent of its compute graph
+        report
+            .compute(nested_ctx)
+            .map(|v| v.clone())
+            .with_name(report_name.as_str())
     }
 
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {

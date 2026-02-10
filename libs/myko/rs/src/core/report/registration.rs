@@ -18,10 +18,10 @@ use crate::{common::to_value::ToValue, request::RequestContext, server::CellServ
 
 /// Type-erased report output trait.
 /// Report outputs implement this to enable serialization at the WebSocket layer.
-pub trait AnyOutput: ToValue + Send + Sync + 'static {}
+pub trait AnyOutput: ToValue + std::fmt::Debug + Send + Sync + 'static {}
 
 /// Blanket implementation for any type that satisfies the bounds.
-impl<T: ToValue + Send + Sync + 'static> AnyOutput for T {}
+impl<T: ToValue + std::fmt::Debug + Send + Sync + 'static> AnyOutput for T {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type aliases for function pointers
@@ -108,9 +108,13 @@ impl<R: ReportParams> ReportFactory for R {
         let ctx = ReportContext::new(request_ctx, server_ctx);
 
         // Call the inner report's compute method
+        let report_id = R::report_id_static();
         let cell = <R as ReportHandler>::compute(&request.report, ctx);
 
         // Map to type-erased output (clone since map receives a reference)
-        Ok(cell.map(|output| Arc::new(output.clone()) as Arc<dyn AnyOutput>))
+        let report_name = format!("report:{}", report_id);
+        Ok(cell
+            .map(|output| Arc::new(output.clone()) as Arc<dyn AnyOutput>)
+            .with_name(report_name.as_str()))
     }
 }

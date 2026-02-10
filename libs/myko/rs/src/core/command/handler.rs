@@ -131,7 +131,7 @@ impl CommandContext {
     pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Q::Item>, CommandError>
     where
         Q: QueryParams,
-        Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
+        Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -155,7 +155,7 @@ impl CommandContext {
     pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Q::Item>, CommandError>
     where
         Q: QueryParams,
-        Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
+        Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {

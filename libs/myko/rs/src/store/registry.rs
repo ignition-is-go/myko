@@ -40,8 +40,8 @@ impl StoreRegistry {
         let key: Arc<str> = entity_type.into();
 
         self.stores
-            .entry(key)
-            .or_insert_with(|| Arc::new(EntityStore::new()))
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(EntityStore::new().with_name(format!("store:{}", key))))
             .clone()
     }
 

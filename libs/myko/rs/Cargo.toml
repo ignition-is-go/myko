@@ -33,13 +33,13 @@ ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.21"
 flume.workspace = true
 hypha.workspace = true
+dashmap.workspace = true
 
 # Native-only deps (store, search, codegen)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dprint-plugin-typescript = "0.95.12"
 tantivy = "0.22"
 crossbeam.workspace = true
-dashmap.workspace = true
 
 # WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
 [target.'cfg(target_arch = "wasm32")'.dependencies]

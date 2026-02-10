@@ -159,7 +159,8 @@ impl MykoClient {
     /// Create a MykoClient with a custom transport implementation.
     pub fn with_transport(transport: Arc<dyn SocketTransport>) -> MykoClient {
         let protocol = Arc::new(AtomicU8::new(MykoProtocol::MSGPACK as u8));
-        let connection_status = Cell::new(ConnectionStatus::Disconnected);
+        let connection_status =
+            Cell::new(ConnectionStatus::Disconnected).with_name("connection_status");
 
         let query_handlers: DashMap<Arc<str>, QueryHandler> = DashMap::new();
         let report_handlers: DashMap<Arc<str>, ReportHandler> = DashMap::new();
@@ -454,7 +455,7 @@ impl MykoClient {
             query_item_type,
         };
 
-        let cell = Cell::new(vec![]);
+        let cell = Cell::new(vec![]).with_name(query_id.as_ref());
         let cell_writer = cell.clone();
 
         // State for accumulating query diffs
@@ -551,7 +552,7 @@ impl MykoClient {
     ) -> Cell<Option<O>, CellImmutable>
     where
         R: ReportParams + ReportIdStatic + Clone,
-        O: DeserializeOwned + Clone + Send + Sync + 'static,
+        O: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let report: ReportRequest<R> = report.into();
         let report_id: Arc<str> = R::report_id_static().into();
@@ -563,7 +564,7 @@ impl MykoClient {
             report_id: report_id.to_string(),
         };
 
-        let cell = Cell::new(None);
+        let cell = Cell::new(None).with_name(report_id.as_ref());
         let cell_writer = cell.clone();
 
         // Register handler for report responses matching this tx
@@ -618,7 +619,7 @@ impl MykoClient {
     ) -> Cell<O, CellImmutable>
     where
         R: ReportParams + ReportIdStatic + Clone,
-        O: DeserializeOwned + Clone + Send + Sync + 'static,
+        O: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let cell = self.watch_report::<R, O>(report);
         // Map Option<O> -> O using the initial value as default
@@ -639,7 +640,7 @@ impl MykoClient {
     pub fn send_command<C, R>(&self, command: &C) -> Cell<Option<Result<R, String>>, CellImmutable>
     where
         C: Serialize + Clone + CommandId,
-        R: DeserializeOwned + Clone + Send + Sync + 'static,
+        R: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let request = CommandRequest::new(command.clone());
         let tx = request.tx.to_string();
@@ -661,7 +662,7 @@ impl MykoClient {
             }
         };
 
-        let cell = Cell::new(None);
+        let cell = Cell::new(None).with_name(format!("cmd:{}", command.command_id()).as_str());
         let cell_writer = cell.clone();
 
         // Register one-shot handler

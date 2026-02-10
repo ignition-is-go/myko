@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
-use crate::{common::to_value::ToValue, query::QueryParams, request::RequestContext};
+use crate::{
+    common::to_value::ToValue, query::QueryParams, report::ReportId, request::RequestContext,
+};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -100,12 +102,22 @@ impl ReportContext {
     ///
     /// Returns a cell that updates whenever the sub-report output changes.
     /// This allows reports to compose other reports.
+    ///
+    /// Forwards to `CellServerCtx::report()` which wraps the compute result
+    /// in a named relay for inspector visibility.
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + Clone + 'static,
+        R: ReportHandler + ReportId + Clone + 'static,
     {
-        // Compute the sub-report
-        report.compute(self.clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx.report(report, self.req.clone())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = report;
+            unreachable!();
+        }
     }
 }
 
@@ -139,7 +151,14 @@ impl ReportContext {
 /// }
 /// ```
 pub trait ReportHandler: Sized + Send + Sync + 'static {
-    type Output: Serialize + DeserializeOwned + Clone + Send + Sync + ToValue + 'static;
+    type Output: Serialize
+        + DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + ToValue
+        + 'static;
 
     /// Compute the report output as a reactive cell.
     ///
