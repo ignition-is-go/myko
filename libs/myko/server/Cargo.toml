@@ -33,5 +33,9 @@ uuid.workspace = true
 chrono.workspace = true
 log.workspace = true
 dashmap.workspace = true
-hypha = { workspace = true, features = ["inspector"] }
+hypha.workspace = true
 inventory = "0.3.21"
+
+[features]
+default = []
+inspector = ["hypha/inspector"]

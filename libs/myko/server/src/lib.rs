@@ -138,6 +138,7 @@ pub struct CellServer {
     /// Callback to run after init (Kafka catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
     /// Hypha cell inspector server (kept alive for the lifetime of the server)
+    #[cfg(feature = "inspector")]
     _inspector: hypha::server::InspectorServer,
 }
 
@@ -196,7 +197,9 @@ impl CellServer {
         let search_index = Arc::new(SearchIndex::new());
 
         // Start the hypha cell inspector server
+        #[cfg(feature = "inspector")]
         let inspector = hypha::server::start_server("myko");
+        #[cfg(feature = "inspector")]
         log::info!("Hypha inspector on port {}", inspector.port());
 
         Self {
@@ -212,6 +215,7 @@ impl CellServer {
             ready,
             peer_registry_instance: RwLock::new(None),
             after_init: std::sync::Mutex::new(None),
+            #[cfg(feature = "inspector")]
             _inspector: inspector,
         }
     }
