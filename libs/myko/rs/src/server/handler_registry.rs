@@ -100,7 +100,7 @@ impl HandlerRegistry {
             }
         }
 
-        log::info!(
+        log::trace!(
             "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
             format_list(item_parsers.keys()),
