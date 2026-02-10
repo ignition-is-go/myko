@@ -3,5 +3,13 @@
 //! Usage: cargo run --bin typegen -p myko-rs
 
 fn main() {
-    myko_rs::codegen::generate_item_types().expect("Failed to generate TypeScript types");
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        myko_rs::codegen::generate_item_types().expect("Failed to generate TypeScript types");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        panic!("typegen is not supported on wasm32");
+    }
 }

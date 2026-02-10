@@ -51,7 +51,7 @@ impl MykoClientWrapper {
         RUNTIME.block_on(async {
             match serde_json::from_str::<myko_rs::event::MEvent>(&json) {
                 Ok(event) => {
-                    match inner.send_event(event).await {
+                    match inner.send_event(event) {
                         Ok(()) => String::new(),
                         Err(e) => e,
                     }

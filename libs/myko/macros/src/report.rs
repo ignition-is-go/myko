@@ -41,6 +41,8 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
         #derives
         #input_struct
 
+        // Registration is server-only (requires ReportFactory which depends on hypha)
+        #[cfg(not(target_arch = "wasm32"))]
         myko_rs::submit! {
             #report_registration
         }
@@ -67,7 +69,7 @@ pub fn myko_report_impl(report_output_type: Path, input_struct: ItemStruct) -> T
 
         // Note: WithTransaction, AnyReport, and Report are implemented on ReportRequest<#struct_name>
         // via blanket impls in myko_rs. The user's struct just implements the identity traits.
-        // ReportHandler must still be implemented by the user.
+        // ReportHandler must still be implemented by the user (server-only).
         // ReportFactory is implemented via blanket impl and provides parse() and cell_factory().
     };
 

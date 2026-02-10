@@ -78,12 +78,16 @@
 
 // Main module structure
 pub mod client;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod codegen;
+pub mod codegen_types;
 pub mod core;
 pub mod entities;
-pub mod mcp;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod search;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod utils;
 pub mod wire;
@@ -94,7 +98,9 @@ pub mod prelude;
 pub mod bench_entities;
 
 // Re-export core modules at top level for backwards compatibility
-pub use core::{command, common, item, query, relationship, report, request, saga};
+#[cfg(not(target_arch = "wasm32"))]
+pub use core::saga;
+pub use core::{command, common, item, query, relationship, report, request};
 
 // Re-export crates for use in macros
 pub use hypha; // For cell-based queries/reports in #[myko_item]
@@ -103,6 +109,89 @@ pub use inventory::submit; // For myko_rs::submit! macro
 pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko_rs::TS)]
+
+/// Register a type for ts-rs export.
+#[macro_export]
+macro_rules! register_ts_export {
+    ($ty:ty) => {
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsExportRegistration {
+                type_name: stringify!($ty),
+                export_fn: || <$ty as $crate::ts_rs::TS>::export(),
+            }
+        }
+    };
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            $crate::register_ts_export!($ty);
+        )+
+    };
+}
+
+/// Define a Rust constant and register it for TypeScript export.
+#[macro_export]
+macro_rules! ts_const {
+    (pub $name:ident : &str = $value:expr) => {
+        pub const $name: &str = $value;
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TsConstValue::Str($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($name:ident : &str = $value:expr) => {
+        const $name: &str = $value;
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TsConstValue::Str($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    (pub $name:ident : i64 = $value:expr) => {
+        pub const $name: i64 = $value;
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TsConstValue::Int($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($name:ident : i64 = $value:expr) => {
+        const $name: i64 = $value;
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TsConstValue::Int($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    (pub $name:ident : bool = $value:expr) => {
+        pub const $name: bool = $value;
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TsConstValue::Bool($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($name:ident : bool = $value:expr) => {
+        const $name: bool = $value;
+        $crate::inventory::submit! {
+            $crate::codegen_types::TsConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TsConstValue::Bool($value),
+                crate_name: module_path!(),
+            }
+        }
+    };
+}
 
 /// Helper macro for submitting message event registrations
 #[macro_export]

@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
-use hypha::Gettable;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::server::CellServerCtx;
 use crate::{
     command::CommandError, event::EventOptions, item::Eventable, query::QueryParams,
-    request::RequestContext, server::CellServerCtx,
+    request::RequestContext,
 };
 
 /// Context provided to command handlers for accessing dependencies.
@@ -24,11 +25,13 @@ pub struct CommandContext {
     /// The command ID being executed (for error reporting).
     pub command_id: Arc<str>,
 
+    #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<CellServerCtx>,
 }
 
 impl CommandContext {
     /// Create a new CommandContext.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
@@ -84,9 +87,16 @@ impl CommandContext {
         item: &T,
         options: EventOptions,
     ) -> Result<(), CommandError> {
-        self.server_ctx.set_with_options(item, Some(options));
-
-        Ok(())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx.set_with_options(item, Some(options));
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (item, options);
+            unreachable!();
+        }
     }
 
     /// Emit a DEL event for an item.
@@ -103,9 +113,16 @@ impl CommandContext {
         item: &T,
         options: EventOptions,
     ) -> Result<(), CommandError> {
-        self.server_ctx.del_with_options(item, Some(options));
-
-        Ok(())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx.del_with_options(item, Some(options));
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (item, options);
+            unreachable!();
+        }
     }
 
     /// Execute a query and return the first result.
@@ -116,12 +133,21 @@ impl CommandContext {
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
     {
-        Ok(self
-            .server_ctx
-            .query(query.clone(), self.req.clone())
-            .get()
-            .first()
-            .cloned())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use hypha::Gettable;
+            Ok(self
+                .server_ctx
+                .query(query.clone(), self.req.clone())
+                .get()
+                .first()
+                .cloned())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = query;
+            unreachable!();
+        }
     }
     /// Execute a query and return all results.
     ///
@@ -131,7 +157,16 @@ impl CommandContext {
         Q: QueryParams,
         Q::Item: DeserializeOwned + Send + Sync + Clone + 'static,
     {
-        Ok(self.server_ctx.query(query, self.req.clone()).get())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use hypha::Gettable;
+            Ok(self.server_ctx.query(query, self.req.clone()).get())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = query;
+            unreachable!();
+        }
     }
 
     /// Execute another command within this context.
@@ -153,9 +188,16 @@ impl CommandContext {
     where
         R: crate::report::ReportParams + Clone,
     {
-        use hypha::Gettable;
-
-        Ok(self.server_ctx.report(report, self.req.clone()).get())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use hypha::Gettable;
+            Ok(self.server_ctx.report(report, self.req.clone()).get())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = report;
+            unreachable!();
+        }
     }
 }
 

@@ -10,6 +10,7 @@ repository = "https://github.com/ignition-is-go/rship"
 
 
 [dependencies]
+# Core deps (available on all targets)
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -17,43 +18,39 @@ partially.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 async-stream.workspace = true
-tokio.workspace = true
-tungstenite.workspace = true
-tokio-tungstenite.workspace = true
 async-trait.workspace = true
-rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 myko-macros.workspace = true
-openssl = { version = "0.10.35", features = ["vendored"] }
 rmp.workspace = true
 rmp-serde.workspace = true
 md5 = "0.7.0"
-tokio-util.workspace = true
-tokio-stream.workspace = true
 pin-project-lite.workspace = true
 url.workspace = true
 chrono.workspace = true
 log.workspace = true
-ractor.workspace = true
 anyhow.workspace = true
 autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.21"
+flume.workspace = true
+hypha.workspace = true
+
+# Native-only deps (store, search, codegen)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dprint-plugin-typescript = "0.95.12"
 tantivy = "0.22"
 crossbeam.workspace = true
-flume.workspace = true
-hypha.workspace = true
 dashmap.workspace = true
+
+# WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window"] }
+# uuid needs js feature for WASM RNG support
+uuid = { version = "1", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
 
 [features]
 default = []
 bench = []
-
-[dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
-num_cpus = "1.16"
-
-[[bench]]
-name = "gateway"
-harness = false
-required-features = ["bench"]

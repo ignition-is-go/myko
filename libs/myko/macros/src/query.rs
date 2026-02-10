@@ -40,6 +40,8 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
         #derives
         #input_struct
 
+        // Registration is server-only (requires QueryFactory which depends on hypha/store)
+        #[cfg(not(target_arch = "wasm32"))]
         myko_rs::submit! {
             #query_registration
         }

@@ -7,4 +7,5 @@ pub mod query;
 pub mod relationship;
 pub mod report;
 pub mod request;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod saga;

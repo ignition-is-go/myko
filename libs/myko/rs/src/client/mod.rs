@@ -1,21 +1,17 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU8, Ordering},
     },
 };
 
-use autosocket::{AutoReconnectSocket, SocketConnectionStatus};
-use hypha::{Cell, CellImmutable, Mutable};
+use autosocket::{CallbackGuard, SocketConnectionStatus, SocketTransport, WsFrame};
+use dashmap::DashMap;
+use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, Watchable};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use tokio_stream::{
-    StreamExt,
-    wrappers::{BroadcastStream, WatchStream},
-};
-use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
 use crate::{
@@ -53,11 +49,90 @@ pub enum ConnectionStatus {
     Disconnected,
 }
 
+/// Response handler for incoming command responses (one-shot).
+type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
+
+/// Handler for incoming query responses.
+type QueryHandler = Box<dyn Fn(Value) + Send + Sync>;
+
+/// Handler for incoming report responses.
+type ReportHandler = Box<dyn Fn(Value) + Send + Sync>;
+
+/// Handler for incoming command requests (from server).
+type CommandRequestHandler = Box<dyn Fn(Value, CommandResponder) + Send + Sync>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CommandResponder — allows sync command handlers to send responses
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Allows a command handler to send a response back to the server.
+pub struct CommandResponder {
+    socket: Arc<dyn SocketTransport>,
+    protocol: Arc<AtomicU8>,
+    tx: String,
+    command_id: Arc<str>,
+}
+
+impl CommandResponder {
+    /// Send a successful response.
+    pub fn respond_ok(&self, response: Value) {
+        let resp = crate::command::CommandResponse {
+            tx: self.tx.clone(),
+            response,
+        };
+        let msg = MykoMessage::CommandResponse(resp);
+        if let Some(frame) = encode_protocol(&self.protocol, &msg) {
+            let _ = self.socket.send(frame);
+        }
+    }
+
+    /// Send an error response.
+    pub fn respond_err(&self, message: String) {
+        let err = crate::command::CommandError {
+            tx: self.tx.clone(),
+            command_id: self.command_id.to_string(),
+            message,
+        };
+        let msg = MykoMessage::CommandError(err);
+        if let Some(frame) = encode_protocol(&self.protocol, &msg) {
+            let _ = self.socket.send(frame);
+        }
+    }
+}
+
+fn encode_protocol(protocol: &AtomicU8, msg: &MykoMessage) -> Option<WsFrame> {
+    match MykoProtocol::from(protocol.load(Ordering::SeqCst)) {
+        MykoProtocol::JSON => serde_json::to_string(msg).ok().map(WsFrame::Text),
+        MykoProtocol::MSGPACK => rmp_serde::to_vec(msg).ok().map(WsFrame::Binary),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MykoClient
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 pub struct MykoClient {
-    socket: Arc<AutoReconnectSocket>,
-    /// Wire protocol for encoding messages (defaults to MSGPACK)
+    inner: Arc<MykoClientInner>,
+}
+
+struct MykoClientInner {
+    socket: Arc<dyn SocketTransport>,
     protocol: Arc<AtomicU8>,
+    connection_status: Cell<ConnectionStatus, CellMutable>,
+
+    // Dispatch maps keyed by tx
+    query_handlers: DashMap<Arc<str>, QueryHandler>,
+    report_handlers: DashMap<Arc<str>, ReportHandler>,
+    command_response_handlers: Mutex<HashMap<String, CommandResponseHandler>>,
+    command_request_handlers: DashMap<Arc<str>, CommandRequestHandler>,
+
+    // Frames queued while disconnected
+    pending_sends: Mutex<Vec<WsFrame>>,
+
+    // Guards that keep subscriptions alive
+    _message_guard: CallbackGuard,
+    _status_guard: CallbackGuard,
 }
 
 impl Default for MykoClient {
@@ -67,144 +142,215 @@ impl Default for MykoClient {
 }
 
 impl MykoClient {
+    /// Create a new MykoClient with the platform-default transport.
+    ///
+    /// On native: uses `AutoReconnectSocket` (tokio-tungstenite).
+    /// On WASM: uses `WasmSocket` (web-sys WebSocket).
     pub fn new() -> MykoClient {
-        let socket = Arc::new(AutoReconnectSocket::new());
-        // Default to MSGPACK for better performance - server auto-detects binary frames
-        let protocol = Arc::new(AtomicU8::new(MykoProtocol::MSGPACK as u8));
+        #[cfg(not(target_arch = "wasm32"))]
+        let socket: Arc<dyn SocketTransport> = Arc::new(autosocket::AutoReconnectSocket::new());
 
-        MykoClient { socket, protocol }
+        #[cfg(target_arch = "wasm32")]
+        let socket: Arc<dyn SocketTransport> = Arc::new(autosocket::WasmSocket::new());
+
+        Self::with_transport(socket)
     }
+
+    /// Create a MykoClient with a custom transport implementation.
+    pub fn with_transport(transport: Arc<dyn SocketTransport>) -> MykoClient {
+        let protocol = Arc::new(AtomicU8::new(MykoProtocol::MSGPACK as u8));
+        let connection_status = Cell::new(ConnectionStatus::Disconnected);
+
+        let query_handlers: DashMap<Arc<str>, QueryHandler> = DashMap::new();
+        let report_handlers: DashMap<Arc<str>, ReportHandler> = DashMap::new();
+        let command_response_handlers: Mutex<HashMap<String, CommandResponseHandler>> =
+            Mutex::new(HashMap::new());
+        let command_request_handlers: DashMap<Arc<str>, CommandRequestHandler> = DashMap::new();
+        let pending_sends: Mutex<Vec<WsFrame>> = Mutex::new(Vec::new());
+
+        // We need to set up the callbacks, but they reference the inner struct.
+        // Use a two-step initialization: create with noop guards, then replace.
+        let inner = Arc::new_cyclic(|weak| {
+            let weak_for_msg = weak.clone();
+            let message_guard = transport.on_message(Box::new(move |frame| {
+                let Some(inner) = weak_for_msg.upgrade() else {
+                    return;
+                };
+                Self::handle_frame(&inner, &frame);
+            }));
+
+            let weak_for_status = weak.clone();
+            let status_guard = transport.on_status_change(Box::new(move |status| {
+                let Some(inner) = weak_for_status.upgrade() else {
+                    return;
+                };
+                let conn_status = match &status {
+                    SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
+                    SocketConnectionStatus::Connected(addr) => {
+                        ConnectionStatus::Connected(addr.clone())
+                    }
+                    SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
+                };
+
+                inner.connection_status.set(conn_status.clone());
+
+                // Flush pending sends on connect
+                if let ConnectionStatus::Connected(_) = conn_status {
+                    let mut pending = inner.pending_sends.lock().unwrap();
+                    for frame in pending.drain(..) {
+                        let _ = inner.socket.send(frame);
+                    }
+                }
+            }));
+
+            MykoClientInner {
+                socket: transport.clone(),
+                protocol: protocol.clone(),
+                connection_status,
+                query_handlers,
+                report_handlers,
+                command_response_handlers,
+                command_request_handlers,
+                pending_sends,
+                _message_guard: message_guard,
+                _status_guard: status_guard,
+            }
+        });
+
+        MykoClient { inner }
+    }
+
+    /// Handle an incoming WebSocket frame by dispatching to registered handlers.
+    fn handle_frame(inner: &MykoClientInner, frame: &WsFrame) {
+        let Some(value) = Self::decode_message(frame) else {
+            return;
+        };
+
+        let parsed = match serde_json::from_value::<MykoMessage>(value.clone()) {
+            Ok(msg) => msg,
+            Err(_) => return,
+        };
+
+        match parsed {
+            MykoMessage::QueryResponse(response) => {
+                let tx: Arc<str> = response.tx.clone();
+                if let Some(handler) = inner.query_handlers.get(&tx) {
+                    if let Ok(response_value) = serde_json::to_value(&response) {
+                        handler(response_value);
+                    }
+                }
+            }
+            MykoMessage::ReportResponse(response) => {
+                let tx: Arc<str> = response.tx.clone().into();
+                if let Some(handler) = inner.report_handlers.get(&tx) {
+                    handler(response.response);
+                }
+            }
+            MykoMessage::CommandResponse(response) => {
+                let mut handlers = inner.command_response_handlers.lock().unwrap();
+                if let Some(handler) = handlers.remove(&response.tx) {
+                    handler(Ok(response.response));
+                }
+            }
+            MykoMessage::CommandError(err) => {
+                let mut handlers = inner.command_response_handlers.lock().unwrap();
+                if let Some(handler) = handlers.remove(&err.tx) {
+                    handler(Err(err.message));
+                }
+            }
+            MykoMessage::Command(wrapped) => {
+                let command_id: Arc<str> = wrapped.command_id.clone().into();
+                if let Some(handler) = inner.command_request_handlers.get(&command_id) {
+                    let tx = wrapped
+                        .command
+                        .get("tx")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if tx.is_empty() {
+                        return;
+                    }
+                    let responder = CommandResponder {
+                        socket: inner.socket.clone(),
+                        protocol: inner.protocol.clone(),
+                        tx,
+                        command_id: command_id.clone(),
+                    };
+                    handler(wrapped.command, responder);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Protocol and encoding
+    // ─────────────────────────────────────────────────────────────────────────
 
     /// Set the wire protocol (JSON or MSGPACK). Default is MSGPACK.
     pub fn set_protocol(&self, protocol: MykoProtocol) {
-        self.protocol.store(protocol as u8, Ordering::SeqCst);
+        self.inner.protocol.store(protocol as u8, Ordering::SeqCst);
     }
 
     /// Get the current wire protocol.
     pub fn get_protocol(&self) -> MykoProtocol {
-        MykoProtocol::from(self.protocol.load(Ordering::SeqCst))
+        MykoProtocol::from(self.inner.protocol.load(Ordering::SeqCst))
     }
 
     /// Encode a message according to the current protocol.
-    fn encode_message<T: Serialize>(&self, msg: &T) -> Result<Message, String> {
+    fn encode_message<T: Serialize>(&self, msg: &T) -> Result<WsFrame, String> {
         match self.get_protocol() {
             MykoProtocol::JSON => {
                 let json = serde_json::to_string(msg).map_err(|e| e.to_string())?;
-                Ok(Message::Text(json))
+                Ok(WsFrame::Text(json))
             }
             MykoProtocol::MSGPACK => {
                 let bytes = rmp_serde::to_vec(msg).map_err(|e| e.to_string())?;
-                Ok(Message::Binary(bytes))
+                Ok(WsFrame::Binary(bytes))
             }
         }
     }
 
-    /// Decode a WebSocket message according to its type.
-    fn decode_message(msg: &Message) -> Option<Value> {
-        match msg {
-            Message::Text(content) => serde_json::from_str::<Value>(content).ok(),
-            Message::Binary(bytes) => rmp_serde::from_slice::<Value>(bytes).ok(),
-            _ => None,
+    /// Decode a WebSocket frame according to its type.
+    fn decode_message(frame: &WsFrame) -> Option<Value> {
+        match frame {
+            WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
+            WsFrame::Binary(bytes) => rmp_serde::from_slice::<Value>(bytes).ok(),
         }
     }
 
-    /// Get a stream of connection status changes
-    pub fn watch_connection_status(
-        &self,
-    ) -> impl tokio_stream::Stream<Item = ConnectionStatus> + 'static {
-        let rx = self.socket.subscribe_status();
-        WatchStream::new(rx).map(|status| match status {
-            SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
-            SocketConnectionStatus::Connected(addr) => ConnectionStatus::Connected(addr),
-            SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
-        })
+    // ─────────────────────────────────────────────────────────────────────────
+    // Connection
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get a reactive cell of the connection status.
+    pub fn connection_status(&self) -> &Cell<ConnectionStatus, CellMutable> {
+        &self.inner.connection_status
     }
 
-    /// Get the current connection status
+    /// Get the current connection status synchronously.
     pub fn get_connection_status_sync(&self) -> ConnectionStatus {
-        match self.socket.get_status() {
-            SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
-            SocketConnectionStatus::Connected(addr) => ConnectionStatus::Connected(addr),
-            SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
-        }
-    }
-
-    pub async fn send_event(&self, event: MEvent) -> Result<(), String> {
-        let myko_msg = MykoMessage::Event(event);
-        let msg = self.encode_message(&myko_msg)?;
-
-        self.socket
-            .outgoing
-            .send(msg)
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
-
-    pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
-        let myko_msg = MykoMessage::Query(query);
-        let msg = self.encode_message(&myko_msg)?;
-
-        self.socket
-            .outgoing
-            .send(msg)
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
-
-    /// Send a raw wrapped command (for federation forwarding)
-    pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
-        let myko_msg = MykoMessage::Command(command);
-        let msg = self.encode_message(&myko_msg)?;
-
-        self.socket
-            .outgoing
-            .send(msg)
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
-
-    /// Send a raw wrapped report (for federation forwarding)
-    pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
-        let myko_msg = MykoMessage::Report(report);
-        let msg = self.encode_message(&myko_msg)?;
-
-        self.socket
-            .outgoing
-            .send(msg)
-            .map(|_| ())
-            .map_err(|err| err.to_string())
-    }
-
-    pub fn get_messages(&self) -> impl tokio_stream::Stream<Item = Value> + 'static {
-        let stream = BroadcastStream::new(self.socket.incoming.clone().subscribe());
-
-        stream.filter_map(|x| match x {
-            Ok(msg) => Self::decode_message(&msg),
-            _ => None,
-        })
+        self.inner.connection_status.get()
     }
 
     pub fn set_address(&self, addr: Option<String>) {
         if addr.is_none() {
             debug!("Setting address to None, disconnecting socket");
-            self.socket.set_addr(None);
+            self.inner.socket.set_addr(None);
             return;
         }
 
         let addr = addr.unwrap();
 
-        // Try to parse as URL, but only accept if it has a valid ws/wss scheme
-        // Otherwise, treat as host:port and prepend ws://
         let mut parsed = match Url::parse(addr.as_str()) {
             Ok(url) if url.scheme() == "ws" || url.scheme() == "wss" => url,
             _ => {
-                // No valid scheme, treat as host:port
                 let add_ws = format!("ws://{addr}");
                 match Url::parse(add_ws.as_str()) {
                     Ok(c) => c,
                     Err(e) => {
                         warn!("Could not parse url: {e:?}");
-                        self.socket.set_addr(None);
+                        self.inner.socket.set_addr(None);
                         return;
                     }
                 }
@@ -220,294 +366,251 @@ impl MykoClient {
         }
 
         info!("MykoClient connecting to {}", parsed);
-        self.socket.set_addr(Some(parsed.to_string()));
+        self.inner.socket.set_addr(Some(parsed.to_string()));
     }
 
     /// Disconnect the client and stop any reconnection attempts.
-    /// This will cancel all reconnection attempts and fire the disconnected event.
     pub fn disconnect(&self) {
         debug!("Disconnecting MykoClient");
-        self.socket.close();
+        self.inner.socket.close();
     }
 
     /// Close the client and stop any reconnection attempts.
-    /// Alias for disconnect() - useful for peer connections that should not reconnect.
     pub fn close(&self) {
         debug!("Closing MykoClient");
-        self.socket.close();
+        self.inner.socket.close();
     }
 
-    pub async fn get_connection_status(&self) -> ConnectionStatus {
-        self.watch_connection_status()
-            .take(1)
-            .next()
-            .await
-            .unwrap_or(ConnectionStatus::Disconnected)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Send helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Send a frame, or queue it if disconnected.
+    fn send_or_queue(&self, frame: WsFrame) {
+        if let ConnectionStatus::Connected(_) = self.inner.connection_status.get() {
+            let _ = self.inner.socket.send(frame);
+        } else {
+            self.inner.pending_sends.lock().unwrap().push(frame);
+        }
     }
 
-    pub fn handle_command<C, F, Fut>(&self, handler: F)
+    pub fn send_event(&self, event: MEvent) -> Result<(), String> {
+        let myko_msg = MykoMessage::Event(event);
+        let frame = self.encode_message(&myko_msg)?;
+        self.send_or_queue(frame);
+        Ok(())
+    }
+
+    pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
+        let myko_msg = MykoMessage::Query(query);
+        let frame = self.encode_message(&myko_msg)?;
+        self.send_or_queue(frame);
+        Ok(())
+    }
+
+    /// Send a raw wrapped command (for federation forwarding)
+    pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
+        let myko_msg = MykoMessage::Command(command);
+        let frame = self.encode_message(&myko_msg)?;
+        self.send_or_queue(frame);
+        Ok(())
+    }
+
+    /// Send a raw wrapped report (for federation forwarding)
+    pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
+        let myko_msg = MykoMessage::Report(report);
+        let frame = self.encode_message(&myko_msg)?;
+        self.send_or_queue(frame);
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Watch Query — Cell-based
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Watch a query and receive updates as a reactive Cell.
+    ///
+    /// Returns a Cell containing the current list of matching items.
+    /// The Cell updates whenever the server pushes query diffs.
+    /// On reconnect, the query is automatically re-subscribed.
+    pub fn watch_query<Q>(
+        &self,
+        query: impl Into<QueryRequest<Q>>,
+    ) -> Cell<Vec<Q::Item>, CellImmutable>
     where
-        C: DeserializeOwned + Clone + Send + crate::command::CommandId + 'static,
-        F: Fn(C) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'static,
+        Q: QueryParams + Clone,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
-        let outgoing = self.socket.clone();
-        let protocol = self.protocol.clone();
-        let mut msgs = BroadcastStream::new(self.socket.incoming.clone().subscribe()).filter_map(
-            |x| match x {
-                Ok(ref msg) => Self::decode_message(msg),
-                _ => None,
-            },
-        );
+        let query: QueryRequest<Q> = query.into();
+        let tx: Arc<str> = query.tx.clone();
+        let query_id = query.query.query_id();
+        let query_item_type = Q::query_item_type_static();
 
-        tokio::spawn(async move {
-            while let Some(val) = msgs.next().await {
-                let parsed = serde_json::from_value::<MykoMessage>(val.clone());
-                let Ok(MykoMessage::Command(wrapped)) = parsed else {
-                    continue;
+        let query_value = serde_json::to_value(&query).expect("Query should serialize");
+
+        let wrapped = WrappedQuery {
+            query: query_value,
+            query_id: query_id.clone(),
+            query_item_type,
+        };
+
+        let cell = Cell::new(vec![]);
+        let cell_writer = cell.clone();
+
+        // State for accumulating query diffs
+        let state: Arc<Mutex<HashMap<Arc<str>, Q::Item>>> = Arc::default();
+
+        let tx_for_handler = tx.clone();
+        let query_id_for_handler = query_id.clone();
+
+        // Register handler for query responses matching this tx
+        self.inner.query_handlers.insert(
+            tx.clone(),
+            Box::new(move |response_value: Value| {
+                let Ok(response) =
+                    serde_json::from_value::<crate::wire::QueryResponse>(response_value)
+                else {
+                    return;
                 };
 
-                // extract tx from wrapped.command
-                let tx: String = wrapped
-                    .command
-                    .get("tx")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if tx.is_empty() {
-                    // malformed command without tx; ignore
-                    continue;
+                if response.tx != tx_for_handler {
+                    return;
                 }
 
-                // Helper to encode response based on protocol
-                let encode_response = |msg: &MykoMessage| -> Option<Message> {
-                    match MykoProtocol::from(protocol.load(Ordering::SeqCst)) {
-                        MykoProtocol::JSON => serde_json::to_string(msg).ok().map(Message::Text),
-                        MykoProtocol::MSGPACK => rmp_serde::to_vec(msg).ok().map(Message::Binary),
-                    }
-                };
+                let mut state = state.lock().unwrap();
 
-                // try to deserialize to requested command type; if it fails, it's not for this handler
-                match serde_json::from_value::<C>(wrapped.command.clone()) {
-                    Ok(cmd) => {
-                        // Ensure the commandId matches the type this handler expects
-                        if *wrapped.command_id != *cmd.command_id() {
-                            continue;
-                        }
-                        let result = handler(cmd).await;
-                        match result {
-                            Ok(response) => {
-                                let resp = crate::command::CommandResponse {
-                                    tx: tx.clone(),
-                                    response,
-                                };
-                                let msg = MykoMessage::CommandResponse(resp);
-                                if let Some(encoded) = encode_response(&msg) {
-                                    let _ = outgoing.outgoing.send(encoded);
-                                }
-                            }
-                            Err(message) => {
-                                let err = crate::command::CommandError {
-                                    tx: tx.clone(),
-                                    command_id: wrapped.command_id.clone(),
-                                    message,
-                                };
-                                let msg = MykoMessage::CommandError(err);
-                                if let Some(encoded) = encode_response(&msg) {
-                                    let _ = outgoing.outgoing.send(encoded);
-                                }
-                            }
-                        }
+                if response.sequence == 0 {
+                    trace!("Sequence reset: Clearing {} state", query_id_for_handler);
+                    state.clear();
+                }
+
+                let upserts: Vec<Q::Item> = response
+                    .upserts
+                    .iter()
+                    .filter_map(|x| serde_json::from_value::<Q::Item>(x.item.clone()).ok())
+                    .collect();
+
+                for up in upserts.iter() {
+                    state.insert(up.id().clone(), up.clone());
+                }
+
+                for del in response.deletes.iter() {
+                    state.remove(del);
+                }
+
+                cell_writer.set(state.values().cloned().collect());
+            }),
+        );
+
+        // Build the frame to send (and re-send on reconnect)
+        let msg = MykoMessage::Query(wrapped);
+        let frame = self
+            .encode_message(&msg)
+            .expect("Could not serialize message");
+
+        // Subscribe to connection status to re-send on reconnect
+        let socket = self.inner.socket.clone();
+        let send_query_id = query_id.clone();
+        let frame_clone = frame.clone();
+        let status_guard = self.inner.connection_status.subscribe(move |signal| {
+            if let hypha::Signal::Value(status) = signal {
+                match &**status {
+                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
+                        Ok(_) => debug!("Watching query {send_query_id}"),
+                        Err(e) => error!("Could not send query: {e:?}"),
+                    },
+                    ConnectionStatus::Disconnected => {
+                        warn!("Query {send_query_id} Disconnected");
                     }
-                    Err(_) => continue,
                 }
             }
         });
-    }
 
-    pub async fn send_command<
-        C: Serialize + Clone + CommandId,
-        R: DeserializeOwned + Clone + 'static,
-    >(
-        &self,
-        command: &C,
-    ) -> Result<R, String> {
-        let request = CommandRequest::new(command.clone());
-        let tx = request.tx.to_string();
-
-        let wrapped = wrap_command_request(&request).map_err(|e| e.to_string())?;
-
-        let msg = MykoMessage::Command(wrapped);
-        let ws_msg = self.encode_message(&msg)?;
-
-        // listen for matching response/error
-        let mut stream =
-            BroadcastStream::new(self.socket.incoming.clone().subscribe()).filter_map(move |x| {
-                match x {
-                    Ok(ref msg) => {
-                        let data = Self::decode_message(msg)?;
-                        let parsed = serde_json::from_value::<MykoMessage>(data).ok()?;
-                        match parsed {
-                            MykoMessage::CommandResponse(resp) => {
-                                if resp.tx != tx {
-                                    return None;
-                                }
-                                Some(Ok(resp.response))
-                            }
-                            MykoMessage::CommandError(err) => {
-                                if err.tx != tx {
-                                    return None;
-                                }
-                                Some(Err(err.message))
-                            }
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                }
-            });
-
-        // send message (on next Connected)
-        let send_socket = self.socket.clone();
-        let me = self.clone();
-
-        // ensure connection ready or wait for it
-        if let ConnectionStatus::Disconnected = self.get_connection_status().await {
-            // wait once until connected
-            let mut st = me.watch_connection_status();
-            while let Some(status) = st.next().await {
-                if let ConnectionStatus::Connected(_) = status {
-                    break;
-                }
-            }
+        // Send immediately if connected
+        if let ConnectionStatus::Connected(_) = self.inner.connection_status.get() {
+            let _ = self.inner.socket.send(frame);
         }
 
-        send_socket
-            .outgoing
-            .send(ws_msg)
-            .map_err(|err| err.to_string())?;
+        // Tie the reconnection guard's lifetime to the cell
+        cell.own(status_guard);
 
-        // await first response
-        let next = stream
-            .next()
-            .await
-            .ok_or_else(|| "No response".to_string())?;
-        let value = next?;
-        let res: R = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        Ok(res)
+        cell.lock()
     }
 
-    /// Watch a report and receive updates as a stream.
+    // ─────────────────────────────────────────────────────────────────────────
+    // Watch Report — Cell-based
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Watch a report and receive updates as a reactive Cell.
     ///
-    /// Accepts any type that can be converted into a `ReportRequest<R>`, including:
-    /// - Report params directly (e.g., `MissingFiles { machine_id: "..." }`)
-    /// - A `ReportRequest<R>` wrapper
-    /// - A reference to a `ReportRequest<R>`
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Pass report params directly - no need to wrap in ReportRequest::new()
-    /// let stream = client.watch_report::<MissingFiles, Missing>(
-    ///     MissingFiles { machine_id: id.clone() }
-    /// );
-    /// ```
+    /// Returns a Cell containing the latest report value (None until first response).
+    /// On reconnect, the report is automatically re-subscribed.
     pub fn watch_report<R, O>(
         &self,
         report: impl Into<ReportRequest<R>>,
-    ) -> impl tokio_stream::Stream<Item = O> + 'static
+    ) -> Cell<Option<O>, CellImmutable>
     where
         R: ReportParams + ReportIdStatic + Clone,
-        O: DeserializeOwned + 'static,
+        O: DeserializeOwned + Clone + Send + Sync + 'static,
     {
         let report: ReportRequest<R> = report.into();
-        let stream = self.get_messages();
-
         let report_id: Arc<str> = R::report_id_static().into();
-        let tx = report.tx.clone();
+        let tx: Arc<str> = report.tx.clone();
 
-        // Serialize the ReportRequest directly (includes tx via serde flatten)
         let report_value = serde_json::to_value(&report).expect("Report should serialize");
-
         let wrapped = WrappedReport {
             report: report_value,
             report_id: report_id.to_string(),
         };
 
-        let tx_clone = tx.clone();
-        let stream = stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage>(x);
-            let data = match d {
-                Ok(d) => d,
-                Err(e) => {
-                    error!("Could not parse data @ watch_report: {e:?}");
-                    return None;
-                }
-            };
+        let cell = Cell::new(None);
+        let cell_writer = cell.clone();
 
-            match data {
-                MykoMessage::ReportResponse(response) => {
-                    if response.tx != *tx_clone {
-                        return None;
-                    }
+        // Register handler for report responses matching this tx
+        self.inner.report_handlers.insert(
+            tx.clone(),
+            Box::new(
+                move |response: Value| match serde_json::from_value::<O>(response) {
+                    Ok(data) => cell_writer.set(Some(data)),
+                    Err(e) => error!("Could not parse report value: {e:?}"),
+                },
+            ),
+        );
 
-                    let data = serde_json::from_value::<O>(response.response.clone())
-                        .expect("could not parse report value @ watch_report ");
-
-                    Some(data)
-                }
-                _ => None,
-            }
-        });
-
+        // Build the frame to send
         let msg = MykoMessage::Report(wrapped);
-        let msg = self
+        let frame = self
             .encode_message(&msg)
             .expect("Could not serialize message");
 
-        let report_send_socket = self.socket.clone();
-        let report_send_self = self.clone();
-        let report_send_report_id = report_id.clone();
-
-        tokio::spawn(async move {
-            let mut stream = report_send_self.watch_connection_status();
-            while let Some(status) = stream.next().await {
-                match status {
-                    ConnectionStatus::Connected(_) => {
-                        match report_send_socket.outgoing.send(msg.clone()) {
-                            Ok(_) => {
-                                debug!("Watching report {report_send_report_id}");
-                            }
-                            Err(e) => {
-                                error!("Could not send message to ws: {e:?}");
-                            }
-                        }
-                    }
-                    ConnectionStatus::Disconnected => {
-                        debug!("Report {report_send_report_id} Disconnected");
+        // Subscribe to connection status to re-send on reconnect
+        let socket = self.inner.socket.clone();
+        let send_report_id = report_id.clone();
+        let frame_clone = frame.clone();
+        let status_guard = self.inner.connection_status.subscribe(move |signal| {
+            if let hypha::Signal::Value(status) = signal {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    match socket.send(frame_clone.clone()) {
+                        Ok(_) => debug!("Watching report {send_report_id}"),
+                        Err(e) => error!("Could not send report: {e:?}"),
                     }
                 }
             }
         });
 
-        stream
+        // Send immediately if connected
+        if let ConnectionStatus::Connected(_) = self.inner.connection_status.get() {
+            let _ = self.inner.socket.send(frame);
+        }
+
+        cell.own(status_guard);
+
+        cell.lock()
     }
 
-    /// Watch a report and receive updates as a reactive Cell.
+    /// Watch a report and receive updates as a reactive Cell with an initial value.
     ///
-    /// Similar to `watch_report`, but returns a hypha Cell instead of a stream.
-    /// The cell is updated whenever a new report value is received.
-    ///
-    /// # Arguments
-    /// * `report` - The report parameters
-    /// * `initial` - Initial value for the cell before any data is received
-    ///
-    /// # Example
-    /// ```ignore
-    /// let cell = client.watch_report_cell::<WatchSyncValue, SyncValueUpdateOutput>(
-    ///     WatchSyncValue { key: "timer".into(), rate: None, init: None },
-    ///     SyncValueUpdateOutput::default(),
-    /// );
-    /// ```
+    /// Like `watch_report`, but starts with a concrete initial value instead of None.
     pub fn watch_report_cell<R, O>(
         &self,
         report: impl Into<ReportRequest<R>>,
@@ -517,137 +620,120 @@ impl MykoClient {
         R: ReportParams + ReportIdStatic + Clone,
         O: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        let cell = Cell::new(initial);
-        let cell_clone = cell.clone();
+        let cell = self.watch_report::<R, O>(report);
+        // Map Option<O> -> O using the initial value as default
+        cell.map(move |opt| match opt {
+            Some(val) => val.clone(),
+            None => initial.clone(),
+        })
+    }
 
-        let mut stream = self.watch_report::<R, O>(report);
+    // ─────────────────────────────────────────────────────────────────────────
+    // Send Command — Cell-based
+    // ─────────────────────────────────────────────────────────────────────────
 
-        tokio::spawn(async move {
-            while let Some(value) = stream.next().await {
-                cell_clone.set(value);
+    /// Send a command and get the result as a Cell.
+    ///
+    /// Returns a Cell<Option<Result<R, String>>> that starts as None
+    /// and becomes Some when the server responds.
+    pub fn send_command<C, R>(&self, command: &C) -> Cell<Option<Result<R, String>>, CellImmutable>
+    where
+        C: Serialize + Clone + CommandId,
+        R: DeserializeOwned + Clone + Send + Sync + 'static,
+    {
+        let request = CommandRequest::new(command.clone());
+        let tx = request.tx.to_string();
+
+        let wrapped = match wrap_command_request(&request) {
+            Ok(w) => w,
+            Err(e) => {
+                let cell = Cell::new(Some(Err(e.to_string())));
+                return cell.lock();
             }
-        });
+        };
+
+        let msg = MykoMessage::Command(wrapped);
+        let frame = match self.encode_message(&msg) {
+            Ok(f) => f,
+            Err(e) => {
+                let cell = Cell::new(Some(Err(e)));
+                return cell.lock();
+            }
+        };
+
+        let cell = Cell::new(None);
+        let cell_writer = cell.clone();
+
+        // Register one-shot handler
+        {
+            let mut handlers = self.inner.command_response_handlers.lock().unwrap();
+            handlers.insert(
+                tx.clone(),
+                Box::new(move |result: Result<Value, String>| {
+                    let mapped = result.and_then(|value| {
+                        serde_json::from_value::<R>(value).map_err(|e| e.to_string())
+                    });
+                    cell_writer.set(Some(mapped));
+                }),
+            );
+        }
+
+        self.send_or_queue(frame);
 
         cell.lock()
     }
 
-    /// Watch a query and receive updates as a stream.
+    // ─────────────────────────────────────────────────────────────────────────
+    // Handle Command — callback-based
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Register a handler for incoming commands of a specific type.
     ///
-    /// Accepts any type that can be converted into a `QueryRequest<Q>`, including:
-    /// - Query params directly (e.g., `GetTargetsByIds { ids: vec![...] }`)
-    /// - A `QueryRequest<Q>` wrapper
-    /// - A reference to a `QueryRequest<Q>`
+    /// The handler receives the deserialized command and a `CommandResponder`
+    /// that can be used to send back a response.
     ///
-    /// # Example
-    /// ```ignore
-    /// // Pass query params directly - no need to wrap in QueryRequest::new()
-    /// let stream = client.watch_query(GetTargetsByIds { ids: vec![id.into()] });
-    /// ```
-    pub fn watch_query<Q>(
-        &self,
-        query: impl Into<QueryRequest<Q>>,
-    ) -> impl tokio_stream::Stream<Item = Vec<Q::Item>> + 'static
+    /// Returns a `CallbackGuard` — drop it to unregister the handler.
+    pub fn on_command<C, F>(&self, handler: F) -> CallbackGuard
     where
-        Q: QueryParams + Clone,
-        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+        C: DeserializeOwned
+            + Clone
+            + Send
+            + crate::command::CommandId
+            + crate::command::CommandIdStatic
+            + 'static,
+        F: Fn(C, CommandResponder) + Send + Sync + 'static,
     {
-        let query: QueryRequest<Q> = query.into();
-        let stream = self.get_messages();
+        let command_id: Arc<str> = C::COMMAND_ID.into();
 
-        let tx = query.tx.clone();
-        let query_id = query.query.query_id();
-        let query_item_type = Q::query_item_type_static();
-
-        // Serialize the QueryRequest directly (includes tx and created_at via serde flatten)
-        let query_value = serde_json::to_value(query).expect("Query should serialize");
-
-        let wrapped = WrappedQuery {
-            query: query_value,
-            query_id: query_id.clone(),
-            query_item_type,
-        };
-
-        let send_query_id = query_id.clone();
-        let state: Arc<std::sync::Mutex<HashMap<Arc<str>, Q::Item>>> = Arc::default();
-
-        let tx_clone = tx.clone();
-        let stream = stream.filter_map(move |x| {
-            let d = serde_json::from_value::<MykoMessage>(x);
-            let data = match d {
-                Ok(d) => d,
-                Err(e) => {
-                    error!("Could not parse data @ watch_query: {e:?}");
-                    return None;
+        self.inner.command_request_handlers.insert(
+            command_id.clone(),
+            Box::new(move |value: Value, responder: CommandResponder| {
+                match serde_json::from_value::<C>(value) {
+                    Ok(cmd) => handler(cmd, responder),
+                    Err(_) => {} // Not for this handler
                 }
-            };
+            }),
+        );
 
-            match data {
-                MykoMessage::QueryResponse(response) => {
-                    if response.tx != tx_clone {
-                        return None;
-                    }
+        let inner = self.inner.clone();
+        let id = command_id;
+        CallbackGuard::new(move || {
+            inner.command_request_handlers.remove(&id);
+        })
+    }
 
-                    let mut state = state.lock().expect("Cannot lock state");
-                    let upserts = response.upserts;
-                    let deletes = response.deletes;
-                    let seq = response.sequence;
+    // ─────────────────────────────────────────────────────────────────────────
+    // Message callback (raw)
+    // ─────────────────────────────────────────────────────────────────────────
 
-                    if seq == 0 {
-                        trace!("Sequence reset: Clearing {} state", query_id.clone());
-                        state.clear();
-                    }
-
-                    let upserts: Vec<Q::Item> = upserts
-                        .iter()
-                        .filter_map(|x| serde_json::from_value::<Q::Item>(x.item.clone()).ok())
-                        .collect();
-
-                    for up in upserts.iter() {
-                        let _len = state.len();
-                        state.insert(up.id().clone(), up.clone());
-                    }
-
-                    for del in deletes.iter() {
-                        let _len = state.len();
-                        state.remove(del);
-                    }
-
-                    Some(state.values().cloned().collect::<Vec<Q::Item>>())
-                }
-                _ => None,
+    /// Register a callback for all incoming messages (decoded as Value).
+    /// Drop the returned guard to unsubscribe.
+    pub fn on_message(&self, cb: impl Fn(Value) + Send + Sync + 'static) -> CallbackGuard {
+        self.inner.socket.on_message(Box::new(move |frame| {
+            if let Some(value) = Self::decode_message(&frame) {
+                cb(value);
             }
-        });
-
-        let msg = MykoMessage::Query(wrapped);
-        let msg = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
-
-        let query_send_socket = self.socket.clone();
-        let query_send_self = self.clone();
-
-        tokio::spawn(async move {
-            let mut stream = query_send_self.watch_connection_status();
-            while let Some(status) = stream.next().await {
-                match status {
-                    ConnectionStatus::Connected(_) => {
-                        match query_send_socket.outgoing.send(msg.clone()) {
-                            Ok(_) => {
-                                debug!("Watching query {send_query_id}");
-                            }
-                            Err(e) => {
-                                error!("Could not send message to ws: {e:?}");
-                            }
-                        }
-                    }
-                    ConnectionStatus::Disconnected => {
-                        warn!("Query {send_query_id} Disconnected");
-                    }
-                }
-            }
-        });
-
-        stream
+        }))
     }
 
     // =========================================================================
@@ -656,25 +742,24 @@ impl MykoClient {
 
     /// Watch connection status changes with a callback.
     /// Callback receives JSON: `{"type":"Connected","data":"ws://..."}` or `{"type":"Disconnected"}`
-    pub fn watch_connection_status_callback<F>(&self, callback: F)
+    pub fn watch_connection_status_callback<F>(&self, callback: F) -> CallbackGuard
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        let client = self.clone();
-        tokio::spawn(async move {
-            let mut stream = client.watch_connection_status();
-            while let Some(status) = stream.next().await {
-                if let Ok(json) = serde_json::to_string(&status) {
+        let guard = self.inner.connection_status.subscribe(move |signal| {
+            if let hypha::Signal::Value(status) = signal {
+                if let Ok(json) = serde_json::to_string(&*status) {
                     callback(json);
                 }
             }
         });
+        // Convert SubscriptionGuard to CallbackGuard
+        CallbackGuard::new(move || {
+            drop(guard);
+        })
     }
 
     /// Watch a query with a callback that receives the current state as Vec<Value>.
-    ///
-    /// - `query`: WrappedQuery with tx and createdAt already set.
-    /// - `callback`: Called with current items whenever state changes.
     ///
     /// Returns a cancel function that stops the query when called.
     pub fn watch_query_callback<F>(
@@ -685,12 +770,6 @@ impl MykoClient {
     where
         F: Fn(Vec<Value>) + Send + Sync + 'static,
     {
-        let client = self.clone();
-        let callback = Arc::new(callback);
-        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancelled_clone = cancelled.clone();
-
-        // Extract tx from the query
         let tx: Arc<str> = query
             .query
             .get("tx")
@@ -698,80 +777,83 @@ impl MykoClient {
             .unwrap_or("")
             .into();
 
-        tokio::spawn(async move {
-            // State for accumulating query results
-            let state: Arc<std::sync::Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
+        let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
+        let callback = Arc::new(callback);
 
-            // Get message stream
-            let mut stream = client.get_messages();
+        let state_clone = state.clone();
+        let callback_clone = callback.clone();
+        let tx_clone = tx.clone();
 
-            // Wait for connection and send query
-            loop {
-                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+        // Register handler
+        self.inner.query_handlers.insert(
+            tx.clone(),
+            Box::new(move |response_value: Value| {
+                let Ok(response) =
+                    serde_json::from_value::<crate::wire::QueryResponse>(response_value)
+                else {
                     return;
-                }
-                let status = client.get_connection_status().await;
-                if let ConnectionStatus::Connected(_) = status {
-                    if let Err(e) = client.send_query(query.clone()) {
-                        error!("Failed to send query: {}", e);
-                    }
-                    break;
-                }
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-
-            // Process responses
-            while let Some(msg) = stream.next().await {
-                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-
-                let Ok(myko_msg) = serde_json::from_value::<MykoMessage>(msg) else {
-                    continue;
                 };
 
-                if let MykoMessage::QueryResponse(response) = myko_msg {
-                    if response.tx != tx {
-                        continue;
+                if response.tx != tx_clone {
+                    return;
+                }
+
+                let mut state = state_clone.lock().unwrap();
+
+                if response.sequence == 0 {
+                    state.clear();
+                }
+
+                for wrapped_item in response.upserts {
+                    if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
+                        state.insert(id.into(), wrapped_item.item);
                     }
+                }
 
-                    let mut state = state.lock().expect("Cannot lock state");
+                for id in response.deletes {
+                    state.remove(&id);
+                }
 
-                    // Reset on sequence 0
-                    if response.sequence == 0 {
-                        state.clear();
-                    }
+                let items: Vec<Value> = state.values().cloned().collect();
+                callback_clone(items);
+            }),
+        );
 
-                    // Apply upserts
-                    for wrapped_item in response.upserts {
-                        if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
-                            state.insert(id.into(), wrapped_item.item);
-                        }
-                    }
+        // Build frame and set up reconnection
+        let msg = MykoMessage::Query(query);
+        let frame = self
+            .encode_message(&msg)
+            .expect("Could not serialize message");
 
-                    // Apply deletes
-                    for id in response.deletes {
-                        state.remove(&id);
-                    }
-
-                    // Send current state
-                    let items: Vec<Value> = state.values().cloned().collect();
-                    callback(items);
+        let socket = self.inner.socket.clone();
+        let frame_clone = frame.clone();
+        let status_guard = self.inner.connection_status.subscribe(move |signal| {
+            if let hypha::Signal::Value(status) = signal {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    let _ = socket.send(frame_clone.clone());
                 }
             }
         });
 
-        // Return cancel function
+        if let ConnectionStatus::Connected(_) = self.inner.connection_status.get() {
+            let _ = self.inner.socket.send(frame);
+        }
+
+        // Return cancel function — captures status_guard so it lives until cancelled
+        let inner = self.inner.clone();
+        let cancel_tx = tx;
+        let guard = std::sync::Mutex::new(Some(status_guard));
         move || {
-            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = guard.lock().unwrap().take();
+            inner.query_handlers.remove(&cancel_tx);
         }
     }
 
     /// Send an event using JSON input.
     /// Returns error message if failed, empty string on success.
-    pub async fn send_event_json(&self, event_json: String) -> String {
+    pub fn send_event_json(&self, event_json: String) -> String {
         match serde_json::from_str::<MEvent>(&event_json) {
-            Ok(event) => match self.send_event(event).await {
+            Ok(event) => match self.send_event(event) {
                 Ok(()) => String::new(),
                 Err(e) => e,
             },
@@ -780,9 +862,6 @@ impl MykoClient {
     }
 
     /// Watch a report with a callback that receives the report result as Value.
-    ///
-    /// - `report`: WrappedReport with tx already set.
-    /// - `callback`: Called with report result whenever it updates.
     ///
     /// Returns a cancel function that stops the report when called.
     pub fn watch_report_callback<F>(
@@ -793,11 +872,6 @@ impl MykoClient {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let client = self.clone();
-        let callback = Arc::new(callback);
-        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancelled_clone = cancelled.clone();
-
         // Extract tx from the report
         let tx: Arc<str> = report
             .report
@@ -806,58 +880,45 @@ impl MykoClient {
             .unwrap_or("")
             .into();
 
-        let report_id = report.report_id.clone();
+        let _report_id = report.report_id.clone();
+        let callback = Arc::new(callback);
+        let callback_clone = callback.clone();
 
-        // Pre-encode message before spawning
+        // Register handler
+        self.inner.report_handlers.insert(
+            tx.clone(),
+            Box::new(move |response: Value| {
+                callback_clone(response);
+            }),
+        );
+
+        // Build frame and set up reconnection
         let msg = MykoMessage::Report(report);
-        let encoded_msg = self
+        let frame = self
             .encode_message(&msg)
             .expect("Could not serialize report");
 
-        tokio::spawn(async move {
-            // Get message stream
-            let mut stream = client.get_messages();
-
-            // Wait for connection and send report
-            loop {
-                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    return;
-                }
-                let status = client.get_connection_status().await;
-                if let ConnectionStatus::Connected(_) = status {
-                    if let Err(e) = client.socket.outgoing.send(encoded_msg.clone()) {
-                        error!("Failed to send report: {}", e);
-                    } else {
-                        debug!("Watching report {}", report_id);
-                    }
-                    break;
-                }
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-
-            // Process responses
-            while let Some(msg) = stream.next().await {
-                if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-
-                let Ok(myko_msg) = serde_json::from_value::<MykoMessage>(msg) else {
-                    continue;
-                };
-
-                if let MykoMessage::ReportResponse(response) = myko_msg {
-                    if response.tx != *tx {
-                        continue;
-                    }
-
-                    callback(response.response);
+        let socket = self.inner.socket.clone();
+        let frame_clone = frame.clone();
+        let status_guard = self.inner.connection_status.subscribe(move |signal| {
+            if let hypha::Signal::Value(status) = signal {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    let _ = socket.send(frame_clone.clone());
                 }
             }
         });
 
-        // Return cancel function
+        if let ConnectionStatus::Connected(_) = self.inner.connection_status.get() {
+            let _ = self.inner.socket.send(frame);
+        }
+
+        // Return cancel function — captures status_guard so it lives until cancelled
+        let inner = self.inner.clone();
+        let cancel_tx = tx;
+        let guard = std::sync::Mutex::new(Some(status_guard));
         move || {
-            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = guard.lock().unwrap().take();
+            inner.report_handlers.remove(&cancel_tx);
         }
     }
 }

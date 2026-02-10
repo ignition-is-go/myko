@@ -245,8 +245,8 @@ pub struct FallbackToIdRegistration {
 inventory::collect!(FallbackToIdRegistration);
 
 /// Iterator over all registered fallback_to_id fields
-pub fn iter_fallback_to_id_registrations(
-) -> impl Iterator<Item = &'static FallbackToIdRegistration> {
+pub fn iter_fallback_to_id_registrations() -> impl Iterator<Item = &'static FallbackToIdRegistration>
+{
     inventory::iter::<FallbackToIdRegistration>()
 }
 

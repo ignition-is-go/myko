@@ -18,23 +18,28 @@ pub use crate::{
     },
     common::{to_value::ToValue, with_id::WithId, with_transaction::WithTransaction},
     core::item::{AnyItem, Eventable, ItemParseFn, ItemRegistration},
-    mcp::McpServer,
     query::{
-        AnyQuery, Query, QueryFactory, QueryHandler, QueryId, QueryIdStatic, QueryItemType,
-        QueryParseFn, QueryRegistration, QueryTestCtx,
+        AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
+        QueryTestCtx,
     },
     report::{
-        AnyReport, CountResult, MykoReport, Report, ReportContext, ReportFactory, ReportHandler,
-        ReportId, ReportIdStatic, ReportOutputType, ReportParseFn, ReportRegistration,
+        AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
+        ReportIdStatic, ReportOutputType, ReportParams,
     },
-    search::{
-        EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
-    },
-    server::{CellServer, CellServerBuilder, CellServerCtx},
     utils::downcast_item,
     wire::{
         CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
         PingData, QueryError, QueryResponse, ReportError, ReportResponse, WrappedCommand,
         WrappedItem, WrappedQuery, WrappedReport,
     },
+};
+// Server-only re-exports (tokio-free types only; CellServer lives in myko-server)
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::{
+    query::{QueryFactory, QueryParseFn, QueryRegistration},
+    report::{ReportFactory, ReportParseFn, ReportRegistration},
+    search::{
+        EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
+    },
+    server::CellServerCtx,
 };

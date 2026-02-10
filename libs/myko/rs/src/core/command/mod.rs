@@ -1,16 +1,18 @@
 //! Command types and registration.
 
 mod handler;
+#[cfg(not(target_arch = "wasm32"))]
 mod registration;
 mod request;
 mod traits;
 
-// Re-export handler types
+// Re-export handler types (available on all platforms for entity impls)
 pub use handler::{
     CommandContext, CommandExecutorAdapter, CommandExecutorFactory, CommandHandler,
     CommandHandlerRegistration, DynCommandExecutor,
 };
-// Re-export registration types
+#[cfg(not(target_arch = "wasm32"))]
+// Re-export registration types (server-only)
 pub use registration::CommandRegistration;
 // Re-export request type
 pub use request::CommandRequest;

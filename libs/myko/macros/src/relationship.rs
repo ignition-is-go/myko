@@ -563,6 +563,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .collect();
 
         registrations.push(quote! {
+            #[cfg(not(target_arch = "wasm32"))]
             myko_rs::submit! {
                 myko_rs::search::SearchableRegistration {
                     entity_type: #local_type,

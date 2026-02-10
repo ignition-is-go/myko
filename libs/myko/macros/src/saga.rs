@@ -41,7 +41,8 @@ pub fn myko_saga_impl(input_struct: ItemStruct) -> TokenStream {
     let expanded = quote! {
         #input_struct
 
-        // Saga registration for runtime discovery
+        // Saga registration for runtime discovery (server-only)
+        #[cfg(not(target_arch = "wasm32"))]
         myko_rs::submit! {
             myko_rs::saga::SagaRegistration {
                 saga_id: #struct_name_str,

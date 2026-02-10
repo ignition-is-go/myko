@@ -90,7 +90,7 @@ impl MykoClient {
 
         py.allow_threads(move || {
             self.runtime.block_on(async {
-                inner.send_event(event).await
+                inner.send_event(event)
                     .map_err(|e| PyRuntimeError::new_err(format!("Failed to send event: {}", e)))
             })
         })

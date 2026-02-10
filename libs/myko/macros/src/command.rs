@@ -94,16 +94,19 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
                 }
             }
 
-            /// Client-side handle method for sending commands
-            pub async fn handle(
+            /// Client-side handle method for sending commands.
+            /// Returns a Cell that will be populated with the result when
+            /// the server responds.
+            pub fn handle(
                 &self,
                 client: &myko_rs::prelude::MykoClient,
-            ) -> Result<#result_type_tokens, String> {
-                client.send_command::<#struct_name, #result_type_tokens>(self).await
+            ) -> myko_rs::hypha::Cell<Option<Result<#result_type_tokens, String>>, myko_rs::hypha::CellImmutable> {
+                client.send_command::<#struct_name, #result_type_tokens>(self)
             }
         }
 
-        // Command registration (for type generation)
+        // Command registration (for type generation, server-only)
+        #[cfg(not(target_arch = "wasm32"))]
         myko_rs::submit! {
             myko_rs::command::CommandRegistration {
                 command_id: stringify!(#struct_name),
@@ -113,7 +116,8 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
             }
         }
 
-        // Register command handler for runtime dispatch
+        // Register command handler for runtime dispatch (server-only)
+        #[cfg(not(target_arch = "wasm32"))]
         myko_rs::register_command_handler!(#struct_name);
 
         // Register for ts-rs export

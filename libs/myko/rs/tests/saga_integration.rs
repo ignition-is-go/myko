@@ -7,7 +7,7 @@
 
 #![cfg(feature = "bench")]
 
-use futures::StreamExt;
+use futures::{StreamExt, executor::block_on, stream};
 use myko_rs::{
     bench_entities::BenchItem,
     event::{MEvent, MEventType},
@@ -37,17 +37,15 @@ fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
     }
 }
 
-#[tokio::test]
-async fn test_saga_pairwise_operator() {
-    use futures::stream;
-
+#[test]
+fn test_saga_pairwise_operator() {
     let events = stream::iter(vec![
         make_bench_item_event("id-1", "First"),
         make_bench_item_event("id-2", "Second"),
         make_bench_item_event("id-3", "Third"),
     ]);
 
-    let pairs: Vec<_> = events.pairwise().collect().await;
+    let pairs: Vec<_> = block_on(events.pairwise().collect());
 
     assert_eq!(pairs.len(), 2);
     assert_eq!(
@@ -60,25 +58,21 @@ async fn test_saga_pairwise_operator() {
     );
 }
 
-#[tokio::test]
-async fn test_saga_scan_operator() {
-    use futures::stream;
-
+#[test]
+fn test_saga_scan_operator() {
     let events = stream::iter(vec![
         make_bench_item_event("id-1", "First"),
         make_bench_item_event("id-2", "Second"),
         make_bench_item_event("id-3", "Third"),
     ]);
 
-    let counts: Vec<_> = events.accumulate(0, |count, _| *count + 1).collect().await;
+    let counts: Vec<_> = block_on(events.accumulate(0, |count, _| *count + 1).collect());
 
     assert_eq!(counts, vec![1, 2, 3]);
 }
 
-#[tokio::test]
-async fn test_saga_filter_chain() {
-    use futures::stream;
-
+#[test]
+fn test_saga_filter_chain() {
     let events = stream::iter(vec![
         make_bench_item_event("id-1", "First"),
         make_other_event("OtherItem", MEventType::SET),
@@ -97,11 +91,12 @@ async fn test_saga_filter_chain() {
     ]);
 
     // Filter to only BenchItem SET events
-    let filtered: Vec<_> = events
-        .of_item_type("BenchItem")
-        .of_change_type(MEventType::SET)
-        .collect()
-        .await;
+    let filtered: Vec<_> = block_on(
+        events
+            .of_item_type("BenchItem")
+            .of_change_type(MEventType::SET)
+            .collect(),
+    );
 
     assert_eq!(filtered.len(), 2);
     assert!(
@@ -116,25 +111,21 @@ async fn test_saga_filter_chain() {
     );
 }
 
-#[tokio::test]
-async fn test_saga_of_item_type() {
-    use futures::stream;
-
+#[test]
+fn test_saga_of_item_type() {
     let events = stream::iter(vec![
         make_bench_item_event("id-1", "First"),
         make_other_event("Scene", MEventType::SET),
         make_bench_item_event("id-2", "Second"),
     ]);
 
-    let filtered: Vec<_> = events.of_item_type("BenchItem").collect().await;
+    let filtered: Vec<_> = block_on(events.of_item_type("BenchItem").collect());
 
     assert_eq!(filtered.len(), 2);
 }
 
-#[tokio::test]
-async fn test_saga_of_change_type() {
-    use futures::stream;
-
+#[test]
+fn test_saga_of_change_type() {
     let events = stream::iter(vec![
         make_bench_item_event("id-1", "First"),
         MEvent::from_item(
@@ -151,7 +142,7 @@ async fn test_saga_of_change_type() {
         make_bench_item_event("id-3", "Third"),
     ]);
 
-    let filtered: Vec<_> = events.of_change_type(MEventType::SET).collect().await;
+    let filtered: Vec<_> = block_on(events.of_change_type(MEventType::SET).collect());
 
     assert_eq!(filtered.len(), 2);
 }

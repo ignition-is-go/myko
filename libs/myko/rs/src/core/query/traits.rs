@@ -2,6 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+use hypha::CellImmutable;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -130,7 +131,7 @@ pub trait Query:
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>>;
+    ) -> hypha::Cell<Vec<<Self as QueryItemType>::Item>, CellImmutable>;
 }
 
 // Blanket impl of Query for QueryRequest<Q>
@@ -144,7 +145,7 @@ where
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> impl tokio_stream::Stream<Item = Vec<<Self as QueryItemType>::Item>> {
+    ) -> hypha::Cell<Vec<<Self as QueryItemType>::Item>, CellImmutable> {
         client.watch_query::<Q>(self)
     }
 }

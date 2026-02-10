@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use hypha::MapDiff;
 use serde::{Deserialize, Serialize, de::Error};
 use serde_json::Value;
 use ts_rs::TS;
 
 use super::item::WrappedItem;
-use crate::core::{
-    item::AnyItem,
-    query::{QueryId, QueryItemType},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::item::AnyItem;
+use crate::core::query::{QueryId, QueryItemType};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +52,7 @@ impl QueryResponse {
     }
 
     /// Create a QueryResponse from a MapDiff.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_diff(
         diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,

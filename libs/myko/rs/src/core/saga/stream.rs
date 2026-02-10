@@ -257,7 +257,7 @@ pub fn is_change_type(change_type: MEventType) -> impl Fn(&MEvent) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use futures::{StreamExt, stream};
+    use futures::{StreamExt, executor::block_on, stream};
     use serde_json::json;
 
     use super::*;
@@ -274,28 +274,28 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_of_item_type() {
+    #[test]
+    fn test_of_item_type() {
         let events = stream::iter(vec![
             make_event("Target", MEventType::SET),
             make_event("Scene", MEventType::SET),
             make_event("Target", MEventType::DEL),
         ]);
 
-        let filtered: Vec<_> = events.of_item_type("Target").collect().await;
+        let filtered: Vec<_> = block_on(events.of_item_type("Target").collect());
         assert_eq!(filtered.len(), 2);
         assert!(filtered.iter().all(|e: &MEvent| e.item_type() == "Target"));
     }
 
-    #[tokio::test]
-    async fn test_of_change_type() {
+    #[test]
+    fn test_of_change_type() {
         let events = stream::iter(vec![
             make_event("Target", MEventType::SET),
             make_event("Target", MEventType::DEL),
             make_event("Target", MEventType::SET),
         ]);
 
-        let filtered: Vec<_> = events.of_change_type(MEventType::SET).collect().await;
+        let filtered: Vec<_> = block_on(events.of_change_type(MEventType::SET).collect());
         assert_eq!(filtered.len(), 2);
         assert!(
             filtered
@@ -304,32 +304,32 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_pairwise() {
+    #[test]
+    fn test_pairwise() {
         let events = stream::iter(vec![
             make_event("Target", MEventType::SET),
             make_event("Target", MEventType::SET),
             make_event("Target", MEventType::SET),
         ]);
 
-        let pairs: Vec<_> = events.pairwise().collect().await;
+        let pairs: Vec<_> = block_on(events.pairwise().collect());
         assert_eq!(pairs.len(), 2); // 3 events -> 2 pairs
     }
 
-    #[tokio::test]
-    async fn test_scan() {
+    #[test]
+    fn test_scan() {
         let events = stream::iter(vec![
             make_event("Target", MEventType::SET),
             make_event("Target", MEventType::SET),
             make_event("Target", MEventType::SET),
         ]);
 
-        let counts: Vec<_> = events.accumulate(0, |count, _| *count + 1).collect().await;
+        let counts: Vec<_> = block_on(events.accumulate(0, |count, _| *count + 1).collect());
         assert_eq!(counts, vec![1, 2, 3]);
     }
 
-    #[tokio::test]
-    async fn test_chained_operators() {
+    #[test]
+    fn test_chained_operators() {
         let events = stream::iter(vec![
             make_event("Target", MEventType::SET),
             make_event("Scene", MEventType::SET),
@@ -337,11 +337,12 @@ mod tests {
             make_event("Target", MEventType::SET),
         ]);
 
-        let filtered: Vec<_> = events
-            .of_item_type("Target")
-            .of_change_type(MEventType::SET)
-            .collect()
-            .await;
+        let filtered: Vec<_> = block_on(
+            events
+                .of_item_type("Target")
+                .of_change_type(MEventType::SET)
+                .collect(),
+        );
 
         assert_eq!(filtered.len(), 2);
     }

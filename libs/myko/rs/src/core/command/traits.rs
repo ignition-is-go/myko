@@ -39,8 +39,11 @@ pub trait AnyCommand: WithTransaction + CommandId + Debug + Send + Sync + 'stati
 }
 
 // A command that can be sent; implementors provide a response type via the macro.
-pub trait MykoCommand<T> {
-    fn handle(&self, client: &MykoClient) -> impl std::future::Future<Output = Result<T, String>>;
+pub trait MykoCommand<T: DeserializeOwned + Clone + Send + Sync + 'static> {
+    fn handle(
+        &self,
+        client: &MykoClient,
+    ) -> hypha::Cell<Option<Result<T, String>>, hypha::CellImmutable>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

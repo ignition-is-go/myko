@@ -4,9 +4,9 @@ use hypha::{Cell, CellImmutable};
 use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
-use crate::{
-    common::to_value::ToValue, query::QueryParams, request::RequestContext, server::CellServerCtx,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::server::CellServerCtx;
+use crate::{common::to_value::ToValue, query::QueryParams, request::RequestContext};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -18,6 +18,7 @@ use crate::{
 pub struct ReportContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
     pub req: Arc<RequestContext>,
+    #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<CellServerCtx>,
 }
 
@@ -26,6 +27,7 @@ impl ReportContext {
     // Convenience accessors for request context
     // ─────────────────────────────────────────────────────────────────────────
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<CellServerCtx>) -> Self {
         Self { req, server_ctx }
     }
@@ -65,7 +67,15 @@ impl ReportContext {
         Q: QueryParams + 'static,
         Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        self.server_ctx.query(query, self.req.clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx.query(query, self.req.clone())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = query;
+            unreachable!();
+        }
     }
 
     /// Search for entities matching a query string.
@@ -73,9 +83,17 @@ impl ReportContext {
     /// Returns matching entity IDs (up to `limit` results).
     /// Uses tantivy full-text search on fields marked with `#[searchable]`.
     pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
-        self.server_ctx
-            .search_index()
-            .search(entity_type, query, limit)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx
+                .search_index()
+                .search(entity_type, query, limit)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (entity_type, query, limit);
+            unreachable!();
+        }
     }
 
     /// Subscribe to a sub-report dependency.
