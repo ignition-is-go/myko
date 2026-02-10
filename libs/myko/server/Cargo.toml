@@ -1,0 +1,37 @@
+[package]
+name = "myko-server"
+version = "3.1.0-canary.23"
+edition = "2024"
+description = "Myko server runtime — WebSocket, Kafka, peer federation"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+# Internal
+myko-rs.workspace = true
+
+# Async runtime
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tungstenite.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+
+# Kafka
+rdkafka = { version = "0.36.2", features = ["cmake-build"] }
+openssl = { version = "0.10.35", features = ["vendored"] }
+
+# Async utilities
+futures-util.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+
+# Misc
+uuid.workspace = true
+chrono.workspace = true
+log.workspace = true
+dashmap.workspace = true
+hypha.workspace = true
+inventory = "0.3.21"
