@@ -101,6 +101,9 @@ members = [
   "apps/node-agent",
   # Tools
   "tools/release",
+  "libs/myko/server",
+  "libs/myko/leptos",
+  "apps/labs/leptos-playground",
 ]
 
 [workspace.package]
@@ -181,6 +184,8 @@ napi-build = "2.0"
 
 # Internal crates
 myko-rs = { version = "3.1.0-canary.23", path = "libs/myko/rs" }
+myko-server = { version = "3.1.0-canary.23", path = "libs/myko/server" }
+myko-leptos = { version = "0.1.0", path = "libs/myko/leptos" }
 myko-macros = { version = "3.1.0-canary.23", path = "libs/myko/macros" }
 rship-entities = { version = "3.1.0-canary.23", path = "libs/entities/rs" }
 rship-entities-macros = { version = "3.1.0-canary.23", path = "libs/entities/macros" }
