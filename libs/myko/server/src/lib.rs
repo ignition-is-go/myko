@@ -49,8 +49,10 @@ pub struct CellServerBuilder {
     host_id: Option<Uuid>,
     kafka: Option<KafkaConfig>,
     peer_registry: Option<peer_registry::PeerRegistryConfig>,
-    after_init: Option<Box<dyn FnOnce(&CellServer) + Send>>,
+    after_init: Option<AfterInitCallback>,
 }
+
+type AfterInitCallback = Box<dyn FnOnce(&CellServer) + Send>;
 
 impl CellServerBuilder {
     /// Create a new server builder.
@@ -134,7 +136,7 @@ pub struct CellServer {
     /// Peer registry for federation (initialized after Kafka catch-up)
     peer_registry_instance: RwLock<Option<peer_registry::PeerRegistry>>,
     /// Callback to run after init (Kafka catch-up + relations) but before WS loop
-    after_init: std::sync::Mutex<Option<Box<dyn FnOnce(&CellServer) + Send>>>,
+    after_init: std::sync::Mutex<Option<AfterInitCallback>>,
 }
 
 impl CellServer {

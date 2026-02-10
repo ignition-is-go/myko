@@ -708,9 +708,8 @@ impl MykoClient {
         self.inner.command_request_handlers.insert(
             command_id.clone(),
             Box::new(move |value: Value, responder: CommandResponder| {
-                match serde_json::from_value::<C>(value) {
-                    Ok(cmd) => handler(cmd, responder),
-                    Err(_) => {} // Not for this handler
+                if let Ok(cmd) = serde_json::from_value::<C>(value) {
+                    handler(cmd, responder);
                 }
             }),
         );
