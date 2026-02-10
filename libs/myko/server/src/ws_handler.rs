@@ -380,22 +380,21 @@ impl WsHandler {
 
                         // Auto-populate #[fallback_to_id] fields with the entity's own id
                         // if the field is null or missing
-                        if let Some(obj) = event.item.as_object_mut() {
-                            if let Some(id) =
+                        if let Some(obj) = event.item.as_object_mut()
+                            && let Some(id) =
                                 obj.get("id").and_then(|v| v.as_str()).map(String::from)
-                            {
-                                for reg in iter_fallback_to_id_registrations() {
-                                    if reg.entity_type == event.item_type {
-                                        let field = reg.field_name_json;
-                                        if matches!(
-                                            obj.get(field),
-                                            None | Some(serde_json::Value::Null)
-                                        ) {
-                                            obj.insert(
-                                                field.to_string(),
-                                                serde_json::Value::String(id.clone()),
-                                            );
-                                        }
+                        {
+                            for reg in iter_fallback_to_id_registrations() {
+                                if reg.entity_type == event.item_type {
+                                    let field = reg.field_name_json;
+                                    if matches!(
+                                        obj.get(field),
+                                        None | Some(serde_json::Value::Null)
+                                    ) {
+                                        obj.insert(
+                                            field.to_string(),
+                                            serde_json::Value::String(id.clone()),
+                                        );
                                     }
                                 }
                             }

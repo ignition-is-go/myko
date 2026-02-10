@@ -343,12 +343,11 @@ impl PeerRegistry {
                         let (conn_tx, conn_rx) = tokio::sync::oneshot::channel::<bool>();
                         let conn_tx = std::sync::Mutex::new(Some(conn_tx));
                         let conn_guard = client.connection_status().subscribe(move |signal| {
-                            if let Signal::Value(status) = signal {
-                                if let ConnectionStatus::Connected(_) = &**status {
-                                    if let Some(sender) = conn_tx.lock().unwrap().take() {
-                                        let _ = sender.send(true);
-                                    }
-                                }
+                            if let Signal::Value(status) = signal
+                                && let ConnectionStatus::Connected(_) = &**status
+                                && let Some(sender) = conn_tx.lock().unwrap().take()
+                            {
+                                let _ = sender.send(true);
                             }
                         });
 
@@ -384,25 +383,25 @@ impl PeerRegistry {
                         let verify_tx = std::sync::Mutex::new(Some(verify_tx));
                         let query_cell = client.watch_query::<GetConnectedServer>(&query);
                         let verify_guard = query_cell.subscribe(move |signal| {
-                            if let Signal::Value(servers) = signal {
-                                if !servers.is_empty() {
-                                    let result = servers
-                                        .first()
-                                        .map(|s| {
-                                            let matches = s.id.as_ref() == expected_id;
-                                            if !matches {
-                                                warn!(
-                                                    "Server ID mismatch: expected {}, got {}",
-                                                    expected_id,
-                                                    s.id.as_ref()
-                                                );
-                                            }
-                                            matches
-                                        })
-                                        .unwrap_or(false);
-                                    if let Some(sender) = verify_tx.lock().unwrap().take() {
-                                        let _ = sender.send(result);
-                                    }
+                            if let Signal::Value(servers) = signal
+                                && !servers.is_empty()
+                            {
+                                let result = servers
+                                    .first()
+                                    .map(|s| {
+                                        let matches = s.id.as_ref() == expected_id;
+                                        if !matches {
+                                            warn!(
+                                                "Server ID mismatch: expected {}, got {}",
+                                                expected_id,
+                                                s.id.as_ref()
+                                            );
+                                        }
+                                        matches
+                                    })
+                                    .unwrap_or(false);
+                                if let Some(sender) = verify_tx.lock().unwrap().take() {
+                                    let _ = sender.send(result);
                                 }
                             }
                         });

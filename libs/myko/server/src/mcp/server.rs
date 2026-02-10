@@ -603,12 +603,11 @@ async fn execute_command(
         let (tx_connected, rx_connected) = tokio::sync::oneshot::channel::<bool>();
         let tx_connected = std::sync::Mutex::new(Some(tx_connected));
         let guard = client.connection_status().subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
-                if let ConnectionStatus::Connected(_) = &**status {
-                    if let Some(sender) = tx_connected.lock().unwrap().take() {
-                        let _ = sender.send(true);
-                    }
-                }
+            if let hypha::Signal::Value(status) = signal
+                && let ConnectionStatus::Connected(_) = &**status
+                && let Some(sender) = tx_connected.lock().unwrap().take()
+            {
+                let _ = sender.send(true);
             }
         });
 

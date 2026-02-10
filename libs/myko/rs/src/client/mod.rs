@@ -234,10 +234,10 @@ impl MykoClient {
         match parsed {
             MykoMessage::QueryResponse(response) => {
                 let tx: Arc<str> = response.tx.clone();
-                if let Some(handler) = inner.query_handlers.get(&tx) {
-                    if let Ok(response_value) = serde_json::to_value(&response) {
-                        handler(response_value);
-                    }
+                if let Some(handler) = inner.query_handlers.get(&tx)
+                    && let Ok(response_value) = serde_json::to_value(&response)
+                {
+                    handler(response_value);
                 }
             }
             MykoMessage::ReportResponse(response) => {
@@ -588,12 +588,12 @@ impl MykoClient {
         let send_report_id = report_id.clone();
         let frame_clone = frame.clone();
         let status_guard = self.inner.connection_status.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
-                if let ConnectionStatus::Connected(_) = &**status {
-                    match socket.send(frame_clone.clone()) {
-                        Ok(_) => debug!("Watching report {send_report_id}"),
-                        Err(e) => error!("Could not send report: {e:?}"),
-                    }
+            if let hypha::Signal::Value(status) = signal
+                && let ConnectionStatus::Connected(_) = &**status
+            {
+                match socket.send(frame_clone.clone()) {
+                    Ok(_) => debug!("Watching report {send_report_id}"),
+                    Err(e) => error!("Could not send report: {e:?}"),
                 }
             }
         });
@@ -747,10 +747,10 @@ impl MykoClient {
         F: Fn(String) + Send + Sync + 'static,
     {
         let guard = self.inner.connection_status.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
-                if let Ok(json) = serde_json::to_string(&*status) {
-                    callback(json);
-                }
+            if let hypha::Signal::Value(status) = signal
+                && let Ok(json) = serde_json::to_string(status)
+            {
+                callback(json);
             }
         });
         // Convert SubscriptionGuard to CallbackGuard
@@ -828,10 +828,10 @@ impl MykoClient {
         let socket = self.inner.socket.clone();
         let frame_clone = frame.clone();
         let status_guard = self.inner.connection_status.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
-                if let ConnectionStatus::Connected(_) = &**status {
-                    let _ = socket.send(frame_clone.clone());
-                }
+            if let hypha::Signal::Value(status) = signal
+                && let ConnectionStatus::Connected(_) = &**status
+            {
+                let _ = socket.send(frame_clone.clone());
             }
         });
 
@@ -901,10 +901,10 @@ impl MykoClient {
         let socket = self.inner.socket.clone();
         let frame_clone = frame.clone();
         let status_guard = self.inner.connection_status.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
-                if let ConnectionStatus::Connected(_) = &**status {
-                    let _ = socket.send(frame_clone.clone());
-                }
+            if let hypha::Signal::Value(status) = signal
+                && let ConnectionStatus::Connected(_) = &**status
+            {
+                let _ = socket.send(frame_clone.clone());
             }
         });
 
