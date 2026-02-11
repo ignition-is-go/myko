@@ -135,13 +135,11 @@ impl CommandContext {
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use hypha::Gettable;
             Ok(self
                 .server_ctx
-                .query(query.clone(), self.req.clone())
-                .get()
-                .first()
-                .cloned())
+                .query_snapshot(query, self.req.clone())
+                .into_iter()
+                .next())
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -159,8 +157,7 @@ impl CommandContext {
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use hypha::Gettable;
-            Ok(self.server_ctx.query(query, self.req.clone()).get())
+            Ok(self.server_ctx.query_snapshot(query, self.req.clone()))
         }
         #[cfg(target_arch = "wasm32")]
         {

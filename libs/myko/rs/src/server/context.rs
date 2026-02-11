@@ -327,6 +327,47 @@ impl CellServerCtx {
             .with_name(query_name.as_str())
     }
 
+    /// Run a one-shot (non-reactive) query.
+    ///
+    /// Iterates the store directly and returns matching entities without creating
+    /// any reactive cells or subscriptions. Use this for command handlers and other
+    /// contexts where you need a point-in-time snapshot, not a live query.
+    pub fn query_snapshot<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+    ) -> Vec<Q::Item>
+    where
+        Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let query_item_type = Q::query_item_type_static();
+        let store = self.registry.get_or_create(&query_item_type);
+
+        let query_context = Arc::new(QueryContext {
+            req: request.clone(),
+        });
+        let query = Arc::new(query);
+
+        store
+            .snapshot()
+            .into_iter()
+            .filter_map(|(_, item)| {
+                let typed_item = item.as_any().downcast_ref::<Q::Item>()?;
+                let ctx = QueryTestCtx {
+                    item: Arc::new(typed_item.clone()),
+                    query: query.clone(),
+                    query_context: query_context.clone(),
+                };
+                if Q::test_entity(ctx) {
+                    Some(typed_item.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn report<R>(
         &self,
         report: R,
