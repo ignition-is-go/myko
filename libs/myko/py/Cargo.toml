@@ -17,11 +17,8 @@ crate-type = ["cdylib"]
 myko-rs = { version = "3.1.0-canary.23", path = "../rs" }
 pyo3 = { version = "0.22", features = ["extension-module"] }
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 pythonize = "0.22"
-uuid = { version = "1.0", features = ["v4"] }
-chrono = "0.4"
 
 [build-dependencies]
 pyo3-build-config = "0.22"
