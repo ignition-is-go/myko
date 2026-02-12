@@ -447,6 +447,10 @@ export class MykoClient {
         this.sharedQueries.delete(cacheKey)
       }),
       shareReplay({ bufferSize: 1, refCount: true }),
+      // Defensive copy: shareReplay replays the same array reference to all
+      // subscribers, so a mutation (e.g. .shift()) by one subscriber would
+      // corrupt the shared value for others. Cloning per-subscriber prevents this.
+      map((x) => Array.isArray(x) ? x.slice() as QueryResult<Q> : x),
     )
 
     this.sharedQueries.set(cacheKey, shared$)
@@ -497,6 +501,12 @@ export class MykoClient {
         this.send({ event: MykoEvent.ReportCancel, data: { tx } })
       }),
       shareReplay({ bufferSize: 1, refCount: true }),
+      // Defensive copy: prevent one subscriber's mutations from affecting others
+      map((x) => {
+        if (Array.isArray(x)) return x.slice() as ReportResult<R>
+        if (x instanceof Object) return { ...x } as ReportResult<R>
+        return x
+      }),
     )
 
     this.sharedReports.set(cacheKey, shared$)
