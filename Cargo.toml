@@ -44,6 +44,8 @@ members = [
   "libs/entities/cameras",
   "libs/entities/surfaces",
   "libs/entities/ui",
+  "libs/entities/scene",
+  "libs/entities/engine",
   "libs/entities/nodes",
   "libs/entities/math",
   "libs/entities/logic",
@@ -220,6 +222,8 @@ rship-entities-rive = { version = "3.1.0-canary.23", path = "libs/entities/rive"
 rship-entities-cameras = { version = "3.1.0-canary.23", path = "libs/entities/cameras" }
 rship-entities-surfaces = { version = "3.1.0-canary.23", path = "libs/entities/surfaces" }
 rship-entities-ui = { version = "3.1.0-canary.23", path = "libs/entities/ui" }
+rship-entities-scene = { version = "3.1.0-canary.23", path = "libs/entities/scene" }
+rship-entities-engine = { version = "3.1.0-canary.23", path = "libs/entities/engine" }
 rship-entities-nodes = { version = "3.1.0-canary.23", path = "libs/entities/nodes" }
 rship-entities-math = { version = "3.1.0-canary.23", path = "libs/entities/math" }
 rship-entities-logic = { version = "3.1.0-canary.23", path = "libs/entities/logic" }
