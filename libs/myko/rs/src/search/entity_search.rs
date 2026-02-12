@@ -18,7 +18,6 @@
 
 use std::sync::Arc;
 
-use crate as myko_rs;
 use crate::{
     item::Eventable,
     report::{ReportContext, ReportHandler},

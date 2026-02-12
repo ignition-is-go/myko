@@ -6,7 +6,6 @@ use myko_macros::{myko_command, myko_report, myko_report_output};
 use crate::{
     prelude::*,
     report::{ReportContext, ReportHandler},
-    {self as myko_rs},
 };
 
 #[myko_item]

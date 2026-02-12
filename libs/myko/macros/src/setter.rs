@@ -89,6 +89,7 @@ fn to_pascal_case(s: &str) -> String {
 pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> TokenStream {
     let entity_ident = format_ident!("{}", entity_name);
     let get_by_id_ident = format_ident!("Get{}ById", entity_name);
+    let krate = crate::myko_rs_path();
 
     let commands: Vec<TokenStream> = setters
     .iter()
@@ -166,14 +167,14 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
               #param_field,
           }
 
-          impl myko_rs::command::CommandHandler for #command_name {
+          impl #krate::command::CommandHandler for #command_name {
               fn execute(
                   self,
-                  ctx: myko_rs::prelude::CommandContext,
-              ) -> Result<(), myko_rs::prelude::CommandError> {
+                  ctx: #krate::prelude::CommandContext,
+              ) -> Result<(), #krate::prelude::CommandError> {
                   let report = #get_by_id_ident { id: self.id.clone() };
                   let entity = ctx.exec_report(report)?.ok_or_else(|| {
-                      myko_rs::prelude::CommandError {
+                      #krate::prelude::CommandError {
                           tx: ctx.tx().to_string(),
                           command_id: ctx.command_id.to_string(),
                           message: format!("{} {} not found", stringify!(#entity_ident), self.id),

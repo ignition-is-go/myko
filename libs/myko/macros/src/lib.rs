@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
 use syn::parse_macro_input;
 
@@ -11,6 +12,91 @@ mod relationship;
 mod report;
 mod saga;
 mod setter;
+
+/// Returns whether we are compiling inside the myko-rs crate itself.
+pub(crate) fn is_myko_rs_crate() -> bool {
+    std::env::var("CARGO_PKG_NAME")
+        .map(|name| name == "myko-rs")
+        .unwrap_or(false)
+}
+
+/// Returns the path to use for `myko_rs` depending on the current crate.
+/// When compiling myko-rs itself, returns `crate`; otherwise returns `myko_rs`.
+pub(crate) fn myko_rs_path() -> syn::Path {
+    if is_myko_rs_crate() {
+        syn::Path::from(syn::Ident::new("crate", Span::call_site()))
+    } else {
+        syn::Path::from(syn::Ident::new("myko_rs", Span::call_site()))
+    }
+}
+
+/// Context for generating serde/partially derive paths in macros.
+/// When inside myko-rs, uses direct crate paths. When outside, uses re-exports.
+pub(crate) struct DeriveCtx {
+    /// Path to myko_rs (either `crate` or `myko_rs`)
+    pub krate: syn::Path,
+    /// Path for serde derives (either `serde` or `myko_rs::serde`)
+    pub serde_path: proc_macro2::TokenStream,
+    /// String value for #[serde(crate = "...")] — None when inside myko-rs
+    pub serde_crate_attr: Option<String>,
+    /// Path for partially derives (either `partially` or `myko_rs::partially`)
+    pub partially_path: proc_macro2::TokenStream,
+    /// String value for #[partially(crate = "...")] — None when inside myko-rs
+    pub partially_crate_attr: Option<String>,
+}
+
+impl DeriveCtx {
+    pub fn new() -> Self {
+        let krate = myko_rs_path();
+        if is_myko_rs_crate() {
+            Self {
+                krate,
+                serde_path: quote!(serde),
+                serde_crate_attr: None,
+                partially_path: quote!(partially),
+                partially_crate_attr: None,
+            }
+        } else {
+            let serde_crate_str = "myko_rs::serde".to_string();
+            let partially_crate_str = "myko_rs::partially".to_string();
+            Self {
+                krate,
+                serde_path: quote!(myko_rs::serde),
+                serde_crate_attr: Some(serde_crate_str),
+                partially_path: quote!(myko_rs::partially),
+                partially_crate_attr: Some(partially_crate_str),
+            }
+        }
+    }
+
+    /// Generate #[serde(crate = "...", ...rest)] or just #[serde(...rest)]
+    pub fn serde_attr(&self, rest: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        match &self.serde_crate_attr {
+            Some(crate_str) => {
+                if rest.is_empty() {
+                    quote!(#[serde(crate = #crate_str)])
+                } else {
+                    quote!(#[serde(crate = #crate_str, #rest)])
+                }
+            }
+            None => {
+                if rest.is_empty() {
+                    quote!()
+                } else {
+                    quote!(#[serde(#rest)])
+                }
+            }
+        }
+    }
+
+    /// Generate the serde(crate = "...") fragment for embedding in partially attributes
+    pub fn serde_crate_partially_attr(&self) -> proc_macro2::TokenStream {
+        match &self.serde_crate_attr {
+            Some(crate_str) => quote!(attribute(serde(crate = #crate_str)),),
+            None => quote!(),
+        }
+    }
+}
 
 #[proc_macro_derive(PartialMatches)]
 pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
@@ -331,14 +417,18 @@ pub fn myko_saga(_attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
     let name = &input.ident;
+    let ctx = DeriveCtx::new();
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
-        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
-        #[serde(rename_all = "camelCase")]
+        #[derive(Debug, Clone, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+        #serde_rename_attr
         #input
 
-        myko_rs::register_ts_export!(#name);
+        #krate::register_ts_export!(#name);
     };
 
     expanded.into()

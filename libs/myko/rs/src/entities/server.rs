@@ -4,7 +4,6 @@ use crate::{
     entities::client::GetAllClients,
     prelude::*,
     report::{ReportContext, ReportHandler},
-    {self as myko_rs},
 };
 
 #[myko_item]

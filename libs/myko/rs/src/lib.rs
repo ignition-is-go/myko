@@ -106,6 +106,8 @@ pub use core::{command, common, item, query, relationship, report, request};
 pub use hypha; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko_rs::submit! macro
+pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
+pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko_rs::TS)]

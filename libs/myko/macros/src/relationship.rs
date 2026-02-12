@@ -391,6 +391,7 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
 pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> TokenStream {
     let mut registrations = Vec::new();
     let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
+    let krate = crate::myko_rs_path();
 
     // Generate BelongsTo registrations
     for bt in &info.belongs_to {
@@ -415,9 +416,9 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         };
 
         registrations.push(quote! {
-            myko_rs::submit! {
-                myko_rs::relationship::RelationRegistration {
-                    relation: myko_rs::relationship::Relation::BelongsTo {
+            #krate::submit! {
+                #krate::relationship::RelationRegistration {
+                    relation: #krate::relationship::Relation::BelongsTo {
                         local_type: #local_type,
                         foreign_type: #foreign_type,
                         extract_fk: #extract_fk,
@@ -433,20 +434,20 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         let foreign_type = &om.foreign_type;
 
         registrations.push(quote! {
-            myko_rs::submit! {
-                myko_rs::relationship::RelationRegistration {
-                    relation: myko_rs::relationship::Relation::OwnsMany {
+            #krate::submit! {
+                #krate::relationship::RelationRegistration {
+                    relation: #krate::relationship::Relation::OwnsMany {
                         local_type: #local_type,
                         foreign_type: #foreign_type,
                         extract_ids: |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
                             item.downcast_ref::<#local_type_ident>()
                                 .map(|e| e.#field_ident.iter().map(|id| std::sync::Arc::<str>::from(&**id)).collect())
                         },
-                        remove_id: |item: &dyn std::any::Any, id_to_remove: &str| -> Option<std::sync::Arc<dyn myko_rs::item::AnyItem>> {
+                        remove_id: |item: &dyn std::any::Any, id_to_remove: &str| -> Option<std::sync::Arc<dyn #krate::item::AnyItem>> {
                             item.downcast_ref::<#local_type_ident>().map(|e| {
                                 let mut updated = e.clone();
                                 updated.#field_ident.retain(|id| &**id != id_to_remove);
-                                std::sync::Arc::new(updated) as std::sync::Arc<dyn myko_rs::item::AnyItem>
+                                std::sync::Arc::new(updated) as std::sync::Arc<dyn #krate::item::AnyItem>
                             })
                         },
                     }
@@ -463,7 +464,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .map(|(ft, lk, _lkj)| {
                 let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 quote! {
-                    myko_rs::relationship::EnsureForDependency {
+                    #krate::relationship::EnsureForDependency {
                         foreign_type: #ft,
                         extract_fk: |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
                             item.downcast_ref::<#local_type_ident>()
@@ -504,9 +505,9 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .collect();
 
         registrations.push(quote! {
-        myko_rs::submit! {
-            myko_rs::relationship::RelationRegistration {
-                relation: myko_rs::relationship::Relation::EnsureFor {
+        #krate::submit! {
+            #krate::relationship::RelationRegistration {
+                relation: #krate::relationship::Relation::EnsureFor {
                     local_type: #local_type,
                     dependencies: &[#(#deps),*],
                     make_entity: |dep_ids: &[std::sync::Arc<str>]| {
@@ -515,7 +516,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                         entity.hash = std::sync::Arc::from("");
                         #(#fk_field_assignments)*
                         #(#default_assignments)*
-                        std::sync::Arc::new(entity) as std::sync::Arc<dyn myko_rs::item::AnyItem>
+                        std::sync::Arc::new(entity) as std::sync::Arc<dyn #krate::item::AnyItem>
                     },
                 }
             }
@@ -528,8 +529,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         let field_name_json = &ci.field_name_json;
 
         registrations.push(quote! {
-            myko_rs::submit! {
-                myko_rs::relationship::ClientIdRegistration {
+            #krate::submit! {
+                #krate::relationship::ClientIdRegistration {
                     entity_type: #local_type,
                     field_name_json: #field_name_json,
                 }
@@ -542,8 +543,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         let field_name_json = &fi.field_name_json;
 
         registrations.push(quote! {
-            myko_rs::submit! {
-                myko_rs::relationship::FallbackToIdRegistration {
+            #krate::submit! {
+                #krate::relationship::FallbackToIdRegistration {
                     entity_type: #local_type,
                     field_name_json: #field_name_json,
                 }
@@ -564,8 +565,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
 
         registrations.push(quote! {
             #[cfg(not(target_arch = "wasm32"))]
-            myko_rs::submit! {
-                myko_rs::search::SearchableRegistration {
+            #krate::submit! {
+                #krate::search::SearchableRegistration {
                     entity_type: #local_type,
                     fields: &[#(#fields),*],
                 }

@@ -15,10 +15,7 @@
 use partially::Partial;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    prelude::*,
-    {self as myko_rs},
-};
+use crate::prelude::*;
 
 /// A simple entity for benchmarking with category-based filtering.
 #[myko_item]

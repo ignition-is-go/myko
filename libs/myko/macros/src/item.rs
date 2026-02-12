@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Field, FieldsNamed, ItemStruct};
 
-use crate::{relationship, setter};
+use crate::{DeriveCtx, relationship, setter};
 
 pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     // Collect relationship information BEFORE stripping attributes
@@ -13,6 +13,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let name = &input_struct.ident;
     let name_str = name.to_string();
+
+    let ctx = DeriveCtx::new();
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    let partially_path = &ctx.partially_path;
 
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
         // Strip relationship and setter attributes from each field
@@ -43,18 +48,28 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         named.push(hash_field);
     };
 
+    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+
+    let partially_crate_attr = match &ctx.partially_crate_attr {
+        Some(s) => quote!(crate = #s,),
+        None => quote!(),
+    };
+
     // Add Default derive if entity has ensure_for relationships (needed for make_entity)
+    // NOTE(ts): `partially` forwards all container attributes (including #[serde(crate = ...)])
+    // from the main struct to the Partial struct automatically, so we must NOT also add
+    // `attribute(serde(crate = ...))` — that would cause "duplicate serde attribute `crate`".
     let derives = if !rel_info.ensure_for_fields.is_empty() {
         quote! {
-            #[derive(Default, partially::Partial, PartialEq, Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
-            #[serde(rename_all = "camelCase")]
-            #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS), attribute(ts(optional_fields)))]
+            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+            #serde_rename_attr
+            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, myko_macros::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     } else {
         quote! {
-            #[derive(partially::Partial, PartialEq, Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
-            #[serde(rename_all = "camelCase")]
-            #[partially(derive(Clone, serde::Serialize, serde::Deserialize, Debug, Default, myko_macros::PartialMatches, myko_rs::TS), attribute(ts(optional_fields)))]
+            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+            #serde_rename_attr
+            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, myko_macros::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     };
 
@@ -65,8 +80,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #[myko_macros::myko_query(#name)]
         pub struct #get_all_query_ident {}
 
-        impl myko_rs::prelude::QueryHandler for #get_all_query_ident {
-            fn test_entity(ctx: myko_rs::prelude::QueryTestCtx<Self>) -> bool {
+        impl #krate::prelude::QueryHandler for #get_all_query_ident {
+            fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
                 true
             }
         }
@@ -81,8 +96,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub ids: Vec<std::sync::Arc<str>>,
         }
 
-        impl myko_rs::prelude::QueryHandler for #get_by_ids_query_ident {
-            fn test_entity(ctx: myko_rs::prelude::QueryTestCtx<Self>) -> bool {
+        impl #krate::prelude::QueryHandler for #get_by_ids_query_ident {
+            fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
                 ctx.query.ids.contains(&ctx.item.id)
             }
         }
@@ -96,8 +111,8 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #[myko_macros::myko_query(#name)]
          pub struct #get_by_partial_ident(pub #partial_ident);
 
-         impl myko_rs::prelude::QueryHandler for #get_by_partial_ident {
-             fn test_entity(ctx: myko_rs::prelude::QueryTestCtx<Self>) -> bool {
+         impl #krate::prelude::QueryHandler for #get_by_partial_ident {
+             fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
                  ctx.query.0.matches(&ctx.item)
              }
          }
@@ -122,11 +137,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #[myko_macros::myko_report(#count_result_ident)]
         pub struct #count_all_report_ident {}
 
-        impl myko_rs::prelude::ReportHandler for #count_all_report_ident {
+        impl #krate::prelude::ReportHandler for #count_all_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::Cell<Self::Output, myko_rs::prelude::CellImmutable> {
-                use myko_rs::prelude::MapExt;
+            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
+                use #krate::prelude::MapExt;
 
                 // Query all items and count them
                 let query = #get_all_query_ident {};
@@ -142,11 +157,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #[myko_macros::myko_report(#count_result_ident)]
         pub struct #count_report_ident(pub #partial_ident);
 
-        impl myko_rs::prelude::ReportHandler for #count_report_ident {
+        impl #krate::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::Cell<Self::Output, myko_rs::prelude::CellImmutable> {
-                use myko_rs::prelude::MapExt;
+            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
+                use #krate::prelude::MapExt;
 
                 // Query by partial filter and count results
                 let query = #get_by_partial_ident(self.0.clone());
@@ -164,11 +179,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub id: std::sync::Arc<str>,
         }
 
-        impl myko_rs::prelude::ReportHandler for #get_by_id_report_ident {
+        impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
             type Output = Option<#name>;
 
-            fn compute(&self, ctx: myko_rs::prelude::ReportContext) -> myko_rs::prelude::Cell<Self::Output, myko_rs::prelude::CellImmutable> {
-                use myko_rs::prelude::MapExt;
+            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
+                use #krate::prelude::MapExt;
 
                 let id = self.id.clone();
 
@@ -183,15 +198,17 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let delete_command_ident = format_ident!("Delete{}", name_str);
     let delete_result_ident = format_ident!("Delete{}Result", name_str);
 
+    let delete_serde_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+
     let delete_command = quote! {
         /// Result type for Delete command
-        #[derive(Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
-        #[serde(rename_all = "camelCase")]
+        #[derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #delete_serde_attr
         pub struct #delete_result_ident {
             pub deleted: bool,
         }
 
-        myko_rs::register_ts_export!(#delete_result_ident);
+        #krate::register_ts_export!(#delete_result_ident);
 
         /// Command to delete a single entity by ID
         #[myko_macros::myko_command(#delete_result_ident)]
@@ -199,11 +216,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub id: std::sync::Arc<str>,
         }
 
-        impl myko_rs::command::CommandHandler for #delete_command_ident {
+        impl #krate::command::CommandHandler for #delete_command_ident {
             fn execute(
                 self,
-                ctx: myko_rs::prelude::CommandContext,
-            ) -> Result<#delete_result_ident, myko_rs::prelude::CommandError> {
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<#delete_result_ident, #krate::prelude::CommandError> {
 
                 let report = #get_by_id_report_ident { id: self.id.clone() };
 
@@ -214,7 +231,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                         ctx.emit_del(&e)?;
                         Ok(#delete_result_ident { deleted: true })
                     }
-                    None => Err(myko_rs::prelude::CommandError {
+                    None => Err(#krate::prelude::CommandError {
                         tx: ctx.tx().to_string(),
                         command_id: ctx.command_id.to_string(),
                         message: format!("{} not found: {}", #name_str, self.id),
@@ -230,13 +247,13 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let delete_many_command = quote! {
         /// Result type for bulk Delete command
-        #[derive(Clone, serde::Serialize, serde::Deserialize, Debug, myko_rs::TS)]
-        #[serde(rename_all = "camelCase")]
+        #[derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #delete_serde_attr
         pub struct #delete_many_result_ident {
             pub deleted_count: usize,
         }
 
-        myko_rs::register_ts_export!(#delete_many_result_ident);
+        #krate::register_ts_export!(#delete_many_result_ident);
 
         /// Command to delete multiple entities by ID
         #[myko_macros::myko_command(#delete_many_result_ident)]
@@ -244,11 +261,11 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             pub ids: Vec<std::sync::Arc<str>>,
         }
 
-        impl myko_rs::command::CommandHandler for #delete_many_command_ident {
+        impl #krate::command::CommandHandler for #delete_many_command_ident {
             fn execute(
                 self,
-                ctx: myko_rs::prelude::CommandContext,
-            ) -> Result<#delete_many_result_ident, myko_rs::prelude::CommandError> {
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<#delete_many_result_ident, #krate::prelude::CommandError> {
                 let mut deleted_count = 0;
 
 
@@ -267,10 +284,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     };
 
     let item_registration = quote! {
-        myko_rs::prelude::ItemRegistration {
+        #krate::prelude::ItemRegistration {
             entity_type: #name_str,
             crate_name: module_path!(),
-            parse: <#name as myko_rs::item::Eventable>::parse,
+            parse: <#name as #krate::item::Eventable>::parse,
         }
     };
 
@@ -282,26 +299,26 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let expanded = quote! {
 
-        use myko_rs::prelude::Query;
-        use myko_rs::hypha::MapExt as _HyphaMapExt;
+        use #krate::prelude::Query;
+        use #krate::hypha::MapExt as _HyphaMapExt;
 
         #derives
         #input_struct
 
         // Register for ts-rs export
-        myko_rs::register_ts_export!(#name, #partial_ident);
+        #krate::register_ts_export!(#name, #partial_ident);
 
-        myko_rs::submit! {
+        #krate::submit! {
             #item_registration
         }
 
-        impl myko_rs::item::Eventable for #name {
+        impl #krate::item::Eventable for #name {
             fn entity_name_static() -> &'static str {
                 #name_str
             }
         }
 
-        impl myko_rs::prelude::AnyItem for #name {
+        impl #krate::prelude::AnyItem for #name {
             fn as_any(&self) -> &dyn std::any::Any {
                 self
             }
@@ -311,7 +328,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
             }
         }
 
-        impl myko_rs::prelude::WithId for #name {
+        impl #krate::prelude::WithId for #name {
             fn id(&self) -> std::sync::Arc<str> {
                 self.id.clone()
             }

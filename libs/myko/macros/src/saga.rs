@@ -37,16 +37,17 @@ use syn::ItemStruct;
 pub fn myko_saga_impl(input_struct: ItemStruct) -> TokenStream {
     let struct_name = &input_struct.ident;
     let struct_name_str = struct_name.to_string();
+    let krate = crate::myko_rs_path();
 
     let expanded = quote! {
         #input_struct
 
         // Saga registration for runtime discovery (server-only)
         #[cfg(not(target_arch = "wasm32"))]
-        myko_rs::submit! {
-            myko_rs::saga::SagaRegistration {
+        #krate::submit! {
+            #krate::saga::SagaRegistration {
                 saga_id: #struct_name_str,
-                create: || std::sync::Arc::new(#struct_name) as std::sync::Arc<dyn myko_rs::saga::AnySaga>,
+                create: || std::sync::Arc::new(#struct_name) as std::sync::Arc<dyn #krate::saga::AnySaga>,
             }
         }
     };
