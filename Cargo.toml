@@ -56,6 +56,7 @@ members = [
   "libs/entities/rs",
   "libs/entities/macros",
   "libs/sdk/rs",
+  "libs/platform/core",
   "libs/rs-macros",
   "libs/sync",
   "libs/opencv",
@@ -105,6 +106,7 @@ members = [
   "tools/release",
   "libs/myko/server",
   "libs/myko/leptos",
+  "apps/link-ui/ui",
   "apps/labs/leptos-playground",
 ]
 
@@ -237,3 +239,4 @@ link = { version = "3.1.0-canary.23", path = "libs/link/core" }
 rship-sync = { version = "3.1.0-canary.23", path = "libs/sync" }
 rs-macros = { version = "3.1.0-canary.23", path = "libs/rs-macros" }
 hypha = { version = "0.1.0", path = "libs/hypha/hypha" }
+pulse-platform = { version = "0.1.0", path = "libs/platform/core" }
