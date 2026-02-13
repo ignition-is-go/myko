@@ -20,6 +20,43 @@ pub fn provide_myko(address: &str) {
     let _ = address;
 }
 
+/// Disconnect the Myko client (clears the address).
+pub fn disconnect_myko() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use myko_rs::client::MykoClient;
+        let client = expect_context::<MykoClient>();
+        client.set_address(None);
+    }
+}
+
+/// Returns a reactive signal tracking the Myko connection status.
+pub fn use_connection_status() -> ReadSignal<bool> {
+    let (read, write) = signal(false);
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use myko_rs::{
+            client::{ConnectionStatus, MykoClient},
+            hypha::{Signal, Watchable},
+        };
+
+        let client = expect_context::<MykoClient>();
+        let cell = client.connection_status();
+        let guard = cell.subscribe(move |signal| {
+            if let Signal::Value(status) = signal {
+                write.set(matches!(&**status, ConnectionStatus::Connected(_)));
+            }
+        });
+        cell.own(guard);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = write;
+
+    read
+}
+
 /// Returns a reactive signal of query results that updates when the server pushes data.
 ///
 /// Subscribes to the query via `MykoClient` and updates the signal on each change.
@@ -60,6 +97,40 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     let _ = (query, write);
+
+    read
+}
+
+/// Send a command to the Myko server and return a reactive signal with the result.
+///
+/// The returned signal starts as `None` and resolves to `Some(Ok(response))` or
+/// `Some(Err(message))` when the server responds.
+pub fn send_command<C, R>(cmd: C) -> ReadSignal<Option<Result<R, String>>>
+where
+    C: serde::Serialize + Clone + myko_rs::core::command::CommandId + 'static,
+    R: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
+    let (read, write) = signal(None);
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use myko_rs::{
+            client::MykoClient,
+            hypha::{Signal, Watchable},
+        };
+
+        let client = expect_context::<MykoClient>();
+        let cell = client.send_command::<C, R>(&cmd);
+        let guard = cell.subscribe(move |signal| {
+            if let Signal::Value(result) = signal {
+                write.set((**result).clone());
+            }
+        });
+        cell.own(guard);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (cmd, write);
 
     read
 }

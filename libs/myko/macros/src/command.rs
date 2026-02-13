@@ -20,7 +20,9 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
     ];
     // Add serde rename attr
     let serde_rename_attr_clone = ctx.serde_attr(quote!(rename_all = "camelCase"));
-    args_struct.attrs.push(syn::parse_quote!(#serde_rename_attr_clone));
+    args_struct
+        .attrs
+        .push(syn::parse_quote!(#serde_rename_attr_clone));
 
     // Default to () if no result type specified
     let result_type_tokens = match &result_type {

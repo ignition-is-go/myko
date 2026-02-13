@@ -332,11 +332,7 @@ impl CellServerCtx {
     /// Iterates the store directly and returns matching entities without creating
     /// any reactive cells or subscriptions. Use this for command handlers and other
     /// contexts where you need a point-in-time snapshot, not a live query.
-    pub fn query_snapshot<Q>(
-        &self,
-        query: Q,
-        request: Arc<RequestContext>,
-    ) -> Vec<Q::Item>
+    pub fn query_snapshot<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Q::Item>
     where
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,

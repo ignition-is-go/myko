@@ -505,23 +505,23 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .collect();
 
         registrations.push(quote! {
-        #krate::submit! {
-            #krate::relationship::RelationRegistration {
-                relation: #krate::relationship::Relation::EnsureFor {
-                    local_type: #local_type,
-                    dependencies: &[#(#deps),*],
-                    make_entity: |dep_ids: &[std::sync::Arc<str>]| {
-                        let mut entity = #local_type_ident::default();
-                        entity.id = uuid::Uuid::new_v4().to_string().into();
-                        entity.hash = std::sync::Arc::from("");
-                        #(#fk_field_assignments)*
-                        #(#default_assignments)*
-                        std::sync::Arc::new(entity) as std::sync::Arc<dyn #krate::item::AnyItem>
-                    },
+            #krate::submit! {
+                #krate::relationship::RelationRegistration {
+                    relation: #krate::relationship::Relation::EnsureFor {
+                        local_type: #local_type,
+                        dependencies: &[#(#deps),*],
+                        make_entity: |dep_ids: &[std::sync::Arc<str>]| {
+                            let mut entity = #local_type_ident::default();
+                            entity.id = uuid::Uuid::new_v4().to_string().into();
+                            entity.hash = std::sync::Arc::from("");
+                            #(#fk_field_assignments)*
+                            #(#default_assignments)*
+                            std::sync::Arc::new(entity) as std::sync::Arc<dyn #krate::item::AnyItem>
+                        },
+                    }
                 }
             }
-        }
-    });
+        });
     }
 
     // Generate ClientId registration if present
