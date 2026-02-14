@@ -191,8 +191,8 @@ export class MykoClient {
   private peerDiscoverySubscription: Subscription | null = null
   private useSecureWebSocket = false
 
-  // Protocol - defaults to MSGPACK for better performance, server auto-detects
-  private protocol: MykoProtocol = MykoProtocol.JSON
+  // Protocol - default to MSGPACK for better performance, server auto-detects.
+  private protocol: MykoProtocol = MykoProtocol.MSGPACK
 
   constructor() {
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
