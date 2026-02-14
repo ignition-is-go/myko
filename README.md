@@ -9,30 +9,42 @@ A control platform for orchestrating reactive event relationships within network
 ## Quick Start
 
 ```bash
-# Prerequisites: Node 20+, Bun, pnpm 10+, Rust, protobuf
+# Prerequisites: Node 20+, pnpm 10+, Rust, protobuf
+# Optional: Bun (legacy server/tooling), Docker (local Kafka)
 
 # Install
 pnpm install
 
-# Run server
-pnpm dev --filter @rship/server
+# Start Kafka (required for the primary Rust server)
+docker compose -f docker-compose.local.yml up -d
+
+# Run primary server (Rust)
+export MYKO_HOST_ADDRESS=localhost
+export MYKO_PORT=5155
+export KAFKA_BROKERS=localhost:9092
+cargo run -p server_rs --target-dir target/agent
 
 # Run UI (separate terminal)
 pnpm dev --filter @rship/ui
+
+# (Optional) Legacy Bun/TypeScript server (supports local-only mode)
+# pnpm dev --filter @rship/server
 ```
 
 ## Project Structure
 
 ```
 /apps/
-├── server/     # Bun server
+├── server_rs/  # Primary Rust server
+├── server/     # Legacy Bun/TypeScript server
 ├── ui/         # Svelte 5 + SvelteKit
+├── asset_store/# Asset Store service
 ├── execs/      # 15+ executor implementations
 └── linkd/      # Link daemon
 
 /libs/
 ├── myko/       # Event sourcing framework
-├── entities/   # Domain entities & handlers
+├── entities/   # Domain entities (Rust) + generated bindings
 ├── sdk/        # Multi-language executor SDK
 └── ...
 ```
@@ -51,8 +63,9 @@ pnpm dev --filter @rship/ui
 | `KAFKA_BROKERS` | Kafka broker addresses |
 | `MYKO_HOST_ADDRESS` | Server host |
 | `MYKO_PORT` | Server port (default: 5155) |
-| `RSHIP_CLUSTER_SECRET` | Cluster auth secret |
-| `AUTH_0_DOMAIN` | Auth0 domain |
+
+Legacy Bun/TypeScript server (`apps/server`) uses additional environment variables (for example `RSHIP_CLUSTER_SECRET`,
+`AUTH_0_DOMAIN`, and `RSHIP_LOCAL_ONLY`). See `docs/DEVELOPMENT.md` and `apps/server` for details.
 
 ## License
 
