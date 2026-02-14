@@ -216,8 +216,9 @@ impl AutoReconnectSocket {
                     debug!("Connection teardown requested");
                 }
                 _ = async {
+                    let mut attempt: u64 = 0;
                     loop {
-                        info!("Connecting to {addr}");
+                        attempt = attempt.saturating_add(1);
 
                         // Parse URL with fallback to ws:// scheme
                         let url = match Self::parse_websocket_url(&addr) {
@@ -231,12 +232,18 @@ impl AutoReconnectSocket {
                         let ws_stream = match connect_async(&url).await {
                             Ok((ws_stream, _)) => ws_stream,
                             Err(e) => {
-                                warn!("Failed to connect to {}: {}", url, e);
+                                // Many environments default to showing only errors. If a service is down,
+                                // make retry behavior unmistakable.
+                                error!(
+                                    "Failed to connect to {} (attempt {}): {}. Retrying in 1s...",
+                                    url, attempt, e
+                                );
                                 tokio::time::sleep(Duration::from_secs(1)).await;
                                 continue;
                             }
                         };
 
+                        attempt = 0;
                         info!("Autoreconnect socket Connected to {url}");
 
                         let (write, read) = ws_stream.split();
