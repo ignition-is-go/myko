@@ -12,7 +12,6 @@ members = [
   "libs/myko/rs",
   "libs/myko/macros",
   "libs/link/core",
-  "libs/link/rpc/rs",
   "libs/entities/foundation",
   "libs/entities/core",
   "libs/entities/tags",
