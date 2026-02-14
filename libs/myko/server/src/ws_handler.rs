@@ -28,6 +28,59 @@ use uuid::Uuid;
 /// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.
 const SWITCH_TO_MSGPACK: &str = "myko:switch-to-msgpack";
 
+/// Per-connection drop tracking to avoid log storms when clients fall behind.
+///
+/// When the outbound channel is full, we will drop messages (same as today),
+/// but we must not `warn!` for every drop or we can effectively DoS ourselves.
+struct DropLogger {
+    client_id: Arc<str>,
+    dropped: std::sync::atomic::AtomicU64,
+    last_log_ms: std::sync::atomic::AtomicU64,
+}
+
+impl DropLogger {
+    fn new(client_id: Arc<str>) -> Self {
+        Self {
+            client_id,
+            dropped: std::sync::atomic::AtomicU64::new(0),
+            last_log_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn on_drop(&self, kind: &'static str, err: &dyn std::fmt::Display) {
+        use std::sync::atomic::Ordering;
+
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+
+        // Log at most once per second per connection.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last_ms = self.last_log_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last_ms) < 1000 {
+            return;
+        }
+
+        if self
+            .last_log_ms
+            .compare_exchange(last_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let n = self.dropped.swap(0, Ordering::Relaxed);
+        log::warn!(
+            "WebSocket send buffer full; dropped {} message(s) for client {} (latest: {}): {}",
+            n,
+            self.client_id,
+            kind,
+            err
+        );
+    }
+}
+
 /// WebSocket handler for a single client connection.
 pub struct WsHandler;
 
@@ -50,10 +103,17 @@ impl WsHandler {
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
-        let writer = ChannelWriter { tx: tx.clone() };
+        let drop_logger = Arc::new(DropLogger::new(client_id.clone()));
+        let writer = ChannelWriter {
+            tx: tx.clone(),
+            drop_logger: drop_logger.clone(),
+        };
 
         // Register writer in the global client registry (if initialized)
-        let writer_arc: Arc<dyn WsWriter> = Arc::new(ChannelWriter { tx: tx.clone() });
+        let writer_arc: Arc<dyn WsWriter> = Arc::new(ChannelWriter {
+            tx: tx.clone(),
+            drop_logger: drop_logger.clone(),
+        });
         if let Some(registry) = try_client_registry() {
             registry.register(client_id.clone(), writer_arc);
         }
@@ -130,7 +190,13 @@ impl WsHandler {
 
                     match rmp_serde::from_slice::<MykoMessage>(&data) {
                         Ok(myko_msg) => {
-                            if let Err(e) = Self::handle_message(&mut session, ctx, &tx, myko_msg) {
+                            if let Err(e) = Self::handle_message(
+                                &mut session,
+                                ctx,
+                                &tx,
+                                drop_logger.as_ref(),
+                                myko_msg,
+                            ) {
                                 log::error!("Error handling message: {}", e);
                             }
                         }
@@ -150,10 +216,7 @@ impl WsHandler {
                         if let Err(e) = tx.try_send(MykoMessage::ProtocolSwitch {
                             protocol: "msgpack".into(),
                         }) {
-                            log::warn!(
-                                "WebSocket send buffer full, dropping ProtocolSwitch: {}",
-                                e
-                            );
+                            drop_logger.on_drop("ProtocolSwitch", &e);
                         }
                         // Then switch to binary for subsequent messages
                         use_binary.store(true, Ordering::SeqCst);
@@ -162,7 +225,13 @@ impl WsHandler {
 
                     match serde_json::from_str::<MykoMessage>(&text) {
                         Ok(myko_msg) => {
-                            if let Err(e) = Self::handle_message(&mut session, ctx, &tx, myko_msg) {
+                            if let Err(e) = Self::handle_message(
+                                &mut session,
+                                ctx,
+                                &tx,
+                                drop_logger.as_ref(),
+                                myko_msg,
+                            ) {
                                 log::error!("Error handling message: {}", e);
                             }
                         }
@@ -220,6 +289,7 @@ impl WsHandler {
         session: &mut ClientSession<W>,
         ctx: Arc<CellServerCtx>,
         tx: &mpsc::Sender<MykoMessage>,
+        drop_logger: &DropLogger,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let handler_registry = ctx.handler_registry.clone();
@@ -462,10 +532,7 @@ impl WsHandler {
                                     tx: tx_id.to_string(),
                                 });
                                 if let Err(e) = tx.try_send(response) {
-                                    log::warn!(
-                                        "WebSocket send buffer full, dropping CommandResponse: {}",
-                                        e
-                                    );
+                                    drop_logger.on_drop("CommandResponse", &e);
                                 }
                             }
                             Err(e) => {
@@ -475,10 +542,7 @@ impl WsHandler {
                                     message: e.message,
                                 });
                                 if let Err(e) = tx.try_send(error) {
-                                    log::warn!(
-                                        "WebSocket send buffer full, dropping CommandError: {}",
-                                        e
-                                    );
+                                    drop_logger.on_drop("CommandError", &e);
                                 }
                             }
                         }
@@ -494,7 +558,7 @@ impl WsHandler {
                         message: format!("Command handler not found: {}", command_id),
                     });
                     if let Err(e) = tx.try_send(error) {
-                        log::warn!("WebSocket send buffer full, dropping CommandError: {}", e);
+                        drop_logger.on_drop("CommandError", &e);
                     }
                 }
             }
@@ -503,7 +567,7 @@ impl WsHandler {
                 // Echo back the ping data
                 let pong = MykoMessage::Ping(PingData { id, timestamp });
                 if let Err(e) = tx.try_send(pong) {
-                    log::warn!("WebSocket send buffer full, dropping Ping response: {}", e);
+                    drop_logger.on_drop("Ping", &e);
                 }
             }
 
@@ -529,13 +593,14 @@ impl WsHandler {
 /// forwarded to the actual WebSocket.
 struct ChannelWriter {
     tx: mpsc::Sender<MykoMessage>,
+    drop_logger: Arc<DropLogger>,
 }
 
 impl WsWriter for ChannelWriter {
     fn send(&self, msg: MykoMessage) {
         // Use try_send since we're in sync context
         if let Err(e) = self.tx.try_send(msg) {
-            log::warn!("WebSocket send buffer full, dropping message: {}", e);
+            self.drop_logger.on_drop("message", &e);
         }
     }
 }
@@ -547,7 +612,8 @@ mod tests {
     #[test]
     fn test_channel_writer() {
         let (tx, mut rx) = mpsc::channel(10);
-        let writer = ChannelWriter { tx };
+        let drop_logger = Arc::new(DropLogger::new("test-client".into()));
+        let writer = ChannelWriter { tx, drop_logger };
 
         let msg = MykoMessage::Ping(PingData {
             id: "test".to_string(),
