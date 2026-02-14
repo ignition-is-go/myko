@@ -17,7 +17,7 @@ import {
   type WrappedQuery,
   type WrappedReport,
 } from '@myko/rs'
-import { pack, unpack } from 'msgpackr'
+import { Packr, Unpackr } from 'msgpackr'
 import {
   bufferCount,
   bufferTime,
@@ -39,6 +39,12 @@ import {
   switchMap,
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
+
+// msgpackr defaults can emit extension types for values that don't exist in JSON (notably
+// `undefined`). Our Rust server deserializes msgpack into `serde_json::Value`, so ensure we
+// encode `undefined` as nil/null instead of an extension.
+const packr = new Packr({ encodeUndefinedAsNil: true })
+const unpackr = new Unpackr({})
 
 /** Union type for error event names */
 export type MykoErrorEvent =
@@ -191,8 +197,8 @@ export class MykoClient {
   private peerDiscoverySubscription: Subscription | null = null
   private useSecureWebSocket = false
 
-  // Protocol - default to MSGPACK for better performance, server auto-detects.
-  private protocol: MykoProtocol = MykoProtocol.MSGPACK
+  // Protocol defaults to JSON for maximum compatibility (no msgpack extensions, bigint issues, etc).
+  private protocol: MykoProtocol = MykoProtocol.JSON
 
   constructor() {
     this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
@@ -358,11 +364,16 @@ export class MykoClient {
   /** Measure round-trip latency */
   async ping(): Promise<number> {
     const id = uuid()
-    const timestamp = BigInt(Date.now())
+    const nowMs = Date.now()
+    // IMPORTANT: the Rust server expects `timestamp: i64`.
+    // - JSON cannot encode bigint, so use number in JSON mode.
+    // - msgpack can encode bigint as int64, so use bigint in MSGPACK mode.
+    const timestamp =
+      this.protocol === MykoProtocol.MSGPACK ? BigInt(nowMs) : nowMs
 
     this.send({
       event: MykoEvent.Ping,
-      data: { id, timestamp } satisfies PingData,
+      data: { id, timestamp } as unknown as PingData,
     } as MykoMessage)
 
     return firstValueFrom(
@@ -710,11 +721,11 @@ export class MykoClient {
         message = JSON.parse(data) as MykoMessage
       } else if (data instanceof ArrayBuffer) {
         // Binary msgpack message
-        message = unpack(new Uint8Array(data)) as MykoMessage
+        message = unpackr.unpack(new Uint8Array(data)) as MykoMessage
       } else if (data instanceof Blob) {
         // Handle Blob asynchronously - convert to ArrayBuffer first
         data.arrayBuffer().then((buffer) => {
-          const decoded = unpack(new Uint8Array(buffer)) as MykoMessage
+          const decoded = unpackr.unpack(new Uint8Array(buffer)) as MykoMessage
           this.routeMessage(decoded)
         })
         return
@@ -763,7 +774,7 @@ export class MykoClient {
       if (managed?.ws.readyState === WebSocket.OPEN) {
         const encoded =
           this.protocol === MykoProtocol.MSGPACK
-            ? pack(message)
+            ? packr.pack(message)
             : JSON.stringify(message)
         managed.ws.send(encoded)
         this.upMsgCounter.next()
