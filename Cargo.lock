@@ -11025,6 +11025,7 @@ dependencies = [
  "dotenv",
  "env_logger",
  "log",
+ "myko-rs",
  "myko-server",
  "pulse-platform",
  "rship-entities",

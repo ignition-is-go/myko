@@ -16,6 +16,7 @@ pub mod ws_handler;
 
 // Re-export all tokio-free server types from myko-rs
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{
         Arc, RwLock,
@@ -30,7 +31,7 @@ use myko_rs::{search::SearchIndex, store::StoreRegistry};
 use uuid::Uuid;
 
 /// Cell-based Myko server configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CellServerConfig {
     /// Address to bind the WebSocket server
     pub bind_addr: SocketAddr,
@@ -40,6 +41,10 @@ pub struct CellServerConfig {
     pub host_id: Option<Uuid>,
     /// Optional peer registry configuration for federation
     pub peer_registry: Option<peer_registry::PeerRegistryConfig>,
+    /// Default persister override (falls back to Kafka producer when unset and Kafka is enabled)
+    pub default_persister: Option<Arc<dyn Persister>>,
+    /// Per-entity persister overrides keyed by entity type name
+    pub persister_overrides: HashMap<String, Arc<dyn Persister>>,
 }
 
 /// Builder for creating a CellServer.
@@ -49,6 +54,8 @@ pub struct CellServerBuilder {
     host_id: Option<Uuid>,
     kafka: Option<KafkaConfig>,
     peer_registry: Option<peer_registry::PeerRegistryConfig>,
+    default_persister: Option<Arc<dyn Persister>>,
+    persister_overrides: HashMap<String, Arc<dyn Persister>>,
     after_init: Option<AfterInitCallback>,
 }
 
@@ -84,6 +91,23 @@ impl CellServerBuilder {
         self
     }
 
+    /// Set the default persister used for all entity types without explicit overrides.
+    pub fn with_default_persister(mut self, persister: Arc<dyn Persister>) -> Self {
+        self.default_persister = Some(persister);
+        self
+    }
+
+    /// Override persister for a specific entity type (e.g. "Pulse").
+    pub fn with_persister_override(
+        mut self,
+        entity_type: impl Into<String>,
+        persister: Arc<dyn Persister>,
+    ) -> Self {
+        self.persister_overrides
+            .insert(entity_type.into(), persister);
+        self
+    }
+
     /// Register a callback to run after Kafka catch-up and relation establishment,
     /// but before the WebSocket accept loop starts. Use this for starting subsystems
     /// that need entity data (e.g., scene engine).
@@ -103,6 +127,8 @@ impl CellServerBuilder {
             kafka: self.kafka,
             host_id: self.host_id,
             peer_registry: self.peer_registry,
+            default_persister: self.default_persister,
+            persister_overrides: self.persister_overrides,
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server
@@ -123,6 +149,8 @@ pub struct CellServer {
     pub kafka_producer: Option<KafkaProducerHandle>,
     /// Full-text search index
     pub search_index: Arc<SearchIndex>,
+    /// Persister routing (default + per-entity overrides)
+    pub persisters: Arc<PersisterRouter>,
     /// Server host ID
     pub host_id: Uuid,
     /// Server configuration
@@ -196,6 +224,21 @@ impl CellServer {
         // Initialize full-text search index
         let search_index = Arc::new(SearchIndex::new());
 
+        // Build persister routing:
+        // - explicit default from config if provided
+        // - otherwise Kafka producer handle when available
+        // - explicit per-entity overrides always win
+        let mut persister_router = PersisterRouter::default();
+        if let Some(default_persister) = config.default_persister.clone() {
+            persister_router.set_default(Some(default_persister));
+        } else if let Some(handle) = kafka_producer.clone() {
+            persister_router.set_default(Some(Arc::new(handle) as Arc<dyn Persister>));
+        }
+        for (entity_type, persister) in &config.persister_overrides {
+            persister_router.set_override(entity_type.clone(), persister.clone());
+        }
+        let persisters = Arc::new(persister_router);
+
         // Start the hypha cell inspector server
         #[cfg(feature = "inspector")]
         let inspector = hypha::server::start_server("myko");
@@ -208,6 +251,7 @@ impl CellServer {
             relationship_manager,
             kafka_producer,
             search_index,
+            persisters,
             host_id,
             config,
             _kafka_producer_owner: kafka_producer_owner,
@@ -248,14 +292,12 @@ impl CellServer {
 
     /// Get a server context for module use.
     pub fn ctx(&self) -> CellServerCtx {
-        let persister: Option<Arc<dyn Persister>> =
-            self.kafka_producer.clone().map(|p| Arc::new(p) as _);
         CellServerCtx::new(
             self.host_id,
             self.registry.clone(),
             self.handler_registry.clone(),
             self.relationship_manager.clone(),
-            persister,
+            self.persisters.clone(),
             self.search_index.clone(),
         )
     }
@@ -283,7 +325,14 @@ impl CellServer {
     pub fn register_all_kafka_topics(&self) {
         if let Some(ref consumer) = self.kafka_consumer {
             for entity_type in self.handler_registry.entity_types() {
-                consumer.register_topic(entity_type);
+                if self.persisters.should_register_kafka_topic(entity_type) {
+                    consumer.register_topic(entity_type);
+                } else {
+                    log::trace!(
+                        "Skipping Kafka topic registration for {} (non-durable persister)",
+                        entity_type
+                    );
+                }
             }
         }
     }
@@ -435,6 +484,8 @@ mod tests {
             kafka: None,
             host_id: None,
             peer_registry: None,
+            default_persister: None,
+            persister_overrides: HashMap::new(),
         };
         let server = CellServer::new(config);
         assert!(Arc::strong_count(&server.registry) >= 1);
@@ -448,6 +499,8 @@ mod tests {
             kafka: None,
             host_id: Some(host_id),
             peer_registry: None,
+            default_persister: None,
+            persister_overrides: HashMap::new(),
         };
         let server = CellServer::new(config);
         assert_eq!(server.host_id, host_id);

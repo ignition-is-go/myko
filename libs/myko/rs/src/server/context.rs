@@ -11,7 +11,7 @@ use hypha::{Cell, CellImmutable, MapExt, SelectExt};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-use super::{HandlerRegistry, RelationshipManager, persister::Persister};
+use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     core::item::{AnyItem, Eventable},
     query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx},
@@ -38,8 +38,8 @@ pub struct CellServerCtx {
     pub handler_registry: Arc<HandlerRegistry>,
     /// Relationship manager - handles cascades
     relationship_manager: Arc<RelationshipManager>,
-    /// Optional persister for event durability
-    persister: Option<Arc<dyn Persister>>,
+    /// Persister routing (default + per-entity overrides)
+    persisters: Arc<PersisterRouter>,
     /// Full-text search index
     search_index: Arc<SearchIndex>,
 }
@@ -51,7 +51,7 @@ impl CellServerCtx {
         registry: Arc<StoreRegistry>,
         handler_registry: Arc<HandlerRegistry>,
         relationship_manager: Arc<RelationshipManager>,
-        persister: Option<Arc<dyn Persister>>,
+        persisters: Arc<PersisterRouter>,
         search_index: Arc<SearchIndex>,
     ) -> Self {
         Self {
@@ -59,7 +59,7 @@ impl CellServerCtx {
             registry,
             handler_registry,
             relationship_manager,
-            persister,
+            persisters,
             search_index,
         }
     }
@@ -244,21 +244,21 @@ impl CellServerCtx {
     // ─────────────────────────────────────────────────────────────────────────
 
     fn produce_set<T: Eventable>(&self, entity: &T) {
-        if let Some(ref persister) = self.persister {
+        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
             let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
             persister.persist(event);
         }
     }
 
     fn produce_del(&self, entity_type: &str, id: &str) {
-        if let Some(ref persister) = self.persister {
+        if let Some(persister) = self.persisters.resolve(entity_type) {
             let event = MEvent::del(entity_type, id, &self.host_id.to_string());
             persister.persist(event);
         }
     }
 
     fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) {
-        if let Some(ref persister) = self.persister {
+        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
             let event = MEvent::set_from_value(
                 item.entity_type(),
                 item.to_value(),

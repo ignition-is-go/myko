@@ -24,6 +24,6 @@ pub use client_registry::{client_registry, init_client_registry, try_client_regi
 pub use client_session::{ClientSession, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
-pub use persister::{NullPersister, Persister};
+pub use persister::{BlackholePersister, NullPersister, Persister, PersisterRouter};
 pub use protocol::{message_to_json, message_to_msgpack};
 pub use relationship_manager::RelationshipManager;
