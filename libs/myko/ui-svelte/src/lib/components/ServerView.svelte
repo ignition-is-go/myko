@@ -24,12 +24,16 @@
 			? (interval(500).pipe(switchMap(() => client.ping().catch((e) => false))) as Observable<
 					number | false
 				>)
-			: client.watchReport(new PeerAlive(server.id))
+			: client.watchReport(new PeerAlive({ peerId: server.id }))
 	);
 
-	let ping = $derived(
-		$alive === undefined ? 'Connecting' : $alive === false ? 'Dead' : `${Math.round($alive)}ms`
-	);
+	let ping = $derived.by(() => {
+		const value = $alive;
+		if (value === undefined) return 'Connecting';
+		if (value === false) return 'Dead';
+		if (!Number.isFinite(value) || value < 0) return 'Unknown';
+		return `${Math.round(value)}ms`;
+	});
 
 	let started = $state(DateTime.fromISO(server.startedAt).toRelative());
 
@@ -41,7 +45,7 @@
 		clearInterval(startedInterbal);
 	});
 
-	const currentLogLevel = $derived(client.watchReport(new ServerLogLevel(server.id)));
+	const currentLogLevel = $derived(client.watchReport(new ServerLogLevel({ serverId: server.id })));
 </script>
 
 <div class="server flex gap-5">
