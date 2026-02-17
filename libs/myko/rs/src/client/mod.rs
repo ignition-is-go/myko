@@ -6,9 +6,12 @@ use std::{
     },
 };
 
-use autosocket::{CallbackGuard, SocketConnectionStatus, SocketTransport, WsFrame};
+pub use autosocket::SocketConnectionStatus as ConnectionStatus;
+use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, Watchable};
+use hypha::{
+    Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SubscriptionGuard, Watchable,
+};
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -18,9 +21,10 @@ use crate::{
     command::{CommandId, CommandRequest},
     common::with_id::WithId,
     core::item::Eventable,
+    entities::server::{GetPeerServers, Server},
     query::{QueryParams, QueryRequest},
     report::{ReportIdStatic, ReportParams, ReportRequest},
-    wire::{MEvent, MykoMessage, WrappedQuery, WrappedReport, wrap_command_request},
+    wire::{MEvent, MykoMessage, PingData, WrappedQuery, WrappedReport, wrap_command_request},
 };
 
 /// Wire protocol for encoding messages.
@@ -39,14 +43,6 @@ impl From<u8> for MykoProtocol {
             _ => MykoProtocol::MSGPACK,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
-#[serde(rename_all = "camelCase", tag = "type", content = "data")]
-pub enum ConnectionStatus {
-    Connected(String),
-    Disconnected,
 }
 
 /// Response handler for incoming command responses (one-shot).
@@ -116,10 +112,31 @@ pub struct MykoClient {
     inner: Arc<MykoClientInner>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MykoClientOptions {
+    pub auto_reconnect: bool,
+    pub peer_failover: bool,
+}
+
+impl Default for MykoClientOptions {
+    fn default() -> Self {
+        Self {
+            auto_reconnect: true,
+            peer_failover: false,
+        }
+    }
+}
+
 struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
     protocol: Arc<AtomicU8>,
     connection_status: Cell<ConnectionStatus, CellMutable>,
+    ping_ms: Cell<Option<u64>, CellMutable>,
+    peer_failover_enabled: bool,
+    known_servers: Mutex<Vec<String>>,
+    current_address: Mutex<Option<String>>,
+    _peer_failover_status_guard: Mutex<Option<SubscriptionGuard>>,
+    _peer_discovery_guard: Mutex<Option<SubscriptionGuard>>,
 
     // Dispatch maps keyed by tx
     query_handlers: DashMap<Arc<str>, QueryHandler>,
@@ -147,20 +164,52 @@ impl MykoClient {
     /// On native: uses `AutoReconnectSocket` (tokio-tungstenite).
     /// On WASM: uses `WasmSocket` (web-sys WebSocket).
     pub fn new() -> MykoClient {
+        Self::with_options(MykoClientOptions::default())
+    }
+
+    /// Create a client with peer failover enabled.
+    pub fn with_failover() -> MykoClient {
+        Self::with_options(MykoClientOptions {
+            auto_reconnect: true,
+            peer_failover: true,
+        })
+    }
+
+    /// Create a new MykoClient with configurable transport auto-reconnect behavior.
+    pub fn new_with_auto_reconnect(auto_reconnect: bool) -> MykoClient {
+        Self::with_options(MykoClientOptions {
+            auto_reconnect,
+            peer_failover: false,
+        })
+    }
+
+    /// Create a new MykoClient with explicit options.
+    pub fn with_options(options: MykoClientOptions) -> MykoClient {
         #[cfg(not(target_arch = "wasm32"))]
-        let socket: Arc<dyn SocketTransport> = Arc::new(autosocket::AutoReconnectSocket::new());
+        let socket: Arc<dyn SocketTransport> = Arc::new(
+            autosocket::AutoReconnectSocket::with_auto_reconnect(options.auto_reconnect),
+        );
 
         #[cfg(target_arch = "wasm32")]
-        let socket: Arc<dyn SocketTransport> = Arc::new(autosocket::WasmSocket::new());
+        let socket: Arc<dyn SocketTransport> = Arc::new(
+            autosocket::WasmSocket::with_auto_reconnect(options.auto_reconnect),
+        );
 
-        Self::with_transport(socket)
+        Self::with_transport_and_options(socket, options)
     }
 
     /// Create a MykoClient with a custom transport implementation.
     pub fn with_transport(transport: Arc<dyn SocketTransport>) -> MykoClient {
+        Self::with_transport_and_options(transport, MykoClientOptions::default())
+    }
+
+    fn with_transport_and_options(
+        transport: Arc<dyn SocketTransport>,
+        options: MykoClientOptions,
+    ) -> MykoClient {
         let protocol = Arc::new(AtomicU8::new(MykoProtocol::MSGPACK as u8));
-        let connection_status =
-            Cell::new(ConnectionStatus::Disconnected).with_name("connection_status");
+        let connection_status = Cell::new(ConnectionStatus::Idle).with_name("connection_status");
+        let ping_ms = Cell::new(None).with_name("ping_ms");
 
         let query_handlers: DashMap<Arc<str>, QueryHandler> = DashMap::new();
         let report_handlers: DashMap<Arc<str>, ReportHandler> = DashMap::new();
@@ -185,15 +234,12 @@ impl MykoClient {
                 let Some(inner) = weak_for_status.upgrade() else {
                     return;
                 };
-                let conn_status = match &status {
-                    SocketConnectionStatus::Connecting(_) => ConnectionStatus::Disconnected,
-                    SocketConnectionStatus::Connected(addr) => {
-                        ConnectionStatus::Connected(addr.clone())
-                    }
-                    SocketConnectionStatus::Disconnected => ConnectionStatus::Disconnected,
-                };
+                let conn_status = status.clone();
 
                 inner.connection_status.set(conn_status.clone());
+                if !matches!(conn_status, ConnectionStatus::Connected(_)) {
+                    inner.ping_ms.set(None);
+                }
 
                 // Flush pending sends on connect
                 if let ConnectionStatus::Connected(_) = conn_status {
@@ -208,6 +254,12 @@ impl MykoClient {
                 socket: transport.clone(),
                 protocol: protocol.clone(),
                 connection_status,
+                ping_ms,
+                peer_failover_enabled: options.peer_failover,
+                known_servers: Mutex::new(Vec::new()),
+                current_address: Mutex::new(None),
+                _peer_failover_status_guard: Mutex::new(None),
+                _peer_discovery_guard: Mutex::new(None),
                 query_handlers,
                 report_handlers,
                 command_response_handlers,
@@ -218,7 +270,117 @@ impl MykoClient {
             }
         });
 
-        MykoClient { inner }
+        let client = MykoClient { inner };
+
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::spawn_ping_loop(Arc::downgrade(&client.inner));
+
+        if client.inner.peer_failover_enabled {
+            client.setup_peer_failover();
+        }
+
+        client
+    }
+
+    fn setup_peer_failover(&self) {
+        let this = self.clone();
+        let status_guard = self.inner.connection_status.subscribe(move |signal| {
+            if let hypha::Signal::Value(status) = signal
+                && matches!(&**status, ConnectionStatus::Disconnected)
+            {
+                this.try_failover();
+            }
+        });
+        *self.inner._peer_failover_status_guard.lock().unwrap() = Some(status_guard);
+
+        let discovery = self.watch_query(GetPeerServers {});
+        let this = self.clone();
+        let discovery_guard = discovery.subscribe(move |signal| {
+            if let hypha::Signal::Value(servers) = signal {
+                this.update_known_servers_from_peers(servers.as_ref());
+            }
+        });
+        *self.inner._peer_discovery_guard.lock().unwrap() = Some(discovery_guard);
+    }
+
+    fn update_known_servers_from_peers(&self, peers: &[Server]) {
+        let current = self.inner.current_address.lock().unwrap().clone();
+        let use_wss = current
+            .as_ref()
+            .map(|a| a.starts_with("wss://"))
+            .unwrap_or(false);
+
+        let mut next = Vec::new();
+        if let Some(current) = current {
+            next.push(current);
+        }
+
+        for server in peers {
+            let addr = if use_wss {
+                format!("wss://{}:{}/myko", server.address, server.port)
+            } else {
+                format!("ws://{}:{}/myko", server.address, server.port)
+            };
+            if !next.iter().any(|x| x == &addr) {
+                next.push(addr);
+            }
+        }
+
+        *self.inner.known_servers.lock().unwrap() = next;
+    }
+
+    fn try_failover(&self) {
+        if !self.inner.peer_failover_enabled {
+            return;
+        }
+
+        let current = self.inner.current_address.lock().unwrap().clone();
+        let servers = self.inner.known_servers.lock().unwrap().clone();
+        if servers.is_empty() {
+            return;
+        }
+
+        let start_idx = current
+            .as_ref()
+            .and_then(|c| servers.iter().position(|s| s == c))
+            .unwrap_or(0);
+
+        for offset in 1..=servers.len() {
+            let idx = (start_idx + offset) % servers.len();
+            let candidate = servers[idx].clone();
+            if current.as_ref() == Some(&candidate) {
+                continue;
+            }
+            info!("MykoClient failover attempting {}", candidate);
+            self.set_address(Some(candidate));
+            return;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_ping_loop(inner: std::sync::Weak<MykoClientInner>) {
+        std::thread::spawn(move || {
+            loop {
+                let Some(inner) = inner.upgrade() else {
+                    break;
+                };
+
+                if matches!(
+                    inner.connection_status.get(),
+                    ConnectionStatus::Connected(_)
+                ) {
+                    let msg = MykoMessage::Ping(PingData {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    });
+                    if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
+                        let _ = inner.socket.send(frame);
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
     }
 
     /// Handle an incoming WebSocket frame by dispatching to registered handlers.
@@ -280,6 +442,11 @@ impl MykoClient {
                     handler(wrapped.command, responder);
                 }
             }
+            MykoMessage::Ping(PingData { timestamp, .. }) => {
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let ping_ms = now_ms.saturating_sub(timestamp) as u64;
+                inner.ping_ms.set(Some(ping_ms));
+            }
             _ => {}
         }
     }
@@ -334,10 +501,21 @@ impl MykoClient {
         self.inner.connection_status.get()
     }
 
+    /// Get a reactive cell of live ping in milliseconds (None when unavailable).
+    pub fn ping_ms(&self) -> &Cell<Option<u64>, CellMutable> {
+        &self.inner.ping_ms
+    }
+
+    /// Get the current ping synchronously.
+    pub fn get_ping_ms_sync(&self) -> Option<u64> {
+        self.inner.ping_ms.get()
+    }
+
     pub fn set_address(&self, addr: Option<String>) {
         if addr.is_none() {
             debug!("Setting address to None, disconnecting socket");
             self.inner.socket.set_addr(None);
+            *self.inner.current_address.lock().unwrap() = None;
             return;
         }
 
@@ -367,7 +545,16 @@ impl MykoClient {
         }
 
         info!("MykoClient connecting to {}", parsed);
-        self.inner.socket.set_addr(Some(parsed.to_string()));
+        let parsed_addr = parsed.to_string();
+        self.inner.socket.set_addr(Some(parsed_addr.clone()));
+        *self.inner.current_address.lock().unwrap() = Some(parsed_addr.clone());
+        if self.inner.peer_failover_enabled {
+            let mut servers = self.inner.known_servers.lock().unwrap();
+            if let Some(pos) = servers.iter().position(|s| s == &parsed_addr) {
+                servers.remove(pos);
+            }
+            servers.insert(0, parsed_addr);
+        }
     }
 
     /// Disconnect the client and stop any reconnection attempts.
@@ -520,7 +707,7 @@ impl MykoClient {
                         Ok(_) => debug!("Watching query {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     },
-                    ConnectionStatus::Disconnected => {
+                    _ => {
                         warn!("Query {send_query_id} Disconnected");
                     }
                 }

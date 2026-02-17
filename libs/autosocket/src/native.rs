@@ -28,6 +28,8 @@ pub struct AutoReconnectSocket {
     outgoing: broadcast::Sender<WsFrame>,
     /// Token to cancel the current connection/reconnection loop
     teardown: Arc<std::sync::Mutex<Option<CancellationToken>>>,
+    /// Whether to automatically reconnect after failures/disconnects
+    auto_reconnect: bool,
 }
 
 impl Default for AutoReconnectSocket {
@@ -111,12 +113,17 @@ impl SocketTransport for AutoReconnectSocket {
 
 impl AutoReconnectSocket {
     pub fn new() -> Self {
+        Self::with_auto_reconnect(true)
+    }
+
+    pub fn with_auto_reconnect(auto_reconnect: bool) -> Self {
         Self {
-            status: Arc::new(RwLock::new(SocketConnectionStatus::Disconnected)),
+            status: Arc::new(RwLock::new(SocketConnectionStatus::Idle)),
             message_callbacks: Arc::new(DashMap::new()),
             status_callbacks: Arc::new(DashMap::new()),
             outgoing: broadcast::channel(1000).0,
             teardown: Arc::new(std::sync::Mutex::new(None)),
+            auto_reconnect,
         }
     }
 
@@ -145,7 +152,8 @@ impl AutoReconnectSocket {
 
         // Cancel existing connection/reconnection loop
         if let SocketConnectionStatus::Connected(ref current_addr)
-        | SocketConnectionStatus::Connecting(ref current_addr) = current_status
+        | SocketConnectionStatus::Connecting(ref current_addr)
+        | SocketConnectionStatus::Reconnecting(ref current_addr) = current_status
             && Some(current_addr.clone()) == addr
         {
             info!("Already connected to {current_addr}");
@@ -165,7 +173,11 @@ impl AutoReconnectSocket {
         Self::set_status(
             &self.status,
             &self.status_callbacks,
-            SocketConnectionStatus::Disconnected,
+            if addr.is_some() {
+                SocketConnectionStatus::Disconnected
+            } else {
+                SocketConnectionStatus::Idle
+            },
         );
 
         // Start new connection if address provided
@@ -190,7 +202,7 @@ impl AutoReconnectSocket {
         Self::set_status(
             &self.status,
             &self.status_callbacks,
-            SocketConnectionStatus::Disconnected,
+            SocketConnectionStatus::Idle,
         );
     }
 
@@ -209,6 +221,7 @@ impl AutoReconnectSocket {
         let status = self.status.clone();
         let status_callbacks = self.status_callbacks.clone();
         let teardown_clone = teardown.clone();
+        let auto_reconnect = self.auto_reconnect;
 
         tokio::spawn(async move {
             tokio::select! {
@@ -219,11 +232,28 @@ impl AutoReconnectSocket {
                     let mut attempt: u64 = 0;
                     loop {
                         attempt = attempt.saturating_add(1);
+                        Self::set_status(
+                            &status,
+                            &status_callbacks,
+                            if attempt == 1 {
+                                SocketConnectionStatus::Connecting(addr.clone())
+                            } else {
+                                SocketConnectionStatus::Reconnecting(addr.clone())
+                            },
+                        );
 
                         // Parse URL with fallback to ws:// scheme
                         let url = match Self::parse_websocket_url(&addr) {
                             Ok(url) => url,
                             Err(_) => {
+                                if !auto_reconnect {
+                                    Self::set_status(
+                                        &status,
+                                        &status_callbacks,
+                                        SocketConnectionStatus::Disconnected,
+                                    );
+                                    break;
+                                }
                                 tokio::time::sleep(Duration::from_secs(1)).await;
                                 continue;
                             }
@@ -232,6 +262,18 @@ impl AutoReconnectSocket {
                         let ws_stream = match connect_async(&url).await {
                             Ok((ws_stream, _)) => ws_stream,
                             Err(e) => {
+                                if !auto_reconnect {
+                                    error!(
+                                        "Failed to connect to {} (attempt {}): {}. Auto-reconnect disabled; giving up.",
+                                        url, attempt, e
+                                    );
+                                    Self::set_status(
+                                        &status,
+                                        &status_callbacks,
+                                        SocketConnectionStatus::Disconnected,
+                                    );
+                                    break;
+                                }
                                 // Many environments default to showing only errors. If a service is down,
                                 // make retry behavior unmistakable.
                                 error!(
@@ -274,6 +316,9 @@ impl AutoReconnectSocket {
                             &status_callbacks,
                             SocketConnectionStatus::Disconnected,
                         );
+                        if !auto_reconnect {
+                            break;
+                        }
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 } => {}

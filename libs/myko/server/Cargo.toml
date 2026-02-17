@@ -33,6 +33,7 @@ chrono.workspace = true
 log.workspace = true
 hypha.workspace = true
 inventory = "0.3.21"
+dashmap.workspace = true
 
 [features]
 default = []

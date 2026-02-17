@@ -82,6 +82,15 @@ impl McpServer {
                     ConnectionStatus::Connected(addr) => {
                         eprintln!("[myko-mcp] Connected to {}", addr);
                     }
+                    ConnectionStatus::Connecting(addr) => {
+                        eprintln!("[myko-mcp] Connecting to {}", addr);
+                    }
+                    ConnectionStatus::Reconnecting(addr) => {
+                        eprintln!("[myko-mcp] Reconnecting to {}", addr);
+                    }
+                    ConnectionStatus::Idle => {
+                        eprintln!("[myko-mcp] Idle");
+                    }
                     ConnectionStatus::Disconnected => {
                         eprintln!("[myko-mcp] Disconnected");
                     }
@@ -472,6 +481,9 @@ async fn execute_tool(
         return Ok(json!({
             "status": match &status {
                 ConnectionStatus::Connected(addr) => format!("Connected to {}", addr),
+                ConnectionStatus::Connecting(addr) => format!("Connecting to {}", addr),
+                ConnectionStatus::Reconnecting(addr) => format!("Reconnecting to {}", addr),
+                ConnectionStatus::Idle => "Idle".to_string(),
                 ConnectionStatus::Disconnected => "Disconnected".to_string(),
             }
         }));
@@ -598,7 +610,7 @@ async fn execute_command(
     arguments: Value,
 ) -> Result<Value, String> {
     let status = client.connection_status().get();
-    if let ConnectionStatus::Disconnected = &status {
+    if !matches!(status, ConnectionStatus::Connected(_)) {
         // Wait for connection with timeout
         let (tx_connected, rx_connected) = tokio::sync::oneshot::channel::<bool>();
         let tx_connected = std::sync::Mutex::new(Some(tx_connected));

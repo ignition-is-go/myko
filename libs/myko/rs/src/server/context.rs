@@ -7,12 +7,14 @@
 
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, MapExt, SelectExt};
+use dashmap::DashMap;
+use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SelectExt};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
+    client::{ConnectionStatus, MykoClient},
     core::item::{AnyItem, Eventable},
     query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx},
     report::{ReportContext, ReportHandler, ReportId},
@@ -42,6 +44,10 @@ pub struct CellServerCtx {
     persisters: Arc<PersisterRouter>,
     /// Full-text search index
     search_index: Arc<SearchIndex>,
+    /// Live peer clients by peer server id (populated by peer registry).
+    peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
+    /// Monotonic tick bumped on peer client register/unregister.
+    peer_clients_tick: Cell<u64, CellMutable>,
 }
 
 impl CellServerCtx {
@@ -53,6 +59,7 @@ impl CellServerCtx {
         relationship_manager: Arc<RelationshipManager>,
         persisters: Arc<PersisterRouter>,
         search_index: Arc<SearchIndex>,
+        peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
     ) -> Self {
         Self {
             host_id,
@@ -61,12 +68,47 @@ impl CellServerCtx {
             relationship_manager,
             persisters,
             search_index,
+            peer_clients,
+            peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
         }
     }
 
     /// Get the search index.
     pub fn search_index(&self) -> &Arc<SearchIndex> {
         &self.search_index
+    }
+
+    /// Register or replace a live peer client for a server id.
+    pub fn register_peer_client(&self, peer_id: Arc<str>, client: Arc<MykoClient>) {
+        self.peer_clients.insert(peer_id, client);
+        let next = self.peer_clients_tick.get().saturating_add(1);
+        self.peer_clients_tick.set(next);
+    }
+
+    /// Remove a live peer client for a server id.
+    pub fn unregister_peer_client(&self, peer_id: &str) {
+        if self.peer_clients.remove(peer_id).is_some() {
+            let next = self.peer_clients_tick.get().saturating_add(1);
+            self.peer_clients_tick.set(next);
+        }
+    }
+
+    /// Get a live peer client by server id, if present.
+    pub fn peer_client(&self, peer_id: &str) -> Option<Arc<MykoClient>> {
+        self.peer_clients
+            .get(peer_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Get a peer's current connection status if the client is present.
+    pub fn peer_connection_status(&self, peer_id: &str) -> Option<ConnectionStatus> {
+        self.peer_client(peer_id)
+            .map(|client| client.get_connection_status_sync())
+    }
+
+    /// Reactive tick that updates whenever peer client membership changes.
+    pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
+        self.peer_clients_tick.clone().lock()
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -237,6 +279,40 @@ impl CellServerCtx {
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
+    }
+
+    /// Delete an entity by type/id and publish DEL even if the item is not present locally.
+    ///
+    /// This is useful for explicit tombstoning of entities (e.g. disconnected peers)
+    /// where we must ensure a DEL event is produced to Kafka.
+    ///
+    /// Note: relationship cascades require the full item and are therefore skipped here.
+    pub fn del_by_id_with_options(
+        &self,
+        entity_type: &str,
+        id: &str,
+        options: Option<EventOptions>,
+    ) {
+        let options = options.unwrap_or_default();
+        let id_arc: Arc<str> = id.into();
+
+        // Reduce: remove from store
+        self.registry.get_or_create(entity_type).remove(&id_arc);
+
+        // Search: remove from index
+        self.search_index.remove_entity(id);
+
+        // Persist: produce to Kafka (unless prevented)
+        if !options.prevent_persist {
+            self.produce_del(entity_type, id);
+        }
+
+        log::trace!("Published DEL {}:{}", entity_type, id);
+    }
+
+    /// Delete an entity by type/id with default options.
+    pub fn del_by_id(&self, entity_type: &str, id: &str) {
+        self.del_by_id_with_options(entity_type, id, None);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -36,6 +36,7 @@ pub struct WasmSocket {
     inner: SendWrapper<Rc<RefCell<WasmSocketInner>>>,
     callbacks: SendWrapper<WasmCallbacks>,
     addr: SendWrapper<RefCell<Option<String>>>,
+    auto_reconnect: bool,
 }
 
 // SAFETY: WASM is single-threaded. SendWrapper ensures this is only accessed on the main thread.
@@ -44,6 +45,10 @@ unsafe impl Sync for WasmSocket {}
 
 impl WasmSocket {
     pub fn new() -> Self {
+        Self::with_auto_reconnect(true)
+    }
+
+    pub fn with_auto_reconnect(auto_reconnect: bool) -> Self {
         Self {
             inner: SendWrapper::new(Rc::new(RefCell::new(WasmSocketInner {
                 ws: None,
@@ -55,9 +60,10 @@ impl WasmSocket {
             callbacks: SendWrapper::new(WasmCallbacks {
                 message_callbacks: Rc::new(RefCell::new(Vec::new())),
                 status_callbacks: Rc::new(RefCell::new(Vec::new())),
-                status: Rc::new(RefCell::new(SocketConnectionStatus::Disconnected)),
+                status: Rc::new(RefCell::new(SocketConnectionStatus::Idle)),
             }),
             addr: SendWrapper::new(RefCell::new(None)),
+            auto_reconnect,
         }
     }
 
@@ -72,11 +78,16 @@ impl WasmSocket {
 
     fn connect(&self, addr: &str) {
         info!("WasmSocket: connecting to {addr}");
+        Self::set_status(
+            &self.callbacks,
+            SocketConnectionStatus::Connecting(addr.to_string()),
+        );
 
         let ws = match WebSocket::new(addr) {
             Ok(ws) => ws,
             Err(e) => {
                 error!("WasmSocket: failed to create WebSocket: {e:?}");
+                Self::set_status(&self.callbacks, SocketConnectionStatus::Disconnected);
                 return;
             }
         };
@@ -122,7 +133,13 @@ impl WasmSocket {
         let msg_cbs_close = self.callbacks.message_callbacks.clone();
         let inner_close = Rc::clone(&self.inner);
         let addr_close = addr.to_string();
+        let auto_reconnect = self.auto_reconnect;
         let on_close = Closure::wrap(Box::new(move |_: CloseEvent| {
+            if !auto_reconnect {
+                warn!("WasmSocket: WebSocket closed");
+                set_status_raw(&status, &status_cbs, SocketConnectionStatus::Disconnected);
+                return;
+            }
             warn!("WasmSocket: WebSocket closed, reconnecting in 1s");
             set_status_raw(&status, &status_cbs, SocketConnectionStatus::Disconnected);
 
@@ -135,7 +152,7 @@ impl WasmSocket {
             let window = web_sys::window().expect("no window");
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &Closure::once_into_js(move || {
-                    reconnect(&addr, &status, &status_cbs, &msg_cbs, inner);
+                    reconnect(&addr, &status, &status_cbs, &msg_cbs, inner, auto_reconnect);
                 })
                 .unchecked_into(),
                 1000,
@@ -168,7 +185,7 @@ impl WasmSocket {
         inner.ws = Some(ws);
     }
 
-    fn disconnect(&self) {
+    fn disconnect(&self, new_status: SocketConnectionStatus) {
         let mut inner = self.inner.borrow_mut();
         if let Some(ws) = inner.ws.take() {
             // Clear callbacks to prevent reconnect-on-close
@@ -182,14 +199,18 @@ impl WasmSocket {
         inner._on_error = None;
         inner._on_close = None;
         inner._on_open = None;
-        Self::set_status(&self.callbacks, SocketConnectionStatus::Disconnected);
+        Self::set_status(&self.callbacks, new_status);
     }
 }
 
 impl SocketTransport for WasmSocket {
     fn set_addr(&self, addr: Option<String>) {
         // Disconnect existing connection
-        self.disconnect();
+        self.disconnect(if addr.is_some() {
+            SocketConnectionStatus::Disconnected
+        } else {
+            SocketConnectionStatus::Idle
+        });
 
         *self.addr.borrow_mut() = addr.clone();
 
@@ -200,7 +221,7 @@ impl SocketTransport for WasmSocket {
 
     fn close(&self) {
         *self.addr.borrow_mut() = None;
-        self.disconnect();
+        self.disconnect(SocketConnectionStatus::Idle);
     }
 
     fn get_status(&self) -> SocketConnectionStatus {
@@ -262,8 +283,22 @@ fn reconnect(
     status_callbacks: &Rc<RefCell<Vec<(u64, StatusCallback)>>>,
     message_callbacks: &Rc<RefCell<Vec<(u64, MessageCallback)>>>,
     inner: Rc<RefCell<WasmSocketInner>>,
+    auto_reconnect: bool,
 ) {
+    if !auto_reconnect {
+        set_status_raw(
+            status,
+            status_callbacks,
+            SocketConnectionStatus::Disconnected,
+        );
+        return;
+    }
     info!("WasmSocket: reconnecting to {addr}");
+    set_status_raw(
+        status,
+        status_callbacks,
+        SocketConnectionStatus::Reconnecting(addr.to_string()),
+    );
 
     let ws = match WebSocket::new(addr) {
         Ok(ws) => ws,
@@ -277,7 +312,14 @@ fn reconnect(
             let window = web_sys::window().expect("no window");
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &Closure::once_into_js(move || {
-                    reconnect(&addr, &status, &status_callbacks, &message_callbacks, inner);
+                    reconnect(
+                        &addr,
+                        &status,
+                        &status_callbacks,
+                        &message_callbacks,
+                        inner,
+                        auto_reconnect,
+                    );
                 })
                 .unchecked_into(),
                 1000,
@@ -342,7 +384,7 @@ fn reconnect(
         let window = web_sys::window().expect("no window");
         let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
             &Closure::once_into_js(move || {
-                reconnect(&addr, &status, &status_cbs, &msg_cbs, inner);
+                reconnect(&addr, &status, &status_cbs, &msg_cbs, inner, auto_reconnect);
             })
             .unchecked_into(),
             1000,

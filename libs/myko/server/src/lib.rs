@@ -27,7 +27,7 @@ use std::{
 
 use kafka::{CellKafkaConsumer, CellKafkaProducer, KafkaConfig, KafkaProducerHandle};
 pub use myko_rs::server::*;
-use myko_rs::{search::SearchIndex, store::StoreRegistry};
+use myko_rs::{client::MykoClient, search::SearchIndex, store::StoreRegistry};
 use uuid::Uuid;
 
 /// Cell-based Myko server configuration.
@@ -163,6 +163,8 @@ pub struct CellServer {
     ready: Arc<AtomicBool>,
     /// Peer registry for federation (initialized after Kafka catch-up)
     peer_registry_instance: RwLock<Option<peer_registry::PeerRegistry>>,
+    /// Live peer clients shared with report context.
+    peer_clients: Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>,
     /// Callback to run after init (Kafka catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
     /// Hypha cell inspector server (kept alive for the lifetime of the server)
@@ -258,6 +260,7 @@ impl CellServer {
             kafka_consumer,
             ready,
             peer_registry_instance: RwLock::new(None),
+            peer_clients: Arc::new(dashmap::DashMap::new()),
             after_init: std::sync::Mutex::new(None),
             #[cfg(feature = "inspector")]
             _inspector: inspector,
@@ -299,6 +302,7 @@ impl CellServer {
             self.relationship_manager.clone(),
             self.persisters.clone(),
             self.search_index.clone(),
+            self.peer_clients.clone(),
         )
     }
 
@@ -392,6 +396,8 @@ impl CellServer {
 
     /// Run the server with full initialization.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::net::TcpListener;
+
         // Wait for Kafka catch-up if configured
         if self.kafka_consumer.is_some() {
             log::info!("Waiting for Kafka to catch up...");
@@ -413,6 +419,11 @@ impl CellServer {
         log::info!("Establishing relations...");
         self.establish_relations();
 
+        // Bind WebSocket listener first so peer publication only happens once
+        // the gateway is actually available.
+        let listener = TcpListener::bind(&self.config.bind_addr).await?;
+        log::info!("CellServer listening on {}", self.config.bind_addr);
+
         // Start peer registry if configured
         if self.config.peer_registry.is_some() {
             self.start_peer_registry(None);
@@ -429,7 +440,7 @@ impl CellServer {
         }
 
         log::info!("Server started");
-        self.run_ws_loop().await
+        self.run_ws_accept_loop(listener).await
     }
 
     /// Run just the WebSocket accept loop.
@@ -438,7 +449,13 @@ impl CellServer {
 
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         log::info!("CellServer listening on {}", self.config.bind_addr);
+        self.run_ws_accept_loop(listener).await
+    }
 
+    async fn run_ws_accept_loop(
+        &self,
+        listener: tokio::net::TcpListener,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ready = self.ready.clone();
 
         loop {

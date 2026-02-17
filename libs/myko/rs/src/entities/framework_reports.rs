@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable};
+use hypha::{Cell, CellImmutable, MapExt, SwitchMapExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -200,8 +200,8 @@ impl crate::command::CommandHandler for SetLogLevel {
     }
 }
 
-/// Report that checks if a peer server is alive and returns ping time in ms.
-/// Returns the ping time if alive, or a negative value if not reachable.
+/// Report that checks whether a peer server client is currently connected.
+/// Returns ping in milliseconds when available, otherwise `-1`.
 #[myko_macros::myko_report(i64)]
 pub struct PeerAlive {
     pub peer_id: Arc<str>,
@@ -210,10 +210,20 @@ pub struct PeerAlive {
 impl ReportHandler for PeerAlive {
     type Output = i64;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
-        // TODO(ts): Implement peer health check via PeerManager
-        // Return -1 to indicate not implemented/unreachable
-        Cell::new(-1i64).lock()
+    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+        let peer_id = self.peer_id.clone();
+        let report_ctx = ctx.clone();
+        ctx.peer_clients_tick().switch_map(move |_| {
+            let Some(peer_client) = report_ctx.peer_client(peer_id.as_ref()) else {
+                return Cell::new(-1).lock();
+            };
+
+            peer_client.ping_ms().map(|ping_ms| {
+                ping_ms
+                    .map(|ms| ms.min(i64::MAX as u64) as i64)
+                    .unwrap_or(-1)
+            })
+        })
     }
 }
 

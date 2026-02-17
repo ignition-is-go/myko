@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 log.workspace = true
 url.workspace = true
+serde.workspace = true
+ts-rs = { workspace = true, features = ["serde-json-impl"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dashmap.workspace = true

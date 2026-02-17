@@ -61,7 +61,12 @@ impl MykoClient {
                 let status = inner.get_connection_status().await;
                 match status {
                     myko_rs::client::ConnectionStatus::Connected(_) => Ok(ConnectionStatus::Connected),
-                    myko_rs::client::ConnectionStatus::Disconnected => Ok(ConnectionStatus::Disconnected),
+                    myko_rs::client::ConnectionStatus::Idle
+                    | myko_rs::client::ConnectionStatus::Connecting(_)
+                    | myko_rs::client::ConnectionStatus::Reconnecting(_)
+                    | myko_rs::client::ConnectionStatus::Disconnected => {
+                        Ok(ConnectionStatus::Disconnected)
+                    }
                 }
             })
         })

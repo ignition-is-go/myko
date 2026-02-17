@@ -14,10 +14,14 @@ pub use wasm::WasmSocket;
 // Shared types
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
 pub enum SocketConnectionStatus {
+    Idle,
     Disconnected,
     Connecting(String),
+    Reconnecting(String),
     Connected(String),
 }
 

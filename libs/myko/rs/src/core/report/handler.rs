@@ -5,6 +5,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
+use crate::client::{ConnectionStatus, MykoClient};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
     common::to_value::ToValue, query::QueryParams, report::ReportId, request::RequestContext,
@@ -118,6 +120,24 @@ impl ReportContext {
             let _ = report;
             unreachable!();
         }
+    }
+
+    /// Get the live peer client for a peer server id, if present.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn peer_client(&self, peer_id: &str) -> Option<Arc<MykoClient>> {
+        self.server_ctx.peer_client(peer_id)
+    }
+
+    /// Get the current connection status for a peer server id, if a peer client exists.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn peer_connection_status(&self, peer_id: &str) -> Option<ConnectionStatus> {
+        self.server_ctx.peer_connection_status(peer_id)
+    }
+
+    /// Reactive tick that updates when peer client membership changes.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
+        self.server_ctx.peer_clients_tick()
     }
 }
 
