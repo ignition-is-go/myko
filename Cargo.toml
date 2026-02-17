@@ -99,6 +99,8 @@ members = [
   "apps/execs/dante",
   "apps/execs/nmos",
   "apps/execs/network-discovery",
+  "apps/execs/test-pulse",
+  "apps/execs/test-pulse/ui",
   # Node Agent
   "apps/node-agent",
   # Tools
