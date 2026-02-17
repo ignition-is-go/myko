@@ -9,7 +9,11 @@ use crate::client::{ConnectionStatus, MykoClient};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
-    common::to_value::ToValue, query::QueryParams, report::ReportId, request::RequestContext,
+    common::{to_value::ToValue, with_id::WithId},
+    core::item::Eventable,
+    query::QueryParams,
+    report::ReportId,
+    request::RequestContext,
 };
 
 /// Context provided to report handlers for accessing dependencies.
@@ -69,7 +73,7 @@ impl ReportContext {
     pub fn query<Q>(&self, query: Q) -> Cell<Vec<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: DeserializeOwned + Clone + Send + Sync + 'static,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {

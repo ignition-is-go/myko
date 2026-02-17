@@ -8,9 +8,11 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::traits::{
-    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
+    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCellCtx,
 };
 use crate::common::with_transaction::WithTransaction;
+#[cfg(not(target_arch = "wasm32"))]
+use hypha::{Cell, CellImmutable};
 
 /// Wraps query parameters with transaction metadata.
 ///
@@ -113,11 +115,10 @@ impl<Q: QueryItemType> QueryItemType for QueryRequest<Q> {
     }
 }
 
-impl<Q: QueryHandler + Clone> QueryHandler for QueryRequest<Q> {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
-        // Delegate to inner query's test_entity
-        // We need to create a QueryHandlerCtx for the inner type
-        Q::test_entity(QueryTestCtx {
+impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequest<Q> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn test_entity(ctx: QueryTestCellCtx<Self>) -> Cell<bool, CellImmutable> {
+        Q::test_entity(QueryTestCellCtx {
             item: ctx.item,
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,

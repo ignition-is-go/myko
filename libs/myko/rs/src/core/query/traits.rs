@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hypha::CellImmutable;
+use hypha::{Cell, CellImmutable, MapExt};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -11,6 +11,8 @@ use super::{
     context::QueryContext,
     request::QueryRequest,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::query::QueryCellContext;
 use crate::{
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
@@ -46,13 +48,51 @@ pub trait QueryItemType {
 ///
 /// Any deduplication of changes to this query are handled upstream in the handler logic.
 pub trait QueryHandler: QueryItemType + Sized {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool;
+    /// Reactive per-entity membership predicate.
+    ///
+    /// For each entity item cell, return a reactive `Cell<bool>` indicating
+    /// whether the item should be included in the query result.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn test_entity(ctx: QueryTestCellCtx<Self>) -> Cell<bool, CellImmutable>
+    where
+        Self: Send + Sync + 'static;
 }
 
 pub struct QueryTestCtx<TQuery: QueryItemType> {
     pub item: Arc<TQuery::Item>,
     pub query: Arc<TQuery>,
     pub query_context: Arc<QueryContext>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct QueryTestCellCtx<TQuery: QueryItemType> {
+    pub item: Cell<Option<Arc<TQuery::Item>>, CellImmutable>,
+    pub query: Arc<TQuery>,
+    pub query_context: QueryCellContext,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<TQuery: QueryItemType> QueryTestCellCtx<TQuery>
+where
+    TQuery: Send + Sync + 'static,
+{
+    /// Bridge helper for legacy boolean predicates during migration.
+    pub fn map_bool<F>(self, predicate: F) -> Cell<bool, CellImmutable>
+    where
+        F: Fn(QueryTestCtx<TQuery>) -> bool + Send + Sync + 'static,
+    {
+        let query = self.query.clone();
+        let query_context = self.query_context.clone();
+        self.item.map(move |item_opt| {
+            item_opt.as_ref().is_some_and(|item| {
+                predicate(QueryTestCtx {
+                    item: item.clone(),
+                    query: query.clone(),
+                    query_context: query_context.query_context.clone(),
+                })
+            })
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -171,6 +211,7 @@ impl From<&dyn AnyQuery> for WrappedQuery {
             query: query.to_value(),
             query_id: query.query_id(),
             query_item_type: query.query_item_type(),
+            window: None,
         }
     }
 }

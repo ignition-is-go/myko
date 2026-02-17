@@ -9,10 +9,17 @@ mod request;
 mod traits;
 
 // Re-export all public types
+#[cfg(not(target_arch = "wasm32"))]
+pub use context::QueryCellContext;
 pub use context::QueryContext;
 #[cfg(not(target_arch = "wasm32"))]
-pub use registration::{QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration};
+pub use registration::{
+    QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration, QueryRuntimeMetrics,
+    QueryRuntimePerIdMetrics, query_runtime_metrics, query_runtime_metrics_by_id,
+};
 pub use request::QueryRequest;
+#[cfg(not(target_arch = "wasm32"))]
+pub use traits::QueryTestCellCtx;
 pub use traits::{
     AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
 };

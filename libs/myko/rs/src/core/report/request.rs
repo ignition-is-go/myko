@@ -43,6 +43,12 @@ impl<R> ReportRequest<R> {
             report,
         }
     }
+
+    /// Create a new report request with a specific tx.
+    /// Used when composing reports from within another reactive context.
+    pub fn with_tx(report: R, tx: Arc<str>) -> Self {
+        Self { tx, report }
+    }
 }
 
 impl<R: Default> Default for ReportRequest<R> {

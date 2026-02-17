@@ -18,10 +18,16 @@ use crate::{common::to_value::ToValue, request::RequestContext, server::CellServ
 
 /// Type-erased report output trait.
 /// Report outputs implement this to enable serialization at the WebSocket layer.
-pub trait AnyOutput: ToValue + std::fmt::Debug + Send + Sync + 'static {}
+pub trait AnyOutput: ToValue + std::fmt::Debug + Send + Sync + 'static {
+    fn as_any(&self) -> &dyn Any;
+}
 
 /// Blanket implementation for any type that satisfies the bounds.
-impl<T: ToValue + std::fmt::Debug + Send + Sync + 'static> AnyOutput for T {}
+impl<T: ToValue + std::fmt::Debug + Send + Sync + 'static> AnyOutput for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Type aliases for function pointers
