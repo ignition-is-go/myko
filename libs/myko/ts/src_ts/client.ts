@@ -154,6 +154,8 @@ type CommandIncomingMessage = Extract<
 interface ManagedSocket {
   ws: WebSocket
   address: string
+  endpointKey: string
+  reconnectOnClose: boolean
 }
 
 /**
@@ -163,6 +165,9 @@ export class MykoClient {
   // Socket management
   private sockets = new Map<string, ManagedSocket>()
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private endpointSockets = new Map<string, string>()
+  // Main server: the socket used for outbound sends.
+  // Other open sockets are warm standbys for failover.
   private currentServer: string | null = null
   private shouldReconnect = true
 
@@ -193,7 +198,7 @@ export class MykoClient {
 
   // Auth & peer discovery
   private userToken: string | null = null
-  private peerDiscoveryEnabled = false
+  private peerDiscoveryEnabled = true
   private peerDiscoverySubscription: Subscription | null = null
   private useSecureWebSocket = false
 
@@ -201,8 +206,8 @@ export class MykoClient {
   private protocol: MykoProtocol = MykoProtocol.JSON
 
   constructor() {
-    this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
-    this.currentServerSubject.next(null)
+    this.setConnectionStatus(ConnectionStatus.Disconnected, 'init')
+    this.setCurrentServer(null, 'init')
   }
 
   /** Set the wire protocol (JSON or MSGPACK). Default is MSGPACK. */
@@ -219,7 +224,8 @@ export class MykoClient {
     this.shouldReconnect = true // Re-enable autoreconnect when setting new address
     this.closeAllSockets()
     if (address) {
-      this.createSocket(address)
+      this.useSecureWebSocket = address.startsWith('wss://')
+      this.createSocket(address, true)
     }
   }
 
@@ -228,16 +234,16 @@ export class MykoClient {
     this.shouldReconnect = true // Re-enable autoreconnect when setting new addresses
     this.closeAllSockets()
     for (const addr of addresses) {
-      this.createSocket(addr)
+      this.createSocket(addr, true)
     }
   }
 
   /** Add additional servers (connects immediately) */
-  addServers(addresses: string[]): void {
+  addServers(addresses: string[], reconnectOnClose = true): void {
     this.shouldReconnect = true // Re-enable autoreconnect when adding servers
     for (const addr of addresses) {
       if (!this.hasConnectionTo(addr)) {
-        this.createSocket(addr)
+        this.createSocket(addr, reconnectOnClose)
       }
     }
   }
@@ -254,21 +260,31 @@ export class MykoClient {
     return this.currentServer
   }
 
+  /** Get the current main server address used for outbound sends */
+  getMainServer(): string | null {
+    return this.currentServer
+  }
+
   /** Get all server addresses */
   getServers(): string[] {
-    return Array.from(this.sockets.keys())
+    return Array.from(this.sockets.values()).map((m) => m.address)
   }
 
   /** Get addresses of all open connections */
   getOpenServers(): string[] {
-    return Array.from(this.sockets.entries())
-      .filter(([, m]) => m.ws.readyState === WebSocket.OPEN)
-      .map(([addr]) => addr)
+    return Array.from(this.sockets.values())
+      .filter((m) => m.ws.readyState === WebSocket.OPEN)
+      .map((m) => m.address)
   }
 
   /** Observable of current server changes */
   get currentServer$(): Observable<string | null> {
     return this.currentServerSubject.asObservable()
+  }
+
+  /** Observable of main server changes */
+  get mainServer$(): Observable<string | null> {
+    return this.currentServer$
   }
 
   /** Get current connection status */
@@ -310,6 +326,11 @@ export class MykoClient {
 
   private startPeerDiscovery(): void {
     this.peerDiscoverySubscription?.unsubscribe()
+    this.logConnection('peer_discovery_started', {
+      secure: this.useSecureWebSocket,
+      via: 'query:GetPeerServers',
+    })
+
     this.peerDiscoverySubscription = this.watchQuery(
       new GetPeerServers({}),
     ).subscribe((servers: Server[]) => {
@@ -318,9 +339,13 @@ export class MykoClient {
           ? `wss://${s.address}/myko`
           : `ws://${s.address}:${s.port}/myko`,
       )
-      if (addresses.length > 0) {
-        this.addServers(addresses)
-      }
+      this.logConnection('peer_discovery_update', {
+        peers: servers.length,
+        addresses,
+      })
+      // Discovered peers are ephemeral: if they disconnect, wait for discovery
+      // to advertise them again rather than actively redialing.
+      if (addresses.length > 0) this.addServers(addresses, false)
     })
   }
 
@@ -589,20 +614,12 @@ export class MykoClient {
   }
 
   private hasConnectionTo(address: string): boolean {
-    if (this.sockets.has(address)) return true
-
-    // Check by port (handles localhost vs 127.0.0.1)
-    const parsed = this.parseAddress(address)
-    if (!parsed) return false
-
-    for (const existing of this.sockets.keys()) {
-      const existingParsed = this.parseAddress(existing)
-      if (existingParsed?.port === parsed.port) return true
-    }
-    return false
+    return this.endpointSockets.has(this.endpointKey(address))
   }
 
-  private parseAddress(address: string): { host: string; port: number } | null {
+  private parseAddress(
+    address: string,
+  ): { host: string; port: number } | null {
     try {
       const url = new URL(address)
       const port = url.port
@@ -610,15 +627,32 @@ export class MykoClient {
         : url.protocol === 'wss:'
           ? 443
           : 80
-      return { host: url.hostname, port }
+      return { host: url.hostname.toLowerCase(), port }
     } catch {
       return null
     }
   }
 
+  private endpointKey(address: string): string {
+    const parsed = this.parseAddress(address)
+    if (!parsed) return address
+    const host = this.hostsEquivalent(parsed.host, 'localhost')
+      ? 'localhost'
+      : parsed.host
+    return `${host}:${parsed.port}`
+  }
+
+  private hostsEquivalent(a: string, b: string): boolean {
+    if (a === b) return true
+
+    const loopback = new Set(['localhost', '127.0.0.1', '::1'])
+    return loopback.has(a) && loopback.has(b)
+  }
+
   private closeAllSockets(): void {
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer)
     this.reconnectTimers.clear()
+    this.endpointSockets.clear()
 
     for (const m of this.sockets.values()) {
       m.ws.onclose = null
@@ -628,21 +662,37 @@ export class MykoClient {
       m.ws.close()
     }
     this.sockets.clear()
-    this.currentServer = null
-    this.currentServerSubject.next(null)
-    this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
+    this.setCurrentServer(null, 'all sockets closed')
+    this.setConnectionStatus(ConnectionStatus.Disconnected, 'all sockets closed')
   }
 
-  private createSocket(address: string): void {
-    if (this.sockets.has(address)) return
+  private createSocket(address: string, reconnectOnClose = true): void {
+    const endpointKey = this.endpointKey(address)
+    if (this.endpointSockets.has(endpointKey)) return
+    this.endpointSockets.set(endpointKey, address)
+    const reconnectTimer = this.reconnectTimers.get(endpointKey)
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      this.reconnectTimers.delete(endpointKey)
+    }
 
+    this.logConnection('socket_connecting', {
+      address,
+      openServers: this.getOpenServers(),
+      knownServers: this.getServers(),
+    })
     const ws = new WebSocket(address)
     ws.binaryType = 'arraybuffer' // Receive binary messages as ArrayBuffer for msgpack
-    const managed: ManagedSocket = { ws, address }
+    const managed: ManagedSocket = {
+      ws,
+      address,
+      endpointKey,
+      reconnectOnClose,
+    }
     this.sockets.set(address, managed)
 
     if (this.sockets.size === 1) {
-      this.connectionStatusSubject.next(ConnectionStatus.Connecting)
+      this.setConnectionStatus(ConnectionStatus.Connecting, `connecting to ${address}`)
     }
 
     ws.onopen = () => {
@@ -652,9 +702,8 @@ export class MykoClient {
       }
 
       if (!this.currentServer) {
-        this.currentServer = address
-        this.currentServerSubject.next(address)
-        this.connectionStatusSubject.next(ConnectionStatus.Connected)
+        this.setCurrentServer(address, 'socket open')
+        this.setConnectionStatus(ConnectionStatus.Connected, `connected to ${address}`)
         this.flushQueue()
         this.resendSubscriptions()
         if (this.peerDiscoveryEnabled) this.startPeerDiscovery()
@@ -665,23 +714,37 @@ export class MykoClient {
       if (this.sockets.get(address) !== managed) return
 
       this.sockets.delete(address)
+      this.endpointSockets.delete(endpointKey)
 
       if (this.currentServer === address) {
         const next = this.getFirstOpenSocket()
         if (next) {
-          this.currentServer = next.address
-          this.currentServerSubject.next(next.address)
+          this.setCurrentServer(
+            next.address,
+            `failover from ${address} to ${next.address}`,
+          )
+          this.setConnectionStatus(
+            ConnectionStatus.Connected,
+            `main failover to ${next.address}`,
+          )
           this.resendSubscriptions()
           return // Peer discovery will re-add this server when it's back
         }
-        this.currentServer = null
-        this.currentServerSubject.next(null)
-        this.connectionStatusSubject.next(ConnectionStatus.Disconnected)
+        this.setCurrentServer(null, `disconnected from ${address}`)
+        this.setConnectionStatus(
+          ConnectionStatus.Disconnected,
+          `no open servers after ${address} closed`,
+        )
       }
 
-      // Only retry if completely disconnected
-      if (this.shouldReconnect && !this.hasOpenConnection()) {
-        this.scheduleReconnect(address)
+      // Only retry explicitly configured sockets when completely disconnected.
+      // Discovered peers are expected to reappear via peer discovery.
+      if (
+        managed.reconnectOnClose &&
+        this.shouldReconnect &&
+        !this.hasOpenConnection()
+      ) {
+        this.scheduleReconnect(address, endpointKey)
       }
     }
 
@@ -693,17 +756,23 @@ export class MykoClient {
     }
   }
 
-  private scheduleReconnect(address: string): void {
-    if (this.reconnectTimers.has(address)) return
+  private scheduleReconnect(address: string, endpointKey: string): void {
+    if (this.reconnectTimers.has(endpointKey)) return
 
+    this.logConnection('reconnect_scheduled', { address, delayMs: 1000 })
     const timer = setTimeout(() => {
-      this.reconnectTimers.delete(address)
-      if (this.shouldReconnect && !this.hasOpenConnection()) {
+      this.reconnectTimers.delete(endpointKey)
+      if (
+        this.shouldReconnect &&
+        !this.hasOpenConnection() &&
+        !this.endpointSockets.has(endpointKey)
+      ) {
+        this.logConnection('reconnect_attempt', { address })
         this.createSocket(address)
       }
     }, 1000)
 
-    this.reconnectTimers.set(address, timer)
+    this.reconnectTimers.set(endpointKey, timer)
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -755,9 +824,19 @@ export class MykoClient {
         break
       case MykoEvent.QueryError:
         this.queryErrors.next(message as QueryErrorMessage)
+        this.logConnection('query_error', {
+          tx: message.data.tx,
+          message: message.data.message,
+          queryId: this.activeQueries.get(message.data.tx)?.queryId,
+        })
         break
       case MykoEvent.ReportError:
         this.reportErrors.next(message as ReportErrorMessage)
+        this.logConnection('report_error', {
+          tx: message.data.tx,
+          message: message.data.message,
+          reportId: this.activeReports.get(message.data.tx)?.reportId,
+        })
         break
       case MykoEvent.Ping:
         this.pingResponses.next(message as PingMessage)
@@ -797,5 +876,32 @@ export class MykoClient {
     for (const r of this.activeReports.values()) {
       this.send({ event: MykoEvent.Report, data: r })
     }
+  }
+
+  private setConnectionStatus(
+    status: ConnectionStatus,
+    reason: string,
+  ): void {
+    this.connectionStatusSubject.next(status)
+    this.logConnection('status', {
+      status,
+      reason,
+      currentServer: this.currentServer,
+      openServers: this.getOpenServers(),
+    })
+  }
+
+  private setCurrentServer(server: string | null, reason: string): void {
+    this.currentServer = server
+    this.currentServerSubject.next(server)
+    this.logConnection('current_server', { server, reason })
+  }
+
+  private logConnection(
+    event: string,
+    details: Record<string, unknown>,
+  ): void {
+    // Keep these logs lightweight and always available for diagnosing failover behavior.
+    console.info(`[MykoClient] ${event}`, details)
   }
 }
