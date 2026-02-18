@@ -9,11 +9,11 @@ A control platform for orchestrating reactive event relationships within network
 ## Quick Start
 
 ```bash
-# Prerequisites: Node 20+, pnpm 10+, Rust, protobuf
-# Optional: Bun (legacy server/tooling), Docker (local Kafka)
+# Prerequisites: Bun, Rust, protobuf
+# Optional: Docker (local Kafka)
 
 # Install
-pnpm install
+bun install
 
 # Start Kafka (required for the primary Rust server)
 docker compose -f docker-compose.local.yml up -d
@@ -25,10 +25,10 @@ export KAFKA_BROKERS=localhost:9092
 cargo run -p server_rs --target-dir target/agent
 
 # Run UI (separate terminal)
-pnpm dev --filter @rship/ui
+bun run --filter @rship/ui dev
 
 # (Optional) Legacy Bun/TypeScript server (supports local-only mode)
-# pnpm dev --filter @rship/server
+# bun run --filter @rship/server dev
 ```
 
 ## Project Structure

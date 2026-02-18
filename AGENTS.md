@@ -57,10 +57,10 @@ cargo clippy --target-dir target/agent -- -D warnings
 cargo fmt --all
 
 # UI / TypeScript
-pnpm install
-pnpm dev --filter @rship/ui
-pnpm build --filter <package>
-pnpm format:all
+bun install
+bun run --filter @rship/ui dev
+bun run --filter <package> build
+bun run format:all
 
 # Type generation (run inside relevant crate)
 cargo make gen

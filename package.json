@@ -24,7 +24,6 @@
     "lint-staged": "^15.2.10",
     "nodemon": "^3.1.7",
     "pkg": "^5.8.1",
-    "pnpm": "^10.3.0",
     "prettier": "3.5.3",
     "prettier-plugin-organize-imports": "^3.2.4",
     "prettier-plugin-svelte": "3.4.1",
@@ -35,34 +34,16 @@
   },
   "license": "MIT",
   "name": "rship",
-  "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@serialport/bindings-cpp",
-      "@sveltejs/kit",
-      "@tailwindcss/oxide",
-      "browser-tabs-lock",
-      "bufferutil",
-      "bun",
-      "core-js",
-      "electron",
-      "electron-winstaller",
-      "esbuild",
-      "ffmpeg-static",
-      "grpc-tools",
-      "msgpackr-extract",
-      "protobufjs",
-      "sharp",
-      "svelte-preprocess",
-      "utf-8-validate",
-      "workerd"
-    ],
-    "overrides": {
-      "@types/three": "^0.181.0",
-      "rxjs": "7.8.2"
-    }
+  "overrides": {
+    "@types/three": "^0.181.0",
+    "rxjs": "7.8.2"
   },
+  "packageManager": "bun@1.3.4",
   "private": true,
+  "workspaces": [
+    "apps/**",
+    "libs/**"
+  ],
   "scripts": {
     "clean": "./tools/scripts/clean.sh",
     "cs:publish": "./tools/scripts/cs-publish.sh",
@@ -80,15 +61,13 @@
     "rust:publish": "./tools/scripts/rust-publish.sh",
     "sync": "git submodule update --init --recursive --remote",
     "test:smoke": "bun run ./tools/scripts/smoke-test.ts",
-    "check": "pnpm run -r check",
+    "check": "bun run --filter '*' check",
     "versionecho": "bun run ./tools/scripts/version-echo.ts"
   },
   "trustedDependencies": [
     "@serialport/bindings-cpp",
     "@sveltejs/kit",
     "core-js",
-    "electron",
-    "electron-winstaller",
     "esbuild",
     "msgpackr-extract",
     "node-rdkafka",
