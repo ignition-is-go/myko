@@ -18,6 +18,7 @@ tokio-util.workspace = true
 # Kafka
 rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 openssl = { version = "0.10.35", features = ["vendored"] }
+postgres = "0.19.9"
 
 # Async utilities
 futures-util.workspace = true
