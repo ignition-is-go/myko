@@ -676,8 +676,8 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                     .filter(|entry| entry.value().#root_parent_field.is_empty())
                     .count(),
             };
-            log::debug!(
-                target: "myko_rs::core::view::builder",
+            log::trace!(
+                            target: "myko_rs::core::view::builder",
                 "[{}] root parent_match_count={}",
                 stringify!(#struct_name),
                 parent_match_count
@@ -691,8 +691,8 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
         let parent_param = &tree.parent_param;
         let include_offline_param = &tree.include_offline_param;
         quote! {
-            log::debug!(
-                target: "myko_rs::core::view::builder",
+            log::trace!(
+                            target: "myko_rs::core::view::builder",
                 "[{}] build_view start parent={:?} include_offline={}",
                 stringify!(#struct_name),
                 view.#parent_param,
@@ -701,8 +701,8 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
         }
     } else {
         quote! {
-            log::debug!(
-                target: "myko_rs::core::view::builder",
+            log::trace!(
+                            target: "myko_rs::core::view::builder",
                 "[{}] build_view start",
                 stringify!(#struct_name)
             );
@@ -737,7 +737,7 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                 let recompute_row = recompute_row.clone();
                 #store_ident.subscribe_diffs(move |diff| match diff {
                     #krate::hypha::MapDiff::Initial { entries } => {
-                        log::debug!(
+                        log::trace!(
                             target: "myko_rs::core::view::builder",
                             "[{}] join_one[{}] initial entries={}",
                             stringify!(#struct_name),
@@ -780,7 +780,7 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                             .take(8)
                             .map(|entry| entry.key().to_string())
                             .collect();
-                        log::debug!(
+                        log::trace!(
                             target: "myko_rs::core::view::builder",
                             "[{}] join_one[{}] matched_targets={} overlap_with_roots={} joined_sample={:?} non_overlap_sample={:?} root_sample={:?}",
                             stringify!(#struct_name),
@@ -968,7 +968,7 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                 let recompute_row = recompute_row.clone();
                 #store_ident.subscribe_diffs(move |diff| match diff {
                     #krate::hypha::MapDiff::Initial { entries } => {
-                        log::debug!(
+                        log::trace!(
                             target: "myko_rs::core::view::builder",
                             "[{}] join_many[{}] initial entries={}",
                             stringify!(#struct_name),
@@ -1012,7 +1012,7 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                             .take(8)
                             .map(|entry| entry.key().to_string())
                             .collect();
-                        log::debug!(
+                        log::trace!(
                             target: "myko_rs::core::view::builder",
                             "[{}] join_many[{}] matched_targets={} overlap_with_roots={} joined_sample={:?} non_overlap_sample={:?} root_sample={:?}",
                             stringify!(#struct_name),
@@ -1325,8 +1325,8 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                     let recompute_row = recompute_row.clone();
                     root_store.subscribe_diffs(move |diff| match diff {
                         #krate::hypha::MapDiff::Initial { entries } => {
-                            log::debug!(
-                                target: "myko_rs::core::view::builder",
+                            log::trace!(
+                            target: "myko_rs::core::view::builder",
                                 "[{}] root initial entries={}",
                                 stringify!(#struct_name),
                                 entries.len()
@@ -1342,8 +1342,8 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                                 .take(12)
                                 .map(|entry| entry.key().to_string())
                                 .collect();
-                            log::debug!(
-                                target: "myko_rs::core::view::builder",
+                            log::trace!(
+                            target: "myko_rs::core::view::builder",
                                 "[{}] root sample={:?}",
                                 stringify!(#struct_name),
                                 root_id_sample

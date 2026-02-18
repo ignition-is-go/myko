@@ -71,7 +71,7 @@ where
         Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     fn parse(value: Value) -> Result<Arc<dyn AnyView>, anyhow::Error> {
-        log::debug!("ViewFactory::parse view_id={}", V::view_id_static());
+        log::trace!("ViewFactory::parse view_id={}", V::view_id_static());
         let view = serde_json::from_value::<ViewRequest<V>>(value)?;
         Ok(Arc::new(view))
     }
@@ -82,7 +82,7 @@ where
         request_ctx: Arc<RequestContext>,
         server_ctx: Option<Arc<CellServerCtx>>,
     ) -> Result<FilteredViewCellMap, String> {
-        log::debug!(
+        log::trace!(
             "ViewFactory::cell_factory start view_id={}",
             V::view_id_static()
         );
@@ -103,7 +103,7 @@ where
             view: view.clone(),
             view_context: view_cell_ctx.clone(),
         }) {
-            log::debug!(
+            log::trace!(
                 "ViewFactory::cell_factory using build_view view_id={}",
                 V::view_id_static()
             );

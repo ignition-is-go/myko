@@ -617,7 +617,7 @@ impl WsHandler {
             MykoMessage::EventBatch(mut events) => {
                 let incoming = events.len();
                 if incoming >= 64 {
-                    log::info!(
+                    log::trace!(
                         "Received event batch from client {} size={}",
                         session.client_id,
                         incoming
@@ -628,13 +628,13 @@ impl WsHandler {
                 }
                 let applied = ctx.apply_event_batch(events);
                 if applied >= 64 {
-                    log::info!(
+                    log::trace!(
                         "Applied event batch from client {} size={}",
                         session.client_id,
                         applied
                     );
                 } else {
-                    log::debug!(
+                    log::trace!(
                         "Applied event batch from client {} size={}",
                         session.client_id,
                         applied

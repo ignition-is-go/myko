@@ -340,7 +340,6 @@ impl CellServerCtx {
             return 0;
         }
 
-        let incoming = events.len();
         #[derive(Clone)]
         struct SetOp {
             item: Arc<dyn AnyItem>,
@@ -446,26 +445,7 @@ impl CellServerCtx {
             }
         }
 
-        let applied = sets.len() + dels.len();
-        if incoming >= 64 || applied >= 64 {
-            log::info!(
-                "apply_event_batch incoming={} applied={} set={} del={}",
-                incoming,
-                applied,
-                sets.len(),
-                dels.len()
-            );
-        } else {
-            log::debug!(
-                "apply_event_batch incoming={} applied={} set={} del={}",
-                incoming,
-                applied,
-                sets.len(),
-                dels.len()
-            );
-        }
-
-        applied
+        sets.len() + dels.len()
     }
 
     // ─────────────────────────────────────────────────────────────────────────

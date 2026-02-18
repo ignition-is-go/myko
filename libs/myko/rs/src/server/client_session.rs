@@ -89,7 +89,7 @@ impl<W: WsWriter> ClientSession<W> {
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
         if had_existing {
-            log::warn!(
+            log::trace!(
                 "ClientSession {} replacing existing query subscription tx={} (active_before={})",
                 self.client_id,
                 tx,
@@ -128,14 +128,14 @@ impl<W: WsWriter> ClientSession<W> {
         );
 
         let active = self.subscriptions.len();
-        log::debug!(
+        log::trace!(
             "ClientSession {} subscribed query tx={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
             active
         );
         if active >= 100 && active % 100 == 0 {
-            log::warn!(
+            log::trace!(
                 "ClientSession {} high subscription count: {} (most recent tx={})",
                 self.client_id,
                 active,
@@ -169,7 +169,7 @@ impl<W: WsWriter> ClientSession<W> {
                     return;
                 }
             };
-            log::debug!(
+            log::trace!(
                 "ClientSession {} view tx={} seq={} upserts={} deletes={} changes={} window={:?} total_count={:?}",
                 client_id_for_log,
                 tx_clone,
@@ -192,7 +192,7 @@ impl<W: WsWriter> ClientSession<W> {
             }),
         );
 
-        log::debug!(
+        log::trace!(
             "ClientSession {} subscribed view tx={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
@@ -209,7 +209,7 @@ impl<W: WsWriter> ClientSession<W> {
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
         if had_existing {
-            log::warn!(
+            log::trace!(
                 "ClientSession {} replacing existing report subscription tx={} report_id={} (active_before={})",
                 self.client_id,
                 tx,
@@ -245,7 +245,7 @@ impl<W: WsWriter> ClientSession<W> {
             .insert(tx, SubscriptionEntry::Guard { _guard: guard });
 
         let active = self.subscriptions.len();
-        log::debug!(
+        log::trace!(
             "ClientSession {} subscribed report tx={} report_id={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
@@ -253,7 +253,7 @@ impl<W: WsWriter> ClientSession<W> {
             active
         );
         if active >= 100 && active % 100 == 0 {
-            log::warn!(
+            log::trace!(
                 "ClientSession {} high subscription count: {} (most recent report tx={}, id={})",
                 self.client_id,
                 active,
@@ -266,7 +266,7 @@ impl<W: WsWriter> ClientSession<W> {
     /// Update window for an active query subscription.
     pub fn update_query_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
         let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
-            log::warn!(
+            log::trace!(
                 "ClientSession {} window update for unknown tx={} (active_subscriptions={})",
                 self.client_id,
                 tx,
@@ -290,7 +290,7 @@ impl<W: WsWriter> ClientSession<W> {
             QuerySubscriptionKind::Query => self.writer.send(MykoMessage::QueryResponse(response)),
             QuerySubscriptionKind::View => self.writer.send(MykoMessage::ViewResponse(response)),
         }
-        log::debug!(
+        log::trace!(
             "ClientSession {} updated query window tx={} (active_subscriptions={})",
             self.client_id,
             tx,
@@ -300,7 +300,7 @@ impl<W: WsWriter> ClientSession<W> {
 
     /// Update window for an active view subscription.
     pub fn update_view_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
-        log::debug!(
+        log::trace!(
             "ClientSession {} requested view window update tx={} window={:?}",
             self.client_id,
             tx,
@@ -312,7 +312,7 @@ impl<W: WsWriter> ClientSession<W> {
     /// Cancel a subscription by transaction ID.
     pub fn cancel(&mut self, tx: &Arc<str>) {
         let removed = self.subscriptions.remove(tx).is_some();
-        log::debug!(
+        log::trace!(
             "ClientSession {} cancel tx={} removed={} active_subscriptions={}",
             self.client_id,
             tx,
@@ -325,7 +325,7 @@ impl<W: WsWriter> ClientSession<W> {
     pub fn cancel_all(&mut self) {
         let before = self.subscriptions.len();
         self.subscriptions.clear();
-        log::debug!(
+        log::trace!(
             "ClientSession {} cancel_all removed_subscriptions={}",
             self.client_id,
             before
@@ -396,7 +396,7 @@ impl QuerySubscriptionState {
                     }
                 }
                 if batch_size >= 64 {
-                    log::debug!(
+                    log::trace!(
                         "ClientSession tx={} apply_source_diff batch_size={} all_items={}",
                         tx,
                         batch_size,
@@ -499,7 +499,7 @@ impl QuerySubscriptionState {
 impl<W: WsWriter> Drop for ClientSession<W> {
     fn drop(&mut self) {
         // All guards drop automatically
-        log::debug!(
+        log::trace!(
             "ClientSession dropped for client {}, cleaning up {} subscriptions",
             self.client_id,
             self.subscriptions.len()
