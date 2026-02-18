@@ -397,18 +397,8 @@ fn run_consumer_loop(
     registry: Arc<StoreRegistry>,
     status: Arc<CatchUpStatus>,
 ) -> Result<(), String> {
-    let mut reader = Client::connect(&config.url, NoTls)
-        .map_err(|e| format_pg_connect_error("reader", &config.url, &e))?;
-    ensure_schema(&mut reader, config)
-        .map_err(|e| format_pg_error("ensure_schema(reader)", Some(&config.url), &e))?;
-
-    let mut listener = Client::connect(&config.url, NoTls)
-        .map_err(|e| format_pg_connect_error("listener", &config.url, &e))?;
-    ensure_schema(&mut listener, config)
-        .map_err(|e| format_pg_error("ensure_schema(listener)", Some(&config.url), &e))?;
-    listener
-        .batch_execute(&format!("LISTEN {};", qi(&config.channel)))
-        .map_err(|e| format!("LISTEN failed: {e}"))?;
+    let mut reader = connect_consumer_client("reader", config)?;
+    let mut listener = connect_listener_client(config)?;
 
     info!(
         "CellPostgresConsumer started (table={}, channel={})",
@@ -416,15 +406,64 @@ fn run_consumer_loop(
     );
 
     let table = qi(&config.table);
+    let high_water_sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
+    let high_water_row = reader
+        .query_one(&high_water_sql, &[])
+        .map_err(|e| format_pg_error("query(high_water)", Some(&config.url), &e))?;
+    let high_water: i64 = high_water_row.get(0);
+    let snapshot_sql = format!(
+        "
+        SELECT s.id, s.event::text
+        FROM (
+            SELECT DISTINCT ON (item_type, item_id)
+                id, item_type, item_id, change_type, event
+            FROM {table}
+            WHERE id <= $1
+            ORDER BY item_type, item_id, id DESC
+        ) s
+        WHERE s.change_type = 'SET'
+        ORDER BY s.id ASC
+        "
+    );
+    let snapshot_rows = reader
+        .query(&snapshot_sql, &[&high_water])
+        .map_err(|e| format_pg_error("query(snapshot latest SET)", Some(&config.url), &e))?;
+    let snapshot_count = snapshot_rows.len();
+    for row in snapshot_rows {
+        let id: i64 = row.get(0);
+        let event_json: String = row.get(1);
+        match MEvent::from_str_trim(&event_json) {
+            Ok(event) => {
+                apply_remote_event(event, host_id, &handler_registry, &registry);
+            }
+            Err(err) => {
+                error!("Invalid postgres snapshot row id={id}: {err}");
+            }
+        }
+    }
+    info!(
+        "Postgres snapshot loaded latest state rows={} high_water={}",
+        snapshot_count, high_water
+    );
+
     let fetch_sql =
         format!("SELECT id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2");
-    let mut last_seen_id: i64 = 0;
+    let mut last_seen_id: i64 = high_water;
     let mut initial_done = false;
 
     loop {
-        let rows = reader
-            .query(&fetch_sql, &[&last_seen_id, &1000_i64])
-            .map_err(|e| format_pg_error("query(fetch events)", Some(&config.url), &e))?;
+        let rows = match reader.query(&fetch_sql, &[&last_seen_id, &1000_i64]) {
+            Ok(rows) => rows,
+            Err(err) => {
+                warn!(
+                    "{}",
+                    format_pg_error("query(fetch events)", Some(&config.url), &err)
+                );
+                std::thread::sleep(Duration::from_millis(500));
+                reader = connect_consumer_client("reader", config)?;
+                continue;
+            }
+        };
         if !rows.is_empty() {
             for row in rows {
                 let id: i64 = row.get(0);
@@ -450,20 +489,70 @@ fn run_consumer_loop(
         }
 
         let mut notified = false;
-        let mut notifications = listener.notifications();
-        let mut iter = notifications.timeout_iter(Duration::from_millis(500));
-        match iter.next() {
-            Ok(Some(_n)) => {
-                notified = true;
+        let mut reconnect_listener = false;
+        {
+            let mut notifications = listener.notifications();
+            let mut iter = notifications.timeout_iter(Duration::from_millis(500));
+            match iter.next() {
+                Ok(Some(_n)) => {
+                    notified = true;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    warn!("Postgres LISTEN error: {err}; reconnecting listener");
+                    reconnect_listener = true;
+                }
             }
-            Ok(None) => {}
-            Err(err) => {
-                warn!("Postgres LISTEN error: {err}");
-            }
+        }
+        if reconnect_listener {
+            std::thread::sleep(Duration::from_millis(500));
+            listener = connect_listener_client(config)?;
+            // Listener dropped; run an immediate catch-up query pass before waiting again.
+            continue;
         }
 
         if !notified {
             trace!("Postgres consumer poll tick (no notification)");
+        }
+    }
+}
+
+fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client, String> {
+    let mut backoff_ms = 250u64;
+    loop {
+        match Client::connect(&config.url, NoTls) {
+            Ok(mut client) => {
+                if let Err(err) = ensure_schema(&mut client, config) {
+                    warn!(
+                        "{}",
+                        format_pg_error(&format!("ensure_schema({role})"), Some(&config.url), &err)
+                    );
+                }
+                return Ok(client);
+            }
+            Err(err) => {
+                warn!("{}", format_pg_connect_error(role, &config.url, &err));
+                std::thread::sleep(Duration::from_millis(backoff_ms));
+                backoff_ms = (backoff_ms * 2).min(5_000);
+            }
+        }
+    }
+}
+
+fn connect_listener_client(config: &PostgresConfig) -> Result<Client, String> {
+    let mut backoff_ms = 250u64;
+    loop {
+        let mut client = connect_consumer_client("listener", config)?;
+        match client.batch_execute(&format!("LISTEN {};", qi(&config.channel))) {
+            Ok(()) => return Ok(client),
+            Err(err) => {
+                warn!(
+                    "{}",
+                    format_pg_error("LISTEN(register)", Some(&config.url), &err)
+                );
+                std::thread::sleep(Duration::from_millis(backoff_ms));
+                backoff_ms = (backoff_ms * 2).min(5_000);
+            }
         }
     }
 }
