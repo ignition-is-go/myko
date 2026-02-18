@@ -134,7 +134,7 @@ impl<W: WsWriter> ClientSession<W> {
             tx_for_log,
             active
         );
-        if active >= 100 && active % 100 == 0 {
+        if active >= 100 && active.is_multiple_of(100) {
             log::trace!(
                 "ClientSession {} high subscription count: {} (most recent tx={})",
                 self.client_id,
@@ -252,7 +252,7 @@ impl<W: WsWriter> ClientSession<W> {
             report_id_for_log,
             active
         );
-        if active >= 100 && active % 100 == 0 {
+        if active >= 100 && active.is_multiple_of(100) {
             log::trace!(
                 "ClientSession {} high subscription count: {} (most recent report tx={}, id={})",
                 self.client_id,
