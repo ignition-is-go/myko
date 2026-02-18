@@ -30,8 +30,8 @@ pub use crate::{
     },
     utils::downcast_item,
     view::{
-        AnyView, FilteredViewCellMap, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic,
-        ViewItemType, ViewParams, ViewRequest,
+        AnyView, FilteredViewCellMap, TypedViewCellMap, ViewBuildCellCtx, ViewHandler, ViewId,
+        ViewIdStatic, ViewItemType, ViewParams, ViewRequest,
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,

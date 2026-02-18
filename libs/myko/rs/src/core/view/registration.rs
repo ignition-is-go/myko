@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::{
-    cell::FilteredViewCellMap,
+    cell::{FilteredViewCellMap, erase_typed_view_map},
     context::{ViewCellContext, ViewContext},
     request::ViewRequest,
     traits::{
@@ -26,7 +26,7 @@ pub type ViewCellFactory = fn(
     Arc<dyn AnyView>,
     Arc<StoreRegistry>,
     Arc<RequestContext>,
-    Option<Arc<CellServerCtx>>,
+    Arc<CellServerCtx>,
 ) -> Result<FilteredViewCellMap, String>;
 
 /// Registration entry for a view type.
@@ -54,7 +54,7 @@ pub trait ViewFactory: ViewParams {
         view: Arc<dyn AnyView>,
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Option<Arc<CellServerCtx>>,
+        server_ctx: Arc<CellServerCtx>,
     ) -> Result<FilteredViewCellMap, String>;
 }
 
@@ -80,7 +80,7 @@ where
         any_view: Arc<dyn AnyView>,
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Option<Arc<CellServerCtx>>,
+        server_ctx: Arc<CellServerCtx>,
     ) -> Result<FilteredViewCellMap, String> {
         log::trace!(
             "ViewFactory::cell_factory start view_id={}",
@@ -93,25 +93,22 @@ where
             .ok_or_else(|| "Failed to downcast view payload".to_string())?;
         let view: Arc<V> = Arc::new(request.view);
 
-        let view_ctx = Arc::new(ViewContext {
-            req: request_ctx.clone(),
-        });
+        let view_ctx = Arc::new(ViewContext::new(
+            request_ctx.clone(),
+            registry.clone(),
+            server_ctx.clone(),
+        ));
         let view_cell_ctx =
             ViewCellContext::new(request_ctx, view_ctx, registry.clone(), server_ctx);
 
-        if let Some(built) = V::build_view(ViewBuildCellCtx {
+        let built = V::build_cell(ViewBuildCellCtx {
             view: view.clone(),
             view_context: view_cell_ctx.clone(),
-        }) {
-            log::trace!(
-                "ViewFactory::cell_factory using build_view view_id={}",
-                V::view_id_static()
-            );
-            return Ok(built);
-        }
-        Err(format!(
-            "View {} must implement build_view (views are macro-defined only)",
+        });
+        log::trace!(
+            "ViewFactory::cell_factory using build_cell view_id={}",
             V::view_id_static()
-        ))
+        );
+        Ok(erase_typed_view_map(built))
     }
 }

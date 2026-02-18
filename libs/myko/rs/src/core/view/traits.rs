@@ -15,7 +15,7 @@ pub trait ViewIdStatic {
 }
 
 pub trait ViewItemType {
-    type Item: std::fmt::Debug + Send + Sync;
+    type Item: hypha::traits::CellValue;
     fn view_item_type(&self) -> Arc<str>;
     fn view_item_type_static() -> Arc<str>;
 }
@@ -26,7 +26,7 @@ pub struct ViewBuildCellCtx<TView: ViewItemType> {
 }
 
 pub trait ViewHandler: ViewItemType + Sized {
-    fn build_view(ctx: ViewBuildCellCtx<Self>) -> Option<super::cell::FilteredViewCellMap>
+    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> super::cell::TypedViewCellMap<Self::Item>
     where
         Self: Send + Sync + 'static;
 }

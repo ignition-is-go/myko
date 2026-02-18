@@ -97,11 +97,12 @@ impl QueryCellContext {
             return Ok(existing.value().clone());
         }
         if let Some(existing) = global_subquery_cache().get(&key)
-            && let Some(shared) = existing.value().upgrade() {
-                let locked = shared.lock();
-                self.subquery_cache.insert(key, locked.clone());
-                return Ok(locked);
-            }
+            && let Some(shared) = existing.value().upgrade()
+        {
+            let locked = shared.lock();
+            self.subquery_cache.insert(key, locked.clone());
+            return Ok(locked);
+        }
 
         let wrapped = QueryRequest::with_tx(query, self.request_ctx.tx.clone());
         let any_query: Arc<dyn AnyQuery> = Arc::new(wrapped);

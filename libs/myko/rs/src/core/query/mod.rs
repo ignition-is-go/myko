@@ -10,6 +10,8 @@ mod traits;
 
 // Re-export all public types
 #[cfg(not(target_arch = "wasm32"))]
+pub use cell::FilteredCellMap;
+#[cfg(not(target_arch = "wasm32"))]
 pub use context::QueryCellContext;
 pub use context::QueryContext;
 #[cfg(not(target_arch = "wasm32"))]

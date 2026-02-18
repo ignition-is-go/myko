@@ -9,7 +9,7 @@ use hypha::{Cell, CellImmutable, CellMap, MapDiff};
 use crate::core::item::AnyItem;
 
 /// Type alias for entity diff cell.
-pub type EntityDiffCell = Cell<Option<MapDiff<Arc<str>, Arc<dyn AnyItem>>>, CellImmutable>;
+pub type EntityDiffCell = Cell<MapDiff<Arc<str>, Arc<dyn AnyItem>>, CellImmutable>;
 
 /// Type alias for entity entries cell.
 pub type EntityEntriesCell = Cell<Vec<(Arc<str>, Arc<dyn AnyItem>)>, CellImmutable>;

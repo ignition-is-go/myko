@@ -539,6 +539,10 @@ mod tests {
         fn last_message(&self) -> Option<MykoMessage> {
             self.messages.lock().unwrap().last().cloned()
         }
+
+        fn messages(&self) -> Vec<MykoMessage> {
+            self.messages.lock().unwrap().clone()
+        }
     }
 
     impl WsWriter for MockWriter {
@@ -714,5 +718,46 @@ mod tests {
         } else {
             panic!("Expected QueryResponse");
         }
+    }
+
+    #[test]
+    fn test_subscribe_view_respects_initial_window() {
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+
+        let cellmap = store.select(|_| true);
+        session.subscribe_view(
+            "tx-view-1".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 1,
+            }),
+        );
+
+        let msgs = mock.messages();
+        let first = msgs.into_iter().find_map(|m| match m {
+            MykoMessage::ViewResponse(r) => Some(r),
+            _ => None,
+        });
+        let Some(resp) = first else {
+            panic!("expected at least one ViewResponse");
+        };
+
+        assert_eq!(resp.upserts.len(), 1);
+        assert_eq!(resp.deletes.len(), 0);
+        assert_eq!(resp.total_count, Some(3));
+        let Some(window) = resp.window else {
+            panic!("expected window in response");
+        };
+        assert_eq!(window.offset, 0);
+        assert_eq!(window.limit, 1);
     }
 }

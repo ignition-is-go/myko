@@ -452,7 +452,7 @@ impl WsHandler {
                                 any_view,
                                 registry.clone(),
                                 request_context,
-                                Some(ctx.clone()),
+                                ctx.clone(),
                             ) {
                                 Ok(filtered_cellmap) => {
                                     log::debug!(

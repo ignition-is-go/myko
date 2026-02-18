@@ -9,15 +9,12 @@ use syn::{
 
 pub struct ViewArgs {
     pub item_type: Path,
-    pub builder: Path,
 }
 
 impl Parse for ViewArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let item_type: Path = input.parse()?;
-        input.parse::<Token![,]>()?;
-        let builder: Path = input.parse()?;
-        Ok(Self { item_type, builder })
+        Ok(Self { item_type })
     }
 }
 
@@ -117,7 +114,6 @@ struct ViewSpec {
     output: Path,
     root: Option<Path>,
     root_out: Option<Ident>,
-    builder: Option<Path>,
 }
 
 struct JoinedViewArgs {
@@ -228,13 +224,11 @@ fn parse_view_attr(attr: &syn::Attribute) -> syn::Result<ViewSpec> {
     let mut output = None;
     let mut root = None;
     let mut root_out = None;
-    let mut builder = None;
     for (k, v) in parse_kv_args(metas)? {
         match k.as_str() {
             "output" => output = Some(parse_path_expr(v, "output")?),
             "root" => root = Some(parse_path_expr(v, "root")?),
             "root_out" => root_out = Some(parse_ident_expr(v, "root_out")?),
-            "builder" => builder = Some(parse_path_expr(v, "builder")?),
             _ => {}
         }
     }
@@ -242,7 +236,6 @@ fn parse_view_attr(attr: &syn::Attribute) -> syn::Result<ViewSpec> {
         output: output.ok_or_else(|| syn::Error::new(attr.span(), "missing view(output = ...)"))?,
         root,
         root_out,
-        builder,
     })
 }
 
@@ -312,7 +305,6 @@ pub fn myko_view_item_impl(input_struct: ItemStruct) -> TokenStream {
 pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
     let struct_name = &input_struct.ident;
     let item_type = args.item_type;
-    let builder = args.builder;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
@@ -378,13 +370,6 @@ pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
             }
         }
 
-        impl #krate::prelude::ViewHandler for #struct_name {
-            fn build_view(
-                ctx: #krate::prelude::ViewBuildCellCtx<Self>,
-            ) -> Option<#krate::prelude::FilteredViewCellMap> {
-                Some(#builder(ctx.view.as_ref(), &ctx.view_context))
-            }
-        }
     }
 }
 
@@ -436,15 +421,6 @@ pub fn myko_view_declarative_impl(mut input_struct: ItemStruct) -> TokenStream {
         .to_compile_error();
     };
 
-    if let Some(builder) = view.builder.clone() {
-        return myko_view_impl(
-            ViewArgs {
-                item_type: view.output.clone(),
-                builder,
-            },
-            input_struct,
-        );
-    }
     let root_type = if let Some(r) = view.root.clone() {
         r
     } else if let Some(first) = sources.first() {
@@ -1244,15 +1220,15 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
         }
 
         impl #krate::prelude::ViewHandler for #struct_name {
-            fn build_view(
+            fn build_cell(
                 ctx: #krate::prelude::ViewBuildCellCtx<Self>,
-            ) -> Option<#krate::prelude::FilteredViewCellMap> {
+            ) -> #krate::prelude::TypedViewCellMap<Self::Item> {
                 let view = ctx.view.as_ref();
                 let view_ctx = &ctx.view_context;
                 #build_view_log
 
                 let output =
-                    #krate::hypha::CellMap::<std::sync::Arc<str>, std::sync::Arc<dyn #krate::prelude::AnyItem>>::new()
+                    #krate::hypha::CellMap::<std::sync::Arc<str>, #item_type>::new()
                         .with_name(stringify!(#struct_name));
                 let roots = std::sync::Arc::new(
                     ::dashmap::DashMap::<std::sync::Arc<str>, #root_type>::new()
@@ -1307,7 +1283,7 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                             #(#join_many_row_fields)*
                             #(#join_one_row_fields)*
                         };
-                        output.insert(target_id.clone(), std::sync::Arc::new(row) as std::sync::Arc<dyn #krate::prelude::AnyItem>);
+                        output.insert(target_id.clone(), row);
                         log::trace!(
                             target: "myko_rs::core::view::builder",
                             "[{}] row upsert target={} join_one=[{}] join_many=[{}]",
@@ -1447,7 +1423,7 @@ fn render_joined_view(args: JoinedViewArgs, input_struct: ItemStruct) -> TokenSt
                 #(#join_one_guards)*
                 #(#join_many_guards)*
 
-                Some(output.lock())
+                output.lock()
             }
         }
     }

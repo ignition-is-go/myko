@@ -88,8 +88,8 @@ impl<V: ViewItemType> ViewItemType for ViewRequest<V> {
 }
 
 impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest<V> {
-    fn build_view(ctx: ViewBuildCellCtx<Self>) -> Option<super::cell::FilteredViewCellMap> {
-        V::build_view(ViewBuildCellCtx {
+    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> super::cell::TypedViewCellMap<Self::Item> {
+        V::build_cell(ViewBuildCellCtx {
             view: Arc::new(ctx.view.view.clone()),
             view_context: ctx.view_context,
         })

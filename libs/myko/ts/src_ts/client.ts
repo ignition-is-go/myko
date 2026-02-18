@@ -799,7 +799,7 @@ export class MykoClient {
         )
         if (order) {
           state.visibleIds = order.ids.slice()
-        } else if (data.window) {
+        } else {
           // Fallback when window-order diffs are unavailable: derive visible ids
           // from current cache contents (in insertion order).
           state.visibleIds = [...state.cache.keys()]
@@ -913,7 +913,7 @@ export class MykoClient {
         )
         if (order) {
           state.visibleIds = order.ids.slice()
-        } else if (data.window) {
+        } else {
           state.visibleIds = [...state.cache.keys()]
         }
 

@@ -7,6 +7,8 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::{ConnectionStatus, MykoClient};
 #[cfg(not(target_arch = "wasm32"))]
+use crate::query::FilteredCellMap;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
     common::{to_value::ToValue, with_id::WithId},
@@ -85,6 +87,20 @@ impl ReportContext {
             let _ = query;
             unreachable!();
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Subscribe to a query dependency and get its reactive CellMap.
+    ///
+    /// Use this when you need incremental `MapDiff` semantics rather than
+    /// a flattened `Vec<Item>` stream from `query()`.
+    pub fn query_map<Q>(&self, query: Q) -> FilteredCellMap
+    where
+        Q: QueryParams + 'static,
+        Q::Item:
+            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        self.server_ctx.query_map(query, self.req.clone())
     }
 
     /// Search for entities matching a query string.

@@ -289,10 +289,10 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// Compatibility syntax (manual builder):
-/// `#[myko_view(ViewItemType, build_fn_path)]`
-/// where `build_fn_path` has signature:
-/// `fn(&QueryParamsType, &myko_rs::query::QueryCellContext) -> myko_rs::query::FilteredCellMap`.
+/// Query-style declaration syntax:
+/// `#[myko_view(ViewItemType)]`
+/// and then implement `myko_rs::prelude::ViewHandler` for the params type with:
+/// `fn build_cell(ctx: ViewBuildCellCtx<Self>) -> FilteredViewCellMap`.
 #[proc_macro_attribute]
 pub fn myko_view(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);

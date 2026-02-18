@@ -16,7 +16,10 @@ use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     client::{ConnectionStatus, MykoClient},
     core::item::{AnyItem, Eventable},
-    query::{QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest, QueryTestCtx},
+    query::{
+        FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
+        QueryTestCtx,
+    },
     report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
     search::SearchIndex,
@@ -530,6 +533,22 @@ impl CellServerCtx {
     {
         let query_id = Q::query_id_static();
         let query_name = format!("query:{}", query_id);
+        self.query_map(query, request)
+            .entries()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
+                    .collect()
+            })
+            .with_name(query_name.as_str())
+    }
+
+    pub fn query_map<Q>(&self, query: Q, request: Arc<RequestContext>) -> FilteredCellMap
+    where
+        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
         let query_req = QueryRequest::with_tx(query, request.tx.clone());
         let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
 
@@ -540,14 +559,6 @@ impl CellServerCtx {
             Some(Arc::new(self.clone())),
         )
         .expect("query cell factory should not fail for typed query")
-        .entries()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
-                .collect()
-        })
-        .with_name(query_name.as_str())
     }
 
     /// Run a one-shot (non-reactive) query.
