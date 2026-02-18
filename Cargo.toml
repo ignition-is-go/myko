@@ -94,6 +94,7 @@ members = [
   "apps/execs/amx",
   "apps/execs/brightsign",
   "apps/execs/weather",
+  "apps/execs/noise-rs",
   "apps/execs/pangolin",
   "apps/execs/ndi",
   "apps/execs/dante",
