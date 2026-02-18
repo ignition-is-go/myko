@@ -9632,6 +9632,7 @@ dependencies = [
 name = "rship-entities-assignment"
 version = "3.1.0-canary.23"
 dependencies = [
+ "dashmap",
  "myko-macros",
  "myko-rs",
  "partially",
