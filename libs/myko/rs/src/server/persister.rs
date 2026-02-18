@@ -19,6 +19,14 @@ pub trait Persister: Send + Sync + 'static {
     fn should_register_kafka_topic(&self) -> bool {
         true
     }
+
+    /// Startup healthcheck hook.
+    ///
+    /// Persisters can override this to fail server startup when dependencies
+    /// (broker, credentials, etc.) are not healthy.
+    fn startup_healthcheck(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// No-op persister for in-memory-only operation (dev mode).
@@ -79,5 +87,20 @@ impl PersisterRouter {
         self.resolve(entity_type)
             .map(|p| p.should_register_kafka_topic())
             .unwrap_or(false)
+    }
+
+    /// Run startup healthchecks for all resolved persisters across known entity types.
+    pub fn startup_healthcheck(&self, entity_types: &[&str]) -> Result<(), String> {
+        for entity_type in entity_types {
+            if let Some(persister) = self.resolve(entity_type) {
+                persister.startup_healthcheck().map_err(|reason| {
+                    format!(
+                        "Persister startup healthcheck failed for entity type `{}`: {}",
+                        entity_type, reason
+                    )
+                })?;
+            }
+        }
+        Ok(())
     }
 }

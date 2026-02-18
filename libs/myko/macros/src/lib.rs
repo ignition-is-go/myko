@@ -12,6 +12,7 @@ mod relationship;
 mod report;
 mod saga;
 mod setter;
+mod view;
 
 /// Returns whether we are compiling inside the myko-rs crate itself.
 pub(crate) fn is_myko_rs_crate() -> bool {
@@ -268,6 +269,53 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     query::myko_query_impl(query_item_type, input).into()
 }
 
+/// Defines a reactive view query.
+///
+/// Preferred stacked syntax:
+/// ```ignore
+/// #[myko_view]
+/// #[view(output = TargetTreeView, root = Target, root_out = target)]
+/// #[tree(parent_param = parent_target_id, parent_field = parent_targets, include_offline_param = include_offline)]
+/// #[source(Target, key = id)]
+/// #[source(TargetStatus, key = target_id)]
+/// #[source(Action, key = id)]
+/// #[source(Emitter, key = id)]
+/// #[join_one(Target.id == TargetStatus.target_id, out = is_online, online = Status::Online)]
+/// #[join_many(Target.id == Action.target_id, out = actions)]
+/// #[join_many(Target.id == Emitter.target_id, out = emitters)]
+/// pub struct GetTargetTreeByParentFiltered {
+///     pub parent_target_id: Option<Arc<str>>,
+///     pub include_offline: bool,
+/// }
+/// ```
+///
+/// Compatibility syntax (manual builder):
+/// `#[myko_view(ViewItemType, build_fn_path)]`
+/// where `build_fn_path` has signature:
+/// `fn(&QueryParamsType, &myko_rs::query::QueryCellContext) -> myko_rs::query::FilteredCellMap`.
+#[proc_macro_attribute]
+pub fn myko_view(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    if attr.is_empty() {
+        view::myko_view_declarative_impl(input).into()
+    } else {
+        let args = parse_macro_input!(attr as view::ViewArgs);
+        view::myko_view_impl(args, input).into()
+    }
+}
+
+/// Marks a struct as a typed view item (id/hash should already be present).
+///
+/// Adds serde/TS derives, TS export registration, and implements:
+/// - `WithId` (from `id`)
+/// - `AnyItem`
+/// - `Eventable`
+#[proc_macro_attribute]
+pub fn myko_view_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    view::myko_view_item_impl(input).into()
+}
+
 /// Generates a reactive report that can depend on queries and other reports.
 ///
 /// # Usage
@@ -364,34 +412,25 @@ pub fn derive_message_events(input: TokenStream) -> TokenStream {
 /// #[myko_saga]
 /// pub struct CleanupSaga;
 ///
-/// impl myko_rs::saga::Saga for CleanupSaga {
-///     type State = ();
+/// impl myko_rs::saga::SagaHandler for CleanupSaga {
+///     type EventItem = myko_rs::entities::client::Client;
+///     type Command = HandleClientDisconnected;
+///     const EVENT_TYPE: myko_rs::event::MEventType = myko_rs::event::MEventType::DEL;
 ///
-///     fn name() -> &'static str {
-///         "CleanupSaga"
-///     }
-///
-///     fn build(
-///         events: myko_rs::saga::EventStream,
+///     fn handle(
+///         item: Self::EventItem,
+///         event: myko_rs::event::MEvent,
 ///         ctx: std::sync::Arc<myko_rs::saga::SagaContext>,
-///     ) -> myko_rs::saga::CommandStream {
-///         use myko_rs::saga::SagaStreamExt;
-///         use futures::StreamExt;
-///
-///         Box::pin(events
-///             .of_item_type("LogEntry")
-///             .of_change_type(myko_rs::event::MEventType::SET)
-///             .filter_map(|event| async move {
-///                 // Saga logic here
-///                 None
-///             }))
+///     ) -> Option<Self::Command> {
+///         // Saga logic here
+///         None
 ///     }
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn myko_saga(_attr: TokenStream, input: TokenStream) -> TokenStream {
+pub fn myko_saga(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
-    saga::myko_saga_impl(input).into()
+    saga::myko_saga_impl(attr.into(), input).into()
 }
 
 /// Adds standard derives and registers for TypeScript export.

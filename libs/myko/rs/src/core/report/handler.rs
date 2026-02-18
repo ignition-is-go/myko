@@ -73,7 +73,8 @@ impl ReportContext {
     pub fn query<Q>(&self, query: Q) -> Cell<Vec<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item:
+            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {

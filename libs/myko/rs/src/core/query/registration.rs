@@ -9,7 +9,6 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::{JoinExt, MapExt, Signal, SubscriptionGuard, Watchable};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -18,7 +17,7 @@ use super::{
     cell::FilteredCellMap,
     context::{QueryCellContext, QueryContext},
     request::QueryRequest,
-    traits::{AnyQuery, QueryParams, QueryTestCellCtx},
+    traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
 };
 use crate::{
     common::with_id::WithId, request::RequestContext, server::CellServerCtx, store::StoreRegistry,
@@ -190,113 +189,105 @@ where
     ) -> Result<FilteredCellMap, String> {
         QUERY_CELL_FACTORIES_CREATED.fetch_add(1, Ordering::Relaxed);
         let query_id = Q::query_id_static();
-        increment_counter(query_factories_by_id(), query_id.clone());
-
-        // Downcast to the QueryRequest wrapper
+        increment_counter(query_factories_by_id(), query_id);
         let any_ref: &dyn Any = any_query.as_ref();
         let request: QueryRequest<Q> = any_ref
             .downcast_ref::<QueryRequest<Q>>()
             .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "Failed to downcast query to QueryRequest<{}>",
-                    Q::query_id_static()
-                )
-            })?;
-
-        // Extract the inner query params
+            .ok_or_else(|| "Failed to downcast query payload".to_string())?;
         let query: Arc<Q> = Arc::new(request.query);
 
-        // Get the store for this entity type
-        let store = registry.get_or_create(&Q::query_item_type_static());
-
-        log::trace!(
-            "Creating query cell for {} with host_id={}",
-            Q::query_id_static(),
-            request_ctx.host_id
-        );
-
-        // Create server context with actual host_id for test_entity
         let query_ctx = Arc::new(QueryContext {
             req: request_ctx.clone(),
         });
+        let query_cell_ctx =
+            QueryCellContext::new(request_ctx, query_ctx.clone(), registry.clone(), server_ctx);
 
+        if let Some(built) = Q::build_view(QueryBuildCellCtx {
+            query: query.clone(),
+            query_context: query_cell_ctx.clone(),
+        }) {
+            return Ok(built);
+        }
+
+        let store = registry.get_or_create(&Q::query_item_type_static());
         let output = hypha::CellMap::<Arc<str>, Arc<dyn crate::core::item::AnyItem>>::new();
+
         let output_for_diffs = output.clone();
-        let output_for_ensure = output.clone();
-        let store_for_diffs = store.clone();
-        let store_for_ensure = store.clone();
-        let query_cell_ctx = QueryCellContext::new(
-            request_ctx.clone(),
-            query_ctx.clone(),
-            registry.clone(),
-            server_ctx,
-        );
-
-        let per_item_guards = Arc::new(DashMap::<Arc<str>, SubscriptionGuard>::new());
-        let per_item_guards_for_diffs = per_item_guards.clone();
-        let query_id_for_ensure = query_id.clone();
-        let query_id_for_diffs = query_id.clone();
-
-        let ensure_watch = move |id: Arc<str>| {
-            if per_item_guards.contains_key(&id) {
-                return;
-            }
-
-            let item_cell = store_for_ensure.get(&id).map(|item_opt| {
-                item_opt.as_ref().and_then(|item| {
-                    item.as_any()
-                        .downcast_ref::<Q::Item>()
-                        .map(|typed| Arc::new(typed.clone()))
-                })
-            });
-
-            let include_cell = Q::test_entity(QueryTestCellCtx {
-                item: item_cell.clone(),
-                query: query.clone(),
-                query_context: query_cell_ctx.clone(),
-            });
-
-            let visible_item_cell = include_cell
-                .join(&item_cell)
-                .map(|(include, item_opt)| if *include { item_opt.clone() } else { None });
-
-            let output_for_item = output_for_ensure.downgrade();
-            let id_for_item = id.clone();
-            let guard = visible_item_cell.subscribe(move |signal| {
-                let Some(output) = output_for_item.upgrade() else {
-                    return;
-                };
-                if let Signal::Value(item_opt) = signal {
-                    if let Some(item) = item_opt.as_ref() {
-                        output.insert(id_for_item.clone(), item.clone());
-                    } else {
-                        output.remove(&id_for_item);
+        let query_for_diffs = query.clone();
+        let query_ctx_for_diffs = query_ctx.clone();
+        let guard = store.subscribe_diffs(move |diff| {
+            fn apply_diff<Q>(
+                diff: &hypha::MapDiff<Arc<str>, Arc<dyn crate::core::item::AnyItem>>,
+                output: &hypha::CellMap<Arc<str>, Arc<dyn crate::core::item::AnyItem>>,
+                query: &Arc<Q>,
+                query_ctx: &Arc<QueryContext>,
+            ) where
+                Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+                Q::Item: DeserializeOwned
+                    + Eventable
+                    + WithId
+                    + Clone
+                    + std::fmt::Debug
+                    + Send
+                    + Sync
+                    + 'static,
+            {
+                match diff {
+                    hypha::MapDiff::Initial { entries } => {
+                        for (_id, item_any) in entries {
+                            let Some(item) = item_any.as_any().downcast_ref::<Q::Item>() else {
+                                continue;
+                            };
+                            let item = Arc::new(item.clone());
+                            let include = Q::test_entity(QueryTestCtx {
+                                item: item.clone(),
+                                query: query.clone(),
+                                query_context: query_ctx.clone(),
+                            });
+                            if include {
+                                output
+                                    .insert(item.id(), item as Arc<dyn crate::core::item::AnyItem>);
+                            }
+                        }
+                    }
+                    hypha::MapDiff::Insert { value, .. }
+                    | hypha::MapDiff::Update {
+                        new_value: value, ..
+                    } => {
+                        let Some(item) = value.as_any().downcast_ref::<Q::Item>() else {
+                            return;
+                        };
+                        let item = Arc::new(item.clone());
+                        let id = item.id();
+                        let include = Q::test_entity(QueryTestCtx {
+                            item: item.clone(),
+                            query: query.clone(),
+                            query_context: query_ctx.clone(),
+                        });
+                        if include {
+                            output.insert(id, item as Arc<dyn crate::core::item::AnyItem>);
+                        } else {
+                            output.remove(&id);
+                        }
+                    }
+                    hypha::MapDiff::Remove { key, .. } => {
+                        output.remove(key);
+                    }
+                    hypha::MapDiff::Batch { changes } => {
+                        for change in changes {
+                            apply_diff::<Q>(change, output, query, query_ctx);
+                        }
                     }
                 }
-            });
+            }
 
-            per_item_guards.insert(id, guard);
-            QUERY_PER_ITEM_GUARDS_CREATED.fetch_add(1, Ordering::Relaxed);
-            increment_counter(query_guards_created_by_id(), query_id_for_ensure.clone());
-        };
-
-        let guard = store_for_diffs.subscribe_diffs(move |diff| match diff {
-            hypha::MapDiff::Initial { entries } => {
-                for (id, _) in entries {
-                    ensure_watch(id.clone());
-                }
-            }
-            hypha::MapDiff::Insert { key, .. } | hypha::MapDiff::Update { key, .. } => {
-                ensure_watch(key.clone());
-            }
-            hypha::MapDiff::Remove { key, .. } => {
-                if per_item_guards_for_diffs.remove(key).is_some() {
-                    QUERY_PER_ITEM_GUARDS_REMOVED.fetch_add(1, Ordering::Relaxed);
-                    increment_counter(query_guards_removed_by_id(), query_id_for_diffs.clone());
-                }
-                output_for_diffs.remove(key);
-            }
+            apply_diff::<Q>(
+                diff,
+                &output_for_diffs,
+                &query_for_diffs,
+                &query_ctx_for_diffs,
+            );
         });
         output.own_guard(guard);
 

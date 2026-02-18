@@ -10,6 +10,8 @@ pub use myko_macros::*;
 pub use ts_rs::TS;
 pub use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::query::QueryBuildCellCtx;
 pub use crate::{
     client::MykoClient,
     command::{
@@ -27,19 +29,24 @@ pub use crate::{
         ReportIdStatic, ReportOutputType, ReportParams,
     },
     utils::downcast_item,
+    view::{
+        AnyView, FilteredViewCellMap, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic,
+        ViewItemType, ViewParams, ViewRequest,
+    },
     wire::{
         CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
-        PingData, QueryError, QueryResponse, ReportError, ReportResponse, WrappedCommand,
-        WrappedItem, WrappedQuery, WrappedReport,
+        PingData, QueryChange, QueryError, QueryResponse, ReportError, ReportResponse,
+        WrappedCommand, WrappedItem, WrappedQuery, WrappedReport,
     },
 };
 // Server-only re-exports (tokio-free types only; CellServer lives in myko-server)
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{
-    query::{QueryFactory, QueryParseFn, QueryRegistration},
+    query::{QueryCellContext, QueryFactory, QueryParseFn, QueryRegistration},
     report::{ReportFactory, ReportParseFn, ReportRegistration},
     search::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
     },
     server::CellServerCtx,
+    view::{ViewFactory, ViewRegistration},
 };

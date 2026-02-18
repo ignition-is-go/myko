@@ -530,6 +530,7 @@ async fn execute_query(
                 query: query_json,
                 query_id: reg.query_id.into(),
                 query_item_type: reg.query_item_type.into(),
+                window: None,
             };
 
             let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();

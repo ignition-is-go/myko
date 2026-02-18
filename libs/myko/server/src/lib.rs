@@ -25,9 +25,13 @@ use std::{
     time::Duration,
 };
 
+use futures_util::StreamExt;
 use kafka::{CellKafkaConsumer, CellKafkaProducer, KafkaConfig, KafkaProducerHandle};
 pub use myko_rs::server::*;
-use myko_rs::{client::MykoClient, search::SearchIndex, store::StoreRegistry};
+use myko_rs::{
+    client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,
+    search::SearchIndex, store::StoreRegistry, wire::MEvent,
+};
 use uuid::Uuid;
 
 /// Cell-based Myko server configuration.
@@ -167,6 +171,12 @@ pub struct CellServer {
     peer_clients: Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>,
     /// Callback to run after init (Kafka catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
+    /// Sender for local+replicated event fan-out to saga runtime.
+    saga_event_tx: flume::Sender<MEvent>,
+    /// Receiver consumed when saga runtime starts.
+    saga_event_rx: std::sync::Mutex<Option<flume::Receiver<MEvent>>>,
+    /// Saga tasks kept alive for server lifetime.
+    saga_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Hypha cell inspector server (kept alive for the lifetime of the server)
     #[cfg(feature = "inspector")]
     _inspector: hypha::server::InspectorServer,
@@ -189,6 +199,7 @@ impl CellServer {
         init_client_registry();
 
         // Initialize Kafka if configured
+        let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
         let (kafka_producer_owner, kafka_producer, kafka_consumer) =
             if let Some(ref kafka_config) = config.kafka {
                 match CellKafkaProducer::new(kafka_config, host_id) {
@@ -262,6 +273,9 @@ impl CellServer {
             peer_registry_instance: RwLock::new(None),
             peer_clients: Arc::new(dashmap::DashMap::new()),
             after_init: std::sync::Mutex::new(None),
+            saga_event_tx,
+            saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
+            saga_tasks: std::sync::Mutex::new(Vec::new()),
             #[cfg(feature = "inspector")]
             _inspector: inspector,
         }
@@ -303,7 +317,125 @@ impl CellServer {
             self.persisters.clone(),
             self.search_index.clone(),
             self.peer_clients.clone(),
+            Some(self.saga_event_tx.clone()),
         )
+    }
+
+    fn start_saga_runtime(&self) {
+        let registrations: Vec<_> = inventory::iter::<SagaRegistration>().collect();
+        if registrations.is_empty() {
+            return;
+        }
+        let Some(rx) = self
+            .saga_event_rx
+            .lock()
+            .expect("saga_event_rx mutex poisoned")
+            .take()
+        else {
+            return;
+        };
+
+        log::info!("Starting saga runtime with {} saga(s)", registrations.len());
+        let (event_tx, _) = tokio::sync::broadcast::channel::<MEvent>(8192);
+        let event_tx_dispatch = event_tx.clone();
+
+        let dispatcher = tokio::spawn(async move {
+            while let Ok(event) = rx.recv_async().await {
+                let _ = event_tx_dispatch.send(event);
+            }
+        });
+        self.saga_tasks
+            .lock()
+            .expect("saga_tasks mutex poisoned")
+            .push(dispatcher);
+
+        for registration in registrations {
+            let saga = (registration.create)();
+            let saga_name = saga.name().to_string();
+            let saga_name_for_stream = saga_name.clone();
+            let event_rx = event_tx.subscribe();
+            let events: myko_rs::saga::EventStream = Box::pin(futures_util::stream::unfold(
+                event_rx,
+                move |mut event_rx| {
+                    let saga_name_for_stream = saga_name_for_stream.clone();
+                    async move {
+                        loop {
+                            match event_rx.recv().await {
+                                Ok(event) => return Some((event, event_rx)),
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                    log::warn!(
+                                        "Saga {} lagged; skipped {} events",
+                                        saga_name_for_stream,
+                                        skipped
+                                    );
+                                    continue;
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    return None;
+                                }
+                            }
+                        }
+                    }
+                },
+            ));
+
+            let saga_ctx = Arc::new(myko_rs::saga::SagaContext::with_event_sink(
+                self.host_id,
+                self.registry.clone(),
+                self.saga_event_tx.clone(),
+            ));
+            let mut command_stream = saga.build_boxed(events, saga_ctx);
+
+            let host_id = self.host_id;
+            let registry = self.registry.clone();
+            let handler_registry = self.handler_registry.clone();
+            let relationship_manager = self.relationship_manager.clone();
+            let persisters = self.persisters.clone();
+            let search_index = self.search_index.clone();
+            let peer_clients = self.peer_clients.clone();
+            let saga_event_tx = self.saga_event_tx.clone();
+
+            let handle = tokio::spawn(async move {
+                while let Some(command) = command_stream.next().await {
+                    let command_name = command.command_name();
+                    log::debug!("Saga {} executing command {}", saga_name, command_name);
+                    let req = Arc::new(RequestContext::internal(
+                        Arc::from(Uuid::new_v4().to_string()),
+                        host_id,
+                        &format!("saga:{saga_name}"),
+                    ));
+
+                    let cmd_ctx = CommandContext::new(
+                        Arc::from(command_name),
+                        req,
+                        Arc::new(CellServerCtx::new(
+                            host_id,
+                            registry.clone(),
+                            handler_registry.clone(),
+                            relationship_manager.clone(),
+                            persisters.clone(),
+                            search_index.clone(),
+                            peer_clients.clone(),
+                            Some(saga_event_tx.clone()),
+                        )),
+                    );
+
+                    if let Err(err) = command.execute_boxed(cmd_ctx) {
+                        log::error!(
+                            "Saga {} command {} failed: {}",
+                            saga_name,
+                            command_name,
+                            err.message
+                        );
+                    }
+                }
+            });
+
+            self.saga_tasks
+                .lock()
+                .expect("saga_tasks mutex poisoned")
+                .push(handle);
+        }
     }
 
     /// Get the Kafka producer handle (if Kafka is enabled).
@@ -351,10 +483,10 @@ impl CellServer {
     }
 
     /// Initialize Kafka with all known entity types and wait for catch-up.
-    pub fn init_kafka_and_wait(&self, timeout: Duration) -> bool {
+    pub fn init_kafka_and_wait(&self, timeout: Duration) -> Result<(), String> {
         if self.kafka_consumer.is_none() {
             self.ready.store(true, Ordering::SeqCst);
-            return true;
+            return Ok(());
         }
 
         self.register_all_kafka_topics();
@@ -363,15 +495,13 @@ impl CellServer {
     }
 
     /// Wait for Kafka to catch up to all registered topics.
-    pub fn wait_for_kafka_catchup(&self, timeout: Duration) -> bool {
+    pub fn wait_for_kafka_catchup(&self, timeout: Duration) -> Result<(), String> {
         if let Some(ref consumer) = self.kafka_consumer {
-            let caught_up = consumer.wait_until_caught_up(timeout);
-            if caught_up {
-                self.ready.store(true, Ordering::SeqCst);
-            }
-            caught_up
+            consumer.wait_until_caught_up(timeout)?;
+            self.ready.store(true, Ordering::SeqCst);
+            Ok(())
         } else {
-            true
+            Ok(())
         }
     }
 
@@ -398,17 +528,23 @@ impl CellServer {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        // Persisters can veto startup via startup healthchecks.
+        let entity_types: Vec<&str> = self
+            .handler_registry
+            .entity_types()
+            .map(|t| t.as_ref())
+            .collect();
+        self.persisters
+            .startup_healthcheck(&entity_types)
+            .map_err(|reason| format!("Persister startup healthcheck failed: {reason}"))?;
+
         // Wait for Kafka catch-up if configured
         if self.kafka_consumer.is_some() {
             log::info!("Waiting for Kafka to catch up...");
             let timeout = std::time::Duration::from_secs(300);
-            if self.init_kafka_and_wait(timeout) {
-                log::info!("Kafka caught up, ready to accept connections");
-            } else {
-                log::warn!(
-                    "Kafka catch-up timed out, proceeding anyway (will reject connections until ready)"
-                );
-            }
+            self.init_kafka_and_wait(timeout)
+                .map_err(|reason| format!("Kafka startup catch-up failed: {reason}"))?;
+            log::info!("Kafka caught up, ready to accept connections");
         }
 
         // Build search index from store data (after Kafka catch-up)
@@ -438,6 +574,8 @@ impl CellServer {
         {
             hook(self);
         }
+
+        self.start_saga_runtime();
 
         log::info!("Server started");
         self.run_ws_accept_loop(listener).await

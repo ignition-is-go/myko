@@ -16,6 +16,7 @@ import {
   type WrappedItem,
   type WrappedQuery,
   type WrappedReport,
+  type WrappedView,
 } from '@myko/rs'
 import { Packr, Unpackr } from 'msgpackr'
 import {
@@ -45,10 +46,12 @@ import { v4 as uuid } from 'uuid'
 // encode `undefined` as nil/null instead of an extension.
 const packr = new Packr({ encodeUndefinedAsNil: true })
 const unpackr = new Unpackr({})
+const EVENT_BATCH = 'ws:m:event-batch'
 
 /** Union type for error event names */
 export type MykoErrorEvent =
   | typeof MykoEvent.QueryError
+  | typeof MykoEvent.ViewError
   | typeof MykoEvent.CommandError
   | typeof MykoEvent.ReportError
 
@@ -87,6 +90,14 @@ export interface Query<T> {
   readonly $res?: () => T[]
 }
 
+/** View class interface */
+export interface View<T> {
+  readonly viewId: string
+  readonly viewItemType: string
+  readonly view: Record<string, unknown>
+  readonly $res?: () => T[]
+}
+
 /** Report class interface */
 export interface Report<T> {
   readonly reportId: string
@@ -107,6 +118,12 @@ export type QueryResult<Q> = Q extends Query<infer R> ? R[] : unknown[]
 /** Extract item type from a query */
 export type QueryItem<Q> = Q extends Query<infer R> ? R : unknown
 
+/** Extract item type from a view */
+export type ViewItem<V> = V extends View<infer R> ? R : unknown
+
+/** Extract result type from a view */
+export type ViewResult<V> = V extends View<infer R> ? R[] : unknown[]
+
 /** Extract result type from a report */
 export type ReportResult<R> = R extends Report<infer T> ? T : unknown
 
@@ -118,6 +135,20 @@ export type QueryDiff<T> = {
   sequence: bigint
   deletes: string[]
   upserts: T[]
+}
+
+export type QueryWindow = {
+  offset: number
+  limit: number
+}
+
+export type QueryWatchOptions = {
+  window?: QueryWindow | null
+}
+
+export type QueryWindowInfo = {
+  totalCount: number | null
+  window: QueryWindow | null
 }
 
 // Message type aliases
@@ -187,10 +218,18 @@ export class MykoClient {
 
   // Subscription tracking
   private activeQueries = new Map<string, WrappedQuery>()
+  private activeViews = new Map<string, WrappedView>()
   private activeReports = new Map<string, WrappedReport>()
+  private activeQueryNames = new Map<string, string>()
+  private activeViewNames = new Map<string, string>()
+  private activeReportNames = new Map<string, string>()
   private sharedQueries = new Map<string, Observable<unknown>>()
+  private sharedViews = new Map<string, Observable<unknown>>()
   private sharedReports = new Map<string, Observable<unknown>>()
   private messageQueue: MykoMessage[] = []
+  private pendingEventBatch: MEvent[] = []
+  private eventBatchFlushScheduled = false
+  private readonly eventBatchMaxSize = 256
 
   // Stats
   private downMsgCounter = new Subject<void>()
@@ -437,21 +476,56 @@ export class MykoClient {
   /** Start a query subscription, returns [tx, responses$] */
   private startQuery<Q extends Query<unknown>>(
     query: Q,
+    options?: QueryWatchOptions,
   ): [string, Observable<QueryResponseMessage>] {
+    if (!query.queryId || !query.queryItemType || !(query as { query?: unknown }).query) {
+      const details = {
+        ctor: (query as { constructor?: { name?: string } }).constructor?.name ?? 'unknown',
+        keys: Object.keys((query as Record<string, unknown>) ?? {}),
+        queryId: (query as { queryId?: unknown }).queryId,
+        queryItemType: (query as { queryItemType?: unknown }).queryItemType,
+      }
+      this.logConnection('query_shape_invalid', details)
+      throw new Error(
+        `Invalid query shape for ${details.ctor}: expected { queryId, queryItemType, query }`,
+      )
+    }
+
     const tx = uuid()
-    const wrappedQuery: WrappedQuery = {
+    const window = options?.window ?? undefined
+    const queryName =
+      (query as { constructor?: { name?: string } }).constructor?.name ?? query.queryId
+    const wrappedQuery = {
       query: { ...query.query, tx, createdAt: new Date().toISOString() },
       queryId: query.queryId,
       queryItemType: query.queryItemType,
-    }
+      ...(window ? { window } : {}),
+    } as WrappedQuery
 
     this.activeQueries.set(tx, wrappedQuery)
+    this.activeQueryNames.set(tx, queryName)
+    this.logConnection('query_subscribe', {
+      tx,
+      queryId: wrappedQuery.queryId,
+      queryItemType: wrappedQuery.queryItemType,
+      queryName,
+      window: window ?? null,
+      activeQueries: this.activeQueries.size,
+    })
     this.send({ event: MykoEvent.Query, data: wrappedQuery })
 
     const responses$ = this.queryResponses.pipe(
       filter((r) => r.data.tx === tx),
       finalize(() => {
+        this.logConnection('query_cancel', {
+          tx,
+          queryId: wrappedQuery.queryId,
+          queryItemType: wrappedQuery.queryItemType,
+          queryName,
+          activeQueriesBefore: this.activeQueries.size,
+        })
         this.activeQueries.delete(tx)
+        this.activeQueryNames.delete(tx)
         this.send({ event: MykoEvent.QueryCancel, data: { tx } })
       }),
     )
@@ -459,14 +533,123 @@ export class MykoClient {
     return [tx, responses$]
   }
 
+  /** Update server-side window for an active query subscription */
+  setQueryWindow(tx: string, window: QueryWindow | null): void {
+    const active = this.activeQueries.get(tx)
+    if (!active) return
+
+    const updated = {
+      ...active,
+      ...(window ? { window } : {}),
+    } as WrappedQuery
+    if (!window) {
+      delete (updated as { window?: QueryWindow }).window
+    }
+    this.activeQueries.set(tx, updated)
+    this.logConnection('query_window_set', {
+      tx,
+      queryId: active.queryId,
+      queryItemType: active.queryItemType,
+      queryName: this.activeQueryNames.get(tx) ?? active.queryId,
+      window,
+    })
+
+    this.send({ event: MykoEvent.QueryWindow, data: { tx, window } as unknown } as MykoMessage)
+  }
+
+  /** Start a view subscription, returns [tx, responses$] */
+  private startView<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): [string, Observable<QueryResponseMessage>] {
+    if (!view.viewId || !view.viewItemType || !(view as { view?: unknown }).view) {
+      const details = {
+        ctor: (view as { constructor?: { name?: string } }).constructor?.name ?? 'unknown',
+        keys: Object.keys((view as Record<string, unknown>) ?? {}),
+        viewId: (view as { viewId?: unknown }).viewId,
+        viewItemType: (view as { viewItemType?: unknown }).viewItemType,
+      }
+      this.logConnection('view_shape_invalid', details)
+      throw new Error(
+        `Invalid view shape for ${details.ctor}: expected { viewId, viewItemType, view }`,
+      )
+    }
+
+    const tx = uuid()
+    const window = options?.window ?? undefined
+    const viewName =
+      (view as { constructor?: { name?: string } }).constructor?.name ?? view.viewId
+    const wrappedView = {
+      view: { ...view.view, tx, createdAt: new Date().toISOString() },
+      viewId: view.viewId,
+      viewItemType: view.viewItemType,
+      ...(window ? { window } : {}),
+    } as WrappedView
+
+    this.activeViews.set(tx, wrappedView)
+    this.activeViewNames.set(tx, viewName)
+    this.logConnection('view_subscribe', {
+      tx,
+      viewId: wrappedView.viewId,
+      viewItemType: wrappedView.viewItemType,
+      viewName,
+      window: wrappedView.window ?? null,
+      activeViews: this.activeViews.size,
+    })
+    this.send({ event: MykoEvent.View, data: wrappedView })
+
+    const responses$ = this.queryResponses.pipe(
+      filter((r) => r.data.tx === tx),
+      finalize(() => {
+        this.logConnection('view_cancel', {
+          tx,
+          viewId: wrappedView.viewId,
+          viewName,
+          activeViewsBefore: this.activeViews.size,
+        })
+        this.activeViews.delete(tx)
+        this.activeViewNames.delete(tx)
+        this.send({ event: MykoEvent.ViewCancel, data: { tx } })
+      }),
+    )
+
+    return [tx, responses$]
+  }
+
+  /** Update server-side window for an active view subscription */
+  setViewWindow(tx: string, window: QueryWindow | null): void {
+    const active = this.activeViews.get(tx)
+    if (!active) return
+
+    const updated = {
+      ...active,
+      ...(window ? { window } : {}),
+    } as WrappedView
+    if (!window) {
+      delete (updated as { window?: QueryWindow }).window
+    }
+    this.activeViews.set(tx, updated)
+    this.logConnection('view_window_set', {
+      tx,
+      viewId: active.viewId,
+      viewName: this.activeViewNames.get(tx) ?? active.viewId,
+      window,
+    })
+
+    this.send({ event: MykoEvent.ViewWindow, data: { tx, window } as unknown } as MykoMessage)
+  }
+
   /** Watch a query and receive live updates with automatic deduplication */
-  watchQuery<Q extends Query<unknown>>(query: Q): Observable<QueryResult<Q>> {
-    const cacheKey = `query:${query.queryId}:${JSON.stringify(query.query)}`
+  watchQuery<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<QueryResult<Q>> {
+    const cacheKey = `query:${query.queryId}:${JSON.stringify(query.query)}:${JSON.stringify(options?.window ?? null)}`
 
     const existing = this.sharedQueries.get(cacheKey)
     if (existing) return existing as Observable<QueryResult<Q>>
 
-    const [, responses$] = this.startQuery(query)
+    const [, responses$] = this.startQuery(query, options)
 
     const shared$ = responses$.pipe(
       scan((acc, update) => {
@@ -486,18 +669,53 @@ export class MykoClient {
       // Defensive copy: shareReplay replays the same array reference to all
       // subscribers, so a mutation (e.g. .shift()) by one subscriber would
       // corrupt the shared value for others. Cloning per-subscriber prevents this.
-      map((x) => Array.isArray(x) ? x.slice() as QueryResult<Q> : x),
+      map((x) => (Array.isArray(x) ? (x.slice() as QueryResult<Q>) : x)),
     )
 
     this.sharedQueries.set(cacheKey, shared$)
     return shared$
   }
 
+  /** Watch a view and receive live updates with automatic deduplication */
+  watchView<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<ViewResult<V>> {
+    const cacheKey = `view:${view.viewId}:${JSON.stringify(view.view)}:${JSON.stringify(options?.window ?? null)}`
+
+    const existing = this.sharedViews.get(cacheKey)
+    if (existing) return existing as Observable<ViewResult<V>>
+
+    const [, responses$] = this.startView(view, options)
+
+    const shared$ = responses$.pipe(
+      scan((acc, update) => {
+        if (BigInt(update.data.sequence) === 0n) acc.clear()
+        for (const id of update.data.deletes) acc.delete(id)
+        for (const wrapped of update.data.upserts) {
+          const item = wrapped.item as { id: string }
+          if (item?.id) acc.set(item.id, wrapped)
+        }
+        return acc
+      }, new Map<string, WrappedItem<unknown>>()),
+      map((items) => [...items.values()].map((w) => w.item) as ViewResult<V>),
+      finalize(() => {
+        this.sharedViews.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+      map((x) => (Array.isArray(x) ? (x.slice() as ViewResult<V>) : x)),
+    )
+
+    this.sharedViews.set(cacheKey, shared$)
+    return shared$
+  }
+
   /** Watch a query and receive raw diff events */
   watchQueryDiff<Q extends Query<unknown>>(
     query: Q,
+    options?: QueryWatchOptions,
   ): Observable<QueryDiff<QueryItem<Q>>> {
-    const [, responses$] = this.startQuery(query)
+    const [, responses$] = this.startQuery(query, options)
 
     return responses$.pipe(
       map((r) => ({
@@ -510,6 +728,252 @@ export class MykoClient {
     )
   }
 
+  /** Watch a view and receive raw diff events */
+  watchViewDiff<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<QueryDiff<ViewItem<V>>> {
+    const [, responses$] = this.startView(view, options)
+
+    return responses$.pipe(
+      map((r) => ({
+        sequence: BigInt(r.data.sequence),
+        deletes: r.data.deletes,
+        upserts: r.data.upserts.map(
+          (w: WrappedItem<JsonValue>) => w.item,
+        ) as ViewItem<V>[],
+      })),
+    )
+  }
+
+  /**
+   * Start a live query with a mutable server-side window.
+   * Use `setWindow` to scroll without re-subscribing.
+   */
+  watchQueryWindowed<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): {
+    tx: string
+    results$: Observable<QueryResult<Q>>
+    windowInfo$: Observable<QueryWindowInfo>
+    setWindow: (window: QueryWindow | null) => void
+  } {
+    const [tx, responses$] = this.startQuery(query, options)
+    const sharedResponses$ = responses$.pipe(
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    const results$ = sharedResponses$.pipe(
+      scan((state, update) => {
+        const data = update.data as QueryResponseMessage['data'] & {
+          total_count?: number
+          totalCount?: number
+          window?: QueryWindow | null
+          changes?: Array<
+            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'delete'; id: string }
+            | {
+                kind: 'windowOrder'
+                ids: string[]
+                totalCount?: number
+                total_count?: number
+                window?: QueryWindow | null
+              }
+          >
+        }
+
+        if (BigInt(update.data.sequence) === 0n) {
+          state.cache.clear()
+          state.visibleIds = []
+        }
+
+        for (const id of update.data.deletes) state.cache.delete(id)
+        for (const wrapped of update.data.upserts) {
+          const item = wrapped.item as { id?: string }
+          if (item?.id) state.cache.set(item.id, wrapped)
+        }
+
+        const order = data.changes?.find(
+          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+            change.kind === 'windowOrder',
+        )
+        if (order) {
+          state.visibleIds = order.ids.slice()
+        } else if (data.window) {
+          // Fallback when window-order diffs are unavailable: derive visible ids
+          // from current cache contents (in insertion order).
+          state.visibleIds = [...state.cache.keys()]
+        }
+
+        return state
+      }, {
+        cache: new Map<string, WrappedItem<JsonValue>>(),
+        visibleIds: [] as string[],
+      }),
+      map((state) =>
+        state.visibleIds
+          .map((id) => state.cache.get(id)?.item)
+          .filter((item): item is JsonValue => item !== undefined) as QueryResult<Q>,
+      ),
+      map((x) => x.slice() as QueryResult<Q>),
+    )
+    const windowInfo$ = sharedResponses$.pipe(
+      map((update) => {
+        const data = update.data as QueryResponseMessage['data'] & {
+          total_count?: number
+          totalCount?: number
+          window?: QueryWindow | null
+          changes?: Array<
+            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'delete'; id: string }
+            | {
+                kind: 'windowOrder'
+                ids: string[]
+                totalCount?: number
+                total_count?: number
+                window?: QueryWindow | null
+              }
+          >
+        }
+        const order = data.changes?.find(
+          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+            change.kind === 'windowOrder',
+        )
+        const orderTotalCount = order?.totalCount ?? order?.total_count
+        return {
+          totalCount:
+            typeof data.totalCount === 'number'
+              ? data.totalCount
+              : typeof data.total_count === 'number'
+                ? data.total_count
+              : typeof orderTotalCount === 'number'
+                ? orderTotalCount
+                : null,
+          window: data.window ?? order?.window ?? null,
+        } satisfies QueryWindowInfo
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+
+    return {
+      tx,
+      results$,
+      windowInfo$,
+      setWindow: (window) => this.setQueryWindow(tx, window),
+    }
+  }
+
+  /** Start a live view with a mutable server-side window. */
+  watchViewWindowed<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): {
+    tx: string
+    results$: Observable<ViewResult<V>>
+    windowInfo$: Observable<QueryWindowInfo>
+    setWindow: (window: QueryWindow | null) => void
+  } {
+    const [tx, responses$] = this.startView(view, options)
+    const sharedResponses$ = responses$.pipe(
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    const results$ = sharedResponses$.pipe(
+      scan((state, update) => {
+        const data = update.data as QueryResponseMessage['data'] & {
+          total_count?: number
+          totalCount?: number
+          window?: QueryWindow | null
+          changes?: Array<
+            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'delete'; id: string }
+            | {
+                kind: 'windowOrder'
+                ids: string[]
+                totalCount?: number
+                total_count?: number
+                window?: QueryWindow | null
+              }
+          >
+        }
+
+        if (BigInt(update.data.sequence) === 0n) {
+          state.cache.clear()
+          state.visibleIds = []
+        }
+
+        for (const id of update.data.deletes) state.cache.delete(id)
+        for (const wrapped of update.data.upserts) {
+          const item = wrapped.item as { id?: string }
+          if (item?.id) state.cache.set(item.id, wrapped)
+        }
+
+        const order = data.changes?.find(
+          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+            change.kind === 'windowOrder',
+        )
+        if (order) {
+          state.visibleIds = order.ids.slice()
+        } else if (data.window) {
+          state.visibleIds = [...state.cache.keys()]
+        }
+
+        return state
+      }, {
+        cache: new Map<string, WrappedItem<JsonValue>>(),
+        visibleIds: [] as string[],
+      }),
+      map((state) =>
+        state.visibleIds
+          .map((id) => state.cache.get(id)?.item)
+          .filter((item): item is JsonValue => item !== undefined) as ViewResult<V>,
+      ),
+      map((x) => x.slice() as ViewResult<V>),
+    )
+    const windowInfo$ = sharedResponses$.pipe(
+      map((update) => {
+        const data = update.data as QueryResponseMessage['data'] & {
+          total_count?: number
+          totalCount?: number
+          window?: QueryWindow | null
+          changes?: Array<
+            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'delete'; id: string }
+            | {
+                kind: 'windowOrder'
+                ids: string[]
+                totalCount?: number
+                total_count?: number
+                window?: QueryWindow | null
+              }
+          >
+        }
+        const order = data.changes?.find(
+          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+            change.kind === 'windowOrder',
+        )
+        const orderTotalCount = order?.totalCount ?? order?.total_count
+        return {
+          totalCount:
+            typeof data.totalCount === 'number'
+              ? data.totalCount
+              : typeof data.total_count === 'number'
+                ? data.total_count
+                : typeof orderTotalCount === 'number'
+                  ? orderTotalCount
+                  : null,
+          window: data.window ?? order?.window ?? null,
+        } satisfies QueryWindowInfo
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    return {
+      tx,
+      results$,
+      windowInfo$,
+      setWindow: (window) => this.setViewWindow(tx, window),
+    }
+  }
+
   /** Watch a report with automatic deduplication */
   watchReport<R extends Report<unknown>>(
     report: R,
@@ -520,20 +984,46 @@ export class MykoClient {
     if (existing) return existing as Observable<ReportResult<R>>
 
     const tx = uuid()
+    const reportName =
+      (report as { constructor?: { name?: string } }).constructor?.name ??
+      report.reportId
     const wrappedReport: WrappedReport = {
       report: { ...report.report, tx },
       reportId: report.reportId,
     }
 
     this.activeReports.set(tx, wrappedReport)
+    this.activeReportNames.set(tx, reportName)
+    this.logConnection('report_subscribe', {
+      tx,
+      reportId: wrappedReport.reportId,
+      reportName,
+      report: report.report,
+      activeReports: this.activeReports.size,
+    })
     this.send({ event: MykoEvent.Report, data: wrappedReport })
 
     const shared$ = this.reportResponses.pipe(
       filter((r) => r.data.tx === tx),
+      map((r) => {
+        this.logConnection('report_response', {
+          tx,
+          reportId: wrappedReport.reportId,
+          reportName,
+        })
+        return r
+      }),
       map((r) => r.data.response as ReportResult<R>),
       finalize(() => {
+        this.logConnection('report_cancel', {
+          tx,
+          reportId: wrappedReport.reportId,
+          reportName,
+          activeReportsBefore: this.activeReports.size,
+        })
         this.sharedReports.delete(cacheKey)
         this.activeReports.delete(tx)
+        this.activeReportNames.delete(tx)
         this.send({ event: MykoEvent.ReportCancel, data: { tx } })
       }),
       shareReplay({ bufferSize: 1, refCount: true }),
@@ -555,7 +1045,46 @@ export class MykoClient {
 
   /** Send an event to the server */
   sendEvent(event: MEvent): void {
-    this.send({ event: MykoEvent.Event, data: event })
+    // Pulses are latency-sensitive; bypass batching and send immediately.
+    if (event.itemType === 'Pulse') {
+      this.flushPendingEventBatch()
+      this.sendNow({ event: MykoEvent.Event, data: event })
+      return
+    }
+    this.sendEventBatch([event])
+  }
+
+  /** Send a batch of events to the server */
+  sendEventBatch(events: MEvent[]): void {
+    if (events.length === 0) return
+
+    const buffered: MEvent[] = []
+    const immediatePulses: MEvent[] = []
+    for (const event of events) {
+      if (event.itemType === 'Pulse') {
+        immediatePulses.push(event)
+      } else {
+        buffered.push(event)
+      }
+    }
+
+    if (buffered.length > 0) {
+      this.pendingEventBatch.push(...buffered)
+    }
+
+    if (immediatePulses.length > 0) {
+      this.flushPendingEventBatch()
+      for (const pulse of immediatePulses) {
+        this.sendNow({ event: MykoEvent.Event, data: pulse })
+      }
+      return
+    }
+
+    if (this.pendingEventBatch.length >= this.eventBatchMaxSize) {
+      this.flushPendingEventBatch()
+      return
+    }
+    this.scheduleEventBatchFlush()
   }
 
   /** Send a command and wait for response */
@@ -617,9 +1146,7 @@ export class MykoClient {
     return this.endpointSockets.has(this.endpointKey(address))
   }
 
-  private parseAddress(
-    address: string,
-  ): { host: string; port: number } | null {
+  private parseAddress(address: string): { host: string; port: number } | null {
     try {
       const url = new URL(address)
       const port = url.port
@@ -663,7 +1190,10 @@ export class MykoClient {
     }
     this.sockets.clear()
     this.setCurrentServer(null, 'all sockets closed')
-    this.setConnectionStatus(ConnectionStatus.Disconnected, 'all sockets closed')
+    this.setConnectionStatus(
+      ConnectionStatus.Disconnected,
+      'all sockets closed',
+    )
   }
 
   private createSocket(address: string, reconnectOnClose = true): void {
@@ -692,7 +1222,10 @@ export class MykoClient {
     this.sockets.set(address, managed)
 
     if (this.sockets.size === 1) {
-      this.setConnectionStatus(ConnectionStatus.Connecting, `connecting to ${address}`)
+      this.setConnectionStatus(
+        ConnectionStatus.Connecting,
+        `connecting to ${address}`,
+      )
     }
 
     ws.onopen = () => {
@@ -703,7 +1236,10 @@ export class MykoClient {
 
       if (!this.currentServer) {
         this.setCurrentServer(address, 'socket open')
-        this.setConnectionStatus(ConnectionStatus.Connected, `connected to ${address}`)
+        this.setConnectionStatus(
+          ConnectionStatus.Connected,
+          `connected to ${address}`,
+        )
         this.flushQueue()
         this.resendSubscriptions()
         if (this.peerDiscoveryEnabled) this.startPeerDiscovery()
@@ -811,7 +1347,40 @@ export class MykoClient {
   private routeMessage(message: MykoMessage): void {
     switch (message.event) {
       case MykoEvent.QueryResponse:
+        this.logConnection('query_response', {
+          tx: message.data.tx,
+          queryId: this.activeQueries.get(message.data.tx)?.queryId,
+          queryItemType: this.activeQueries.get(message.data.tx)?.queryItemType,
+          queryName:
+            this.activeQueryNames.get(message.data.tx) ??
+            this.activeQueries.get(message.data.tx)?.queryId ??
+            'unknown',
+          sequence: message.data.sequence,
+          upserts: message.data.upserts.length,
+          deletes: message.data.deletes.length,
+          changes: (message.data as { changes?: unknown[] }).changes?.length ?? 0,
+          totalCount:
+            (message.data as { totalCount?: number; total_count?: number }).totalCount ??
+            (message.data as { totalCount?: number; total_count?: number }).total_count ??
+            null,
+          window: (message.data as { window?: QueryWindow | null }).window ?? null,
+        })
         this.queryResponses.next(message)
+        break
+      case MykoEvent.ViewResponse:
+        this.logConnection('view_response', {
+          tx: (message as QueryResponseMessage).data.tx,
+          sequence: (message as QueryResponseMessage).data.sequence,
+          upserts: (message as QueryResponseMessage).data.upserts.length,
+          deletes: (message as QueryResponseMessage).data.deletes.length,
+          changes: ((message as QueryResponseMessage).data as { changes?: unknown[] }).changes?.length ?? 0,
+          totalCount: ((message as QueryResponseMessage).data as { totalCount?: number; total_count?: number })
+            .totalCount ??
+            ((message as QueryResponseMessage).data as { totalCount?: number; total_count?: number }).total_count ??
+            null,
+          window: ((message as QueryResponseMessage).data as { window?: QueryWindow | null }).window ?? null,
+        })
+        this.queryResponses.next(message as unknown as QueryResponseMessage)
         break
       case MykoEvent.ReportResponse:
         this.reportResponses.next(message)
@@ -828,6 +1397,24 @@ export class MykoClient {
           tx: message.data.tx,
           message: message.data.message,
           queryId: this.activeQueries.get(message.data.tx)?.queryId,
+          queryItemType: this.activeQueries.get(message.data.tx)?.queryItemType,
+          queryName:
+            this.activeQueryNames.get(message.data.tx) ??
+            this.activeQueries.get(message.data.tx)?.queryId ??
+            'unknown',
+        })
+        break
+      case MykoEvent.ViewError:
+        this.queryErrors.next(message as unknown as QueryErrorMessage)
+        this.logConnection('view_error', {
+          tx: message.data.tx,
+          message: message.data.message,
+          viewId: this.activeViews.get(message.data.tx)?.viewId,
+          viewItemType: this.activeViews.get(message.data.tx)?.viewItemType,
+          viewName:
+            this.activeViewNames.get(message.data.tx) ??
+            this.activeViews.get(message.data.tx)?.viewId ??
+            'unknown',
         })
         break
       case MykoEvent.ReportError:
@@ -836,6 +1423,10 @@ export class MykoClient {
           tx: message.data.tx,
           message: message.data.message,
           reportId: this.activeReports.get(message.data.tx)?.reportId,
+          reportName:
+            this.activeReportNames.get(message.data.tx) ??
+            this.activeReports.get(message.data.tx)?.reportId ??
+            'unknown',
         })
         break
       case MykoEvent.Ping:
@@ -847,7 +1438,32 @@ export class MykoClient {
     }
   }
 
+  private scheduleEventBatchFlush(): void {
+    if (this.eventBatchFlushScheduled) return
+    this.eventBatchFlushScheduled = true
+    queueMicrotask(() => {
+      this.eventBatchFlushScheduled = false
+      this.flushPendingEventBatch()
+    })
+  }
+
+  private flushPendingEventBatch(): void {
+    if (this.pendingEventBatch.length === 0) return
+
+    while (this.pendingEventBatch.length > 0) {
+      const batch = this.pendingEventBatch.splice(0, this.eventBatchMaxSize)
+      this.sendNow({ event: EVENT_BATCH, data: batch } as unknown as MykoMessage)
+    }
+  }
+
   private send(message: MykoMessage): void {
+    if ((message as { event: string }).event !== EVENT_BATCH) {
+      this.flushPendingEventBatch()
+    }
+    this.sendNow(message)
+  }
+
+  private sendNow(message: MykoMessage): void {
     if (this.currentServer) {
       const managed = this.sockets.get(this.currentServer)
       if (managed?.ws.readyState === WebSocket.OPEN) {
@@ -873,15 +1489,15 @@ export class MykoClient {
     for (const q of this.activeQueries.values()) {
       this.send({ event: MykoEvent.Query, data: q })
     }
+    for (const v of this.activeViews.values()) {
+      this.send({ event: MykoEvent.View, data: v })
+    }
     for (const r of this.activeReports.values()) {
       this.send({ event: MykoEvent.Report, data: r })
     }
   }
 
-  private setConnectionStatus(
-    status: ConnectionStatus,
-    reason: string,
-  ): void {
+  private setConnectionStatus(status: ConnectionStatus, reason: string): void {
     this.connectionStatusSubject.next(status)
     this.logConnection('status', {
       status,
@@ -897,11 +1513,12 @@ export class MykoClient {
     this.logConnection('current_server', { server, reason })
   }
 
-  private logConnection(
-    event: string,
-    details: Record<string, unknown>,
-  ): void {
-    // Keep these logs lightweight and always available for diagnosing failover behavior.
+  private logConnection(event: string, details: Record<string, unknown>): void {
+    // Opt-in logging only (hot paths can emit a lot and hurt UI perf).
+    const enabled =
+      typeof globalThis !== 'undefined' &&
+      Boolean((globalThis as { __MYKO_DEBUG_CONNECTION__?: boolean }).__MYKO_DEBUG_CONNECTION__)
+    if (!enabled) return
     console.info(`[MykoClient] ${event}`, details)
   }
 }

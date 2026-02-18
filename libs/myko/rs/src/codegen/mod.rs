@@ -15,6 +15,7 @@ use crate::{
     core::item::ItemRegistration,
     query::QueryRegistration,
     report::ReportRegistration,
+    view::ViewRegistration,
     wire::MessageEventRegistration,
 };
 
@@ -126,6 +127,9 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     let queries: Vec<_> = inventory::iter::<QueryRegistration>()
         .filter(|x| x.crate_name.contains(&crate_name))
         .collect();
+    let views: Vec<_> = inventory::iter::<ViewRegistration>()
+        .filter(|x| x.crate_name.contains(&crate_name))
+        .collect();
     let reports: Vec<_> = inventory::iter::<ReportRegistration>()
         .filter(|x| x.crate_name.contains(&crate_name))
         .collect();
@@ -137,6 +141,7 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     let class_type_names: HashSet<&str> = queries
         .iter()
         .map(|q| q.query_id)
+        .chain(views.iter().map(|v| v.view_id))
         .chain(reports.iter().map(|r| r.report_id))
         .chain(commands.iter().map(|c| c.command_id))
         .collect();
@@ -163,6 +168,9 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     }
     for query in &queries {
         entity_types.insert(query.query_item_type.to_string());
+    }
+    for view in &views {
+        entity_types.insert(view.view_item_type.to_string());
     }
     for report in reports
         .iter()
@@ -208,6 +216,11 @@ pub fn generate_item_types() -> Result<(), anyhow::Error> {
     let query_classes = queries
         .iter()
         .map(|q| generate_query_class(q.query_id, q.query_item_type))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+    let view_classes = views
+        .iter()
+        .map(|v| generate_view_class(v.view_id, v.view_item_type))
         .collect::<Vec<String>>()
         .join("\n\n");
 
@@ -306,6 +319,9 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
         "// Query classes".to_string(),
         query_classes,
         "".to_string(),
+        "// View classes".to_string(),
+        view_classes,
+        "".to_string(),
         "// Report classes".to_string(),
         report_classes,
         "".to_string(),
@@ -359,6 +375,23 @@ fn generate_query_class(query_id: &str, query_item_type: &str) -> String {
 
   constructor(args: Omit<_{query_id}, 'tx' | 'createdAt'>) {{
     this.query = args;
+  }}
+}}"#
+    )
+}
+
+fn generate_view_class(view_id: &str, view_item_type: &str) -> String {
+    format!(
+        r#"export class {view_id} {{
+  static readonly viewId = "{view_id}" as const;
+  static readonly viewItemType = "{view_item_type}" as const;
+  readonly viewId = "{view_id}" as const;
+  readonly viewItemType = "{view_item_type}" as const;
+  readonly view: Omit<_{view_id}, 'tx' | 'createdAt'>;
+  declare readonly $res: () => {view_item_type}[];
+
+  constructor(args: Omit<_{view_id}, 'tx' | 'createdAt'>) {{
+    this.view = args;
   }}
 }}"#
     )

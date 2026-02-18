@@ -18,7 +18,10 @@ use myko_rs::{
     relationship::{iter_client_id_registrations, iter_fallback_to_id_registrations},
     request::RequestContext,
     server::{CellServerCtx, ClientSession, WsWriter, client_registry::try_client_registry},
-    wire::{CancelSubscription, CommandError, CommandResponse, MykoMessage, PingData},
+    wire::{
+        CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
+        PingData, QueryWindowUpdate, ViewError, ViewWindowUpdate,
+    },
 };
 use tokio::{net::TcpStream, sync::mpsc};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -27,6 +30,40 @@ use uuid::Uuid;
 /// Protocol switch message sent by client to enable binary (msgpack) encoding.
 /// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.
 const SWITCH_TO_MSGPACK: &str = "myko:switch-to-msgpack";
+
+fn normalize_incoming_event(event: &mut MEvent, client_id: &str) {
+    if event.change_type != MEventType::SET {
+        return;
+    }
+
+    // Auto-populate #[myko_client_id] fields with the connection's client_id
+    for reg in iter_client_id_registrations() {
+        if reg.entity_type == event.item_type {
+            if let Some(obj) = event.item.as_object_mut() {
+                obj.insert(
+                    reg.field_name_json.to_string(),
+                    serde_json::Value::String(client_id.to_string()),
+                );
+            }
+            break;
+        }
+    }
+
+    // Auto-populate #[fallback_to_id] fields with the entity's own id
+    // if the field is null or missing.
+    if let Some(obj) = event.item.as_object_mut()
+        && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(String::from)
+    {
+        for reg in iter_fallback_to_id_registrations() {
+            if reg.entity_type == event.item_type {
+                let field = reg.field_name_json;
+                if matches!(obj.get(field), None | Some(serde_json::Value::Null)) {
+                    obj.insert(field.to_string(), serde_json::Value::String(id.clone()));
+                }
+            }
+        }
+    }
+}
 
 /// Per-connection drop tracking to avoid log storms when clients fall behind.
 ///
@@ -311,6 +348,15 @@ impl WsHandler {
                 let entity_type = &wrapped.query_item_type;
 
                 log::trace!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
+                log::debug!(
+                    "Query subscribe request client={} tx={} query_id={} item_type={} window={} active_subscriptions_before={}",
+                    session.client_id,
+                    tx_id,
+                    query_id,
+                    entity_type,
+                    wrapped.window.is_some(),
+                    session.subscription_count()
+                );
 
                 let request_context = Arc::new(RequestContext::from_client(
                     tx_id.clone(),
@@ -318,7 +364,6 @@ impl WsHandler {
                     host_id,
                 ));
 
-                // Look up the query registration
                 if let Some(query_data) = handler_registry.get_query(query_id) {
                     // Parse the query JSON to the concrete type
                     let parsed = (query_data.parse)(wrapped.query.clone());
@@ -329,9 +374,14 @@ impl WsHandler {
                                 any_query,
                                 registry.clone(),
                                 request_context.clone(),
+                                Some(ctx.clone()),
                             ) {
                                 Ok(filtered_cellmap) => {
-                                    session.subscribe_query(tx_id, filtered_cellmap);
+                                    session.subscribe_query(
+                                        tx_id,
+                                        filtered_cellmap,
+                                        wrapped.window.clone(),
+                                    );
                                 }
                                 Err(e) => {
                                     log::error!(
@@ -354,17 +404,141 @@ impl WsHandler {
                 } else {
                     // Fall back to select all for unknown queries
                     log::warn!(
-                        "No registered handler for query {}, falling back to select all",
+                        "No registered query handler for {}, falling back to select all",
                         query_id
                     );
                     let cellmap = registry.get_or_create(entity_type).select(|_| true);
-                    session.subscribe_query(tx_id, cellmap);
+                    session.subscribe_query(tx_id, cellmap, wrapped.window.clone());
+                }
+            }
+
+            MykoMessage::View(wrapped) => {
+                let tx_id: Arc<str> = wrapped
+                    .view
+                    .get("tx")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .into();
+                let view_id = &wrapped.view_id;
+                let item_type = &wrapped.view_item_type;
+
+                log::trace!("View {} for {} (tx: {})", view_id, item_type, tx_id);
+                log::debug!(
+                    "View subscribe request client={} tx={} view_id={} item_type={} window={:?}",
+                    session.client_id,
+                    tx_id,
+                    view_id,
+                    item_type,
+                    wrapped.window
+                );
+
+                let request_context = Arc::new(RequestContext::from_client(
+                    tx_id.clone(),
+                    session.client_id.clone(),
+                    host_id,
+                ));
+
+                if let Some(view_data) = handler_registry.get_view(view_id) {
+                    let parsed = (view_data.parse)(wrapped.view.clone());
+                    match parsed {
+                        Ok(any_view) => {
+                            log::debug!(
+                                "View parsed successfully client={} tx={} view_id={}",
+                                session.client_id,
+                                tx_id,
+                                view_id
+                            );
+                            match (view_data.cell_factory)(
+                                any_view,
+                                registry.clone(),
+                                request_context,
+                                Some(ctx.clone()),
+                            ) {
+                                Ok(filtered_cellmap) => {
+                                    log::debug!(
+                                        "View cell factory succeeded client={} tx={} view_id={}",
+                                        session.client_id,
+                                        tx_id,
+                                        view_id
+                                    );
+                                    session.subscribe_view(
+                                        tx_id,
+                                        filtered_cellmap,
+                                        wrapped.window.clone(),
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to create view cell for {}: {}",
+                                        view_id,
+                                        e
+                                    );
+                                    if let Err(err) =
+                                        tx.try_send(MykoMessage::ViewError(ViewError {
+                                            tx: tx_id.to_string(),
+                                            view_id: view_id.to_string(),
+                                            message: e,
+                                        }))
+                                    {
+                                        drop_logger.on_drop("ViewError", &err);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let message = format!("Failed to parse view {}: {}", view_id, e);
+                            log::error!(
+                                "{} | payload: {}",
+                                message,
+                                serde_json::to_string(&wrapped.view).unwrap_or_default()
+                            );
+                            if let Err(err) = tx.try_send(MykoMessage::ViewError(ViewError {
+                                tx: tx_id.to_string(),
+                                view_id: view_id.to_string(),
+                                message,
+                            })) {
+                                drop_logger.on_drop("ViewError", &err);
+                            }
+                        }
+                    }
+                } else {
+                    let message = format!("No registered handler for view: {}", view_id);
+                    log::warn!("{}", message);
+                    if let Err(err) = tx.try_send(MykoMessage::ViewError(ViewError {
+                        tx: tx_id.to_string(),
+                        view_id: view_id.to_string(),
+                        message,
+                    })) {
+                        drop_logger.on_drop("ViewError", &err);
+                    }
                 }
             }
 
             MykoMessage::QueryCancel(CancelSubscription { tx: tx_id }) => {
                 log::trace!("Query cancel: {}", tx_id);
                 session.cancel(&tx_id.into());
+            }
+
+            MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
+                let tx_id: Arc<str> = tx.into();
+                log::trace!("Query window update: {}", tx_id);
+                log::debug!(
+                    "Query window request client={} tx={} has_window={} active_subscriptions={}",
+                    session.client_id,
+                    tx_id,
+                    window.is_some(),
+                    session.subscription_count()
+                );
+                session.update_query_window(&tx_id, window);
+            }
+            MykoMessage::ViewCancel(CancelSubscription { tx: tx_id }) => {
+                log::trace!("View cancel: {}", tx_id);
+                session.cancel(&tx_id.into());
+            }
+            MykoMessage::ViewWindow(ViewWindowUpdate { tx, window }) => {
+                let tx_id: Arc<str> = tx.into();
+                log::trace!("View window update: {}", tx_id);
+                session.update_view_window(&tx_id, window);
             }
 
             MykoMessage::Report(wrapped) => {
@@ -378,6 +552,13 @@ impl WsHandler {
                 let report_id = &wrapped.report_id;
 
                 log::trace!("Report {} (tx: {})", report_id, tx_id);
+                log::debug!(
+                    "Report subscribe request client={} tx={} report_id={} active_subscriptions_before={}",
+                    session.client_id,
+                    tx_id,
+                    report_id,
+                    session.subscription_count()
+                );
 
                 // Look up the report registration
                 if let Some(report_data) = handler_registry.get_report(report_id) {
@@ -429,66 +610,35 @@ impl WsHandler {
             }
 
             MykoMessage::Event(mut event) => {
-                use myko_rs::event::MEventType;
+                normalize_incoming_event(&mut event, &session.client_id);
+                let _ = ctx.apply_event(event);
+            }
 
-                // log::debug!("Event: {:?} {}", event.change_type(), event.item_type());
-
-                match event.change_type {
-                    MEventType::SET => {
-                        // Auto-populate #[myko_client_id] fields with the connection's client_id
-                        for reg in iter_client_id_registrations() {
-                            if reg.entity_type == event.item_type {
-                                if let Some(obj) = event.item.as_object_mut() {
-                                    obj.insert(
-                                        reg.field_name_json.to_string(),
-                                        serde_json::Value::String(session.client_id.to_string()),
-                                    );
-                                }
-                                break;
-                            }
-                        }
-
-                        // Auto-populate #[fallback_to_id] fields with the entity's own id
-                        // if the field is null or missing
-                        if let Some(obj) = event.item.as_object_mut()
-                            && let Some(id) =
-                                obj.get("id").and_then(|v| v.as_str()).map(String::from)
-                        {
-                            for reg in iter_fallback_to_id_registrations() {
-                                if reg.entity_type == event.item_type {
-                                    let field = reg.field_name_json;
-                                    if matches!(
-                                        obj.get(field),
-                                        None | Some(serde_json::Value::Null)
-                                    ) {
-                                        obj.insert(
-                                            field.to_string(),
-                                            serde_json::Value::String(id.clone()),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Parse JSON to typed entity
-                        if let Some(item) = ctx.parse_item(&event.item_type, &event.item) {
-                            // Publish with default options (Reduce + Relationships + Persist)
-                            ctx.set_dyn(item);
-                        } else {
-                            log::warn!("Unknown entity type or parse error: {}", event.item_type);
-                        }
-                    }
-                    MEventType::DEL => {
-                        // For DEL, parse to get the entity (needed for relationships)
-                        if let Some(item) = ctx.parse_item(&event.item_type, &event.item) {
-                            ctx.del_dyn(item);
-                        } else {
-                            log::warn!(
-                                "Unknown entity type or parse error for DEL: {}",
-                                event.item_type
-                            );
-                        }
-                    }
+            MykoMessage::EventBatch(mut events) => {
+                let incoming = events.len();
+                if incoming >= 64 {
+                    log::info!(
+                        "Received event batch from client {} size={}",
+                        session.client_id,
+                        incoming
+                    );
+                }
+                for event in &mut events {
+                    normalize_incoming_event(event, &session.client_id);
+                }
+                let applied = ctx.apply_event_batch(events);
+                if applied >= 64 {
+                    log::info!(
+                        "Applied event batch from client {} size={}",
+                        session.client_id,
+                        applied
+                    );
+                } else {
+                    log::debug!(
+                        "Applied event batch from client {} size={}",
+                        session.client_id,
+                        applied
+                    );
                 }
             }
 
@@ -574,6 +724,8 @@ impl WsHandler {
             // Response messages - these shouldn't come from clients
             MykoMessage::QueryResponse(_)
             | MykoMessage::QueryError(_)
+            | MykoMessage::ViewResponse(_)
+            | MykoMessage::ViewError(_)
             | MykoMessage::ReportResponse(_)
             | MykoMessage::ReportError(_)
             | MykoMessage::CommandResponse(_)

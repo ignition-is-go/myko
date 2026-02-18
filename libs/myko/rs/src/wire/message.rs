@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     command::{CommandError, CommandResponse, WrappedCommand},
     event::MEvent,
-    query::{QueryError, QueryResponse, WrappedQuery},
+    query::{QueryError, QueryResponse, QueryWindowUpdate, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
+    view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView},
 };
 
 /// Cancel subscription payload - just the transaction ID
@@ -43,6 +44,16 @@ pub enum MykoMessage {
     QueryResponse(QueryResponse),
     #[serde(rename = "ws:m:query-cancel")]
     QueryCancel(CancelSubscription),
+    #[serde(rename = "ws:m:query-window")]
+    QueryWindow(QueryWindowUpdate),
+    #[serde(rename = "ws:m:view")]
+    View(WrappedView),
+    #[serde(rename = "ws:m:view-response")]
+    ViewResponse(ViewResponse),
+    #[serde(rename = "ws:m:view-cancel")]
+    ViewCancel(CancelSubscription),
+    #[serde(rename = "ws:m:view-window")]
+    ViewWindow(ViewWindowUpdate),
     #[serde(rename = "ws:m:report")]
     Report(WrappedReport),
     #[serde(rename = "ws:m:report-response")]
@@ -53,8 +64,12 @@ pub enum MykoMessage {
     ReportError(ReportError),
     #[serde(rename = "ws:m:query-error")]
     QueryError(QueryError),
+    #[serde(rename = "ws:m:view-error")]
+    ViewError(ViewError),
     #[serde(rename = "ws:m:event")]
     Event(MEvent),
+    #[serde(rename = "ws:m:event-batch")]
+    EventBatch(Vec<MEvent>),
     #[serde(rename = "ws:m:command")]
     Command(WrappedCommand),
     #[serde(rename = "ws:m:command-response")]

@@ -7,8 +7,12 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
-    command::CommandError, event::EventOptions, item::Eventable, query::QueryParams,
+    command::CommandError,
+    event::EventOptions,
+    item::Eventable,
+    query::QueryParams,
     request::RequestContext,
+    wire::{MEvent, MEventType},
 };
 
 /// Context provided to command handlers for accessing dependencies.
@@ -95,6 +99,48 @@ impl CommandContext {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (item, options);
+            unreachable!();
+        }
+    }
+
+    /// Emit a batch of SET events for items.
+    ///
+    /// This is more efficient than repeated `emit_set` calls because the server can
+    /// apply the events in one bulk pass.
+    pub fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
+        &self,
+        items: &[T],
+    ) -> Result<(), CommandError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if items.is_empty() {
+                return Ok(());
+            }
+
+            let source_id = self.req.client_id.as_ref().map(|id| id.to_string());
+            let mut events = Vec::with_capacity(items.len());
+            for item in items {
+                let item_json = serde_json::to_value(item).map_err(|err| CommandError {
+                    tx: self.req.tx.to_string(),
+                    command_id: self.command_id.to_string(),
+                    message: format!("Failed to serialize item for batch set: {}", err),
+                })?;
+                events.push(MEvent {
+                    item: item_json,
+                    change_type: MEventType::SET,
+                    item_type: item.entity_type().to_string(),
+                    created_at: self.req.created_at.to_string(),
+                    tx: self.req.tx.to_string(),
+                    source_id: source_id.clone(),
+                    options: None,
+                });
+            }
+            self.server_ctx.apply_event_batch(events);
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = items;
             unreachable!();
         }
     }

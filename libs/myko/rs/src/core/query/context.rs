@@ -1,14 +1,20 @@
 //! Minimal server context for query handlers.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[cfg(not(target_arch = "wasm32"))]
-use hypha::{Cell, CellImmutable, MapExt};
+use dashmap::DashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use hypha::{Cell, CellImmutable, MapExt, WeakCellMap};
+#[cfg(not(target_arch = "wasm32"))]
+use serde_json::Value;
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
     cell::FilteredCellMap, registration::QueryFactory, request::QueryRequest, traits::AnyQuery,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::item::AnyItem;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::report::{AnyReport, ReportFactory, ReportOutputType, ReportRequest};
 use crate::request::RequestContext;
@@ -31,7 +37,7 @@ pub struct QueryContext {
 
 /// Server-only context for advanced query composition.
 ///
-/// Use this from `QueryHandler::build_cell` to compose query cells from other
+/// Use this from `QueryHandler::build_view` to compose query cells from other
 /// queries while preserving request context (tx, host_id, lineage).
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
@@ -40,6 +46,16 @@ pub struct QueryCellContext {
     pub query_context: Arc<QueryContext>,
     registry: Arc<StoreRegistry>,
     server_ctx: Option<Arc<CellServerCtx>>,
+    subquery_cache: Arc<DashMap<String, FilteredCellMap>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static GLOBAL_SUBQUERY_CACHE: OnceLock<DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>>> =
+    OnceLock::new();
+
+#[cfg(not(target_arch = "wasm32"))]
+fn global_subquery_cache() -> &'static DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>> {
+    GLOBAL_SUBQUERY_CACHE.get_or_init(DashMap::new)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -55,6 +71,7 @@ impl QueryCellContext {
             query_context,
             registry,
             server_ctx,
+            subquery_cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -71,14 +88,33 @@ impl QueryCellContext {
             + Sync
             + 'static,
     {
+        let key = Self::subquery_cache_key(
+            &serde_json::to_value(&query).unwrap_or(Value::Null),
+            Q::query_id_static().as_ref(),
+            &self.request_ctx.host_id.to_string(),
+        );
+        if let Some(existing) = self.subquery_cache.get(&key) {
+            return Ok(existing.value().clone());
+        }
+        if let Some(existing) = global_subquery_cache().get(&key) {
+            if let Some(shared) = existing.value().upgrade() {
+                let locked = shared.lock();
+                self.subquery_cache.insert(key, locked.clone());
+                return Ok(locked);
+            }
+        }
+
         let wrapped = QueryRequest::with_tx(query, self.request_ctx.tx.clone());
         let any_query: Arc<dyn AnyQuery> = Arc::new(wrapped);
-        Q::cell_factory(
+        let built = Q::cell_factory(
             any_query,
             self.registry.clone(),
             self.request_ctx.clone(),
             self.server_ctx.clone(),
-        )
+        )?;
+        global_subquery_cache().insert(key.clone(), built.downgrade());
+        self.subquery_cache.insert(key, built.clone());
+        Ok(built)
     }
 
     /// Build a reactive cell for a report using the same request context.
@@ -111,5 +147,11 @@ impl QueryCellContext {
 
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
+    }
+
+    fn subquery_cache_key(query_value: &Value, query_id: &str, host_id: &str) -> String {
+        let payload =
+            serde_json::to_string(query_value).unwrap_or_else(|_| format!("{query_value:?}"));
+        format!("{host_id}:{query_id}:{payload}")
     }
 }

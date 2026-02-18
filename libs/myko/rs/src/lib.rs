@@ -100,14 +100,16 @@ pub mod bench_entities;
 // Re-export core modules at top level for backwards compatibility
 #[cfg(not(target_arch = "wasm32"))]
 pub use core::saga;
-pub use core::{command, common, item, query, relationship, report, request};
+pub use core::{command, common, item, query, relationship, report, request, view};
 
 // Re-export crates for use in macros
+pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hypha; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko_rs::submit! macro
 pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
+pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
 pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko_rs::TS)]

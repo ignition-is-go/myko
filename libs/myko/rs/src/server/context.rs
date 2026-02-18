@@ -5,10 +5,10 @@
 //! - Publish entities (Reduce → Relationships → Persist)
 //! - Access server identity (host_id)
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SelectExt};
+use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -16,7 +16,7 @@ use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     client::{ConnectionStatus, MykoClient},
     core::item::{AnyItem, Eventable},
-    query::{QueryContext, QueryHandler, QueryParams, QueryTestCtx},
+    query::{QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest, QueryTestCtx},
     report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
     search::SearchIndex,
@@ -48,6 +48,8 @@ pub struct CellServerCtx {
     peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
     /// Monotonic tick bumped on peer client register/unregister.
     peer_clients_tick: Cell<u64, CellMutable>,
+    /// Optional event sink used to fan out applied events to saga runtimes.
+    event_sink: Option<flume::Sender<MEvent>>,
 }
 
 impl CellServerCtx {
@@ -60,6 +62,7 @@ impl CellServerCtx {
         persisters: Arc<PersisterRouter>,
         search_index: Arc<SearchIndex>,
         peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
+        event_sink: Option<flume::Sender<MEvent>>,
     ) -> Self {
         Self {
             host_id,
@@ -70,6 +73,7 @@ impl CellServerCtx {
             search_index,
             peer_clients,
             peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
+            event_sink,
         }
     }
 
@@ -109,6 +113,11 @@ impl CellServerCtx {
     /// Reactive tick that updates whenever peer client membership changes.
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.peer_clients_tick.clone().lock()
+    }
+
+    /// Number of currently tracked peer clients.
+    pub fn peer_client_count(&self) -> usize {
+        self.peer_clients.len()
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -200,12 +209,12 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item, self);
+            self.relationship_manager.forward_del(item.clone(), self);
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity_type, &id);
+            self.produce_del(entity_type, &id, Some(entity.to_value()));
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
@@ -270,12 +279,12 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item, self);
+            self.relationship_manager.forward_del(item.clone(), self);
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity_type, &id);
+            self.produce_del(entity_type, &id, Some(item.to_value()));
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
@@ -304,7 +313,7 @@ impl CellServerCtx {
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity_type, id);
+            self.produce_del(entity_type, id, None);
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
@@ -313,6 +322,150 @@ impl CellServerCtx {
     /// Delete an entity by type/id with default options.
     pub fn del_by_id(&self, entity_type: &str, id: &str) {
         self.del_by_id_with_options(entity_type, id, None);
+    }
+
+    /// Apply a single wire event (parse -> reduce -> relationships -> persist).
+    ///
+    /// Returns `true` when the event was parsed and applied, `false` otherwise.
+    pub fn apply_event(&self, event: MEvent) -> bool {
+        self.apply_event_batch(vec![event]) == 1
+    }
+
+    /// Apply a batch of wire events with a single parse pass and grouped store updates.
+    ///
+    /// This reduces overhead versus calling `set_dyn`/`del_dyn` for each event individually.
+    /// Returns the number of successfully parsed/applied events.
+    pub fn apply_event_batch(&self, events: Vec<MEvent>) -> usize {
+        if events.is_empty() {
+            return 0;
+        }
+
+        let incoming = events.len();
+        #[derive(Clone)]
+        struct SetOp {
+            item: Arc<dyn AnyItem>,
+            options: EventOptions,
+        }
+
+        #[derive(Clone)]
+        struct DelOp {
+            item: Arc<dyn AnyItem>,
+            options: EventOptions,
+        }
+
+        let mut sets: Vec<SetOp> = Vec::new();
+        let mut dels: Vec<DelOp> = Vec::new();
+
+        for event in events {
+            let options = event.options.clone().unwrap_or_default();
+            match event.change_type {
+                MEventType::SET => {
+                    if let Some(item) = self.parse_item(&event.item_type, &event.item) {
+                        sets.push(SetOp { item, options });
+                    } else {
+                        log::warn!(
+                            "Unknown entity type or parse error for SET: {}",
+                            event.item_type
+                        );
+                    }
+                }
+                MEventType::DEL => {
+                    if let Some(item) = self.parse_item(&event.item_type, &event.item) {
+                        dels.push(DelOp { item, options });
+                    } else {
+                        log::warn!(
+                            "Unknown entity type or parse error for DEL: {}",
+                            event.item_type
+                        );
+                    }
+                }
+            }
+        }
+
+        if sets.is_empty() && dels.is_empty() {
+            return 0;
+        }
+
+        let mut inserts_by_type: HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>> =
+            HashMap::new();
+        let mut removes_by_type: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+
+        for op in &sets {
+            let entity_type: Arc<str> = op.item.entity_type().into();
+            inserts_by_type
+                .entry(entity_type)
+                .or_default()
+                .push((op.item.id(), op.item.clone()));
+            self.search_index.index_item(&op.item);
+        }
+        for op in &dels {
+            let entity_type: Arc<str> = op.item.entity_type().into();
+            let id = op.item.id();
+            removes_by_type
+                .entry(entity_type)
+                .or_default()
+                .push(id.clone());
+            self.search_index.remove_entity(&id);
+        }
+
+        // Reduce: one diff emission per entity type per operation kind.
+        for (entity_type, entries) in inserts_by_type {
+            let store = self.registry.get_or_create(entity_type.as_ref());
+            store.insert_many(entries);
+        }
+        for (entity_type, keys) in removes_by_type {
+            let store = self.registry.get_or_create(entity_type.as_ref());
+            store.remove_many(keys);
+        }
+
+        // Relationships
+        for op in &sets {
+            if !op.options.prevent_relationship_updates {
+                self.relationship_manager.forward_set(op.item.clone(), self);
+            }
+        }
+        for op in &dels {
+            if !op.options.prevent_relationship_updates {
+                self.relationship_manager.forward_del(op.item.clone(), self);
+            }
+        }
+
+        // Persist
+        for op in &sets {
+            if !op.options.prevent_persist {
+                self.produce_set_dyn(&op.item);
+            }
+        }
+        for op in &dels {
+            if !op.options.prevent_persist {
+                self.produce_del(
+                    op.item.entity_type(),
+                    &op.item.id(),
+                    Some(op.item.to_value()),
+                );
+            }
+        }
+
+        let applied = sets.len() + dels.len();
+        if incoming >= 64 || applied >= 64 {
+            log::info!(
+                "apply_event_batch incoming={} applied={} set={} del={}",
+                incoming,
+                applied,
+                sets.len(),
+                dels.len()
+            );
+        } else {
+            log::debug!(
+                "apply_event_batch incoming={} applied={} set={} del={}",
+                incoming,
+                applied,
+                sets.len(),
+                dels.len()
+            );
+        }
+
+        applied
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -324,12 +477,31 @@ impl CellServerCtx {
             let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
             persister.persist(event);
         }
+        if let Some(sink) = &self.event_sink {
+            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
+            let _ = sink.send(event);
+        }
     }
 
-    fn produce_del(&self, entity_type: &str, id: &str) {
+    fn produce_del(&self, entity_type: &str, id: &str, sink_item: Option<serde_json::Value>) {
         if let Some(persister) = self.persisters.resolve(entity_type) {
             let event = MEvent::del(entity_type, id, &self.host_id.to_string());
             persister.persist(event);
+        }
+        if let Some(sink) = &self.event_sink {
+            let event = match sink_item {
+                Some(item) => MEvent {
+                    item,
+                    change_type: MEventType::DEL,
+                    item_type: entity_type.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    tx: uuid::Uuid::new_v4().to_string(),
+                    source_id: Some(self.host_id.to_string()),
+                    options: None,
+                },
+                None => MEvent::del(entity_type, id, &self.host_id.to_string()),
+            };
+            let _ = sink.send(event);
         }
     }
 
@@ -341,6 +513,14 @@ impl CellServerCtx {
                 &self.host_id.to_string(),
             );
             persister.persist(event);
+        }
+        if let Some(sink) = &self.event_sink {
+            let event = MEvent::set_from_value(
+                item.entity_type(),
+                item.to_value(),
+                &self.host_id.to_string(),
+            );
+            let _ = sink.send(event);
         }
     }
 
@@ -365,42 +545,29 @@ impl CellServerCtx {
         request: Arc<RequestContext>,
     ) -> Cell<Vec<Q::Item>, CellImmutable>
     where
-        Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let query_item_type = Q::query_item_type_static();
-        let store = self.registry.get_or_create(&query_item_type);
-
-        // Create a MykoServerCtx for query compatibility
-        let query_context = Arc::new(QueryContext {
-            req: request.clone(),
-        });
-        let query = Arc::new(query);
-
-        // Filter using the query's test_entity
         let query_id = Q::query_id_static();
         let query_name = format!("query:{}", query_id);
-        store
-            .select(move |item| {
-                if let Some(typed_item) = item.as_any().downcast_ref::<Q::Item>() {
-                    let ctx = QueryTestCtx {
-                        item: Arc::new(typed_item.clone()),
-                        query: query.clone(),
-                        query_context: query_context.clone(),
-                    };
-                    Q::test_entity(ctx)
-                } else {
-                    false
-                }
-            })
-            .entries()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
-                    .collect()
-            })
-            .with_name(query_name.as_str())
+        let query_req = QueryRequest::with_tx(query, request.tx.clone());
+        let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
+
+        Q::cell_factory(
+            any_query,
+            self.registry.clone(),
+            request,
+            Some(Arc::new(self.clone())),
+        )
+        .expect("query cell factory should not fail for typed query")
+        .entries()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
+                .collect()
+        })
+        .with_name(query_name.as_str())
     }
 
     /// Run a one-shot (non-reactive) query.

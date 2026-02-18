@@ -8,31 +8,13 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::traits::{
-    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCellCtx,
+    AnyQuery, QueryBuildCellCtx, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
+    QueryTestCtx,
 };
 use crate::common::with_transaction::WithTransaction;
 #[cfg(not(target_arch = "wasm32"))]
-use hypha::{Cell, CellImmutable};
+use crate::core::query::cell::FilteredCellMap;
 
-/// Wraps query parameters with transaction metadata.
-///
-/// This type adds `tx` (transaction ID) and `created_at` timestamp to any query
-/// parameters struct. Uses `#[serde(flatten)]` to serialize as a flat structure.
-///
-/// # Example
-///
-/// ```ignore
-/// // Query params (what user defines):
-/// #[myko_query(Server)]
-/// pub struct GetServersByIds {
-///     pub ids: Vec<Arc<str>>,
-/// }
-///
-/// // Create a request:
-/// let request = QueryRequest::new(GetServersByIds { ids: vec![...] });
-///
-/// // Serializes to: { "tx": "...", "createdAt": "...", "ids": [...] }
-/// ```
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest<Q> {
@@ -43,7 +25,6 @@ pub struct QueryRequest<Q> {
 }
 
 impl<Q> QueryRequest<Q> {
-    /// Create a new query request with auto-generated tx and timestamp.
     pub fn new(query: Q) -> Self {
         Self {
             tx: Uuid::new_v4().to_string().into(),
@@ -52,8 +33,6 @@ impl<Q> QueryRequest<Q> {
         }
     }
 
-    /// Create a new query request with a specific tx.
-    /// Used by reports to share their tx with query subscriptions.
     pub fn with_tx(query: Q, tx: Arc<str>) -> Self {
         Self {
             tx,
@@ -69,16 +48,12 @@ impl<Q: Default> Default for QueryRequest<Q> {
     }
 }
 
-/// Convert query params directly into a QueryRequest.
-/// This only works for types that implement QueryParams (actual query param structs),
-/// not for QueryRequest itself, which avoids ambiguity with From<&QueryRequest<Q>>.
 impl<Q: QueryParams> From<Q> for QueryRequest<Q> {
     fn from(query: Q) -> Self {
         Self::new(query)
     }
 }
 
-/// Convert a reference to a QueryRequest into an owned QueryRequest by cloning.
 impl<Q: Clone> From<&QueryRequest<Q>> for QueryRequest<Q> {
     fn from(request: &QueryRequest<Q>) -> Self {
         request.clone()
@@ -116,10 +91,17 @@ impl<Q: QueryItemType> QueryItemType for QueryRequest<Q> {
 }
 
 impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequest<Q> {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn test_entity(ctx: QueryTestCellCtx<Self>) -> Cell<bool, CellImmutable> {
-        Q::test_entity(QueryTestCellCtx {
+    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
+        Q::test_entity(QueryTestCtx {
             item: ctx.item,
+            query: Arc::new(ctx.query.query.clone()),
+            query_context: ctx.query_context,
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_view(ctx: QueryBuildCellCtx<Self>) -> Option<FilteredCellMap> {
+        Q::build_view(QueryBuildCellCtx {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
         })

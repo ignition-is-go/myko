@@ -14,9 +14,15 @@ import {
 	type CommandResult,
 	type MykoError,
 	type Query,
+	type QueryWindow,
+	type QueryWatchOptions,
 	type QueryDiff,
 	type QueryItem,
+	type QueryWindowInfo,
 	type QueryResult,
+	type View,
+	type ViewItem,
+	type ViewResult,
 	type Report,
 	type ReportResult
 } from '@myko/ts';
@@ -56,6 +62,39 @@ export type LiveQuery<Q extends Query<unknown>> = {
 	readonly resolved: boolean;
 	/** Current error if any */
 	readonly error: Error | undefined;
+};
+
+/** Live windowed query result with automatic lifecycle management */
+export type LiveWindowedQuery<Q extends Query<unknown>> = {
+	/** Current windowed items */
+	readonly items: QueryResult<Q>;
+	/** Current reported total count */
+	readonly totalCount: number | null;
+	/** Current applied server window */
+	readonly window: QueryWindow | null;
+	/** Whether first response has been received */
+	readonly resolved: boolean;
+	/** Current error if any */
+	readonly error: Error | undefined;
+	/** Update server-side window without re-subscribing */
+	setWindow(window: QueryWindow | null): void;
+};
+
+/** Live view result with automatic lifecycle management */
+export type LiveView<V extends View<unknown>> = {
+	readonly items: SvelteMap<string, ViewItem<V> & { id: string }>;
+	readonly resolved: boolean;
+	readonly error: Error | undefined;
+};
+
+/** Live windowed view result with automatic lifecycle management */
+export type LiveWindowedView<V extends View<unknown>> = {
+	readonly items: ViewResult<V>;
+	readonly totalCount: number | null;
+	readonly window: QueryWindow | null;
+	readonly resolved: boolean;
+	readonly error: Error | undefined;
+	setWindow(window: QueryWindow | null): void;
 };
 
 /**
@@ -302,6 +341,243 @@ export class SvelteMykoClient {
 		};
 	}
 
+	/** Create a live view subscription with automatic lifecycle management. */
+	liveView<V extends View<unknown>>(factory: () => V | null | undefined): LiveView<V> {
+		type Item = ViewItem<V> & { id: string };
+		const items = new SvelteMap<string, Item>();
+		let resolved = $state(false);
+		let error = $state<Error | undefined>(undefined);
+
+		$effect(() => {
+			const view = factory();
+			if (!view) {
+				items.clear();
+				resolved = false;
+				error = undefined;
+				return;
+			}
+
+			error = undefined;
+			const subscription = this.client.watchViewDiff(view).subscribe({
+				next: (diff) => {
+					if (diff.sequence === 0n) {
+						items.clear();
+					}
+					for (const id of diff.deletes) {
+						items.delete(id);
+					}
+					for (const item of diff.upserts) {
+						const typedItem = item as Item;
+						items.set(typedItem.id, typedItem);
+					}
+					resolved = true;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
+				}
+			});
+
+			return () => {
+				subscription.unsubscribe();
+				items.clear();
+				resolved = false;
+			};
+		});
+
+		return {
+			items,
+			get resolved() {
+				return resolved;
+			},
+			get error() {
+				return error;
+			}
+		};
+	}
+
+	/**
+	 * Create a live windowed query with automatic lifecycle management.
+	 *
+	 * Uses server-side query windows while exposing Svelte-native reactive state.
+	 */
+	liveQueryWindowed<Q extends Query<unknown>>(
+		factory: () => Q | null | undefined,
+		optionsFactory?: () => QueryWatchOptions | undefined
+	): LiveWindowedQuery<Q> {
+		type Result = QueryResult<Q>;
+		let items = $state<Result>([] as unknown as Result);
+		let totalCount = $state<number | null>(null);
+		let window = $state<QueryWindow | null>(null);
+		let resolved = $state(false);
+		let error = $state<Error | undefined>(undefined);
+		let setWindowFn: (window: QueryWindow | null) => void = () => {};
+
+		$effect(() => {
+			const query = factory();
+			const options = optionsFactory?.();
+
+			if (!query) {
+				items = [] as unknown as Result;
+				totalCount = null;
+				window = null;
+				resolved = false;
+				error = undefined;
+				setWindowFn = () => {};
+				return;
+			}
+
+			error = undefined;
+			resolved = false;
+
+			const handle = this.client.watchQueryWindowed(query, options);
+			setWindowFn = handle.setWindow;
+
+			const itemsSub = handle.results$.subscribe({
+				next: (next) => {
+					items = next as Result;
+					resolved = true;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
+				}
+			});
+
+			const infoSub = handle.windowInfo$.subscribe({
+				next: (info) => {
+					totalCount = info.totalCount;
+					window = info.window;
+					resolved = true;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
+				}
+			});
+
+			return () => {
+				itemsSub.unsubscribe();
+				infoSub.unsubscribe();
+				items = [] as unknown as Result;
+				totalCount = null;
+				window = null;
+				resolved = false;
+				setWindowFn = () => {};
+			};
+		});
+
+		return {
+			get items() {
+				return items;
+			},
+			get totalCount() {
+				return totalCount;
+			},
+			get window() {
+				return window;
+			},
+			get resolved() {
+				return resolved;
+			},
+			get error() {
+				return error;
+			},
+			setWindow(nextWindow: QueryWindow | null) {
+				setWindowFn(nextWindow);
+			}
+		};
+	}
+
+	/** Create a live windowed view with automatic lifecycle management. */
+	liveViewWindowed<V extends View<unknown>>(
+		factory: () => V | null | undefined,
+		optionsFactory?: () => QueryWatchOptions | undefined
+	): LiveWindowedView<V> {
+		type Result = ViewResult<V>;
+		let items = $state<Result>([] as unknown as Result);
+		let totalCount = $state<number | null>(null);
+		let window = $state<QueryWindow | null>(null);
+		let resolved = $state(false);
+		let error = $state<Error | undefined>(undefined);
+		let setWindowFn: (window: QueryWindow | null) => void = () => {};
+
+		$effect(() => {
+			const view = factory();
+			const options = optionsFactory?.();
+
+			if (!view) {
+				items = [] as unknown as Result;
+				totalCount = null;
+				window = null;
+				resolved = false;
+				error = undefined;
+				setWindowFn = () => {};
+				return;
+			}
+
+			error = undefined;
+			resolved = false;
+
+			const handle = this.client.watchViewWindowed(view, options);
+			setWindowFn = handle.setWindow;
+
+			const itemsSub = handle.results$.subscribe({
+				next: (next) => {
+					items = next as Result;
+					resolved = true;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
+				}
+			});
+
+			const infoSub = handle.windowInfo$.subscribe({
+				next: (info) => {
+					totalCount = info.totalCount;
+					window = info.window;
+					resolved = true;
+					error = undefined;
+				},
+				error: (e) => {
+					error = e instanceof Error ? e : new Error(String(e));
+				}
+			});
+
+			return () => {
+				itemsSub.unsubscribe();
+				infoSub.unsubscribe();
+				items = [] as unknown as Result;
+				totalCount = null;
+				window = null;
+				resolved = false;
+				setWindowFn = () => {};
+			};
+		});
+
+		return {
+			get items() {
+				return items;
+			},
+			get totalCount() {
+				return totalCount;
+			},
+			get window() {
+				return window;
+			},
+			get resolved() {
+				return resolved;
+			},
+			get error() {
+				return error;
+			},
+			setWindow(nextWindow: QueryWindow | null) {
+				setWindowFn(nextWindow);
+			}
+		};
+	}
+
 	/**
 	 * Watch a query with Observable-based updates.
 	 *
@@ -314,6 +590,52 @@ export class SvelteMykoClient {
 	 */
 	watchQuery<Q extends Query<unknown>>(queryFactory: Q): Observable<QueryResult<Q>> {
 		return this.client.watchQuery(queryFactory);
+	}
+
+	/**
+	 * Watch a query with optional server-side windowing.
+	 */
+	watchQueryWithOptions<Q extends Query<unknown>>(
+		queryFactory: Q,
+		options?: QueryWatchOptions
+	): Observable<QueryResult<Q>> {
+		return this.client.watchQuery(queryFactory, options);
+	}
+
+	/** Watch a view with optional server-side windowing. */
+	watchViewWithOptions<V extends View<unknown>>(
+		viewFactory: V,
+		options?: QueryWatchOptions
+	): Observable<ViewResult<V>> {
+		return this.client.watchView(viewFactory, options);
+	}
+
+	/**
+	 * Watch a query and mutate its server-side window without re-subscribing.
+	 */
+	watchQueryWindowed<Q extends Query<unknown>>(
+		queryFactory: Q,
+		options?: QueryWatchOptions
+	): {
+		tx: string;
+		results$: Observable<QueryResult<Q>>;
+		windowInfo$: Observable<QueryWindowInfo>;
+		setWindow: (window: QueryWindow | null) => void;
+	} {
+		return this.client.watchQueryWindowed(queryFactory, options);
+	}
+
+	/** Watch a view and mutate its server-side window without re-subscribing. */
+	watchViewWindowed<V extends View<unknown>>(
+		viewFactory: V,
+		options?: QueryWatchOptions
+	): {
+		tx: string;
+		results$: Observable<ViewResult<V>>;
+		windowInfo$: Observable<QueryWindowInfo>;
+		setWindow: (window: QueryWindow | null) => void;
+	} {
+		return this.client.watchViewWindowed(viewFactory, options);
 	}
 
 	/**
@@ -344,9 +666,7 @@ export class SvelteMykoClient {
 	 * </script>
 	 * ```
 	 */
-	async sendCommand<C extends Command<unknown>>(
-		commandFactory: C
-	): Promise<CommandResult<C>> {
+	async sendCommand<C extends Command<unknown>>(commandFactory: C): Promise<CommandResult<C>> {
 		const commandId = commandFactory.commandId;
 		this.commandSentSubject.next({ commandId });
 		try {

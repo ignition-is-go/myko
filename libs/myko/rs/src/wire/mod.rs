@@ -12,6 +12,8 @@ pub mod item;
 pub mod message;
 pub mod query;
 pub mod report;
+mod shared;
+pub mod view;
 
 // Re-export deprecated function for backwards compat
 #[allow(deprecated)]
@@ -20,5 +22,9 @@ pub use command::{CommandError, CommandResponse, WrappedCommand, wrap_command_re
 pub use event::{EventOptions, MEvent, MEventType};
 pub use item::WrappedItem;
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
-pub use query::{QueryError, QueryResponse, QueryResult, WrappedQuery, wrap_query};
+pub use query::{
+    QueryChange, QueryError, QueryResponse, QueryResult, QueryWindow, QueryWindowUpdate,
+    WrappedQuery, wrap_query,
+};
 pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
+pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view};

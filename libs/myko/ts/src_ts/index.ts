@@ -83,7 +83,13 @@ export {
   type Query,
   type QueryDiff,
   type QueryItem,
+  type QueryWatchOptions,
+  type QueryWindow,
+  type QueryWindowInfo,
   type QueryResult,
+  type View,
+  type ViewItem,
+  type ViewResult,
   type Report,
   type ReportResult,
 } from './client.js'

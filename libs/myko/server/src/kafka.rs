@@ -329,6 +329,10 @@ pub struct TopicProgress {
 pub struct CatchUpStatus {
     /// Whether all initial topics have caught up
     caught_up: AtomicBool,
+    /// Whether catch-up hit a non-recoverable failure
+    failed: AtomicBool,
+    /// Failure reason when `failed` is set
+    failure_reason: std::sync::RwLock<Option<String>>,
     /// Topics still pending catch-up with progress info
     pending_topics: std::sync::RwLock<Vec<TopicProgress>>,
 }
@@ -337,6 +341,8 @@ impl CatchUpStatus {
     fn new() -> Self {
         Self {
             caught_up: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
+            failure_reason: std::sync::RwLock::new(None),
             pending_topics: std::sync::RwLock::new(Vec::new()),
         }
     }
@@ -344,6 +350,16 @@ impl CatchUpStatus {
     /// Check if all initial topics have caught up.
     pub fn is_caught_up(&self) -> bool {
         self.caught_up.load(Ordering::SeqCst)
+    }
+
+    /// Check if catch-up has failed.
+    pub fn is_failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
+    }
+
+    /// Current failure reason if any.
+    pub fn failure_reason(&self) -> Option<String> {
+        self.failure_reason.read().unwrap().clone()
     }
 
     /// Get topics still pending catch-up with progress.
@@ -356,18 +372,35 @@ impl CatchUpStatus {
         *self.pending_topics.write().unwrap() = topics;
     }
 
+    /// Mark catch-up as failed.
+    fn fail(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        *self.failure_reason.write().unwrap() = Some(reason.clone());
+        self.failed.store(true, Ordering::SeqCst);
+        self.caught_up.store(false, Ordering::SeqCst);
+    }
+
     /// Block until caught up or timeout.
     ///
-    /// Returns true if caught up, false if timed out.
-    pub fn wait_until_caught_up(&self, timeout: Duration) -> bool {
+    /// Returns `Ok(())` if caught up, `Err(reason)` on timeout or critical failure.
+    pub fn wait_until_caught_up(&self, timeout: Duration) -> Result<(), String> {
         let start = std::time::Instant::now();
         let poll_interval = Duration::from_millis(50);
         let log_interval = Duration::from_secs(5);
         let mut last_log = std::time::Instant::now() - log_interval; // Log immediately on first check
 
         while !self.is_caught_up() {
+            if self.is_failed() {
+                return Err(self
+                    .failure_reason()
+                    .unwrap_or_else(|| "Kafka catch-up failed with unknown reason".to_string()));
+            }
+
             if start.elapsed() >= timeout {
-                return false;
+                return Err(format!(
+                    "Kafka catch-up timed out after {}s",
+                    timeout.as_secs()
+                ));
             }
 
             // Log pending topics periodically
@@ -389,7 +422,7 @@ impl CatchUpStatus {
 
             std::thread::sleep(poll_interval);
         }
-        true
+        Ok(())
     }
 }
 
@@ -605,18 +638,12 @@ impl CellKafkaConsumer {
                                         }
                                     }
                                     Err(err) => {
-                                        warn!("{topic}: Failed to fetch watermarks: {err}");
-                                        // Assume empty
-                                        high_water_marks.insert(topic.clone(), 0);
-                                        caught_up.insert(topic);
-                                        check_all_caught_up(
-                                            &initial_topics,
-                                            &caught_up,
-                                            &high_water_marks,
-                                            &current_offsets,
-                                            initial_registration_done,
-                                            &catch_up_status_clone,
+                                        let reason = format!(
+                                            "Critical Kafka startup failure: {topic} watermark fetch failed: {err}"
                                         );
+                                        error!("{reason}");
+                                        catch_up_status_clone.fail(reason);
+                                        return;
                                     }
                                 }
                             }
@@ -823,7 +850,7 @@ impl CellKafkaConsumer {
     /// Block until all initial topics are caught up or timeout.
     ///
     /// Returns true if caught up, false if timed out.
-    pub fn wait_until_caught_up(&self, timeout: Duration) -> bool {
+    pub fn wait_until_caught_up(&self, timeout: Duration) -> Result<(), String> {
         self.catch_up_status.wait_until_caught_up(timeout)
     }
 }

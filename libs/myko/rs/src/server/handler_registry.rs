@@ -10,6 +10,7 @@ use crate::{
     item::{ItemParseFn, ItemRegistration},
     query::{QueryCellFactory, QueryParseFn, QueryRegistration},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
+    view::{ViewCellFactory, ViewParseFn, ViewRegistration},
 };
 
 /// Stored query registration data.
@@ -18,6 +19,14 @@ pub struct StoredQueryData {
     pub query_item_type: Arc<str>,
     pub parse: QueryParseFn,
     pub cell_factory: QueryCellFactory,
+}
+
+/// Stored view registration data.
+pub struct StoredViewData {
+    pub view_id: Arc<str>,
+    pub view_item_type: Arc<str>,
+    pub parse: ViewParseFn,
+    pub cell_factory: ViewCellFactory,
 }
 
 /// Stored report registration data.
@@ -36,6 +45,8 @@ pub struct HandlerRegistry {
     item_parsers: HashMap<Arc<str>, ItemParseFn>,
     /// Query data by query id
     query_data: HashMap<Arc<str>, StoredQueryData>,
+    /// View data by view id
+    view_data: HashMap<Arc<str>, StoredViewData>,
     /// Report data by report id
     report_data: HashMap<Arc<str>, StoredReportData>,
 }
@@ -45,6 +56,7 @@ impl HandlerRegistry {
     pub fn new() -> Self {
         let mut item_parsers = HashMap::new();
         let mut query_data = HashMap::new();
+        let mut view_data = HashMap::new();
         let mut report_data = HashMap::new();
 
         // Collect item registrations
@@ -63,6 +75,18 @@ impl HandlerRegistry {
                 cell_factory: registration.cell_factory,
             };
             query_data.insert(data.query_id.clone(), data);
+        }
+
+        // Collect view registrations
+        for registration in inventory::iter::<ViewRegistration> {
+            log::trace!("Registered view: {}", registration.view_id);
+            let data = StoredViewData {
+                view_id: registration.view_id.into(),
+                view_item_type: registration.view_item_type.into(),
+                parse: registration.parse,
+                cell_factory: registration.cell_factory,
+            };
+            view_data.insert(data.view_id.clone(), data);
         }
 
         // Collect report registrations
@@ -101,11 +125,13 @@ impl HandlerRegistry {
         }
 
         log::trace!(
-            "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
+            "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Views ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
             format_list(item_parsers.keys()),
             query_data.len(),
             format_list(query_data.keys()),
+            view_data.len(),
+            format_list(view_data.keys()),
             report_data.len(),
             format_list(report_data.keys()),
             command_ids.len(),
@@ -115,6 +141,7 @@ impl HandlerRegistry {
         Self {
             item_parsers,
             query_data,
+            view_data,
             report_data,
         }
     }
@@ -132,6 +159,11 @@ impl HandlerRegistry {
     /// Get report registration data by report id.
     pub fn get_report(&self, report_id: &str) -> Option<&StoredReportData> {
         self.report_data.get(report_id)
+    }
+
+    /// Get view registration data by view id.
+    pub fn get_view(&self, view_id: &str) -> Option<&StoredViewData> {
+        self.view_data.get(view_id)
     }
 
     /// Check if an entity type has a registered parser.
@@ -152,6 +184,11 @@ impl HandlerRegistry {
     /// Get all registered report ids.
     pub fn report_ids(&self) -> impl Iterator<Item = &Arc<str>> {
         self.report_data.keys()
+    }
+
+    /// Get all registered view ids.
+    pub fn view_ids(&self) -> impl Iterator<Item = &Arc<str>> {
+        self.view_data.keys()
     }
 }
 

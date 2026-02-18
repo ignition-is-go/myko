@@ -589,6 +589,16 @@ impl MykoClient {
         Ok(())
     }
 
+    pub fn send_event_batch(&self, events: Vec<MEvent>) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let myko_msg = MykoMessage::EventBatch(events);
+        let frame = self.encode_message(&myko_msg)?;
+        self.send_or_queue(frame);
+        Ok(())
+    }
+
     pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
         let myko_msg = MykoMessage::Query(query);
         let frame = self.encode_message(&myko_msg)?;
@@ -640,6 +650,7 @@ impl MykoClient {
             query: query_value,
             query_id: query_id.clone(),
             query_item_type,
+            window: None,
         };
 
         let cell = Cell::new(vec![]).with_name(query_id.as_ref());

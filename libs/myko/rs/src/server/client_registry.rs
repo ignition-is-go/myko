@@ -43,6 +43,11 @@ impl ClientRegistry {
             false
         }
     }
+
+    /// Number of currently connected clients.
+    pub fn len(&self) -> usize {
+        self.writers.len()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
