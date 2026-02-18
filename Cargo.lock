@@ -6514,6 +6514,7 @@ version = "3.1.0-canary.23"
 dependencies = [
  "chrono",
  "dashmap",
+ "flume 0.11.1",
  "futures-util",
  "hypha",
  "inventory",
@@ -6901,6 +6902,21 @@ dependencies = [
  "num-traits",
  "rand 0.8.5",
  "rand_xorshift",
+]
+
+[[package]]
+name = "noise-rs"
+version = "3.1.0-canary.23"
+dependencies = [
+ "anyhow",
+ "hostname",
+ "rand 0.8.5",
+ "rship-sdk",
+ "schemars 1.2.1",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -9470,6 +9486,8 @@ dependencies = [
 name = "rship-entities"
 version = "3.1.0-canary.23"
 dependencies = [
+ "futures-util",
+ "log",
  "myko-rs",
  "rship-entities-assets",
  "rship-entities-assignment",
@@ -9640,6 +9658,7 @@ dependencies = [
 name = "rship-entities-external"
 version = "3.1.0-canary.23"
 dependencies = [
+ "dashmap",
  "hypha",
  "log",
  "myko-macros",
@@ -11032,6 +11051,7 @@ dependencies = [
  "myko-server",
  "pulse-platform",
  "rship-entities",
+ "tikv-jemallocator",
  "tokio",
 ]
 
@@ -12541,6 +12561,26 @@ dependencies = [
  "quick-error",
  "weezl",
  "zune-jpeg 0.4.21",
+]
+
+[[package]]
+name = "tikv-jemalloc-sys"
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd8aa5b2ab86a2cefa406d889139c162cbb230092f7d1d7cbc1716405d852a3b"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
+name = "tikv-jemallocator"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359b4327f954e0567e69fb191cf1436617748813819c94b8cd4a431422d053a"
+dependencies = [
+ "libc",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
