@@ -581,10 +581,14 @@ impl CellServer {
 
     /// Initialize Postgres replay/listener and wait for catch-up.
     pub fn init_postgres_and_wait(&self, timeout: Duration) -> Result<(), String> {
+        if self.config.postgres.is_some() && self.postgres_consumer.is_none() {
+            return Err(
+                "Postgres is configured but the Postgres consumer is not running".to_string(),
+            );
+        }
+
         if let Some(ref consumer) = self.postgres_consumer {
             consumer.wait_until_caught_up(timeout)?;
-            self.ready.store(true, Ordering::SeqCst);
-        } else {
             self.ready.store(true, Ordering::SeqCst);
         }
         Ok(())
@@ -629,6 +633,10 @@ impl CellServer {
         self.persisters
             .startup_healthcheck(&entity_types)
             .map_err(|reason| format!("Persister startup healthcheck failed: {reason}"))?;
+
+        if self.config.postgres.is_some() && self.postgres_consumer.is_none() {
+            return Err("Postgres is configured but the Postgres consumer failed to start".into());
+        }
 
         // Wait for Postgres catch-up if configured
         if self.postgres_consumer.is_some() {

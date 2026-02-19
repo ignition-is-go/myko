@@ -107,6 +107,36 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let get_by_partial_ident = format_ident!("Get{}sByQuery", name_str);
     let partial_ident = format_ident!("Partial{}", name_str);
 
+    let belongs_to_fast_paths: Vec<TokenStream> = rel_info
+        .belongs_to
+        .iter()
+        .filter(|bt| !bt.is_optional)
+        .map(|bt| {
+            let field_ident = format_ident!("{}", bt.field_name);
+            let field_name = bt.field_name.clone();
+            quote! {
+                if let Some(fk) = ctx.query.0.#field_ident.clone() {
+                    let source = #krate::query::build_belongs_to_source_map(
+                        ctx.query_context.registry(),
+                        ctx.query_context.request_ctx.host_id,
+                        #name_str,
+                        #field_name,
+                        |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
+                            item.downcast_ref::<#name>()
+                                .map(|e| std::sync::Arc::<str>::from(e.#field_ident.as_ref()))
+                        },
+                        std::sync::Arc::<str>::from(fk.as_ref()),
+                    );
+                    return Some(#krate::query::filter_query_over_source::<#get_by_partial_ident>(
+                        source,
+                        ctx.query.clone(),
+                        ctx.query_context.query_context.clone(),
+                    ));
+                }
+            }
+        })
+        .collect();
+
     let get_by_partial_query = quote! {
         #[myko_macros::myko_query(#name)]
          pub struct #get_by_partial_ident(pub #partial_ident);
@@ -114,6 +144,17 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
          impl #krate::prelude::QueryHandler for #get_by_partial_ident {
              fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
                  ctx.query.0.matches(&ctx.item)
+             }
+
+             #[cfg(not(target_arch = "wasm32"))]
+             fn build_view(
+                ctx: #krate::prelude::QueryBuildCellCtx<Self>,
+             ) -> Option<#krate::prelude::FilteredCellMap>
+             where
+                Self: std::marker::Send + std::marker::Sync + 'static,
+             {
+                #(#belongs_to_fast_paths)*
+                None
              }
          }
 

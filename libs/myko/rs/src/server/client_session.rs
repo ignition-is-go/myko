@@ -115,7 +115,9 @@ impl<W: WsWriter> ClientSession<W> {
                     return;
                 }
             };
-            writer.send(MykoMessage::QueryResponse(response));
+            if let Some(response) = response {
+                writer.send(MykoMessage::QueryResponse(response));
+            }
         });
 
         self.subscriptions.insert(
@@ -168,6 +170,9 @@ impl<W: WsWriter> ClientSession<W> {
                     log::error!("View subscription state poisoned for tx={}", tx_clone);
                     return;
                 }
+            };
+            let Some(response) = response else {
+                return;
             };
             log::trace!(
                 "ClientSession {} view tx={} seq={} upserts={} deletes={} changes={} window={:?} total_count={:?}",
@@ -348,7 +353,8 @@ impl QuerySubscriptionState {
         &mut self,
         diff: &hypha::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
-    ) -> QueryResponse {
+    ) -> Option<QueryResponse> {
+        let previous_total_count = self.all_items.len();
         let mut changed_ids: HashSet<Arc<str>> = HashSet::new();
 
         match diff {
@@ -406,19 +412,22 @@ impl QuerySubscriptionState {
             }
         }
 
-        self.compute_windowed_response(tx, &changed_ids)
+        self.compute_windowed_response(tx, &changed_ids, previous_total_count, false)
     }
 
     fn apply_window_update(&mut self, window: Option<QueryWindow>, tx: Arc<str>) -> QueryResponse {
         self.window = window;
-        self.compute_windowed_response(tx, &HashSet::new())
+        self.compute_windowed_response(tx, &HashSet::new(), self.all_items.len(), true)
+            .expect("window update should always produce a response")
     }
 
     fn compute_windowed_response(
         &mut self,
         tx: Arc<str>,
         changed_ids: &HashSet<Arc<str>>,
-    ) -> QueryResponse {
+        previous_total_count: usize,
+        force_emit: bool,
+    ) -> Option<QueryResponse> {
         let mut ordered_ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
         ordered_ids.sort_unstable();
 
@@ -435,6 +444,8 @@ impl QuerySubscriptionState {
         };
 
         let previous_visible = self.visible_items.clone();
+        let mut previous_visible_ids: Vec<Arc<str>> = previous_visible.keys().cloned().collect();
+        previous_visible_ids.sort_unstable();
         let mut next_visible: HashMap<Arc<str>, Arc<dyn AnyItem>> = HashMap::new();
 
         for id in &visible_ids {
@@ -464,6 +475,38 @@ impl QuerySubscriptionState {
             }
         }
 
+        let total_count = self.all_items.len();
+        let window_order_changed = previous_visible_ids != visible_ids;
+        let total_count_changed = previous_total_count != total_count;
+        let visible_changed = !upserts.is_empty() || !deletes.is_empty();
+        let should_emit = force_emit
+            || self.sequence == 0
+            || visible_changed
+            || window_order_changed
+            || total_count_changed;
+
+        log::trace!(
+            "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
+            tx,
+            force_emit,
+            self.sequence,
+            changed_ids.len(),
+            upserts.len(),
+            deletes.len(),
+            visible_changed,
+            window_order_changed,
+            total_count_changed,
+            should_emit,
+            total_count,
+            self.window
+        );
+
+        self.visible_items = next_visible;
+
+        if !should_emit {
+            return None;
+        }
+
         let mut changes: Vec<QueryChange> = Vec::with_capacity(upserts.len() + deletes.len() + 1);
         for item in &upserts {
             changes.push(QueryChange::Upsert { item: item.clone() });
@@ -474,25 +517,23 @@ impl QuerySubscriptionState {
         if self.window.is_some() {
             changes.push(QueryChange::WindowOrder {
                 ids: visible_ids.clone(),
-                total_count: self.all_items.len(),
+                total_count,
                 window: self.window.clone(),
             });
         }
 
-        self.visible_items = next_visible;
-
         let seq = self.sequence;
         self.sequence = self.sequence.saturating_add(1);
 
-        QueryResponse {
+        Some(QueryResponse {
             tx,
             sequence: seq,
             changes,
             upserts,
             deletes,
-            total_count: Some(self.all_items.len()),
+            total_count: Some(total_count),
             window: self.window.clone(),
-        }
+        })
     }
 }
 
@@ -759,5 +800,39 @@ mod tests {
         };
         assert_eq!(window.offset, 0);
         assert_eq!(window.limit, 1);
+    }
+
+    #[test]
+    fn test_view_window_ignores_out_of_window_updates() {
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+
+        let cellmap = store.select(|_| true);
+        session.subscribe_view(
+            "tx-view-1".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 1,
+            }),
+        );
+
+        // Initial window response
+        let before = mock.message_count();
+        assert!(before >= 1);
+
+        // "c" is outside window [a] with sorted IDs.
+        store.insert("c".into(), make_entity("c", "Charlie Updated"));
+
+        // No visible/window/count change => no extra response.
+        let after = mock.message_count();
+        assert_eq!(after, before);
     }
 }

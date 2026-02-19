@@ -297,11 +297,15 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn myko_view(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
     if attr.is_empty() {
-        view::myko_view_declarative_impl(input).into()
-    } else {
-        let args = parse_macro_input!(attr as view::ViewArgs);
-        view::myko_view_impl(args, input).into()
+        return syn::Error::new(
+            input.ident.span(),
+            "#[myko_view] requires an item type: #[myko_view(ViewItemType)]",
+        )
+        .to_compile_error()
+        .into();
     }
+    let args = parse_macro_input!(attr as view::ViewArgs);
+    view::myko_view_impl(args, input).into()
 }
 
 /// Marks a struct as a typed view item (id/hash should already be present).

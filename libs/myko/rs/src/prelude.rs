@@ -11,6 +11,8 @@ pub use ts_rs::TS;
 pub use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub use crate::query::FilteredCellMap;
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::QueryBuildCellCtx;
 pub use crate::{
     client::MykoClient,

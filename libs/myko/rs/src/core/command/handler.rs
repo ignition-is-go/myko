@@ -117,7 +117,7 @@ impl CommandContext {
                 return Ok(());
             }
 
-            let source_id = self.req.client_id.as_ref().map(|id| id.to_string());
+            let source_id = Some(self.req.host_id.to_string());
             let mut events = Vec::with_capacity(items.len());
             for item in items {
                 let item_json = serde_json::to_value(item).map_err(|err| CommandError {
@@ -167,7 +167,7 @@ impl CommandContext {
                 return Ok(());
             }
 
-            let source_id = self.req.client_id.as_ref().map(|id| id.to_string());
+            let source_id = Some(self.req.host_id.to_string());
             let mut events = Vec::with_capacity(items.len());
             for item in items {
                 let item_json = serde_json::to_value(item).map_err(|err| CommandError {

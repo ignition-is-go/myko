@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     client::{ConnectionStatus, MykoClient},
-    core::item::{AnyItem, Eventable},
+    core::item::{AnyItem, Eventable, typed_map_from_any_item},
     query::{
         FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
         QueryTestCtx,
@@ -24,6 +24,7 @@ use crate::{
     request::RequestContext,
     search::SearchIndex,
     store::StoreRegistry,
+    view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
     wire::{EventOptions, MEvent, MEventType},
 };
 
@@ -342,6 +343,7 @@ impl CellServerCtx {
         if events.is_empty() {
             return 0;
         }
+        let input_len = events.len();
 
         #[derive(Clone)]
         struct SetOp {
@@ -388,6 +390,14 @@ impl CellServerCtx {
             return 0;
         }
 
+        log::trace!(
+            target: "myko_rs::server::context",
+            "apply_event_batch parsed: input_events={} sets={} dels={}",
+            input_len,
+            sets.len(),
+            dels.len()
+        );
+
         let mut inserts_by_type: HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>> =
             HashMap::new();
         let mut removes_by_type: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
@@ -412,10 +422,22 @@ impl CellServerCtx {
 
         // Reduce: one diff emission per entity type per operation kind.
         for (entity_type, entries) in inserts_by_type {
+            log::trace!(
+                target: "myko_rs::server::context",
+                "apply_event_batch reduce inserts: entity_type={} count={}",
+                entity_type,
+                entries.len()
+            );
             let store = self.registry.get_or_create(entity_type.as_ref());
             store.insert_many(entries);
         }
         for (entity_type, keys) in removes_by_type {
+            log::trace!(
+                target: "myko_rs::server::context",
+                "apply_event_batch reduce removes: entity_type={} count={}",
+                entity_type,
+                keys.len()
+            );
             let store = self.registry.get_or_create(entity_type.as_ref());
             store.remove_many(keys);
         }
@@ -559,6 +581,42 @@ impl CellServerCtx {
             Some(Arc::new(self.clone())),
         )
         .expect("query cell factory should not fail for typed query")
+    }
+
+    /// Build a reactive view cell map (type-erased for framework internals).
+    pub fn view_map_untyped<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
+        let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
+
+        V::cell_factory(
+            any_view,
+            self.registry.clone(),
+            request,
+            Arc::new(self.clone()),
+        )
+        .expect("view cell factory should not fail for typed view")
+    }
+
+    /// Back-compat alias for type-erased view map.
+    pub fn view_map<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        self.view_map_untyped(view, request)
+    }
+
+    /// Build a typed reactive view cell map.
+    pub fn view<V>(&self, view: V, request: Arc<RequestContext>) -> TypedViewCellMap<V::Item>
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        typed_map_from_any_item(self.view_map_untyped(view, request), "CellServerCtx::view")
     }
 
     /// Run a one-shot (non-reactive) query.

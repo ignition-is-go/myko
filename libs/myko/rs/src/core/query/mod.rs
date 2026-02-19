@@ -17,7 +17,8 @@ pub use context::QueryContext;
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::{
     QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration, QueryRuntimeMetrics,
-    QueryRuntimePerIdMetrics, query_runtime_metrics, query_runtime_metrics_by_id,
+    QueryRuntimePerIdMetrics, build_belongs_to_source_map, filter_query_over_source,
+    query_runtime_metrics, query_runtime_metrics_by_id,
 };
 pub use request::QueryRequest;
 #[cfg(not(target_arch = "wasm32"))]
