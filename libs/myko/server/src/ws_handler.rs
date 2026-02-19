@@ -3,11 +3,13 @@
 //! Handles WebSocket connections using ClientSession for subscription management.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -160,6 +162,15 @@ impl WsHandler {
         // Protocol: default to JSON, switch to binary only if client opts in
         let use_binary = Arc::new(AtomicBool::new(false));
         let use_binary_writer = use_binary.clone();
+        let query_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let view_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let subscribe_started_by_tx: Arc<Mutex<HashMap<Arc<str>, Instant>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let query_ids_by_tx_writer = query_ids_by_tx.clone();
+        let view_ids_by_tx_writer = view_ids_by_tx.clone();
+        let subscribe_started_by_tx_writer = subscribe_started_by_tx.clone();
 
         // Publish Client entity
         let client_entity = Client {
@@ -173,11 +184,71 @@ impl WsHandler {
         log::info!("Client connected: {} from {}", client_id, addr);
 
         let write_ctx = ctx.clone();
+        let write_client_id = client_id.clone();
+        let write_addr = addr;
 
         // Spawn task to forward messages from channel to WebSocket
         let write_task = tokio::spawn(async move {
             let _ctx = write_ctx;
+            let mut tx_emit_counts: HashMap<Arc<str>, u64> = HashMap::new();
             while let Some(msg) = rx.recv().await {
+                let (kind, tx_id, seq, upserts, deletes, total_count) = match &msg {
+                    MykoMessage::ViewResponse(r) => (
+                        "view_response",
+                        Some(r.tx.clone()),
+                        Some(r.sequence),
+                        Some(r.upserts.len()),
+                        Some(r.deletes.len()),
+                        r.total_count,
+                    ),
+                    MykoMessage::QueryResponse(r) => (
+                        "query_response",
+                        Some(r.tx.clone()),
+                        Some(r.sequence),
+                        Some(r.upserts.len()),
+                        Some(r.deletes.len()),
+                        r.total_count,
+                    ),
+                    _ => ("other", None, None, None, None, None),
+                };
+                let query_id = if kind == "query_response" {
+                    tx_id.as_ref().and_then(|tx| {
+                        query_ids_by_tx_writer
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(tx).cloned())
+                    })
+                } else {
+                    None
+                };
+                let view_id = if kind == "view_response" {
+                    tx_id.as_ref().and_then(|tx| {
+                        view_ids_by_tx_writer
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(tx).cloned())
+                    })
+                } else {
+                    None
+                };
+                let emit_index = tx_id.as_ref().map(|tx| {
+                    let next = tx_emit_counts.get(tx).copied().unwrap_or(0) + 1;
+                    tx_emit_counts.insert(tx.clone(), next);
+                    next
+                });
+                let subscribe_to_first_emit_ms = if emit_index == Some(1) {
+                    tx_id.as_ref().and_then(|tx| {
+                        subscribe_started_by_tx_writer
+                            .lock()
+                            .ok()
+                            .and_then(|m| m.get(tx).copied())
+                            .map(|started| started.elapsed().as_millis())
+                    })
+                } else {
+                    None
+                };
+
+                let serialize_started = Instant::now();
                 let ws_msg = if use_binary_writer.load(Ordering::SeqCst) {
                     // Binary mode: use msgpack
                     match rmp_serde::to_vec(&msg) {
@@ -197,8 +268,43 @@ impl WsHandler {
                         }
                     }
                 };
+                let serialize_ms = serialize_started.elapsed().as_millis();
+                let payload_bytes = match &ws_msg {
+                    Message::Binary(b) => b.len(),
+                    Message::Text(t) => t.len(),
+                    _ => 0,
+                };
+
+                let send_started = Instant::now();
                 if write.send(ws_msg).await.is_err() {
                     break;
+                }
+                let send_ms = send_started.elapsed().as_millis();
+
+                // Perf visibility for initial responses and large payloads.
+                let is_initial = seq == Some(0);
+                let is_large = payload_bytes >= 256 * 1024;
+                if (kind == "view_response" || kind == "query_response") && (is_initial || is_large) {
+                    log::info!(
+                        target: "myko_server::ws_perf",
+                        "ws_perf client={} addr={} kind={} tx={:?} emit_index={:?} subscribe_to_first_emit_ms={:?} query_id={:?} view_id={:?} seq={:?} upserts={:?} deletes={:?} total_count={:?} payload_bytes={} serialize_ms={} send_ms={} binary={}",
+                        write_client_id,
+                        write_addr,
+                        kind,
+                        tx_id,
+                        emit_index,
+                        subscribe_to_first_emit_ms,
+                        query_id,
+                        view_id,
+                        seq,
+                        upserts,
+                        deletes,
+                        total_count,
+                        payload_bytes,
+                        serialize_ms,
+                        send_ms,
+                        use_binary_writer.load(Ordering::SeqCst)
+                    );
                 }
             }
         });
@@ -232,10 +338,15 @@ impl WsHandler {
                                 ctx,
                                 &tx,
                                 drop_logger.as_ref(),
+                                &query_ids_by_tx,
+                                &view_ids_by_tx,
+                                &subscribe_started_by_tx,
                                 myko_msg,
                             ) {
                                 log::error!("Error handling message: {}", e);
                             }
+                            // Allow writer task to make progress during startup burst.
+                            tokio::task::yield_now().await;
                         }
                         Err(e) => {
                             log::warn!("Failed to parse message from {}: {}", client_id, e);
@@ -267,10 +378,15 @@ impl WsHandler {
                                 ctx,
                                 &tx,
                                 drop_logger.as_ref(),
+                                &query_ids_by_tx,
+                                &view_ids_by_tx,
+                                &subscribe_started_by_tx,
                                 myko_msg,
                             ) {
                                 log::error!("Error handling message: {}", e);
                             }
+                            // Allow writer task to make progress during startup burst.
+                            tokio::task::yield_now().await;
                         }
                         Err(e) => {
                             log::warn!(
@@ -327,6 +443,9 @@ impl WsHandler {
         ctx: Arc<CellServerCtx>,
         tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &DropLogger,
+        query_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
+        view_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
+        subscribe_started_by_tx: &Arc<Mutex<HashMap<Arc<str>, Instant>>>,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let handler_registry = ctx.handler_registry.clone();
@@ -346,6 +465,25 @@ impl WsHandler {
                     .into();
                 let query_id = &wrapped.query_id;
                 let entity_type = &wrapped.query_item_type;
+
+                // Defensive dedupe: some clients can replay the same subscribe request.
+                // A duplicate for the same tx would reset server-side sequence/window state.
+                if session.has_subscription(&tx_id) {
+                    log::debug!(
+                        "Ignoring duplicate query subscribe client={} tx={} query_id={} item_type={}",
+                        session.client_id,
+                        tx_id,
+                        query_id,
+                        entity_type
+                    );
+                    return Ok(());
+                }
+                if let Ok(mut map) = query_ids_by_tx.lock() {
+                    map.insert(tx_id.clone(), query_id.clone());
+                }
+                if let Ok(mut map) = subscribe_started_by_tx.lock() {
+                    map.entry(tx_id.clone()).or_insert_with(Instant::now);
+                }
 
                 log::trace!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
                 log::debug!(
@@ -422,6 +560,24 @@ impl WsHandler {
                 let view_id = &wrapped.view_id;
                 let item_type = &wrapped.view_item_type;
 
+                // Defensive dedupe: ignore repeated subscribe for an already-active tx.
+                if session.has_subscription(&tx_id) {
+                    log::debug!(
+                        "Ignoring duplicate view subscribe client={} tx={} view_id={} item_type={}",
+                        session.client_id,
+                        tx_id,
+                        view_id,
+                        item_type
+                    );
+                    return Ok(());
+                }
+                if let Ok(mut map) = view_ids_by_tx.lock() {
+                    map.insert(tx_id.clone(), view_id.clone());
+                }
+                if let Ok(mut map) = subscribe_started_by_tx.lock() {
+                    map.entry(tx_id.clone()).or_insert_with(Instant::now);
+                }
+
                 log::trace!("View {} for {} (tx: {})", view_id, item_type, tx_id);
                 log::debug!(
                     "View subscribe request client={} tx={} view_id={} item_type={} window={:?}",
@@ -461,8 +617,9 @@ impl WsHandler {
                                         tx_id,
                                         view_id
                                     );
-                                    session.subscribe_view(
+                                    session.subscribe_view_with_id(
                                         tx_id,
+                                        view_id.clone(),
                                         filtered_cellmap,
                                         wrapped.window.clone(),
                                     );
@@ -516,7 +673,14 @@ impl WsHandler {
 
             MykoMessage::QueryCancel(CancelSubscription { tx: tx_id }) => {
                 log::trace!("Query cancel: {}", tx_id);
-                session.cancel(&tx_id.into());
+                let tx_id: Arc<str> = tx_id.into();
+                if let Ok(mut map) = query_ids_by_tx.lock() {
+                    map.remove(&tx_id);
+                }
+                if let Ok(mut map) = subscribe_started_by_tx.lock() {
+                    map.remove(&tx_id);
+                }
+                session.cancel(&tx_id);
             }
 
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
@@ -533,7 +697,14 @@ impl WsHandler {
             }
             MykoMessage::ViewCancel(CancelSubscription { tx: tx_id }) => {
                 log::trace!("View cancel: {}", tx_id);
-                session.cancel(&tx_id.into());
+                let tx_id: Arc<str> = tx_id.into();
+                if let Ok(mut map) = view_ids_by_tx.lock() {
+                    map.remove(&tx_id);
+                }
+                if let Ok(mut map) = subscribe_started_by_tx.lock() {
+                    map.remove(&tx_id);
+                }
+                session.cancel(&tx_id);
             }
             MykoMessage::ViewWindow(ViewWindowUpdate { tx, window }) => {
                 let tx_id: Arc<str> = tx.into();

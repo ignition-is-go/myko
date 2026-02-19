@@ -10145,6 +10145,7 @@ dependencies = [
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-core",
  "serde",
  "serde_json",
  "ts-rs",

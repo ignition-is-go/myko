@@ -593,7 +593,20 @@ export class SvelteMykoClient {
 	}
 
 	/**
+	 * Watch a view with Observable-based updates.
+	 *
+	 * @deprecated Use `liveView()` for component usage. Kept for backward compatibility
+	 * with existing service code paths that still consume observables.
+	 */
+	watchView<V extends View<unknown>>(viewFactory: V): Observable<ViewResult<V>> {
+		return this.client.watchView(viewFactory);
+	}
+
+	/**
 	 * Watch a query with optional server-side windowing.
+	 *
+	 * @deprecated Use `liveQuery()` (or `liveQueryWindowed()` for runes-native windowing)
+	 * in component/service rune contexts.
 	 */
 	watchQueryWithOptions<Q extends Query<unknown>>(
 		queryFactory: Q,
@@ -602,7 +615,11 @@ export class SvelteMykoClient {
 		return this.client.watchQuery(queryFactory, options);
 	}
 
-	/** Watch a view with optional server-side windowing. */
+	/**
+	 * Watch a view with optional server-side windowing.
+	 *
+	 * @deprecated Use `liveView()` in component/service rune contexts.
+	 */
 	watchViewWithOptions<V extends View<unknown>>(
 		viewFactory: V,
 		options?: QueryWatchOptions
@@ -612,6 +629,8 @@ export class SvelteMykoClient {
 
 	/**
 	 * Watch a query and mutate its server-side window without re-subscribing.
+	 *
+	 * @deprecated Use `liveQueryWindowed()` in component/service rune contexts.
 	 */
 	watchQueryWindowed<Q extends Query<unknown>>(
 		queryFactory: Q,
@@ -625,7 +644,11 @@ export class SvelteMykoClient {
 		return this.client.watchQueryWindowed(queryFactory, options);
 	}
 
-	/** Watch a view and mutate its server-side window without re-subscribing. */
+	/**
+	 * Watch a view and mutate its server-side window without re-subscribing.
+	 *
+	 * @deprecated Use `liveView()` in component/service rune contexts.
+	 */
 	watchViewWindowed<V extends View<unknown>>(
 		viewFactory: V,
 		options?: QueryWatchOptions

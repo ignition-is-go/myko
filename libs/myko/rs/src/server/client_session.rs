@@ -8,6 +8,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
@@ -153,10 +154,23 @@ impl<W: WsWriter> ClientSession<W> {
         cell: hypha::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
+        self.subscribe_view_with_id(tx, "unknown".into(), cell, window);
+    }
+
+    /// Subscribe to a CellMap from a view cell factory with explicit view id for perf logging.
+    pub fn subscribe_view_with_id(
+        &mut self,
+        tx: Arc<str>,
+        view_id: Arc<str>,
+        cell: hypha::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+        window: Option<QueryWindow>,
+    ) {
         let writer = self.writer.clone();
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
         let client_id_for_log = self.client_id.clone();
+        let view_id_for_log = view_id.clone();
+        let subscribed_at = Instant::now();
         let state = Arc::new(Mutex::new(QuerySubscriptionState {
             window,
             ..Default::default()
@@ -185,6 +199,24 @@ impl<W: WsWriter> ClientSession<W> {
                 response.window,
                 response.total_count
             );
+            if response.sequence == 0 {
+                let first_emit_ms = subscribed_at.elapsed().as_millis();
+                let payload_bytes = serde_json::to_vec(&MykoMessage::ViewResponse(response.clone()))
+                    .map(|buf| buf.len())
+                    .unwrap_or(0);
+                log::info!(
+                    target: "myko_rs::server::view_perf",
+                    "view_perf client={} view_id={} tx={} first_emit_ms={} initial_rows={} total_count={:?} payload_bytes={} window={:?}",
+                    client_id_for_log,
+                    view_id_for_log,
+                    tx_clone,
+                    first_emit_ms,
+                    response.upserts.len(),
+                    response.total_count,
+                    payload_bytes,
+                    response.window
+                );
+            }
             writer.send(MykoMessage::ViewResponse(response));
         });
 
@@ -198,8 +230,9 @@ impl<W: WsWriter> ClientSession<W> {
         );
 
         log::trace!(
-            "ClientSession {} subscribed view tx={} active_subscriptions={}",
+            "ClientSession {} subscribed view view_id={} tx={} active_subscriptions={}",
             self.client_id,
+            view_id,
             tx_for_log,
             self.subscriptions.len()
         );

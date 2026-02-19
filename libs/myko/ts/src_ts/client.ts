@@ -226,6 +226,8 @@ export class MykoClient {
   private sharedQueries = new Map<string, Observable<unknown>>()
   private sharedViews = new Map<string, Observable<unknown>>()
   private sharedReports = new Map<string, Observable<unknown>>()
+  private subscriptionStartMs = new Map<string, number>()
+  private firstResponseLogged = new Set<string>()
   private messageQueue: MykoMessage[] = []
   private pendingEventBatch: MEvent[] = []
   private eventBatchFlushScheduled = false
@@ -504,6 +506,8 @@ export class MykoClient {
 
     this.activeQueries.set(tx, wrappedQuery)
     this.activeQueryNames.set(tx, queryName)
+    this.subscriptionStartMs.set(tx, this.nowMs())
+    this.firstResponseLogged.delete(tx)
     this.logConnection('query_subscribe', {
       tx,
       queryId: wrappedQuery.queryId,
@@ -514,8 +518,25 @@ export class MykoClient {
     })
     this.send({ event: MykoEvent.Query, data: wrappedQuery })
 
-    const responses$ = this.queryResponses.pipe(
-      filter((r) => r.data.tx === tx),
+    const responses$ = new Observable<QueryResponseMessage>((subscriber) => {
+      const responseSub = this.queryResponses
+        .pipe(filter((r) => r.data.tx === tx))
+        .subscribe({
+          next: (response) => subscriber.next(response),
+          error: (error) => subscriber.error(error),
+        })
+
+      const errorSub = this.queryErrors
+        .pipe(filter((error) => error.data.tx === tx))
+        .subscribe((error) => {
+          subscriber.error(new Error(error.data.message))
+        })
+
+      return () => {
+        responseSub.unsubscribe()
+        errorSub.unsubscribe()
+      }
+    }).pipe(
       finalize(() => {
         this.logConnection('query_cancel', {
           tx,
@@ -526,6 +547,8 @@ export class MykoClient {
         })
         this.activeQueries.delete(tx)
         this.activeQueryNames.delete(tx)
+        this.subscriptionStartMs.delete(tx)
+        this.firstResponseLogged.delete(tx)
         this.send({ event: MykoEvent.QueryCancel, data: { tx } })
       }),
     )
@@ -588,6 +611,8 @@ export class MykoClient {
 
     this.activeViews.set(tx, wrappedView)
     this.activeViewNames.set(tx, viewName)
+    this.subscriptionStartMs.set(tx, this.nowMs())
+    this.firstResponseLogged.delete(tx)
     this.logConnection('view_subscribe', {
       tx,
       viewId: wrappedView.viewId,
@@ -598,8 +623,25 @@ export class MykoClient {
     })
     this.send({ event: MykoEvent.View, data: wrappedView })
 
-    const responses$ = this.queryResponses.pipe(
-      filter((r) => r.data.tx === tx),
+    const responses$ = new Observable<QueryResponseMessage>((subscriber) => {
+      const responseSub = this.queryResponses
+        .pipe(filter((r) => r.data.tx === tx))
+        .subscribe({
+          next: (response) => subscriber.next(response),
+          error: (error) => subscriber.error(error),
+        })
+
+      const errorSub = this.queryErrors
+        .pipe(filter((error) => error.data.tx === tx))
+        .subscribe((error) => {
+          subscriber.error(new Error(error.data.message))
+        })
+
+      return () => {
+        responseSub.unsubscribe()
+        errorSub.unsubscribe()
+      }
+    }).pipe(
       finalize(() => {
         this.logConnection('view_cancel', {
           tx,
@@ -609,6 +651,8 @@ export class MykoClient {
         })
         this.activeViews.delete(tx)
         this.activeViewNames.delete(tx)
+        this.subscriptionStartMs.delete(tx)
+        this.firstResponseLogged.delete(tx)
         this.send({ event: MykoEvent.ViewCancel, data: { tx } })
       }),
     )
@@ -1347,6 +1391,16 @@ export class MykoClient {
   private routeMessage(message: MykoMessage): void {
     switch (message.event) {
       case MykoEvent.QueryResponse:
+        this.maybeLogFirstResponseTiming('query', message.data.tx, {
+          queryId: this.activeQueries.get(message.data.tx)?.queryId,
+          queryName:
+            this.activeQueryNames.get(message.data.tx) ??
+            this.activeQueries.get(message.data.tx)?.queryId ??
+            'unknown',
+          sequence: message.data.sequence,
+          upserts: message.data.upserts.length,
+          deletes: message.data.deletes.length,
+        })
         this.logConnection('query_response', {
           tx: message.data.tx,
           queryId: this.activeQueries.get(message.data.tx)?.queryId,
@@ -1365,9 +1419,29 @@ export class MykoClient {
             null,
           window: (message.data as { window?: QueryWindow | null }).window ?? null,
         })
+        const queryPublishStarted = this.nowMs()
         this.queryResponses.next(message)
+        this.logConnection('query_publish_ms', {
+          tx: message.data.tx,
+          sequence: message.data.sequence,
+          publishMs: Number((this.nowMs() - queryPublishStarted).toFixed(2)),
+        })
         break
       case MykoEvent.ViewResponse:
+        this.maybeLogFirstResponseTiming(
+          'view',
+          (message as QueryResponseMessage).data.tx,
+          {
+            viewId: this.activeViews.get((message as QueryResponseMessage).data.tx)?.viewId,
+            viewName:
+              this.activeViewNames.get((message as QueryResponseMessage).data.tx) ??
+              this.activeViews.get((message as QueryResponseMessage).data.tx)?.viewId ??
+              'unknown',
+            sequence: (message as QueryResponseMessage).data.sequence,
+            upserts: (message as QueryResponseMessage).data.upserts.length,
+            deletes: (message as QueryResponseMessage).data.deletes.length,
+          },
+        )
         this.logConnection('view_response', {
           tx: (message as QueryResponseMessage).data.tx,
           sequence: (message as QueryResponseMessage).data.sequence,
@@ -1380,7 +1454,13 @@ export class MykoClient {
             null,
           window: ((message as QueryResponseMessage).data as { window?: QueryWindow | null }).window ?? null,
         })
+        const viewPublishStarted = this.nowMs()
         this.queryResponses.next(message as unknown as QueryResponseMessage)
+        this.logConnection('view_publish_ms', {
+          tx: (message as QueryResponseMessage).data.tx,
+          sequence: (message as QueryResponseMessage).data.sequence,
+          publishMs: Number((this.nowMs() - viewPublishStarted).toFixed(2)),
+        })
         break
       case MykoEvent.ReportResponse:
         this.reportResponses.next(message)
@@ -1463,7 +1543,16 @@ export class MykoClient {
     this.sendNow(message)
   }
 
+  private messageTx(message: MykoMessage): string | null {
+    const data = (message as { data?: unknown }).data as
+      | { tx?: string }
+      | undefined
+    return typeof data?.tx === 'string' ? data.tx : null
+  }
+
   private sendNow(message: MykoMessage): void {
+    const event = (message as { event: string }).event
+    const tx = this.messageTx(message)
     if (this.currentServer) {
       const managed = this.sockets.get(this.currentServer)
       if (managed?.ws.readyState === WebSocket.OPEN) {
@@ -1477,11 +1566,21 @@ export class MykoClient {
       }
     }
     this.messageQueue.push(message)
+    this.logConnection('ws_enqueue', {
+      event,
+      tx,
+      queueDepth: this.messageQueue.length,
+      currentServer: this.currentServer,
+    })
   }
 
   private flushQueue(): void {
     const queue = this.messageQueue
     this.messageQueue = []
+    this.logConnection('ws_flush_queue', {
+      queuedMessages: queue.length,
+      currentServer: this.currentServer,
+    })
     for (const msg of queue) this.send(msg)
   }
 
@@ -1534,12 +1633,35 @@ export class MykoClient {
     this.logConnection('current_server', { server, reason })
   }
 
+  private nowMs(): number {
+    if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+      return performance.now()
+    }
+    return Date.now()
+  }
+
+  private maybeLogFirstResponseTiming(
+    kind: 'query' | 'view',
+    tx: string,
+    details: Record<string, unknown>,
+  ): void {
+    if (this.firstResponseLogged.has(tx)) return
+    const startedAt = this.subscriptionStartMs.get(tx)
+    if (startedAt === undefined) return
+    const elapsedMs = this.nowMs() - startedAt
+    this.firstResponseLogged.add(tx)
+    this.logConnection(`${kind}_first_response_timing`, {
+      tx,
+      subscribeToFirstResponseMs: Number(elapsedMs.toFixed(2)),
+      ...details,
+    })
+  }
+
   private logConnection(event: string, details: Record<string, unknown>): void {
-    // Opt-in logging only (hot paths can emit a lot and hurt UI perf).
-    const enabled =
-      typeof globalThis !== 'undefined' &&
-      Boolean((globalThis as { __MYKO_DEBUG_CONNECTION__?: boolean }).__MYKO_DEBUG_CONNECTION__)
-    if (!enabled) return
-    console.info(`[MykoClient] ${event}`, details)
+    console.info(`[MykoClient] ${event}`, {
+      tsIso: new Date().toISOString(),
+      tsMs: Date.now(),
+      ...details,
+    })
   }
 }
