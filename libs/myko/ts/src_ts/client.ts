@@ -1485,9 +1485,30 @@ export class MykoClient {
     for (const msg of queue) this.send(msg)
   }
 
+  private withReconnectSequenceReset(query: WrappedQuery): WrappedQuery {
+    const queryPayload = query.query
+    if (
+      queryPayload &&
+      typeof queryPayload === 'object' &&
+      !Array.isArray(queryPayload)
+    ) {
+      return {
+        ...query,
+        query: {
+          ...(queryPayload as Record<string, JsonValue>),
+          seq: 0 as JsonValue,
+        },
+      }
+    }
+    return query
+  }
+
   private resendSubscriptions(): void {
     for (const q of this.activeQueries.values()) {
-      this.send({ event: MykoEvent.Query, data: q })
+      this.send({
+        event: MykoEvent.Query,
+        data: this.withReconnectSequenceReset(q),
+      })
     }
     for (const v of this.activeViews.values()) {
       this.send({ event: MykoEvent.View, data: v })
