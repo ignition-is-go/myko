@@ -3,7 +3,9 @@
 pub use chrono::Utc;
 // Re-export hypha cell types for reports
 pub use hypha::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SelectExt, Watchable,
+    Cell, CellImmutable, CellMutable, CountByExt, FlatMapMapExt, Gettable, GroupByExt, IndexByExt,
+    MapExt, MapValuesCellExt, Mutable, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
+    Watchable,
 };
 pub use myko_macros::*;
 // Re-export ts_rs::TS for derive macros
@@ -23,7 +25,11 @@ pub use crate::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,
     },
-    common::{to_value::ToValue, with_id::WithId, with_transaction::WithTransaction},
+    common::{
+        to_value::ToValue,
+        with_id::{WithId, WithTypedId},
+        with_transaction::WithTransaction,
+    },
     core::item::{AnyItem, Eventable, ItemParseFn, ItemRegistration},
     query::{
         AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,

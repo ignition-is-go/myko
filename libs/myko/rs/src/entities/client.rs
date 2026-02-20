@@ -4,14 +4,14 @@ use hypha::{Cell, CellImmutable, MapExt};
 use myko_macros::{myko_command, myko_report, myko_report_output};
 
 use crate::{
+    entities::server::ServerId,
     prelude::*,
     report::{ReportContext, ReportHandler},
 };
 
 #[myko_item]
 pub struct Client {
-    #[belongs_to(Server)]
-    pub server_id: Arc<str>,
+    pub server_id: ServerId,
 
     /// ISO timestamp for windback mode. When set, the client sees historical state
     /// as of this timestamp instead of live state.
@@ -30,7 +30,7 @@ pub struct ClientStatusOutput {
 /// Report that returns whether a client is currently connected
 #[myko_report(ClientStatusOutput)]
 pub struct ClientStatus {
-    pub client_id: Arc<str>,
+    pub client_id: ClientId,
 }
 
 impl ReportHandler for ClientStatus {
@@ -41,7 +41,7 @@ impl ReportHandler for ClientStatus {
 
         // Query all clients and check if one with our id exists
         ctx.query(GetAllClients {}).map(move |clients| {
-            let online = clients.iter().any(|c| c.id == client_id);
+            let online = clients.iter().any(|c| c.id.as_ref() == client_id.as_ref());
             ClientStatusOutput { online }
         })
     }
@@ -66,13 +66,15 @@ impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
     fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
-        let client_id = ctx.client_id().map(Arc::from);
+        let client_id = ctx
+            .client_id()
+            .map(|id| ClientId::from(Arc::<str>::from(id)));
 
         // Query all clients and find the requesting client's windback status
         ctx.query(GetAllClients {}).map(move |clients| {
             let windback = client_id
                 .as_ref()
-                .and_then(|cid| clients.iter().find(|c| &c.id == cid))
+                .and_then(|cid| clients.iter().find(|c| c.id.as_ref() == cid.as_ref()))
                 .and_then(|c| c.windback.clone());
             WindbackStatusOutput { windback }
         })
@@ -104,7 +106,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
         // Find the client entity
         let client = ctx
             .exec_report(GetClientById {
-                id: Arc::from(client_id),
+                id: ClientId::from(Arc::<str>::from(client_id.clone())),
             })?
             .ok_or_else(|| CommandError {
                 tx: ctx.tx().to_string(),
@@ -148,7 +150,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         // Find the client entity
         let client = ctx
             .exec_report(GetClientById {
-                id: Arc::from(client_id),
+                id: ClientId::from(Arc::<str>::from(client_id.clone())),
             })?
             .ok_or_else(|| CommandError {
                 tx: ctx.tx().to_string(),

@@ -87,8 +87,9 @@ impl CellServerCtx {
     }
 
     /// Register or replace a live peer client for a server id.
-    pub fn register_peer_client(&self, peer_id: Arc<str>, client: Arc<MykoClient>) {
-        self.peer_clients.insert(peer_id, client);
+    pub fn register_peer_client<S: AsRef<str>>(&self, peer_id: S, client: Arc<MykoClient>) {
+        self.peer_clients
+            .insert(Arc::<str>::from(peer_id.as_ref()), client);
         let next = self.peer_clients_tick.get().saturating_add(1);
         self.peer_clients_tick.set(next);
     }

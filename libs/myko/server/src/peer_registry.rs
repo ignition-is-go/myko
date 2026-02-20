@@ -15,7 +15,7 @@ use dashmap::DashMap;
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, TapExt, Watchable};
 use log::info;
 use myko_rs::{
-    entities::server::{GetAllServers, GetPeerServers, Server},
+    entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
     server::CellServerCtx,
 };
 use uuid::Uuid;
@@ -37,8 +37,8 @@ pub struct PeerStatus {
 pub struct PeerRegistry {
     _peers_guard: SubscriptionGuard,
     _self_advertise_guard: SubscriptionGuard,
-    _connections: Arc<DashMap<Arc<str>, PeerConnectionHandle>>,
-    _remove_guards: Arc<DashMap<Arc<str>, SubscriptionGuard>>,
+    _connections: Arc<DashMap<ServerId, PeerConnectionHandle>>,
+    _remove_guards: Arc<DashMap<ServerId, SubscriptionGuard>>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ pub struct PeerRegistryConfig {
 }
 
 impl PeerRegistry {
-    fn build_local_server(config: &PeerRegistryConfig, host_id: &Arc<str>) -> Server {
+    fn build_local_server(config: &PeerRegistryConfig, host_id: &ServerId) -> Server {
         Server {
             address: config.address.clone(),
             id: host_id.clone(),
@@ -63,7 +63,7 @@ impl PeerRegistry {
     fn spawn_self_advertise_guard(
         ctx: CellServerCtx,
         local_server: Server,
-        self_host_id: Arc<str>,
+        self_host_id: ServerId,
     ) -> SubscriptionGuard {
         let all_servers = ctx.query(GetAllServers {}, ctx.new_server_transaction());
         all_servers.subscribe(move |signal| {
@@ -82,12 +82,12 @@ impl PeerRegistry {
 
     fn reconcile_peer_snapshot<T>(
         peers: &T,
-        host_id: &Arc<str>,
+        host_id: &ServerId,
         local_address: &str,
         local_port: u16,
         ctx: &CellServerCtx,
-        connections: &Arc<DashMap<Arc<str>, PeerConnectionHandle>>,
-        remove_guards: &Arc<DashMap<Arc<str>, SubscriptionGuard>>,
+        connections: &Arc<DashMap<ServerId, PeerConnectionHandle>>,
+        remove_guards: &Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) where
         T: AsRef<[Server]>,
     {
@@ -156,12 +156,12 @@ impl PeerRegistry {
 
     fn spawn_peer_reconcile_guard(
         peer_servers: Cell<Vec<Server>, CellImmutable>,
-        host_id: Arc<str>,
+        host_id: ServerId,
         local_address: String,
         local_port: u16,
         ctx: CellServerCtx,
-        connections: Arc<DashMap<Arc<str>, PeerConnectionHandle>>,
-        remove_guards: Arc<DashMap<Arc<str>, SubscriptionGuard>>,
+        connections: Arc<DashMap<ServerId, PeerConnectionHandle>>,
+        remove_guards: Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) -> SubscriptionGuard {
         peer_servers
             .tap(move |peers| {
@@ -184,15 +184,15 @@ impl PeerRegistry {
         let connections = Arc::new(DashMap::new());
         let remove_guards = Arc::new(DashMap::new());
         let peer_servers = ctx.query(GetPeerServers {}, server_req);
-        let host_arc_str: Arc<str> = ctx.host_id.to_string().into();
-        let server = Self::build_local_server(&config, &host_arc_str);
+        let host_id = ServerId(ctx.host_id.to_string().into());
+        let server = Self::build_local_server(&config, &host_id);
 
         let self_advertise_guard =
-            Self::spawn_self_advertise_guard(ctx.clone(), server.clone(), host_arc_str.clone());
+            Self::spawn_self_advertise_guard(ctx.clone(), server.clone(), host_id.clone());
 
         let peer_sub = Self::spawn_peer_reconcile_guard(
             peer_servers,
-            host_arc_str.clone(),
+            host_id.clone(),
             config.address.clone(),
             config.port,
             ctx.clone(),

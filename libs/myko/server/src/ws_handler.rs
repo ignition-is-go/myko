@@ -17,7 +17,7 @@ use hypha::SelectExt;
 use myko_rs::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},
-    entities::client::Client,
+    entities::client::{Client, ClientId},
     relationship::{iter_client_id_registrations, iter_fallback_to_id_registrations},
     request::RequestContext,
     server::{CellServerCtx, ClientSession, WsWriter, client_registry::try_client_registry},
@@ -183,7 +183,7 @@ impl WsHandler {
 
         // Publish Client entity
         let client_entity = Client {
-            id: client_id.clone(),
+            id: ClientId(client_id.clone()),
             hash: client_id.clone(),
             server_id: host_id.to_string().into(),
             windback: None,

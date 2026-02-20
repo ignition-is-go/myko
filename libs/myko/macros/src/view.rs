@@ -36,6 +36,14 @@ pub fn myko_view_item_impl(input_struct: ItemStruct) -> TokenStream {
             }
         }
 
+        impl #krate::common::with_id::WithTypedId for #name {
+            type Id = std::sync::Arc<str>;
+
+            fn typed_id(&self) -> Self::Id {
+                self.id.clone()
+            }
+        }
+
         impl #krate::prelude::AnyItem for #name {
             fn as_any(&self) -> &dyn std::any::Any {
                 self
@@ -121,6 +129,11 @@ pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
                 stringify!(#item_type).into()
             }
         }
+
+        const _: fn() = || {
+            fn assert_with_typed_id<T: #krate::common::with_id::WithTypedId>() {}
+            assert_with_typed_id::<#item_type>();
+        };
 
     }
 }

@@ -8,6 +8,7 @@ use uuid::Uuid;
 use crate::server::CellServerCtx;
 use crate::{
     command::CommandError,
+    entities::client::ClientId,
     event::EventOptions,
     item::Eventable,
     query::QueryParams,
@@ -58,8 +59,8 @@ impl CommandContext {
     }
 
     /// Get the client ID if present.
-    pub fn client_id(&self) -> Option<&str> {
-        self.req.client_id.as_deref()
+    pub fn client_id(&self) -> Option<ClientId> {
+        self.req.client_id.clone()
     }
 
     /// Get the host ID.

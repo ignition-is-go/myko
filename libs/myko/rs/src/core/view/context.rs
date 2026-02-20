@@ -7,13 +7,16 @@ use serde::de::DeserializeOwned;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::view::ViewFactory;
+use crate::{
+    common::with_id::WithTypedId, request::RequestContext, server::CellServerCtx,
+    store::StoreRegistry,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    item::{downcast_any_item_map_diff, typed_map_from_any_item},
+    item::downcast_any_item_map_diff,
     query::{FilteredCellMap, QueryFactory, QueryHandler, QueryParams},
     report::{ReportHandler, ReportId},
 };
-use crate::{request::RequestContext, server::CellServerCtx, store::StoreRegistry};
 
 #[derive(Clone)]
 pub struct ViewContext {
@@ -63,12 +66,18 @@ impl ViewCellContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn query_map<Q>(&self, query: Q) -> CellMap<Arc<str>, Q::Item, CellImmutable>
+    pub fn query_map<Q>(
+        &self,
+        query: Q,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
     {
-        typed_map_from_any_item(self.query_map_untyped(query), "ViewCellContext::query_map")
+        crate::item::typed_map_from_any_item_with_typed_id(
+            self.query_map_untyped(query),
+            "ViewCellContext::query_map",
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -141,12 +150,18 @@ impl ViewContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn query_map<Q>(&self, query: Q) -> CellMap<Arc<str>, Q::Item, CellImmutable>
+    pub fn query_map<Q>(
+        &self,
+        query: Q,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
     {
-        typed_map_from_any_item(self.query_map_untyped(query), "ViewContext::query_map")
+        crate::item::typed_map_from_any_item_with_typed_id(
+            self.query_map_untyped(query),
+            "ViewContext::query_map",
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]

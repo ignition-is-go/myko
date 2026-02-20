@@ -476,8 +476,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .collect();
 
         // Generate make_entity function that creates entity with dependency IDs populated
-        // The function takes &[Arc<str>] with IDs in the same order as dependencies
-        // Use .to_string() for compatibility with both String and Arc<str> fields
+        // The function takes &[Arc<str>] with IDs in the same order as dependencies.
+        // Assign via Into so typed ID wrappers and Arc<str>/String all work.
         let fk_field_assignments: Vec<_> = ef
             .dependencies
             .iter()
@@ -486,7 +486,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 let idx = syn::Index::from(i);
                 quote! {
-                    entity.#field_ident = dep_ids[#idx].to_string();
+                    entity.#field_ident = dep_ids[#idx].clone().into();
                 }
             })
             .collect();

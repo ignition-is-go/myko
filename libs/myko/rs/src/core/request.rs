@@ -23,6 +23,8 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::entities::client::ClientId;
+
 /// Context that propagates through request processing.
 ///
 /// Created when a request arrives via WebSocket and flows through
@@ -35,7 +37,7 @@ pub struct RequestContext {
 
     /// Client ID of the WebSocket connection that initiated this request.
     /// `None` for internal operations (sagas, startup tasks).
-    pub client_id: Option<Arc<str>>,
+    pub client_id: Option<ClientId>,
 
     /// Call chain tracking the path of execution.
     /// Starts with `["client"]` for WebSocket requests or `["saga", "SagaName"]` for sagas.
@@ -65,7 +67,7 @@ impl RequestContext {
     ) -> Self {
         Self {
             tx,
-            client_id,
+            client_id: client_id.map(Into::into),
             lineage,
             host_id,
             created_at,
@@ -80,7 +82,7 @@ impl RequestContext {
     pub fn from_client(tx: Arc<str>, client_id: Arc<str>, host_id: Uuid) -> Self {
         Self {
             tx,
-            client_id: Some(client_id),
+            client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -99,7 +101,7 @@ impl RequestContext {
     ) -> Self {
         Self {
             tx,
-            client_id: Some(client_id),
+            client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),

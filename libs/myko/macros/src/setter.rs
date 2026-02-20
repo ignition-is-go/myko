@@ -88,6 +88,7 @@ fn to_pascal_case(s: &str) -> String {
 /// Generate setter commands for all annotated fields
 pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> TokenStream {
     let entity_ident = format_ident!("{}", entity_name);
+    let id_type_ident = format_ident!("{}Id", entity_name);
     let get_by_id_ident = format_ident!("Get{}ById", entity_name);
     let krate = crate::myko_rs_path();
 
@@ -163,7 +164,7 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
           /// Auto-generated setter command
           #[myko_macros::myko_command]
           pub struct #command_name {
-              pub id: std::sync::Arc<str>,
+              pub id: #id_type_ident,
               #param_field,
           }
 

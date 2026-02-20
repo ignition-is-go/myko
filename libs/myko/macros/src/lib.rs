@@ -149,6 +149,7 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 ///
 /// | Type | Description |
 /// |------|-------------|
+/// | `{Entity}Id` | Entity-specific ID wrapper over `Arc<str>` (TypeScript: `string`) |
 /// | `Partial{Entity}` | Partial version with all fields optional, for filtering |
 /// | `{Entity}Count` | Count result with `count: usize` field |
 /// | `Delete{Entity}Result` | Single delete result with `deleted: bool` field |

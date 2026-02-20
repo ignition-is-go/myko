@@ -1,3 +1,5 @@
+use std::collections::{BTreeSet, HashMap};
+
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Field, FieldsNamed, ItemStruct};
@@ -13,6 +15,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let name = &input_struct.ident;
     let name_str = name.to_string();
+    let id_type_ident = format_ident!("{}Id", name_str);
 
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
@@ -33,7 +36,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         let hash = quote! { hash };
 
         let id_field: Field = syn::parse_quote! {
-            #pub_viz #id: #arc_str
+            #pub_viz #id: #id_type_ident
         };
 
         let mut hash_field: Field = syn::parse_quote! {
@@ -93,12 +96,12 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let get_by_ids_query = quote! {
         #[myko_macros::myko_query(#name)]
         pub struct #get_by_ids_query_ident {
-            pub ids: Vec<std::sync::Arc<str>>,
+            pub ids: Vec<#id_type_ident>,
         }
 
         impl #krate::prelude::QueryHandler for #get_by_ids_query_ident {
             fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
-                ctx.query.ids.contains(&ctx.item.id)
+                ctx.query.ids.contains(&ctx.item.id.clone().into())
             }
         }
 
@@ -217,7 +220,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let get_by_id_report = quote! {
         #[myko_macros::myko_report(Option<#name>)]
         pub struct #get_by_id_report_ident {
-            pub id: std::sync::Arc<str>,
+            pub id: #id_type_ident,
         }
 
         impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
@@ -254,7 +257,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         /// Command to delete a single entity by ID
         #[myko_macros::myko_command(#delete_result_ident)]
         pub struct #delete_command_ident {
-            pub id: std::sync::Arc<str>,
+            pub id: #id_type_ident,
         }
 
         impl #krate::command::CommandHandler for #delete_command_ident {
@@ -299,7 +302,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         /// Command to delete multiple entities by ID
         #[myko_macros::myko_command(#delete_many_result_ident)]
         pub struct #delete_many_command_ident {
-            pub ids: Vec<std::sync::Arc<str>>,
+            pub ids: Vec<#id_type_ident>,
         }
 
         impl #krate::command::CommandHandler for #delete_many_command_ident {
@@ -335,6 +338,65 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     // Generate relationship registrations
     let relationship_registrations = relationship::generate_registrations(&name_str, &rel_info);
 
+    let mut field_types = HashMap::<String, syn::Type>::new();
+    if let syn::Fields::Named(FieldsNamed { named, .. }) = &input_struct.fields {
+        for field in named {
+            if let Some(field_ident) = &field.ident {
+                field_types.insert(field_ident.to_string(), field.ty.clone());
+            }
+        }
+    }
+
+    // Generate HasForeignKey impls from #[belongs_to] / #[ensure_for] fields.
+    // Deduplicate by foreign parent type so a field tagged with both
+    // #[belongs_to(X)] and #[ensure_for(X)] yields a single impl.
+    let mut fk_impl_parents = BTreeSet::<String>::new();
+    let mut has_foreign_key_impls: Vec<TokenStream> = Vec::new();
+
+    for bt in &rel_info.belongs_to {
+        let Some(field_ty) = field_types.get(&bt.field_name) else {
+            continue;
+        };
+        let field_ident = format_ident!("{}", bt.field_name);
+        let foreign_ty_ident = format_ident!("{}", bt.foreign_type);
+        if fk_impl_parents.insert(bt.foreign_type.clone()) {
+            has_foreign_key_impls.push(quote! {
+                impl #krate::hypha::HasForeignKey<#foreign_ty_ident> for #name
+                where
+                    #field_ty: #krate::hypha::IdFor<#foreign_ty_ident>,
+                {
+                    type ForeignKey = #field_ty;
+
+                    fn fk(&self) -> Self::ForeignKey {
+                        self.#field_ident.clone()
+                    }
+                }
+            });
+        }
+    }
+
+    for ef in &rel_info.ensure_for_fields {
+        let Some(field_ty) = field_types.get(&ef.field_name) else {
+            continue;
+        };
+        let field_ident = format_ident!("{}", ef.field_name);
+        let foreign_ty_ident = format_ident!("{}", ef.foreign_type);
+        if fk_impl_parents.insert(ef.foreign_type.clone()) {
+            has_foreign_key_impls.push(quote! {
+                impl #krate::hypha::HasForeignKey<#foreign_ty_ident> for #name
+                where
+                    #field_ty: #krate::hypha::IdFor<#foreign_ty_ident>,
+                {
+                    type ForeignKey = #field_ty;
+
+                    fn fk(&self) -> Self::ForeignKey {
+                        self.#field_ident.clone()
+                    }
+                }
+            });
+        }
+    }
+
     // Generate setter commands for fields with #[myko_rename] or #[myko_setter]
     let setter_commands = setter::generate_setter_commands(&name_str, &setter_fields);
 
@@ -343,11 +405,82 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         use #krate::prelude::Query;
         use #krate::hypha::MapExt as _HyphaMapExt;
 
+        #[derive(
+            Clone,
+            Default,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            #serde_path::Serialize,
+            #serde_path::Deserialize,
+            Debug,
+            #krate::TS
+        )]
+        #[ts(type = "string")]
+        pub struct #id_type_ident(pub std::sync::Arc<str>);
+
+        impl std::ops::Deref for #id_type_ident {
+            type Target = str;
+
+            fn deref(&self) -> &Self::Target {
+                self.0.as_ref()
+            }
+        }
+
+        impl std::fmt::Display for #id_type_ident {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Display::fmt(self.0.as_ref(), f)
+            }
+        }
+
+        impl AsRef<str> for #id_type_ident {
+            fn as_ref(&self) -> &str {
+                self.0.as_ref()
+            }
+        }
+
+        impl From<std::sync::Arc<str>> for #id_type_ident {
+            fn from(value: std::sync::Arc<str>) -> Self {
+                Self(value)
+            }
+        }
+
+        impl From<#id_type_ident> for std::sync::Arc<str> {
+            fn from(value: #id_type_ident) -> Self {
+                value.0
+            }
+        }
+
+        impl From<String> for #id_type_ident {
+            fn from(value: String) -> Self {
+                Self(std::sync::Arc::<str>::from(value))
+            }
+        }
+
+        impl From<&str> for #id_type_ident {
+            fn from(value: &str) -> Self {
+                Self(std::sync::Arc::<str>::from(value))
+            }
+        }
+
+        impl #krate::hypha::IdFor<#name> for #id_type_ident {
+            type MapKey = std::sync::Arc<str>;
+
+            fn map_key(&self) -> Self::MapKey {
+                self.0.clone()
+            }
+        }
+        impl #krate::hypha::IdType for #id_type_ident {
+            type Parent = #name;
+        }
+
         #derives
         #input_struct
 
         // Register for ts-rs export
-        #krate::register_ts_export!(#name, #partial_ident);
+        #krate::register_ts_export!(#id_type_ident, #name, #partial_ident);
 
         #krate::submit! {
             #item_registration
@@ -371,9 +504,19 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         impl #krate::prelude::WithId for #name {
             fn id(&self) -> std::sync::Arc<str> {
-                self.id.clone()
+                self.id.clone().into()
             }
         }
+
+        impl #krate::common::with_id::WithTypedId for #name {
+            type Id = #id_type_ident;
+
+            fn typed_id(&self) -> Self::Id {
+                self.id.clone().into()
+            }
+        }
+
+        #(#has_foreign_key_impls)*
 
         // ToValue is implemented via blanket impl for all Serialize types
 
