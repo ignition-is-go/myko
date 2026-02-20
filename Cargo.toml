@@ -46,6 +46,7 @@ members = [
   "libs/entities/scene",
   "libs/entities/engine",
   "libs/entities/nodes",
+  "libs/entities/nodes-runtime",
   "libs/entities/math",
   "libs/entities/logic",
   "libs/entities/lists",
@@ -229,6 +230,7 @@ rship-entities-ui = { version = "3.1.0-canary.23", path = "libs/entities/ui" }
 rship-entities-scene = { version = "3.1.0-canary.23", path = "libs/entities/scene" }
 rship-entities-engine = { version = "3.1.0-canary.23", path = "libs/entities/engine" }
 rship-entities-nodes = { version = "3.1.0-canary.23", path = "libs/entities/nodes" }
+rship-entities-nodes-runtime = { version = "3.1.0-canary.23", path = "libs/entities/nodes-runtime" }
 rship-entities-math = { version = "3.1.0-canary.23", path = "libs/entities/math" }
 rship-entities-logic = { version = "3.1.0-canary.23", path = "libs/entities/logic" }
 rship-entities-lists = { version = "3.1.0-canary.23", path = "libs/entities/lists" }
