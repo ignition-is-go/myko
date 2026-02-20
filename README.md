@@ -22,7 +22,7 @@ docker compose -f docker-compose.local.yml up -d
 export MYKO_HOST_ADDRESS=localhost
 export MYKO_PORT=5155
 export KAFKA_BROKERS=localhost:9092
-cargo run -p server_rs --target-dir target/agent
+cargo run -p rship_server --target-dir target/agent
 
 # Run UI (separate terminal)
 bun run --filter @rship/ui dev
@@ -35,7 +35,7 @@ bun run --filter @rship/ui dev
 
 ```
 /apps/
-├── server_rs/  # Primary Rust server
+├── server/  # Primary Rust server
 ├── server/     # Legacy Bun/TypeScript server
 ├── ui/         # Svelte 5 + SvelteKit
 ├── asset_store/# Asset Store service

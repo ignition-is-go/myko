@@ -83,7 +83,7 @@ Canonical entity definitions live in Rust (`libs/entities/rs/`).
 TypeScript bindings are generated from Rust.
 
 ### Applications (`apps/`)
-- `apps/server_rs/`: Primary Rust server
+- `apps/server/`: Primary Rust server
 - `apps/ui/`: SvelteKit UI
 - `apps/execs/`: Executor implementations
 

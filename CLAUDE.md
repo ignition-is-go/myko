@@ -65,7 +65,7 @@ Multi-language executor SDK. Executors connect via WebSocket to declare Targets/
 
 ### Applications (`/apps/`)
 
-- **server_rs**: Rust server (primary) - `apps/server_rs/`
+- **rship_server**: Rust server (primary) - `apps/server/`
 - **ui**: Svelte 5 + SvelteKit, Tailwind 4 + daisyUI 5
 - **execs**: 15+ executor implementations
 
