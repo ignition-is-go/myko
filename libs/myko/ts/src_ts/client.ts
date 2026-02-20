@@ -82,6 +82,8 @@ export enum MykoProtocol {
   MSGPACK = 'MSGPACK',
 }
 
+type ConnectionLogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug' | 'verbose'
+
 /** Query class interface */
 export interface Query<T> {
   readonly queryId: string
@@ -232,6 +234,8 @@ export class MykoClient {
   private pendingEventBatch: MEvent[] = []
   private eventBatchFlushScheduled = false
   private readonly eventBatchMaxSize = 256
+  private connectionLogLevelThreshold: ConnectionLogLevel =
+    MykoClient.resolveDefaultConnectionLogLevel()
 
   // Stats
   private downMsgCounter = new Subject<void>()
@@ -249,6 +253,11 @@ export class MykoClient {
   constructor() {
     this.setConnectionStatus(ConnectionStatus.Disconnected, 'init')
     this.setCurrentServer(null, 'init')
+  }
+
+  /** Set connection log verbosity at runtime. */
+  setConnectionLogLevel(level: ConnectionLogLevel): void {
+    this.connectionLogLevelThreshold = level
   }
 
   /** Set the wire protocol (JSON or MSGPACK). Default is MSGPACK. */
@@ -1657,8 +1666,106 @@ export class MykoClient {
     })
   }
 
+  private connectionLogLevel(
+    event: string,
+  ): 'info' | 'debug' | 'verbose' | 'warn' | 'error' {
+    // Main lifecycle state transitions remain visible at info.
+    const infoEvents = new Set(['status', 'current_server'])
+    if (infoEvents.has(event)) return 'info'
+
+    // Subscription setup and first-response timing are debug-level diagnostics.
+    const debugEvents = new Set([
+      'socket_connecting',
+      'peer_discovery_started',
+      'peer_discovery_update',
+      'query_subscribe',
+      'view_subscribe',
+      'report_subscribe',
+      'query_cancel',
+      'view_cancel',
+      'report_cancel',
+      'query_first_response_timing',
+      'view_first_response_timing',
+      'reconnect_scheduled',
+      'reconnect_attempt',
+      'query_shape_invalid',
+    ])
+    if (debugEvents.has(event)) return 'debug'
+
+    // Follow-up response churn and transport internals are verbose-level.
+    const verboseEvents = new Set([
+      'ws_enqueue',
+      'ws_flush_queue',
+      'query_response',
+      'view_response',
+      'report_response',
+      'query_publish_ms',
+      'view_publish_ms',
+    ])
+    if (verboseEvents.has(event)) return 'verbose'
+
+    if (event.endsWith('_error')) return 'error'
+
+    return 'debug'
+  }
+
+  private static resolveDefaultConnectionLogLevel(): ConnectionLogLevel {
+    const readGlobal = (): string | undefined => {
+      const globalObj = globalThis as Record<string, unknown>
+      const value = globalObj.MYKO_CLIENT_LOG_LEVEL
+      return typeof value === 'string' ? value : undefined
+    }
+
+    const readProcessEnv = (): string | undefined => {
+      const processLike = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+      return processLike?.env?.MYKO_CLIENT_LOG_LEVEL
+    }
+
+    const value = (readGlobal() ?? readProcessEnv() ?? '').toLowerCase()
+    switch (value) {
+      case 'silent':
+      case 'error':
+      case 'warn':
+      case 'info':
+      case 'debug':
+      case 'verbose':
+        return value
+      default:
+        return 'warn'
+    }
+  }
+
+  private shouldLogConnection(level: ConnectionLogLevel): boolean {
+    const priority: Record<ConnectionLogLevel, number> = {
+      silent: 0,
+      error: 1,
+      warn: 2,
+      info: 3,
+      debug: 4,
+      verbose: 5,
+    }
+    return priority[level] <= priority[this.connectionLogLevelThreshold]
+  }
+
   private logConnection(event: string, details: Record<string, unknown>): void {
-    console.info(`[MykoClient] ${event}`, {
+    const level = this.connectionLogLevel(event)
+    if (!this.shouldLogConnection(level)) return
+    const maybeVerbose = (
+      console as unknown as { verbose?: (...args: unknown[]) => void }
+    ).verbose
+    const logger: (...args: unknown[]) => void =
+      level === 'info'
+        ? console.info
+        : level === 'warn'
+          ? console.warn
+          : level === 'error'
+            ? console.error
+            : level === 'verbose' || level === 'debug'
+              ? maybeVerbose ?? console.debug ?? console.log
+              : console.log
+    const levelPrefix = level === 'verbose' ? '[verbose] ' : ''
+
+    logger(`${levelPrefix}[MykoClient] ${event}`, {
       tsIso: new Date().toISOString(),
       tsMs: Date.now(),
       ...details,

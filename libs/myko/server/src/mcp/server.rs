@@ -11,7 +11,7 @@ use myko_rs::{
     command::CommandRegistration,
     query::QueryRegistration,
     report::ReportRegistration,
-    wire::{MykoMessage, WrappedCommand, WrappedQuery, WrappedReport},
+    wire::{WrappedCommand, WrappedQuery, WrappedReport},
 };
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -533,12 +533,22 @@ async fn execute_query(
                 window: None,
             };
 
+            let cell = client.watch_query_raw(wrapped);
             let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
             let result_tx = Arc::new(std::sync::Mutex::new(Some(result_tx)));
-
-            let _cancel = client.watch_query_callback(wrapped, move |items| {
-                if let Some(tx) = result_tx.lock().unwrap().take() {
-                    let _ = tx.send(items);
+            let seen_initial = Arc::new(std::sync::Mutex::new(false));
+            let result_tx_sub = result_tx.clone();
+            let seen_initial_sub = seen_initial.clone();
+            let _guard = cell.subscribe(move |signal| {
+                if let hypha::Signal::Value(items) = signal {
+                    let mut seen = seen_initial_sub.lock().unwrap();
+                    if !*seen {
+                        *seen = true;
+                        return;
+                    }
+                    if let Some(tx) = result_tx_sub.lock().unwrap().take() {
+                        let _ = tx.send((**items).clone());
+                    }
                 }
             });
 
@@ -581,12 +591,15 @@ async fn execute_report(
                 report_id: reg.report_id.to_string(),
             };
 
+            let cell = client.watch_report_raw(wrapped);
             let (result_tx, result_rx) = oneshot::channel::<Value>();
             let result_tx = Arc::new(std::sync::Mutex::new(Some(result_tx)));
-
-            let _cancel = client.watch_report_callback(wrapped, move |value| {
-                if let Some(tx) = result_tx.lock().unwrap().take() {
-                    let _ = tx.send(value);
+            let _guard = cell.subscribe(move |signal| {
+                if let hypha::Signal::Value(value_opt) = signal
+                    && let Some(value) = &**value_opt
+                    && let Some(tx) = result_tx.lock().unwrap().take()
+                {
+                    let _ = tx.send(value.clone());
                 }
             });
 
@@ -652,49 +665,26 @@ async fn execute_command(
         command_id: command_id.to_string(),
     };
 
-    client
-        .send_command_raw(wrapped)
-        .map_err(|e| format!("Failed to send: {}", e))?;
-
-    // Listen for the response via on_message callback + oneshot
-    let tx_clone = tx.clone();
+    let result_cell = client.send_command_raw_result(wrapped);
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<Result<Value, String>>();
-    let resp_tx = std::sync::Mutex::new(Some(resp_tx));
-    let msg_guard = client.on_message(move |msg| {
-        if let Ok(myko_msg) = serde_json::from_value::<MykoMessage>(msg) {
-            match myko_msg {
-                MykoMessage::CommandResponse(resp) if resp.tx == tx_clone => {
-                    if let Some(sender) = resp_tx.lock().unwrap().take() {
-                        let _ = sender.send(Ok(resp.response));
-                    }
-                }
-                MykoMessage::CommandError(err) if err.tx == tx_clone => {
-                    if let Some(sender) = resp_tx.lock().unwrap().take() {
-                        let _ = sender.send(Err(err.message));
-                    }
-                }
-                _ => {}
-            }
+    let resp_tx = Arc::new(std::sync::Mutex::new(Some(resp_tx)));
+    let _guard = result_cell.subscribe(move |signal| {
+        if let hypha::Signal::Value(result_opt) = signal
+            && let Some(result) = &**result_opt
+            && let Some(sender) = resp_tx.lock().unwrap().take()
+        {
+            let _ = sender.send(result.clone());
         }
     });
 
     match tokio::time::timeout(std::time::Duration::from_secs(10), resp_rx).await {
-        Ok(Ok(Ok(response))) => {
-            drop(msg_guard);
-            Ok(json!({
-                "command_id": command_id,
-                "success": true,
-                "result": response
-            }))
-        }
-        Ok(Ok(Err(e))) => {
-            drop(msg_guard);
-            Err(e)
-        }
-        _ => {
-            drop(msg_guard);
-            Err("Timeout waiting for response".to_string())
-        }
+        Ok(Ok(Ok(response))) => Ok(json!({
+            "command_id": command_id,
+            "success": true,
+            "result": response
+        })),
+        Ok(Ok(Err(e))) => Err(e),
+        _ => Err("Timeout waiting for response".to_string()),
     }
 }
 

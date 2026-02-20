@@ -15,6 +15,7 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use hypha::SelectExt;
 use myko_rs::{
+    WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::Client,
     relationship::{iter_client_id_registrations, iter_fallback_to_id_registrations},
@@ -26,7 +27,10 @@ use myko_rs::{
     },
 };
 use tokio::{net::TcpStream, sync::mpsc};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    accept_async_with_config,
+    tungstenite::{Message, protocol::WebSocketConfig},
+};
 use uuid::Uuid;
 
 /// Protocol switch message sent by client to enable binary (msgpack) encoding.
@@ -133,7 +137,12 @@ impl WsHandler {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let host_id = ctx.host_id;
 
-        let ws_stream = accept_async(stream).await?;
+        let ws_config = WebSocketConfig {
+            max_message_size: Some(WS_MAX_MESSAGE_SIZE_BYTES),
+            max_frame_size: Some(WS_MAX_FRAME_SIZE_BYTES),
+            ..Default::default()
+        };
+        let ws_stream = accept_async_with_config(stream, Some(ws_config)).await?;
         let (mut write, mut read) = ws_stream.split();
 
         // Create a bounded channel for sending messages to the client
@@ -284,8 +293,9 @@ impl WsHandler {
                 // Perf visibility for initial responses and large payloads.
                 let is_initial = seq == Some(0);
                 let is_large = payload_bytes >= 256 * 1024;
-                if (kind == "view_response" || kind == "query_response") && (is_initial || is_large) {
-                    log::info!(
+                if (kind == "view_response" || kind == "query_response") && (is_initial || is_large)
+                {
+                    log::debug!(
                         target: "myko_server::ws_perf",
                         "ws_perf client={} addr={} kind={} tx={:?} emit_index={:?} subscribe_to_first_emit_ms={:?} query_id={:?} view_id={:?} seq={:?} upserts={:?} deletes={:?} total_count={:?} payload_bytes={} serialize_ms={} send_ms={} binary={}",
                         write_client_id,
@@ -324,7 +334,7 @@ impl WsHandler {
                 Message::Binary(data) => {
                     // Auto-detect: receiving binary means client wants binary responses
                     if !use_binary.load(Ordering::SeqCst) {
-                        log::info!(
+                        log::debug!(
                             "Client {} auto-switching to binary (msgpack) protocol",
                             client_id
                         );
@@ -356,7 +366,7 @@ impl WsHandler {
                 Message::Text(text) => {
                     // Check for protocol switch request
                     if text == SWITCH_TO_MSGPACK {
-                        log::info!(
+                        log::debug!(
                             "Client {} switching to binary (msgpack) protocol",
                             client_id
                         );
@@ -411,7 +421,7 @@ impl WsHandler {
                     log::trace!("Pong from {}", client_id);
                 }
                 Message::Close(_) => {
-                    log::info!("Client {} disconnecting", client_id);
+                    log::debug!("Client {} disconnecting", client_id);
                     break;
                 }
                 Message::Frame(_) => {

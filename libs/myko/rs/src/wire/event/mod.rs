@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{io::Cursor, sync::Arc};
 
 use chrono::Utc;
 use rmp_serde::Deserializer;
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::item::Eventable;
+use crate::{core::item::AnyItem, item::Eventable};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub enum MEventType {
@@ -114,12 +114,25 @@ impl MEvent {
         }
     }
 
-    /// Create a DEL event for an entity type and ID
-    pub fn del(entity_type: &str, id: &str, source_id: &str) -> MEvent {
+    /// Create a DEL event from a typed entity.
+    pub fn del(item: &impl Eventable, source_id: &str) -> MEvent {
         MEvent {
-            item: serde_json::json!({ "id": id }),
+            item: serde_json::to_value(item).unwrap(),
             change_type: MEventType::DEL,
-            item_type: entity_type.to_string(),
+            item_type: item.entity_type().to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: Some(source_id.to_string()),
+            options: None,
+        }
+    }
+
+    /// Create a DEL event from a dynamic item.
+    pub fn del_from_any(item: &Arc<dyn AnyItem>, source_id: &str) -> MEvent {
+        MEvent {
+            item: item.to_value(),
+            change_type: MEventType::DEL,
+            item_type: item.entity_type().to_string(),
             created_at: Utc::now().to_rfc3339(),
             tx: uuid::Uuid::new_v4().to_string(),
             source_id: Some(source_id.to_string()),

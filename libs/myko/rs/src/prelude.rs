@@ -15,7 +15,10 @@ pub use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::QueryBuildCellCtx;
 pub use crate::{
-    client::MykoClient,
+    client::{
+        MykoClient,
+        entity_sync::{EntityStoreSync, EntityStoreSyncOptions},
+    },
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,

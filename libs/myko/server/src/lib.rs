@@ -665,6 +665,10 @@ impl CellServer {
         // the gateway is actually available.
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         log::info!("CellServer listening on {}", self.config.bind_addr);
+        log::info!(
+            "WebSocket server listening on ws://{}/myko",
+            self.config.bind_addr
+        );
 
         // Start peer registry if configured
         if self.config.peer_registry.is_some() {
@@ -693,6 +697,10 @@ impl CellServer {
 
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         log::info!("CellServer listening on {}", self.config.bind_addr);
+        log::info!(
+            "WebSocket server listening on ws://{}/myko",
+            self.config.bind_addr
+        );
         self.run_ws_accept_loop(listener).await
     }
 

@@ -13,13 +13,16 @@ const shouldUseSecure =
 	env.PUBLIC_USE_SECURE_WEBSOCKET !== undefined
 		? env.PUBLIC_USE_SECURE_WEBSOCKET === 'true'
 		: isHttps;
+const shouldDebugLog = env.PUBLIC_MYKO_CLIENT_DEBUG === 'true';
 
 export const client = new WSM.WSMClient(
 	(url) => {
 		return new WebSocket(url);
 	},
 	{
-		onLog: (...l) => console.log(...l),
+		onLog: (...l) => {
+			if (shouldDebugLog) console.log(...l);
+		},
 		onError: (...l) => console.error(...l),
 		onServerConnect: (url) => {
 			connectHandlers.forEach((h) => h(url));

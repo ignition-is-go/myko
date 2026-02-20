@@ -8,7 +8,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, TrySendError},
+        mpsc,
     },
     time::Duration,
 };
@@ -32,6 +32,8 @@ pub struct PostgresConfig {
     pub table: String,
     /// LISTEN/NOTIFY channel name.
     pub channel: String,
+    /// Producer channel capacity before backpressure/drop on try_send.
+    pub producer_buffer: usize,
 }
 
 /// Persisted event row fetched from Postgres.
@@ -53,10 +55,16 @@ impl PostgresConfig {
         let table = std::env::var("MYKO_POSTGRES_TABLE").unwrap_or_else(|_| "myko_events".into());
         let channel =
             std::env::var("MYKO_POSTGRES_CHANNEL").unwrap_or_else(|_| "myko_events_notify".into());
+        let producer_buffer = std::env::var("MYKO_POSTGRES_PRODUCER_BUFFER")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(50_000);
         Some(Self {
             url,
             table,
             channel,
+            producer_buffer,
         })
     }
 }
@@ -126,15 +134,13 @@ impl PostgresProducerHandle {
         if event.source_id.is_none() {
             event.source_id = Some(self.host_id.to_string());
         }
-        match self.sender.try_send(event) {
+        match self.sender.send(event) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                error!("Postgres producer buffer full (50k), dropping event");
-            }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(mpsc::SendError(_)) => {
                 error!(
-                    "Postgres producer channel closed, dropping event (producer thread not running)"
+                    "Postgres producer channel closed; refusing to drop event (producer thread not running)"
                 );
+                panic!("postgres producer channel closed");
             }
         }
     }
@@ -163,7 +169,7 @@ impl CellPostgresProducer {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
 
-        let (tx, rx) = mpsc::sync_channel::<MEvent>(50_000);
+        let (tx, rx) = mpsc::sync_channel::<MEvent>(config.producer_buffer);
         let cfg = config.clone();
         let cfg_for_handle = cfg.clone();
         std::thread::spawn(move || run_producer_loop(cfg, rx));
@@ -187,38 +193,29 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<MEvent>) {
     let mut client: Option<Client> = None;
 
     while let Ok(event) = rx.recv() {
-        if client.is_none() {
-            client = connect_producer_client(&config);
+        let pending = event;
+        loop {
             if client.is_none() {
-                error!("Postgres producer unavailable; dropping event");
-                continue;
-            }
-        }
-
-        if let Some(c) = client.as_mut() {
-            if let Err(err) = insert_event(c, &config, event.clone()) {
-                error!(
-                    "{}",
-                    format_pg_error("insert_event(producer)", Some(&config.url), &err)
-                );
-                client = None;
-            } else {
-                continue;
-            }
-        }
-
-        if client.is_none() {
-            client = connect_producer_client(&config);
-            if let Some(c) = client.as_mut() {
-                if let Err(err) = insert_event(c, &config, event) {
-                    error!(
-                        "{}",
-                        format_pg_error("insert_event(producer-retry)", Some(&config.url), &err)
-                    );
-                    client = None;
+                client = connect_producer_client(&config);
+                if client.is_none() {
+                    error!("Postgres producer unavailable; retrying event persist");
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
                 }
-            } else {
-                error!("Postgres producer reconnect failed; dropping event");
+            }
+
+            if let Some(c) = client.as_mut() {
+                match insert_event(c, &config, pending.clone()) {
+                    Ok(()) => break,
+                    Err(err) => {
+                        error!(
+                            "{}",
+                            format_pg_error("insert_event(producer)", Some(&config.url), &err)
+                        );
+                        client = None;
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
             }
         }
     }

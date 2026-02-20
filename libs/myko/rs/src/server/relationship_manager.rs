@@ -125,7 +125,7 @@ pub struct RelationshipManager {
 impl RelationshipManager {
     /// Create a new RelationshipManager with lookup tables built from inventory.
     pub fn new() -> Self {
-        info!("RelationshipManager: Initializing from inventory");
+        trace!("RelationshipManager: Initializing from inventory");
 
         let mut belongs_to_by_foreign: HashMap<&'static str, Vec<BelongsToLookup>> = HashMap::new();
         let mut belongs_to_by_local: HashMap<&'static str, Vec<BelongsToLookup>> = HashMap::new();
@@ -216,7 +216,7 @@ impl RelationshipManager {
 
         let relation_count =
             belongs_to_by_foreign.len() + owns_many_by_local.len() + ensure_for_by_dependency.len();
-        debug!(
+        trace!(
             "RelationshipManager: {} relation types indexed",
             relation_count
         );
@@ -268,7 +268,7 @@ impl RelationshipManager {
     /// 3. EnsureFor initialization: Create missing entities for all dependency combinations
     pub fn establish_relations(&self, ctx: &CellServerCtx) {
         info!("RelationshipManager: Establishing relations on startup");
-        debug!(
+        trace!(
             "RelationshipManager: BelongsTo relations by local: {:?}",
             self.belongs_to_by_local.keys().collect::<Vec<_>>()
         );
@@ -461,13 +461,13 @@ impl RelationshipManager {
 
     /// Cleanup orphaned children for BelongsTo relationships
     fn cleanup_belongs_to_orphans(&self, ctx: &CellServerCtx) {
-        debug!(
+        trace!(
             "RelationshipManager: cleanup_belongs_to_orphans - checking {} child types",
             self.belongs_to_by_local.len()
         );
 
         for (child_type, lookups) in &self.belongs_to_by_local {
-            debug!(
+            trace!(
                 "RelationshipManager: Checking BelongsTo orphans for child type '{}' ({} lookups)",
                 child_type,
                 lookups.len()
@@ -478,7 +478,7 @@ impl RelationshipManager {
                 let parents = self.get_all_items(ctx, lookup.foreign_type);
                 let parent_ids: HashSet<Arc<str>> = parents.iter().map(|p| p.id()).collect();
 
-                debug!(
+                trace!(
                     "RelationshipManager: {} -> {}: Found {} parents in store",
                     child_type,
                     lookup.foreign_type,
@@ -487,7 +487,7 @@ impl RelationshipManager {
 
                 // Get all children and find orphans using typed extractor
                 let children = self.get_all_items(ctx, child_type);
-                debug!(
+                trace!(
                     "RelationshipManager: {} -> {}: Found {} children in store",
                     child_type,
                     lookup.foreign_type,
@@ -516,7 +516,7 @@ impl RelationshipManager {
                             valid_count += 1;
                         }
                     } else {
-                        debug!(
+                        trace!(
                             "RelationshipManager: {} {} - extract_fk returned None",
                             child_type,
                             child.id()
@@ -525,7 +525,7 @@ impl RelationshipManager {
                     }
                 }
 
-                debug!(
+                trace!(
                     "RelationshipManager: {} -> {}: {} orphans deleted, {} valid, {} no FK",
                     child_type, lookup.foreign_type, orphan_count, valid_count, no_fk_count
                 );
@@ -535,13 +535,13 @@ impl RelationshipManager {
 
     /// Cleanup orphaned children for OwnsMany relationships
     fn cleanup_owns_many_orphans(&self, ctx: &CellServerCtx) {
-        debug!(
+        trace!(
             "RelationshipManager: cleanup_owns_many_orphans - checking {} parent types",
             self.owns_many_by_local.len()
         );
 
         for (parent_type, lookups) in &self.owns_many_by_local {
-            debug!(
+            trace!(
                 "RelationshipManager: Checking OwnsMany orphans for parent type '{}' ({} lookups)",
                 parent_type,
                 lookups.len()
@@ -552,7 +552,7 @@ impl RelationshipManager {
                 let parents = self.get_all_items(ctx, parent_type);
                 let mut referenced_ids: HashSet<Arc<str>> = HashSet::new();
 
-                debug!(
+                trace!(
                     "RelationshipManager: {} ->> {}: Found {} parents in store",
                     parent_type,
                     lookup.foreign_type,
@@ -572,7 +572,7 @@ impl RelationshipManager {
                     }
                 }
 
-                debug!(
+                trace!(
                     "RelationshipManager: {} ->> {}: {} parents have child IDs, {} have no IDs, {} total referenced child IDs",
                     parent_type,
                     lookup.foreign_type,
@@ -583,7 +583,7 @@ impl RelationshipManager {
 
                 // Get all children and find orphans
                 let children = self.get_all_items(ctx, lookup.foreign_type);
-                debug!(
+                trace!(
                     "RelationshipManager: {} ->> {}: Found {} children in store",
                     parent_type,
                     lookup.foreign_type,
@@ -610,10 +610,17 @@ impl RelationshipManager {
                     }
                 }
 
-                info!(
-                    "RelationshipManager: {} ->> {}: {} orphans deleted, {} valid",
-                    parent_type, lookup.foreign_type, orphan_count, valid_count
-                );
+                if orphan_count > 0 {
+                    info!(
+                        "RelationshipManager: {} ->> {}: {} orphans deleted, {} valid",
+                        parent_type, lookup.foreign_type, orphan_count, valid_count
+                    );
+                } else {
+                    trace!(
+                        "RelationshipManager: {} ->> {}: {} orphans deleted, {} valid",
+                        parent_type, lookup.foreign_type, orphan_count, valid_count
+                    );
+                }
             }
         }
     }
@@ -797,7 +804,7 @@ impl RelationshipManager {
             );
             ctx.del_dyn_with_options(item, Some(options));
         } else {
-            debug!(
+            trace!(
                 "RelationshipManager: publish_del_cascade {} {} - entity NOT found in store",
                 entity_type, id
             );

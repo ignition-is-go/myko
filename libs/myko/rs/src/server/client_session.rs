@@ -204,7 +204,7 @@ impl<W: WsWriter> ClientSession<W> {
                 let payload_bytes = serde_json::to_vec(&MykoMessage::ViewResponse(response.clone()))
                     .map(|buf| buf.len())
                     .unwrap_or(0);
-                log::info!(
+                log::trace!(
                     target: "myko_rs::server::view_perf",
                     "view_perf client={} view_id={} tx={} first_emit_ms={} initial_rows={} total_count={:?} payload_bytes={} window={:?}",
                     client_id_for_log,

@@ -218,10 +218,121 @@ impl CellServerCtx {
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity_type, &id, Some(entity.to_value()));
+            self.produce_del(entity);
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
+    }
+
+    /// Publish a batch of entities (SET) with default options.
+    ///
+    /// Default behavior: Reduce + Relationships + Persist
+    pub fn batch_set<T>(&self, entities: &[T])
+    where
+        T: Eventable + Clone + 'static,
+    {
+        self.batch_set_with_options(entities, None);
+    }
+
+    /// Publish a batch of entities (SET) with shared options.
+    ///
+    /// This avoids manual `MEvent` construction and performs a grouped store insert.
+    pub fn batch_set_with_options<T>(&self, entities: &[T], options: Option<EventOptions>)
+    where
+        T: Eventable + Clone + 'static,
+    {
+        if entities.is_empty() {
+            return;
+        }
+
+        let options = options.unwrap_or_default();
+        let entity_type = T::entity_name_static();
+        let store = self.registry.get_or_create(entity_type);
+
+        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(entities.len());
+        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
+
+        for entity in entities {
+            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
+            self.search_index.index_item(&item);
+            entries.push((entity.id(), item.clone()));
+            items.push(item);
+        }
+
+        // Reduce: one diff emission for the whole batch.
+        store.insert_many(entries);
+
+        // Relationships: process cascades (unless prevented)
+        if !options.prevent_relationship_updates {
+            for item in &items {
+                self.relationship_manager.forward_set(item.clone(), self);
+            }
+        }
+
+        // Persist: produce to Kafka (unless prevented)
+        if !options.prevent_persist {
+            for item in &items {
+                self.produce_set_dyn(item);
+            }
+        }
+
+        log::trace!("Published batch SET {} count={}", entity_type, items.len());
+    }
+
+    /// Delete a batch of entities (DEL) with default options.
+    ///
+    /// Default behavior: Reduce + Relationships + Persist
+    pub fn batch_del<T>(&self, entities: &[T])
+    where
+        T: Eventable + Clone + 'static,
+    {
+        self.batch_del_with_options(entities, None);
+    }
+
+    /// Delete a batch of entities (DEL) with shared options.
+    ///
+    /// This avoids manual `MEvent` construction and performs a grouped store remove.
+    pub fn batch_del_with_options<T>(&self, entities: &[T], options: Option<EventOptions>)
+    where
+        T: Eventable + Clone + 'static,
+    {
+        if entities.is_empty() {
+            return;
+        }
+
+        let options = options.unwrap_or_default();
+        let entity_type = T::entity_name_static();
+        let store = self.registry.get_or_create(entity_type);
+
+        let mut ids: Vec<Arc<str>> = Vec::with_capacity(entities.len());
+        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
+
+        for entity in entities {
+            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
+            let id = item.id();
+            self.search_index.remove_entity(&id);
+            ids.push(id);
+            items.push(item);
+        }
+
+        // Reduce: one diff emission for the whole batch.
+        store.remove_many(ids);
+
+        // Relationships: process cascades (unless prevented)
+        if !options.prevent_relationship_updates {
+            for item in &items {
+                self.relationship_manager.forward_del(item.clone(), self);
+            }
+        }
+
+        // Persist: produce to Kafka (unless prevented)
+        if !options.prevent_persist {
+            for item in &items {
+                self.produce_del_dyn(item);
+            }
+        }
+
+        log::trace!("Published batch DEL {} count={}", entity_type, items.len());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -288,7 +399,7 @@ impl CellServerCtx {
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity_type, &id, Some(item.to_value()));
+            self.produce_del_dyn(&item);
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
@@ -309,6 +420,11 @@ impl CellServerCtx {
         let options = options.unwrap_or_default();
         let id_arc: Arc<str> = id.into();
 
+        let existing = self
+            .registry
+            .get(entity_type)
+            .and_then(|store| store.get(&id_arc).get());
+
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id_arc);
 
@@ -317,7 +433,15 @@ impl CellServerCtx {
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity_type, id, None);
+            if let Some(item) = existing {
+                self.produce_del_dyn(&item);
+            } else {
+                log::warn!(
+                    "del_by_id could not persist DEL without full entity: {}:{}",
+                    entity_type,
+                    id
+                );
+            }
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
@@ -462,11 +586,7 @@ impl CellServerCtx {
         }
         for op in &dels {
             if !op.options.prevent_persist {
-                self.produce_del(
-                    op.item.entity_type(),
-                    &op.item.id(),
-                    Some(op.item.to_value()),
-                );
+                self.produce_del_dyn(&op.item);
             }
         }
 
@@ -488,24 +608,24 @@ impl CellServerCtx {
         }
     }
 
-    fn produce_del(&self, entity_type: &str, id: &str, sink_item: Option<serde_json::Value>) {
-        if let Some(persister) = self.persisters.resolve(entity_type) {
-            let event = MEvent::del(entity_type, id, &self.host_id.to_string());
+    fn produce_del<T: Eventable>(&self, entity: &T) {
+        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
+            let event = MEvent::del(entity, &self.host_id.to_string());
             persister.persist(event);
         }
         if let Some(sink) = &self.event_sink {
-            let event = match sink_item {
-                Some(item) => MEvent {
-                    item,
-                    change_type: MEventType::DEL,
-                    item_type: entity_type.to_string(),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                    tx: uuid::Uuid::new_v4().to_string(),
-                    source_id: Some(self.host_id.to_string()),
-                    options: None,
-                },
-                None => MEvent::del(entity_type, id, &self.host_id.to_string()),
-            };
+            let event = MEvent::del(entity, &self.host_id.to_string());
+            let _ = sink.send(event);
+        }
+    }
+
+    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) {
+        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
+            let event = MEvent::del_from_any(item, &self.host_id.to_string());
+            persister.persist(event);
+        }
+        if let Some(sink) = &self.event_sink {
+            let event = MEvent::del_from_any(item, &self.host_id.to_string());
             let _ = sink.send(event);
         }
     }
