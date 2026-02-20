@@ -1,14 +1,12 @@
 use std::{cell::RefCell, rc::Rc};
 
+use hypha::{Cell, CellImmutable, CellMutable, Mutable};
 use log::{error, info, warn};
 use send_wrapper::SendWrapper;
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
-use crate::{CallbackGuard, SocketConnectionStatus, SocketTransport, WsFrame, next_callback_id};
-
-type MessageCallback = Box<dyn Fn(WsFrame)>;
-type StatusCallback = Box<dyn Fn(SocketConnectionStatus)>;
+use crate::{SocketConnectionStatus, SocketTransport, WsFrame};
 
 struct WasmSocketInner {
     ws: Option<WebSocket>,
@@ -22,9 +20,8 @@ struct WasmSocketInner {
 
 /// Callback registries for WASM (single-threaded, uses Rc<RefCell>)
 struct WasmCallbacks {
-    message_callbacks: Rc<RefCell<Vec<(u64, MessageCallback)>>>,
-    status_callbacks: Rc<RefCell<Vec<(u64, StatusCallback)>>>,
-    status: Rc<RefCell<SocketConnectionStatus>>,
+    intended_status: Cell<SocketConnectionStatus, CellMutable>,
+    actual_status: Cell<SocketConnectionStatus, CellMutable>,
 }
 
 /// Browser WebSocket transport with auto-reconnect.
@@ -36,6 +33,8 @@ pub struct WasmSocket {
     inner: SendWrapper<Rc<RefCell<WasmSocketInner>>>,
     callbacks: SendWrapper<WasmCallbacks>,
     addr: SendWrapper<RefCell<Option<String>>>,
+    incoming_tx: flume::Sender<WsFrame>,
+    incoming_rx: flume::Receiver<WsFrame>,
     auto_reconnect: bool,
 }
 
@@ -49,6 +48,7 @@ impl WasmSocket {
     }
 
     pub fn with_auto_reconnect(auto_reconnect: bool) -> Self {
+        let (incoming_tx, incoming_rx) = flume::unbounded();
         Self {
             inner: SendWrapper::new(Rc::new(RefCell::new(WasmSocketInner {
                 ws: None,
@@ -58,22 +58,21 @@ impl WasmSocket {
                 _on_open: None,
             }))),
             callbacks: SendWrapper::new(WasmCallbacks {
-                message_callbacks: Rc::new(RefCell::new(Vec::new())),
-                status_callbacks: Rc::new(RefCell::new(Vec::new())),
-                status: Rc::new(RefCell::new(SocketConnectionStatus::Idle)),
+                intended_status: Cell::new(SocketConnectionStatus::Idle)
+                    .with_name("autosocket.wasm.intended_status"),
+                actual_status: Cell::new(SocketConnectionStatus::Idle)
+                    .with_name("autosocket.wasm.actual_status"),
             }),
             addr: SendWrapper::new(RefCell::new(None)),
+            incoming_tx,
+            incoming_rx,
             auto_reconnect,
         }
     }
 
     /// Update status and notify all status callbacks
     fn set_status(callbacks: &WasmCallbacks, new_status: SocketConnectionStatus) {
-        *callbacks.status.borrow_mut() = new_status.clone();
-        let cbs = callbacks.status_callbacks.borrow();
-        for (_, cb) in cbs.iter() {
-            cb(new_status.clone());
-        }
+        callbacks.actual_status.set(new_status);
     }
 
     fn connect(&self, addr: &str) {
@@ -97,7 +96,7 @@ impl WasmSocket {
         let addr_string = addr.to_string();
 
         // onmessage: parse into WsFrame and call callbacks
-        let msg_cbs = self.callbacks.message_callbacks.clone();
+        let incoming_tx = self.incoming_tx.clone();
         let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
             let data = e.data();
 
@@ -110,10 +109,7 @@ impl WasmSocket {
                 return;
             };
 
-            let cbs = msg_cbs.borrow();
-            for (_, cb) in cbs.iter() {
-                cb(frame.clone());
-            }
+            let _ = incoming_tx.send(frame);
         }) as Box<dyn FnMut(MessageEvent)>);
 
         ws.set_onmessage(Some(
@@ -128,31 +124,29 @@ impl WasmSocket {
         ws.set_onerror(Some(on_error.as_ref().unchecked_ref::<js_sys::Function>()));
 
         // onclose: reconnect after 1s
-        let status_cbs = self.callbacks.status_callbacks.clone();
-        let status = self.callbacks.status.clone();
-        let msg_cbs_close = self.callbacks.message_callbacks.clone();
         let inner_close = Rc::clone(&self.inner);
         let addr_close = addr.to_string();
+        let actual_status = self.callbacks.actual_status.clone();
+        let incoming_tx_for_reconnect = self.incoming_tx.clone();
         let auto_reconnect = self.auto_reconnect;
         let on_close = Closure::wrap(Box::new(move |_: CloseEvent| {
             if !auto_reconnect {
                 warn!("WasmSocket: WebSocket closed");
-                set_status_raw(&status, &status_cbs, SocketConnectionStatus::Disconnected);
+                actual_status.set(SocketConnectionStatus::Disconnected);
                 return;
             }
             warn!("WasmSocket: WebSocket closed, reconnecting in 1s");
-            set_status_raw(&status, &status_cbs, SocketConnectionStatus::Disconnected);
+            actual_status.set(SocketConnectionStatus::Disconnected);
 
-            let status = status.clone();
-            let status_cbs = status_cbs.clone();
-            let msg_cbs = msg_cbs_close.clone();
+            let actual_status = actual_status.clone();
+            let incoming_tx = incoming_tx_for_reconnect.clone();
             let inner = Rc::clone(&inner_close);
             let addr = addr_close.clone();
 
             let window = web_sys::window().expect("no window");
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &Closure::once_into_js(move || {
-                    reconnect(&addr, &status, &status_cbs, &msg_cbs, inner, auto_reconnect);
+                    reconnect(&addr, &actual_status, incoming_tx, inner, auto_reconnect);
                 })
                 .unchecked_into(),
                 1000,
@@ -162,16 +156,11 @@ impl WasmSocket {
         ws.set_onclose(Some(on_close.as_ref().unchecked_ref::<js_sys::Function>()));
 
         // onopen
-        let status_cbs_open = self.callbacks.status_callbacks.clone();
-        let status_open = self.callbacks.status.clone();
+        let status_open = self.callbacks.actual_status.clone();
         let addr_open = addr_string.clone();
         let on_open = Closure::wrap(Box::new(move || {
             info!("WasmSocket: connected to {addr_open}");
-            set_status_raw(
-                &status_open,
-                &status_cbs_open,
-                SocketConnectionStatus::Connected(addr_open.clone()),
-            );
+            status_open.set(SocketConnectionStatus::Connected(addr_open.clone()));
         }) as Box<dyn FnMut()>);
 
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref::<js_sys::Function>()));
@@ -205,6 +194,10 @@ impl WasmSocket {
 
 impl SocketTransport for WasmSocket {
     fn set_addr(&self, addr: Option<String>) {
+        self.callbacks.intended_status.set(match addr.clone() {
+            Some(a) => SocketConnectionStatus::Connected(a),
+            None => SocketConnectionStatus::Idle,
+        });
         // Disconnect existing connection
         self.disconnect(if addr.is_some() {
             SocketConnectionStatus::Disconnected
@@ -220,12 +213,19 @@ impl SocketTransport for WasmSocket {
     }
 
     fn close(&self) {
+        self.callbacks
+            .intended_status
+            .set(SocketConnectionStatus::Idle);
         *self.addr.borrow_mut() = None;
         self.disconnect(SocketConnectionStatus::Idle);
     }
 
-    fn get_status(&self) -> SocketConnectionStatus {
-        self.callbacks.status.borrow().clone()
+    fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+        self.callbacks.intended_status.clone().lock()
+    }
+
+    fn actual_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+        self.callbacks.actual_status.clone().lock()
     }
 
     fn send(&self, frame: WsFrame) -> Result<(), String> {
@@ -238,40 +238,8 @@ impl SocketTransport for WasmSocket {
         }
     }
 
-    fn on_message(&self, cb: Box<dyn Fn(WsFrame) + Send + Sync>) -> CallbackGuard {
-        let id = next_callback_id();
-        self.callbacks.message_callbacks.borrow_mut().push((id, cb));
-        // NOTE(ts): CallbackGuard removal is a no-op in WASM since we can't
-        // safely access the SendWrapper from the guard's Drop. Callbacks
-        // are cleaned up when the socket is dropped. For the use cases here
-        // (app-lifetime subscriptions), this is fine.
-        CallbackGuard::noop()
-    }
-
-    fn on_status_change(
-        &self,
-        cb: Box<dyn Fn(SocketConnectionStatus) + Send + Sync>,
-    ) -> CallbackGuard {
-        // Call immediately with current status
-        let current = self.callbacks.status.borrow().clone();
-        cb(current);
-
-        let id = next_callback_id();
-        self.callbacks.status_callbacks.borrow_mut().push((id, cb));
-        CallbackGuard::noop()
-    }
-}
-
-/// Helper to update status and notify callbacks (used from closures that capture raw Rcs)
-fn set_status_raw(
-    status: &Rc<RefCell<SocketConnectionStatus>>,
-    status_callbacks: &Rc<RefCell<Vec<(u64, StatusCallback)>>>,
-    new_status: SocketConnectionStatus,
-) {
-    *status.borrow_mut() = new_status.clone();
-    let cbs = status_callbacks.borrow();
-    for (_, cb) in cbs.iter() {
-        cb(new_status.clone());
+    fn read_rx(&self) -> flume::Receiver<WsFrame> {
+        self.incoming_rx.clone()
     }
 }
 
@@ -279,26 +247,17 @@ fn set_status_raw(
 /// Updates `inner.ws` so that `send()` uses the new socket.
 fn reconnect(
     addr: &str,
-    status: &Rc<RefCell<SocketConnectionStatus>>,
-    status_callbacks: &Rc<RefCell<Vec<(u64, StatusCallback)>>>,
-    message_callbacks: &Rc<RefCell<Vec<(u64, MessageCallback)>>>,
+    status: &Cell<SocketConnectionStatus, CellMutable>,
+    incoming_tx: flume::Sender<WsFrame>,
     inner: Rc<RefCell<WasmSocketInner>>,
     auto_reconnect: bool,
 ) {
     if !auto_reconnect {
-        set_status_raw(
-            status,
-            status_callbacks,
-            SocketConnectionStatus::Disconnected,
-        );
+        status.set(SocketConnectionStatus::Disconnected);
         return;
     }
     info!("WasmSocket: reconnecting to {addr}");
-    set_status_raw(
-        status,
-        status_callbacks,
-        SocketConnectionStatus::Reconnecting(addr.to_string()),
-    );
+    status.set(SocketConnectionStatus::Reconnecting(addr.to_string()));
 
     let ws = match WebSocket::new(addr) {
         Ok(ws) => ws,
@@ -306,20 +265,12 @@ fn reconnect(
             error!("WasmSocket: failed to reconnect: {e:?}");
             // Try again in 1s
             let status = status.clone();
-            let status_callbacks = status_callbacks.clone();
-            let message_callbacks = message_callbacks.clone();
+            let incoming_tx = incoming_tx.clone();
             let addr = addr.to_string();
             let window = web_sys::window().expect("no window");
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &Closure::once_into_js(move || {
-                    reconnect(
-                        &addr,
-                        &status,
-                        &status_callbacks,
-                        &message_callbacks,
-                        inner,
-                        auto_reconnect,
-                    );
+                    reconnect(&addr, &status, incoming_tx, inner, auto_reconnect);
                 })
                 .unchecked_into(),
                 1000,
@@ -333,7 +284,7 @@ fn reconnect(
     let addr_string = addr.to_string();
 
     // onmessage
-    let msg_cbs = message_callbacks.clone();
+    let incoming_tx_for_message = incoming_tx.clone();
     let on_message = Closure::wrap(Box::new(move |e: MessageEvent| {
         let data = e.data();
         let frame = if let Some(text) = data.as_string() {
@@ -344,10 +295,7 @@ fn reconnect(
         } else {
             return;
         };
-        let cbs = msg_cbs.borrow();
-        for (_, cb) in cbs.iter() {
-            cb(frame.clone());
-        }
+        let _ = incoming_tx_for_message.send(frame);
     }) as Box<dyn FnMut(MessageEvent)>);
     ws.set_onmessage(Some(
         on_message.as_ref().unchecked_ref::<js_sys::Function>(),
@@ -363,28 +311,22 @@ fn reconnect(
 
     // onclose: reconnect again
     let status_close = status.clone();
-    let status_cbs_close = status_callbacks.clone();
-    let msg_cbs_close = message_callbacks.clone();
     let inner_close = Rc::clone(&inner);
     let addr_close = addr.to_string();
+    let incoming_tx_for_close = incoming_tx.clone();
     let on_close = Closure::wrap(Box::new(move |_: CloseEvent| {
         warn!("WasmSocket: WebSocket closed, reconnecting in 1s");
-        set_status_raw(
-            &status_close,
-            &status_cbs_close,
-            SocketConnectionStatus::Disconnected,
-        );
+        status_close.set(SocketConnectionStatus::Disconnected);
 
         let status = status_close.clone();
-        let status_cbs = status_cbs_close.clone();
-        let msg_cbs = msg_cbs_close.clone();
+        let incoming_tx = incoming_tx_for_close.clone();
         let inner = Rc::clone(&inner_close);
         let addr = addr_close.clone();
 
         let window = web_sys::window().expect("no window");
         let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
             &Closure::once_into_js(move || {
-                reconnect(&addr, &status, &status_cbs, &msg_cbs, inner, auto_reconnect);
+                reconnect(&addr, &status, incoming_tx, inner, auto_reconnect);
             })
             .unchecked_into(),
             1000,
@@ -395,15 +337,10 @@ fn reconnect(
 
     // onopen
     let status_open = status.clone();
-    let status_cbs_open = status_callbacks.clone();
     let addr_open = addr_string;
     let on_open = Closure::wrap(Box::new(move || {
         info!("WasmSocket: connected to {addr_open}");
-        set_status_raw(
-            &status_open,
-            &status_cbs_open,
-            SocketConnectionStatus::Connected(addr_open.clone()),
-        );
+        status_open.set(SocketConnectionStatus::Connected(addr_open.clone()));
     }) as Box<dyn FnMut()>);
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref::<js_sys::Function>()));
     on_open.forget();

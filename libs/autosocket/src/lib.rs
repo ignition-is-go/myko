@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use hypha::{Cell, CellImmutable};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -65,12 +65,6 @@ impl Drop for CallbackGuard {
     }
 }
 
-/// Generates unique callback IDs for DashMap-based callback registries.
-pub(crate) fn next_callback_id() -> u64 {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Transport trait
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,23 +80,15 @@ pub trait SocketTransport: Send + Sync + 'static {
     /// Close the connection and stop reconnection attempts.
     fn close(&self);
 
-    /// Get the current connection status.
-    fn get_status(&self) -> SocketConnectionStatus;
+    /// Intended connection state requested by the caller.
+    fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable>;
+
+    /// Actual observed connection state of the transport.
+    fn actual_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable>;
 
     /// Send a frame to the remote end.
     fn send(&self, frame: WsFrame) -> Result<(), String>;
 
-    /// Register a callback for incoming messages.
-    /// The callback is called for each received frame.
-    /// Drop the returned guard to unsubscribe.
-    fn on_message(&self, cb: Box<dyn Fn(WsFrame) + Send + Sync>) -> CallbackGuard;
-
-    /// Register a callback for connection status changes.
-    /// The callback is called immediately with the current status,
-    /// then again on each status change.
-    /// Drop the returned guard to unsubscribe.
-    fn on_status_change(
-        &self,
-        cb: Box<dyn Fn(SocketConnectionStatus) + Send + Sync>,
-    ) -> CallbackGuard;
+    /// Read stream of incoming websocket frames.
+    fn read_rx(&self) -> flume::Receiver<WsFrame>;
 }

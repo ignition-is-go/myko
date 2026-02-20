@@ -337,6 +337,7 @@ dependencies = [
  "env_logger",
  "hostname",
  "log",
+ "myko-rs",
  "myko-server",
  "pulse-platform",
  "rship-entities",
@@ -604,14 +605,12 @@ name = "autosocket"
 version = "0.1.0"
 dependencies = [
  "dashmap",
- "futures-util",
+ "flume 0.11.1",
+ "hypha",
  "js-sys",
  "log",
  "send_wrapper",
  "serde",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
  "ts-rs",
  "tungstenite",
  "url",
@@ -9618,10 +9617,16 @@ name = "rship-entities-assets"
 version = "3.1.0-canary.23"
 dependencies = [
  "chrono",
+ "dashmap",
  "hypha",
+ "log",
  "myko-macros",
  "myko-rs",
  "partially",
+ "rship-entities-core",
+ "rship-entities-external",
+ "rship-entities-foundation",
+ "rship-entities-machine",
  "rship-entities-macros",
  "rship-entities-nodes",
  "serde",
@@ -10331,6 +10336,21 @@ version = "0.1.0"
 dependencies = [
  "myko-server",
  "rship-entities",
+]
+
+[[package]]
+name = "rship_server"
+version = "0.1.0"
+dependencies = [
+ "dotenv",
+ "env_logger",
+ "log",
+ "myko-rs",
+ "myko-server",
+ "pulse-platform",
+ "rship-entities",
+ "tikv-jemallocator",
+ "tokio",
 ]
 
 [[package]]
@@ -11119,21 +11139,6 @@ checksum = "63eb08f80db903d3c42f64e60ebb3875e0305be502bdc064ec0a0eab42207f00"
 dependencies = [
  "server_fn_macro",
  "syn 2.0.115",
-]
-
-[[package]]
-name = "server_rs"
-version = "0.1.0"
-dependencies = [
- "dotenv",
- "env_logger",
- "log",
- "myko-rs",
- "myko-server",
- "pulse-platform",
- "rship-entities",
- "tikv-jemallocator",
- "tokio",
 ]
 
 [[package]]
