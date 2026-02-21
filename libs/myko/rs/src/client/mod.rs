@@ -664,7 +664,7 @@ impl MykoClient {
             let mut pending = self.inner.pending_sends.lock().unwrap();
             pending.push(frame);
             let len = pending.len();
-            if len == 1 || len % 10_000 == 0 {
+            if len == 1 || len.is_multiple_of(10_000) {
                 warn!(
                     "MykoClient queued frame while disconnected; pending_sends={}",
                     len

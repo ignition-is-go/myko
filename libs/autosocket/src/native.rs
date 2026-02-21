@@ -358,7 +358,7 @@ impl AutoReconnectSocket {
                                     || e.kind() == std::io::ErrorKind::TimedOut
                                     || e.kind() == std::io::ErrorKind::Interrupted =>
                             {
-                                if attempts == 1 || attempts % 100 == 0 {
+                                if attempts == 1 || attempts.is_multiple_of(100) {
                                     warn!(
                                         "Websocket write backpressure (kind={:?}) queue_len={} attempts={}",
                                         e.kind(),
