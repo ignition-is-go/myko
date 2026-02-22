@@ -410,16 +410,18 @@ fn run_consumer_loop(
     let high_water: i64 = high_water_row.get(0);
     let snapshot_sql = format!(
         "
-        SELECT s.id, s.event::text
-        FROM (
+        WITH latest AS (
             SELECT DISTINCT ON (item_type, item_id)
-                id, item_type, item_id, change_type, event
+                id, change_type
             FROM {table}
             WHERE id <= $1
             ORDER BY item_type, item_id, id DESC
-        ) s
-        WHERE s.change_type = 'SET'
-        ORDER BY s.id ASC
+        )
+        SELECT e.id, e.event::text
+        FROM latest
+        JOIN {table} e ON e.id = latest.id
+        WHERE latest.change_type = 'SET'
+        ORDER BY e.id ASC
         "
     );
     let snapshot_rows = reader
@@ -601,6 +603,7 @@ fn ensure_schema(client: &mut Client, config: &PostgresConfig) -> Result<(), ::p
     let table = qi(&config.table);
     let idx_tx = qi(&format!("{}_tx_idx", config.table));
     let idx_item = qi(&format!("{}_item_type_item_id_idx", config.table));
+    let idx_item_latest = qi(&format!("{}_item_latest_idx", config.table));
     let idx_created = qi(&format!("{}_created_at_idx", config.table));
     let trigger_fn = qi(&format!("{}_notify_insert_fn", config.table));
     let trigger_name = qi(&format!("{}_notify_insert_trigger", config.table));
@@ -619,6 +622,7 @@ fn ensure_schema(client: &mut Client, config: &PostgresConfig) -> Result<(), ::p
         );
         CREATE INDEX IF NOT EXISTS {idx_tx} ON {table} (tx);
         CREATE INDEX IF NOT EXISTS {idx_item} ON {table} (item_type, item_id);
+        CREATE INDEX IF NOT EXISTS {idx_item_latest} ON {table} (item_type, item_id, id DESC);
         CREATE INDEX IF NOT EXISTS {idx_created} ON {table} (created_at);
         CREATE OR REPLACE FUNCTION {trigger_fn}() RETURNS trigger AS $$
         BEGIN
