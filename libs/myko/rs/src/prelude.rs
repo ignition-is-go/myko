@@ -3,9 +3,8 @@
 pub use chrono::Utc;
 // Re-export hypha cell types for reports
 pub use hypha::{
-    Cell, CellImmutable, CellMutable, CountByExt, FlatMapMapExt, Gettable, GroupByExt, IndexByExt,
-    MapExt, MapValuesCellExt, Mutable, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
-    Watchable,
+    Cell, CellImmutable, CellMutable, CountByExt, Gettable, GroupByExt, MapExt, Mutable,
+    ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt, Watchable,
 };
 pub use myko_macros::*;
 // Re-export ts_rs::TS for derive macros
