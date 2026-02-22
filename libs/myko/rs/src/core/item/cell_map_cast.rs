@@ -75,25 +75,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    match diff {
-        MapDiff::Initial { entries } => {
-            output.apply_batch(vec![MapDiff::Initial {
-                entries: entries.clone(),
-            }]);
-        }
-        MapDiff::Insert { key, value } => {
-            output.insert(key.clone(), value.clone());
-        }
-        MapDiff::Remove { key, .. } => {
-            output.remove(key);
-        }
-        MapDiff::Update { key, new_value, .. } => {
-            output.insert(key.clone(), new_value.clone());
-        }
-        MapDiff::Batch { changes } => {
-            output.apply_batch(changes.clone());
-        }
-    }
+    output.apply_batch(vec![diff.clone()]);
 }
 
 pub fn typed_map_from_any_item<T: CellValue + 'static>(
@@ -121,105 +103,69 @@ where
     let typed_clone = typed.clone();
     let guard = source.subscribe_diffs(move |diff| {
         let typed_diff = downcast_any_item_map_diff::<T>(diff, context);
-        match typed_diff {
-            MapDiff::Initial { entries } => {
-                let mapped = entries
-                    .into_iter()
-                    .map(|(_, value)| (value.typed_id(), value))
-                    .collect();
-                typed_clone.apply_batch(vec![MapDiff::Initial { entries: mapped }]);
-            }
-            MapDiff::Insert { value, .. } => {
-                let key = value.typed_id();
-                typed_clone.insert(key, value);
-            }
-            MapDiff::Remove { old_value, .. } => {
-                let key = old_value.typed_id();
-                typed_clone.remove(&key);
-            }
-            MapDiff::Update {
-                old_value,
-                new_value,
-                ..
-            } => {
-                let old_key = old_value.typed_id();
-                let new_key = new_value.typed_id();
-                if old_key != new_key {
-                    typed_clone.remove(&old_key);
-                }
-                typed_clone.insert(new_key, new_value);
-            }
-            MapDiff::Batch { changes } => {
-                for change in changes {
-                    match change {
-                        MapDiff::Initial { entries } => {
-                            let mapped = entries
-                                .into_iter()
-                                .map(|(_, value)| (value.typed_id(), value))
-                                .collect();
-                            typed_clone.apply_batch(vec![MapDiff::Initial { entries: mapped }]);
-                        }
-                        MapDiff::Insert { value, .. } => {
-                            let key = value.typed_id();
-                            typed_clone.insert(key, value);
-                        }
-                        MapDiff::Remove { old_value, .. } => {
-                            let key = old_value.typed_id();
-                            typed_clone.remove(&key);
-                        }
-                        MapDiff::Update {
-                            old_value,
-                            new_value,
-                            ..
-                        } => {
-                            let old_key = old_value.typed_id();
-                            let new_key = new_value.typed_id();
-                            if old_key != new_key {
-                                typed_clone.remove(&old_key);
-                            }
-                            typed_clone.insert(new_key, new_value);
-                        }
-                        MapDiff::Batch { changes: nested } => {
-                            for nested_change in nested {
-                                match nested_change {
-                                    MapDiff::Initial { entries } => {
-                                        let mapped = entries
-                                            .into_iter()
-                                            .map(|(_, value)| (value.typed_id(), value))
-                                            .collect();
-                                        typed_clone.apply_batch(vec![MapDiff::Initial {
-                                            entries: mapped,
-                                        }]);
-                                    }
-                                    MapDiff::Insert { value, .. } => {
-                                        let key = value.typed_id();
-                                        typed_clone.insert(key, value);
-                                    }
-                                    MapDiff::Remove { old_value, .. } => {
-                                        let key = old_value.typed_id();
-                                        typed_clone.remove(&key);
-                                    }
-                                    MapDiff::Update {
-                                        old_value,
-                                        new_value,
-                                        ..
-                                    } => {
-                                        let old_key = old_value.typed_id();
-                                        let new_key = new_value.typed_id();
-                                        if old_key != new_key {
-                                            typed_clone.remove(&old_key);
-                                        }
-                                        typed_clone.insert(new_key, new_value);
-                                    }
-                                    MapDiff::Batch { .. } => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let mut changes: Vec<MapDiff<<T as WithTypedId>::Id, T>> = Vec::new();
+        remap_diff_to_typed_id(&typed_diff, &mut changes);
+        typed_clone.apply_batch(changes);
     });
     typed.own_guard(guard);
     typed.lock()
+}
+
+fn remap_diff_to_typed_id<T>(
+    diff: &MapDiff<Arc<str>, T>,
+    out: &mut Vec<MapDiff<<T as WithTypedId>::Id, T>>,
+) where
+    T: CellValue + WithTypedId + 'static,
+{
+    match diff {
+        MapDiff::Initial { entries } => {
+            out.push(MapDiff::Initial {
+                entries: entries
+                    .iter()
+                    .map(|(_, value)| (value.typed_id(), value.clone()))
+                    .collect(),
+            });
+        }
+        MapDiff::Insert { value, .. } => {
+            out.push(MapDiff::Insert {
+                key: value.typed_id(),
+                value: value.clone(),
+            });
+        }
+        MapDiff::Remove { old_value, .. } => {
+            out.push(MapDiff::Remove {
+                key: old_value.typed_id(),
+                old_value: old_value.clone(),
+            });
+        }
+        MapDiff::Update {
+            old_value,
+            new_value,
+            ..
+        } => {
+            let old_key = old_value.typed_id();
+            let new_key = new_value.typed_id();
+            if old_key == new_key {
+                out.push(MapDiff::Update {
+                    key: new_key,
+                    old_value: old_value.clone(),
+                    new_value: new_value.clone(),
+                });
+            } else {
+                out.push(MapDiff::Remove {
+                    key: old_key,
+                    old_value: old_value.clone(),
+                });
+                out.push(MapDiff::Insert {
+                    key: new_key,
+                    value: new_value.clone(),
+                });
+            }
+        }
+        MapDiff::Batch { changes } => {
+            for change in changes {
+                remap_diff_to_typed_id(change, out);
+            }
+        }
+    }
 }

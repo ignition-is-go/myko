@@ -191,21 +191,39 @@ impl BelongsToSourceIndex {
     ) {
         match diff {
             MapDiff::Initial { entries } => {
-                self.buckets.clear();
+                let mut grouped: HashMap<
+                    Arc<str>,
+                    Vec<(Arc<str>, Arc<dyn crate::core::item::AnyItem>)>,
+                > = HashMap::new();
                 for (id, item) in entries {
                     if let Some(fk) = extract_fk(item.as_any()) {
-                        self.bucket_for(fk).insert(id.clone(), item.clone());
+                        grouped
+                            .entry(fk)
+                            .or_default()
+                            .push((id.clone(), item.clone()));
                     }
+                }
+                self.buckets.clear();
+                for (fk, bucket_entries) in grouped {
+                    self.bucket_for(fk).apply_batch(vec![MapDiff::Initial {
+                        entries: bucket_entries,
+                    }]);
                 }
             }
             MapDiff::Insert { key, value } => {
                 if let Some(fk) = extract_fk(value.as_any()) {
-                    self.bucket_for(fk).insert(key.clone(), value.clone());
+                    self.bucket_for(fk).apply_batch(vec![MapDiff::Insert {
+                        key: key.clone(),
+                        value: value.clone(),
+                    }]);
                 }
             }
             MapDiff::Remove { key, old_value } => {
                 if let Some(fk) = extract_fk(old_value.as_any()) {
-                    self.bucket_for(fk).remove(key);
+                    self.bucket_for(fk).apply_batch(vec![MapDiff::Remove {
+                        key: key.clone(),
+                        old_value: old_value.clone(),
+                    }]);
                 }
             }
             MapDiff::Update {
@@ -215,14 +233,37 @@ impl BelongsToSourceIndex {
             } => {
                 let old_fk = extract_fk(old_value.as_any());
                 let new_fk = extract_fk(new_value.as_any());
-                if old_fk != new_fk
-                    && let Some(old_fk) = old_fk
-                {
-                    self.bucket_for(old_fk).remove(key);
-                }
-                if let Some(new_fk) = new_fk {
-                    self.bucket_for(new_fk)
-                        .insert(key.clone(), new_value.clone());
+                match (old_fk, new_fk) {
+                    (Some(old_fk), Some(new_fk)) if old_fk == new_fk => {
+                        self.bucket_for(new_fk).apply_batch(vec![MapDiff::Update {
+                            key: key.clone(),
+                            old_value: old_value.clone(),
+                            new_value: new_value.clone(),
+                        }]);
+                    }
+                    (Some(old_fk), Some(new_fk)) => {
+                        self.bucket_for(old_fk).apply_batch(vec![MapDiff::Remove {
+                            key: key.clone(),
+                            old_value: old_value.clone(),
+                        }]);
+                        self.bucket_for(new_fk).apply_batch(vec![MapDiff::Insert {
+                            key: key.clone(),
+                            value: new_value.clone(),
+                        }]);
+                    }
+                    (Some(old_fk), None) => {
+                        self.bucket_for(old_fk).apply_batch(vec![MapDiff::Remove {
+                            key: key.clone(),
+                            old_value: old_value.clone(),
+                        }]);
+                    }
+                    (None, Some(new_fk)) => {
+                        self.bucket_for(new_fk).apply_batch(vec![MapDiff::Insert {
+                            key: key.clone(),
+                            value: new_value.clone(),
+                        }]);
+                    }
+                    (None, None) => {}
                 }
             }
             MapDiff::Batch { changes } => {
@@ -356,6 +397,7 @@ where
         {
             match diff {
                 MapDiff::Initial { entries } => {
+                    let mut next: Vec<(Arc<str>, Arc<dyn crate::core::item::AnyItem>)> = Vec::new();
                     for (_id, item_any) in entries {
                         let Some(item) = item_any.as_any().downcast_ref::<Q::Item>() else {
                             continue;
@@ -367,9 +409,10 @@ where
                             query_context: query_ctx.clone(),
                         });
                         if include {
-                            output.insert(item.id(), item as Arc<dyn crate::core::item::AnyItem>);
+                            next.push((item.id(), item as Arc<dyn crate::core::item::AnyItem>));
                         }
                     }
+                    output.apply_batch(vec![MapDiff::Initial { entries: next }]);
                 }
                 MapDiff::Insert { value, .. }
                 | MapDiff::Update {
@@ -385,14 +428,32 @@ where
                         query: query.clone(),
                         query_context: query_ctx.clone(),
                     });
+                    let previous = output.get_value(&id);
                     if include {
-                        output.insert(id, item as Arc<dyn crate::core::item::AnyItem>);
-                    } else {
-                        output.remove(&id);
+                        let new_value = item as Arc<dyn crate::core::item::AnyItem>;
+                        if let Some(old_value) = previous {
+                            output.apply_batch(vec![MapDiff::Update {
+                                key: id,
+                                old_value,
+                                new_value,
+                            }]);
+                        } else {
+                            output.apply_batch(vec![MapDiff::Insert {
+                                key: id,
+                                value: new_value,
+                            }]);
+                        }
+                    } else if let Some(old_value) = previous {
+                        output.apply_batch(vec![MapDiff::Remove { key: id, old_value }]);
                     }
                 }
                 MapDiff::Remove { key, .. } => {
-                    output.remove(key);
+                    if let Some(old_value) = output.get_value(key) {
+                        output.apply_batch(vec![MapDiff::Remove {
+                            key: key.clone(),
+                            old_value,
+                        }]);
+                    }
                 }
                 MapDiff::Batch { changes } => {
                     let mut current: HashMap<Arc<str>, Arc<dyn crate::core::item::AnyItem>> =
@@ -678,6 +739,8 @@ where
             {
                 match diff {
                     hypha::MapDiff::Initial { entries } => {
+                        let mut next: Vec<(Arc<str>, Arc<dyn crate::core::item::AnyItem>)> =
+                            Vec::new();
                         for (_id, item_any) in entries {
                             let Some(item) = item_any.as_any().downcast_ref::<Q::Item>() else {
                                 continue;
@@ -689,10 +752,10 @@ where
                                 query_context: query_ctx.clone(),
                             });
                             if include {
-                                output
-                                    .insert(item.id(), item as Arc<dyn crate::core::item::AnyItem>);
+                                next.push((item.id(), item as Arc<dyn crate::core::item::AnyItem>));
                             }
                         }
+                        output.apply_batch(vec![hypha::MapDiff::Initial { entries: next }]);
                     }
                     hypha::MapDiff::Insert { value, .. }
                     | hypha::MapDiff::Update {
@@ -708,14 +771,32 @@ where
                             query: query.clone(),
                             query_context: query_ctx.clone(),
                         });
+                        let previous = output.get_value(&id);
                         if include {
-                            output.insert(id, item as Arc<dyn crate::core::item::AnyItem>);
-                        } else {
-                            output.remove(&id);
+                            let new_value = item as Arc<dyn crate::core::item::AnyItem>;
+                            if let Some(old_value) = previous {
+                                output.apply_batch(vec![hypha::MapDiff::Update {
+                                    key: id,
+                                    old_value,
+                                    new_value,
+                                }]);
+                            } else {
+                                output.apply_batch(vec![hypha::MapDiff::Insert {
+                                    key: id,
+                                    value: new_value,
+                                }]);
+                            }
+                        } else if let Some(old_value) = previous {
+                            output.apply_batch(vec![hypha::MapDiff::Remove { key: id, old_value }]);
                         }
                     }
                     hypha::MapDiff::Remove { key, .. } => {
-                        output.remove(key);
+                        if let Some(old_value) = output.get_value(key) {
+                            output.apply_batch(vec![hypha::MapDiff::Remove {
+                                key: key.clone(),
+                                old_value,
+                            }]);
+                        }
                     }
                     hypha::MapDiff::Batch { changes } => {
                         let mut current: HashMap<Arc<str>, Arc<dyn crate::core::item::AnyItem>> =
