@@ -25,7 +25,7 @@ pub trait ReportIdStatic {
 
 /// Output type for a report
 pub trait ReportOutputType {
-    type Output: Serialize + DeserializeOwned + Clone + Debug + Send + Sync + 'static;
+    type Output: Serialize + DeserializeOwned + Clone + Debug + PartialEq + Send + Sync + 'static;
 }
 
 pub trait MykoReport<T> {
@@ -156,7 +156,7 @@ impl<R: ReportParams> Report for ReportRequest<R> {
 
 /// Wrapper struct for count report outputs.
 /// Using a struct instead of a primitive ensures consistent TypeScript type generation via ts-rs.
-#[derive(Debug, Clone, Serialize, serde::Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct CountResult {

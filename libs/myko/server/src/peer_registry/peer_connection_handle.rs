@@ -7,14 +7,14 @@ use myko_rs::{
     entities::server::{GetConnectedServer, Server},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum IdentityCycle {
     Pending,
     Imposter,
     Correct,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PeerConnectionCycle {
     Pending,
     Connected,

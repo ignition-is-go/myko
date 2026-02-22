@@ -635,7 +635,7 @@ mod tests {
     }
 
     // Test entity
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     struct TestEntity {
         id: Arc<str>,
         name: String,
@@ -663,6 +663,14 @@ mod tests {
 
         fn entity_type(&self) -> &'static str {
             "TestEntity"
+        }
+
+        fn equals(&self, other: &dyn AnyItem) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|typed| self == typed)
+                .unwrap_or(false)
         }
     }
 

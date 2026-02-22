@@ -184,7 +184,6 @@ impl WsHandler {
         // Publish Client entity
         let client_entity = Client {
             id: ClientId(client_id.clone()),
-            hash: client_id.clone(),
             server_id: host_id.to_string().into(),
             windback: None,
         };

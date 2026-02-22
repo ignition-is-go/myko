@@ -480,7 +480,7 @@ fn rust_type_to_ts(rust_type: &str) -> String {
 
 fn generate_item_constructor(item_name: &str) -> String {
     format!(
-        "  {}: (args: Omit<{}, 'hash'>) => ({{ item: args, itemType: \"{}\" }})",
+        "  {}: (args: {}) => ({{ item: args, itemType: \"{}\" }})",
         item_name, item_name, item_name
     )
 }

@@ -111,7 +111,6 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 ///
 /// Adds two required fields automatically:
 /// - `pub id: Arc<str>` - Unique identifier for the entity
-/// - `pub hash: Arc<str>` - Hash for change detection (defaults to empty)
 ///
 /// # Derives
 ///
@@ -468,7 +467,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
-        #[derive(Debug, Clone, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
         #serde_rename_attr
         #input
 

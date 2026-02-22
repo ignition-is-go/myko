@@ -165,7 +165,7 @@ mod tests {
     use crate::common::{to_value::ToValue, with_id::WithId};
 
     // Test entity
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     struct TestTarget {
         id: Arc<str>,
         name: String,
@@ -195,6 +195,14 @@ mod tests {
 
         fn entity_type(&self) -> &'static str {
             "TestTarget"
+        }
+
+        fn equals(&self, other: &dyn AnyItem) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|typed| self == typed)
+                .unwrap_or(false)
         }
     }
 

@@ -94,7 +94,7 @@ impl ViewCellContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + 'static,
+        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
     {
         self.server_ctx.report(report, self.request_ctx.clone())
     }
@@ -178,7 +178,7 @@ impl ViewContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + 'static,
+        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
     {
         self.server_ctx.report(report, self.req.clone())
     }

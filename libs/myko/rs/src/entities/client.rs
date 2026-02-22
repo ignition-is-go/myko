@@ -117,7 +117,6 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
         // Update client with new windback time
         let updated_client = Client {
             id: client.id.clone(),
-            hash: Arc::from(Uuid::new_v4().to_string()),
             server_id: client.server_id,
             windback: Some(self.windback.clone()),
         };
@@ -160,7 +159,6 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         // Update client to clear windback
         let updated_client = Client {
             id: client.id.clone(),
-            hash: Arc::from(Uuid::new_v4().to_string()),
             server_id: client.server_id,
             windback: None,
         };

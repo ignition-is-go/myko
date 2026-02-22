@@ -18,7 +18,6 @@ use myko_rs::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
     server::CellServerCtx,
 };
-use uuid::Uuid;
 
 mod peer_connection_handle;
 use peer_connection_handle::{PeerConnectionHandle, PeerState};
@@ -55,7 +54,6 @@ impl PeerRegistry {
             id: host_id.clone(),
             port: config.port,
             started_at: chrono::Utc::now().to_rfc3339(),
-            hash: Uuid::new_v4().to_string().into(),
             version: config.version.clone(),
         }
     }

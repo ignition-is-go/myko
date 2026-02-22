@@ -130,7 +130,7 @@ impl ReportContext {
     /// in a named relay for inspector visibility.
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + 'static,
+        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -196,6 +196,7 @@ pub trait ReportHandler: Sized + Send + Sync + 'static {
         + DeserializeOwned
         + Clone
         + std::fmt::Debug
+        + PartialEq
         + Send
         + Sync
         + ToValue

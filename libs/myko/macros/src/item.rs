@@ -30,25 +30,13 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         }
 
         let id = quote! { id };
-        let arc_str = quote! { std::sync::Arc<str> };
         let pub_viz = quote! { pub };
-
-        let hash = quote! { hash };
 
         let id_field: Field = syn::parse_quote! {
             #pub_viz #id: #id_type_ident
         };
 
-        let mut hash_field: Field = syn::parse_quote! {
-            #pub_viz #hash: #arc_str
-        };
-
-        hash_field.attrs.push(syn::parse_quote! {
-            #[serde(default)]
-        });
-
         named.push(id_field);
-        named.push(hash_field);
     };
 
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
@@ -246,7 +234,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let delete_command = quote! {
         /// Result type for Delete command
-        #[derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
         #delete_serde_attr
         pub struct #delete_result_ident {
             pub deleted: bool,
@@ -291,7 +279,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     let delete_many_command = quote! {
         /// Result type for bulk Delete command
-        #[derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
         #delete_serde_attr
         pub struct #delete_many_result_ident {
             pub deleted_count: usize,
@@ -499,6 +487,14 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
             fn entity_type(&self) -> &'static str {
                 #name_str
+            }
+
+            fn equals(&self, other: &dyn #krate::prelude::AnyItem) -> bool {
+                other
+                    .as_any()
+                    .downcast_ref::<Self>()
+                    .map(|typed| self == typed)
+                    .unwrap_or(false)
             }
         }
 

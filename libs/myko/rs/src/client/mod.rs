@@ -842,7 +842,7 @@ impl MykoClient {
     ) -> Cell<Option<O>, CellImmutable>
     where
         R: ReportParams + ReportIdStatic + Clone,
-        O: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        O: DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
     {
         let report: ReportRequest<R> = report.into();
         let report_id: Arc<str> = R::report_id_static().into();
@@ -1009,7 +1009,7 @@ impl MykoClient {
     ) -> Cell<O, CellImmutable>
     where
         R: ReportParams + ReportIdStatic + Clone,
-        O: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        O: DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
     {
         let cell = self.watch_report::<R, O>(report);
         // Map Option<O> -> O using the initial value as default
@@ -1030,7 +1030,7 @@ impl MykoClient {
     pub fn send_command<C, R>(&self, command: &C) -> Cell<Option<Result<R, String>>, CellImmutable>
     where
         C: Serialize + Clone + CommandId,
-        R: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        R: DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
     {
         let request = CommandRequest::new(command.clone());
         let tx = request.tx.to_string();

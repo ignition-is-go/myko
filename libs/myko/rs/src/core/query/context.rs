@@ -1,11 +1,11 @@
 //! Minimal server context for query handlers.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use dashmap::DashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use hypha::{Cell, CellImmutable, MapExt, WeakCellMap};
+use hypha::{Cell, CellImmutable, MapExt};
 #[cfg(not(target_arch = "wasm32"))]
 use serde_json::Value;
 
@@ -13,8 +13,6 @@ use serde_json::Value;
 use super::{
     cell::FilteredCellMap, registration::QueryFactory, request::QueryRequest, traits::AnyQuery,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::item::AnyItem;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::report::{AnyReport, ReportFactory, ReportOutputType, ReportRequest};
 use crate::request::RequestContext;
@@ -47,15 +45,6 @@ pub struct QueryCellContext {
     registry: Arc<StoreRegistry>,
     server_ctx: Option<Arc<CellServerCtx>>,
     subquery_cache: Arc<DashMap<String, FilteredCellMap>>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-static GLOBAL_SUBQUERY_CACHE: OnceLock<DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>>> =
-    OnceLock::new();
-
-#[cfg(not(target_arch = "wasm32"))]
-fn global_subquery_cache() -> &'static DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>> {
-    GLOBAL_SUBQUERY_CACHE.get_or_init(DashMap::new)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -96,12 +85,10 @@ impl QueryCellContext {
         if let Some(existing) = self.subquery_cache.get(&key) {
             return Ok(existing.value().clone());
         }
-        if let Some(existing) = global_subquery_cache().get(&key)
-            && let Some(shared) = existing.value().upgrade()
-        {
-            let locked = shared.lock();
-            self.subquery_cache.insert(key, locked.clone());
-            return Ok(locked);
+        if let Some(server_ctx) = self.server_ctx.clone() {
+            let built = server_ctx.query_map(query, self.request_ctx.clone());
+            self.subquery_cache.insert(key, built.clone());
+            return Ok(built);
         }
 
         let wrapped = QueryRequest::with_tx(query, self.request_ctx.tx.clone());
@@ -112,7 +99,6 @@ impl QueryCellContext {
             self.request_ctx.clone(),
             self.server_ctx.clone(),
         )?;
-        global_subquery_cache().insert(key.clone(), built.downgrade());
         self.subquery_cache.insert(key, built.clone());
         Ok(built)
     }

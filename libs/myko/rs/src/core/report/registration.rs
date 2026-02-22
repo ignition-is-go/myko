@@ -20,12 +20,27 @@ use crate::{common::to_value::ToValue, request::RequestContext, server::CellServ
 /// Report outputs implement this to enable serialization at the WebSocket layer.
 pub trait AnyOutput: ToValue + std::fmt::Debug + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
+    fn equals(&self, other: &dyn AnyOutput) -> bool;
 }
 
 /// Blanket implementation for any type that satisfies the bounds.
-impl<T: ToValue + std::fmt::Debug + Send + Sync + 'static> AnyOutput for T {
+impl<T: ToValue + std::fmt::Debug + PartialEq + Send + Sync + 'static> AnyOutput for T {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn equals(&self, other: &dyn AnyOutput) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .map(|typed| self == typed)
+            .unwrap_or(false)
+    }
+}
+
+impl PartialEq for dyn AnyOutput {
+    fn eq(&self, other: &Self) -> bool {
+        self.equals(other)
     }
 }
 

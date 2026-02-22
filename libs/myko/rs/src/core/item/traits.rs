@@ -17,7 +17,18 @@ pub trait AnyItem: WithId + ToValue + Any + Debug + Send + Sync + 'static {
 
     /// Returns the entity type name (e.g., "Target", "Scene").
     fn entity_type(&self) -> &'static str;
+
+    /// Typed equality across erased items.
+    fn equals(&self, other: &dyn AnyItem) -> bool;
 }
+
+impl PartialEq for dyn AnyItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.equals(other)
+    }
+}
+
+impl Eq for dyn AnyItem {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Item Registration - inventory-based registration
@@ -42,7 +53,9 @@ pub struct ItemRegistration {
 // Eventable - Trait for items that can be sent as events
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub trait Eventable: AnyItem + Serialize + DeserializeOwned + Clone + Sized + Any {
+pub trait Eventable:
+    AnyItem + Serialize + DeserializeOwned + Clone + PartialEq + Sized + Any
+{
     /// Static entity type name (use entity_type() from AnyItem for instance method).
     fn entity_name_static() -> &'static str;
 

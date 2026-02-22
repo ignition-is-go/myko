@@ -21,18 +21,17 @@ use crate::{
 
 /// Stub representation of an entity for tree traversal.
 /// Contains minimal identifying information without full entity data.
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ItemStub {
     pub id: Arc<str>,
     pub item_type: String,
     pub name: Option<String>,
-    pub hash: Arc<str>,
 }
 
 /// Data returned by EntitySnapshotDifference report.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct EntitySnapshotDifferenceData {
@@ -232,7 +231,7 @@ impl ReportHandler for PeerAlive {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Container for an event with associated metadata.
-#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct EventContainer {

@@ -7,7 +7,7 @@
 //!
 //! | Concept | Description |
 //! |---------|-------------|
-//! | **Item** | Base entity with `id` and content-hash (`hash`) for optimistic concurrency |
+//! | **Item** | Base entity with typed `id` |
 //! | **Event** | Immutable record of state change: `SET` (create/update) or `DEL` (delete) |
 //! | **Query** | Request for live data stream, returns reactive `Observable<T[]>` |
 //! | **Report** | Computed/derived data request, returns `Observable<T>` |
@@ -44,7 +44,7 @@
 //! pub struct Target {
 //!     pub name: String,
 //!     pub category: Option<String>,
-//!     // id: Arc<str> and hash: Arc<str> added automatically
+//!     // id is added automatically
 //! }
 //! ```
 //!

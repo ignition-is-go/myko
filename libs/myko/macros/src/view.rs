@@ -24,7 +24,7 @@ pub fn myko_view_item_impl(input_struct: ItemStruct) -> TokenStream {
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
     quote! {
-        #[derive(Debug, Clone, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
         #serde_rename_attr
         #input_struct
 
@@ -51,6 +51,14 @@ pub fn myko_view_item_impl(input_struct: ItemStruct) -> TokenStream {
 
             fn entity_type(&self) -> &'static str {
                 stringify!(#name)
+            }
+
+            fn equals(&self, other: &dyn #krate::prelude::AnyItem) -> bool {
+                other
+                    .as_any()
+                    .downcast_ref::<Self>()
+                    .map(|typed| self == typed)
+                    .unwrap_or(false)
             }
         }
 

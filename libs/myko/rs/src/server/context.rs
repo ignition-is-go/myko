@@ -5,10 +5,10 @@
 //! - Publish entities (Reduce → Relationships → Persist)
 //! - Access server identity (host_id)
 
-use std::{collections::HashMap, sync::Arc};
+use std::{any::Any, collections::HashMap, sync::Arc};
 
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable};
+use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, WeakCellMap};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -54,6 +54,12 @@ pub struct CellServerCtx {
     peer_clients_tick: Cell<u64, CellMutable>,
     /// Optional event sink used to fan out applied events to saga runtimes.
     event_sink: Option<flume::Sender<MEvent>>,
+    /// Top-level cache for reactive query maps.
+    query_cache: Arc<DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>>>,
+    /// Top-level cache for reactive view maps.
+    view_cache: Arc<DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>>>,
+    /// Top-level cache for reactive report cells (typed weak cells behind Any).
+    report_cache: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 
 impl CellServerCtx {
@@ -78,7 +84,21 @@ impl CellServerCtx {
             peer_clients,
             peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
             event_sink,
+            query_cache: Arc::new(DashMap::new()),
+            view_cache: Arc::new(DashMap::new()),
+            report_cache: Arc::new(DashMap::new()),
         }
+    }
+
+    fn cache_key<T: serde::Serialize>(
+        &self,
+        kind: &str,
+        id: &str,
+        params: &T,
+        request: &RequestContext,
+    ) -> String {
+        let payload = serde_json::to_string(params).unwrap_or_else(|_| "<serde_error>".to_string());
+        format!("{}:{kind}:{id}:{payload}", request.host_id)
     }
 
     /// Get the search index.
@@ -692,16 +712,25 @@ impl CellServerCtx {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
+        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        if let Some(existing) = self.query_cache.get(&key)
+            && let Some(shared) = existing.value().upgrade()
+        {
+            return shared.lock();
+        }
+
         let query_req = QueryRequest::with_tx(query, request.tx.clone());
         let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
 
-        Q::cell_factory(
+        let built = Q::cell_factory(
             any_query,
             self.registry.clone(),
             request,
             Some(Arc::new(self.clone())),
         )
-        .expect("query cell factory should not fail for typed query")
+        .expect("query cell factory should not fail for typed query");
+        self.query_cache.insert(key, built.downgrade());
+        built
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
@@ -710,16 +739,25 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
+        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        if let Some(existing) = self.view_cache.get(&key)
+            && let Some(shared) = existing.value().upgrade()
+        {
+            return shared.lock();
+        }
+
         let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
         let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
 
-        V::cell_factory(
+        let built = V::cell_factory(
             any_view,
             self.registry.clone(),
             request,
             Arc::new(self.clone()),
         )
-        .expect("view cell factory should not fail for typed view")
+        .expect("view cell factory should not fail for typed view");
+        self.view_cache.insert(key, built.downgrade());
+        built
     }
 
     /// Back-compat alias for type-erased view map.
@@ -783,19 +821,28 @@ impl CellServerCtx {
         request: Arc<RequestContext>,
     ) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + 'static,
+        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
     {
         let report_name = format!("report:{}", report.report_id());
+        let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
 
-        // Create a nested context - sub-report args are accessed via &self in compute
+        if let Some(existing) = self.report_cache.get(&key)
+            && let Some(weak) = existing
+                .value()
+                .as_ref()
+                .downcast_ref::<hypha::cell::WeakCell<R::Output, CellImmutable>>()
+            && let Some(shared) = weak.upgrade()
+        {
+            return shared.with_name(report_name.as_str());
+        }
+
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
-
-        // Wrap the compute result in a named relay so the inspector
-        // shows the report as a parent of its compute graph
-        report
-            .compute(nested_ctx)
-            .map(|v| v.clone())
-            .with_name(report_name.as_str())
+        let built = report.compute(nested_ctx).map(|v| v.clone());
+        self.report_cache.insert(
+            key,
+            Arc::new(built.downgrade()) as Arc<dyn Any + Send + Sync>,
+        );
+        built.with_name(report_name.as_str())
     }
 
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {

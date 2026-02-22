@@ -9,11 +9,11 @@ pub type FilteredViewCellMap = CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable
 
 pub fn erase_typed_view_map<T>(typed: TypedViewCellMap<T>) -> FilteredViewCellMap
 where
-    T: AnyItem + Clone + Send + Sync + 'static,
+    T: AnyItem + Clone + PartialEq + Send + Sync + 'static,
 {
     fn map_any_diff<T>(diff: &MapDiff<Arc<str>, T>) -> MapDiff<Arc<str>, Arc<dyn AnyItem>>
     where
-        T: AnyItem + Clone + Send + Sync + 'static,
+        T: AnyItem + Clone + PartialEq + Send + Sync + 'static,
     {
         match diff {
             MapDiff::Initial { entries } => MapDiff::Initial {
