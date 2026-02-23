@@ -108,7 +108,7 @@ where
 pub fn send_command<C, R>(cmd: C) -> ReadSignal<Option<Result<R, String>>>
 where
     C: serde::Serialize + Clone + myko_rs::core::command::CommandId + 'static,
-    R: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    R: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
 {
     let (read, write) = signal(None);
 

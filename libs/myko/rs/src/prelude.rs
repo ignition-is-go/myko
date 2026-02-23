@@ -12,14 +12,13 @@ pub use ts_rs::TS;
 pub use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
+pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::QueryBuildCellCtx;
 pub use crate::{
-    client::{
-        MykoClient,
-        entity_sync::{EntityStoreSync, EntityStoreSyncOptions},
-    },
+    client::MykoClient,
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,

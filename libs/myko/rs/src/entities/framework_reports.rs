@@ -5,7 +5,9 @@
 
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, MapExt, SwitchMapExt};
+#[cfg(not(target_arch = "wasm32"))]
+use hypha::SwitchMapExt;
+use hypha::{Cell, CellImmutable, MapExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -206,6 +208,7 @@ pub struct PeerAlive {
     pub peer_id: Arc<str>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ReportHandler for PeerAlive {
     type Output = i64;
 
@@ -223,6 +226,15 @@ impl ReportHandler for PeerAlive {
                     .unwrap_or(-1)
             })
         })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ReportHandler for PeerAlive {
+    type Output = i64;
+
+    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+        Cell::new(-1).lock()
     }
 }
 

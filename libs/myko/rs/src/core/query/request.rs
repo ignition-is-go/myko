@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::traits::QueryBuildCellCtx;
 use super::traits::{
-    AnyQuery, QueryBuildCellCtx, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
-    QueryTestCtx,
+    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
 };
 use crate::common::with_transaction::WithTransaction;
 #[cfg(not(target_arch = "wasm32"))]

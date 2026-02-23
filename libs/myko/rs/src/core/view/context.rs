@@ -2,26 +2,31 @@ use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use hypha::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
+#[cfg(target_arch = "wasm32")]
+use hypha::{CellImmutable, CellMap, CellMutable};
 #[cfg(not(target_arch = "wasm32"))]
 use serde::de::DeserializeOwned;
 
+#[cfg(target_arch = "wasm32")]
+use crate::query::QueryParams;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::view::ViewFactory;
-use crate::{
-    common::with_id::WithTypedId, request::RequestContext, server::CellServerCtx,
-    store::StoreRegistry,
-};
+use crate::{common::with_id::WithTypedId, request::RequestContext};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     item::downcast_any_item_map_diff,
     query::{FilteredCellMap, QueryFactory, QueryHandler, QueryParams},
     report::{ReportHandler, ReportId},
+    server::CellServerCtx,
+    store::StoreRegistry,
 };
 
 #[derive(Clone)]
 pub struct ViewContext {
     pub req: Arc<RequestContext>,
+    #[cfg(not(target_arch = "wasm32"))]
     registry: Arc<StoreRegistry>,
+    #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<CellServerCtx>,
 }
 
@@ -29,11 +34,14 @@ pub struct ViewContext {
 pub struct ViewCellContext {
     pub request_ctx: Arc<RequestContext>,
     pub view_context: Arc<ViewContext>,
+    #[cfg(not(target_arch = "wasm32"))]
     registry: Arc<StoreRegistry>,
+    #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<CellServerCtx>,
 }
 
 impl ViewCellContext {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         request_ctx: Arc<RequestContext>,
         view_context: Arc<ViewContext>,
@@ -48,10 +56,12 @@ impl ViewCellContext {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn server_ctx(&self) -> Arc<CellServerCtx> {
         self.server_ctx.clone()
     }
@@ -78,6 +88,18 @@ impl ViewCellContext {
             self.query_map_untyped(query),
             "ViewCellContext::query_map",
         )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn query_map<Q>(
+        &self,
+        _query: Q,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    where
+        Q: QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
+    {
+        CellMap::<<Q::Item as WithTypedId>::Id, Q::Item, CellMutable>::new().lock()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -120,6 +142,7 @@ impl ViewCellContext {
 }
 
 impl ViewContext {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         req: Arc<RequestContext>,
         registry: Arc<StoreRegistry>,
@@ -132,10 +155,12 @@ impl ViewContext {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn server_ctx(&self) -> Arc<CellServerCtx> {
         self.server_ctx.clone()
     }
@@ -162,6 +187,18 @@ impl ViewContext {
             self.query_map_untyped(query),
             "ViewContext::query_map",
         )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn query_map<Q>(
+        &self,
+        _query: Q,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    where
+        Q: QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
+    {
+        CellMap::<<Q::Item as WithTypedId>::Id, Q::Item, CellMutable>::new().lock()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

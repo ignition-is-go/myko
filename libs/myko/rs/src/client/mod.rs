@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
 
 pub use autosocket::SocketConnectionStatus as ConnectionStatus;
