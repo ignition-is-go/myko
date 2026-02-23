@@ -19,16 +19,21 @@ use crate::core::query::cell::FilteredCellMap;
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest<Q> {
     pub tx: Arc<str>,
+    #[serde(default = "default_created_at")]
     pub created_at: Arc<str>,
     #[serde(flatten)]
     pub query: Q,
+}
+
+fn default_created_at() -> Arc<str> {
+    Utc::now().to_rfc3339().into()
 }
 
 impl<Q> QueryRequest<Q> {
     pub fn new(query: Q) -> Self {
         Self {
             tx: Uuid::new_v4().to_string().into(),
-            created_at: Utc::now().to_rfc3339().into(),
+            created_at: default_created_at(),
             query,
         }
     }
@@ -36,7 +41,7 @@ impl<Q> QueryRequest<Q> {
     pub fn with_tx(query: Q, tx: Arc<str>) -> Self {
         Self {
             tx,
-            created_at: Utc::now().to_rfc3339().into(),
+            created_at: default_created_at(),
             query,
         }
     }

@@ -777,7 +777,20 @@ impl MykoClient {
                 let upserts: Vec<Q::Item> = response
                     .upserts
                     .iter()
-                    .filter_map(|x| serde_json::from_value::<Q::Item>(x.item.clone()).ok())
+                    .filter_map(
+                        |x| match serde_json::from_value::<Q::Item>(x.item.clone()) {
+                            Ok(item) => Some(item),
+                            Err(e) => {
+                                error!(
+                                    "Failed to parse query '{}' upsert as {}: {}",
+                                    query_id_for_handler,
+                                    std::any::type_name::<Q::Item>(),
+                                    e
+                                );
+                                None
+                            }
+                        },
+                    )
                     .collect();
 
                 for up in upserts.iter() {
@@ -953,7 +966,20 @@ impl MykoClient {
                 let upserts: Vec<V::Item> = response
                     .upserts
                     .iter()
-                    .filter_map(|x| serde_json::from_value::<V::Item>(x.item.clone()).ok())
+                    .filter_map(
+                        |x| match serde_json::from_value::<V::Item>(x.item.clone()) {
+                            Ok(item) => Some(item),
+                            Err(e) => {
+                                error!(
+                                    "Failed to parse view '{}' upsert as {}: {}",
+                                    view_id_for_handler,
+                                    std::any::type_name::<V::Item>(),
+                                    e
+                                );
+                                None
+                            }
+                        },
+                    )
                     .collect();
 
                 for up in upserts.iter() {

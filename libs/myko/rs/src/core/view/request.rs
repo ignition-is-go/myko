@@ -16,16 +16,21 @@ use crate::common::with_transaction::WithTransaction;
 #[serde(rename_all = "camelCase")]
 pub struct ViewRequest<V> {
     pub tx: Arc<str>,
+    #[serde(default = "default_created_at")]
     pub created_at: Arc<str>,
     #[serde(flatten)]
     pub view: V,
+}
+
+fn default_created_at() -> Arc<str> {
+    Utc::now().to_rfc3339().into()
 }
 
 impl<V> ViewRequest<V> {
     pub fn new(view: V) -> Self {
         Self {
             tx: Uuid::new_v4().to_string().into(),
-            created_at: Utc::now().to_rfc3339().into(),
+            created_at: default_created_at(),
             view,
         }
     }
@@ -33,7 +38,7 @@ impl<V> ViewRequest<V> {
     pub fn with_tx(view: V, tx: Arc<str>) -> Self {
         Self {
             tx,
-            created_at: Utc::now().to_rfc3339().into(),
+            created_at: default_created_at(),
             view,
         }
     }
