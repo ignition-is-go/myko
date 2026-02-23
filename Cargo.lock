@@ -5946,6 +5946,7 @@ name = "link"
 version = "3.1.0-canary.23"
 dependencies = [
  "anyhow",
+ "async-trait",
  "autosocket",
  "crossbeam",
  "crossbeam-channel",
