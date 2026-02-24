@@ -10,7 +10,7 @@ projects:
   myko-rs: 'libs/myko/rs'
   node-agent: 'apps/node-agent'
   rship-mcp: 'apps/rship_mcp'
-  # sdk-ts: 'libs/sdk/ts'
+  sdk-ts: 'libs/sdk/ts'
   server: 'apps/server'
   sync-server: 'apps/sync_server'
   ui: 'apps/ui'
