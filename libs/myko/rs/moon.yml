@@ -7,3 +7,11 @@ tasks:
       - "run"
       - "--bin"
       - "typegen"
+    inputs:
+      - "Cargo.toml"
+      - "/Cargo.lock"
+      - "src/**/*"
+    outputs:
+      - "bindings/**/*"
+    options:
+      cache: true
