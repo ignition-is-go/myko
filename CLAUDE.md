@@ -22,16 +22,17 @@ cargo clippy -- -D warnings
 cargo fmt
 
 # UI & TypeScript tooling
-pnpm install                          # Install dependencies
-pnpm dev --filter @rship/ui           # UI dev server
-pnpm build --filter <package>         # Build package
-pnpm format:all                       # Prettier
+bun install                           # Install dependencies
+bun run --filter @rship/ui dev        # UI dev server
+bun run --filter <package> build      # Build package
+bun run format:all                    # Prettier
 
 # Type generation (Rust → TypeScript, run from respective directories)
-cargo make gen                        # In libs/myko/rs or libs/entities/rs
+bunx @moonrepo/cli run myko-rs:gen
+bunx @moonrepo/cli run entities-rs:gen
 
 # Legacy server (being replaced)
-pnpm dev --filter @rship/server       # Bun server (MYKO_PORT=5155)
+bun run --filter @rship/server dev    # Bun server (MYKO_PORT=5155)
 ```
 
 ## Cargo
@@ -121,9 +122,9 @@ Auto-generates: `GetAllTargets`, `GetTargetsByIds`, `GetTargetsByQuery`, `CountA
 
 - **Rust First**: New logic belongs in Rust. TypeScript is for UI and legacy support only.
 - **Generated Types**: Never manually maintain duplicate types - generate TS from Rust definitions.
-- **Type Generation**: `cargo make gen` in `libs/myko/rs/` or `libs/entities/rs/` generates TS bindings.
+- **Type Generation**: `moon run myko-rs:gen` and `moon run entities-rs:gen` generate TS bindings.
 - **JS Runtime**: Bun, not Node.js (for legacy server and tooling).
-- **Package Manager**: pnpm workspaces
+- **Package Manager**: bun workspaces
 - **Submodules**: Auto-updated via preinstall hook
 
 ### Prefer Existing Patterns

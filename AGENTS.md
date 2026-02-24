@@ -63,7 +63,8 @@ bun run --filter <package> build
 bun run format:all
 
 # Type generation (run inside relevant crate)
-cargo make gen
+bunx @moonrepo/cli run myko-rs:gen
+bunx @moonrepo/cli run entities-rs:gen
 ```
 
 ## Cargo / Clippy Guidance

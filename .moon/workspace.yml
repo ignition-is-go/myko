@@ -1,0 +1,16 @@
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+
+projects:
+  asset-store: 'apps/asset_store'
+  docs-rship-io: 'apps/docs.rship.io'
+  entities-rs: 'libs/entities/rs'
+  link-cli: 'apps/link-cli'
+  link-ui: 'apps/link-ui'
+  linkd: 'apps/linkd'
+  myko-rs: 'libs/myko/rs'
+  node-agent: 'apps/node-agent'
+  rship-mcp: 'apps/rship_mcp'
+  # sdk-ts: 'libs/sdk/ts'
+  server: 'apps/server'
+  sync-server: 'apps/sync_server'
+  ui: 'apps/ui'

@@ -1,0 +1,9 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+tasks:
+  gen:
+    command: "cargo"
+    args:
+      - "run"
+      - "--bin"
+      - "typegen"
