@@ -15,3 +15,13 @@ tasks:
       - "bindings/**/*"
     options:
       cache: true
+
+  clean:
+    command: "bash"
+    args:
+      - "-lc"
+      - |
+        rm -rf bindings
+    options:
+      cache: false
+      outputStyle: "stream"
