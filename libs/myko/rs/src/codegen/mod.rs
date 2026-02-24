@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use dprint_plugin_typescript::{
@@ -18,6 +18,19 @@ use crate::{
     view::ViewRegistration,
     wire::MessageEventRegistration,
 };
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocEntry {
+    entity_type: String,
+    kind: String,
+    prop_name: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+    prop_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    doc_string: Option<String>,
+}
 
 /// Export all registered ts-rs types to the bindings directory.
 pub fn export_registered_ts_types() -> Result<(), anyhow::Error> {
@@ -361,6 +374,294 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
     println!("Successfully wrote to file: {}", file_path.display());
 
     Ok(())
+}
+
+/// Generate docs JSON entries from ts-rs binding files.
+///
+/// This is intentionally separate from `generate_item_types` so callers can
+/// run docs generation independently (or in addition to TS type generation).
+pub fn generate_docs_json_from_bindings(
+    bindings_dir: impl AsRef<Path>,
+    output_file: impl AsRef<Path>,
+) -> Result<(), anyhow::Error> {
+    let bindings_dir = bindings_dir.as_ref();
+    let output_file = output_file.as_ref();
+
+    if !bindings_dir.exists() {
+        anyhow::bail!(
+            "Bindings directory does not exist: {}",
+            bindings_dir.display()
+        );
+    }
+
+    let mut entries = Vec::<DocEntry>::new();
+    for file in collect_ts_binding_files(bindings_dir)? {
+        let content = fs::read_to_string(&file)?;
+        let Some(entity_type) = file.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(body) = extract_exported_object_type_body(&content, entity_type) else {
+            continue;
+        };
+        for (prop_name, prop_type, doc_string) in parse_object_type_fields(&body) {
+            entries.push(DocEntry {
+                entity_type: entity_type.to_string(),
+                kind: "prop".to_string(),
+                prop_name,
+                entry_type: "prop".to_string(),
+                prop_type,
+                doc_string,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.entity_type
+            .cmp(&b.entity_type)
+            .then_with(|| a.prop_name.cmp(&b.prop_name))
+    });
+
+    if let Some(parent) = output_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(&entries)?;
+    fs::write(output_file, json)?;
+    println!("Successfully wrote docs JSON: {}", output_file.display());
+
+    Ok(())
+}
+
+fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBuf>, anyhow::Error> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(bindings_dir)? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let is_ts = path.extension().map(|x| x == "ts").unwrap_or(false);
+        let is_dts = path
+            .file_name()
+            .and_then(|x| x.to_str())
+            .map(|x| x.ends_with(".d.ts"))
+            .unwrap_or(false);
+        if is_ts && !is_dts {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn extract_exported_object_type_body(content: &str, type_name: &str) -> Option<String> {
+    let marker = format!("export type {type_name} =");
+    let start = content.find(&marker)?;
+    let rest = &content[start + marker.len()..];
+    let brace_start_rel = rest.find('{')?;
+    let brace_start = start + marker.len() + brace_start_rel;
+
+    let mut depth = 0usize;
+    let mut end_idx = None;
+    for (i, ch) in content[brace_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    end_idx = Some(brace_start + i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end_idx = end_idx?;
+    Some(content[brace_start + 1..end_idx].to_string())
+}
+
+fn parse_object_type_fields(body: &str) -> Vec<(String, String, Option<String>)> {
+    let mut fields = Vec::new();
+    let mut pending_doc: Option<String> = None;
+
+    for segment in split_top_level_commas(body) {
+        let mut segment = segment.trim().to_string();
+        if segment.is_empty() {
+            continue;
+        }
+
+        while let Some(start) = segment.find("/**") {
+            let tail = &segment[start + 3..];
+            let Some(end_rel) = tail.find("*/") else {
+                break;
+            };
+            let end = start + 3 + end_rel + 2;
+            let comment_block = &segment[start..end];
+            let doc = normalize_jsdoc(comment_block);
+            if !doc.is_empty() {
+                pending_doc = Some(doc);
+            }
+            segment.replace_range(start..end, "");
+        }
+
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+
+        let Some(colon_idx) = find_top_level_colon(segment) else {
+            continue;
+        };
+        let raw_name = segment[..colon_idx].trim();
+        let raw_type = segment[colon_idx + 1..].trim();
+
+        let prop_name = raw_name
+            .trim_start_matches("readonly ")
+            .trim_end_matches('?')
+            .trim()
+            .trim_matches('\'')
+            .trim_matches('"')
+            .to_string();
+        if prop_name.is_empty() || prop_name == "id" || prop_name == "hash" {
+            pending_doc = None;
+            continue;
+        }
+
+        let prop_type = raw_type.trim().to_string();
+        if prop_type.is_empty() {
+            pending_doc = None;
+            continue;
+        }
+
+        fields.push((prop_name, prop_type, pending_doc.take()));
+    }
+
+    fields
+}
+
+fn split_top_level_commas(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut paren = 0usize;
+    let mut angle = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_block_comment = false;
+    let mut in_line_comment = false;
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        let next = if i + 1 < chars.len() {
+            Some(chars[i + 1])
+        } else {
+            None
+        };
+        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+        if in_block_comment {
+            if ch == '*' && next == Some('/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '/' && next == Some('*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '/' && next == Some('/') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '\'' && !in_double && prev != Some('\\') {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single && prev != Some('\\') {
+            in_double = !in_double;
+        } else if !in_single && !in_double {
+            match ch {
+                '{' => brace += 1,
+                '}' => brace = brace.saturating_sub(1),
+                '[' => bracket += 1,
+                ']' => bracket = bracket.saturating_sub(1),
+                '(' => paren += 1,
+                ')' => paren = paren.saturating_sub(1),
+                '<' => angle += 1,
+                '>' => angle = angle.saturating_sub(1),
+                ',' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => {
+                    out.push(chars[start..i].iter().collect::<String>());
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if start < chars.len() {
+        out.push(chars[start..].iter().collect::<String>());
+    }
+    out
+}
+
+fn find_top_level_colon(input: &str) -> Option<usize> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut paren = 0usize;
+    let mut angle = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, ch) in chars.iter().enumerate() {
+        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+        if *ch == '\'' && !in_double && prev != Some('\\') {
+            in_single = !in_single;
+            continue;
+        }
+        if *ch == '"' && !in_single && prev != Some('\\') {
+            in_double = !in_double;
+            continue;
+        }
+        if in_single || in_double {
+            continue;
+        }
+        match ch {
+            '{' => brace += 1,
+            '}' => brace = brace.saturating_sub(1),
+            '[' => bracket += 1,
+            ']' => bracket = bracket.saturating_sub(1),
+            '(' => paren += 1,
+            ')' => paren = paren.saturating_sub(1),
+            '<' => angle += 1,
+            '>' => angle = angle.saturating_sub(1),
+            ':' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_jsdoc(block: &str) -> String {
+    block
+        .replace("/**", "")
+        .replace("*/", "")
+        .lines()
+        .map(|line| line.trim().trim_start_matches('*').trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn generate_query_class(query_id: &str, query_item_type: &str) -> String {

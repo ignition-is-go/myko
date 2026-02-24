@@ -51,3 +51,4 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 [features]
 default = []
 bench = []
+doc-gen = []
