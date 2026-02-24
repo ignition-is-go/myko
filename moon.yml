@@ -1,0 +1,16 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+tasks:
+  clean:
+    command: './tools/scripts/clean-artifacts.sh'
+    options:
+      cache: false
+      outputStyle: 'stream'
+
+  install:
+    command: 'bun'
+    args: ['install']
+
+  check:
+    command: 'cargo'
+    args: ['check']

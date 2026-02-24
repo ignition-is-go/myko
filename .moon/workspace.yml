@@ -9,6 +9,7 @@ projects:
   linkd: 'apps/linkd'
   myko-rs: 'libs/myko/rs'
   node-agent: 'apps/node-agent'
+  root: '.'
   rship-mcp: 'apps/rship_mcp'
   sdk-ts: 'libs/sdk/ts'
   server: 'apps/server'
