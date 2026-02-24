@@ -1083,7 +1083,9 @@ export class MykoClient {
       // Defensive copy: prevent one subscriber's mutations from affecting others
       map((x) => {
         if (Array.isArray(x)) return x.slice() as ReportResult<R>
-        if (x instanceof Object) return { ...x } as ReportResult<R>
+        if (x && typeof x === 'object') {
+          return { ...(x as Record<string, unknown>) } as ReportResult<R>
+        }
         return x
       }),
     )
@@ -1437,37 +1439,39 @@ export class MykoClient {
         })
         break
       case MykoEvent.ViewResponse:
+        // ViewResponse and QueryResponse share the same payload shape.
+        const viewMessage = message as unknown as QueryResponseMessage
         this.maybeLogFirstResponseTiming(
           'view',
-          (message as QueryResponseMessage).data.tx,
+          viewMessage.data.tx,
           {
-            viewId: this.activeViews.get((message as QueryResponseMessage).data.tx)?.viewId,
+            viewId: this.activeViews.get(viewMessage.data.tx)?.viewId,
             viewName:
-              this.activeViewNames.get((message as QueryResponseMessage).data.tx) ??
-              this.activeViews.get((message as QueryResponseMessage).data.tx)?.viewId ??
+              this.activeViewNames.get(viewMessage.data.tx) ??
+              this.activeViews.get(viewMessage.data.tx)?.viewId ??
               'unknown',
-            sequence: (message as QueryResponseMessage).data.sequence,
-            upserts: (message as QueryResponseMessage).data.upserts.length,
-            deletes: (message as QueryResponseMessage).data.deletes.length,
+            sequence: viewMessage.data.sequence,
+            upserts: viewMessage.data.upserts.length,
+            deletes: viewMessage.data.deletes.length,
           },
         )
         this.logConnection('view_response', {
-          tx: (message as QueryResponseMessage).data.tx,
-          sequence: (message as QueryResponseMessage).data.sequence,
-          upserts: (message as QueryResponseMessage).data.upserts.length,
-          deletes: (message as QueryResponseMessage).data.deletes.length,
-          changes: ((message as QueryResponseMessage).data as { changes?: unknown[] }).changes?.length ?? 0,
-          totalCount: ((message as QueryResponseMessage).data as { totalCount?: number; total_count?: number })
+          tx: viewMessage.data.tx,
+          sequence: viewMessage.data.sequence,
+          upserts: viewMessage.data.upserts.length,
+          deletes: viewMessage.data.deletes.length,
+          changes: (viewMessage.data as { changes?: unknown[] }).changes?.length ?? 0,
+          totalCount: (viewMessage.data as { totalCount?: number; total_count?: number })
             .totalCount ??
-            ((message as QueryResponseMessage).data as { totalCount?: number; total_count?: number }).total_count ??
+            (viewMessage.data as { totalCount?: number; total_count?: number }).total_count ??
             null,
-          window: ((message as QueryResponseMessage).data as { window?: QueryWindow | null }).window ?? null,
+          window: (viewMessage.data as { window?: QueryWindow | null }).window ?? null,
         })
         const viewPublishStarted = this.nowMs()
-        this.queryResponses.next(message as unknown as QueryResponseMessage)
+        this.queryResponses.next(viewMessage)
         this.logConnection('view_publish_ms', {
-          tx: (message as QueryResponseMessage).data.tx,
-          sequence: (message as QueryResponseMessage).data.sequence,
+          tx: viewMessage.data.tx,
+          sequence: viewMessage.data.sequence,
           publishMs: Number((this.nowMs() - viewPublishStarted).toFixed(2)),
         })
         break

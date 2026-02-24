@@ -28,3 +28,29 @@ pub use query::{
 };
 pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
 pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view};
+
+// Ensure core wire types are exported to TS bindings for downstream packages.
+crate::register_ts_export!(
+    event::MEventType,
+    event::EventOptions,
+    event::MEvent,
+    message::CancelSubscription,
+    message::PingData,
+    message::MykoMessage,
+    command::CommandResponse,
+    command::WrappedCommand,
+    command::CommandError,
+    query::QueryResponse,
+    query::QueryChange,
+    query::WrappedQuery,
+    query::QueryError,
+    query::QueryWindow,
+    query::QueryWindowUpdate,
+    report::ReportResponse,
+    report::WrappedReport,
+    report::ReportError,
+    view::WrappedView,
+    view::ViewError,
+    view::ViewWindowUpdate,
+    serde_json::Value
+);
