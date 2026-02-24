@@ -177,9 +177,12 @@ impl WsHandler {
             Arc::new(Mutex::new(HashMap::new()));
         let subscribe_started_by_tx: Arc<Mutex<HashMap<Arc<str>, Instant>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let outbound_commands_by_tx: Arc<Mutex<HashMap<String, (String, Instant)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let query_ids_by_tx_writer = query_ids_by_tx.clone();
         let view_ids_by_tx_writer = view_ids_by_tx.clone();
         let subscribe_started_by_tx_writer = subscribe_started_by_tx.clone();
+        let outbound_commands_by_tx_writer = outbound_commands_by_tx.clone();
 
         // Publish Client entity
         let client_entity = Client {
@@ -255,6 +258,17 @@ impl WsHandler {
                 } else {
                     None
                 };
+
+                if let MykoMessage::Command(wrapped) = &msg
+                    && let Some(tx_id) = wrapped.command.get("tx").and_then(|v| v.as_str())
+                    && !tx_id.trim().is_empty()
+                    && let Ok(mut map) = outbound_commands_by_tx_writer.lock()
+                {
+                    map.insert(
+                        tx_id.to_string(),
+                        (wrapped.command_id.clone(), Instant::now()),
+                    );
+                }
 
                 let serialize_started = Instant::now();
                 let ws_msg = if use_binary_writer.load(Ordering::SeqCst) {
@@ -350,6 +364,7 @@ impl WsHandler {
                                 &query_ids_by_tx,
                                 &view_ids_by_tx,
                                 &subscribe_started_by_tx,
+                                &outbound_commands_by_tx,
                                 myko_msg,
                             ) {
                                 log::error!("Error handling message: {}", e);
@@ -390,6 +405,7 @@ impl WsHandler {
                                 &query_ids_by_tx,
                                 &view_ids_by_tx,
                                 &subscribe_started_by_tx,
+                                &outbound_commands_by_tx,
                                 myko_msg,
                             ) {
                                 log::error!("Error handling message: {}", e);
@@ -455,6 +471,7 @@ impl WsHandler {
         query_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
         view_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
         subscribe_started_by_tx: &Arc<Mutex<HashMap<Arc<str>, Instant>>>,
+        outbound_commands_by_tx: &Arc<Mutex<HashMap<String, (String, Instant)>>>,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let handler_registry = ctx.handler_registry.clone();
@@ -901,17 +918,142 @@ impl WsHandler {
                 }
             }
 
-            // Response messages - these shouldn't come from clients
-            MykoMessage::QueryResponse(_)
-            | MykoMessage::QueryError(_)
-            | MykoMessage::ViewResponse(_)
-            | MykoMessage::ViewError(_)
-            | MykoMessage::ReportResponse(_)
-            | MykoMessage::ReportError(_)
-            | MykoMessage::CommandResponse(_)
-            | MykoMessage::CommandError(_)
-            | MykoMessage::ProtocolSwitch { .. } => {
-                log::warn!("Received unexpected response message from client");
+            // Response messages - these shouldn't come from clients.
+            MykoMessage::QueryResponse(resp) => {
+                log::warn!(
+                    "Unexpected client message kind=query_response client={} tx={} seq={} upserts={} deletes={} active_subscriptions={}",
+                    session.client_id,
+                    resp.tx,
+                    resp.sequence,
+                    resp.upserts.len(),
+                    resp.deletes.len(),
+                    session.subscription_count()
+                );
+            }
+            MykoMessage::QueryError(err) => {
+                log::warn!(
+                    "Unexpected client message kind=query_error client={} tx={} query_id={} message={} active_subscriptions={}",
+                    session.client_id,
+                    err.tx,
+                    err.query_id,
+                    err.message,
+                    session.subscription_count()
+                );
+            }
+            MykoMessage::ViewResponse(resp) => {
+                log::warn!(
+                    "Unexpected client message kind=view_response client={} tx={} seq={} upserts={} deletes={} active_subscriptions={}",
+                    session.client_id,
+                    resp.tx,
+                    resp.sequence,
+                    resp.upserts.len(),
+                    resp.deletes.len(),
+                    session.subscription_count()
+                );
+            }
+            MykoMessage::ViewError(err) => {
+                log::warn!(
+                    "Unexpected client message kind=view_error client={} tx={} view_id={} message={} active_subscriptions={}",
+                    session.client_id,
+                    err.tx,
+                    err.view_id,
+                    err.message,
+                    session.subscription_count()
+                );
+            }
+            MykoMessage::ReportResponse(resp) => {
+                log::warn!(
+                    "Unexpected client message kind=report_response client={} tx={} active_subscriptions={}",
+                    session.client_id,
+                    resp.tx,
+                    session.subscription_count()
+                );
+            }
+            MykoMessage::ReportError(err) => {
+                log::warn!(
+                    "Unexpected client message kind=report_error client={} tx={} report_id={} message={} active_subscriptions={}",
+                    session.client_id,
+                    err.tx,
+                    err.report_id,
+                    err.message,
+                    session.subscription_count()
+                );
+            }
+            MykoMessage::CommandResponse(resp) => {
+                if resp.tx.trim().is_empty() {
+                    log::warn!(
+                        "Malformed client message kind=command_response client={} tx=<empty> active_subscriptions={}",
+                        session.client_id,
+                        session.subscription_count()
+                    );
+                } else {
+                    let correlated = outbound_commands_by_tx
+                        .lock()
+                        .ok()
+                        .and_then(|mut map| map.remove(&resp.tx));
+                    if let Some((command_id, started)) = correlated {
+                        log::info!(
+                            "Client command response matched outbound command client={} tx={} command_id={} roundtrip_ms={} active_subscriptions={}",
+                            session.client_id,
+                            resp.tx,
+                            command_id,
+                            started.elapsed().as_millis(),
+                            session.subscription_count()
+                        );
+                    } else {
+                        log::warn!(
+                            "Client command response without outbound match client={} tx={} active_subscriptions={}",
+                            session.client_id,
+                            resp.tx,
+                            session.subscription_count()
+                        );
+                    }
+                }
+            }
+            MykoMessage::CommandError(err) => {
+                if err.tx.trim().is_empty() {
+                    log::warn!(
+                        "Malformed client message kind=command_error client={} tx=<empty> command_id={} message={} active_subscriptions={}",
+                        session.client_id,
+                        err.command_id,
+                        err.message,
+                        session.subscription_count()
+                    );
+                } else {
+                    let correlated = outbound_commands_by_tx
+                        .lock()
+                        .ok()
+                        .and_then(|mut map| map.remove(&err.tx));
+                    if let Some((command_id, started)) = correlated {
+                        log::warn!(
+                            "Client command error matched outbound command client={} tx={} command_id={} transport_command_id={} message={} roundtrip_ms={} active_subscriptions={}",
+                            session.client_id,
+                            err.tx,
+                            err.command_id,
+                            command_id,
+                            err.message,
+                            started.elapsed().as_millis(),
+                            session.subscription_count()
+                        );
+                    } else {
+                        log::warn!(
+                            "Client command error without outbound match client={} tx={} command_id={} message={} active_subscriptions={}",
+                            session.client_id,
+                            err.tx,
+                            err.command_id,
+                            err.message,
+                            session.subscription_count()
+                        );
+                    }
+                }
+            }
+            MykoMessage::ProtocolSwitch { protocol } => {
+                log::warn!(
+                    "Unexpected client message kind=protocol_switch_ack client={} protocol={} active_subscriptions={}",
+                    session.client_id,
+                    protocol,
+                    session.subscription_count()
+                );
             }
         }
 
