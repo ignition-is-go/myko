@@ -22,7 +22,7 @@ docker compose -f docker-compose.local.yml up -d
 export MYKO_HOST_ADDRESS=localhost
 export MYKO_PORT=5155
 export KAFKA_BROKERS=localhost:9092
-cargo run -p rship_server --target-dir target/agent
+cargo run -p rship-server --target-dir target/agent
 
 # Run UI (separate terminal)
 bun run --filter @rship/ui dev

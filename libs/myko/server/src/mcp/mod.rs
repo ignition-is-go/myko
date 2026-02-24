@@ -10,10 +10,10 @@
 //!
 //! ## Usage
 //!
-//! For Rship, use the `rship_mcp` binary which includes all entity registrations:
+//! For Rship, use the `rship-mcp` binary which includes all entity registrations:
 //!
 //! ```bash
-//! cargo run -p rship_mcp
+//! cargo run -p rship-mcp
 //! ```
 //!
 //! Or use programmatically in your own crate:
@@ -36,7 +36,7 @@
 //!   "mcpServers": {
 //!     "rship": {
 //!       "command": "cargo",
-//!       "args": ["run", "-p", "rship_mcp"],
+//!       "args": ["run", "-p", "rship-mcp"],
 //!       "cwd": "/path/to/rship"
 //!     }
 //!   }

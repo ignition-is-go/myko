@@ -329,7 +329,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "asset_store"
+name = "asset-store"
 version = "3.1.0-canary.23"
 dependencies = [
  "axum",
@@ -340,8 +340,8 @@ dependencies = [
  "myko-rs",
  "myko-server",
  "pulse-platform",
+ "rship-asset-store-core",
  "rship-entities",
- "rship_asset_store_core",
  "tokio",
 ]
 
@@ -7808,7 +7808,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "opencv_napi"
+name = "opencv-napi"
 version = "3.1.0-canary.23"
 dependencies = [
  "anyhow",
@@ -9695,6 +9695,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship-asset-store-core"
+version = "3.1.0-canary.23"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-credential-types",
+ "aws-sdk-s3",
+ "aws-smithy-types",
+ "axum",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "ffmpeg-the-third",
+ "futures-util",
+ "gif 0.13.3",
+ "hostname",
+ "image 0.25.9",
+ "log",
+ "mime_guess",
+ "myko-macros",
+ "myko-rs",
+ "partially",
+ "percent-encoding",
+ "pulse-platform",
+ "reqwest 0.12.28",
+ "rship-entities",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower-http 0.6.8",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "rship-entities"
 version = "3.1.0-canary.23"
 dependencies = [
@@ -9725,6 +9760,7 @@ dependencies = [
  "rship-entities-networking",
  "rship-entities-nmos",
  "rship-entities-nodes",
+ "rship-entities-nodes-runtime",
  "rship-entities-objects",
  "rship-entities-physical",
  "rship-entities-rive",
@@ -10403,6 +10439,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship-mcp"
+version = "0.1.0"
+dependencies = [
+ "myko-server",
+ "rship-entities",
+]
+
+[[package]]
 name = "rship-node-agent"
 version = "3.1.0-canary.23"
 dependencies = [
@@ -10445,6 +10489,22 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "rship-server"
+version = "0.1.0"
+dependencies = [
+ "dotenv",
+ "env_logger",
+ "log",
+ "myko-rs",
+ "myko-server",
+ "pulse-platform",
+ "rship-entities",
+ "rship-entities-engine",
+ "tikv-jemallocator",
+ "tokio",
 ]
 
 [[package]]
@@ -10493,65 +10553,6 @@ dependencies = [
  "myko-rs",
  "serde",
  "ts-rs",
-]
-
-[[package]]
-name = "rship_asset_store_core"
-version = "3.1.0-canary.23"
-dependencies = [
- "anyhow",
- "aws-config",
- "aws-credential-types",
- "aws-sdk-s3",
- "aws-smithy-types",
- "axum",
- "bytes",
- "chrono",
- "dashmap",
- "ffmpeg-the-third",
- "futures-util",
- "gif 0.13.3",
- "hostname",
- "image 0.25.9",
- "log",
- "mime_guess",
- "myko-macros",
- "myko-rs",
- "partially",
- "percent-encoding",
- "pulse-platform",
- "reqwest 0.12.28",
- "rship-entities",
- "serde",
- "serde_json",
- "tokio",
- "tower-http 0.6.8",
- "ts-rs",
- "uuid",
-]
-
-[[package]]
-name = "rship_mcp"
-version = "0.1.0"
-dependencies = [
- "myko-server",
- "rship-entities",
-]
-
-[[package]]
-name = "rship_server"
-version = "0.1.0"
-dependencies = [
- "dotenv",
- "env_logger",
- "log",
- "myko-rs",
- "myko-server",
- "pulse-platform",
- "rship-entities",
- "rship-entities-engine",
- "tikv-jemallocator",
- "tokio",
 ]
 
 [[package]]
@@ -12037,7 +12038,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sync_server"
+name = "sync-server"
 version = "3.1.0-canary.23"
 dependencies = [
  "dotenv",
