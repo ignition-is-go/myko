@@ -8,9 +8,15 @@ tasks:
       outputStyle: 'stream'
 
   install:
+    options:
+      cache: false
+      outputStyle: 'stream'
     command: 'bun'
     args: ['install']
 
   check:
+    options:
+      cache: false
+      outputStyle: 'stream'
     command: 'cargo'
     args: ['check']
