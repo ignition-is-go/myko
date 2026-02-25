@@ -9,14 +9,22 @@ tasks:
       - 'run'
       - '--bin'
       - 'typegen'
-    inputs:
-      - 'Cargo.toml'
-      - '/Cargo.lock'
-      - 'src/**/*'
-    outputs:
-      - 'bindings/**/*'
     options:
-      cache: true
+      cache: false
+
+  gen-watch:
+    deps:
+      - 'root:install'
+    command: 'cargo'
+    args:
+      - 'watch'
+      - '-x'
+      - 'run --bin typegen'
+    options:
+      cache: false
+      persistent: true
+      runInCI: false
+      outputStyle: 'stream'
 
   clean:
     command: 'bash'

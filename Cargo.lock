@@ -10324,6 +10324,7 @@ dependencies = [
  "rship-entities-foundation",
  "rship-entities-macros",
  "rship-entities-nodes",
+ "rship-entities-scene",
  "serde",
  "serde_json",
  "ts-rs",
