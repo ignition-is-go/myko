@@ -46,6 +46,7 @@ crate::register_ts_export!(
     query::QueryError,
     query::QueryWindow,
     query::QueryWindowUpdate,
+    item::WrappedItem<serde_json::Value>,
     report::ReportResponse,
     report::WrappedReport,
     report::ReportError,
