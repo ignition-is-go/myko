@@ -58,7 +58,12 @@
 		viewstate.stopDragWindback();
 	};
 
-	const diff = client.watchReport(new EntitySnapshotDifference(entrypointItemType, entrypointId));
+	const diff = client.watchReport(
+		new EntitySnapshotDifference({
+			parentType: entrypointItemType,
+			parentId: entrypointId
+		})
+	);
 </script>
 
 <svelte:window {onkeydown} {onmousedown} {onmouseup} />

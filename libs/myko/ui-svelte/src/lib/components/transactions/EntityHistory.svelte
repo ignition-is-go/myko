@@ -101,7 +101,14 @@
 	);
 
 	const children = $derived(
-		client.watchReport(new ChildEntitiesAllTime(itemType, id)).pipe(startWith([]))
+		client
+			.watchReport(
+				new ChildEntitiesAllTime({
+					parentType: itemType,
+					parentId: id
+				})
+			)
+			.pipe(startWith([]))
 	);
 
 	let isInView = $state(false);

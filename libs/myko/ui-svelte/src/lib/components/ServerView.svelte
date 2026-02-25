@@ -60,7 +60,12 @@
 			class="select"
 			onchange={(e) => {
 				console.log(e.currentTarget.value);
-				client.sendCommand(new SetLogLevel(server.id, e.currentTarget.value as LogLevel));
+				client.sendCommand(
+					new SetLogLevel({
+						serverId: server.id,
+						level: e.currentTarget.value as LogLevel
+					})
+				);
 			}}
 		>
 			{#each LOG_RANK as rank}

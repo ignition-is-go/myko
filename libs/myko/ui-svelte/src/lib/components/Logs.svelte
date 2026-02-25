@@ -9,7 +9,7 @@
 
 	const { serverId }: Props = $props();
 
-	const logs = client.watchReport(new Loggers()).pipe(startWith([]));
+	const logs = client.watchReport(new Loggers({})).pipe(startWith([]));
 </script>
 
 {#each $logs as log}
