@@ -1,6 +1,7 @@
 $schema: 'https://moonrepo.dev/schemas/workspace.json'
 
 projects:
+  asset-store-core: 'libs/asset-store/core'
   asset-store: 'apps/asset_store'
   docs-rship-io: 'apps/docs.rship.io'
   entities-rs: 'libs/entities/rs'
