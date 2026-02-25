@@ -20,3 +20,10 @@ tasks:
       outputStyle: 'stream'
     command: 'cargo'
     args: ['check']
+
+  test:
+    options:
+      cache: false
+      outputStyle: 'stream'
+    command: 'cargo'
+    args: ['test']
