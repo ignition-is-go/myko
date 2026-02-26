@@ -681,9 +681,16 @@ impl CellServerCtx {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let peer_servers = ctx.query(GetPeerServers {});
-    /// // peer_servers is Cell<Vec<Server>, CellImmutable>
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use myko_rs::entities::server::GetPeerServers;
+    /// use myko_rs::request::RequestContext;
+    /// use myko_rs::server::CellServerCtx;
+    ///
+    /// fn demo(ctx: &CellServerCtx, req: Arc<RequestContext>) {
+    ///     let _peer_servers = ctx.query(GetPeerServers {}, req);
+    ///     // _peer_servers is Cell<Vec<Server>, CellImmutable>
+    /// }
     /// ```
     pub fn query<Q>(
         &self,

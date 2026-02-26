@@ -13,7 +13,15 @@
 //! A child entity has a foreign key pointing to a parent. When the parent is deleted,
 //! all children with matching foreign keys are cascade-deleted.
 //!
-//! ```rust,ignore
+//! ```text
+//! use myko_rs::prelude::*;
+//! use std::sync::Arc;
+//!
+//! #[myko_item]
+//! pub struct Scene {
+//!     pub name: String,
+//! }
+//!
 //! #[myko_item]
 //! pub struct Binding {
 //!     #[belongs_to(Scene)]
@@ -26,7 +34,15 @@
 //! A parent entity owns an array of child IDs. Deleting the parent deletes all children.
 //! Deleting a child removes its ID from the parent's array.
 //!
-//! ```rust,ignore
+//! ```text
+//! use myko_rs::prelude::*;
+//! use std::sync::Arc;
+//!
+//! #[myko_item]
+//! pub struct BindingNode {
+//!     pub name: String,
+//! }
+//!
 //! #[myko_item]
 //! pub struct Scene {
 //!     #[owns_many(BindingNode)]
@@ -38,7 +54,20 @@
 //!
 //! Automatically create one entity for each combination of dependency entities.
 //!
-//! ```rust,ignore
+//! ```text
+//! use myko_rs::prelude::*;
+//! use std::sync::Arc;
+//!
+//! #[myko_item]
+//! pub struct Session {
+//!     pub name: String,
+//! }
+//!
+//! #[myko_item]
+//! pub struct Bundle {
+//!     pub name: String,
+//! }
+//!
 //! #[myko_item]
 //! pub struct BundleStatus {
 //!     #[ensure_for(Session)]

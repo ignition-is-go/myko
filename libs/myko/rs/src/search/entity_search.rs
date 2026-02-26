@@ -4,15 +4,16 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
+//! use myko_rs::entities::server::Server;
+//! use myko_rs::search::EntitySearch;
+//!
 //! // Type-safe constructor with default limit (100)
-//! let search = EntitySearch::for_type::<Target>("audio mixer");
+//! let search = EntitySearch::for_type::<Server>("audio mixer");
 //!
 //! // With custom limit
-//! let search = EntitySearch::for_type_with_limit::<Target>("audio mixer", 50);
-//!
-//! let result = report_manager.call(ReportManagerMsg::Execute, search).await?;
-//! // result contains EntitySearchResult { ids: vec!["id1".into(), "id2".into(), ...] }
+//! let _search = EntitySearch::for_type_with_limit::<Server>("audio mixer", 50);
+//! let _ = search;
 //! ```
 //!
 
@@ -54,8 +55,12 @@ impl EntitySearch {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// let search = EntitySearch::for_type::<Target>("audio mixer");
+    /// ```rust,no_run
+    /// use myko_rs::entities::server::Server;
+    /// use myko_rs::search::EntitySearch;
+    ///
+    /// let search = EntitySearch::for_type::<Server>("audio mixer");
+    /// let _ = search;
     /// ```
     pub fn for_type<T: Eventable>(query: &str) -> Self {
         Self::for_type_with_limit::<T>(query, 100)
@@ -65,8 +70,12 @@ impl EntitySearch {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// let search = EntitySearch::for_type_with_limit::<Target>("audio mixer", 50);
+    /// ```rust,no_run
+    /// use myko_rs::entities::server::Server;
+    /// use myko_rs::search::EntitySearch;
+    ///
+    /// let search = EntitySearch::for_type_with_limit::<Server>("audio mixer", 50);
+    /// let _ = search;
     /// ```
     pub fn for_type_with_limit<T: Eventable>(query: &str, limit: usize) -> Self {
         Self {

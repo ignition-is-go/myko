@@ -8,10 +8,50 @@ use crate::core::item::AnyItem;
 /// Returns `Some(T)` if the downcast succeeds, `None` otherwise.
 ///
 /// # Example
-/// ```ignore
-/// let item: Arc<dyn AnyItem> = ...;
+/// ```rust,no_run
+/// use std::{any::Any, sync::Arc};
+/// use myko_rs::common::{to_value::ToValue, with_id::WithId};
+/// use myko_rs::item::AnyItem;
+/// use myko_rs::utils::downcast_item;
+///
+/// #[derive(Clone, Debug, PartialEq)]
+/// struct Server {
+///     id: Arc<str>,
+/// }
+///
+/// impl WithId for Server {
+///     fn id(&self) -> Arc<str> {
+///         self.id.clone()
+///     }
+/// }
+///
+/// impl ToValue for Server {
+///     fn to_value(&self) -> serde_json::Value {
+///         serde_json::json!({ "id": self.id.as_ref() })
+///     }
+/// }
+///
+/// impl AnyItem for Server {
+///     fn as_any(&self) -> &dyn Any {
+///         self
+///     }
+///
+///     fn entity_type(&self) -> &'static str {
+///         "Server"
+///     }
+///
+///     fn equals(&self, other: &dyn AnyItem) -> bool {
+///         other
+///             .as_any()
+///             .downcast_ref::<Self>()
+///             .map(|typed| self == typed)
+///             .unwrap_or(false)
+///     }
+/// }
+///
+/// let item: Arc<dyn AnyItem> = Arc::new(Server { id: "server-1".into() });
 /// if let Some(server) = downcast_item::<Server>(&item) {
-///     println!("Server: {}", server.id);
+///     assert_eq!(server.id.as_ref(), "server-1");
 /// }
 /// ```
 pub fn downcast_item<T: Clone + 'static>(item: &Arc<dyn AnyItem>) -> Option<T> {

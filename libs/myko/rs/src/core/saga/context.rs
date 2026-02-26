@@ -7,7 +7,10 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust,no_run
+//! use myko_rs::event::MEvent;
+//! use myko_rs::saga::SagaContext;
+//!
 //! fn handle_event(event: MEvent, ctx: &SagaContext) -> Option<MEvent> {
 //!     // Check if this event originated from our server
 //!     if event.source_id.as_deref() != Some(&ctx.host_id().to_string()) {
@@ -15,7 +18,7 @@
 //!     }
 //!
 //!     // Return an event to publish
-//!     Some(create_notification_event(&event))
+//!     Some(event)
 //! }
 //! ```
 

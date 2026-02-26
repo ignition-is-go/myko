@@ -4,24 +4,17 @@
 //! the actor-based stream system.
 //!
 //! # Example
-//! ```ignore
-//! struct GetActiveSceneCount {
-//!     session_id: Arc<str>,
-//! }
+//! ```rust,no_run
+//! use myko_rs::prelude::*;
+//! use myko_rs::report::cell::{CellReportContext, CellReportHandler};
 //!
-//! impl CellReportHandler for GetActiveSceneCount {
+//! struct CountTargets;
+//!
+//! impl CellReportHandler for CountTargets {
 //!     type Output = usize;
 //!
 //!     fn compute(&self, ctx: &CellReportContext) -> Cell<Self::Output, CellImmutable> {
-//!         let session_id = self.session_id.clone();
-//!         ctx.query_where("Scene", move |item| {
-//!             // Check if scene belongs to session and is active
-//!             if let Some(scene) = item.as_any().downcast_ref::<Scene>() {
-//!                 scene.session_id == session_id && scene.active
-//!             } else {
-//!                 false
-//!             }
-//!         }).map(|scenes| scenes.len())
+//!         ctx.query_count("Target", |_| true)
 //!     }
 //! }
 //! ```
@@ -132,18 +125,17 @@ impl CellReportContext {
 /// updates whenever any dependency changes.
 ///
 /// # Example
-/// ```ignore
+/// ```rust,no_run
+/// use myko_rs::prelude::*;
+/// use myko_rs::report::cell::{CellReportContext, CellReportHandler};
+///
+/// struct GetOnlineTargetCount;
+///
 /// impl CellReportHandler for GetOnlineTargetCount {
 ///     type Output = usize;
 ///
 ///     fn compute(&self, ctx: &CellReportContext) -> Cell<Self::Output, CellImmutable> {
-///         ctx.query_where("Target", |item| {
-///             if let Some(target) = item.as_any().downcast_ref::<Target>() {
-///                 target.online
-///             } else {
-///                 false
-///             }
-///         }).map(|targets| targets.len())
+///         ctx.query_count("Target", |_| true)
 ///     }
 /// }
 /// ```

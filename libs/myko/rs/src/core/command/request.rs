@@ -17,9 +17,12 @@ use crate::common::with_transaction::WithTransaction;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust,no_run
+/// use serde::{Deserialize, Serialize};
+/// use myko_rs::command::CommandRequest;
+///
 /// // Command params (what user defines):
-/// #[myko_command(Target)]
+/// #[derive(Clone, Debug, Serialize, Deserialize)]
 /// pub struct CreateTarget {
 ///     pub name: String,
 /// }
@@ -27,7 +30,11 @@ use crate::common::with_transaction::WithTransaction;
 /// // Create a request:
 /// let request = CommandRequest::new(CreateTarget { name: "foo".into() });
 ///
-/// // Serializes to: { "tx": "...", "name": "foo" }
+/// // Use tx from an existing request when composing nested work:
+/// let _same_tx = CommandRequest::with_tx(
+///     CreateTarget { name: "bar".into() },
+///     request.tx.clone(),
+/// );
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

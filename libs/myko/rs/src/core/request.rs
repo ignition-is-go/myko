@@ -10,8 +10,15 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use uuid::Uuid;
+//! use myko_rs::request::RequestContext;
+//!
 //! // Create initial context from WebSocket request
+//! let tx: Arc<str> = "tx-1".into();
+//! let client_id: Arc<str> = "client-1".into();
+//! let host_id = Uuid::new_v4();
 //! let ctx = RequestContext::from_client(tx, client_id, host_id);
 //!
 //! // Extend lineage for nested operations
@@ -130,10 +137,19 @@ impl RequestContext {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use uuid::Uuid;
+    /// use myko_rs::request::RequestContext;
+    ///
+    /// let tx: Arc<str> = "tx-1".into();
+    /// let client_id: Arc<str> = "client-1".into();
+    /// let host_id = Uuid::new_v4();
     /// let parent = RequestContext::from_client(tx, client_id, host_id);
     /// let child = parent.child("CreateBinding");
-    /// assert_eq!(child.lineage, vec!["client", "CreateBinding"]);
+    /// assert_eq!(child.lineage.len(), 2);
+    /// assert_eq!(child.lineage[0].as_ref(), "client");
+    /// assert_eq!(child.lineage[1].as_ref(), "CreateBinding");
     /// ```
     pub fn child(&self, operation: &str) -> Self {
         let mut lineage = self.lineage.clone();

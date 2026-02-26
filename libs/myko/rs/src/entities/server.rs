@@ -62,14 +62,18 @@ pub struct ServerStatsOutput {
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// // Subscribe to server stats
-/// let stats_stream = client.watch_report::<ServerStats, ServerStatsOutput>(&ServerStats::new());
+/// ```text
+/// // Client-side usage:
+/// let cell = client.watch_report::<ServerStats, ServerStatsOutput>(ServerStats {});
 ///
-/// // Each emission contains the latest server info and client count
-/// while let Some(stats) = stats_stream.next().await {
-///     println!("Server: {:?}, Clients: {}", stats.server, stats.client_count);
-/// }
+/// // `cell` updates whenever server/client state changes.
+/// // Read current value:
+/// let latest = cell.get();
+///
+/// // Or subscribe reactively:
+/// let _guard = cell.subscribe(|signal| {
+///   // handle Signal::Value(Some(ServerStatsOutput { ... }))
+/// });
 /// ```
 #[myko_macros::myko_report(ServerStatsOutput)]
 pub struct ServerStats {}

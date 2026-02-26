@@ -181,14 +181,28 @@ impl ReportContext {
 ///
 /// # Example
 ///
-/// ```ignore
-/// impl ReportHandler for CountActiveTargets {
-///     type Output = usize;
+/// ```text
+/// // Reports are for derived/read-model data.
+/// // Pattern:
+/// // 1) Define params (or an empty struct for no params)
+/// // 2) Implement ReportHandler::compute
+/// // 3) Use ctx.query(...) / ctx.report(...) to compose dependencies
 ///
-///     fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
-///         ctx.query(GetTargetsByQuery(PartialTarget { active: Some(true), ..Default::default() }))
-///             .map(|targets| targets.len())
-///     }
+/// #[myko_report_output]
+/// pub struct ActiveTargetCount {
+///   pub count: usize,
+/// }
+///
+/// #[myko_report(ActiveTargetCount)]
+/// pub struct GetActiveTargetCount;
+///
+/// impl ReportHandler for GetActiveTargetCount {
+///   type Output = ActiveTargetCount;
+///
+///   fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+///     ctx.query(GetTargetsByQuery { active: Some(true), ..Default::default() })
+///       .map(|items| ActiveTargetCount { count: items.len() })
+///   }
 /// }
 /// ```
 pub trait ReportHandler: Sized + Send + Sync + 'static {

@@ -294,26 +294,23 @@ impl CommandContext {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
+/// // Define params with #[myko_command(...)]:
 /// #[myko_command(result = "()")]
 /// pub struct DeleteMachine {
-///     pub id: Arc<str>,
+///   pub id: Arc<str>,
 /// }
 ///
+/// // Implement the business logic:
 /// impl CommandHandler for DeleteMachine {
-///     fn execute(&self, ctx: CommandContext) -> Result<(), CommandError> {
-///         let machine = ctx.registry()
-///             .get_or_create("Machine")
-///             .get_value(&self.id)
-///             .ok_or_else(|| CommandError {
-///                 tx: ctx.tx().to_string(),
-///                 command_id: "DeleteMachine".to_string(),
-///                 message: format!("Machine {} not found", self.id),
-///             })?;
-///         ctx.emit_del_dyn(machine)?;
-///         Ok(())
-///     }
+///   fn execute(self, ctx: CommandContext) -> Result<(), CommandError> {
+///     // validate input, query current state, emit SET/DEL events
+///     Ok(())
+///   }
 /// }
+///
+/// // Register the handler (usually near the command definition):
+/// register_command_handler!(DeleteMachine);
 /// ```
 pub trait CommandHandler: crate::command::CommandParams {
     /// Execute the command synchronously.
@@ -401,7 +398,7 @@ inventory::collect!(CommandHandlerRegistration);
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// register_command_handler!(DeleteMachine);
 /// ```
 #[macro_export]

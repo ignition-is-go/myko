@@ -4,21 +4,17 @@
 //!
 //! For querying, use `store.select(predicate)` directly:
 //!
-//! ```ignore
-//! let store = registry.get_or_create("Target");
+//! ```text
+//! // 1) Build a reactive query map from CellServerCtx:
+//! let map = ctx.query_map(GetTargetsByQuery { active: Some(true), ..Default::default() }, req);
 //!
-//! // Query all entities
-//! let all = store.select(|_| true).entries().map(|entries| {
-//!     entries.iter().map(|(_, item)| item.clone()).collect()
-//! });
+//! // 2) Derive values from the map:
+//! let names = map
+//!   .entries()
+//!   .map(|entries| entries.iter().map(|(_, item)| item.id().to_string()).collect::<Vec<_>>());
 //!
-//! // Query with predicate
-//! let filtered = store.select(|item| {
-//!     // your filter logic
-//!     true
-//! }).entries().map(|entries| {
-//!     entries.iter().map(|(_, item)| item.clone()).collect()
-//! });
+//! // 3) Subscribe once in UI/server code and react to updates.
+//! // The map stays hot and updates when underlying entities change.
 //! ```
 
 use std::sync::Arc;

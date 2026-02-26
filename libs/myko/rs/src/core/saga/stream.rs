@@ -24,8 +24,12 @@ pub trait SagaStreamExt: Stream<Item = MEvent> + Sized {
     /// Filter events by item type name.
     ///
     /// # Example
-    /// ```ignore
-    /// events.of_item_type("Target")
+    /// ```rust,no_run
+    /// use futures::StreamExt;
+    /// use myko_rs::saga::{EventStream, SagaStreamExt};
+    ///
+    /// let events: EventStream = futures::stream::empty().boxed();
+    /// let _ = events.of_item_type("Target");
     /// ```
     fn of_item_type(self, item_type: &'static str) -> OfItemType<Self> {
         OfItemType {
@@ -37,8 +41,13 @@ pub trait SagaStreamExt: Stream<Item = MEvent> + Sized {
     /// Filter events by change type (SET or DEL).
     ///
     /// # Example
-    /// ```ignore
-    /// events.of_change_type(MEventType::SET)
+    /// ```rust,no_run
+    /// use futures::StreamExt;
+    /// use myko_rs::event::MEventType;
+    /// use myko_rs::saga::{EventStream, SagaStreamExt};
+    ///
+    /// let events: EventStream = futures::stream::empty().boxed();
+    /// let _ = events.of_change_type(MEventType::SET);
     /// ```
     fn of_change_type(self, change_type: MEventType) -> OfChangeType<Self> {
         OfChangeType {
@@ -52,17 +61,15 @@ pub trait SagaStreamExt: Stream<Item = MEvent> + Sized {
     /// The first event is buffered and not emitted until the second event arrives.
     ///
     /// # Example
-    /// ```ignore
-    /// events
+    /// ```rust,no_run
+    /// use futures::StreamExt;
+    /// use myko_rs::saga::{EventStream, SagaStreamExt};
+    ///
+    /// let events: EventStream = futures::stream::empty().boxed();
+    /// let _ = events
     ///     .of_item_type("Scene")
     ///     .pairwise()
-    ///     .filter_map(|(prev, curr)| {
-    ///         if prev.item["status"] != curr.item["status"] {
-    ///             Some(StatusChanged { ... })
-    ///         } else {
-    ///             None
-    ///         }
-    ///     })
+    ///     .filter_map(|(_prev, _curr)| async move { None::<()> });
     /// ```
     fn pairwise(self) -> Pairwise<Self> {
         Pairwise {
@@ -77,10 +84,20 @@ pub trait SagaStreamExt: Stream<Item = MEvent> + Sized {
     /// Named `accumulate` to avoid conflict with `futures::StreamExt::scan`.
     ///
     /// # Example
-    /// ```ignore
-    /// events
-    ///     .accumulate(0, |count, _event| count + 1)
-    ///     .filter(|count| count % 10 == 0)
+    /// ```rust,no_run
+    /// use futures::StreamExt;
+    /// use myko_rs::saga::{EventStream, SagaStreamExt};
+    ///
+    /// let events: EventStream = futures::stream::empty().boxed();
+    /// let _ = events
+    ///     .accumulate(0, |count, _event| {
+    ///         *count += 1;
+    ///         *count
+    ///     })
+    ///     .filter(|count| {
+    ///         let count = *count;
+    ///         async move { count % 10 == 0 }
+    ///     });
     /// ```
     fn accumulate<S, F>(self, initial: S, f: F) -> Scan<Self, S, F>
     where

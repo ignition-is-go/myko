@@ -17,10 +17,16 @@
 //!
 //! Relationships are declared using attribute macros on `#[myko_item]` entities:
 //!
-//! ```rust,ignore
+//! ```text
 //! use myko_rs::prelude::*;
+//! use std::sync::Arc;
 //!
 //! // BelongsTo: Binding has FK to Scene
+//! #[myko_item]
+//! pub struct BindingNode {
+//!     pub name: String,
+//! }
+//!
 //! #[myko_item]
 //! pub struct Binding {
 //!     #[belongs_to(Scene)]
@@ -36,6 +42,16 @@
 //! }
 //!
 //! // EnsureFor: Create one BundleStatus per Session×Bundle combination
+//! #[myko_item]
+//! pub struct Session {
+//!     pub name: String,
+//! }
+//!
+//! #[myko_item]
+//! pub struct Bundle {
+//!     pub name: String,
+//! }
+//!
 //! #[myko_item]
 //! pub struct BundleStatus {
 //!     #[ensure_for(Session)]
@@ -198,7 +214,9 @@ pub fn iter_relations() -> impl Iterator<Item = &'static RelationRegistration> {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
+/// use myko_rs::prelude::*;
+///
 /// #[myko_item]
 /// pub struct Instance {
 ///     #[myko_client_id]
@@ -227,7 +245,9 @@ pub fn iter_client_id_registrations() -> impl Iterator<Item = &'static ClientIdR
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
+/// use myko_rs::prelude::*;
+///
 /// #[myko_item]
 /// pub struct Instance {
 ///     #[fallback_to_id]

@@ -20,18 +20,17 @@ pub type EntityEntriesCell = Cell<Vec<(Arc<str>, Arc<dyn AnyItem>)>, CellImmutab
 /// to all cell subscribers.
 ///
 /// # Example
-/// ```ignore
-/// let store = EntityStore::new();
-///
-/// // Insert an entity
-/// store.insert(id, item);
-///
-/// // Get snapshot
-/// let items = store.entries().get();
-///
-/// // Subscribe to changes
-/// store.subscribe_diffs(|diff| {
-///     // Handle insert/update/remove
-/// });
+/// ```text
+/// // EntityStore is `CellMap<Arc<str>, Arc<dyn AnyItem>>`.
+/// //
+/// // Typical flow:
+/// // 1) Get the store from StoreRegistry (by entity type).
+/// // 2) Upsert/remove entities as events are applied.
+/// // 3) Build reactive views from `entries()`, `select(...)`, and `len()`.
+/// //
+/// // let store = registry.get_or_create("Target");
+/// // store.set(id, item);      // on SET events
+/// // store.remove(id);         // on DEL events
+/// // let reactive = store.select(|item| ...).entries();
 /// ```
 pub type EntityStore = CellMap<Arc<str>, Arc<dyn AnyItem>>;

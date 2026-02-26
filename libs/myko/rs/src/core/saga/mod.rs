@@ -12,35 +12,16 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use myko_rs::saga::{Saga, SagaContext, EventStream, CommandStream};
-//! use myko_rs::saga::stream::SagaStreamExt;
+//! ```rust,no_run
+//! use futures::StreamExt;
+//! use myko_rs::event::MEventType;
+//! use myko_rs::saga::{EventStream, SagaStreamExt};
 //!
-//! #[myko_saga]
-//! pub struct StatusTransitionSaga;
-//!
-//! impl Saga for StatusTransitionSaga {
-//!     type State = ();
-//!
-//!     fn name() -> &'static str {
-//!         "StatusTransitionSaga"
-//!     }
-//!
-//!     fn build(events: EventStream, _ctx: Arc<SagaContext>) -> CommandStream {
-//!         Box::pin(events
-//!             .of_item_type("Scene")
-//!             .of_change_type(MEventType::SET)
-//!             .pairwise()
-//!             .filter_map(|(prev, curr)| async move {
-//!                 // Detect status changes
-//!                 if prev.item["status"] != curr.item["status"] {
-//!                     Some(NotifyStatusChange { ... }.into())
-//!                 } else {
-//!                     None
-//!                 }
-//!             }))
-//!     }
-//! }
+//! let events: EventStream = futures::stream::empty().boxed();
+//! let _pipeline = events
+//!     .of_item_type("Scene")
+//!     .of_change_type(MEventType::SET)
+//!     .pairwise();
 //! ```
 //!
 //! # Stream Operators

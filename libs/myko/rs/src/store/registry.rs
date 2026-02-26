@@ -14,12 +14,17 @@ use super::EntityStore;
 /// Thread-safe via DashMap. Automatically creates stores on first access.
 ///
 /// # Example
-/// ```ignore
+/// ```text
+/// // One registry per server/runtime:
 /// let registry = StoreRegistry::new();
 ///
-/// // Get or create store for entity type
+/// // Resolve stores by entity type:
 /// let targets = registry.get_or_create("Target");
-/// targets.insert(id, item);
+/// let scenes = registry.get_or_create("Scene");
+///
+/// // Introspection helpers:
+/// assert!(!registry.is_empty());
+/// let all_types = registry.entity_types();
 /// ```
 pub struct StoreRegistry {
     stores: DashMap<Arc<str>, Arc<EntityStore>>,

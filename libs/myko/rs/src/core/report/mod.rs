@@ -32,32 +32,3 @@ pub use traits::{
 
 // Re-export wire types for backwards compatibility
 pub use crate::wire::{ReportError, ReportResponse, WrappedReport, wrap_report};
-
-/// Convenience macro for creating report streams.
-///
-/// This macro wraps `Box::pin(async_stream::stream! { ... })` to reduce boilerplate
-/// in `ReportHandler::compute` implementations.
-///
-/// # Example
-///
-/// ```ignore
-/// impl ReportHandler for MyReport {
-///     type Output = MyOutput;
-///
-///     fn compute(ctx: ReportContext) -> Pin<Box<dyn Stream<Item = Self::Output> + Send>> {
-///         report_stream! {
-///             let data_stream = ctx.query(MyQuery::default());
-///             futures::pin_mut!(data_stream);
-///             while let Some(items) = data_stream.next().await {
-///                 yield MyOutput { count: items.len() };
-///             }
-///         }
-///     }
-/// }
-/// ```
-#[macro_export]
-macro_rules! report_stream {
-    ($($body:tt)*) => {
-        Box::pin(async_stream::stream! { $($body)* })
-    };
-}

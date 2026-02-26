@@ -17,13 +17,24 @@ use crate::common::with_transaction::WithTransaction;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust,no_run
+/// use serde::{Deserialize, Serialize};
+/// use myko_rs::report::ReportRequest;
+///
 /// // Report params (what user defines):
-/// #[myko_report(ServerStatsOutput)]
+/// #[derive(Clone, Debug, Serialize, Deserialize)]
+/// pub struct ServerStatsOutput {
+///     pub client_count: usize,
+/// }
+///
+/// #[derive(Clone, Debug, Serialize, Deserialize)]
 /// pub struct ServerStats {}
 ///
 /// // Create a request:
 /// let request = ReportRequest::new(ServerStats {});
+///
+/// // Reuse tx for correlation when needed:
+/// let _same_tx = ReportRequest::with_tx(ServerStats {}, request.tx.clone());
 ///
 /// // Serializes to: { "tx": "...", ...params }
 /// ```

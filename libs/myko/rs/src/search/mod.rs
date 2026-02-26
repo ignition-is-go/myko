@@ -6,8 +6,9 @@
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use myko_rs::prelude::*;
+//! use std::sync::Arc;
 //!
 //! #[myko_item]
 //! pub struct Target {

@@ -37,7 +37,7 @@
 //!
 //! Define an entity using the `#[myko_item]` attribute macro:
 //!
-//! ```rust,ignore
+//! ```text
 //! use myko_rs::prelude::*;
 //!
 //! #[myko_item]
