@@ -89,14 +89,6 @@ impl DeriveCtx {
             }
         }
     }
-
-    /// Generate the serde(crate = "...") fragment for embedding in partially attributes
-    pub fn serde_crate_partially_attr(&self) -> proc_macro2::TokenStream {
-        match &self.serde_crate_attr {
-            Some(crate_str) => quote!(attribute(serde(crate = #crate_str)),),
-            None => quote!(),
-        }
-    }
 }
 
 #[proc_macro_derive(PartialMatches)]

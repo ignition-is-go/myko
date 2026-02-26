@@ -824,19 +824,11 @@ impl WsHandler {
                     normalize_incoming_event(event, &session.client_id);
                 }
                 let applied = ctx.apply_event_batch(events);
-                if applied >= 64 {
-                    log::trace!(
-                        "Applied event batch from client {} size={}",
-                        session.client_id,
-                        applied
-                    );
-                } else {
-                    log::trace!(
-                        "Applied event batch from client {} size={}",
-                        session.client_id,
-                        applied
-                    );
-                }
+                log::trace!(
+                    "Applied event batch from client {} size={}",
+                    session.client_id,
+                    applied
+                );
             }
 
             MykoMessage::Command(wrapped) => {
