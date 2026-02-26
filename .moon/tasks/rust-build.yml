@@ -6,6 +6,8 @@ inheritedBy:
 
 tasks:
   build:
+    options:
+      cache: false
     command: 'cargo'
     args:
       - 'build'
