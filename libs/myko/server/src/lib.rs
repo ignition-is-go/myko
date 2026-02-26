@@ -251,34 +251,35 @@ impl CellServer {
                 (None, None, None)
             };
 
-        let (kafka_producer_owner, kafka_producer, kafka_consumer) = if config.postgres.is_none()
-            && config.kafka.is_some()
-        {
-            let kafka_config = config.kafka.as_ref().expect("checked is_some");
-            match CellKafkaProducer::new(kafka_config, host_id) {
-                Ok(producer) => {
-                    let handle = producer.handle();
+        let (kafka_producer_owner, kafka_producer, kafka_consumer) = if config.postgres.is_none() {
+            if let Some(kafka_config) = config.kafka.as_ref() {
+                match CellKafkaProducer::new(kafka_config, host_id) {
+                    Ok(producer) => {
+                        let handle = producer.handle();
 
-                    // Start consumer with handler registry and registry
-                    let consumer = match CellKafkaConsumer::start(
-                        kafka_config,
-                        host_id,
-                        handler_registry.clone(),
-                        registry.clone(),
-                    ) {
-                        Ok(c) => Some(c),
-                        Err(e) => {
-                            log::error!("Failed to start Kafka consumer: {}", e);
-                            None
-                        }
-                    };
+                        // Start consumer with handler registry and registry
+                        let consumer = match CellKafkaConsumer::start(
+                            kafka_config,
+                            host_id,
+                            handler_registry.clone(),
+                            registry.clone(),
+                        ) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                log::error!("Failed to start Kafka consumer: {}", e);
+                                None
+                            }
+                        };
 
-                    (Some(producer), Some(handle), consumer)
+                        (Some(producer), Some(handle), consumer)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create Kafka producer: {}", e);
+                        (None, None, None)
+                    }
                 }
-                Err(e) => {
-                    log::error!("Failed to create Kafka producer: {}", e);
-                    (None, None, None)
-                }
+            } else {
+                (None, None, None)
             }
         } else {
             if config.postgres.is_some() && config.kafka.is_some() {

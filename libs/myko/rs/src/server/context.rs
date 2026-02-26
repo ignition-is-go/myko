@@ -28,6 +28,11 @@ use crate::{
     wire::{EventOptions, MEvent, MEventType},
 };
 
+type AnyItemArc = Arc<dyn AnyItem>;
+type AnyItemWeakMap = WeakCellMap<Arc<str>, AnyItemArc>;
+type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
+type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
+
 /// Context providing capabilities to server modules.
 ///
 /// This is the cell-based equivalent of `MykoServerCtx`, providing:
@@ -55,15 +60,16 @@ pub struct CellServerCtx {
     /// Optional event sink used to fan out applied events to saga runtimes.
     event_sink: Option<flume::Sender<MEvent>>,
     /// Top-level cache for reactive query maps.
-    query_cache: Arc<DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>>>,
+    query_cache: Arc<DashMap<String, AnyItemWeakMap>>,
     /// Top-level cache for reactive view maps.
-    view_cache: Arc<DashMap<String, WeakCellMap<Arc<str>, Arc<dyn AnyItem>>>>,
+    view_cache: Arc<DashMap<String, AnyItemWeakMap>>,
     /// Top-level cache for reactive report cells (typed weak cells behind Any).
     report_cache: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
 }
 
 impl CellServerCtx {
     /// Create a new server context.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         host_id: Uuid,
         registry: Arc<StoreRegistry>,
@@ -543,8 +549,7 @@ impl CellServerCtx {
             dels.len()
         );
 
-        let mut inserts_by_type: HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>> =
-            HashMap::new();
+        let mut inserts_by_type: AnyItemEntriesByType = HashMap::new();
         let mut removes_by_type: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
 
         for op in &sets {

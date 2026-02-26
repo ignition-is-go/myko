@@ -463,6 +463,7 @@ impl WsHandler {
     }
 
     /// Handle a parsed MykoMessage.
+    #[allow(clippy::too_many_arguments)]
     fn handle_message<W: WsWriter>(
         session: &mut ClientSession<W>,
         ctx: Arc<CellServerCtx>,

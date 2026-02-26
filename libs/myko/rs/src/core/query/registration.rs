@@ -43,6 +43,12 @@ pub type QueryCellFactory = fn(
     Option<Arc<CellServerCtx>>,
 ) -> Result<FilteredCellMap, String>;
 
+type AnyItemArc = Arc<dyn crate::core::item::AnyItem>;
+type AnyItemMap = hypha::CellMap<Arc<str>, AnyItemArc>;
+type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
+type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
+type BucketDiffs = Vec<BucketDiff>;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // QueryRegistration - inventory-based registration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,16 +152,13 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
 }
 
 struct BelongsToSourceIndex {
-    buckets: DashMap<Arc<str>, Arc<hypha::CellMap<Arc<str>, Arc<dyn crate::core::item::AnyItem>>>>,
-    _driver: Arc<hypha::CellMap<Arc<str>, Arc<dyn crate::core::item::AnyItem>>>,
+    buckets: DashMap<Arc<str>, Arc<AnyItemMap>>,
+    _driver: Arc<AnyItemMap>,
 }
 
 impl BelongsToSourceIndex {
     fn new(store: Arc<crate::store::EntityStore>, extract_fk: FkExtractor) -> Arc<Self> {
-        let driver = Arc::new(hypha::CellMap::<
-            Arc<str>,
-            Arc<dyn crate::core::item::AnyItem>,
-        >::new());
+        let driver = Arc::new(AnyItemMap::new());
         let index = Arc::new(Self {
             buckets: DashMap::new(),
             _driver: driver.clone(),
@@ -169,32 +172,17 @@ impl BelongsToSourceIndex {
         index
     }
 
-    fn bucket_for(
-        &self,
-        foreign_id: Arc<str>,
-    ) -> Arc<hypha::CellMap<Arc<str>, Arc<dyn crate::core::item::AnyItem>>> {
+    fn bucket_for(&self, foreign_id: Arc<str>) -> Arc<AnyItemMap> {
         self.buckets
             .entry(foreign_id)
-            .or_insert_with(|| {
-                Arc::new(hypha::CellMap::<
-                    Arc<str>,
-                    Arc<dyn crate::core::item::AnyItem>,
-                >::new())
-            })
+            .or_insert_with(|| Arc::new(AnyItemMap::new()))
             .clone()
     }
 
-    fn apply_diff(
-        &self,
-        diff: &MapDiff<Arc<str>, Arc<dyn crate::core::item::AnyItem>>,
-        extract_fk: FkExtractor,
-    ) {
+    fn apply_diff(&self, diff: &BucketDiff, extract_fk: FkExtractor) {
         match diff {
             MapDiff::Initial { entries } => {
-                let mut grouped: HashMap<
-                    Arc<str>,
-                    Vec<(Arc<str>, Arc<dyn crate::core::item::AnyItem>)>,
-                > = HashMap::new();
+                let mut grouped: HashMap<Arc<str>, BucketEntries> = HashMap::new();
                 for (id, item) in entries {
                     if let Some(fk) = extract_fk(item.as_any()) {
                         grouped
@@ -267,10 +255,7 @@ impl BelongsToSourceIndex {
                 }
             }
             MapDiff::Batch { changes } => {
-                let mut by_fk: HashMap<
-                    Arc<str>,
-                    Vec<MapDiff<Arc<str>, Arc<dyn crate::core::item::AnyItem>>>,
-                > = HashMap::new();
+                let mut by_fk: HashMap<Arc<str>, BucketDiffs> = HashMap::new();
 
                 for change in changes {
                     match change {

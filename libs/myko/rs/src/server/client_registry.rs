@@ -48,6 +48,11 @@ impl ClientRegistry {
     pub fn len(&self) -> usize {
         self.writers.len()
     }
+
+    /// Returns true when there are no connected clients.
+    pub fn is_empty(&self) -> bool {
+        self.writers.is_empty()
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

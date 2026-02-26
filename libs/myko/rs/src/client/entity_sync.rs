@@ -26,9 +26,11 @@ impl Default for EntityStoreSyncOptions {
     }
 }
 
+type ItemComparator<T> = Arc<dyn Fn(&T, &T) -> bool + Send + Sync>;
+
 pub struct EntityStoreSyncConfig<T, QLocal, QRemote>
 where
-    T: Eventable + WithId + Clone + Send + Sync + 'static,
+    T: Eventable + WithId + Clone,
     QLocal: QueryFactory + QueryHandler + QueryParams<Item = T> + Clone + Send + Sync + 'static,
     QRemote: QueryParams<Item = T> + Clone + Send + Sync + 'static,
 {
@@ -37,7 +39,7 @@ where
     pub local_query: QLocal,
     pub remote_query: QRemote,
     pub options: EntityStoreSyncOptions,
-    pub items_equal: Arc<dyn Fn(&T, &T) -> bool + Send + Sync>,
+    pub items_equal: ItemComparator<T>,
 }
 
 /// Generic reconciler that keeps a local authoritative entity set in sync with
