@@ -1,0 +1,15 @@
+$schema: 'https://moonrepo.dev/schemas/tasks.json'
+
+inheritedBy:
+  tag: 'rust-dev'
+
+taskOptions:
+  cache: false
+
+tasks:
+  dev:
+    command: 'cargo'
+    args:
+      - 'watch'
+      - '-x'
+      - 'run --target-dir ../../target/run'

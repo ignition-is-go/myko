@@ -1,38 +1,14 @@
 $schema: 'https://moonrepo.dev/schemas/project.json'
-
+language: 'rust'
+stack: 'backend'
+layer: 'library'
+tags:
+  - 'rust-typegen'
 tasks:
   gen:
     deps:
       - '~:clean'
       - 'root:install'
-    command: 'cargo'
-    args:
-      - 'run'
-      - '--bin'
-      - 'typegen'
-    options:
-      cache: false
-
   gen-watch:
     deps:
       - 'root:install'
-    command: 'cargo'
-    args:
-      - 'watch'
-      - '-x'
-      - 'run --bin typegen'
-    options:
-      cache: false
-      persistent: true
-      runInCI: false
-      outputStyle: 'stream'
-
-  clean:
-    command: 'bash'
-    args:
-      - '-lc'
-      - |
-        rm -rf bindings
-    options:
-      cache: false
-      outputStyle: 'stream'

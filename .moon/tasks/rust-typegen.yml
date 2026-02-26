@@ -1,0 +1,32 @@
+$schema: 'https://moonrepo.dev/schemas/tasks.json'
+
+inheritedBy:
+  tag: 'rust-typegen'
+
+taskOptions:
+  cache: false
+
+tasks:
+  gen:
+    command: 'cargo'
+    args:
+      - 'run'
+      - '--bin'
+      - 'typegen'
+
+  gen-watch:
+    command: 'cargo'
+    args:
+      - 'watch'
+      - '-x'
+      - 'run --bin typegen'
+    options:
+      persistent: true
+      runInCI: false
+
+  clean:
+    command: 'bash'
+    args:
+      - '-lc'
+      - |
+        rm -rf bindings

@@ -1,0 +1,14 @@
+$schema: 'https://moonrepo.dev/schemas/tasks.json'
+
+inheritedBy:
+  language: 'rust'
+  layer: 'application'
+
+tasks:
+  build:
+    command: 'cargo'
+    args:
+      - 'build'
+      - '--release'
+      - '--target-dir'
+      - 'target'
