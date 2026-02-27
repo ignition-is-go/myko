@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use ::postgres::{Client, NoTls};
+use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use log::{error, info, trace, warn};
 use myko_rs::{
     event::{MEvent, MEventType},
@@ -22,6 +22,11 @@ use myko_rs::{
 };
 use postgres::fallible_iterator::FallibleIterator;
 use uuid::Uuid;
+
+const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
+const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
+const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
+const PG_KEEPALIVE_RETRIES: u32 = 3;
 
 /// PostgreSQL configuration.
 #[derive(Debug, Clone)]
@@ -84,8 +89,7 @@ impl PostgresHistoryStore {
 
     /// Read events with `id > after_id`, ascending.
     pub fn load_after_id(&self, after_id: i64, limit: i64) -> Result<Vec<PersistedEvent>, String> {
-        let mut client = Client::connect(&self.config.url, NoTls)
-            .map_err(|e| format!("postgres connect failed: {e}"))?;
+        let mut client = connect_pg_client(&self.config, "history(load_after_id)")?;
         let sql = format!(
             "SELECT id, created_at::text, event::text FROM {} WHERE id > $1 ORDER BY id ASC LIMIT $2",
             qi(&self.config.table)
@@ -105,8 +109,7 @@ impl PostgresHistoryStore {
         to_iso: &str,
         limit: i64,
     ) -> Result<Vec<PersistedEvent>, String> {
-        let mut client = Client::connect(&self.config.url, NoTls)
-            .map_err(|e| format!("postgres connect failed: {e}"))?;
+        let mut client = connect_pg_client(&self.config, "history(load_between)")?;
         let sql = format!(
             "SELECT id, created_at::text, event::text FROM {} WHERE created_at >= $1::timestamptz AND created_at <= $2::timestamptz ORDER BY id ASC LIMIT $3",
             qi(&self.config.table)
@@ -222,7 +225,7 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<MEvent>) {
 }
 
 fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
-    match Client::connect(&config.url, NoTls) {
+    match connect_pg_client(config, "producer") {
         Ok(mut c) => match ensure_schema(&mut c, config) {
             Ok(()) => Some(c),
             Err(err) => {
@@ -234,7 +237,7 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
             }
         },
         Err(err) => {
-            log_pg_connect_error("producer", &config.url, &err);
+            error!("{err}");
             None
         }
     }
@@ -519,7 +522,7 @@ fn run_consumer_loop(
 fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client, String> {
     let mut backoff_ms = 250u64;
     loop {
-        match Client::connect(&config.url, NoTls) {
+        match connect_pg_client(config, role) {
             Ok(mut client) => {
                 if let Err(err) = ensure_schema(&mut client, config) {
                     warn!(
@@ -530,7 +533,7 @@ fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client
                 return Ok(client);
             }
             Err(err) => {
-                warn!("{}", format_pg_connect_error(role, &config.url, &err));
+                warn!("{err}");
                 std::thread::sleep(Duration::from_millis(backoff_ms));
                 backoff_ms = (backoff_ms * 2).min(5_000);
             }
@@ -716,6 +719,26 @@ fn format_pg_error(role: &str, url: Option<&str>, err: &postgres::Error) -> Stri
     msg
 }
 
-fn log_pg_connect_error(role: &str, url: &str, err: &postgres::Error) {
-    error!("{}", format_pg_connect_error(role, url, err));
+fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, String> {
+    let mut client_config = parse_pg_client_config(config, role)?;
+
+    // Avoid default 2h keepalive-idle so long-lived idle sockets are detected quickly.
+    client_config.connect_timeout(Duration::from_secs(PG_CONNECT_TIMEOUT_SECS));
+    client_config.keepalives(true);
+    client_config.keepalives_idle(Duration::from_secs(PG_KEEPALIVE_IDLE_SECS));
+    client_config.keepalives_interval(Duration::from_secs(PG_KEEPALIVE_INTERVAL_SECS));
+    client_config.keepalives_retries(PG_KEEPALIVE_RETRIES);
+
+    client_config
+        .connect(NoTls)
+        .map_err(|err| format_pg_connect_error(role, &config.url, &err))
+}
+
+fn parse_pg_client_config(config: &PostgresConfig, role: &str) -> Result<PgClientConfig, String> {
+    config.url.parse::<PgClientConfig>().map_err(|err| {
+        format!(
+            "postgres config parse failed ({role}, dsn={}): {err}",
+            redact_pg_url(&config.url)
+        )
+    })
 }
