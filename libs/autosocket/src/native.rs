@@ -17,6 +17,61 @@ use crate::{SocketConnectionStatus, SocketTransport, WsFrame};
 
 const OUTGOING_QUEUE_CAPACITY: usize = 1024;
 
+type SharedSocket = Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>;
+
+struct ConnectionSession {
+    cancel: Arc<AtomicBool>,
+    read_handle: JoinHandle<()>,
+    write_handle: JoinHandle<()>,
+}
+
+impl ConnectionSession {
+    fn start(
+        socket: SharedSocket,
+        incoming_tx: flume::Sender<WsFrame>,
+        outgoing_rx: flume::Receiver<WsFrame>,
+    ) -> Self {
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let read_cancel = Arc::clone(&cancel);
+        let read_socket = Arc::clone(&socket);
+        let read_handle = thread::spawn(move || {
+            AutoReconnectSocket::run_read_loop(read_socket, incoming_tx, read_cancel);
+        });
+
+        let write_cancel = Arc::clone(&cancel);
+        let write_socket = Arc::clone(&socket);
+        let write_handle = thread::spawn(move || {
+            AutoReconnectSocket::run_write_loop(write_socket, outgoing_rx, write_cancel);
+        });
+
+        Self {
+            cancel,
+            read_handle,
+            write_handle,
+        }
+    }
+
+    fn wait_for_disconnect_reason(&self, worker_cancel: &Arc<AtomicBool>) -> Option<&'static str> {
+        while !worker_cancel.load(Ordering::SeqCst) {
+            if self.read_handle.is_finished() {
+                return Some("read loop exited");
+            }
+            if self.write_handle.is_finished() {
+                return Some("write loop exited");
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
+    fn shutdown(self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        let _ = self.read_handle.join();
+        let _ = self.write_handle.join();
+    }
+}
+
 pub struct AutoReconnectSocket {
     /// What the caller wants this socket to be doing.
     intended_status: Cell<SocketConnectionStatus, CellMutable>,
@@ -28,10 +83,8 @@ pub struct AutoReconnectSocket {
     /// Shared incoming channel for sync+async consumers.
     incoming_tx: flume::Sender<WsFrame>,
     incoming_rx: flume::Receiver<WsFrame>,
-    /// Cancellation flag for the active worker.
-    teardown: Arc<Mutex<Option<Arc<AtomicBool>>>>,
-    /// Handle for the active worker thread.
-    worker_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Cancellation token for the active worker loop.
+    worker_cancel: Mutex<Arc<AtomicBool>>,
     /// Whether to automatically reconnect after failures/disconnects
     auto_reconnect: bool,
     /// Max websocket message size in bytes.
@@ -120,8 +173,7 @@ impl AutoReconnectSocket {
             outgoing_rx,
             incoming_tx,
             incoming_rx,
-            teardown: Arc::new(Mutex::new(None)),
-            worker_handle: Arc::new(Mutex::new(None)),
+            worker_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
             auto_reconnect,
             max_message_size_bytes,
             max_frame_size_bytes,
@@ -182,23 +234,17 @@ impl AutoReconnectSocket {
     fn build(&self, addr: String) {
         info!("Building Connection to {addr}");
 
-        let teardown = Arc::new(AtomicBool::new(false));
-        {
-            let mut guard = self.teardown.lock().unwrap();
-            *guard = Some(teardown.clone());
-        }
-
         let outgoing_rx = self.outgoing_rx.clone();
         let incoming_tx = self.incoming_tx.clone();
         let actual_status = self.actual_status.clone();
-        let teardown_clone = Arc::clone(&teardown);
+        let worker_cancel = self.worker_cancel.lock().unwrap().clone();
         let auto_reconnect = self.auto_reconnect;
         let max_message_size_bytes = self.max_message_size_bytes;
         let max_frame_size_bytes = self.max_frame_size_bytes;
 
-        let handle = thread::spawn(move || {
+        thread::spawn(move || {
             let mut attempt: u64 = 0;
-            while !teardown_clone.load(Ordering::SeqCst) {
+            while !worker_cancel.load(Ordering::SeqCst) {
                 attempt = attempt.saturating_add(1);
                 Self::set_status(
                     &actual_status,
@@ -261,43 +307,20 @@ impl AutoReconnectSocket {
                     SocketConnectionStatus::Connected(addr.clone()),
                 );
 
-                let read_cancel = Arc::clone(&teardown_clone);
-                let write_cancel = Arc::clone(&teardown_clone);
-                let read_socket = Arc::clone(&socket);
-                let write_socket = Arc::clone(&socket);
-                let read_incoming_tx = incoming_tx.clone();
-                let write_outgoing_rx = outgoing_rx.clone();
-
-                let read_handle = thread::spawn(move || {
-                    Self::run_read_loop(read_socket, read_incoming_tx, read_cancel);
-                });
-                let write_handle = thread::spawn(move || {
-                    Self::run_write_loop(write_socket, write_outgoing_rx, write_cancel);
-                });
-
-                let mut disconnect_reason: Option<&'static str> = None;
-                while !teardown_clone.load(Ordering::SeqCst) {
-                    if read_handle.is_finished() {
-                        disconnect_reason = Some("read loop exited");
-                        break;
-                    }
-                    if write_handle.is_finished() {
-                        disconnect_reason = Some("write loop exited");
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-
-                teardown_clone.store(true, Ordering::SeqCst);
-                let _ = read_handle.join();
-                let _ = write_handle.join();
+                let session = ConnectionSession::start(
+                    Arc::clone(&socket),
+                    incoming_tx.clone(),
+                    outgoing_rx.clone(),
+                );
+                let disconnect_reason = session.wait_for_disconnect_reason(&worker_cancel);
+                session.shutdown();
 
                 if let Some(reason) = disconnect_reason {
                     warn!(
                         "WebSocket disconnected from {}: {}. auto_reconnect={}",
                         addr, reason, auto_reconnect
                     );
-                } else if teardown_clone.load(Ordering::SeqCst) {
+                } else if worker_cancel.load(Ordering::SeqCst) {
                     info!("WebSocket worker for {} stopped by teardown", addr);
                 }
 
@@ -305,13 +328,13 @@ impl AutoReconnectSocket {
                 if !auto_reconnect {
                     break;
                 }
+                if worker_cancel.load(Ordering::SeqCst) {
+                    break;
+                }
                 warn!("Retrying WebSocket connection to {} in 1s", addr);
                 thread::sleep(Duration::from_secs(1));
             }
         });
-
-        let mut guard = self.worker_handle.lock().unwrap();
-        *guard = Some(handle);
     }
 
     fn parse_websocket_url(addr: &str) -> Result<String, ()> {
@@ -449,19 +472,9 @@ impl AutoReconnectSocket {
     }
 
     fn stop_worker(&self) {
-        if let Ok(guard) = self.teardown.lock()
-            && let Some(cancel) = guard.as_ref()
-        {
-            cancel.store(true, Ordering::SeqCst);
-        }
-        if let Ok(mut guard) = self.worker_handle.lock()
-            && let Some(handle) = guard.take()
-        {
-            let _ = handle.join();
-        }
-        if let Ok(mut guard) = self.teardown.lock() {
-            *guard = None;
-        }
+        let mut guard = self.worker_cancel.lock().unwrap();
+        guard.store(true, Ordering::SeqCst);
+        *guard = Arc::new(AtomicBool::new(false));
     }
 
     pub fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
