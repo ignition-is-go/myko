@@ -298,17 +298,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 self,
                 ctx: #krate::prelude::CommandContext,
             ) -> Result<#delete_many_result_ident, #krate::prelude::CommandError> {
-                let mut deleted_count = 0;
-
-
                 let q = #get_by_ids_query_ident { ids: self.ids.clone() };
-
                 let entities = ctx.exec_query(q)?;
-
-                for entity in entities {
-                    ctx.emit_del(&entity)?;
-                    deleted_count += 1;
-                }
+                let deleted_count = entities.len();
+                ctx.emit_del_batch(&entities)?;
 
                 Ok(#delete_many_result_ident { deleted_count })
             }
