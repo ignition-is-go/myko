@@ -10092,6 +10092,7 @@ name = "rship-entities-objects"
 version = "3.1.0-canary.23"
 dependencies = [
  "hypha",
+ "myko-rs",
  "once_cell",
  "rship-entities-foundation",
  "rship-entities-macros",
@@ -10233,10 +10234,14 @@ dependencies = [
 name = "rship-entities-string"
 version = "3.1.0-canary.23"
 dependencies = [
+ "hypha",
+ "myko-rs",
+ "once_cell",
  "regex",
  "rship-entities-foundation",
  "rship-entities-macros",
  "rship-entities-nodes",
+ "serde_json",
 ]
 
 [[package]]
