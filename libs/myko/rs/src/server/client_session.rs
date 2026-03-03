@@ -324,6 +324,16 @@ impl<W: WsWriter> ClientSession<W> {
             }
         };
 
+        let Some(response) = response else {
+            log::trace!(
+                "ClientSession {} ignored no-op window update tx={} (active_subscriptions={})",
+                self.client_id,
+                tx,
+                self.subscriptions.len()
+            );
+            return;
+        };
+
         match sub.kind {
             QuerySubscriptionKind::Query => self.writer.send(MykoMessage::QueryResponse(response)),
             QuerySubscriptionKind::View => self.writer.send(MykoMessage::ViewResponse(response)),
@@ -448,10 +458,24 @@ impl QuerySubscriptionState {
         self.compute_windowed_response(tx, &changed_ids, previous_total_count, false)
     }
 
-    fn apply_window_update(&mut self, window: Option<QueryWindow>, tx: Arc<str>) -> QueryResponse {
+    fn apply_window_update(
+        &mut self,
+        window: Option<QueryWindow>,
+        tx: Arc<str>,
+    ) -> Option<QueryResponse> {
+        let same_window = match (&self.window, &window) {
+            (None, None) => true,
+            (Some(current), Some(next)) => {
+                current.offset == next.offset && current.limit == next.limit
+            }
+            _ => false,
+        };
+        if same_window {
+            return None;
+        }
+
         self.window = window;
-        self.compute_windowed_response(tx, &HashSet::new(), self.all_items.len(), true)
-            .expect("window update should always produce a response")
+        self.compute_windowed_response(tx, &HashSet::new(), self.all_items.len(), false)
     }
 
     fn compute_windowed_response(
