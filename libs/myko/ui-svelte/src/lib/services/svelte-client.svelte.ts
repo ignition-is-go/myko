@@ -28,6 +28,40 @@ import {
 } from '@myko/ts';
 import { SvelteMap } from 'svelte/reactivity';
 import { Subject, type Observable, type Subscription } from 'rxjs';
+import { untrack } from 'svelte';
+
+function stableStringify(value: unknown): string | null {
+	const seen = new WeakSet<object>();
+	try {
+		return JSON.stringify(value, (_key, raw) => {
+			if (typeof raw === 'bigint') {
+				return `__bigint:${raw.toString()}`;
+			}
+			if (!raw || typeof raw !== 'object') {
+				return raw;
+			}
+			if (seen.has(raw)) {
+				return '__circular__';
+			}
+			seen.add(raw);
+			if (Array.isArray(raw)) {
+				return raw;
+			}
+			const sorted: Record<string, unknown> = {};
+			for (const key of Object.keys(raw as Record<string, unknown>).sort()) {
+				sorted[key] = (raw as Record<string, unknown>)[key];
+			}
+			return sorted;
+		});
+	} catch {
+		return null;
+	}
+}
+
+function requestKey(kind: 'query' | 'view' | 'report', request: unknown): string | null {
+	const serialized = stableStringify(request);
+	return serialized ? `${kind}:${serialized}` : null;
+}
 
 /** Command sent event (before response) */
 export type CommandSent = {
@@ -221,14 +255,25 @@ export class SvelteMykoClient {
 		type Result = ReportResult<R>;
 		let value = $state<Result | undefined>(undefined);
 		let error = $state<Error | undefined>(undefined);
+		const reportKey = $derived.by(() => {
+			const report = factory();
+			if (!report) return null;
+			return requestKey('report', report);
+		});
 
 		$effect(() => {
-			const report = factory();
+			const key = reportKey;
+			const report = untrack(factory);
 
 			// If factory returns null/undefined, don't subscribe
 			if (!report) {
 				value = undefined;
 				error = undefined;
+				return;
+			}
+			if (!key) {
+				value = undefined;
+				error = new Error('Failed to compute stable report key');
 				return;
 			}
 
@@ -279,7 +324,7 @@ export class SvelteMykoClient {
 	 *   )
 	 * </script>
 	 *
-	 * {#each [...nodes.items.values()] as node}
+	 * {#each nodes.items as [id, node] (id)}
 	 *   <div>{node.name}</div>
 	 * {/each}
 	 * ```
@@ -289,15 +334,27 @@ export class SvelteMykoClient {
 		const items = new SvelteMap<string, Item>();
 		let resolved = $state(false);
 		let error = $state<Error | undefined>(undefined);
+		const queryKey = $derived.by(() => {
+			const query = factory();
+			if (!query) return null;
+			return requestKey('query', query);
+		});
 
 		$effect(() => {
-			const query = factory();
+			const key = queryKey;
+			const query = untrack(factory);
 
 			// If factory returns null/undefined, clear and don't subscribe
 			if (!query) {
 				items.clear();
 				resolved = false;
 				error = undefined;
+				return;
+			}
+			if (!key) {
+				items.clear();
+				resolved = false;
+				error = new Error('Failed to compute stable query key');
 				return;
 			}
 
@@ -347,13 +404,25 @@ export class SvelteMykoClient {
 		const items = new SvelteMap<string, Item>();
 		let resolved = $state(false);
 		let error = $state<Error | undefined>(undefined);
+		const viewKey = $derived.by(() => {
+			const view = factory();
+			if (!view) return null;
+			return requestKey('view', view);
+		});
 
 		$effect(() => {
-			const view = factory();
+			const key = viewKey;
+			const view = untrack(factory);
 			if (!view) {
 				items.clear();
 				resolved = false;
 				error = undefined;
+				return;
+			}
+			if (!key) {
+				items.clear();
+				resolved = false;
+				error = new Error('Failed to compute stable view key');
 				return;
 			}
 
@@ -412,10 +481,19 @@ export class SvelteMykoClient {
 		let resolved = $state(false);
 		let error = $state<Error | undefined>(undefined);
 		let setWindowFn: (window: QueryWindow | null) => void = () => {};
+		const queryWindowKey = $derived.by(() => {
+			const query = factory();
+			if (!query) return null;
+			const q = requestKey('query', query);
+			const o = stableStringify(optionsFactory?.());
+			if (!q) return null;
+			return `${q}|options:${o ?? '__none__'}`;
+		});
 
 		$effect(() => {
-			const query = factory();
-			const options = optionsFactory?.();
+			const key = queryWindowKey;
+			const query = untrack(factory);
+			const options = untrack(() => optionsFactory?.());
 
 			if (!query) {
 				items = [] as unknown as Result;
@@ -423,6 +501,15 @@ export class SvelteMykoClient {
 				window = null;
 				resolved = false;
 				error = undefined;
+				setWindowFn = () => {};
+				return;
+			}
+			if (!key) {
+				items = [] as unknown as Result;
+				totalCount = null;
+				window = null;
+				resolved = false;
+				error = new Error('Failed to compute stable windowed query key');
 				setWindowFn = () => {};
 				return;
 			}
@@ -501,10 +588,19 @@ export class SvelteMykoClient {
 		let resolved = $state(false);
 		let error = $state<Error | undefined>(undefined);
 		let setWindowFn: (window: QueryWindow | null) => void = () => {};
+		const viewWindowKey = $derived.by(() => {
+			const view = factory();
+			if (!view) return null;
+			const v = requestKey('view', view);
+			const o = stableStringify(optionsFactory?.());
+			if (!v) return null;
+			return `${v}|options:${o ?? '__none__'}`;
+		});
 
 		$effect(() => {
-			const view = factory();
-			const options = optionsFactory?.();
+			const key = viewWindowKey;
+			const view = untrack(factory);
+			const options = untrack(() => optionsFactory?.());
 
 			if (!view) {
 				items = [] as unknown as Result;
@@ -512,6 +608,15 @@ export class SvelteMykoClient {
 				window = null;
 				resolved = false;
 				error = undefined;
+				setWindowFn = () => {};
+				return;
+			}
+			if (!key) {
+				items = [] as unknown as Result;
+				totalCount = null;
+				window = null;
+				resolved = false;
+				error = new Error('Failed to compute stable windowed view key');
 				setWindowFn = () => {};
 				return;
 			}

@@ -48,6 +48,26 @@ const packr = new Packr({ encodeUndefinedAsNil: true })
 const unpackr = new Unpackr({})
 const EVENT_BATCH = 'ws:m:event-batch'
 
+function stableStringify(value: unknown): string | null {
+  const seen = new WeakSet<object>()
+  try {
+    return JSON.stringify(value, (_key, raw) => {
+      if (typeof raw === 'bigint') return `__bigint:${raw.toString()}`
+      if (!raw || typeof raw !== 'object') return raw
+      if (seen.has(raw)) return '__circular__'
+      seen.add(raw)
+      if (Array.isArray(raw)) return raw
+      const sorted: Record<string, unknown> = {}
+      for (const key of Object.keys(raw as Record<string, unknown>).sort()) {
+        sorted[key] = (raw as Record<string, unknown>)[key]
+      }
+      return sorted
+    })
+  } catch {
+    return null
+  }
+}
+
 /** Union type for error event names */
 export type MykoErrorEvent =
   | typeof MykoEvent.QueryError
@@ -153,6 +173,29 @@ export type QueryWindowInfo = {
   window: QueryWindow | null
 }
 
+function queryCacheKey(
+  query: Pick<Query<unknown>, 'queryId' | 'query'>,
+  options?: QueryWatchOptions,
+): string {
+  const queryPayload = stableStringify(query.query) ?? '__unstable_query__'
+  const windowPayload = stableStringify(options?.window ?? null) ?? '__unstable_window__'
+  return `query:${query.queryId}:${queryPayload}:${windowPayload}`
+}
+
+function viewCacheKey(
+  view: Pick<View<unknown>, 'viewId' | 'view'>,
+  options?: QueryWatchOptions,
+): string {
+  const viewPayload = stableStringify(view.view) ?? '__unstable_view__'
+  const windowPayload = stableStringify(options?.window ?? null) ?? '__unstable_window__'
+  return `view:${view.viewId}:${viewPayload}:${windowPayload}`
+}
+
+function reportCacheKey(report: Pick<Report<unknown>, 'reportId' | 'report'>): string {
+  const payload = stableStringify(report.report) ?? '__unstable_report__'
+  return `report:${report.reportId}:${payload}`
+}
+
 // Message type aliases
 type QueryResponseMessage = Extract<
   MykoMessage,
@@ -227,6 +270,8 @@ export class MykoClient {
   private activeReportNames = new Map<string, string>()
   private sharedQueries = new Map<string, Observable<unknown>>()
   private sharedViews = new Map<string, Observable<unknown>>()
+  private sharedQueryDiffs = new Map<string, Observable<unknown>>()
+  private sharedViewDiffs = new Map<string, Observable<unknown>>()
   private sharedReports = new Map<string, Observable<unknown>>()
   private subscriptionStartMs = new Map<string, number>()
   private firstResponseLogged = new Set<string>()
@@ -697,7 +742,7 @@ export class MykoClient {
     query: Q,
     options?: QueryWatchOptions,
   ): Observable<QueryResult<Q>> {
-    const cacheKey = `query:${query.queryId}:${JSON.stringify(query.query)}:${JSON.stringify(options?.window ?? null)}`
+    const cacheKey = queryCacheKey(query, options)
 
     const existing = this.sharedQueries.get(cacheKey)
     if (existing) return existing as Observable<QueryResult<Q>>
@@ -734,7 +779,7 @@ export class MykoClient {
     view: V,
     options?: QueryWatchOptions,
   ): Observable<ViewResult<V>> {
-    const cacheKey = `view:${view.viewId}:${JSON.stringify(view.view)}:${JSON.stringify(options?.window ?? null)}`
+    const cacheKey = viewCacheKey(view, options)
 
     const existing = this.sharedViews.get(cacheKey)
     if (existing) return existing as Observable<ViewResult<V>>
@@ -768,17 +813,31 @@ export class MykoClient {
     query: Q,
     options?: QueryWatchOptions,
   ): Observable<QueryDiff<QueryItem<Q>>> {
-    const [, responses$] = this.startQuery(query, options)
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.sharedQueryDiffs.get(cacheKey)
+    if (existing) return existing as Observable<QueryDiff<QueryItem<Q>>>
 
-    return responses$.pipe(
+    const [, responses$] = this.startQuery(query, options)
+    const shared$ = responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
-        deletes: r.data.deletes,
+        deletes: r.data.deletes.slice(),
         upserts: r.data.upserts.map(
           (w: WrappedItem<JsonValue>) => w.item,
         ) as QueryItem<Q>[],
       })),
+      finalize(() => {
+        this.sharedQueryDiffs.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+      map((diff) => ({
+        sequence: diff.sequence,
+        deletes: diff.deletes.slice(),
+        upserts: diff.upserts.slice(),
+      })),
     )
+    this.sharedQueryDiffs.set(cacheKey, shared$)
+    return shared$
   }
 
   /** Watch a view and receive raw diff events */
@@ -786,17 +845,31 @@ export class MykoClient {
     view: V,
     options?: QueryWatchOptions,
   ): Observable<QueryDiff<ViewItem<V>>> {
-    const [, responses$] = this.startView(view, options)
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.sharedViewDiffs.get(cacheKey)
+    if (existing) return existing as Observable<QueryDiff<ViewItem<V>>>
 
-    return responses$.pipe(
+    const [, responses$] = this.startView(view, options)
+    const shared$ = responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
-        deletes: r.data.deletes,
+        deletes: r.data.deletes.slice(),
         upserts: r.data.upserts.map(
           (w: WrappedItem<JsonValue>) => w.item,
         ) as ViewItem<V>[],
       })),
+      finalize(() => {
+        this.sharedViewDiffs.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+      map((diff) => ({
+        sequence: diff.sequence,
+        deletes: diff.deletes.slice(),
+        upserts: diff.upserts.slice(),
+      })),
     )
+    this.sharedViewDiffs.set(cacheKey, shared$)
+    return shared$
   }
 
   /**
@@ -1031,7 +1104,7 @@ export class MykoClient {
   watchReport<R extends Report<unknown>>(
     report: R,
   ): Observable<ReportResult<R>> {
-    const cacheKey = `report:${report.reportId}:${JSON.stringify(report.report)}`
+    const cacheKey = reportCacheKey(report)
 
     const existing = this.sharedReports.get(cacheKey)
     if (existing) return existing as Observable<ReportResult<R>>

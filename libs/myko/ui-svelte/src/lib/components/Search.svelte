@@ -79,7 +79,7 @@
 		{@render empty()}
 	{/if}
 {:else}
-	{#each [...itemsResult.items.values()] as item (item.id)}
+	{#each itemsResult.items as [id, item] (id)}
 		{@render children(item)}
 	{/each}
 {/if}
