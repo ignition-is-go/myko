@@ -99,7 +99,10 @@ impl ReportContext {
     ///
     /// Use this when you need incremental `MapDiff` semantics with row-level
     /// granularity, while preserving the query's concrete item type.
-    pub fn query_map<Q>(&self, query: Q) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    pub fn query_map<Q>(
+        &self,
+        query: Q,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
         Q::Item:
@@ -125,7 +128,7 @@ impl ReportContext {
     /// by canonical `Arc<str>` ids.
     ///
     /// Prefer `query_map()` unless you specifically need string ids.
-    pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Q::Item, CellImmutable>
+    pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
         Q::Item:
