@@ -10062,6 +10062,7 @@ dependencies = [
  "rship-entities-core",
  "rship-entities-foundation",
  "rship-entities-scene",
+ "rship-entities-tags",
  "rship-sync",
  "serde",
  "serde_json",
