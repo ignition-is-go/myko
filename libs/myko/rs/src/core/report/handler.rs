@@ -9,18 +9,21 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::{ConnectionStatus, MykoClient};
 #[cfg(not(target_arch = "wasm32"))]
+use crate::item::{typed_map_arc_from_any_item, typed_map_from_any_item_with_typed_id};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
-    common::{to_value::ToValue, with_id::{WithId, WithTypedId}},
+    common::{
+        to_value::ToValue,
+        with_id::{WithId, WithTypedId},
+    },
     core::item::Eventable,
     query::QueryParams,
     report::ReportId,
     request::RequestContext,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::item::{typed_map_from_any_item, typed_map_from_any_item_with_typed_id};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -76,7 +79,7 @@ impl ReportContext {
     /// Uses cell-based reactive queries.
     ///
     /// Accepts bare query params (e.g., `GetServersByIds { ids: vec![...] }`)
-    pub fn query<Q>(&self, query: Q) -> Cell<Vec<Q::Item>, CellImmutable>
+    pub fn query<Q>(&self, query: Q) -> Cell<Vec<Arc<Q::Item>>, CellImmutable>
     where
         Q: QueryParams + 'static,
         Q::Item:
@@ -105,17 +108,16 @@ impl ReportContext {
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item:
-            Eventable
-                + WithId
-                + WithTypedId
-                + DeserializeOwned
-                + Clone
-                + std::fmt::Debug
-                + Send
-                + Sync
-                + CellValue
-                + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + CellValue
+            + 'static,
     {
         typed_map_from_any_item_with_typed_id(
             self.server_ctx.query_map(query, self.req.clone()),
@@ -131,18 +133,17 @@ impl ReportContext {
     pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item:
-            Eventable
-                + WithId
-                + DeserializeOwned
-                + Clone
-                + std::fmt::Debug
-                + Send
-                + Sync
-                + CellValue
-                + 'static,
+        Q::Item: Eventable
+            + WithId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + CellValue
+            + 'static,
     {
-        typed_map_from_any_item(
+        typed_map_arc_from_any_item(
             self.server_ctx.query_map(query, self.req.clone()),
             "ReportContext::query_map_by_str",
         )

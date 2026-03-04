@@ -30,13 +30,13 @@ pub(super) enum PeerState {
 /// RAII handle for a peer connection.
 /// Dropping the handle closes the client.
 pub(super) struct PeerConnectionHandle {
-    server_ent: Server,
+    server_ent: Arc<Server>,
     client: Arc<MykoClient>,
     pub(super) signal_state: Cell<PeerState, CellImmutable>,
 }
 
 impl PeerConnectionHandle {
-    pub(super) fn new(server_ent: Server) -> Self {
+    pub(super) fn new(server_ent: Arc<Server>) -> Self {
         let addr = format!("{}:{}", server_ent.address, server_ent.port);
 
         let client = MykoClient::new_with_auto_reconnect(false);

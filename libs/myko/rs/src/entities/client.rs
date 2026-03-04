@@ -117,7 +117,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
         // Update client with new windback time
         let updated_client = Client {
             id: client.id.clone(),
-            server_id: client.server_id,
+            server_id: client.server_id.clone(),
             windback: Some(self.windback.clone()),
         };
 
@@ -159,7 +159,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         // Update client to clear windback
         let updated_client = Client {
             id: client.id.clone(),
-            server_id: client.server_id,
+            server_id: client.server_id.clone(),
             windback: None,
         };
 

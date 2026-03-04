@@ -202,26 +202,27 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         }
     };
 
-    // Generate Get{Entity}ById report that returns Option<Entity>
+    // Generate Get{Entity}ById report that returns Option<Arc<Entity>>
     let get_by_id_report_ident = format_ident!("Get{}ById", name_str);
 
     let get_by_id_report = quote! {
-        #[myko_macros::myko_report(Option<#name>)]
+        #[myko_macros::myko_report(Option<std::sync::Arc<#name>>)]
         pub struct #get_by_id_report_ident {
             pub id: #id_type_ident,
         }
 
         impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
-            type Output = Option<#name>;
+            type Output = Option<std::sync::Arc<#name>>;
 
             fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
                 use #krate::prelude::MapExt;
 
                 let id = self.id.clone();
 
-                // Query by ID and return the first match (clone from reference)
+                // Query by ID and return the first match as an Arc entity.
                 let query = #get_by_ids_query_ident { ids: vec![id] };
-                ctx.query(query).map(|items| items.first().cloned())
+                ctx.query(query)
+                    .map(|items| items.first().cloned())
             }
         }
     };
@@ -260,7 +261,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
                 match entity {
                     Some(e) => {
-                        ctx.emit_del(&e)?;
+                        ctx.emit_del(e)?;
                         Ok(#delete_result_ident { deleted: true })
                     }
                     None => Err(#krate::prelude::CommandError {
@@ -301,7 +302,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
                 let q = #get_by_ids_query_ident { ids: self.ids.clone() };
                 let entities = ctx.exec_query(q)?;
                 let deleted_count = entities.len();
-                ctx.emit_del_batch(&entities)?;
+                ctx.emit_del_batch(entities.iter().map(|entity| entity.as_ref()))?;
 
                 Ok(#delete_many_result_ident { deleted_count })
             }

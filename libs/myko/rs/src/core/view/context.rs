@@ -79,7 +79,7 @@ impl ViewCellContext {
     pub fn query_map<Q>(
         &self,
         query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
@@ -94,12 +94,12 @@ impl ViewCellContext {
     pub fn query_map<Q>(
         &self,
         _query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + Clone + Send + Sync + 'static,
         Q::Item: Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
     {
-        CellMap::<<Q::Item as WithTypedId>::Id, Q::Item, CellMutable>::new().lock()
+        CellMap::<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellMutable>::new().lock()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -178,7 +178,7 @@ impl ViewContext {
     pub fn query_map<Q>(
         &self,
         query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
@@ -193,12 +193,12 @@ impl ViewContext {
     pub fn query_map<Q>(
         &self,
         _query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + Clone + Send + Sync + 'static,
         Q::Item: Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
     {
-        CellMap::<<Q::Item as WithTypedId>::Id, Q::Item, CellMutable>::new().lock()
+        CellMap::<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellMutable>::new().lock()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

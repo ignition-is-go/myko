@@ -87,7 +87,7 @@ impl PeerRegistry {
         connections: &Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: &Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) where
-        T: AsRef<[Server]>,
+        T: AsRef<[Arc<Server>]>,
     {
         log::info!(
             "Current Peers: {}",
@@ -111,7 +111,7 @@ impl PeerRegistry {
                     server.port
                 );
                 ctx.unregister_peer_client(server.id.as_ref());
-                ctx.del(server);
+                ctx.del(server.as_ref());
                 continue;
             }
 
@@ -141,7 +141,7 @@ impl PeerRegistry {
                     remove_connection_handles.remove(&remove_server.id);
                     remove_state_guards.remove(&remove_server.id);
                     remove_ctx.unregister_peer_client(remove_server.id.as_ref());
-                    remove_ctx.del(&remove_server);
+                    remove_ctx.del(remove_server.as_ref());
                 }
             });
 
@@ -153,7 +153,7 @@ impl PeerRegistry {
     }
 
     fn spawn_peer_reconcile_guard(
-        peer_servers: Cell<Vec<Server>, CellImmutable>,
+        peer_servers: Cell<Vec<Arc<Server>>, CellImmutable>,
         host_id: ServerId,
         local_address: String,
         local_port: u16,

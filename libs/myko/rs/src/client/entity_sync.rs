@@ -56,7 +56,7 @@ impl<T> EntityStoreSync<T>
 where
     T: Eventable + WithId + Clone + Send + Sync + 'static,
 {
-    fn index_items(items: &[T]) -> HashMap<String, T> {
+    fn index_items(items: &[Arc<T>]) -> HashMap<String, Arc<T>> {
         items
             .iter()
             .cloned()
@@ -66,8 +66,8 @@ where
 
     fn sync_once(
         client: &MykoClient,
-        local_items: &[T],
-        remote_items: &[T],
+        local_items: &[Arc<T>],
+        remote_items: &[Arc<T>],
         options: EntityStoreSyncOptions,
         items_equal: &(dyn Fn(&T, &T) -> bool + Send + Sync),
     ) {
@@ -90,8 +90,8 @@ where
     }
 
     pub fn reconcile(
-        local: &HashMap<String, T>,
-        remote: &HashMap<String, T>,
+        local: &HashMap<String, Arc<T>>,
+        remote: &HashMap<String, Arc<T>>,
         options: EntityStoreSyncOptions,
         items_equal: &(dyn Fn(&T, &T) -> bool + Send + Sync),
     ) -> Vec<MEvent> {
@@ -99,18 +99,18 @@ where
 
         for (id, local_item) in local {
             let should_set = match remote.get(id) {
-                Some(remote_item) => !items_equal(local_item, remote_item),
+                Some(remote_item) => !items_equal(local_item.as_ref(), remote_item.as_ref()),
                 None => true,
             };
             if should_set {
-                events.push(MEvent::from_item(local_item, MEventType::SET, ""));
+                events.push(MEvent::from_item(local_item.as_ref(), MEventType::SET, ""));
             }
         }
 
         if options.delete_stale_remote {
             for (id, remote_item) in remote {
                 if !local.contains_key(id) {
-                    events.push(MEvent::del(remote_item, ""));
+                    events.push(MEvent::del(remote_item.as_ref(), ""));
                 }
             }
         }

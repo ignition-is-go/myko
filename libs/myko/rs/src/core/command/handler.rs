@@ -79,22 +79,25 @@ impl CommandContext {
     }
 
     /// Emit a SET event for an item.
-    pub fn emit_set<T: Eventable + Serialize + Clone + 'static>(
-        &self,
-        item: &T,
-    ) -> Result<(), CommandError> {
+    pub fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
         self.emit_set_with_options(item, EventOptions::default())
     }
 
     /// Emit a SET event for an item with custom options.
-    pub fn emit_set_with_options<T: Eventable + Serialize + Clone + 'static>(
+    pub fn emit_set_with_options<T>(
         &self,
-        item: &T,
+        item: impl std::ops::Deref<Target = T>,
         options: EventOptions,
-    ) -> Result<(), CommandError> {
+    ) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.server_ctx.set_with_options(item, Some(options));
+            self.server_ctx.set_with_options(&*item, Some(options));
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
@@ -147,10 +150,10 @@ impl CommandContext {
     }
 
     /// Emit a DEL event for an item.
-    pub fn emit_del<T: Eventable + Serialize + Clone + 'static>(
-        &self,
-        item: &T,
-    ) -> Result<(), CommandError> {
+    pub fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
         self.emit_del_with_options(item, EventOptions::default())
     }
 
@@ -158,12 +161,15 @@ impl CommandContext {
     ///
     /// This is more efficient than repeated `emit_del` calls because the server can
     /// apply the events in one bulk pass.
-    pub fn emit_del_batch<T: Eventable + Serialize + Clone + 'static>(
-        &self,
-        items: &[T],
-    ) -> Result<(), CommandError> {
+    pub fn emit_del_batch<'a, T, I>(&self, items: I) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+        I: IntoIterator<Item = &'a T>,
+        T: 'a,
+    {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let items: Vec<&T> = items.into_iter().collect();
             if items.is_empty() {
                 return Ok(());
             }
@@ -197,14 +203,17 @@ impl CommandContext {
     }
 
     /// Emit a DEL event for an item with custom options.
-    pub fn emit_del_with_options<T: Eventable + Serialize + Clone + 'static>(
+    pub fn emit_del_with_options<T>(
         &self,
-        item: &T,
+        item: impl std::ops::Deref<Target = T>,
         options: EventOptions,
-    ) -> Result<(), CommandError> {
+    ) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.server_ctx.del_with_options(item, Some(options));
+            self.server_ctx.del_with_options(&*item, Some(options));
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
@@ -217,7 +226,7 @@ impl CommandContext {
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
-    pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Q::Item>, CommandError>
+    pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
@@ -239,14 +248,18 @@ impl CommandContext {
     /// Execute a query and return all results.
     ///
     /// This performs a one-shot query against the store.
-    pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Q::Item>, CommandError>
+    pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            Ok(self.server_ctx.query_snapshot(query, self.req.clone()))
+            Ok(self
+                .server_ctx
+                .query_snapshot(query, self.req.clone())
+                .into_iter()
+                .collect())
         }
         #[cfg(target_arch = "wasm32")]
         {

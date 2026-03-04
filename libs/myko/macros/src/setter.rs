@@ -184,7 +184,7 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
 
                   let updated = #entity_ident {
                       #field_assignment,
-                      ..entity
+                      ..entity.as_ref().clone()
                   };
 
                   ctx.emit_set(&updated)?;

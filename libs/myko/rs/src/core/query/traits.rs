@@ -167,7 +167,7 @@ pub trait Query:
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Vec<<Self as QueryItemType>::Item>, CellImmutable>;
+    ) -> hypha::Cell<Vec<Arc<<Self as QueryItemType>::Item>>, CellImmutable>;
 }
 
 // Blanket impl of Query for QueryRequest<Q>
@@ -181,7 +181,7 @@ where
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Vec<<Self as QueryItemType>::Item>, CellImmutable> {
+    ) -> hypha::Cell<Vec<Arc<<Self as QueryItemType>::Item>>, CellImmutable> {
         client.watch_query::<Q>(self)
     }
 }

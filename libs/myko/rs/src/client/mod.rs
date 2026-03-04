@@ -362,7 +362,7 @@ impl MykoClient {
         *self.inner._peer_discovery_guard.lock().unwrap() = Some(discovery_guard);
     }
 
-    fn update_known_servers_from_peers(&self, peers: &[Server]) {
+    fn update_known_servers_from_peers(&self, peers: &[Arc<Server>]) {
         let current = self.inner.current_address.lock().unwrap().clone();
         let use_wss = current
             .as_ref()
@@ -726,7 +726,7 @@ impl MykoClient {
     pub fn watch_query<Q>(
         &self,
         query: impl Into<QueryRequest<Q>>,
-    ) -> Cell<Vec<Q::Item>, CellImmutable>
+    ) -> Cell<Vec<Arc<Q::Item>>, CellImmutable>
     where
         Q: QueryParams + Clone,
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
@@ -749,7 +749,7 @@ impl MykoClient {
         let cell_writer = cell.clone();
 
         // State for accumulating query diffs
-        let state: Arc<Mutex<HashMap<Arc<str>, Q::Item>>> = Arc::default();
+        let state: Arc<Mutex<HashMap<Arc<str>, Arc<Q::Item>>>> = Arc::default();
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
@@ -775,12 +775,12 @@ impl MykoClient {
                     state.clear();
                 }
 
-                let upserts: Vec<Q::Item> = response
+                let upserts: Vec<Arc<Q::Item>> = response
                     .upserts
                     .iter()
                     .filter_map(
                         |x| match serde_json::from_value::<Q::Item>(x.item.clone()) {
-                            Ok(item) => Some(item),
+                            Ok(item) => Some(Arc::new(item)),
                             Err(e) => {
                                 error!(
                                     "Failed to parse query '{}' upsert as {}: {}",

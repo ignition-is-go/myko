@@ -736,38 +736,28 @@ fn generate_command_class(command_id: &str, result_type: &str) -> String {
 
 fn rust_type_to_ts(rust_type: &str) -> String {
     let trimmed = rust_type.trim();
-
-    // Handle Option<T> -> T | null
-    if trimmed.starts_with("Option")
-        && let Some(start) = trimmed.find('<')
-        && let Some(end) = trimmed.rfind('>')
-    {
-        let inner = trimmed[start + 1..end].trim();
-        let inner_ts = rust_type_to_ts(inner);
-        return format!("{} | null", inner_ts);
-    }
-
-    // Handle Vec<T> -> T[]
-    if trimmed.starts_with("Vec")
-        && let Some(start) = trimmed.find('<')
-        && let Some(end) = trimmed.rfind('>')
-    {
-        let inner = trimmed[start + 1..end].trim();
-        let inner_ts = rust_type_to_ts(inner);
-        return format!("{}[]", inner_ts);
-    }
-
-    // Handle Arc<T> -> unwrap to inner type
-    if trimmed.starts_with("Arc")
-        && let Some(start) = trimmed.find('<')
-        && let Some(end) = trimmed.rfind('>')
-    {
-        let inner = trimmed[start + 1..end].trim();
-        return rust_type_to_ts(inner);
+    let canonical = trimmed.replace(' ', "");
+    let canonical = canonical.as_str();
+    if let Some((outer, inner)) = split_outer_generic(canonical) {
+        match outer_leaf(outer) {
+            // Handle Option<T> -> T | null
+            "Option" => {
+                let inner_ts = rust_type_to_ts(inner);
+                return format!("{inner_ts} | null");
+            }
+            // Handle Vec<T> -> T[]
+            "Vec" => {
+                let inner_ts = rust_type_to_ts(inner);
+                return format!("{inner_ts}[]");
+            }
+            // Handle Arc<T> -> unwrap to inner type
+            "Arc" => return rust_type_to_ts(inner),
+            _ => {}
+        }
     }
 
     // Map Rust primitive types to TypeScript
-    match trimmed {
+    match outer_leaf(canonical) {
         "str" | "String" => "string".to_string(),
         "bool" => "boolean".to_string(),
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
@@ -775,7 +765,7 @@ fn rust_type_to_ts(rust_type: &str) -> String {
         "()" => "void".to_string(),
         // serde_json::Value maps to JsonValue in ts-rs
         "Value" | "serde_json::Value" => "JsonValue".to_string(),
-        _ => trimmed.to_string(),
+        _ => canonical.to_string(),
     }
 }
 
@@ -788,32 +778,20 @@ fn generate_item_constructor(item_name: &str) -> String {
 
 fn extract_importable_types(rust_type: &str) -> Vec<String> {
     let trimmed = rust_type.trim();
-
-    // Handle Option<T> - extract inner type
-    if trimmed.starts_with("Option")
-        && let Some(start) = trimmed.find('<')
-        && let Some(end) = trimmed.rfind('>')
-    {
-        let inner = trimmed[start + 1..end].trim();
-        return extract_importable_types(inner);
-    }
-
-    // Handle Vec<T> - extract inner type
-    if trimmed.starts_with("Vec")
-        && let Some(start) = trimmed.find('<')
-        && let Some(end) = trimmed.rfind('>')
-    {
-        let inner = trimmed[start + 1..end].trim();
-        return extract_importable_types(inner);
-    }
-
-    // Handle Arc<T> - extract inner type
-    if trimmed.starts_with("Arc")
-        && let Some(start) = trimmed.find('<')
-        && let Some(end) = trimmed.rfind('>')
-    {
-        let inner = trimmed[start + 1..end].trim();
-        return extract_importable_types(inner);
+    let canonical = trimmed.replace(' ', "");
+    let canonical = canonical.as_str();
+    if let Some((outer, inner)) = split_outer_generic(canonical) {
+        match outer_leaf(outer) {
+            // Handle Option<T>/Vec<T>/Arc<T> - extract inner type
+            "Option" | "Vec" | "Arc" => return extract_importable_types(inner),
+            // For other generics, collect importables from type arguments
+            _ => {
+                return split_generic_args(inner)
+                    .into_iter()
+                    .flat_map(|arg| extract_importable_types(&arg))
+                    .collect();
+            }
+        }
     }
 
     // Filter out Rust primitive types that don't need imports
@@ -822,7 +800,7 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
         "u32", "u64", "u128", "usize", "f32", "f64",
     ];
 
-    if primitives.contains(&trimmed) {
+    if primitives.contains(&outer_leaf(canonical)) {
         return vec![];
     }
 
@@ -831,8 +809,51 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
         return vec!["JsonValue".to_string()];
     }
 
-    let clean_type = trimmed.replace(" ", "");
+    let clean_type = outer_leaf(canonical).to_string();
     vec![clean_type]
+}
+
+fn outer_leaf(path_or_ident: &str) -> &str {
+    path_or_ident.rsplit("::").next().unwrap_or(path_or_ident)
+}
+
+fn split_outer_generic(s: &str) -> Option<(&str, &str)> {
+    let start = s.find('<')?;
+    let end = s.rfind('>')?;
+    if end <= start {
+        return None;
+    }
+    let outer = s[..start].trim();
+    let inner = s[start + 1..end].trim();
+    if outer.is_empty() || inner.is_empty() {
+        return None;
+    }
+    Some((outer, inner))
+}
+
+fn split_generic_args(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let arg = s[start..idx].trim();
+                if !arg.is_empty() {
+                    args.push(arg.to_string());
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = s[start..].trim();
+    if !tail.is_empty() {
+        args.push(tail.to_string());
+    }
+    args
 }
 
 #[cfg(test)]

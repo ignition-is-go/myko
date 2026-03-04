@@ -81,6 +81,20 @@ where
 pub fn typed_map_from_any_item<T: CellValue + 'static>(
     source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
     context: &'static str,
+) -> CellMap<Arc<str>, T, CellImmutable> {
+    let typed = CellMap::<Arc<str>, T>::new();
+    let typed_clone = typed.clone();
+    let guard = source.subscribe_diffs(move |diff| {
+        let typed_diff = downcast_any_item_map_diff::<T>(diff, context);
+        apply_map_diff(&typed_clone, &typed_diff);
+    });
+    typed.own_guard(guard);
+    typed.lock()
+}
+
+pub fn typed_map_arc_from_any_item<T: std::fmt::Debug + PartialEq + Send + Sync + 'static>(
+    source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+    context: &'static str,
 ) -> CellMap<Arc<str>, Arc<T>, CellImmutable> {
     let typed = CellMap::<Arc<str>, Arc<T>>::new();
     let typed_clone = typed.clone();
@@ -97,7 +111,7 @@ pub fn typed_map_from_any_item_with_typed_id<T>(
     context: &'static str,
 ) -> CellMap<<T as WithTypedId>::Id, Arc<T>, CellImmutable>
 where
-    T: CellValue + WithTypedId + 'static,
+    T: CellValue + WithTypedId + Send + Sync + 'static,
 {
     let typed = CellMap::<<T as WithTypedId>::Id, Arc<T>>::new();
     let typed_clone = typed.clone();
@@ -111,7 +125,7 @@ where
     typed.lock()
 }
 
-fn downcast_any_item_arc<T: AnyItem + 'static>(
+fn downcast_any_item_arc<T: Send + Sync + 'static>(
     value: &Arc<dyn AnyItem>,
     context: &'static str,
 ) -> Arc<T> {
@@ -121,7 +135,7 @@ fn downcast_any_item_arc<T: AnyItem + 'static>(
         .unwrap_or_else(|_| panic!("{context} type mismatch while downcasting Arc<dyn AnyItem>"))
 }
 
-pub fn downcast_any_item_map_diff_arc<T: AnyItem + 'static>(
+pub fn downcast_any_item_map_diff_arc<T: Send + Sync + 'static>(
     diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
     context: &'static str,
 ) -> MapDiff<Arc<str>, Arc<T>> {

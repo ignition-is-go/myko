@@ -73,8 +73,9 @@ impl PendingQueryResponse {
             })
             .collect();
 
-        let mut changes: Vec<QueryChange> =
-            Vec::with_capacity(upserts.len() + self.deletes.len() + usize::from(self.window_order_ids.is_some()));
+        let mut changes: Vec<QueryChange> = Vec::with_capacity(
+            upserts.len() + self.deletes.len() + usize::from(self.window_order_ids.is_some()),
+        );
         for item in &upserts {
             changes.push(QueryChange::Upsert { item: item.clone() });
         }
@@ -336,7 +337,7 @@ impl<W: WsWriter> ClientSession<W> {
 
         let guard = cell.subscribe(move |signal| match &signal {
             Signal::Value(output) => {
-                writer.send_report_response(tx_clone.clone(), output.as_ref().clone());
+                writer.send_report_response(tx_clone.clone(), Arc::clone(output.as_ref()));
             }
             Signal::Complete => {}
             Signal::Error(e) => {
@@ -707,10 +708,8 @@ impl QuerySubscriptionState {
             let window_order_changed = false;
             let total_count_changed = previous_total_count != total_count;
             let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
-            let should_emit = force_emit
-                || self.sequence == 0
-                || visible_changed
-                || total_count_changed;
+            let should_emit =
+                force_emit || self.sequence == 0 || visible_changed || total_count_changed;
 
             log::trace!(
                 "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",

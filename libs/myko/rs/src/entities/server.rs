@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use hypha::{Cell, CellImmutable, JoinExt, MapExt, flat};
 
 use crate::{
@@ -46,7 +48,7 @@ impl QueryHandler for GetPeerServers {
 #[myko_macros::myko_report_output]
 pub struct ServerStatsOutput {
     /// The server entity (if found)
-    pub server: Option<Server>,
+    pub server: Option<Arc<Server>>,
     /// Number of clients connected to this server
     pub client_count: usize,
     /// Server uptime in seconds (computed from started_at)
@@ -86,7 +88,6 @@ impl ReportHandler for ServerStats {
         ctx.query(GetConnectedServer {})
             .join(&ctx.query(GetAllClients {}))
             .map(flat!(|servers, clients| {
-                // Clone from reference since map receives &(Vec, Vec)
                 let server = servers.first().cloned();
 
                 // Compute uptime if we have server info

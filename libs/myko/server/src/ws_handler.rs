@@ -18,11 +18,12 @@ use myko_rs::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
-    report::AnyOutput,
     relationship::{iter_client_id_registrations, iter_fallback_to_id_registrations},
+    report::AnyOutput,
     request::RequestContext,
     server::{
-        CellServerCtx, ClientSession, PendingQueryResponse, WsWriter, client_registry::try_client_registry,
+        CellServerCtx, ClientSession, PendingQueryResponse, WsWriter,
+        client_registry::try_client_registry,
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
@@ -823,13 +824,13 @@ impl WsHandler {
                                 message,
                                 serde_json::to_string(&wrapped.view).unwrap_or_default()
                             );
-                            if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(
-                                ViewError {
+                            if let Err(err) =
+                                priority_tx.try_send(MykoMessage::ViewError(ViewError {
                                     tx: tx_id.to_string(),
                                     view_id: view_id.to_string(),
                                     message,
-                                },
-                            )) {
+                                }))
+                            {
                                 drop_logger.on_drop("ViewError", &err);
                             }
                         }
@@ -1280,7 +1281,10 @@ impl WsWriter for ChannelWriter {
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
-        if let Err(e) = self.deferred_tx.try_send(DeferredOutbound::Report(tx, output)) {
+        if let Err(e) = self
+            .deferred_tx
+            .try_send(DeferredOutbound::Report(tx, output))
+        {
             self.drop_logger.on_drop("ReportResponseDeferred", &e);
         }
     }

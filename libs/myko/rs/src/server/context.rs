@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     client::{ConnectionStatus, MykoClient},
-    core::item::{AnyItem, Eventable, typed_map_from_any_item},
+    core::item::{AnyItem, Eventable, typed_map_arc_from_any_item},
     query::{
         FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
         QueryTestCtx,
@@ -701,7 +701,7 @@ impl CellServerCtx {
         &self,
         query: Q,
         request: Arc<RequestContext>,
-    ) -> Cell<Vec<Q::Item>, CellImmutable>
+    ) -> Cell<Vec<Arc<Q::Item>>, CellImmutable>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -713,7 +713,10 @@ impl CellServerCtx {
             .map(|entries| {
                 entries
                     .iter()
-                    .filter_map(|(_, item)| item.as_any().downcast_ref::<Q::Item>().cloned())
+                    .filter_map(|(_, item)| {
+                        let any_arc: Arc<dyn std::any::Any + Send + Sync> = item.clone();
+                        any_arc.downcast::<Q::Item>().ok()
+                    })
                     .collect()
             })
             .with_name(query_name.as_str())
@@ -787,7 +790,7 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        typed_map_from_any_item(self.view_map_untyped(view, request), "CellServerCtx::view")
+        typed_map_arc_from_any_item(self.view_map_untyped(view, request), "CellServerCtx::view")
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -795,7 +798,7 @@ impl CellServerCtx {
     /// Iterates the store directly and returns matching entities without creating
     /// any reactive cells or subscriptions. Use this for command handlers and other
     /// contexts where you need a point-in-time snapshot, not a live query.
-    pub fn query_snapshot<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Q::Item>
+    pub fn query_snapshot<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Arc<Q::Item>>
     where
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -813,13 +816,14 @@ impl CellServerCtx {
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item = item.as_any().downcast_ref::<Q::Item>()?;
+                let typed_item = Arc::new(typed_item.clone());
                 let ctx = QueryTestCtx {
-                    item: Arc::new(typed_item.clone()),
+                    item: typed_item.clone(),
                     query: query.clone(),
                     query_context: query_context.clone(),
                 };
                 if Q::test_entity(ctx) {
-                    Some(typed_item.clone())
+                    Some(typed_item)
                 } else {
                     None
                 }
