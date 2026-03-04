@@ -21,7 +21,7 @@ mod protocol;
 mod relationship_manager;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
-pub use client_session::{ClientSession, WsWriter};
+pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
 pub use persister::{BlackholePersister, NullPersister, Persister, PersisterRouter};

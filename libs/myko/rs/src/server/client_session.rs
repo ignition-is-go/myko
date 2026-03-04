@@ -29,6 +29,76 @@ use crate::{
 pub trait WsWriter: Send + Sync + 'static {
     /// Send a message to the client.
     fn send(&self, msg: MykoMessage);
+
+    /// Send a report response while allowing implementations to defer
+    /// expensive serialization/conversion work off the reactive callback path.
+    fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
+        self.send(MykoMessage::ReportResponse(ReportResponse {
+            response: output.to_value(),
+            tx: tx.to_string(),
+        }));
+    }
+
+    /// Send a query/view response while allowing implementations to defer
+    /// expensive item-to-JSON conversion off the reactive callback path.
+    fn send_query_response(&self, response: PendingQueryResponse, is_view: bool) {
+        let wire = response.into_wire();
+        if is_view {
+            self.send(MykoMessage::ViewResponse(wire));
+        } else {
+            self.send(MykoMessage::QueryResponse(wire));
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PendingQueryResponse {
+    pub tx: Arc<str>,
+    pub sequence: u64,
+    pub upsert_items: Vec<Arc<dyn AnyItem>>,
+    pub deletes: Vec<Arc<str>>,
+    pub total_count: usize,
+    pub window: Option<QueryWindow>,
+    pub window_order_ids: Option<Vec<Arc<str>>>,
+}
+
+impl PendingQueryResponse {
+    pub fn into_wire(self) -> QueryResponse {
+        let upserts: Vec<WrappedItem<serde_json::Value>> = self
+            .upsert_items
+            .iter()
+            .map(|item| WrappedItem {
+                item: item.to_value(),
+                item_type: item.entity_type().into(),
+            })
+            .collect();
+
+        let mut changes: Vec<QueryChange> =
+            Vec::with_capacity(upserts.len() + self.deletes.len() + usize::from(self.window_order_ids.is_some()));
+        for item in &upserts {
+            changes.push(QueryChange::Upsert { item: item.clone() });
+        }
+        for id in &self.deletes {
+            changes.push(QueryChange::Delete { id: id.clone() });
+        }
+        if let Some(ids) = self.window_order_ids {
+            changes.push(QueryChange::WindowOrder {
+                ids,
+                total_count: self.total_count,
+                window: self.window.clone(),
+            });
+        }
+
+        QueryResponse {
+            tx: self.tx,
+            sequence: self.sequence,
+            changes,
+            upserts,
+            deletes: self.deletes,
+            total_count: Some(self.total_count),
+            window: self.window,
+        }
+    }
 }
 
 /// A WebSocket client session that manages subscriptions.
@@ -117,7 +187,7 @@ impl<W: WsWriter> ClientSession<W> {
                 }
             };
             if let Some(response) = response {
-                writer.send(MykoMessage::QueryResponse(response));
+                writer.send_query_response(response, false);
             }
         });
 
@@ -193,15 +263,18 @@ impl<W: WsWriter> ClientSession<W> {
                 client_id_for_log,
                 tx_clone,
                 response.sequence,
-                response.upserts.len(),
+                response.upsert_items.len(),
                 response.deletes.len(),
-                response.changes.len(),
+                response.upsert_items.len()
+                    + response.deletes.len()
+                    + usize::from(response.window_order_ids.is_some()),
                 response.window,
                 response.total_count
             );
             if response.sequence == 0 {
                 let first_emit_ms = subscribed_at.elapsed().as_millis();
-                let payload_bytes = serde_json::to_vec(&MykoMessage::ViewResponse(response.clone()))
+                let payload_bytes =
+                    serde_json::to_vec(&MykoMessage::ViewResponse(response.clone().into_wire()))
                     .map(|buf| buf.len())
                     .unwrap_or(0);
                 log::trace!(
@@ -211,13 +284,13 @@ impl<W: WsWriter> ClientSession<W> {
                     view_id_for_log,
                     tx_clone,
                     first_emit_ms,
-                    response.upserts.len(),
+                    response.upsert_items.len(),
                     response.total_count,
                     payload_bytes,
                     response.window
                 );
             }
-            writer.send(MykoMessage::ViewResponse(response));
+            writer.send_query_response(response, true);
         });
 
         self.subscriptions.insert(
@@ -263,11 +336,7 @@ impl<W: WsWriter> ClientSession<W> {
 
         let guard = cell.subscribe(move |signal| match &signal {
             Signal::Value(output) => {
-                let response = ReportResponse {
-                    response: output.to_value(),
-                    tx: tx_clone.to_string(),
-                };
-                writer.send(MykoMessage::ReportResponse(response));
+                writer.send_report_response(tx_clone.clone(), output.as_ref().clone());
             }
             Signal::Complete => {}
             Signal::Error(e) => {
@@ -335,8 +404,8 @@ impl<W: WsWriter> ClientSession<W> {
         };
 
         match sub.kind {
-            QuerySubscriptionKind::Query => self.writer.send(MykoMessage::QueryResponse(response)),
-            QuerySubscriptionKind::View => self.writer.send(MykoMessage::ViewResponse(response)),
+            QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
+            QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
         }
         log::trace!(
             "ClientSession {} updated query window tx={} (active_subscriptions={})",
@@ -396,9 +465,14 @@ impl QuerySubscriptionState {
         &mut self,
         diff: &hypha::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
-    ) -> Option<QueryResponse> {
+    ) -> Option<PendingQueryResponse> {
+        if self.window.is_none() {
+            return self.apply_source_diff_unwindowed(diff, tx);
+        }
+
         let previous_total_count = self.all_items.len();
         let mut changed_ids: HashSet<Arc<str>> = HashSet::new();
+        let mut removed_ids: HashSet<Arc<str>> = HashSet::new();
 
         match diff {
             hypha::MapDiff::Initial { entries } => {
@@ -418,6 +492,7 @@ impl QuerySubscriptionState {
             }
             hypha::MapDiff::Remove { key, .. } => {
                 self.all_items.remove(key);
+                removed_ids.insert(key.clone());
             }
             hypha::MapDiff::Batch { changes } => {
                 let batch_size = changes.len();
@@ -440,6 +515,7 @@ impl QuerySubscriptionState {
                         }
                         hypha::MapDiff::Remove { key, .. } => {
                             self.all_items.remove(key);
+                            removed_ids.insert(key.clone());
                         }
                         hypha::MapDiff::Batch { .. } => {}
                     }
@@ -455,14 +531,109 @@ impl QuerySubscriptionState {
             }
         }
 
-        self.compute_windowed_response(tx, &changed_ids, previous_total_count, false)
+        self.compute_windowed_response(tx, &changed_ids, &removed_ids, previous_total_count, false)
+    }
+
+    fn apply_source_diff_unwindowed(
+        &mut self,
+        diff: &hypha::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        tx: Arc<str>,
+    ) -> Option<PendingQueryResponse> {
+        let previous_total_count = self.all_items.len();
+        let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        let mut deletes: Vec<Arc<str>> = Vec::new();
+
+        match diff {
+            hypha::MapDiff::Initial { entries } => {
+                self.all_items.clear();
+                for (id, item) in entries {
+                    self.all_items.insert(id.clone(), item.clone());
+                    upsert_items.push(item.clone());
+                }
+            }
+            hypha::MapDiff::Insert { key, value } => {
+                self.all_items.insert(key.clone(), value.clone());
+                upsert_items.push(value.clone());
+            }
+            hypha::MapDiff::Update { key, new_value, .. } => {
+                self.all_items.insert(key.clone(), new_value.clone());
+                upsert_items.push(new_value.clone());
+            }
+            hypha::MapDiff::Remove { key, .. } => {
+                if self.all_items.remove(key).is_some() {
+                    deletes.push(key.clone());
+                }
+            }
+            hypha::MapDiff::Batch { changes } => {
+                for change in changes {
+                    match change {
+                        hypha::MapDiff::Initial { entries } => {
+                            self.all_items.clear();
+                            for (id, item) in entries {
+                                self.all_items.insert(id.clone(), item.clone());
+                                upsert_items.push(item.clone());
+                            }
+                        }
+                        hypha::MapDiff::Insert { key, value } => {
+                            self.all_items.insert(key.clone(), value.clone());
+                            upsert_items.push(value.clone());
+                        }
+                        hypha::MapDiff::Update { key, new_value, .. } => {
+                            self.all_items.insert(key.clone(), new_value.clone());
+                            upsert_items.push(new_value.clone());
+                        }
+                        hypha::MapDiff::Remove { key, .. } => {
+                            if self.all_items.remove(key).is_some() {
+                                deletes.push(key.clone());
+                            }
+                        }
+                        hypha::MapDiff::Batch { .. } => {}
+                    }
+                }
+            }
+        }
+
+        let total_count = self.all_items.len();
+        let total_count_changed = previous_total_count != total_count;
+        let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
+        let should_emit = self.sequence == 0 || visible_changed || total_count_changed;
+
+        log::trace!(
+            "ClientSession tx={} window_decision force_emit=false seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed=false total_count_changed={} should_emit={} total_count={} window=None",
+            tx,
+            self.sequence,
+            upsert_items.len(),
+            upsert_items.len(),
+            deletes.len(),
+            visible_changed,
+            total_count_changed,
+            should_emit,
+            total_count
+        );
+
+        if !should_emit {
+            return None;
+        }
+
+        let seq = self.sequence;
+        self.sequence = self.sequence.saturating_add(1);
+
+        Some(PendingQueryResponse {
+            tx,
+            sequence: seq,
+            upsert_items,
+            deletes,
+            total_count,
+            window: None,
+            window_order_ids: None,
+        })
     }
 
     fn apply_window_update(
         &mut self,
         window: Option<QueryWindow>,
         tx: Arc<str>,
-    ) -> Option<QueryResponse> {
+    ) -> Option<PendingQueryResponse> {
         let same_window = match (&self.window, &window) {
             (None, None) => true,
             (Some(current), Some(next)) => {
@@ -475,16 +646,106 @@ impl QuerySubscriptionState {
         }
 
         self.window = window;
-        self.compute_windowed_response(tx, &HashSet::new(), self.all_items.len(), false)
+        self.compute_windowed_response(
+            tx,
+            &HashSet::new(),
+            &HashSet::new(),
+            self.all_items.len(),
+            false,
+        )
     }
 
     fn compute_windowed_response(
         &mut self,
         tx: Arc<str>,
         changed_ids: &HashSet<Arc<str>>,
+        removed_ids: &HashSet<Arc<str>>,
         previous_total_count: usize,
         force_emit: bool,
-    ) -> Option<QueryResponse> {
+    ) -> Option<PendingQueryResponse> {
+        if self.window.is_none() {
+            if self.sequence == 0 {
+                self.visible_items = self.all_items.clone();
+            } else {
+                for id in removed_ids {
+                    self.visible_items.remove(id);
+                }
+                for id in changed_ids {
+                    if let Some(item) = self.all_items.get(id.as_ref()) {
+                        self.visible_items.insert(id.clone(), item.clone());
+                    }
+                }
+            }
+
+            let mut deletes: Vec<Arc<str>> = removed_ids
+                .iter()
+                .filter(|id| !self.all_items.contains_key(id.as_ref()))
+                .cloned()
+                .collect();
+            deletes.sort_unstable();
+
+            let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+            if self.sequence == 0 {
+                let mut ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
+                ids.sort_unstable();
+                for id in ids {
+                    if let Some(item) = self.all_items.get(id.as_ref()) {
+                        upsert_items.push(item.clone());
+                    }
+                }
+            } else {
+                let mut ids: Vec<Arc<str>> = changed_ids.iter().cloned().collect();
+                ids.sort_unstable();
+                for id in ids {
+                    if let Some(item) = self.all_items.get(id.as_ref()) {
+                        upsert_items.push(item.clone());
+                    }
+                }
+            }
+
+            let total_count = self.all_items.len();
+            let window_order_changed = false;
+            let total_count_changed = previous_total_count != total_count;
+            let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
+            let should_emit = force_emit
+                || self.sequence == 0
+                || visible_changed
+                || total_count_changed;
+
+            log::trace!(
+                "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
+                tx,
+                force_emit,
+                self.sequence,
+                changed_ids.len(),
+                upsert_items.len(),
+                deletes.len(),
+                visible_changed,
+                window_order_changed,
+                total_count_changed,
+                should_emit,
+                total_count,
+                self.window
+            );
+
+            if !should_emit {
+                return None;
+            }
+
+            let seq = self.sequence;
+            self.sequence = self.sequence.saturating_add(1);
+
+            return Some(PendingQueryResponse {
+                tx,
+                sequence: seq,
+                upsert_items,
+                deletes,
+                total_count,
+                window: None,
+                window_order_ids: None,
+            });
+        }
+
         let mut ordered_ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
         ordered_ids.sort_unstable();
 
@@ -518,24 +779,21 @@ impl QuerySubscriptionState {
             .collect();
         deletes.sort_unstable();
 
-        let mut upserts: Vec<WrappedItem<serde_json::Value>> = Vec::new();
+        let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
         for id in &visible_ids {
             let is_new = !previous_visible.contains_key(id);
             let is_changed = changed_ids.contains(id);
             let should_emit = self.sequence == 0 || is_new || is_changed;
 
             if should_emit && let Some(item) = next_visible.get(id) {
-                upserts.push(WrappedItem {
-                    item: item.to_value(),
-                    item_type: item.entity_type().into(),
-                });
+                upsert_items.push(item.clone());
             }
         }
 
         let total_count = self.all_items.len();
         let window_order_changed = previous_visible_ids != visible_ids;
         let total_count_changed = previous_total_count != total_count;
-        let visible_changed = !upserts.is_empty() || !deletes.is_empty();
+        let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
         let should_emit = force_emit
             || self.sequence == 0
             || visible_changed
@@ -548,7 +806,7 @@ impl QuerySubscriptionState {
             force_emit,
             self.sequence,
             changed_ids.len(),
-            upserts.len(),
+            upsert_items.len(),
             deletes.len(),
             visible_changed,
             window_order_changed,
@@ -564,32 +822,17 @@ impl QuerySubscriptionState {
             return None;
         }
 
-        let mut changes: Vec<QueryChange> = Vec::with_capacity(upserts.len() + deletes.len() + 1);
-        for item in &upserts {
-            changes.push(QueryChange::Upsert { item: item.clone() });
-        }
-        for id in &deletes {
-            changes.push(QueryChange::Delete { id: id.clone() });
-        }
-        if self.window.is_some() {
-            changes.push(QueryChange::WindowOrder {
-                ids: visible_ids.clone(),
-                total_count,
-                window: self.window.clone(),
-            });
-        }
-
         let seq = self.sequence;
         self.sequence = self.sequence.saturating_add(1);
 
-        Some(QueryResponse {
+        Some(PendingQueryResponse {
             tx,
             sequence: seq,
-            changes,
-            upserts,
+            upsert_items,
             deletes,
-            total_count: Some(total_count),
+            total_count,
             window: self.window.clone(),
+            window_order_ids: self.window.as_ref().map(|_| visible_ids),
         })
     }
 }

@@ -18,9 +18,12 @@ use myko_rs::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
+    report::AnyOutput,
     relationship::{iter_client_id_registrations, iter_fallback_to_id_registrations},
     request::RequestContext,
-    server::{CellServerCtx, ClientSession, WsWriter, client_registry::try_client_registry},
+    server::{
+        CellServerCtx, ClientSession, PendingQueryResponse, WsWriter, client_registry::try_client_registry,
+    },
     wire::{
         CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
         PingData, QueryWindowUpdate, ViewError, ViewWindowUpdate,
@@ -124,6 +127,21 @@ impl DropLogger {
     }
 }
 
+struct CommandJob {
+    tx_id: Arc<str>,
+    command_id: String,
+    command: serde_json::Value,
+    received_at: Instant,
+}
+
+enum DeferredOutbound {
+    Report(Arc<str>, Arc<dyn AnyOutput>),
+    Query {
+        response: PendingQueryResponse,
+        is_view: bool,
+    },
+}
+
 /// WebSocket handler for a single client connection.
 pub struct WsHandler;
 
@@ -148,18 +166,23 @@ impl WsHandler {
         // Create a bounded channel for sending messages to the client
         // High limit (10k) since we have good memory availability
         let (tx, mut rx) = mpsc::channel::<MykoMessage>(10_000);
+        let (deferred_tx, mut deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
+        let (priority_tx, mut priority_rx) = mpsc::channel::<MykoMessage>(1_000);
+        let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommandJob>();
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
         let drop_logger = Arc::new(DropLogger::new(client_id.clone()));
         let writer = ChannelWriter {
             tx: tx.clone(),
+            deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
         };
 
         // Register writer in the global client registry (if initialized)
         let writer_arc: Arc<dyn WsWriter> = Arc::new(ChannelWriter {
             tx: tx.clone(),
+            deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
         });
         if let Some(registry) = try_client_registry() {
@@ -177,11 +200,14 @@ impl WsHandler {
             Arc::new(Mutex::new(HashMap::new()));
         let subscribe_started_by_tx: Arc<Mutex<HashMap<Arc<str>, Instant>>> =
             Arc::new(Mutex::new(HashMap::new()));
+        let command_started_by_tx: Arc<Mutex<HashMap<Arc<str>, Instant>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let outbound_commands_by_tx: Arc<Mutex<HashMap<String, (String, Instant)>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let query_ids_by_tx_writer = query_ids_by_tx.clone();
         let view_ids_by_tx_writer = view_ids_by_tx.clone();
         let subscribe_started_by_tx_writer = subscribe_started_by_tx.clone();
+        let command_started_by_tx_writer = command_started_by_tx.clone();
         let outbound_commands_by_tx_writer = outbound_commands_by_tx.clone();
 
         // Publish Client entity
@@ -197,12 +223,61 @@ impl WsHandler {
         let write_ctx = ctx.clone();
         let write_client_id = client_id.clone();
         let write_addr = addr;
+        let command_ctx = ctx.clone();
+        let command_priority_tx = priority_tx.clone();
+        let command_drop_logger = drop_logger.clone();
+        let command_client_id = client_id.clone();
 
         // Spawn task to forward messages from channel to WebSocket
         let write_task = tokio::spawn(async move {
             let _ctx = write_ctx;
             let mut tx_emit_counts: HashMap<Arc<str>, u64> = HashMap::new();
-            while let Some(msg) = rx.recv().await {
+            let mut normal_open = true;
+            let mut priority_open = true;
+            let mut deferred_open = true;
+            while normal_open || priority_open || deferred_open {
+                let msg = tokio::select! {
+                    biased;
+                    maybe = priority_rx.recv(), if priority_open => {
+                        match maybe {
+                            Some(msg) => msg,
+                            None => {
+                                priority_open = false;
+                                continue;
+                            }
+                        }
+                    }
+                    maybe = deferred_rx.recv(), if deferred_open => {
+                        match maybe {
+                            Some(DeferredOutbound::Report(tx, output)) => {
+                                MykoMessage::ReportResponse(myko_rs::wire::ReportResponse {
+                                    response: output.to_value(),
+                                    tx: tx.to_string(),
+                                })
+                            }
+                            Some(DeferredOutbound::Query { response, is_view }) => {
+                                if is_view {
+                                    MykoMessage::ViewResponse(response.into_wire())
+                                } else {
+                                    MykoMessage::QueryResponse(response.into_wire())
+                                }
+                            }
+                            None => {
+                                deferred_open = false;
+                                continue;
+                            }
+                        }
+                    }
+                    maybe = rx.recv(), if normal_open => {
+                        match maybe {
+                            Some(msg) => msg,
+                            None => {
+                                normal_open = false;
+                                continue;
+                            }
+                        }
+                    }
+                };
                 let (kind, tx_id, seq, upserts, deletes, total_count) = match &msg {
                     MykoMessage::ViewResponse(r) => (
                         "view_response",
@@ -219,6 +294,22 @@ impl WsHandler {
                         Some(r.upserts.len()),
                         Some(r.deletes.len()),
                         r.total_count,
+                    ),
+                    MykoMessage::CommandResponse(r) => (
+                        "command_response",
+                        Some(Arc::<str>::from(r.tx.clone())),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    MykoMessage::CommandError(r) => (
+                        "command_error",
+                        Some(Arc::<str>::from(r.tx.clone())),
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                     _ => ("other", None, None, None, None, None),
                 };
@@ -329,6 +420,55 @@ impl WsHandler {
                         use_binary_writer.load(Ordering::SeqCst)
                     );
                 }
+                if (kind == "command_response" || kind == "command_error")
+                    && let Some(tx) = tx_id.as_ref()
+                {
+                    let started_ms = command_started_by_tx_writer
+                        .lock()
+                        .ok()
+                        .and_then(|mut m| m.remove(tx))
+                        .map(|started| started.elapsed().as_millis());
+                    log::debug!(
+                        target: "myko_server::ws_perf",
+                        "ws_perf client={} addr={} kind={} tx={} command_roundtrip_ms={:?} payload_bytes={} serialize_ms={} send_ms={} binary={}",
+                        write_client_id,
+                        write_addr,
+                        kind,
+                        tx,
+                        started_ms,
+                        payload_bytes,
+                        serialize_ms,
+                        send_ms,
+                        use_binary_writer.load(Ordering::SeqCst)
+                    );
+                }
+            }
+        });
+
+        // Execute commands on a dedicated worker so ping/cancel traffic is never
+        // blocked by long-running command handlers.
+        let command_task = tokio::spawn(async move {
+            while let Some(job) = command_rx.recv().await {
+                let command_ctx = command_ctx.clone();
+                let command_priority_tx = command_priority_tx.clone();
+                let command_drop_logger = command_drop_logger.clone();
+                let command_client_id = command_client_id.clone();
+                match tokio::task::spawn_blocking(move || {
+                    Self::execute_command_job(
+                        command_ctx,
+                        &command_priority_tx,
+                        command_drop_logger.as_ref(),
+                        command_client_id,
+                        job,
+                    );
+                })
+                .await
+                {
+                    Ok(()) => {}
+                    Err(e) => {
+                        log::error!("Command worker panicked: {}", e);
+                    }
+                }
             }
         });
 
@@ -359,12 +499,14 @@ impl WsHandler {
                             if let Err(e) = Self::handle_message(
                                 &mut session,
                                 ctx,
-                                &tx,
+                                &priority_tx,
                                 drop_logger.as_ref(),
                                 &query_ids_by_tx,
                                 &view_ids_by_tx,
                                 &subscribe_started_by_tx,
+                                &command_started_by_tx,
                                 &outbound_commands_by_tx,
+                                &command_tx,
                                 myko_msg,
                             ) {
                                 log::error!("Error handling message: {}", e);
@@ -385,7 +527,7 @@ impl WsHandler {
                             client_id
                         );
                         // Send confirmation FIRST (still in JSON mode)
-                        if let Err(e) = tx.try_send(MykoMessage::ProtocolSwitch {
+                        if let Err(e) = priority_tx.try_send(MykoMessage::ProtocolSwitch {
                             protocol: "msgpack".into(),
                         }) {
                             drop_logger.on_drop("ProtocolSwitch", &e);
@@ -400,12 +542,14 @@ impl WsHandler {
                             if let Err(e) = Self::handle_message(
                                 &mut session,
                                 ctx,
-                                &tx,
+                                &priority_tx,
                                 drop_logger.as_ref(),
                                 &query_ids_by_tx,
                                 &view_ids_by_tx,
                                 &subscribe_started_by_tx,
+                                &command_started_by_tx,
                                 &outbound_commands_by_tx,
+                                &command_tx,
                                 myko_msg,
                             ) {
                                 log::error!("Error handling message: {}", e);
@@ -448,6 +592,7 @@ impl WsHandler {
         // Cleanup
         drop(session); // Drops all subscription guards
         write_task.abort();
+        command_task.abort();
 
         // Unregister from client registry
         if let Some(registry) = try_client_registry() {
@@ -467,12 +612,14 @@ impl WsHandler {
     fn handle_message<W: WsWriter>(
         session: &mut ClientSession<W>,
         ctx: Arc<CellServerCtx>,
-        tx: &mpsc::Sender<MykoMessage>,
+        priority_tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &DropLogger,
         query_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
         view_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
         subscribe_started_by_tx: &Arc<Mutex<HashMap<Arc<str>, Instant>>>,
+        command_started_by_tx: &Arc<Mutex<HashMap<Arc<str>, Instant>>>,
         outbound_commands_by_tx: &Arc<Mutex<HashMap<String, (String, Instant)>>>,
+        command_tx: &mpsc::UnboundedSender<CommandJob>,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let handler_registry = ctx.handler_registry.clone();
@@ -658,7 +805,7 @@ impl WsHandler {
                                         e
                                     );
                                     if let Err(err) =
-                                        tx.try_send(MykoMessage::ViewError(ViewError {
+                                        priority_tx.try_send(MykoMessage::ViewError(ViewError {
                                             tx: tx_id.to_string(),
                                             view_id: view_id.to_string(),
                                             message: e,
@@ -676,11 +823,13 @@ impl WsHandler {
                                 message,
                                 serde_json::to_string(&wrapped.view).unwrap_or_default()
                             );
-                            if let Err(err) = tx.try_send(MykoMessage::ViewError(ViewError {
-                                tx: tx_id.to_string(),
-                                view_id: view_id.to_string(),
-                                message,
-                            })) {
+                            if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(
+                                ViewError {
+                                    tx: tx_id.to_string(),
+                                    view_id: view_id.to_string(),
+                                    message,
+                                },
+                            )) {
                                 drop_logger.on_drop("ViewError", &err);
                             }
                         }
@@ -688,7 +837,7 @@ impl WsHandler {
                 } else {
                     let message = format!("No registered handler for view: {}", view_id);
                     log::warn!("{}", message);
-                    if let Err(err) = tx.try_send(MykoMessage::ViewError(ViewError {
+                    if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(ViewError {
                         tx: tx_id.to_string(),
                         view_id: view_id.to_string(),
                         message,
@@ -844,61 +993,30 @@ impl WsHandler {
                 let command_id = &wrapped.command_id;
 
                 log::debug!("Command {} (tx: {})", command_id, tx_id);
-
-                // Look up the command handler via inventory
-                let mut handler_found = false;
-                for registration in inventory::iter::<CommandHandlerRegistration> {
-                    if registration.command_id == command_id {
-                        handler_found = true;
-                        let executor = (registration.factory)();
-
-                        // Create request context
-                        let req = Arc::new(RequestContext::from_client(
-                            tx_id.clone(),
-                            session.client_id.clone(),
-                            host_id,
-                        ));
-
-                        let cmd_id: Arc<str> = Arc::from(wrapped.command_id.clone());
-
-                        // Create command context
-                        let cmd_ctx = CommandContext::new(cmd_id, req, ctx.clone());
-
-                        // Execute the command
-                        match executor.execute_from_value(wrapped.command.clone(), cmd_ctx) {
-                            Ok(result) => {
-                                let response = MykoMessage::CommandResponse(CommandResponse {
-                                    response: result,
-                                    tx: tx_id.to_string(),
-                                });
-                                if let Err(e) = tx.try_send(response) {
-                                    drop_logger.on_drop("CommandResponse", &e);
-                                }
-                            }
-                            Err(e) => {
-                                let error = MykoMessage::CommandError(CommandError {
-                                    tx: tx_id.to_string(),
-                                    command_id: command_id.to_string(),
-                                    message: e.message,
-                                });
-                                if let Err(e) = tx.try_send(error) {
-                                    drop_logger.on_drop("CommandError", &e);
-                                }
-                            }
-                        }
-                        break;
-                    }
+                let received_at = Instant::now();
+                if let Ok(mut map) = command_started_by_tx.lock() {
+                    map.insert(tx_id.clone(), received_at);
                 }
-
-                if !handler_found {
-                    log::warn!("No registered handler for command: {}", command_id);
+                if let Err(e) = command_tx.send(CommandJob {
+                    tx_id: tx_id.clone(),
+                    command_id: wrapped.command_id.clone(),
+                    command: wrapped.command.clone(),
+                    received_at,
+                }) {
+                    log::error!(
+                        "Failed to enqueue command {} for client {} tx={}: {}",
+                        command_id,
+                        session.client_id,
+                        tx_id,
+                        e
+                    );
                     let error = MykoMessage::CommandError(CommandError {
                         tx: tx_id.to_string(),
                         command_id: command_id.to_string(),
-                        message: format!("Command handler not found: {}", command_id),
+                        message: "Command queue unavailable".to_string(),
                     });
-                    if let Err(e) = tx.try_send(error) {
-                        drop_logger.on_drop("CommandError", &e);
+                    if let Err(err) = priority_tx.try_send(error) {
+                        drop_logger.on_drop("CommandError", &err);
                     }
                 }
             }
@@ -906,7 +1024,7 @@ impl WsHandler {
             MykoMessage::Ping(PingData { id, timestamp }) => {
                 // Echo back the ping data
                 let pong = MykoMessage::Ping(PingData { id, timestamp });
-                if let Err(e) = tx.try_send(pong) {
+                if let Err(e) = priority_tx.try_send(pong) {
                     drop_logger.on_drop("Ping", &e);
                 }
             }
@@ -1052,6 +1170,95 @@ impl WsHandler {
 
         Ok(())
     }
+
+    fn execute_command_job(
+        ctx: Arc<CellServerCtx>,
+        priority_tx: &mpsc::Sender<MykoMessage>,
+        drop_logger: &DropLogger,
+        client_id: Arc<str>,
+        job: CommandJob,
+    ) {
+        let host_id = ctx.host_id;
+        let started = Instant::now();
+        let queue_wait_ms = started.duration_since(job.received_at).as_millis();
+        let command_id = job.command_id.clone();
+
+        let mut handler_found = false;
+        for registration in inventory::iter::<CommandHandlerRegistration> {
+            if registration.command_id == command_id {
+                handler_found = true;
+                let executor = (registration.factory)();
+
+                let req = Arc::new(RequestContext::from_client(
+                    job.tx_id.clone(),
+                    client_id.clone(),
+                    host_id,
+                ));
+                let cmd_id: Arc<str> = Arc::from(command_id.clone());
+                let cmd_ctx = CommandContext::new(cmd_id, req, ctx.clone());
+                let execute_started = Instant::now();
+
+                match executor.execute_from_value(job.command.clone(), cmd_ctx) {
+                    Ok(result) => {
+                        let response = MykoMessage::CommandResponse(CommandResponse {
+                            response: result,
+                            tx: job.tx_id.to_string(),
+                        });
+                        if let Err(e) = priority_tx.try_send(response) {
+                            drop_logger.on_drop("CommandResponse", &e);
+                        }
+                    }
+                    Err(e) => {
+                        let error = MykoMessage::CommandError(CommandError {
+                            tx: job.tx_id.to_string(),
+                            command_id: command_id.clone(),
+                            message: e.message,
+                        });
+                        if let Err(err) = priority_tx.try_send(error) {
+                            drop_logger.on_drop("CommandError", &err);
+                        }
+                    }
+                }
+                let execute_ms = execute_started.elapsed().as_millis();
+                let total_ms = job.received_at.elapsed().as_millis();
+                log::debug!(
+                    target: "myko_server::ws_perf",
+                    "command_exec client={} tx={} command_id={} queue_wait_ms={} execute_ms={} total_ms={}",
+                    client_id,
+                    job.tx_id,
+                    command_id,
+                    queue_wait_ms,
+                    execute_ms,
+                    total_ms
+                );
+                break;
+            }
+        }
+
+        if !handler_found {
+            log::warn!("No registered handler for command: {}", command_id);
+            let error = MykoMessage::CommandError(CommandError {
+                tx: job.tx_id.to_string(),
+                command_id: command_id.clone(),
+                message: format!("Command handler not found: {}", command_id),
+            });
+            if let Err(e) = priority_tx.try_send(error) {
+                drop_logger.on_drop("CommandError", &e);
+            }
+        }
+
+        if !handler_found {
+            log::debug!(
+                target: "myko_server::ws_perf",
+                "command_exec client={} tx={} command_id={} queue_wait_ms={} execute_ms=0 total_ms={} handler_found=false",
+                client_id,
+                job.tx_id,
+                command_id,
+                queue_wait_ms,
+                job.received_at.elapsed().as_millis()
+            );
+        }
+    }
 }
 
 /// Channel-based WebSocket writer.
@@ -1060,6 +1267,7 @@ impl WsHandler {
 /// forwarded to the actual WebSocket.
 struct ChannelWriter {
     tx: mpsc::Sender<MykoMessage>,
+    deferred_tx: mpsc::Sender<DeferredOutbound>,
     drop_logger: Arc<DropLogger>,
 }
 
@@ -1068,6 +1276,21 @@ impl WsWriter for ChannelWriter {
         // Use try_send since we're in sync context
         if let Err(e) = self.tx.try_send(msg) {
             self.drop_logger.on_drop("message", &e);
+        }
+    }
+
+    fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
+        if let Err(e) = self.deferred_tx.try_send(DeferredOutbound::Report(tx, output)) {
+            self.drop_logger.on_drop("ReportResponseDeferred", &e);
+        }
+    }
+
+    fn send_query_response(&self, response: PendingQueryResponse, is_view: bool) {
+        if let Err(e) = self
+            .deferred_tx
+            .try_send(DeferredOutbound::Query { response, is_view })
+        {
+            self.drop_logger.on_drop("QueryResponseDeferred", &e);
         }
     }
 }
@@ -1079,8 +1302,13 @@ mod tests {
     #[test]
     fn test_channel_writer() {
         let (tx, mut rx) = mpsc::channel(10);
+        let (deferred_tx, _deferred_rx) = mpsc::channel(10);
         let drop_logger = Arc::new(DropLogger::new("test-client".into()));
-        let writer = ChannelWriter { tx, drop_logger };
+        let writer = ChannelWriter {
+            tx,
+            deferred_tx,
+            drop_logger,
+        };
 
         let msg = MykoMessage::Ping(PingData {
             id: "test".to_string(),
