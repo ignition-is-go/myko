@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable};
+#[cfg(not(target_arch = "wasm32"))]
+use hypha::CellMap;
+use hypha::{Cell, CellImmutable, CellValue};
 use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
@@ -11,12 +13,14 @@ use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
-    common::{to_value::ToValue, with_id::WithId},
+    common::{to_value::ToValue, with_id::{WithId, WithTypedId}},
     core::item::Eventable,
     query::QueryParams,
     report::ReportId,
     request::RequestContext,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::item::{typed_map_from_any_item, typed_map_from_any_item_with_typed_id};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -90,11 +94,62 @@ impl ReportContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Subscribe to a query dependency and get its reactive CellMap.
+    /// Subscribe to a query dependency and get a typed reactive CellMap keyed
+    /// by the item's typed id.
     ///
-    /// Use this when you need incremental `MapDiff` semantics rather than
-    /// a flattened `Vec<Item>` stream from `query()`.
-    pub fn query_map<Q>(&self, query: Q) -> FilteredCellMap
+    /// Use this when you need incremental `MapDiff` semantics with row-level
+    /// granularity, while preserving the query's concrete item type.
+    pub fn query_map<Q>(&self, query: Q) -> CellMap<<Q::Item as WithTypedId>::Id, Q::Item, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item:
+            Eventable
+                + WithId
+                + WithTypedId
+                + DeserializeOwned
+                + Clone
+                + std::fmt::Debug
+                + Send
+                + Sync
+                + CellValue
+                + 'static,
+    {
+        typed_map_from_any_item_with_typed_id(
+            self.server_ctx.query_map(query, self.req.clone()),
+            "ReportContext::query_map",
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Subscribe to a query dependency and get a typed reactive CellMap keyed
+    /// by canonical `Arc<str>` ids.
+    ///
+    /// Prefer `query_map()` unless you specifically need string ids.
+    pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Q::Item, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item:
+            Eventable
+                + WithId
+                + DeserializeOwned
+                + Clone
+                + std::fmt::Debug
+                + Send
+                + Sync
+                + CellValue
+                + 'static,
+    {
+        typed_map_from_any_item(
+            self.server_ctx.query_map(query, self.req.clone()),
+            "ReportContext::query_map_by_str",
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Subscribe to a query dependency and get an untyped reactive CellMap.
+    ///
+    /// Prefer `query_map()` unless you explicitly need erased `AnyItem`.
+    pub fn query_map_untyped<Q>(&self, query: Q) -> FilteredCellMap
     where
         Q: QueryParams + 'static,
         Q::Item:
