@@ -423,13 +423,12 @@ fn run_consumer_loop(
         SELECT e.id, e.event::text
         FROM latest
         JOIN {table} e ON e.id = latest.id
-        WHERE latest.change_type = 'SET'
         ORDER BY e.id ASC
         "
     );
     let snapshot_rows = reader
         .query(&snapshot_sql, &[&high_water])
-        .map_err(|e| format_pg_error("query(snapshot latest SET)", Some(&config.url), &e))?;
+        .map_err(|e| format_pg_error("query(snapshot latest events)", Some(&config.url), &e))?;
     let snapshot_count = snapshot_rows.len();
     for row in snapshot_rows {
         let id: i64 = row.get(0);
