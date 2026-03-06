@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use leptos::prelude::*;
 
 /// Initialize the myko-leptos bridge.
@@ -62,8 +64,7 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 /// Subscribes to the query via `MykoClient` and updates the signal on each change.
 ///
 /// `Q` is the query type (e.g. `GetAllServers`).
-/// `T` is the output type that `Q::Item` converts into via `Into<T>`.
-pub fn live_query<Q, T>(query: Q) -> ReadSignal<Vec<T>>
+pub fn live_query<Q>(query: Q) -> ReadSignal<Vec<Arc<Q::Item>>>
 where
     Q: myko_rs::query::QueryParams + Clone + Send + Sync + 'static,
     Q::Item: myko_rs::core::item::Eventable
@@ -71,10 +72,8 @@ where
         + serde::de::DeserializeOwned
         + Clone
         + std::fmt::Debug
-        + Into<T>
         + Send
         + 'static,
-    T: Clone + Send + Sync + 'static,
 {
     let (read, write) = signal(vec![]);
 
@@ -89,7 +88,7 @@ where
         let cell = client.watch_query(query);
         let guard = cell.subscribe(move |signal| {
             if let Signal::Value(items) = signal {
-                write.set((**items).iter().cloned().map(Into::into).collect());
+                write.set((**items).to_vec());
             }
         });
         cell.own(guard);
