@@ -469,6 +469,7 @@
         "auth0-lock": "^14.2.4",
         "bezier-js": "^6.1.4",
         "daisyui": "^5.5.19",
+        "elkjs": "^0.11.1",
         "fast-xml-parser": "^5.4.2",
         "hls.js": "^1.6.15",
         "html2canvas": "^1.4.1",
@@ -3003,6 +3004,8 @@
     "element-resize-detector": ["element-resize-detector@1.2.4", "", { "dependencies": { "batch-processor": "1.0.0" } }, "sha512-Fl5Ftk6WwXE0wqCgNoseKWndjzZlDCwuPTcoVZfCP9R3EHQF8qUtr3YUPNETegRBOKqQKPW3n4kiIWngGi8tKg=="],
 
     "elementtree": ["elementtree@0.1.7", "", { "dependencies": { "sax": "1.1.4" } }, "sha512-wkgGT6kugeQk/P6VZ/f4T+4HB41BVgNBq5CDIZVbQ02nvTVqAiVTbskxxu3eA/X96lMlfYOwnLQpN2v5E1zDEg=="],
+
+    "elkjs": ["elkjs@0.11.1", "", {}, "sha512-zxxR9k+rx5ktMwT/FwyLdPCrq7xN6e4VGGHH8hA01vVYKjTFik7nHOxBnAYtrgYUB1RpAiLvA1/U2YraWxyKKg=="],
 
     "emittery": ["emittery@0.13.1", "", {}, "sha512-DeWwawk6r5yR9jFgnDKYt4sLS0LmHJJi3ZOnb5/JdbYwj3nW+FxQnHIjhBKz8YLC7oRNPVM9NQ47I3CVx34eqQ=="],
 
