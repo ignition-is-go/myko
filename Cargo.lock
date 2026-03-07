@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "amx"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "asset-store"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "axum",
  "dotenv",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "atem"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -596,7 +596,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autosocket"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "dashmap",
  "flume 0.11.1",
@@ -1374,7 +1374,7 @@ dependencies = [
 
 [[package]]
 name = "brightsign"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "reqwest 0.11.27",
@@ -1391,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "brompton"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "crestron"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2508,7 +2508,7 @@ dependencies = [
 
 [[package]]
 name = "dante-executor"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "dante-control-rs",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "digico"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "rosc",
@@ -2903,7 +2903,7 @@ checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
 
 [[package]]
 name = "disguise"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "pulse-platform",
@@ -2940,7 +2940,7 @@ dependencies = [
 
 [[package]]
 name = "display-core"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
@@ -2956,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "display-nvidia"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "async-trait",
  "log",
@@ -2971,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "display-output"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "ash",
  "core-foundation 0.10.1",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "eos"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -3448,7 +3448,7 @@ dependencies = [
 
 [[package]]
 name = "extron"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "rship-sdk",
@@ -3676,7 +3676,7 @@ dependencies = [
 
 [[package]]
 name = "freed"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -3965,7 +3965,7 @@ dependencies = [
 
 [[package]]
 name = "gen-executor"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3991,7 +3991,7 @@ dependencies = [
 
 [[package]]
 name = "generic-osc"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "fnv",
@@ -4687,7 +4687,7 @@ dependencies = [
 
 [[package]]
 name = "http-webhook"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -4872,7 +4872,7 @@ dependencies = [
 
 [[package]]
 name = "hypha"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5613,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "leptos-playground"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "console_error_panic_hook",
  "leptos",
@@ -5874,7 +5874,7 @@ dependencies = [
 
 [[package]]
 name = "link"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5923,7 +5923,7 @@ dependencies = [
 
 [[package]]
 name = "link-cli"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "clap",
  "crossterm",
@@ -5940,7 +5940,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "dotenv",
  "link",
@@ -5957,7 +5957,7 @@ dependencies = [
 
 [[package]]
 name = "link-ui-leptos"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -5978,7 +5978,7 @@ dependencies = [
 
 [[package]]
 name = "linkd"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "crossbeam",
  "crossbeam-channel",
@@ -6108,7 +6108,7 @@ checksum = "6f92855f29f744b0ae8beadce8c42569cf5cafc82aa6eab3f95ce72c3313fc0d"
 
 [[package]]
 name = "ltc-timecode"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -6404,7 +6404,7 @@ dependencies = [
 
 [[package]]
 name = "mqtt-bridge"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "fnv",
@@ -6425,7 +6425,7 @@ dependencies = [
 
 [[package]]
 name = "mtc-timecode"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "midir",
@@ -6507,7 +6507,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "myko-leptos"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "leptos",
  "myko-rs",
@@ -6516,7 +6516,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6525,7 +6525,7 @@ dependencies = [
 
 [[package]]
 name = "myko-rs"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -6558,7 +6558,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "dashmap",
@@ -6694,7 +6694,7 @@ dependencies = [
 
 [[package]]
 name = "natnet"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -6713,7 +6713,7 @@ dependencies = [
 
 [[package]]
 name = "ndi-executor"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -6828,7 +6828,7 @@ dependencies = [
 
 [[package]]
 name = "network-discovery-executor"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6903,7 +6903,7 @@ dependencies = [
 
 [[package]]
 name = "nmos-executor"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6955,7 +6955,7 @@ dependencies = [
 
 [[package]]
 name = "noise-rs"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "hostname",
@@ -7023,7 +7023,7 @@ dependencies = [
 
 [[package]]
 name = "novastar"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "config 0.14.1",
@@ -7738,7 +7738,7 @@ dependencies = [
 
 [[package]]
 name = "opencv-napi"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "napi",
@@ -7925,7 +7925,7 @@ dependencies = [
 
 [[package]]
 name = "pangolin"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "rosc",
@@ -8700,7 +8700,7 @@ dependencies = [
 
 [[package]]
 name = "ptp"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8720,7 +8720,7 @@ dependencies = [
 
 [[package]]
 name = "pulse-platform"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 
 [[package]]
 name = "pxfm"
@@ -8733,7 +8733,7 @@ dependencies = [
 
 [[package]]
 name = "qlab"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -8762,7 +8762,7 @@ dependencies = [
 
 [[package]]
 name = "qsys"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -9223,7 +9223,7 @@ checksum = "559e8936e7aa47f2ea22b546dba88bf0596fb09f94ea7c4ddfb45dc9a15dc39d"
 
 [[package]]
 name = "reaper"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "config 0.14.1",
@@ -9344,7 +9344,7 @@ checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
 name = "release"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "regex",
@@ -9486,7 +9486,7 @@ dependencies = [
 
 [[package]]
 name = "resolume"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -9608,7 +9608,7 @@ dependencies = [
 
 [[package]]
 name = "rs-macros"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "quote",
  "schemars 1.2.1",
@@ -9619,7 +9619,7 @@ dependencies = [
 
 [[package]]
 name = "rship-asset-store-core"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -9654,7 +9654,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "futures-util",
  "log",
@@ -9707,7 +9707,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-assets"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "dashmap",
@@ -9730,7 +9730,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-assignment"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "dashmap",
  "myko-macros",
@@ -9745,7 +9745,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-audit"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -9758,7 +9758,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-cameras"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -9776,7 +9776,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-color"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -9789,7 +9789,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-compositing"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "hypha",
@@ -9806,7 +9806,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-core"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -9819,7 +9819,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-engine"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "env_logger",
@@ -9844,7 +9844,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-external"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "dashmap",
  "hypha",
@@ -9867,7 +9867,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-feedback"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -9878,7 +9878,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-foundation"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-rs",
  "serde",
@@ -9888,7 +9888,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-generators"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -9905,7 +9905,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-infrastructure"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -9921,7 +9921,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-lighting"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -9937,7 +9937,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-link"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "log",
  "myko-macros",
@@ -9951,7 +9951,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-lists"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "log",
@@ -9965,7 +9965,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-logic"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-rs",
@@ -9978,7 +9978,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-machine"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -9989,7 +9989,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-macros"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "convert_case 0.6.0",
  "proc-macro2",
@@ -9999,7 +9999,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-math"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-rs",
@@ -10011,7 +10011,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-media"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10025,7 +10025,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-networking"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "myko-macros",
@@ -10041,7 +10041,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-nmos"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10053,7 +10053,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-nodes"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "dashmap",
  "hypha",
@@ -10075,7 +10075,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-nodes-runtime"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10092,7 +10092,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-objects"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-rs",
@@ -10105,7 +10105,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-physical"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10123,7 +10123,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-rive"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "hypha",
@@ -10142,7 +10142,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-runtime"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "hypha",
@@ -10170,7 +10170,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-scene"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10185,7 +10185,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-scheduling"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "chrono",
  "myko-macros",
@@ -10201,7 +10201,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-sequencing"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10220,7 +10220,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-status"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10235,7 +10235,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-string"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-rs",
@@ -10249,7 +10249,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-surfaces"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10263,7 +10263,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-tags"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10277,7 +10277,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-teams"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10288,7 +10288,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-timing"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10306,7 +10306,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-ui"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10321,7 +10321,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-variables"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10341,7 +10341,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-vfx"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-macros",
  "myko-rs",
@@ -10355,7 +10355,7 @@ dependencies = [
 
 [[package]]
 name = "rship-entities-visualization"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "hypha",
  "myko-macros",
@@ -10372,7 +10372,7 @@ dependencies = [
 
 [[package]]
 name = "rship-mcp"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "myko-server",
  "rship-entities",
@@ -10380,7 +10380,7 @@ dependencies = [
 
 [[package]]
 name = "rship-node-agent"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10406,7 +10406,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sdk"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "autosocket",
  "env_logger",
@@ -10428,7 +10428,7 @@ dependencies = [
 
 [[package]]
 name = "rship-server"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "dotenv",
  "env_logger",
@@ -10444,7 +10444,7 @@ dependencies = [
 
 [[package]]
 name = "rship-studio"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -10480,7 +10480,7 @@ dependencies = [
 
 [[package]]
 name = "rship-sync"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "dashmap",
  "hypha",
@@ -11125,7 +11125,7 @@ dependencies = [
 
 [[package]]
 name = "serial-port"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -11939,7 +11939,7 @@ dependencies = [
 
 [[package]]
 name = "sync-server"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "dotenv",
  "env_logger",
@@ -12687,7 +12687,7 @@ dependencies = [
 
 [[package]]
 name = "test-pulse"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -12706,7 +12706,7 @@ dependencies = [
 
 [[package]]
 name = "test-pulse-ui"
-version = "0.1.0"
+version = "4.0.0-canary.1"
 dependencies = [
  "console_error_panic_hook",
  "gloo-net",
@@ -13743,7 +13743,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "visca"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -13763,7 +13763,7 @@ dependencies = [
 
 [[package]]
 name = "vmix"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
@@ -14161,7 +14161,7 @@ dependencies = [
 
 [[package]]
 name = "weather"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "reqwest 0.11.27",
@@ -15471,7 +15471,7 @@ checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 
 [[package]]
 name = "yamaha"
-version = "3.1.0-canary.23"
+version = "4.0.0-canary.1"
 dependencies = [
  "anyhow",
  "parking_lot",
