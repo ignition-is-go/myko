@@ -1,5 +1,8 @@
 $schema: 'https://moonrepo.dev/schemas/workspace.json'
 
+vcs:
+  defaultBranch: 'dev'
+
 projects:
   asset-store-core: 'libs/asset-store/core'
   asset-store: 'apps/asset_store'
