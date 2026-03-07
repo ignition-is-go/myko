@@ -207,7 +207,7 @@ napi-build = "2.0"
 
 # Internal crates
 autosocket = { version = "4.0.0-canary.1", path = "libs/autosocket" }
-hypha = { version = "4.0.0-canary.1", path = "libs/hypha/hypha" }
+hypha = { version = "0.1.0", path = "libs/hypha/hypha" }
 link = { version = "4.0.0-canary.1", path = "libs/link/core" }
 myko-leptos = { version = "4.0.0-canary.1", path = "libs/myko/leptos" }
 myko-macros = { version = "4.0.0-canary.1", path = "libs/myko/macros" }
