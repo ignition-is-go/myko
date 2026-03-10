@@ -1,110 +1,172 @@
 # Agent Instructions
 
-This file is the canonical agent guide for this repository.
+Rust-first monorepo with Svelte/SvelteKit UI. Prefer Rust for new backend/domain behavior, and generate cross-language types from Rust instead of duplicating them by hand.
 
-## Overview
+## Rule Sources
 
-Rust-first monorepo with UI in Svelte.
-TypeScript libraries exist for legacy paths but are being phased out.
+- This `AGENTS.md` is the primary repo-specific guide.
+- No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` files were present when this file was updated.
 
-Primary components:
-- **Hypha**: Reactive dataflow framework for complex systems
-- **Myko**: Event-sourcing CQRS framework
-- **Rship**: Control platform built on Myko
-- **Core principle**: Business logic belongs in Rust; cross-language types should be generated, not hand-maintained
+## Quick Context
 
-## Issue Tracking (Beads)
+- Core systems: Hypha (reactive dataflow), Myko (event-sourcing/CQRS), Rship (platform on Myko).
+- Important paths: `apps/server/`, `apps/ui/`, `apps/execs/`, `libs/myko/rs/`, `libs/entities/rs/`, `libs/sdk/rs/`, `libs/sdk/ts/`, `tools/`.
+- This repo uses `bd`; close finished local work with `bd close <id>` then `bd sync --flush-only`.
 
-This project uses **bd** (beads) for issue tracking.
-Run `bd onboard` once, then `bd ready` / `bd show <id>` when starting work.
+## Core Rules
 
-### Quick Reference
+- Rust first unless you are working inside an established legacy TS path.
+- Never hand-maintain TS mirrors of Rust entity types.
+- Reuse existing Myko patterns for registration, logging, env loading, and server wiring.
+- All formatting and testing should go through Moon tasks, not direct formatter/test runner commands.
+- Comments should explain why, not what.
+- Use TODO/NOTE sparingly and include initials or an issue tag, e.g. `TODO(ts): ...`.
+
+## Workspace Commands
 
 ```bash
-bd ready                              # Find available work
-bd show <id>                          # View issue details
-bd update <id> --status in_progress   # Claim work
-bd create "Title" --type task --priority 2
-bd close <id>                         # Complete work
-bd sync --flush-only                  # Persist beads locally only
+moon run root:install
+moon run root:check
 ```
 
-### Beads Workflow Rules
+- Prefer `moon run <project>:<task>` over calling underlying package scripts directly.
+- Use Moon for formatting/testing; if a needed formatter or test flow is not exposed yet, add/update the Moon task instead of standardizing on the raw command.
 
-- **No auto-push**: Only sync/push remote when the user explicitly asks
-- **Local by default**: Use `bd sync --flush-only` during normal task completion
-- **Task-scoped commits**: Commit only files changed for the current task
-- **Separate concerns**: Keep code commits separate from beads persistence actions
-
-### Completing Work
+## Rust Commands
 
 ```bash
-git add <only-task-files>
-git commit -m "feat(scope): ..."
-bd close <id>
-bd sync --flush-only
-```
-
-Do not run `git push` or full `bd sync` unless explicitly requested.
-
-## Commands
-
-```bash
-# Rust (primary)
 cargo check --target-dir target/agent
 cargo test --target-dir target/agent -- --nocapture
 cargo clippy --target-dir target/agent -- -D warnings
 cargo fmt --all
-
-# UI / TypeScript
-bun install
-bun run --filter @rship/ui dev
-bun run --filter <package> build
-bun run format:all
-
-# Type generation (run inside relevant crate)
-bunx @moonrepo/cli run myko-rs:gen
-bunx @moonrepo/cli run entities-rs:gen
 ```
 
-## Cargo / Clippy Guidance
+- Always use `--target-dir target/agent` to avoid lock contention.
+- Prefer `cargo check` during iteration.
+- Check `.bacon-locations` before broad Rust validation.
 
-- Prefer `cargo check` for validation instead of full builds during iteration
-- Always use `--target-dir target/agent` for cargo commands to avoid lock contention with other tooling
-- Check `.bacon-locations` before running broad clippy/check commands; fix reported errors in order
-- Assume user-controlled hot reload workflows are active: do not start long-running apps unless asked
+## UI Commands
 
-## Architecture Notes
+```bash
+moon run ui:dev
+moon run ui:build
+moon run ui:check
+```
 
-### Myko (`libs/myko/`)
-Event-sourcing CQRS flow: **Commands -> Events -> State -> Queries**
+## Type Generation
 
-### Entities (`libs/entities/`)
-Canonical entity definitions live in Rust (`libs/entities/rs/`).
-TypeScript bindings are generated from Rust.
+Run inside the relevant crate when changing exported Rust types:
 
-### Applications (`apps/`)
-- `apps/server/`: Primary Rust server
-- `apps/ui/`: SvelteKit UI
-- `apps/execs/`: Executor implementations
+```bash
+moon run myko-rs:gen
+moon run entities-rs:gen
+```
 
-## Engineering Rules
+## Single-Test Commands
 
-- **Rust first**: New domain/backend logic should be implemented in Rust
-- **Generated types**: Never manually duplicate cross-language types
-- **No stringly typing**: Avoid hardcoded field/type names in Rust
-- **Use existing patterns**: Reuse Myko logging, env guards, and debug-level conventions
-- **Comments explain why**: Keep comments short and intention-focused
+### Rust
 
-## Style
+```bash
+# Single crate
+cargo test -p rship-server --target-dir target/agent -- --nocapture
 
-- Rust: `snake_case` functions/vars, `PascalCase` types
-- TS/JS: `camelCase` functions/vars, `PascalCase` types/classes
-- Max line length: 120 chars
-- Formatting: `rustfmt` and `prettier` where applicable
-- Commits: Conventional commits (`feat(scope): ...`, `fix(scope): ...`, `chore(scope): ...`)
+# Single inline/unit test by exact name
+cargo test -p rship-server my_test_name --target-dir target/agent -- --exact --nocapture
 
-## Migration References
+# Single integration test file
+cargo test -p rship-entities-engine --test cue_engine_test --target-dir target/agent -- --nocapture
+```
 
+### Vitest
+
+```bash
+# Use a Moon task when available.
+# If targeted Vitest execution is needed and no Moon task exists,
+# add/update the Moon task rather than relying on raw bun commands.
+```
+
+### Playwright
+
+```bash
+# Use a Moon task when available.
+# If targeted Playwright execution is needed and no Moon task exists,
+# add/update the Moon task rather than relying on raw bun commands.
+```
+
+- `apps/ui/vitest.config.ts` includes `src/**/*.{test,spec}.{js,ts}`.
+- `apps/ui/playwright.config.ts` defaults to Chromium.
+- `libs/sdk/ts` also uses Vitest and should be routed through Moon tasks.
+
+## Validation Guidance
+
+- Rust-only change: usually run `cargo check -p <crate> --target-dir target/agent`.
+- Rust behavior change: prefer `moon run <project>:test`; if you need narrower coverage, expose that scoped command through Moon.
+- UI change: usually run `moon run ui:check` plus the narrowest matching Moon-backed test task.
+- Do not start long-running dev servers unless the user asks.
+
+## Formatting And Imports
+
+### Rust
+
+- `rustfmt.toml` uses edition `2024`.
+- Import groups are `std`, external crates, then local crate/modules.
+- Imports are reordered automatically and merged at crate granularity.
+
+### TypeScript / Svelte
+
+- Root Prettier rules: 2 spaces, single quotes, no semicolons, trailing commas, width 80.
+- `prettier-plugin-organize-imports` sorts imports automatically.
+- `apps/ui/.prettierrc` also enables `prettier-plugin-tailwindcss`.
+- Biome lints JS/TS; Prettier formats it.
+
+## Naming And File Conventions
+
+- Rust: `snake_case` functions/modules/variables, `PascalCase` types/traits, `SCREAMING_SNAKE_CASE` constants.
+- TS/Svelte: `camelCase` functions/variables, `PascalCase` components/classes/types.
+- Runes-based Svelte service modules often use `.service.svelte.ts`.
+- UI activity registration files commonly use `.activity.ts`.
+- Keep TS tests near the code they cover; Rust tests may be inline or under `tests/`.
+
+## Types And Architecture
+
+- Canonical domain types live in Rust, especially under `libs/entities/rs/` and sibling entity crates.
+- Generate TS bindings from Rust exports instead of duplicating shapes manually.
+- Prefer explicit types on public APIs and non-obvious return values.
+- `apps/ui/tsconfig.json` is strict; the root TS config is looser for legacy packages.
+- In UI code, prefer aliases like `$lib`, `$services`, `$components`, and `$design` over deep relative imports.
+
+## Error Handling
+
+### Rust
+
+- `anyhow` is the common application-level error type.
+- Prefer `anyhow::Result<T>` or a local crate result alias if one exists.
+- Add `.context(...)` / `.with_context(...)` for IO, parsing, subprocess, and network failures.
+- Use `bail!` / `anyhow!` for clear early exits.
+
+### TypeScript / UI
+
+- Prefer `unknown` for caught errors and normalize before surfacing them.
+- Fail gracefully in UI/service code; many services use helper wrappers and toast feedback.
+- Avoid introducing `any` unless there is no practical typed option.
+- Gate noisy debug logging behind a prefix and/or development checks.
+
+## Testing Conventions
+
+- Vitest is the main JS/TS unit test runner.
+- Playwright is used for UI e2e coverage.
+- Rust uses `#[test]`, `#[tokio::test]`, inline test modules, and integration tests.
+- Favor narrow, behavior-focused tests over broad end-to-end setups.
+
+## Commit Expectations
+
+- Use conventional commits: `feat(scope): ...`, `fix(scope): ...`, `chore(scope): ...`.
+- Keep commits task-scoped; do not bundle unrelated files.
+- Do not push or create remote PR side effects unless explicitly asked.
+
+## Useful References
+
+- `docs/TESTING.md`
+- `docs/CONTRIBUTING.md`
 - `libs/myko/rs/MIGRATION.md`
 - `libs/myko/rs/OPTIMIZATION.md`
