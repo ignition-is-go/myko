@@ -13,7 +13,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, WeakCellMap};
+use hypha::{Cell, CellImmutable, CellMutable, Gettable, IdFor, MapExt, Mutable, WeakCellMap};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -21,7 +21,8 @@ use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
-    core::item::{AnyItem, Eventable, typed_map_arc_from_any_item},
+    common::with_id::WithTypedId,
+    core::item::{AnyItem, Eventable, downcast_any_item_arc, typed_map_arc_from_any_item},
     query::{
         FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
         QueryTestCtx,
@@ -900,6 +901,49 @@ impl CellServerCtx {
         typed_map_arc_from_any_item(self.view_map_untyped(view, request), "CellServerCtx::view")
     }
 
+    /// Get a one-shot typed entity snapshot by id.
+    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
+    where
+        T: Eventable + WithTypedId + Send + Sync + 'static,
+        <T as WithTypedId>::Id: hypha::IdFor<T, MapKey = Arc<str>>,
+    {
+        let store = self.registry.get_or_create(T::entity_name_static());
+        let map_key = id.map_key();
+        let item = store.get_value(&map_key)?;
+        Some(downcast_any_item_arc::<T>(
+            &item,
+            "CellServerCtx::entity_snapshot",
+        ))
+    }
+
+    /// Get one-shot typed entity snapshots for an item type.
+    pub fn entity_snapshots<T>(&self) -> Vec<Arc<T>>
+    where
+        T: Eventable + WithTypedId + Send + Sync + 'static,
+        <T as WithTypedId>::Id: hypha::IdFor<T, MapKey = Arc<str>>,
+    {
+        let store = self.registry.get_or_create(T::entity_name_static());
+        store
+            .snapshot()
+            .into_iter()
+            .map(|(_, item)| downcast_any_item_arc::<T>(&item, "CellServerCtx::entity_snapshots"))
+            .collect()
+    }
+
+    /// Get one-shot typed entity snapshots for the provided ids.
+    pub fn entity_snapshots_by_id<T>(
+        &self,
+        ids: impl IntoIterator<Item = <T as WithTypedId>::Id>,
+    ) -> Vec<Arc<T>>
+    where
+        T: Eventable + WithTypedId + Send + Sync + 'static,
+        <T as WithTypedId>::Id: hypha::IdFor<T, MapKey = Arc<str>>,
+    {
+        ids.into_iter()
+            .filter_map(|id| self.entity_snapshot::<T>(&id))
+            .collect()
+    }
+
     /// Run a one-shot (non-reactive) query.
     ///
     /// Iterates the store directly and returns matching entities without creating
@@ -922,8 +966,8 @@ impl CellServerCtx {
             .snapshot()
             .into_iter()
             .filter_map(|(_, item)| {
-                let typed_item = item.as_any().downcast_ref::<Q::Item>()?;
-                let typed_item = Arc::new(typed_item.clone());
+                let typed_item =
+                    downcast_any_item_arc::<Q::Item>(&item, "CellServerCtx::query_snapshot");
                 let ctx = QueryTestCtx {
                     item: typed_item.clone(),
                     query: query.clone(),

@@ -125,7 +125,7 @@ where
     typed.lock()
 }
 
-fn downcast_any_item_arc<T: Send + Sync + 'static>(
+pub fn downcast_any_item_arc<T: Send + Sync + 'static>(
     value: &Arc<dyn AnyItem>,
     context: &'static str,
 ) -> Arc<T> {

@@ -23,7 +23,9 @@ use super::{
     traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
 };
 use crate::{
-    common::with_id::WithId, core::relationship::FkExtractor, request::RequestContext,
+    common::with_id::WithId,
+    core::{item::downcast_any_item_arc, relationship::FkExtractor},
+    request::RequestContext,
     server::CellServerCtx, store::StoreRegistry,
 };
 
@@ -359,11 +361,9 @@ where
         DeserializeOwned + Eventable + WithId + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     source.select(move |item_any: &AnyItemArc| {
-        let Some(item) = item_any.as_any().downcast_ref::<Q::Item>() else {
-            return false;
-        };
+        let item = downcast_any_item_arc::<Q::Item>(item_any, "filter_query_over_source");
         Q::test_entity(QueryTestCtx {
-            item: Arc::new(item.clone()),
+            item,
             query: query.clone(),
             query_context: query_context.clone(),
         })
@@ -447,11 +447,9 @@ where
 
         let store = registry.get_or_create(&Q::query_item_type_static());
         Ok(store.select(move |item_any: &AnyItemArc| {
-            let Some(item) = item_any.as_any().downcast_ref::<Q::Item>() else {
-                return false;
-            };
+            let item = downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
             Q::test_entity(QueryTestCtx {
-                item: Arc::new(item.clone()),
+                item,
                 query: query.clone(),
                 query_context: query_ctx.clone(),
             })
