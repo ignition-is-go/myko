@@ -9646,6 +9646,7 @@ dependencies = [
  "partially",
  "rship-entities-core",
  "rship-entities-external",
+ "rship-entities-spatialization",
  "serde",
  "ts-rs",
  "uuid",
@@ -9744,6 +9745,7 @@ dependencies = [
  "rship-entities-runtime",
  "rship-entities-scene",
  "rship-entities-sequencing",
+ "rship-entities-spatialization",
  "rship-entities-timing",
  "rship-entities-variables",
  "serde_json",
@@ -9767,6 +9769,7 @@ dependencies = [
  "rship-entities-macros",
  "rship-entities-nodes",
  "rship-entities-scene",
+ "rship-entities-spatialization",
  "serde",
  "serde_json",
  "ts-rs",
@@ -10127,6 +10130,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rship-entities-spatialization"
+version = "4.0.0-canary.3"
+dependencies = [
+ "myko-rs",
+ "serde",
+ "serde_json",
+ "ts-rs",
+]
+
+[[package]]
 name = "rship-entities-status"
 version = "4.0.0-canary.3"
 dependencies = [
@@ -10327,6 +10340,7 @@ dependencies = [
  "rship-entities-foundation",
  "rship-entities-machine",
  "rship-entities-nodes",
+ "rship-entities-spatialization",
  "rship-entities-timing",
  "schemars 1.2.1",
  "serde",

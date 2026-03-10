@@ -22,6 +22,7 @@ members = [
   "libs/entities/audit",
   "libs/entities/status",
   "libs/entities/runtime",
+  "libs/entities/spatialization",
   "libs/entities/external",
   "libs/entities/assignment",
   "libs/entities/feedback",
@@ -246,6 +247,7 @@ rship-entities-objects = { version = "4.0.0-canary.3", path = "libs/entities/obj
 rship-entities-physical = { version = "4.0.0-canary.3", path = "libs/entities/physical" }
 rship-entities-rive = { version = "4.0.0-canary.3", path = "libs/entities/rive" }
 rship-entities-runtime = { version = "4.0.0-canary.3", path = "libs/entities/runtime" }
+rship-entities-spatialization = { version = "4.0.0-canary.3", path = "libs/entities/spatialization" }
 rship-entities-scene = { version = "4.0.0-canary.3", path = "libs/entities/scene" }
 rship-entities-scheduling = { version = "4.0.0-canary.3", path = "libs/entities/scheduling" }
 rship-entities-sequencing = { version = "4.0.0-canary.3", path = "libs/entities/sequencing" }
