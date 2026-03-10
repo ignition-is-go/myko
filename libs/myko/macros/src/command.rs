@@ -2,8 +2,17 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ItemStruct, Path};
 
+pub struct CommandOptions {
+    pub result_type: Option<Path>,
+    pub custom_serialize: bool,
+}
+
 /// Generates command trait implementations and registers the command handler.
-pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) -> TokenStream {
+pub fn myko_command_impl(options: CommandOptions, input_struct: ItemStruct) -> TokenStream {
+    let CommandOptions {
+        result_type,
+        custom_serialize,
+    } = options;
     let struct_name = &input_struct.ident;
     let args_struct_name = format_ident!("{}Args", struct_name);
     let ctx = crate::DeriveCtx::new();
@@ -36,9 +45,16 @@ pub fn myko_command_impl(result_type: Option<Path>, input_struct: ItemStruct) ->
         None => "()".to_string(),
     };
 
-    let derives = quote! {
-         #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-         #serde_rename_attr
+    let derives = if custom_serialize {
+        quote! {
+            #[derive(Clone, Debug, #serde_path::Deserialize, #krate::TS)]
+            #serde_rename_attr
+        }
+    } else {
+        quote! {
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+            #serde_rename_attr
+        }
     };
 
     let pairs = input_struct

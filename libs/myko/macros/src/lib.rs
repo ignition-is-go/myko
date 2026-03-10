@@ -2,6 +2,10 @@ use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
 use syn::parse_macro_input;
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
+use syn::Token;
 
 mod command;
 mod item;
@@ -446,13 +450,59 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let result_type = if attr.is_empty() {
-        None
+    let options = if attr.is_empty() {
+        command::CommandOptions {
+            result_type: None,
+            custom_serialize: false,
+        }
     } else {
-        Some(parse_macro_input!(attr as syn::Path))
+        parse_macro_input!(attr as CommandArgs).into()
     };
     let input = parse_macro_input!(input as syn::ItemStruct);
-    command::myko_command_impl(result_type, input).into()
+    command::myko_command_impl(options, input).into()
+}
+
+struct CommandArgs {
+    result_type: Option<syn::Path>,
+    custom_serialize: bool,
+}
+
+impl From<CommandArgs> for command::CommandOptions {
+    fn from(value: CommandArgs) -> Self {
+        Self {
+            result_type: value.result_type,
+            custom_serialize: value.custom_serialize,
+        }
+    }
+}
+
+impl Parse for CommandArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let args = Punctuated::<syn::Path, Token![,]>::parse_terminated(input)?;
+        let mut result_type = None;
+        let mut custom_serialize = false;
+
+        for path in args {
+            if path.is_ident("custom_serialize") {
+                if custom_serialize {
+                    return Err(syn::Error::new(path.span(), "duplicate custom_serialize flag"));
+                }
+                custom_serialize = true;
+                continue;
+            }
+
+            if result_type.is_some() {
+                return Err(syn::Error::new(path.span(), "expected at most one result type"));
+            }
+
+            result_type = Some(path);
+        }
+
+        Ok(Self {
+            result_type,
+            custom_serialize,
+        })
+    }
 }
 
 /// Derive macro that extracts serde rename values from enum variants

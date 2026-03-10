@@ -14,11 +14,12 @@ use std::{
 use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 
 use crate::{
+    client::MykoProtocol,
     core::item::AnyItem,
     report::AnyOutput,
     wire::{
-        MykoMessage, QueryChange, QueryResponse, QueryWindow, ReportError, ReportResponse,
-        WrappedItem,
+        EncodedCommandMessage, MykoMessage, QueryChange, QueryResponse, QueryWindow, ReportError,
+        ReportResponse, WrappedItem,
     },
 };
 
@@ -29,6 +30,19 @@ use crate::{
 pub trait WsWriter: Send + Sync + 'static {
     /// Send a message to the client.
     fn send(&self, msg: MykoMessage);
+
+    /// Return the writer's preferred wire protocol for outbound messages.
+    fn protocol(&self) -> MykoProtocol {
+        MykoProtocol::JSON
+    }
+
+    /// Send a pre-serialized command payload while preserving command metadata.
+    fn send_serialized_command(
+        &self,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    );
 
     /// Send a report response while allowing implementations to defer
     /// expensive serialization/conversion work off the reactive callback path.
@@ -889,6 +903,21 @@ mod tests {
         fn send(&self, msg: MykoMessage) {
             self.messages.lock().unwrap().push(msg);
         }
+
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            payload: EncodedCommandMessage,
+        ) {
+            let msg = match payload {
+                EncodedCommandMessage::Json(json) => serde_json::from_str(&json)
+                    .expect("Serialized command JSON should decode"),
+                EncodedCommandMessage::Msgpack(bytes) => rmp_serde::from_slice(&bytes)
+                    .expect("Serialized command msgpack should decode"),
+            };
+            self.send(msg);
+        }
     }
 
     // Need Arc wrapper for test
@@ -897,6 +926,15 @@ mod tests {
     impl WsWriter for ArcMockWriter {
         fn send(&self, msg: MykoMessage) {
             self.0.send(msg);
+        }
+
+        fn send_serialized_command(
+            &self,
+            tx: Arc<str>,
+            command_id: String,
+            payload: EncodedCommandMessage,
+        ) {
+            self.0.send_serialized_command(tx, command_id, payload);
         }
     }
 

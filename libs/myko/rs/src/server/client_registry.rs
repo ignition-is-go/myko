@@ -6,9 +6,13 @@
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
+use serde::Serialize;
 
+use crate::{
+    command::{CommandId, CommandRequest},
+    wire::{MykoMessage, encode_command_message},
+};
 use super::WsWriter;
-use crate::wire::MykoMessage;
 
 /// Thread-safe registry mapping client IDs to their WebSocket writers.
 pub struct ClientRegistry {
@@ -41,6 +45,34 @@ impl ClientRegistry {
             true
         } else {
             false
+        }
+    }
+
+    pub fn send_command_request_to<C>(&self, client_id: &str, request: &CommandRequest<C>) -> bool
+    where
+        C: CommandId + Serialize,
+    {
+        let Some(writer) = self.writers.get(client_id) else {
+            return false;
+        };
+
+        let command_id = request.command_id().to_string();
+        let protocol = writer.protocol();
+
+        match encode_command_message(protocol, request) {
+            Ok(payload) => {
+                writer.send_serialized_command(request.tx.clone(), command_id, payload);
+                true
+            }
+            Err(err) => {
+                log::error!(
+                    "Failed to serialize command {} for client {}: {}",
+                    request.command_id(),
+                    client_id,
+                    err
+                );
+                false
+            }
         }
     }
 

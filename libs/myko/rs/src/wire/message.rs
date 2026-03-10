@@ -8,6 +8,8 @@ use super::{
     view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView},
 };
 
+pub const WS_EVENT_COMMAND: &str = "ws:m:command";
+
 /// Cancel subscription payload - just the transaction ID
 #[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -70,6 +72,7 @@ pub enum MykoMessage {
     Event(MEvent),
     #[serde(rename = "ws:m:event-batch")]
     EventBatch(Vec<MEvent>),
+    // Keep this literal aligned with `WS_EVENT_COMMAND`.
     #[serde(rename = "ws:m:command")]
     Command(WrappedCommand),
     #[serde(rename = "ws:m:command-response")]

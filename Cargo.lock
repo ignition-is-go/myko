@@ -10324,6 +10324,7 @@ dependencies = [
  "pulse-platform",
  "rs-macros",
  "rship-entities-external",
+ "rship-entities-foundation",
  "rship-entities-machine",
  "rship-entities-nodes",
  "rship-entities-timing",

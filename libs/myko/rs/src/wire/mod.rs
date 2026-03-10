@@ -18,7 +18,10 @@ pub mod view;
 // Re-export deprecated function for backwards compat
 #[allow(deprecated)]
 pub use command::wrap_command;
-pub use command::{CommandError, CommandResponse, WrappedCommand, wrap_command_request};
+pub use command::{
+    CommandError, CommandResponse, EncodedCommandMessage, WrappedCommand, encode_command_message,
+    wrap_command_request,
+};
 pub use event::{EventOptions, MEvent, MEventType};
 pub use item::WrappedItem;
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};

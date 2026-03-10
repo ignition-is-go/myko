@@ -1,10 +1,13 @@
 //! Wire protocol types for commands.
 
+use crate::client::MykoProtocol;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
 use crate::core::command::{CommandId, CommandRequest};
+
+use super::message::WS_EVENT_COMMAND;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +38,11 @@ pub struct CommandError {
     pub message: String,
 }
 
+pub enum EncodedCommandMessage {
+    Json(String),
+    Msgpack(Vec<u8>),
+}
+
 /// Wrap a CommandRequest into a WrappedCommand for sending.
 ///
 /// The CommandRequest already contains the tx via `#[serde(flatten)]`,
@@ -48,6 +56,42 @@ pub fn wrap_command_request<C: CommandId + Serialize + Clone>(
         command: json,
         command_id: request.command_id().to_string(),
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WrappedCommandRef<'a, C> {
+    command: &'a CommandRequest<C>,
+    command_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct CommandMessageRef<'a, C> {
+    event: &'static str,
+    data: WrappedCommandRef<'a, C>,
+}
+
+pub fn encode_command_message<C: CommandId + Serialize>(
+    protocol: MykoProtocol,
+    request: &CommandRequest<C>,
+) -> Result<EncodedCommandMessage, String> {
+    let command_id = request.command_id();
+    let message = CommandMessageRef {
+        event: WS_EVENT_COMMAND,
+        data: WrappedCommandRef {
+            command: request,
+            command_id: command_id.as_ref(),
+        },
+    };
+
+    match protocol {
+        MykoProtocol::JSON => serde_json::to_string(&message)
+            .map(EncodedCommandMessage::Json)
+            .map_err(|err| err.to_string()),
+        MykoProtocol::MSGPACK => rmp_serde::to_vec(&message)
+            .map(EncodedCommandMessage::Msgpack)
+            .map_err(|err| err.to_string()),
+    }
 }
 
 /// Legacy wrap_command that takes tx separately.

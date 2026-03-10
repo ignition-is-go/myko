@@ -26,8 +26,8 @@ use myko_rs::{
         client_registry::try_client_registry,
     },
     wire::{
-        CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
-        PingData, QueryWindowUpdate, ViewError, ViewWindowUpdate,
+        CancelSubscription, CommandError, CommandResponse, EncodedCommandMessage, MEvent,
+        MEventType, MykoMessage, PingData, QueryWindowUpdate, ViewError, ViewWindowUpdate,
     },
 };
 use tokio::{net::TcpStream, sync::mpsc};
@@ -135,6 +135,15 @@ struct CommandJob {
     received_at: Instant,
 }
 
+enum OutboundMessage {
+    Message(MykoMessage),
+    SerializedCommand {
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    },
+}
+
 enum DeferredOutbound {
     Report(Arc<str>, Arc<dyn AnyOutput>),
     Query {
@@ -166,10 +175,13 @@ impl WsHandler {
 
         // Create a bounded channel for sending messages to the client
         // High limit (10k) since we have good memory availability
-        let (tx, mut rx) = mpsc::channel::<MykoMessage>(10_000);
+        let (tx, mut rx) = mpsc::channel::<OutboundMessage>(10_000);
         let (deferred_tx, mut deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, mut priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommandJob>();
+
+        // Protocol: default to JSON, switch to binary only if client opts in
+        let use_binary = Arc::new(AtomicBool::new(false));
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
@@ -178,6 +190,7 @@ impl WsHandler {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
+            use_binary_writer: use_binary.clone(),
         };
 
         // Register writer in the global client registry (if initialized)
@@ -185,6 +198,7 @@ impl WsHandler {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
+            use_binary_writer: use_binary.clone(),
         });
         if let Some(registry) = try_client_registry() {
             registry.register(client_id.clone(), writer_arc);
@@ -192,8 +206,6 @@ impl WsHandler {
 
         let mut session = ClientSession::new(client_id.clone(), writer);
 
-        // Protocol: default to JSON, switch to binary only if client opts in
-        let use_binary = Arc::new(AtomicBool::new(false));
         let use_binary_writer = use_binary.clone();
         let query_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -241,7 +253,7 @@ impl WsHandler {
                     biased;
                     maybe = priority_rx.recv(), if priority_open => {
                         match maybe {
-                            Some(msg) => msg,
+                            Some(msg) => OutboundMessage::Message(msg),
                             None => {
                                 priority_open = false;
                                 continue;
@@ -251,16 +263,16 @@ impl WsHandler {
                     maybe = deferred_rx.recv(), if deferred_open => {
                         match maybe {
                             Some(DeferredOutbound::Report(tx, output)) => {
-                                MykoMessage::ReportResponse(myko_rs::wire::ReportResponse {
+                                OutboundMessage::Message(MykoMessage::ReportResponse(myko_rs::wire::ReportResponse {
                                     response: output.to_value(),
                                     tx: tx.to_string(),
-                                })
+                                }))
                             }
                             Some(DeferredOutbound::Query { response, is_view }) => {
                                 if is_view {
-                                    MykoMessage::ViewResponse(response.into_wire())
+                                    OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
                                 } else {
-                                    MykoMessage::QueryResponse(response.into_wire())
+                                    OutboundMessage::Message(MykoMessage::QueryResponse(response.into_wire()))
                                 }
                             }
                             None => {
@@ -280,6 +292,15 @@ impl WsHandler {
                     }
                 };
                 let (kind, tx_id, seq, upserts, deletes, total_count) = match &msg {
+                    OutboundMessage::SerializedCommand { tx, .. } => (
+                        "command",
+                        Some(tx.clone()),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
+                    OutboundMessage::Message(msg) => match msg {
                     MykoMessage::ViewResponse(r) => (
                         "view_response",
                         Some(r.tx.clone()),
@@ -313,6 +334,7 @@ impl WsHandler {
                         None,
                     ),
                     _ => ("other", None, None, None, None, None),
+                },
                 };
                 let query_id = if kind == "query_response" {
                     tx_id.as_ref().and_then(|tx| {
@@ -351,36 +373,54 @@ impl WsHandler {
                     None
                 };
 
-                if let MykoMessage::Command(wrapped) = &msg
-                    && let Some(tx_id) = wrapped.command.get("tx").and_then(|v| v.as_str())
-                    && !tx_id.trim().is_empty()
-                    && let Ok(mut map) = outbound_commands_by_tx_writer.lock()
-                {
-                    map.insert(
-                        tx_id.to_string(),
-                        (wrapped.command_id.clone(), Instant::now()),
-                    );
+                match &msg {
+                    OutboundMessage::SerializedCommand { tx, command_id, .. } => {
+                        if !tx.trim().is_empty()
+                            && let Ok(mut map) = outbound_commands_by_tx_writer.lock()
+                        {
+                            map.insert(tx.to_string(), (command_id.clone(), Instant::now()));
+                        }
+                    }
+                    OutboundMessage::Message(MykoMessage::Command(wrapped)) => {
+                        if let Some(tx_id) = wrapped.command.get("tx").and_then(|v| v.as_str())
+                            && !tx_id.trim().is_empty()
+                            && let Ok(mut map) = outbound_commands_by_tx_writer.lock()
+                        {
+                            map.insert(
+                                tx_id.to_string(),
+                                (wrapped.command_id.clone(), Instant::now()),
+                            );
+                        }
+                    }
+                    _ => {}
                 }
 
                 let serialize_started = Instant::now();
-                let ws_msg = if use_binary_writer.load(Ordering::SeqCst) {
-                    // Binary mode: use msgpack
-                    match rmp_serde::to_vec(&msg) {
-                        Ok(bytes) => Message::Binary(bytes),
-                        Err(e) => {
-                            log::error!("Failed to serialize message to msgpack: {}", e);
-                            continue;
+                let ws_msg = match &msg {
+                    OutboundMessage::SerializedCommand {
+                        payload: EncodedCommandMessage::Json(json),
+                        ..
+                    } => Message::Text(json.clone()),
+                    OutboundMessage::SerializedCommand {
+                        payload: EncodedCommandMessage::Msgpack(bytes),
+                        ..
+                    } => Message::Binary(bytes.clone()),
+                    OutboundMessage::Message(msg) if use_binary_writer.load(Ordering::SeqCst) => {
+                        match rmp_serde::to_vec(msg) {
+                            Ok(bytes) => Message::Binary(bytes),
+                            Err(e) => {
+                                log::error!("Failed to serialize message to msgpack: {}", e);
+                                continue;
+                            }
                         }
                     }
-                } else {
-                    // JSON mode (default)
-                    match serde_json::to_string(&msg) {
+                    OutboundMessage::Message(msg) => match serde_json::to_string(msg) {
                         Ok(json) => Message::Text(json),
                         Err(e) => {
                             log::error!("Failed to serialize message to JSON: {}", e);
                             continue;
                         }
-                    }
+                    },
                 };
                 let serialize_ms = serialize_started.elapsed().as_millis();
                 let payload_bytes = match &ws_msg {
@@ -1267,16 +1307,40 @@ impl WsHandler {
 /// Sends messages through an mpsc channel which are then
 /// forwarded to the actual WebSocket.
 struct ChannelWriter {
-    tx: mpsc::Sender<MykoMessage>,
+    tx: mpsc::Sender<OutboundMessage>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
     drop_logger: Arc<DropLogger>,
+    use_binary_writer: Arc<AtomicBool>,
 }
 
 impl WsWriter for ChannelWriter {
     fn send(&self, msg: MykoMessage) {
         // Use try_send since we're in sync context
-        if let Err(e) = self.tx.try_send(msg) {
+        if let Err(e) = self.tx.try_send(OutboundMessage::Message(msg)) {
             self.drop_logger.on_drop("message", &e);
+        }
+    }
+
+    fn protocol(&self) -> myko_rs::client::MykoProtocol {
+        if self.use_binary_writer.load(Ordering::SeqCst) {
+            myko_rs::client::MykoProtocol::MSGPACK
+        } else {
+            myko_rs::client::MykoProtocol::JSON
+        }
+    }
+
+    fn send_serialized_command(
+        &self,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) {
+        if let Err(e) = self.tx.try_send(OutboundMessage::SerializedCommand {
+            tx,
+            command_id,
+            payload,
+        }) {
+            self.drop_logger.on_drop("serialized_command", &e);
         }
     }
 
@@ -1312,6 +1376,7 @@ mod tests {
             tx,
             deferred_tx,
             drop_logger,
+            use_binary_writer: Arc::new(AtomicBool::new(false)),
         };
 
         let msg = MykoMessage::Ping(PingData {
