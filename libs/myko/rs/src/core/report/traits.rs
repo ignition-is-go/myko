@@ -8,7 +8,12 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use super::{handler::ReportHandler, request::ReportRequest};
-use crate::{client::MykoClient, common::with_transaction::WithTransaction, wire::WrappedReport};
+use crate::{
+    cache::CacheKey,
+    client::MykoClient,
+    common::with_transaction::WithTransaction,
+    wire::WrappedReport,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Report Traits
@@ -79,6 +84,8 @@ impl From<&Arc<dyn AnyReport>> for WrappedReport {
 ///
 /// The full `Report` trait is implemented on `ReportRequest<R>` where `R: ReportParams`.
 pub trait ReportParams:
+    CacheKey
+    +
     Serialize
     + DeserializeOwned
     + Clone
@@ -95,6 +102,7 @@ pub trait ReportParams:
 
 impl<T> ReportParams for T where
     T: Serialize
+        + CacheKey
         + DeserializeOwned
         + Clone
         + Send

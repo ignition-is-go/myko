@@ -2,7 +2,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{ItemStruct, Path};
 
-pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> TokenStream {
+pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> TokenStream {
+    let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
+    let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
@@ -15,14 +17,28 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
 
     // Apply derives (add Default for empty structs)
     let derives = if is_empty {
-        quote! {
-            #[derive(Clone, Debug, Default, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-            #serde_rename_attr
+        if non_hash_cache_key {
+            quote! {
+                #[derive(Clone, Debug, Default, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
+        } else {
+            quote! {
+                #[derive(Clone, Debug, Default, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
         }
     } else {
-        quote! {
-            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-            #serde_rename_attr
+        if non_hash_cache_key {
+            quote! {
+                #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
+        } else {
+            quote! {
+                #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
         }
     };
 
@@ -34,6 +50,26 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
             crate_name: module_path!(),
             parse: <#struct_name as #krate::query::QueryFactory>::parse,
             cell_factory: <#struct_name as #krate::query::QueryFactory>::cell_factory,
+        }
+    };
+
+    let cache_key_impl = if manual_cache_key {
+        quote!()
+    } else if non_hash_cache_key {
+        quote! {
+            impl #krate::prelude::CacheKey for #struct_name {
+                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                    #krate::cache::write_serde_cache_key(self, state);
+                }
+            }
+        }
+    } else {
+        quote! {
+            impl #krate::prelude::CacheKey for #struct_name {
+                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                    #krate::cache::write_hash_cache_key(self, state);
+                }
+            }
         }
     };
 
@@ -75,6 +111,8 @@ pub fn myko_query_impl(query_item_type: Path, input_struct: ItemStruct) -> Token
                 stringify!(#query_item_type).into()
             }
         }
+
+        #cache_key_impl
     };
 
     expanded

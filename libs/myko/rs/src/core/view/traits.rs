@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::context::ViewCellContext;
-use crate::{common::with_transaction::WithTransaction, wire::WrappedView};
+use crate::{cache::CacheKey, common::with_transaction::WithTransaction, wire::WrappedView};
 
 pub trait ViewId {
     fn view_id(&self) -> Arc<str>;
@@ -61,6 +61,8 @@ impl From<&Arc<dyn AnyView>> for WrappedView {
 
 /// Trait bound bundle for view parameter types.
 pub trait ViewParams:
+    CacheKey
+    +
     serde::Serialize
     + DeserializeOwned
     + Clone
@@ -77,6 +79,7 @@ pub trait ViewParams:
 
 impl<T> ViewParams for T where
     T: serde::Serialize
+        + CacheKey
         + DeserializeOwned
         + Clone
         + Send

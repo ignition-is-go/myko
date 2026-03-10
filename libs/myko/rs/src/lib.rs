@@ -77,6 +77,7 @@
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
 
 // Main module structure
+pub mod cache;
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod codegen;

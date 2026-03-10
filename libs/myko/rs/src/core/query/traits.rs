@@ -16,6 +16,7 @@ use crate::core::query::QueryCellContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::query::cell::FilteredCellMap;
 use crate::{
+    cache::CacheKey,
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
     wire::WrappedQuery,
@@ -110,6 +111,8 @@ pub struct QueryHandlerCtxAny {
 ///
 /// The full `Query` trait is implemented on `QueryRequest<Q>` where `Q: QueryParams`.
 pub trait QueryParams:
+    CacheKey
+    +
     Serialize
     + DeserializeOwned
     + Clone
@@ -127,6 +130,7 @@ pub trait QueryParams:
 // Blanket impl for any type that satisfies the bounds
 impl<T> QueryParams for T where
     T: Serialize
+        + CacheKey
         + DeserializeOwned
         + Clone
         + Send

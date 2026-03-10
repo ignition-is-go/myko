@@ -70,7 +70,9 @@ pub fn myko_view_item_impl(input_struct: ItemStruct) -> TokenStream {
     }
 }
 
-pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
+pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStream {
+    let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
+    let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let item_type = args.item_type;
     let ctx = crate::DeriveCtx::new();
@@ -82,14 +84,28 @@ pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
     let derives = if is_empty {
-        quote! {
-            #[derive(Clone, Debug, Default, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-            #serde_rename_attr
+        if non_hash_cache_key {
+            quote! {
+                #[derive(Clone, Debug, Default, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
+        } else {
+            quote! {
+                #[derive(Clone, Debug, Default, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
         }
     } else {
-        quote! {
-            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-            #serde_rename_attr
+        if non_hash_cache_key {
+            quote! {
+                #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
+        } else {
+            quote! {
+                #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #serde_rename_attr
+            }
         }
     };
 
@@ -100,6 +116,26 @@ pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
             crate_name: module_path!(),
             parse: <#struct_name as #krate::view::ViewFactory>::parse,
             cell_factory: <#struct_name as #krate::view::ViewFactory>::cell_factory,
+        }
+    };
+
+    let cache_key_impl = if manual_cache_key {
+        quote!()
+    } else if non_hash_cache_key {
+        quote! {
+            impl #krate::prelude::CacheKey for #struct_name {
+                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                    #krate::cache::write_serde_cache_key(self, state);
+                }
+            }
+        }
+    } else {
+        quote! {
+            impl #krate::prelude::CacheKey for #struct_name {
+                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                    #krate::cache::write_hash_cache_key(self, state);
+                }
+            }
         }
     };
 
@@ -142,6 +178,8 @@ pub fn myko_view_impl(args: ViewArgs, input_struct: ItemStruct) -> TokenStream {
             fn assert_with_typed_id<T: #krate::common::with_id::WithTypedId>() {}
             assert_with_typed_id::<#item_type>();
         };
+
+        #cache_key_impl
 
     }
 }

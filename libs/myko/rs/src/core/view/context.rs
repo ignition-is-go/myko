@@ -14,6 +14,7 @@ use crate::view::ViewFactory;
 use crate::{common::with_id::WithTypedId, request::RequestContext};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
+    cache::CacheKey,
     item::downcast_any_item_map_diff,
     query::{FilteredCellMap, QueryFactory, QueryHandler, QueryParams},
     report::{ReportHandler, ReportId},
@@ -116,7 +117,7 @@ impl ViewCellContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
+        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
         self.server_ctx.report(report, self.request_ctx.clone())
     }
@@ -215,7 +216,7 @@ impl ViewContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
+        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
         self.server_ctx.report(report, self.req.clone())
     }

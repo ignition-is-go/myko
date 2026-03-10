@@ -15,6 +15,7 @@ use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
+    cache::CacheKey,
     common::{
         to_value::ToValue,
         with_id::{WithId, WithTypedId},
@@ -189,7 +190,7 @@ impl ReportContext {
     /// in a named relay for inspector visibility.
     pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
+        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
         #[cfg(not(target_arch = "wasm32"))]
         {

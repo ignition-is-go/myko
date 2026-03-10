@@ -91,6 +91,80 @@ impl DeriveCtx {
     }
 }
 
+pub(crate) fn take_manual_cache_key_attr(input_struct: &mut syn::ItemStruct) -> bool {
+    let mut found = take_marker_attr(input_struct, "myko_manual_cache_key");
+    input_struct.attrs.retain(|attr| {
+        let is_doc_marker = attr.path().is_ident("doc")
+            && attr
+                .meta
+                .require_name_value()
+                .ok()
+                .and_then(|nv| match &nv.value {
+                    syn::Expr::Lit(expr_lit) => match &expr_lit.lit {
+                        syn::Lit::Str(s) => Some(s.value() == "__myko_manual_cache_key"),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or(false);
+        found |= is_doc_marker;
+        !is_doc_marker
+    });
+    found
+}
+
+pub(crate) fn take_non_hash_cache_key_attr(input_struct: &mut syn::ItemStruct) -> bool {
+    let mut found = take_marker_attr(input_struct, "myko_non_hash_cache_key");
+    input_struct.attrs.retain(|attr| {
+        let is_doc_marker = attr.path().is_ident("doc")
+            && attr
+                .meta
+                .require_name_value()
+                .ok()
+                .and_then(|nv| match &nv.value {
+                    syn::Expr::Lit(expr_lit) => match &expr_lit.lit {
+                        syn::Lit::Str(s) => Some(s.value() == "__myko_non_hash_cache_key"),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or(false);
+        found |= is_doc_marker;
+        !is_doc_marker
+    });
+    found
+}
+
+fn take_marker_attr(input_struct: &mut syn::ItemStruct, attr_name: &str) -> bool {
+    let mut found = false;
+    input_struct.attrs.retain(|attr| {
+        let matches = attr.path().is_ident(attr_name);
+        found |= matches;
+        !matches
+    });
+    found
+}
+
+#[proc_macro_attribute]
+pub fn myko_manual_cache_key(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(input as syn::ItemStruct);
+    quote! {
+        #[doc = "__myko_manual_cache_key"]
+        #item
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(input as syn::ItemStruct);
+    quote! {
+        #[doc = "__myko_non_hash_cache_key"]
+        #item
+    }
+    .into()
+}
+
 #[proc_macro_derive(PartialMatches)]
 pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);

@@ -5,7 +5,12 @@
 //! - Publish entities (Reduce → Relationships → Persist)
 //! - Access server identity (host_id)
 
-use std::{any::Any, collections::HashMap, sync::Arc};
+use std::{
+    any::Any,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use dashmap::DashMap;
 use hypha::{Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, WeakCellMap};
@@ -14,6 +19,7 @@ use uuid::Uuid;
 
 use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
+    cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
     core::item::{AnyItem, Eventable, typed_map_arc_from_any_item},
     query::{
@@ -29,9 +35,108 @@ use crate::{
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
-type AnyItemWeakMap = WeakCellMap<Arc<str>, AnyItemArc>;
 type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
 type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
+
+const REPORT_CACHE_LINGER: Duration = Duration::from_secs(15);
+
+trait ReportCacheEntryDyn: Any + Send + Sync {
+    fn prune_expired(&self);
+    fn as_any(&self) -> &dyn Any;
+}
+
+struct ReportCacheEntry<T> {
+    weak: hypha::cell::WeakCell<T, CellImmutable>,
+    retained: Mutex<Option<(Cell<T, CellImmutable>, Instant)>>,
+}
+
+impl<T> ReportCacheEntry<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn new(cell: Cell<T, CellImmutable>) -> Self {
+        let weak = cell.downgrade();
+        let retained = Mutex::new(Some((cell, Instant::now() + REPORT_CACHE_LINGER)));
+        Self { weak, retained }
+    }
+
+    fn get(&self) -> Option<Cell<T, CellImmutable>> {
+        self.prune_expired();
+
+        if let Some(cell) = self.weak.upgrade() {
+            self.refresh(cell.clone());
+            return Some(cell);
+        }
+
+        let retained = self.retained.lock().ok()?;
+        retained.as_ref().map(|(cell, _)| cell.clone())
+    }
+
+    fn refresh(&self, cell: Cell<T, CellImmutable>) {
+        if let Ok(mut retained) = self.retained.lock() {
+            *retained = Some((cell, Instant::now() + REPORT_CACHE_LINGER));
+        }
+    }
+}
+
+impl<T> ReportCacheEntryDyn for ReportCacheEntry<T>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    fn prune_expired(&self) {
+        if let Ok(mut retained) = self.retained.lock()
+            && let Some((_, expires_at)) = retained.as_ref()
+            && Instant::now() >= *expires_at
+        {
+            retained.take();
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+struct MapCacheEntry {
+    weak: WeakCellMap<Arc<str>, AnyItemArc>,
+    retained: Mutex<Option<(FilteredCellMap, Instant)>>,
+}
+
+impl MapCacheEntry {
+    fn new(map: FilteredCellMap) -> Self {
+        let weak = map.downgrade();
+        let retained = Mutex::new(Some((map, Instant::now() + REPORT_CACHE_LINGER)));
+        Self { weak, retained }
+    }
+
+    fn get(&self) -> Option<FilteredCellMap> {
+        self.prune_expired();
+
+        if let Some(map) = self.weak.upgrade() {
+            let map = map.lock();
+            self.refresh(map.clone());
+            return Some(map);
+        }
+
+        let retained = self.retained.lock().ok()?;
+        retained.as_ref().map(|(map, _)| map.clone())
+    }
+
+    fn refresh(&self, map: FilteredCellMap) {
+        if let Ok(mut retained) = self.retained.lock() {
+            *retained = Some((map, Instant::now() + REPORT_CACHE_LINGER));
+        }
+    }
+
+    fn prune_expired(&self) {
+        if let Ok(mut retained) = self.retained.lock()
+            && let Some((_, expires_at)) = retained.as_ref()
+            && Instant::now() >= *expires_at
+        {
+            retained.take();
+        }
+    }
+}
 
 /// Context providing capabilities to server modules.
 ///
@@ -60,11 +165,11 @@ pub struct CellServerCtx {
     /// Optional event sink used to fan out applied events to saga runtimes.
     event_sink: Option<flume::Sender<MEvent>>,
     /// Top-level cache for reactive query maps.
-    query_cache: Arc<DashMap<String, AnyItemWeakMap>>,
+    query_cache: Arc<DashMap<String, MapCacheEntry>>,
     /// Top-level cache for reactive view maps.
-    view_cache: Arc<DashMap<String, AnyItemWeakMap>>,
-    /// Top-level cache for reactive report cells (typed weak cells behind Any).
-    report_cache: Arc<DashMap<String, Arc<dyn Any + Send + Sync>>>,
+    view_cache: Arc<DashMap<String, MapCacheEntry>>,
+    /// Top-level cache for reactive report cells with short-lived strong retention.
+    report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>>>,
 }
 
 impl CellServerCtx {
@@ -96,15 +201,15 @@ impl CellServerCtx {
         }
     }
 
-    fn cache_key<T: serde::Serialize>(
+    fn cache_key<T: CacheKey>(
         &self,
         kind: &str,
         id: &str,
         params: &T,
         request: &RequestContext,
     ) -> String {
-        let payload = serde_json::to_string(params).unwrap_or_else(|_| "<serde_error>".to_string());
-        format!("{}:{kind}:{id}:{payload}", request.host_id)
+        let payload_hash = params.cache_key_hash();
+        format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
     }
 
     /// Get the search index.
@@ -728,10 +833,11 @@ impl CellServerCtx {
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        if let Some(existing) = self.query_cache.get(&key)
-            && let Some(shared) = existing.value().upgrade()
-        {
-            return shared.lock();
+        if let Some(existing) = self.query_cache.get(&key) {
+            existing.value().prune_expired();
+            if let Some(shared) = existing.value().get() {
+                return shared;
+            }
         }
 
         let query_req = QueryRequest::with_tx(query, request.tx.clone());
@@ -744,7 +850,7 @@ impl CellServerCtx {
             Some(Arc::new(self.clone())),
         )
         .expect("query cell factory should not fail for typed query");
-        self.query_cache.insert(key, built.downgrade());
+        self.query_cache.insert(key, MapCacheEntry::new(built.clone()));
         built
     }
 
@@ -755,10 +861,11 @@ impl CellServerCtx {
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        if let Some(existing) = self.view_cache.get(&key)
-            && let Some(shared) = existing.value().upgrade()
-        {
-            return shared.lock();
+        if let Some(existing) = self.view_cache.get(&key) {
+            existing.value().prune_expired();
+            if let Some(shared) = existing.value().get() {
+                return shared;
+            }
         }
 
         let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
@@ -771,7 +878,7 @@ impl CellServerCtx {
             Arc::new(self.clone()),
         )
         .expect("view cell factory should not fail for typed view");
-        self.view_cache.insert(key, built.downgrade());
+        self.view_cache.insert(key, MapCacheEntry::new(built.clone()));
         built
     }
 
@@ -837,28 +944,28 @@ impl CellServerCtx {
         request: Arc<RequestContext>,
     ) -> Cell<R::Output, CellImmutable>
     where
-        R: ReportHandler + ReportId + Clone + serde::Serialize + 'static,
+        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        let report_name = format!("report:{}", report.report_id());
         let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
 
-        if let Some(existing) = self.report_cache.get(&key)
-            && let Some(weak) = existing
+        if let Some(existing) = self.report_cache.get(&key) {
+            existing.value().prune_expired();
+
+            if let Some(entry) = existing
                 .value()
-                .as_ref()
-                .downcast_ref::<hypha::cell::WeakCell<R::Output, CellImmutable>>()
-            && let Some(shared) = weak.upgrade()
-        {
-            return shared.with_name(report_name.as_str());
+                .as_any()
+                .downcast_ref::<ReportCacheEntry<R::Output>>()
+                && let Some(shared) = entry.get()
+            {
+                return shared;
+            }
         }
 
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
         let built = report.compute(nested_ctx).map(|v| v.clone());
-        self.report_cache.insert(
-            key,
-            Arc::new(built.downgrade()) as Arc<dyn Any + Send + Sync>,
-        );
-        built.with_name(report_name.as_str())
+        self.report_cache
+            .insert(key, Arc::new(ReportCacheEntry::new(built.clone())));
+        built
     }
 
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {

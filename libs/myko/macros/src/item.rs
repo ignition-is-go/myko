@@ -129,6 +129,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         .collect();
 
     let get_by_partial_query = quote! {
+        #[myko_macros::myko_non_hash_cache_key]
         #[myko_macros::myko_query(#name)]
          pub struct #get_by_partial_ident(pub #partial_ident);
 
@@ -186,6 +187,7 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let count_report_ident = format_ident!("Count{}s", name_str);
 
     let count_report = quote! {
+        #[myko_macros::myko_non_hash_cache_key]
         #[myko_macros::myko_report(#count_result_ident)]
         pub struct #count_report_ident(pub #partial_ident);
 
