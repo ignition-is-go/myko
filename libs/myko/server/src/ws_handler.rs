@@ -1386,6 +1386,9 @@ mod tests {
         writer.send(msg);
 
         let received = rx.try_recv().unwrap();
-        assert!(matches!(received, MykoMessage::Ping(_)));
+        assert!(matches!(
+            received,
+            OutboundMessage::Message(MykoMessage::Ping(_))
+        ));
     }
 }
