@@ -7,7 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     command::CommandHandlerRegistration,
-    item::{ItemParseFn, ItemRegistration},
+    item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
     query::{QueryCellFactory, QueryParseFn, QueryRegistration},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
     view::{ViewCellFactory, ViewParseFn, ViewRegistration},
@@ -43,6 +43,8 @@ pub struct StoredReportData {
 pub struct HandlerRegistry {
     /// Item parse functions by entity type name
     item_parsers: HashMap<Arc<str>, ItemParseFn>,
+    /// Optional ingest buffering policy by entity type name
+    item_buffer_policies: HashMap<Arc<str>, IngestBufferPolicy>,
     /// Query data by query id
     query_data: HashMap<Arc<str>, StoredQueryData>,
     /// View data by view id
@@ -55,6 +57,7 @@ impl HandlerRegistry {
     /// Create a new handler registry by collecting all registrations from inventory.
     pub fn new() -> Self {
         let mut item_parsers = HashMap::new();
+        let mut item_buffer_policies = HashMap::new();
         let mut query_data = HashMap::new();
         let mut view_data = HashMap::new();
         let mut report_data = HashMap::new();
@@ -63,6 +66,15 @@ impl HandlerRegistry {
         for registration in inventory::iter::<ItemRegistration> {
             log::trace!("Registered item parser: {}", registration.entity_type);
             item_parsers.insert(registration.entity_type.into(), registration.parse);
+        }
+
+        for registration in inventory::iter::<IngestBufferRegistration> {
+            log::trace!(
+                "Registered ingest buffer policy: {} -> {:?}",
+                registration.entity_type,
+                registration.policy
+            );
+            item_buffer_policies.insert(registration.entity_type.into(), registration.policy);
         }
 
         // Collect query registrations
@@ -140,6 +152,7 @@ impl HandlerRegistry {
 
         Self {
             item_parsers,
+            item_buffer_policies,
             query_data,
             view_data,
             report_data,
@@ -149,6 +162,14 @@ impl HandlerRegistry {
     /// Get an item parse function by entity type name.
     pub fn get_item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
         self.item_parsers.get(entity_type).copied()
+    }
+
+    /// Get the ingest buffering policy for an entity type.
+    pub fn get_item_buffer_policy(&self, entity_type: &str) -> IngestBufferPolicy {
+        self.item_buffer_policies
+            .get(entity_type)
+            .copied()
+            .unwrap_or(IngestBufferPolicy::None)
     }
 
     /// Get query registration data by query id.

@@ -39,7 +39,7 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
 
                 Box::pin(
                     events
-                        .of_item_type(<<#struct_name as #krate::saga::SagaHandler>::EventItem as #krate::item::Eventable>::entity_name_static())
+                        .of_item_type(<<#struct_name as #krate::saga::SagaHandler>::EventItem as #krate::item::Eventable>::ENTITY_NAME_STATIC)
                         .of_change_type(<#struct_name as #krate::saga::SagaHandler>::EVENT_TYPE)
                         .filter_map(move |event| {
                             let ctx = ctx.clone();
@@ -57,7 +57,7 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
                                         log::warn!(
                                             "{}: failed to deserialize {} event item: {}",
                                             #struct_name_str,
-                                            <<#struct_name as #krate::saga::SagaHandler>::EventItem as #krate::item::Eventable>::entity_name_static(),
+                                            <<#struct_name as #krate::saga::SagaHandler>::EventItem as #krate::item::Eventable>::ENTITY_NAME_STATIC,
                                             err
                                         );
                                         return None;

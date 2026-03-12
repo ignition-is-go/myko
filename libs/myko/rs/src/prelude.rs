@@ -29,7 +29,10 @@ pub use crate::{
         with_id::{WithId, WithTypedId},
         with_transaction::WithTransaction,
     },
-    core::item::{AnyItem, Eventable, ItemParseFn, ItemRegistration},
+    core::item::{
+        AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
+        ItemRegistration,
+    },
     query::{
         AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
         QueryTestCtx,

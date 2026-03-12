@@ -79,7 +79,7 @@ impl EntitySearch {
     /// ```
     pub fn for_type_with_limit<T: Eventable>(query: &str, limit: usize) -> Self {
         Self {
-            entity_type: T::entity_name_static().to_string(),
+            entity_type: T::ENTITY_NAME_STATIC.to_string(),
             query: query.to_string(),
             limit,
         }

@@ -63,9 +63,7 @@ pub fn myko_view_item_impl(input_struct: ItemStruct) -> TokenStream {
         }
 
         impl #krate::prelude::Eventable for #name {
-            fn entity_name_static() -> &'static str {
-                stringify!(#name)
-            }
+            const ENTITY_NAME_STATIC: &'static str = stringify!(#name);
         }
     }
 }

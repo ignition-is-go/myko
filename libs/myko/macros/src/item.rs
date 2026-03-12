@@ -2,11 +2,48 @@ use std::collections::{BTreeSet, HashMap};
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Field, FieldsNamed, ItemStruct};
+use syn::{
+    Field, FieldsNamed, ItemStruct, LitInt, Result, Token,
+    parse::{Parse, ParseStream},
+};
 
 use crate::{DeriveCtx, relationship, setter};
 
-pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
+#[derive(Default)]
+pub struct ItemArgs {
+    pub ingest_buffer_ms: Option<u64>,
+}
+
+impl Parse for ItemArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut args = ItemArgs::default();
+
+        while !input.is_empty() {
+            let ident: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            if ident == "ingest_buffer_ms" {
+                let value: LitInt = input.parse()?;
+                args.ingest_buffer_ms = Some(value.base10_parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    "unsupported myko_item option",
+                ));
+            }
+
+            if input.is_empty() {
+                break;
+            }
+
+            input.parse::<Token![,]>()?;
+        }
+
+        Ok(args)
+    }
+}
+
+pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStream {
     // Collect relationship information BEFORE stripping attributes
     let rel_info = relationship::collect_relationships(&input_struct);
 
@@ -21,6 +58,16 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let partially_path = &ctx.partially_path;
+    let ingest_buffer_registration = args.ingest_buffer_ms.map(|window_ms| {
+        quote! {
+            #krate::submit! {
+                #krate::prelude::IngestBufferRegistration {
+                    entity_type: #name_str,
+                    policy: #krate::prelude::IngestBufferPolicy::TimeWindow { window_ms: #window_ms },
+                }
+            }
+        }
+    });
 
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
         // Strip relationship and setter attributes from each field
@@ -469,11 +516,10 @@ pub fn myko_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #krate::submit! {
             #item_registration
         }
+        #ingest_buffer_registration
 
         impl #krate::item::Eventable for #name {
-            fn entity_name_static() -> &'static str {
-                #name_str
-            }
+            const ENTITY_NAME_STATIC: &'static str = #name_str;
         }
 
         impl #krate::prelude::AnyItem for #name {

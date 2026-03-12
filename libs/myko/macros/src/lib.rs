@@ -327,9 +327,10 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 ///
 /// All manually-added fields must implement `Clone`, `Serialize`, and `Deserialize`.
 #[proc_macro_attribute]
-pub fn myko_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
+pub fn myko_item(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as item::ItemArgs);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    item::myko_item_impl(input).into()
+    item::myko_item_impl(args, input).into()
 }
 
 #[proc_macro_attribute]

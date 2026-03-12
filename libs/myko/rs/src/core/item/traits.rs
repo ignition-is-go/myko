@@ -49,6 +49,27 @@ pub struct ItemRegistration {
     pub parse: ItemParseFn,
 }
 
+/// Opt-in ingest buffering policy for high-volume entity streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestBufferPolicy {
+    None,
+    TimeWindow { window_ms: u64 },
+}
+
+impl Default for IngestBufferPolicy {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// Registration entry for an entity type's ingest buffering policy.
+pub struct IngestBufferRegistration {
+    pub entity_type: &'static str,
+    pub policy: IngestBufferPolicy,
+}
+
+inventory::collect!(IngestBufferRegistration);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Eventable - Trait for items that can be sent as events
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,8 +77,18 @@ pub struct ItemRegistration {
 pub trait Eventable:
     AnyItem + Serialize + DeserializeOwned + Clone + PartialEq + Sized + Any
 {
-    /// Static entity type name (use entity_type() from AnyItem for instance method).
-    fn entity_name_static() -> &'static str;
+    /// Static entity type name (use `entity_type()` from `AnyItem` for instance access).
+    const ENTITY_NAME_STATIC: &'static str;
+
+    /// Back-compat helper for generic call sites that still expect a function.
+    fn entity_name_static() -> &'static str {
+        Self::ENTITY_NAME_STATIC
+    }
+
+    /// Opt-in ingest buffering policy for this entity type.
+    fn ingest_buffer_policy() -> IngestBufferPolicy {
+        IngestBufferPolicy::None
+    }
 
     /// Parse JSON into this item type.
     fn parse(value: Value) -> Result<Arc<dyn AnyItem>, anyhow::Error> {

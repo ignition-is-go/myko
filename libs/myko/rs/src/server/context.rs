@@ -8,6 +8,7 @@
 use std::{
     any::Any,
     collections::HashMap,
+    thread,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -22,7 +23,9 @@ use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
     common::with_id::WithTypedId,
-    core::item::{AnyItem, Eventable, downcast_any_item_arc, typed_map_arc_from_any_item},
+    core::item::{
+        AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
+    },
     query::{
         FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
         QueryTestCtx,
@@ -103,6 +106,24 @@ struct MapCacheEntry {
     retained: Mutex<Option<(FilteredCellMap, Instant)>>,
 }
 
+#[derive(Default)]
+struct BufferedIngestState {
+    events: Vec<MEvent>,
+    flush_scheduled: bool,
+}
+
+struct BufferedIngestType {
+    state: Mutex<BufferedIngestState>,
+}
+
+impl BufferedIngestType {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(BufferedIngestState::default()),
+        }
+    }
+}
+
 impl MapCacheEntry {
     fn new(map: FilteredCellMap) -> Self {
         let weak = map.downgrade();
@@ -171,6 +192,8 @@ pub struct CellServerCtx {
     view_cache: Arc<DashMap<String, MapCacheEntry>>,
     /// Top-level cache for reactive report cells with short-lived strong retention.
     report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>>>,
+    /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
+    ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>>>,
 }
 
 impl CellServerCtx {
@@ -199,6 +222,7 @@ impl CellServerCtx {
             query_cache: Arc::new(DashMap::new()),
             view_cache: Arc::new(DashMap::new()),
             report_cache: Arc::new(DashMap::new()),
+            ingest_buffers: Arc::new(DashMap::new()),
         }
     }
 
@@ -600,6 +624,41 @@ impl CellServerCtx {
         if events.is_empty() {
             return 0;
         }
+
+        let mut accepted = 0usize;
+        let mut immediate_events = Vec::new();
+        let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
+
+        for event in events {
+            match self.handler_registry.get_item_buffer_policy(&event.item_type) {
+                IngestBufferPolicy::None => immediate_events.push(event),
+                IngestBufferPolicy::TimeWindow { window_ms } => {
+                    let entity_type: Arc<str> = event.item_type.clone().into();
+                    buffered_by_type
+                        .entry(entity_type)
+                        .or_insert_with(|| (window_ms, Vec::new()))
+                        .1
+                        .push(event);
+                }
+            }
+        }
+
+        if !immediate_events.is_empty() {
+            accepted += self.apply_event_batch_immediate(immediate_events);
+        }
+
+        for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
+            accepted += buffered_events.len();
+            self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
+        }
+
+        accepted
+    }
+
+    fn apply_event_batch_immediate(&self, events: Vec<MEvent>) -> usize {
+        if events.is_empty() {
+            return 0;
+        }
         let input_len = events.len();
 
         #[derive(Clone)]
@@ -723,6 +782,97 @@ impl CellServerCtx {
         }
 
         sets.len() + dels.len()
+    }
+
+    fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
+        self.ingest_buffers
+            .entry(entity_type)
+            .or_insert_with(|| Arc::new(BufferedIngestType::new()))
+            .clone()
+    }
+
+    fn enqueue_buffered_events(
+        &self,
+        entity_type: Arc<str>,
+        window_ms: u64,
+        events: Vec<MEvent>,
+    ) {
+        let buffer = self.ingest_buffer_for(entity_type.clone());
+        let should_schedule = {
+            let Ok(mut state) = buffer.state.lock() else {
+                log::error!(
+                    "Could not acquire ingest buffer lock for entity_type={}",
+                    entity_type
+                );
+                self.apply_event_batch_immediate(events);
+                return;
+            };
+
+            state.events.extend(events);
+            if state.flush_scheduled {
+                false
+            } else {
+                state.flush_scheduled = true;
+                true
+            }
+        };
+
+        if !should_schedule {
+            return;
+        }
+
+        let ctx = self.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(window_ms));
+            ctx.flush_buffered_events_for_type(&entity_type);
+        });
+    }
+
+    fn flush_buffered_events_for_type(&self, entity_type: &Arc<str>) -> usize {
+        let Some(buffer) = self.ingest_buffers.get(entity_type.as_ref()).map(|entry| entry.clone())
+        else {
+            return 0;
+        };
+
+        let events = {
+            let Ok(mut state) = buffer.state.lock() else {
+                log::error!(
+                    "Could not acquire ingest buffer lock for flush entity_type={}",
+                    entity_type
+                );
+                return 0;
+            };
+
+            state.flush_scheduled = false;
+            if state.events.is_empty() {
+                return 0;
+            }
+
+            std::mem::take(&mut state.events)
+        };
+
+        log::trace!(
+            target: "myko_rs::server::context",
+            "flush_buffered_events entity_type={} count={}",
+            entity_type,
+            events.len()
+        );
+
+        self.apply_event_batch_immediate(events)
+    }
+
+    #[cfg(test)]
+    fn flush_all_buffered_events(&self) -> usize {
+        let entity_types: Vec<Arc<str>> = self
+            .ingest_buffers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        entity_types
+            .into_iter()
+            .map(|entity_type| self.flush_buffered_events_for_type(&entity_type))
+            .sum()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1021,6 +1171,176 @@ impl CellServerCtx {
             created_at: chrono::Utc::now().to_string(),
             windback: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::CellServerCtx;
+    use crate::{
+        common::with_id::WithId,
+        core::item::{AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration},
+        hypha::Gettable,
+        search::SearchIndex,
+        server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        store::StoreRegistry,
+        wire::{MEvent, MEventType},
+    };
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct BufferedTestItem {
+        id: Arc<str>,
+        value: i32,
+    }
+
+    impl WithId for BufferedTestItem {
+        fn id(&self) -> Arc<str> {
+            self.id.clone()
+        }
+    }
+
+    impl AnyItem for BufferedTestItem {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "BufferedTestItem"
+        }
+
+        fn equals(&self, other: &dyn AnyItem) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|typed| self == typed)
+                .unwrap_or(false)
+        }
+    }
+
+    impl Eventable for BufferedTestItem {
+        const ENTITY_NAME_STATIC: &'static str = "BufferedTestItem";
+    }
+
+    inventory::submit! {
+        ItemRegistration {
+            entity_type: "BufferedTestItem",
+            crate_name: env!("CARGO_PKG_NAME"),
+            parse: BufferedTestItem::parse,
+        }
+    }
+
+    inventory::submit! {
+        IngestBufferRegistration {
+            entity_type: "BufferedTestItem",
+            policy: IngestBufferPolicy::TimeWindow { window_ms: 5 },
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct ImmediateTestItem {
+        id: Arc<str>,
+        value: i32,
+    }
+
+    impl WithId for ImmediateTestItem {
+        fn id(&self) -> Arc<str> {
+            self.id.clone()
+        }
+    }
+
+    impl AnyItem for ImmediateTestItem {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "ImmediateTestItem"
+        }
+
+        fn equals(&self, other: &dyn AnyItem) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|typed| self == typed)
+                .unwrap_or(false)
+        }
+    }
+
+    impl Eventable for ImmediateTestItem {
+        const ENTITY_NAME_STATIC: &'static str = "ImmediateTestItem";
+    }
+
+    inventory::submit! {
+        ItemRegistration {
+            entity_type: "ImmediateTestItem",
+            crate_name: env!("CARGO_PKG_NAME"),
+            parse: ImmediateTestItem::parse,
+        }
+    }
+
+    fn make_ctx() -> CellServerCtx {
+        CellServerCtx::new(
+            Uuid::new_v4(),
+            Arc::new(StoreRegistry::new()),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(PersisterRouter::default()),
+            Arc::new(SearchIndex::new()),
+            Arc::new(dashmap::DashMap::new()),
+            None,
+        )
+    }
+
+    #[test]
+    fn apply_event_batch_keeps_default_entities_immediate() {
+        let ctx = make_ctx();
+        let applied = ctx.apply_event_batch(vec![MEvent {
+            item: json!({
+                "id": "immediate-1",
+                "value": 7,
+            }),
+            change_type: MEventType::SET,
+            item_type: "ImmediateTestItem".to_string(),
+            created_at: "2026-03-12T00:00:00Z".to_string(),
+            tx: "tx-immediate".to_string(),
+            source_id: Some("test".to_string()),
+            options: None,
+        }]);
+
+        assert_eq!(applied, 1);
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        assert!(store.get(&Arc::<str>::from("immediate-1")).get().is_some());
+    }
+
+    #[test]
+    fn apply_event_batch_buffers_opted_in_entities() {
+        let ctx = make_ctx();
+        let applied = ctx.apply_event_batch(vec![MEvent {
+            item: json!({
+                "id": "buffered-1",
+                "value": 42,
+            }),
+            change_type: MEventType::SET,
+            item_type: "BufferedTestItem".to_string(),
+            created_at: "2026-03-12T00:00:00Z".to_string(),
+            tx: "tx-buffered".to_string(),
+            source_id: Some("test".to_string()),
+            options: None,
+        }]);
+
+        assert_eq!(applied, 1);
+        let store = ctx.registry.get_or_create("BufferedTestItem");
+        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_none());
+
+        let flushed = ctx.flush_all_buffered_events();
+        assert_eq!(flushed, 1);
+        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
     }
 }
 
