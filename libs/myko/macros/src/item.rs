@@ -225,7 +225,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
                 // Query all items and count them
                 let query = #get_all_query_ident {};
-                ctx.query(query).map(|items| #count_result_ident { count: items.len() })
+                ctx.query_map_by_str(query)
+                    .size()
+                    .map(|count| #count_result_ident { count: *count })
             }
         }
     };
@@ -246,7 +248,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
                 // Query by partial filter and count results
                 let query = #get_by_partial_ident(self.0.clone());
-                ctx.query(query).map(|items| #count_result_ident { count: items.len() })
+                ctx.query_map_by_str(query)
+                    .size()
+                    .map(|count| #count_result_ident { count: *count })
             }
         }
     };
@@ -270,8 +274,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
                 // Query by ID and return the first match as an Arc entity.
                 let query = #get_by_ids_query_ident { ids: vec![id] };
-                ctx.query(query)
-                    .map(|items| items.first().cloned())
+                ctx.query_map_by_str(query)
+                    .entries()
+                    .map(|items| items.first().map(|(_, item)| item.clone()))
             }
         }
     };

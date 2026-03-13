@@ -14,7 +14,9 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, CellMutable, Gettable, IdFor, MapExt, Mutable, WeakCellMap};
+use hypha::{
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MapExt, Mutable, WeakCellMap,
+};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -22,7 +24,7 @@ use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
 use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
-    common::with_id::WithTypedId,
+    common::with_id::{WithId, WithTypedId},
     core::item::{
         AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
     },
@@ -935,9 +937,34 @@ impl CellServerCtx {
     // Query methods
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Run a reactive query and return a typed map keyed by canonical string ids.
+    ///
+    /// Use `query_map_untyped()` when framework internals need erased `AnyItem`.
+    pub fn query_map<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+    ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: Eventable
+            + WithId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
+    {
+        typed_map_arc_from_any_item(
+            self.query_map_untyped(query, request),
+            "CellServerCtx::query_map",
+        )
+    }
+
     /// Run a reactive query.
     ///
-    /// Returns a cell that updates whenever the query results change.
+    /// Returns a type-erased map that updates whenever the query results change.
     /// The query's `test_entity` is applied with proper server context.
     ///
     /// # Example
@@ -949,36 +976,11 @@ impl CellServerCtx {
     /// use myko_rs::server::CellServerCtx;
     ///
     /// fn demo(ctx: &CellServerCtx, req: Arc<RequestContext>) {
-    ///     let _peer_servers = ctx.query(GetPeerServers {}, req);
-    ///     // _peer_servers is Cell<Vec<Server>, CellImmutable>
+    ///     let _peer_servers = ctx.query_map_untyped(GetPeerServers {}, req);
+    ///     // _peer_servers is CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>
     /// }
     /// ```
-    pub fn query<Q>(
-        &self,
-        query: Q,
-        request: Arc<RequestContext>,
-    ) -> Cell<Vec<Arc<Q::Item>>, CellImmutable>
-    where
-        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
-    {
-        let query_id = Q::query_id_static();
-        let query_name = format!("query:{}", query_id);
-        self.query_map(query, request)
-            .entries()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|(_, item)| {
-                        let any_arc: Arc<dyn std::any::Any + Send + Sync> = item.clone();
-                        any_arc.downcast::<Q::Item>().ok()
-                    })
-                    .collect()
-            })
-            .with_name(query_name.as_str())
-    }
-
-    pub fn query_map<Q>(&self, query: Q, request: Arc<RequestContext>) -> FilteredCellMap
+    pub fn query_map_untyped<Q>(&self, query: Q, request: Arc<RequestContext>) -> FilteredCellMap
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,

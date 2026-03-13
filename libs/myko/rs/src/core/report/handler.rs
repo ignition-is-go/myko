@@ -9,7 +9,7 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::{ConnectionStatus, MykoClient};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::item::{typed_map_arc_from_any_item, typed_map_from_any_item_with_typed_id};
+use crate::item::typed_map_from_any_item_with_typed_id;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -74,29 +74,6 @@ impl ReportContext {
     // Report-specific methods
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Subscribe to a query dependency.
-    ///
-    /// Returns a cell that updates whenever the query results change.
-    /// Uses cell-based reactive queries.
-    ///
-    /// Accepts bare query params (e.g., `GetServersByIds { ids: vec![...] }`)
-    pub fn query<Q>(&self, query: Q) -> Cell<Vec<Arc<Q::Item>>, CellImmutable>
-    where
-        Q: QueryParams + 'static,
-        Q::Item:
-            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx.query(query, self.req.clone())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!();
-        }
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     /// Subscribe to a query dependency and get a typed reactive CellMap keyed
     /// by the item's typed id.
@@ -121,7 +98,7 @@ impl ReportContext {
             + 'static,
     {
         typed_map_from_any_item_with_typed_id(
-            self.server_ctx.query_map(query, self.req.clone()),
+            self.server_ctx.query_map_untyped(query, self.req.clone()),
             "ReportContext::query_map",
         )
     }
@@ -144,10 +121,7 @@ impl ReportContext {
             + CellValue
             + 'static,
     {
-        typed_map_arc_from_any_item(
-            self.server_ctx.query_map(query, self.req.clone()),
-            "ReportContext::query_map_by_str",
-        )
+        self.server_ctx.query_map(query, self.req.clone())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -160,7 +134,7 @@ impl ReportContext {
         Q::Item:
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.server_ctx.query_map(query, self.req.clone())
+        self.server_ctx.query_map_untyped(query, self.req.clone())
     }
 
     /// Search for entities matching a query string.

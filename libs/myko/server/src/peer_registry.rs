@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, TapExt, Watchable};
+use hypha::{Cell, CellImmutable, MapExt, Signal, SubscriptionGuard, TapExt, Watchable};
 use log::info;
 use myko_rs::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
@@ -63,7 +63,9 @@ impl PeerRegistry {
         local_server: Server,
         self_host_id: ServerId,
     ) -> SubscriptionGuard {
-        let all_servers = ctx.query(GetAllServers {}, ctx.new_server_transaction());
+        let all_servers = ctx
+            .query_map(GetAllServers {}, ctx.new_server_transaction())
+            .items();
         all_servers.subscribe(move |signal| {
             if let Signal::Value(servers) = signal {
                 let has_self = servers.iter().any(|s| s.id == self_host_id);
@@ -181,7 +183,9 @@ impl PeerRegistry {
 
         let connections = Arc::new(DashMap::new());
         let remove_guards = Arc::new(DashMap::new());
-        let peer_servers = ctx.query(GetPeerServers {}, server_req);
+        let peer_servers = ctx
+            .query_map(GetPeerServers {}, server_req)
+            .items();
         let host_id = ServerId(ctx.host_id.to_string().into());
         let server = Self::build_local_server(&config, &host_id);
 

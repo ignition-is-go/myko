@@ -1,6 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use hypha::{JoinExt, Signal, SubscriptionGuard, Watchable};
+use hypha::{JoinExt, MapExt, Signal, SubscriptionGuard, Watchable};
 use log::{debug, error};
 use serde::de::DeserializeOwned;
 
@@ -132,7 +132,12 @@ where
             options,
             items_equal,
         } = config;
-        let local_cell = local_ctx.query(local_query, local_ctx.new_server_transaction());
+        let local_cell = local_ctx
+            .query_map(local_query, local_ctx.new_server_transaction())
+            .entries()
+            .map(|entries: &Vec<(Arc<str>, Arc<T>)>| {
+                entries.iter().map(|(_, item)| item.clone()).collect::<Vec<_>>()
+            });
         let remote_cell = client.watch_query(remote_query);
         let joined = local_cell.join(&remote_cell);
         let sync_client = client.clone();

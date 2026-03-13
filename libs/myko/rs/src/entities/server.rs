@@ -85,10 +85,11 @@ impl ReportHandler for ServerStats {
 
     fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
         // Combine server and client cells - emit whenever either changes
-        ctx.query(GetConnectedServer {})
-            .join(&ctx.query(GetAllClients {}))
+        ctx.query_map(GetConnectedServer {})
+            .entries()
+            .join(&ctx.query_map(GetAllClients {}).entries())
             .map(flat!(|servers, clients| {
-                let server = servers.first().cloned();
+                let server = servers.first().map(|(_, server)| server.clone());
 
                 // Compute uptime if we have server info
                 let uptime_seconds = server.as_ref().and_then(|s| {

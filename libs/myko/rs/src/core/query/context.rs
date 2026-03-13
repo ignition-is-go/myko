@@ -86,7 +86,7 @@ impl QueryCellContext {
             return Ok(existing.value().clone());
         }
         if let Some(server_ctx) = self.server_ctx.clone() {
-            let built = server_ctx.query_map(query, self.request_ctx.clone());
+            let built = server_ctx.query_map_untyped(query, self.request_ctx.clone());
             self.subquery_cache.insert(key, built.clone());
             return Ok(built);
         }

@@ -40,8 +40,10 @@ impl ReportHandler for ClientStatus {
         let client_id = self.client_id.clone();
 
         // Query all clients and check if one with our id exists
-        ctx.query(GetAllClients {}).map(move |clients| {
-            let online = clients.iter().any(|c| c.id.as_ref() == client_id.as_ref());
+        ctx.query_map(GetAllClients {}).entries().map(move |clients| {
+            let online = clients
+                .iter()
+                .any(|(_, c)| c.id.as_ref() == client_id.as_ref());
             ClientStatusOutput { online }
         })
     }
@@ -71,11 +73,11 @@ impl ReportHandler for WindbackStatus {
             .map(|id| ClientId::from(Arc::<str>::from(id)));
 
         // Query all clients and find the requesting client's windback status
-        ctx.query(GetAllClients {}).map(move |clients| {
+        ctx.query_map(GetAllClients {}).entries().map(move |clients| {
             let windback = client_id
                 .as_ref()
-                .and_then(|cid| clients.iter().find(|c| c.id.as_ref() == cid.as_ref()))
-                .and_then(|c| c.windback.clone());
+                .and_then(|cid| clients.iter().find(|(_, c)| c.id.as_ref() == cid.as_ref()))
+                .and_then(|(_, c)| c.windback.clone());
             WindbackStatusOutput { windback }
         })
     }

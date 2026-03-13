@@ -73,7 +73,7 @@ impl ViewCellContext {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.server_ctx.query_map(query, self.request_ctx.clone())
+        self.server_ctx.query_map_untyped(query, self.request_ctx.clone())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -172,7 +172,7 @@ impl ViewContext {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.server_ctx.query_map(query, self.req.clone())
+        self.server_ctx.query_map_untyped(query, self.req.clone())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
