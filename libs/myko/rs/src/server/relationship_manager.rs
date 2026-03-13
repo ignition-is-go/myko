@@ -550,11 +550,10 @@ impl RelationshipManager {
 
             let mut children = Vec::new();
             for child_id in &child_ids {
-                if self.get_by_id(ctx, lookup.foreign_type, child_id).is_some() {
-                    if let Some(child) = self.get_by_id(ctx, lookup.foreign_type, child_id) {
+                if self.get_by_id(ctx, lookup.foreign_type, child_id).is_some()
+                    && let Some(child) = self.get_by_id(ctx, lookup.foreign_type, child_id) {
                         children.push(child);
                     }
-                }
             }
 
             if children.is_empty() {

@@ -28,17 +28,15 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
                 #serde_rename_attr
             }
         }
+    } else if non_hash_cache_key {
+        quote! {
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+            #serde_rename_attr
+        }
     } else {
-        if non_hash_cache_key {
-            quote! {
-                #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-                #serde_rename_attr
-            }
-        } else {
-            quote! {
-                #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
-                #serde_rename_attr
-            }
+        quote! {
+            #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+            #serde_rename_attr
         }
     };
 
