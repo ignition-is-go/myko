@@ -510,7 +510,18 @@ impl WsHandler {
                 };
 
                 let send_started = Instant::now();
-                if write.send(ws_msg).await.is_err() {
+                if let Err(err) = write.send(ws_msg).await {
+                    log::error!(
+                        "WebSocket write failed for client {} from {} kind={} tx={:?} seq={:?} payload_bytes={} binary={}: {}",
+                        write_client_id,
+                        write_addr,
+                        kind,
+                        tx_id,
+                        seq,
+                        payload_bytes,
+                        use_binary_writer.load(Ordering::SeqCst),
+                        err
+                    );
                     break;
                 }
                 let send_ms = send_started.elapsed().as_millis();
@@ -564,6 +575,14 @@ impl WsHandler {
                     );
                 }
             }
+            log::warn!(
+                "WebSocket writer task exiting for client {} from {} normal_open={} priority_open={} deferred_open={}",
+                write_client_id,
+                write_addr,
+                normal_open,
+                priority_open,
+                deferred_open
+            );
         });
 
         // Execute commands on a dedicated worker so ping/cancel traffic is never
@@ -599,7 +618,7 @@ impl WsHandler {
             let msg = match msg {
                 Ok(m) => m,
                 Err(e) => {
-                    log::error!("WebSocket error from {}: {}", client_id, e);
+                    log::error!("WebSocket read error from {}: {}", client_id, e);
                     break;
                 }
             };
@@ -608,8 +627,8 @@ impl WsHandler {
                 Message::Binary(data) => {
                     // Auto-detect: receiving binary means client wants binary responses
                     if !use_binary.load(Ordering::SeqCst) {
-                        log::debug!(
-                            "Client {} auto-switching to binary (msgpack) protocol",
+                        log::info!(
+                            "Client {} switched to binary (msgpack) protocol via auto-detect",
                             client_id
                         );
                         use_binary.store(true, Ordering::SeqCst);
@@ -643,8 +662,8 @@ impl WsHandler {
                 Message::Text(text) => {
                     // Check for protocol switch request
                     if text == SWITCH_TO_MSGPACK {
-                        log::debug!(
-                            "Client {} switching to binary (msgpack) protocol",
+                        log::info!(
+                            "Client {} switched to binary (msgpack) protocol via explicit request",
                             client_id
                         );
                         // Send confirmation FIRST (still in JSON mode)
@@ -700,8 +719,12 @@ impl WsHandler {
                 Message::Pong(_) => {
                     log::trace!("Pong from {}", client_id);
                 }
-                Message::Close(_) => {
-                    log::debug!("Client {} disconnecting", client_id);
+                Message::Close(frame) => {
+                    log::warn!(
+                        "Client {} sent close frame: {:?}",
+                        client_id,
+                        frame
+                    );
                     break;
                 }
                 Message::Frame(_) => {
@@ -1468,9 +1491,6 @@ mod tests {
         writer.send(msg);
 
         let received = rx.try_recv().unwrap();
-        assert!(matches!(
-            received,
-            OutboundMessage::Message(MykoMessage::Ping(_))
-        ));
+        assert!(matches!(received, MykoMessage::Ping(_)));
     }
 }
