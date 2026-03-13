@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
 use hypha::CellMap;
 use hypha::{Cell, CellImmutable, CellValue};
 use serde::{Serialize, de::DeserializeOwned};
@@ -21,11 +20,12 @@ use crate::{
         with_id::{WithId, WithTypedId},
     },
     core::item::Eventable,
-    core::view::{TypedViewCellMap, ViewFactory},
     query::QueryParams,
     report::ReportId,
     request::RequestContext,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::view::{TypedViewCellMap, ViewFactory};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -104,6 +104,28 @@ impl ReportContext {
         )
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn query_map<Q>(
+        &self,
+        query: Q,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + CellValue
+            + 'static,
+    {
+        let _ = query;
+        unreachable!("ReportContext::query_map is not available on wasm32");
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     /// Subscribe to a query dependency and get a typed reactive CellMap keyed
     /// by canonical `Arc<str>` ids.
@@ -123,6 +145,27 @@ impl ReportContext {
             + 'static,
     {
         self.server_ctx.query_map(query, self.req.clone())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn query_map_by_str<Q>(
+        &self,
+        query: Q,
+    ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item: Eventable
+            + WithId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + CellValue
+            + 'static,
+    {
+        let _ = query;
+        unreachable!("ReportContext::query_map_by_str is not available on wasm32");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
