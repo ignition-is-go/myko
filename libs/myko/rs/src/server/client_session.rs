@@ -911,10 +911,12 @@ mod tests {
             payload: EncodedCommandMessage,
         ) {
             let msg = match payload {
-                EncodedCommandMessage::Json(json) => serde_json::from_str(&json)
-                    .expect("Serialized command JSON should decode"),
-                EncodedCommandMessage::Msgpack(bytes) => rmp_serde::from_slice(&bytes)
-                    .expect("Serialized command msgpack should decode"),
+                EncodedCommandMessage::Json(json) => {
+                    serde_json::from_str(&json).expect("Serialized command JSON should decode")
+                }
+                EncodedCommandMessage::Msgpack(bytes) => {
+                    rmp_serde::from_slice(&bytes).expect("Serialized command msgpack should decode")
+                }
             };
             self.send(msg);
         }

@@ -372,49 +372,44 @@ impl WsHandler {
                     }
                 };
                 let (kind, tx_id, seq, upserts, deletes, total_count) = match &msg {
-                    OutboundMessage::SerializedCommand { tx, .. } => (
-                        "command",
-                        Some(tx.clone()),
-                        None,
-                        None,
-                        None,
-                        None,
-                    ),
+                    OutboundMessage::SerializedCommand { tx, .. } => {
+                        ("command", Some(tx.clone()), None, None, None, None)
+                    }
                     OutboundMessage::Message(msg) => match msg {
-                    MykoMessage::ViewResponse(r) => (
-                        "view_response",
-                        Some(r.tx.clone()),
-                        Some(r.sequence),
-                        Some(r.upserts.len()),
-                        Some(r.deletes.len()),
-                        r.total_count,
-                    ),
-                    MykoMessage::QueryResponse(r) => (
-                        "query_response",
-                        Some(r.tx.clone()),
-                        Some(r.sequence),
-                        Some(r.upserts.len()),
-                        Some(r.deletes.len()),
-                        r.total_count,
-                    ),
-                    MykoMessage::CommandResponse(r) => (
-                        "command_response",
-                        Some(Arc::<str>::from(r.tx.clone())),
-                        None,
-                        None,
-                        None,
-                        None,
-                    ),
-                    MykoMessage::CommandError(r) => (
-                        "command_error",
-                        Some(Arc::<str>::from(r.tx.clone())),
-                        None,
-                        None,
-                        None,
-                        None,
-                    ),
-                    _ => ("other", None, None, None, None, None),
-                },
+                        MykoMessage::ViewResponse(r) => (
+                            "view_response",
+                            Some(r.tx.clone()),
+                            Some(r.sequence),
+                            Some(r.upserts.len()),
+                            Some(r.deletes.len()),
+                            r.total_count,
+                        ),
+                        MykoMessage::QueryResponse(r) => (
+                            "query_response",
+                            Some(r.tx.clone()),
+                            Some(r.sequence),
+                            Some(r.upserts.len()),
+                            Some(r.deletes.len()),
+                            r.total_count,
+                        ),
+                        MykoMessage::CommandResponse(r) => (
+                            "command_response",
+                            Some(Arc::<str>::from(r.tx.clone())),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
+                        MykoMessage::CommandError(r) => (
+                            "command_error",
+                            Some(Arc::<str>::from(r.tx.clone())),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
+                        _ => ("other", None, None, None, None, None),
+                    },
                 };
                 let query_id = if kind == "query_response" {
                     tx_id.as_ref().and_then(|tx| {
@@ -720,11 +715,7 @@ impl WsHandler {
                     log::trace!("Pong from {}", client_id);
                 }
                 Message::Close(frame) => {
-                    log::warn!(
-                        "Client {} sent close frame: {:?}",
-                        client_id,
-                        frame
-                    );
+                    log::warn!("Client {} sent close frame: {:?}", client_id, frame);
                     break;
                 }
                 Message::Frame(_) => {

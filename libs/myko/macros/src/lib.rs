@@ -1,11 +1,13 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::quote;
-use syn::parse_macro_input;
-use syn::parse::{Parse, ParseStream};
-use syn::punctuated::Punctuated;
-use syn::spanned::Spanned;
-use syn::Token;
+use syn::{
+    Token,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
+    spanned::Spanned,
+};
 
 mod command;
 mod item;
@@ -486,14 +488,20 @@ impl Parse for CommandArgs {
         for path in args {
             if path.is_ident("custom_serialize") {
                 if custom_serialize {
-                    return Err(syn::Error::new(path.span(), "duplicate custom_serialize flag"));
+                    return Err(syn::Error::new(
+                        path.span(),
+                        "duplicate custom_serialize flag",
+                    ));
                 }
                 custom_serialize = true;
                 continue;
             }
 
             if result_type.is_some() {
-                return Err(syn::Error::new(path.span(), "expected at most one result type"));
+                return Err(syn::Error::new(
+                    path.span(),
+                    "expected at most one result type",
+                ));
             }
 
             result_type = Some(path);

@@ -136,7 +136,10 @@ where
             .query_map(local_query, local_ctx.new_server_transaction())
             .entries()
             .map(|entries: &Vec<(Arc<str>, Arc<T>)>| {
-                entries.iter().map(|(_, item)| item.clone()).collect::<Vec<_>>()
+                entries
+                    .iter()
+                    .map(|(_, item)| item.clone())
+                    .collect::<Vec<_>>()
             });
         let remote_cell = client.watch_query(remote_query);
         let joined = local_cell.join(&remote_cell);

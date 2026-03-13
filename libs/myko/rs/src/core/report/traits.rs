@@ -9,9 +9,7 @@ use ts_rs::TS;
 
 use super::{handler::ReportHandler, request::ReportRequest};
 use crate::{
-    cache::CacheKey,
-    client::MykoClient,
-    common::with_transaction::WithTransaction,
+    cache::CacheKey, client::MykoClient, common::with_transaction::WithTransaction,
     wire::WrappedReport,
 };
 
@@ -85,8 +83,7 @@ impl From<&Arc<dyn AnyReport>> for WrappedReport {
 /// The full `Report` trait is implemented on `ReportRequest<R>` where `R: ReportParams`.
 pub trait ReportParams:
     CacheKey
-    +
-    Serialize
+    + Serialize
     + DeserializeOwned
     + Clone
     + Send

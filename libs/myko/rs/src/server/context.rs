@@ -8,8 +8,8 @@
 use std::{
     any::Any,
     collections::HashMap,
-    thread,
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -553,7 +553,8 @@ impl CellServerCtx {
 
         for (entity_type, typed_items) in items_by_type {
             let store = self.registry.get_or_create(entity_type);
-            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(typed_items.len());
+            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
+                Vec::with_capacity(typed_items.len());
 
             for item in &typed_items {
                 self.search_index.index_item(item);
@@ -574,7 +575,11 @@ impl CellServerCtx {
                 }
             }
 
-            log::trace!("Published batch SET {} count={}", entity_type, typed_items.len());
+            log::trace!(
+                "Published batch SET {} count={}",
+                entity_type,
+                typed_items.len()
+            );
         }
     }
 
@@ -644,7 +649,8 @@ impl CellServerCtx {
             store.remove_many(ids);
 
             if !options.prevent_relationship_updates {
-                self.relationship_manager.forward_del_batch(&typed_items, self);
+                self.relationship_manager
+                    .forward_del_batch(&typed_items, self);
             }
 
             if !options.prevent_persist {
@@ -653,7 +659,11 @@ impl CellServerCtx {
                 }
             }
 
-            log::trace!("Published batch DEL {} count={}", entity_type, typed_items.len());
+            log::trace!(
+                "Published batch DEL {} count={}",
+                entity_type,
+                typed_items.len()
+            );
         }
     }
 
@@ -725,7 +735,10 @@ impl CellServerCtx {
         let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
 
         for event in events {
-            match self.handler_registry.get_item_buffer_policy(&event.item_type) {
+            match self
+                .handler_registry
+                .get_item_buffer_policy(&event.item_type)
+            {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
                     let entity_type: Arc<str> = event.item_type.clone().into();
@@ -893,12 +906,7 @@ impl CellServerCtx {
             .clone()
     }
 
-    fn enqueue_buffered_events(
-        &self,
-        entity_type: Arc<str>,
-        window_ms: u64,
-        events: Vec<MEvent>,
-    ) {
+    fn enqueue_buffered_events(&self, entity_type: Arc<str>, window_ms: u64, events: Vec<MEvent>) {
         let buffer = self.ingest_buffer_for(entity_type.clone());
         let should_schedule = {
             let Ok(mut state) = buffer.state.lock() else {
@@ -931,7 +939,10 @@ impl CellServerCtx {
     }
 
     fn flush_buffered_events_for_type(&self, entity_type: &Arc<str>) -> usize {
-        let Some(buffer) = self.ingest_buffers.get(entity_type.as_ref()).map(|entry| entry.clone())
+        let Some(buffer) = self
+            .ingest_buffers
+            .get(entity_type.as_ref())
+            .map(|entry| entry.clone())
         else {
             return 0;
         };
@@ -1047,14 +1058,8 @@ impl CellServerCtx {
     ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: Eventable
-            + WithId
-            + DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + 'static,
+        Q::Item:
+            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         typed_map_arc_from_any_item(
             self.query_map_untyped(query, request),
@@ -1103,7 +1108,8 @@ impl CellServerCtx {
             Some(Arc::new(self.clone())),
         )
         .expect("query cell factory should not fail for typed query");
-        self.query_cache.insert(key, MapCacheEntry::new(built.clone()));
+        self.query_cache
+            .insert(key, MapCacheEntry::new(built.clone()));
         built
     }
 
@@ -1131,7 +1137,8 @@ impl CellServerCtx {
             Arc::new(self.clone()),
         )
         .expect("view cell factory should not fail for typed view");
-        self.view_cache.insert(key, MapCacheEntry::new(built.clone()));
+        self.view_cache
+            .insert(key, MapCacheEntry::new(built.clone()));
         built
     }
 
@@ -1287,7 +1294,9 @@ mod tests {
     use super::CellServerCtx;
     use crate::{
         common::with_id::WithId,
-        core::item::{AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration},
+        core::item::{
+            AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
+        },
         hypha::Gettable,
         search::SearchIndex,
         server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},

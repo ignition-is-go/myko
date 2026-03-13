@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use hypha::CellMap;
-use hypha::{Cell, CellImmutable, CellValue};
+use hypha::{Cell, CellImmutable, CellMap, CellValue};
 use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::client::{ConnectionStatus, MykoClient};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::view::{TypedViewCellMap, ViewFactory};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::item::typed_map_from_any_item_with_typed_id;
 #[cfg(not(target_arch = "wasm32"))]
@@ -24,8 +25,6 @@ use crate::{
     report::ReportId,
     request::RequestContext,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::view::{TypedViewCellMap, ViewFactory};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -148,10 +147,7 @@ impl ReportContext {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn query_map_by_str<Q>(
-        &self,
-        query: Q,
-    ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
         Q::Item: Eventable

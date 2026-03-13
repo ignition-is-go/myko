@@ -112,8 +112,7 @@ pub struct QueryHandlerCtxAny {
 /// The full `Query` trait is implemented on `QueryRequest<Q>` where `Q: QueryParams`.
 pub trait QueryParams:
     CacheKey
-    +
-    Serialize
+    + Serialize
     + DeserializeOwned
     + Clone
     + Send

@@ -8,11 +8,11 @@ use std::sync::{Arc, OnceLock};
 use dashmap::DashMap;
 use serde::Serialize;
 
+use super::WsWriter;
 use crate::{
     command::{CommandId, CommandRequest},
     wire::{MykoMessage, encode_command_message},
 };
-use super::WsWriter;
 
 /// Thread-safe registry mapping client IDs to their WebSocket writers.
 pub struct ClientRegistry {

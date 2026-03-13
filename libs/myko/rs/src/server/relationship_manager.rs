@@ -526,8 +526,12 @@ impl RelationshipManager {
             parent_index.entry(parent_id).or_default().insert(child_id);
         }
 
-        let _ = self.belongs_to_parent_by_child.insert(lookup.id, child_index);
-        let _ = self.belongs_to_children_by_parent.insert(lookup.id, parent_index);
+        let _ = self
+            .belongs_to_parent_by_child
+            .insert(lookup.id, child_index);
+        let _ = self
+            .belongs_to_children_by_parent
+            .insert(lookup.id, parent_index);
     }
 
     /// Handle OwnsMany parent delete: delete all owned children
@@ -551,9 +555,10 @@ impl RelationshipManager {
             let mut children = Vec::new();
             for child_id in &child_ids {
                 if self.get_by_id(ctx, lookup.foreign_type, child_id).is_some()
-                    && let Some(child) = self.get_by_id(ctx, lookup.foreign_type, child_id) {
-                        children.push(child);
-                    }
+                    && let Some(child) = self.get_by_id(ctx, lookup.foreign_type, child_id)
+                {
+                    children.push(child);
+                }
             }
 
             if children.is_empty() {
@@ -569,7 +574,11 @@ impl RelationshipManager {
         }
     }
 
-    fn handle_owns_many_parent_delete_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) {
+    fn handle_owns_many_parent_delete_batch(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        ctx: &CellServerCtx,
+    ) {
         let Some(first) = items.first() else {
             return;
         };

@@ -11,7 +11,6 @@ use serde::de::DeserializeOwned;
 use crate::query::QueryParams;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::view::ViewFactory;
-use crate::{common::with_id::WithTypedId, request::RequestContext};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     cache::CacheKey,
@@ -21,6 +20,7 @@ use crate::{
     server::CellServerCtx,
     store::StoreRegistry,
 };
+use crate::{common::with_id::WithTypedId, request::RequestContext};
 
 #[derive(Clone)]
 pub struct ViewContext {
@@ -73,7 +73,8 @@ impl ViewCellContext {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.server_ctx.query_map_untyped(query, self.request_ctx.clone())
+        self.server_ctx
+            .query_map_untyped(query, self.request_ctx.clone())
     }
 
     #[cfg(not(target_arch = "wasm32"))]

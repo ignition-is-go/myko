@@ -26,7 +26,8 @@ use crate::{
     common::with_id::WithId,
     core::{item::downcast_any_item_arc, relationship::FkExtractor},
     request::RequestContext,
-    server::CellServerCtx, store::StoreRegistry,
+    server::CellServerCtx,
+    store::StoreRegistry,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

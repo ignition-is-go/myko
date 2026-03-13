@@ -50,14 +50,14 @@ pub struct ItemRegistration {
 }
 
 /// Opt-in ingest buffering policy for high-volume entity streams.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IngestBufferPolicy {
     #[default]
     None,
-    TimeWindow { window_ms: u64 },
+    TimeWindow {
+        window_ms: u64,
+    },
 }
-
 
 /// Registration entry for an entity type's ingest buffering policy.
 pub struct IngestBufferRegistration {
