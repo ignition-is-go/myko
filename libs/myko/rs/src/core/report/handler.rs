@@ -21,6 +21,7 @@ use crate::{
         with_id::{WithId, WithTypedId},
     },
     core::item::Eventable,
+    core::view::{TypedViewCellMap, ViewFactory},
     query::QueryParams,
     report::ReportId,
     request::RequestContext,
@@ -175,6 +176,19 @@ impl ReportContext {
             let _ = report;
             unreachable!();
         }
+    }
+
+    /// Subscribe to a view dependency and get a typed reactive CellMap.
+    ///
+    /// This lets reports reuse incremental, map-native view logic instead of
+    /// rebuilding equivalent query/join pipelines locally.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn view<V>(&self, view: V) -> TypedViewCellMap<V::Item>
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        self.server_ctx.view(view, self.req.clone())
     }
 
     /// Get the live peer client for a peer server id, if present.

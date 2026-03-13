@@ -78,10 +78,11 @@
 //! ```
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
+use dashmap::DashMap;
 use hypha::Gettable;
 use log::{debug, info, trace};
 
@@ -98,6 +99,7 @@ use crate::{
 /// Lookup info for BelongsTo cascades
 #[derive(Clone)]
 struct BelongsToLookup {
+    id: u64,
     local_type: &'static str,
     foreign_type: &'static str,
     extract_fk: FkExtractor,
@@ -149,6 +151,12 @@ pub struct RelationshipManager {
     /// EnsureFor relations indexed by their dependency types
     /// When a dependency entity is created, ensure derived entities exist
     ensure_for_by_dependency: HashMap<&'static str, Vec<EnsureForLookup>>,
+
+    /// Reverse belongs_to index: lookup_id -> parent_id -> child_ids
+    belongs_to_children_by_parent: DashMap<u64, DashMap<Arc<str>, BTreeSet<Arc<str>>>>,
+
+    /// Reverse belongs_to index: lookup_id -> child_id -> parent_id
+    belongs_to_parent_by_child: DashMap<u64, DashMap<Arc<str>, Arc<str>>>,
 }
 
 impl RelationshipManager {
@@ -163,6 +171,7 @@ impl RelationshipManager {
         let mut ensure_for_by_dependency: HashMap<&'static str, Vec<EnsureForLookup>> =
             HashMap::new();
 
+        let mut next_belongs_to_id = 1u64;
         for registration in iter_relations() {
             match &registration.relation {
                 Relation::BelongsTo {
@@ -175,10 +184,12 @@ impl RelationshipManager {
                         local_type, foreign_type
                     );
                     let lookup = BelongsToLookup {
+                        id: next_belongs_to_id,
                         local_type,
                         foreign_type,
                         extract_fk: *extract_fk,
                     };
+                    next_belongs_to_id += 1;
                     belongs_to_by_foreign
                         .entry(foreign_type)
                         .or_default()
@@ -256,6 +267,8 @@ impl RelationshipManager {
             owns_many_by_local,
             owns_many_by_foreign,
             ensure_for_by_dependency,
+            belongs_to_children_by_parent: DashMap::new(),
+            belongs_to_parent_by_child: DashMap::new(),
         }
     }
 
@@ -265,6 +278,12 @@ impl RelationshipManager {
     /// all derived entities exist for all combinations.
     pub fn forward_set(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) {
         let item_type = item.entity_type();
+
+        if let Some(lookups) = self.belongs_to_by_local.get(item_type) {
+            for lookup in lookups {
+                self.index_belongs_to_child(lookup, &item);
+            }
+        }
 
         // Handle EnsureFor (dependency created → ensure derived entities exist)
         if self.ensure_for_by_dependency.contains_key(item_type) {
@@ -287,6 +306,36 @@ impl RelationshipManager {
 
         // Handle OwnsMany child deleted → update parent arrays
         self.handle_owns_many_child_delete(&item, ctx);
+
+        if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
+            for lookup in lookups {
+                self.remove_belongs_to_child(lookup, &item.id());
+            }
+        }
+    }
+
+    /// Forward a batch of DEL events for relationship processing.
+    ///
+    /// Items should all be the same entity type. This keeps cascade deletes grouped
+    /// so downstream stores and views can process one wider delete wave instead of
+    /// thousands of tiny per-parent cascades.
+    pub fn forward_del_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) {
+        if items.is_empty() {
+            return;
+        }
+
+        self.handle_belongs_to_cascade_batch(items, ctx);
+        self.handle_owns_many_parent_delete_batch(items, ctx);
+
+        for item in items {
+            self.handle_owns_many_child_delete(item, ctx);
+
+            if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
+                for lookup in lookups {
+                    self.remove_belongs_to_child(lookup, &item.id());
+                }
+            }
+        }
     }
 
     /// Establish relations on startup (called after Kafka catchup).
@@ -334,16 +383,51 @@ impl RelationshipManager {
         for lookup in lookups {
             // Find children whose FK matches the deleted parent ID using extractor
             let children = self.find_children_by_fk(ctx, lookup, &parent_id);
-
-            for child in children {
-                trace!(
-                    "RelationshipManager: Cascade delete {} {} (parent {} deleted)",
-                    lookup.local_type,
-                    child.id(),
-                    &parent_id
-                );
-                self.publish_del_cascade(ctx, lookup.local_type, &child.id());
+            if children.is_empty() {
+                continue;
             }
+
+            trace!(
+                "RelationshipManager: Cascade delete batch {} count={} (parent {} deleted)",
+                lookup.local_type,
+                children.len(),
+                &parent_id
+            );
+            self.publish_del_cascade_batch(ctx, &children);
+        }
+    }
+
+    fn handle_belongs_to_cascade_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) {
+        let Some(first) = items.first() else {
+            return;
+        };
+        let item_type = first.entity_type();
+        let Some(lookups) = self.belongs_to_by_foreign.get(item_type) else {
+            return;
+        };
+
+        let parent_ids: Vec<Arc<str>> = items.iter().map(|item| item.id()).collect();
+
+        for lookup in lookups {
+            let mut children_by_id: HashMap<Arc<str>, Arc<dyn AnyItem>> = HashMap::new();
+            for parent_id in &parent_ids {
+                for child in self.find_children_by_fk(ctx, lookup, parent_id) {
+                    children_by_id.entry(child.id()).or_insert(child);
+                }
+            }
+
+            if children_by_id.is_empty() {
+                continue;
+            }
+
+            let children: Vec<_> = children_by_id.into_values().collect();
+            trace!(
+                "RelationshipManager: Cascade delete batch {} count={} ({} parents deleted)",
+                lookup.local_type,
+                children.len(),
+                parent_ids.len()
+            );
+            self.publish_del_cascade_batch(ctx, &children);
         }
     }
 
@@ -354,6 +438,18 @@ impl RelationshipManager {
         lookup: &BelongsToLookup,
         parent_id: &str,
     ) -> Vec<Arc<dyn AnyItem>> {
+        self.ensure_belongs_to_index_loaded(ctx, lookup);
+        if let Some(parent_map) = self.belongs_to_children_by_parent.get(&lookup.id) {
+            let store = ctx.registry.get_or_create(lookup.local_type);
+            let Some(child_ids) = parent_map.get(parent_id) else {
+                return Vec::new();
+            };
+            return child_ids
+                .iter()
+                .filter_map(|child_id| store.get_value(child_id))
+                .collect();
+        }
+
         let store = ctx.registry.get_or_create(lookup.local_type);
         store
             .entries()
@@ -366,6 +462,72 @@ impl RelationshipManager {
             })
             .map(|(_, item)| item)
             .collect()
+    }
+
+    fn index_belongs_to_child(&self, lookup: &BelongsToLookup, item: &Arc<dyn AnyItem>) {
+        let child_id = item.id();
+        self.remove_belongs_to_child(lookup, &child_id);
+
+        let Some(parent_id) = (lookup.extract_fk)(item.as_any()) else {
+            return;
+        };
+
+        self.belongs_to_parent_by_child
+            .entry(lookup.id)
+            .or_default()
+            .insert(child_id.clone(), parent_id.clone());
+        self.belongs_to_children_by_parent
+            .entry(lookup.id)
+            .or_default()
+            .entry(parent_id)
+            .or_default()
+            .insert(child_id);
+    }
+
+    fn remove_belongs_to_child(&self, lookup: &BelongsToLookup, child_id: &Arc<str>) {
+        let Some(parent_map) = self.belongs_to_parent_by_child.get(&lookup.id) else {
+            return;
+        };
+        let Some((_, parent_id)) = parent_map.remove(child_id) else {
+            return;
+        };
+
+        let Some(children_by_parent) = self.belongs_to_children_by_parent.get(&lookup.id) else {
+            return;
+        };
+        let should_remove_parent = children_by_parent
+            .get_mut(parent_id.as_ref())
+            .map(|mut child_ids| {
+                child_ids.remove(child_id);
+                child_ids.is_empty()
+            })
+            .unwrap_or(false);
+
+        if should_remove_parent {
+            children_by_parent.remove(parent_id.as_ref());
+        }
+    }
+
+    fn ensure_belongs_to_index_loaded(&self, ctx: &CellServerCtx, lookup: &BelongsToLookup) {
+        if self.belongs_to_parent_by_child.contains_key(&lookup.id) {
+            return;
+        }
+
+        let child_index = DashMap::<Arc<str>, Arc<str>>::new();
+        let parent_index = DashMap::<Arc<str>, BTreeSet<Arc<str>>>::new();
+        let store = ctx.registry.get_or_create(lookup.local_type);
+
+        for (_, item) in store.snapshot() {
+            let Some(parent_id) = (lookup.extract_fk)(item.as_any()) else {
+                continue;
+            };
+            let child_id = item.id();
+            child_index.insert(child_id.clone(), parent_id.clone());
+            parent_index.entry(parent_id).or_default().insert(child_id);
+        }
+
+        let _ = self.belongs_to_parent_by_child.insert(lookup.id, child_index);
+        let _ = self.belongs_to_children_by_parent.insert(lookup.id, parent_index);
     }
 
     /// Handle OwnsMany parent delete: delete all owned children
@@ -386,17 +548,67 @@ impl RelationshipManager {
                 continue;
             }
 
-            // Delete each child
+            let mut children = Vec::new();
             for child_id in &child_ids {
-                // Check if child exists first
                 if self.get_by_id(ctx, lookup.foreign_type, child_id).is_some() {
-                    trace!(
-                        "RelationshipManager: Cascade delete owned {} {}",
-                        lookup.foreign_type, child_id
-                    );
-                    self.publish_del_cascade(ctx, lookup.foreign_type, child_id);
+                    if let Some(child) = self.get_by_id(ctx, lookup.foreign_type, child_id) {
+                        children.push(child);
+                    }
                 }
             }
+
+            if children.is_empty() {
+                continue;
+            }
+
+            trace!(
+                "RelationshipManager: Cascade delete owned batch {} count={}",
+                lookup.foreign_type,
+                children.len()
+            );
+            self.publish_del_cascade_batch(ctx, &children);
+        }
+    }
+
+    fn handle_owns_many_parent_delete_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) {
+        let Some(first) = items.first() else {
+            return;
+        };
+        let item_type = first.entity_type();
+        let Some(lookups) = self.owns_many_by_local.get(item_type) else {
+            return;
+        };
+
+        for lookup in lookups {
+            let mut child_ids = BTreeSet::new();
+            for item in items {
+                if let Some(ids) = (lookup.extract_ids)(item.as_any()) {
+                    child_ids.extend(ids);
+                }
+            }
+
+            if child_ids.is_empty() {
+                continue;
+            }
+
+            let mut children = Vec::new();
+            for child_id in &child_ids {
+                if let Some(child) = self.get_by_id(ctx, lookup.foreign_type, child_id) {
+                    children.push(child);
+                }
+            }
+
+            if children.is_empty() {
+                continue;
+            }
+
+            trace!(
+                "RelationshipManager: Cascade delete owned batch {} count={} ({} parents deleted)",
+                lookup.foreign_type,
+                children.len(),
+                items.len()
+            );
+            self.publish_del_cascade_batch(ctx, &children);
         }
     }
 
@@ -412,6 +624,7 @@ impl RelationshipManager {
         for lookup in lookups {
             // Find parents that contain this child ID using extract_ids
             let parents = self.find_parents_containing(ctx, lookup, &child_id);
+            let mut updates = Vec::new();
 
             for parent_item in parents {
                 // Use the remove_id extractor to get updated parent as Value
@@ -422,8 +635,12 @@ impl RelationshipManager {
                         parent_item.id(),
                         child_id
                     );
-                    self.publish_set_cascade(ctx, lookup.local_type, updated_parent);
+                    updates.push(updated_parent);
                 }
+            }
+
+            if !updates.is_empty() {
+                self.publish_set_cascade_batch(ctx, &updates);
             }
         }
     }
@@ -815,6 +1032,14 @@ impl RelationshipManager {
         ctx.set_dyn_with_options(item, Some(options));
     }
 
+    fn publish_set_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) {
+        let options = EventOptions {
+            prevent_relationship_updates: true,
+            ..Default::default()
+        };
+        ctx.batch_set_dyn_with_options(items, Some(options));
+    }
+
     /// Publish a DEL for cascade operations.
     ///
     /// Sets prevent_relationship_updates to avoid infinite loops.
@@ -838,6 +1063,18 @@ impl RelationshipManager {
                 entity_type, id
             );
         }
+    }
+
+    fn publish_del_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) {
+        if items.is_empty() {
+            return;
+        }
+
+        let options = EventOptions {
+            prevent_relationship_updates: true,
+            ..Default::default()
+        };
+        ctx.batch_del_dyn_with_options(items, Some(options));
     }
 }
 

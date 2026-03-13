@@ -479,9 +479,7 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            for item in &items {
-                self.relationship_manager.forward_del(item.clone(), self);
-            }
+            self.relationship_manager.forward_del_batch(&items, self);
         }
 
         // Persist: produce to Kafka (unless prevented)
@@ -532,6 +530,54 @@ impl CellServerCtx {
         log::trace!("Published SET {}:{}", entity_type, id);
     }
 
+    /// Publish a batch of dynamic items (SET) with shared options.
+    pub fn batch_set_dyn_with_options(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        options: Option<EventOptions>,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+
+        let options = options.unwrap_or_default();
+        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
+            std::collections::BTreeMap::new();
+
+        for item in items {
+            items_by_type
+                .entry(item.entity_type())
+                .or_default()
+                .push(item.clone());
+        }
+
+        for (entity_type, typed_items) in items_by_type {
+            let store = self.registry.get_or_create(entity_type);
+            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(typed_items.len());
+
+            for item in &typed_items {
+                self.search_index.index_item(item);
+                entries.push((item.id(), item.clone()));
+            }
+
+            store.insert_many(entries);
+
+            if !options.prevent_relationship_updates {
+                for item in &typed_items {
+                    self.relationship_manager.forward_set(item.clone(), self);
+                }
+            }
+
+            if !options.prevent_persist {
+                for item in &typed_items {
+                    self.produce_set_dyn(item);
+                }
+            }
+
+            log::trace!("Published batch SET {} count={}", entity_type, typed_items.len());
+        }
+    }
+
     /// Delete a dynamic item (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
@@ -562,6 +608,53 @@ impl CellServerCtx {
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
+    }
+
+    /// Publish a batch of dynamic items (DEL) with shared options.
+    pub fn batch_del_dyn_with_options(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        options: Option<EventOptions>,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+
+        let options = options.unwrap_or_default();
+        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
+            std::collections::BTreeMap::new();
+
+        for item in items {
+            items_by_type
+                .entry(item.entity_type())
+                .or_default()
+                .push(item.clone());
+        }
+
+        for (entity_type, typed_items) in items_by_type {
+            let store = self.registry.get_or_create(entity_type);
+            let mut ids: Vec<Arc<str>> = Vec::with_capacity(typed_items.len());
+
+            for item in &typed_items {
+                let id = item.id();
+                self.search_index.remove_entity(&id);
+                ids.push(id);
+            }
+
+            store.remove_many(ids);
+
+            if !options.prevent_relationship_updates {
+                self.relationship_manager.forward_del_batch(&typed_items, self);
+            }
+
+            if !options.prevent_persist {
+                for item in &typed_items {
+                    self.produce_del_dyn(item);
+                }
+            }
+
+            log::trace!("Published batch DEL {} count={}", entity_type, typed_items.len());
+        }
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -765,10 +858,17 @@ impl CellServerCtx {
                 self.relationship_manager.forward_set(op.item.clone(), self);
             }
         }
+        let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
         for op in &dels {
             if !op.options.prevent_relationship_updates {
-                self.relationship_manager.forward_del(op.item.clone(), self);
+                dels_with_relationships
+                    .entry(op.item.entity_type().into())
+                    .or_default()
+                    .push(op.item.clone());
             }
+        }
+        for (_, items) in dels_with_relationships {
+            self.relationship_manager.forward_del_batch(&items, self);
         }
 
         // Persist

@@ -9,6 +9,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -68,36 +69,38 @@ fn ensure_ws_ingest_logger() {
     }
 
     let stats = ws_ingest_stats();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
+    thread::Builder::new()
+        .name("ws-ingest-logger".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(1));
 
-            let mut per_type = Vec::new();
-            let mut total = 0u64;
-            for entry in &stats.counts_by_type {
-                let count = entry.value().swap(0, Ordering::Relaxed);
-                if count == 0 {
+                let mut per_type = Vec::new();
+                let mut total = 0u64;
+                for entry in &stats.counts_by_type {
+                    let count = entry.value().swap(0, Ordering::Relaxed);
+                    if count == 0 {
+                        continue;
+                    }
+                    total += count;
+                    per_type.push((entry.key().clone(), count));
+                }
+
+                if total == 0 {
                     continue;
                 }
-                total += count;
-                per_type.push((entry.key().clone(), count));
+
+                per_type.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                let details = per_type
+                    .into_iter()
+                    .map(|(entity_type, count)| format!("{entity_type}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                log::info!("WebSocket ingest last_1s total={} {}", total, details);
             }
-
-            if total == 0 {
-                continue;
-            }
-
-            per_type.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let details = per_type
-                .into_iter()
-                .map(|(entity_type, count)| format!("{entity_type}={count}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            log::info!("WebSocket ingest last_1s total={} {}", total, details);
-        }
-    });
+        })
+        .expect("failed to spawn websocket ingest logger thread");
 }
 
 fn record_ws_ingest(events: &[MEvent]) {
