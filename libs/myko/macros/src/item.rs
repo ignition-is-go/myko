@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    Field, FieldsNamed, ItemStruct, LitInt, Result, Token,
+    ExprPath, Field, FieldsNamed, ItemStruct, LitInt, Result, Token,
     parse::{Parse, ParseStream},
 };
 
@@ -12,6 +12,7 @@ use crate::{DeriveCtx, relationship, setter};
 #[derive(Default)]
 pub struct ItemArgs {
     pub ingest_buffer_ms: Option<u64>,
+    pub post_deserialize: Option<ExprPath>,
 }
 
 impl Parse for ItemArgs {
@@ -25,6 +26,9 @@ impl Parse for ItemArgs {
             if ident == "ingest_buffer_ms" {
                 let value: LitInt = input.parse()?;
                 args.ingest_buffer_ms = Some(value.base10_parse()?);
+            } else if ident == "post_deserialize" {
+                let value: ExprPath = input.parse()?;
+                args.post_deserialize = Some(value);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -93,23 +97,66 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         None => quote!(),
     };
 
+    let deserialize_derive = if args.post_deserialize.is_some() {
+        quote!()
+    } else {
+        quote!(#serde_path::Deserialize,)
+    };
+
     // Add Default derive if entity has ensure_for relationships (needed for make_entity)
     // NOTE(ts): `partially` forwards all container attributes (including #[serde(crate = ...)])
     // from the main struct to the Partial struct automatically, so we must NOT also add
     // `attribute(serde(crate = ...))` — that would cause "duplicate serde attribute `crate`".
     let derives = if !rel_info.ensure_for_fields.is_empty() {
         quote! {
-            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
             #serde_rename_attr
             #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, myko_macros::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     } else {
         quote! {
-            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
             #serde_rename_attr
             #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, myko_macros::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     };
+
+    let post_deserialize_impl = args.post_deserialize.as_ref().map(|post_deserialize| {
+        let helper_ident = format_ident!("{}DeserializeHelper", name_str);
+        let mut helper_struct = input_struct.clone();
+        helper_struct.ident = helper_ident.clone();
+        let helper_fields =
+            if let syn::Fields::Named(FieldsNamed { named, .. }) = &input_struct.fields {
+                named
+                    .iter()
+                    .filter_map(|field| field.ident.clone())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+
+        quote! {
+            #[derive(#serde_path::Deserialize, #krate::TS)]
+            #serde_rename_attr
+            #helper_struct
+
+            impl<'de> #serde_path::Deserialize<'de> for #name {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: #serde_path::Deserializer<'de>,
+                {
+                    let #helper_ident {
+                        #(#helper_fields),*
+                    } = #helper_ident::deserialize(deserializer)?;
+                    let mut value = #name {
+                        #(#helper_fields),*
+                    };
+                    #post_deserialize(&mut value);
+                    Ok(value)
+                }
+            }
+        }
+    });
 
     let get_all_query_ident = format_ident!("GetAll{}s", name_str);
 
@@ -514,6 +561,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
         #derives
         #input_struct
+        #post_deserialize_impl
 
         // Register for ts-rs export
         #krate::register_ts_export!(#id_type_ident, #name, #partial_ident);

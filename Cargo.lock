@@ -9792,6 +9792,7 @@ name = "rship-entities-foundation"
 version = "4.0.0-canary.4"
 dependencies = [
  "myko-rs",
+ "ordered-float",
  "serde",
  "serde_json",
  "ts-rs",
