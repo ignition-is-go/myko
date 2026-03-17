@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap};
+use hyphae::{CellImmutable, CellMap, Gettable, Watchable};
 use log::{debug, error, trace};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
