@@ -9687,12 +9687,17 @@ dependencies = [
 name = "rship-entities-color"
 version = "4.0.0-canary.5"
 dependencies = [
+ "hypha",
  "myko-macros",
  "myko-rs",
  "partially",
  "rship-entities-cameras",
  "rship-entities-core",
+ "rship-entities-foundation",
+ "rship-entities-macros",
+ "rship-entities-nodes",
  "serde",
+ "serde_json",
  "ts-rs",
 ]
 
