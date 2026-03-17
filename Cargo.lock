@@ -10361,6 +10361,7 @@ version = "4.0.0-canary.5"
 dependencies = [
  "dotenv",
  "env_logger",
+ "hypha",
  "log",
  "myko-rs",
  "myko-server",

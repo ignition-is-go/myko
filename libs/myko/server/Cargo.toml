@@ -40,3 +40,4 @@ flume.workspace = true
 [features]
 default = []
 inspector = ["hypha/inspector"]
+trace = ['hypha/trace']

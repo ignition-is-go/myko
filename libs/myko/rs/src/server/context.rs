@@ -14,9 +14,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MapExt, Mutable, WeakCellMap,
-};
+use hypha::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, WeakCellMap};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -1245,7 +1243,7 @@ impl CellServerCtx {
         &self,
         report: R,
         request: Arc<RequestContext>,
-    ) -> Cell<R::Output, CellImmutable>
+    ) -> Cell<Arc<R::Output>, CellImmutable>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
@@ -1257,7 +1255,7 @@ impl CellServerCtx {
             if let Some(entry) = existing
                 .value()
                 .as_any()
-                .downcast_ref::<ReportCacheEntry<R::Output>>()
+                .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
                 && let Some(shared) = entry.get()
             {
                 return shared;
@@ -1265,7 +1263,7 @@ impl CellServerCtx {
         }
 
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
-        let built = report.compute(nested_ctx).map(|v| v.clone());
+        let built = report.compute(nested_ctx);
         self.report_cache
             .insert(key, Arc::new(ReportCacheEntry::new(built.clone())));
         built

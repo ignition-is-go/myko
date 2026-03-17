@@ -202,7 +202,7 @@ impl ReportContext {
     ///
     /// Forwards to `CellServerCtx::report()` which wraps the compute result
     /// in a named relay for inspector visibility.
-    pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
+    pub fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
@@ -286,9 +286,9 @@ impl ReportContext {
 /// impl ReportHandler for GetActiveTargetCount {
 ///   type Output = ActiveTargetCount;
 ///
-///   fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+///   fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
 ///     ctx.query(GetTargetsByQuery { active: Some(true), ..Default::default() })
-///       .map(|items| ActiveTargetCount { count: items.len() })
+///       .map(|items| Arc::new(ActiveTargetCount { count: items.len() }))
 ///   }
 /// }
 /// ```
@@ -303,12 +303,12 @@ pub trait ReportHandler: Sized + Send + Sync + 'static {
         + ToValue
         + 'static;
 
-    /// Compute the report output as a reactive cell.
+    /// Compute the report output as a shared reactive cell.
     ///
     /// This method is called once when the report is first subscribed to.
     /// The returned cell automatically updates whenever dependencies change.
     ///
     /// Report arguments are parsed by the framework and passed as `&self`,
     /// so fields are directly accessible (e.g., `self.target_id`).
-    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable>;
+    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable>;
 }

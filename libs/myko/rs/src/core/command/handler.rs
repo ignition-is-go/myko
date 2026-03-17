@@ -290,7 +290,12 @@ impl CommandContext {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use hypha::Gettable;
-            Ok(self.server_ctx.report(report, self.req.clone()).get())
+            Ok(self
+                .server_ctx
+                .report(report, self.req.clone())
+                .get()
+                .as_ref()
+                .clone())
         }
         #[cfg(target_arch = "wasm32")]
         {

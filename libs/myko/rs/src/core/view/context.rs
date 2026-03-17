@@ -116,7 +116,7 @@ impl ViewCellContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
+    pub fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
@@ -215,7 +215,7 @@ impl ViewContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn report<R>(&self, report: R) -> Cell<R::Output, CellImmutable>
+    pub fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {

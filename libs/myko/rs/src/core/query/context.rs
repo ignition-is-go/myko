@@ -107,7 +107,7 @@ impl QueryCellContext {
     pub fn report<R>(
         &self,
         report: R,
-    ) -> Result<Cell<<R as ReportOutputType>::Output, CellImmutable>, String>
+    ) -> Result<Cell<Arc<<R as ReportOutputType>::Output>, CellImmutable>, String>
     where
         R: ReportFactory + Clone,
         <R as ReportOutputType>::Output:
@@ -122,12 +122,14 @@ impl QueryCellContext {
         let erased = R::cell_factory(any_report, self.request_ctx.clone(), server_ctx)
             .map_err(|e| e.to_string())?;
         Ok(erased.map(|output| {
-            output
-                .as_ref()
-                .as_any()
-                .downcast_ref::<<R as ReportOutputType>::Output>()
-                .expect("Report output downcast should match ReportFactory type")
-                .clone()
+            Arc::new(
+                output
+                    .as_ref()
+                    .as_any()
+                    .downcast_ref::<<R as ReportOutputType>::Output>()
+                    .expect("Report output downcast should match ReportFactory type")
+                    .clone(),
+            )
         }))
     }
 

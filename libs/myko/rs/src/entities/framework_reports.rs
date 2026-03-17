@@ -59,10 +59,10 @@ pub struct GetItemsByTypeAndIds {
 impl ReportHandler for GetItemsByTypeAndIds {
     type Output = Vec<serde_json::Value>;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Implement dynamic type lookup once we have entity registry
         // For now, return empty - this requires runtime type resolution
-        Cell::new(Vec::new()).lock()
+        Cell::new(Arc::new(Vec::new())).lock()
     }
 }
 
@@ -76,10 +76,10 @@ pub struct ChildEntities {
 impl ReportHandler for ChildEntities {
     type Output = Vec<ItemStub>;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Implement using relationship manager
         // This requires querying the relationship graph for direct children
-        Cell::new(Vec::new()).lock()
+        Cell::new(Arc::new(Vec::new())).lock()
     }
 }
 
@@ -93,9 +93,9 @@ pub struct FullChildEntities {
 impl ReportHandler for FullChildEntities {
     type Output = Vec<ItemStub>;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Implement recursive traversal using relationship manager
-        Cell::new(Vec::new()).lock()
+        Cell::new(Arc::new(Vec::new())).lock()
     }
 }
 
@@ -109,9 +109,9 @@ pub struct ChildEntitiesAllTime {
 impl ReportHandler for ChildEntitiesAllTime {
     type Output = Vec<ItemStub>;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Implement with historical event store query
-        Cell::new(Vec::new()).lock()
+        Cell::new(Arc::new(Vec::new())).lock()
     }
 }
 
@@ -125,9 +125,9 @@ pub struct EntitySnapshotDifference {
 impl ReportHandler for EntitySnapshotDifference {
     type Output = EntitySnapshotDifferenceData;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Implement snapshot comparison
-        Cell::new(EntitySnapshotDifferenceData::default()).lock()
+        Cell::new(Arc::new(EntitySnapshotDifferenceData::default())).lock()
     }
 }
 
@@ -155,15 +155,15 @@ pub struct Loggers {}
 impl ReportHandler for Loggers {
     type Output = Vec<String>;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Integrate with tracing subscriber to list available targets
-        Cell::new(vec![
+        Cell::new(Arc::new(vec![
             "myko".to_string(),
             "myko::server".to_string(),
             "myko::query".to_string(),
             "myko::command".to_string(),
             "myko::report".to_string(),
-        ])
+        ]))
         .lock()
     }
 }
@@ -177,9 +177,9 @@ pub struct ServerLogLevel {
 impl ReportHandler for ServerLogLevel {
     type Output = LogLevel;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Query actual log level from tracing config
-        Cell::new(LogLevel::Info).lock()
+        Cell::new(Arc::new(LogLevel::Info)).lock()
     }
 }
 
@@ -212,18 +212,20 @@ pub struct PeerAlive {
 impl ReportHandler for PeerAlive {
     type Output = i64;
 
-    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         let peer_id = self.peer_id.clone();
         let report_ctx = ctx.clone();
         ctx.peer_clients_tick().switch_map(move |_| {
             let Some(peer_client) = report_ctx.peer_client(peer_id.as_ref()) else {
-                return Cell::new(-1).lock();
+                return Cell::new(Arc::new(-1)).lock();
             };
 
             peer_client.ping_ms().map(|ping_ms| {
-                ping_ms
-                    .map(|ms| ms.min(i64::MAX as u64) as i64)
-                    .unwrap_or(-1)
+                Arc::new(
+                    ping_ms
+                        .map(|ms| ms.min(i64::MAX as u64) as i64)
+                        .unwrap_or(-1),
+                )
             })
         })
     }
@@ -233,8 +235,8 @@ impl ReportHandler for PeerAlive {
 impl ReportHandler for PeerAlive {
     type Output = i64;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
-        Cell::new(-1).lock()
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
+        Cell::new(Arc::new(-1)).lock()
     }
 }
 
@@ -260,9 +262,9 @@ pub struct EventsForTransaction {
 impl ReportHandler for EventsForTransaction {
     type Output = Vec<crate::wire::MEvent>;
 
-    fn compute(&self, _ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // TODO(ts): Query event store by transaction ID
-        Cell::new(Vec::new()).lock()
+        Cell::new(Arc::new(Vec::new())).lock()
     }
 }
 

@@ -83,7 +83,7 @@ pub struct ServerStats {}
 impl ReportHandler for ServerStats {
     type Output = ServerStatsOutput;
 
-    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         // Combine server and client cells - emit whenever either changes
         ctx.query_map(GetConnectedServer {})
             .entries()
@@ -101,11 +101,11 @@ impl ReportHandler for ServerStats {
                         })
                 });
 
-                ServerStatsOutput {
+                Arc::new(ServerStatsOutput {
                     server,
                     client_count: clients.len(),
                     uptime_seconds,
-                }
+                })
             }))
     }
 }

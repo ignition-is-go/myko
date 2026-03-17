@@ -267,14 +267,14 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #count_all_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
+            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
                 use #krate::prelude::MapExt;
 
                 // Query all items and count them
                 let query = #get_all_query_ident {};
                 ctx.query_map_by_str(query)
                     .size()
-                    .map(|count| #count_result_ident { count: *count })
+                    .map(|count| std::sync::Arc::new(#count_result_ident { count: *count }))
             }
         }
     };
@@ -290,14 +290,14 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
+            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
                 use #krate::prelude::MapExt;
 
                 // Query by partial filter and count results
                 let query = #get_by_partial_ident(self.0.clone());
                 ctx.query_map_by_str(query)
                     .size()
-                    .map(|count| #count_result_ident { count: *count })
+                    .map(|count| std::sync::Arc::new(#count_result_ident { count: *count }))
             }
         }
     };
@@ -314,16 +314,16 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
             type Output = Option<std::sync::Arc<#name>>;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<Self::Output, #krate::prelude::CellImmutable> {
+            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
                 use #krate::prelude::MapExt;
 
                 let id = self.id.clone();
 
-                // Query by ID and return the first match as an Arc entity.
+                // Query by ID and return the first match as a shared entity snapshot.
                 let query = #get_by_ids_query_ident { ids: vec![id] };
                 ctx.query_map_by_str(query)
                     .entries()
-                    .map(|items| items.first().map(|(_, item)| item.clone()))
+                    .map(|items| std::sync::Arc::new(items.first().map(|(_, item)| item.clone())))
             }
         }
     };

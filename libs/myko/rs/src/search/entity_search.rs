@@ -89,13 +89,13 @@ impl EntitySearch {
 impl ReportHandler for EntitySearch {
     type Output = EntitySearchResult;
 
-    fn compute(&self, ctx: ReportContext) -> hypha::Cell<Self::Output, hypha::CellImmutable> {
+    fn compute(&self, ctx: ReportContext) -> hypha::Cell<Arc<Self::Output>, hypha::CellImmutable> {
         // Perform search via ReportContext (sync call)
         let ids = ctx.search(&self.entity_type, &self.query, self.limit);
 
         // Create an immutable cell with the search result
         // Note: This report returns a single result and doesn't update reactively.
         // For reactive search, you would need to subscribe to entity changes.
-        hypha::Cell::new(EntitySearchResult { ids }).lock()
+        hypha::Cell::new(Arc::new(EntitySearchResult { ids })).lock()
     }
 }

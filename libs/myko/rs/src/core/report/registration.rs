@@ -132,10 +132,10 @@ impl<R: ReportParams> ReportFactory for R {
         let report_id = R::report_id_static();
         let cell = <R as ReportHandler>::compute(&request.report, ctx);
 
-        // Map to type-erased output (clone since map receives a reference)
+        // Map to type-erased output for the WS/report subscription layer.
         let report_name = format!("report:{}", report_id);
         Ok(cell
-            .map(|output| Arc::new(output.clone()) as Arc<dyn AnyOutput>)
+            .map(|output| output.clone() as Arc<dyn AnyOutput>)
             .with_name(report_name.as_str()))
     }
 }

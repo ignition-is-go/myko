@@ -36,7 +36,7 @@ pub struct ClientStatus {
 impl ReportHandler for ClientStatus {
     type Output = ClientStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         let client_id = self.client_id.clone();
 
         // Query all clients and check if one with our id exists
@@ -46,7 +46,7 @@ impl ReportHandler for ClientStatus {
                 let online = clients
                     .iter()
                     .any(|(_, c)| c.id.as_ref() == client_id.as_ref());
-                ClientStatusOutput { online }
+                Arc::new(ClientStatusOutput { online })
             })
     }
 }
@@ -69,7 +69,7 @@ pub struct WindbackStatus {}
 impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> Cell<Self::Output, CellImmutable> {
+    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
         let client_id = ctx
             .client_id()
             .map(|id| ClientId::from(Arc::<str>::from(id)));
@@ -82,7 +82,7 @@ impl ReportHandler for WindbackStatus {
                     .as_ref()
                     .and_then(|cid| clients.iter().find(|(_, c)| c.id.as_ref() == cid.as_ref()))
                     .and_then(|(_, c)| c.windback.clone());
-                WindbackStatusOutput { windback }
+                Arc::new(WindbackStatusOutput { windback })
             })
     }
 }
