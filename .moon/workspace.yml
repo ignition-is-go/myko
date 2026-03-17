@@ -9,7 +9,6 @@ projects:
   autosocket: 'libs/autosocket'
   docs-rship-io: 'apps/docs.rship.io'
   entities-rs: 'libs/entities/rs'
-  entities-ts: 'libs/entities/ts'
   hyphae: 'libs/hyphae/hyphae'
   link-cli: 'apps/link-cli'
   link-ui: 'apps/link-ui'
