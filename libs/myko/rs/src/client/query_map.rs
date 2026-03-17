@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use hypha::{CellImmutable, CellMap};
+use hyphae::{CellImmutable, CellMap};
 use log::{debug, error, trace};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
-    common::with_id::WithId,
+    common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, query::QueryParams},
     wire::{message::MykoMessage, query::WrappedQuery},
 };
@@ -28,7 +28,8 @@ impl MykoClient {
     ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + Clone,
-        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+        Q::Item: Eventable + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+        <Q::Item as WithTypedId>::Id: hyphae::IdFor<Q::Item, MapKey = Arc<str>>,
     {
         let query: QueryRequest<Q> = query.into();
         let tx: Arc<str> = query.tx.clone();
@@ -69,7 +70,7 @@ impl MykoClient {
                 // Uses remove_many which emits empty Initial when fully clearing.
                 if response.sequence == 0 {
                     trace!("Sequence reset: Clearing {} map", query_id_for_handler);
-                    use hypha::traits::Gettable;
+                    use hyphae::traits::Gettable;
                     let keys = map_writer.keys().get();
                     map_writer.remove_many(keys);
                 }
@@ -120,7 +121,7 @@ impl MykoClient {
         let send_query_id = query_id.clone();
         let frame_clone = frame.clone();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(status) = signal {
                 match &**status {
                     ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
                         Ok(_) => debug!("Watching query map {send_query_id}"),

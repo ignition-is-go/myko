@@ -100,7 +100,7 @@ where
     read
 }
 
-/// Apply a hypha MapDiff to per-entity Leptos signals.
+/// Apply a hyphae MapDiff to per-entity Leptos signals.
 ///
 /// Each entity has its own RwSignal — only subscribers to that specific entity
 /// are notified on update. The `ids` signal tracks the full ID list for `<For>`
@@ -108,9 +108,9 @@ where
 fn apply_diff<T: Clone + Send + Sync + 'static>(
     signals: &StoredValue<std::collections::HashMap<Arc<str>, RwSignal<Option<Arc<T>>>>>,
     ids_write: &WriteSignal<Vec<Arc<str>>>,
-    diff: &myko_rs::hypha::MapDiff<Arc<str>, Arc<T>>,
+    diff: &myko_rs::hyphae::MapDiff<Arc<str>, Arc<T>>,
 ) {
-    use myko_rs::hypha::MapDiff;
+    use myko_rs::hyphae::MapDiff;
     match diff {
         MapDiff::Initial { entries } => {
             signals.update_value(|map| {
@@ -242,7 +242,7 @@ where
         use std::collections::HashMap;
         use myko_rs::{
             client::MykoClient,
-            hypha::Watchable,
+            hyphae::Watchable,
         };
 
         let client = expect_context::<MykoClient>();
