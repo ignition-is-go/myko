@@ -130,14 +130,12 @@ fn apply_diff<T: Clone + Send + Sync + 'static>(
             });
         }
         MapDiff::Insert { key, value } => {
-            signals.update_value(|map| {
-                match map.entry(key.clone()) {
-                    std::collections::hash_map::Entry::Occupied(e) => {
-                        e.get().set(Some(value.clone()));
-                    }
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(RwSignal::new(Some(value.clone())));
-                    }
+            signals.update_value(|map| match map.entry(key.clone()) {
+                std::collections::hash_map::Entry::Occupied(e) => {
+                    e.get().set(Some(value.clone()));
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(RwSignal::new(Some(value.clone())));
                 }
             });
             ids_write.update(|ids| {
@@ -172,14 +170,12 @@ fn apply_diff<T: Clone + Send + Sync + 'static>(
             for change in changes {
                 match change {
                     MapDiff::Insert { key, value } => {
-                        signals.update_value(|map| {
-                            match map.entry(key.clone()) {
-                                std::collections::hash_map::Entry::Occupied(e) => {
-                                    e.get().set(Some(value.clone()));
-                                }
-                                std::collections::hash_map::Entry::Vacant(e) => {
-                                    e.insert(RwSignal::new(Some(value.clone())));
-                                }
+                        signals.update_value(|map| match map.entry(key.clone()) {
+                            std::collections::hash_map::Entry::Occupied(e) => {
+                                e.get().set(Some(value.clone()));
+                            }
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(RwSignal::new(Some(value.clone())));
                             }
                         });
                         ids_to_add.push(key.clone());
@@ -240,10 +236,8 @@ where
     #[cfg(target_arch = "wasm32")]
     {
         use std::collections::HashMap;
-        use myko_rs::{
-            client::MykoClient,
-            hyphae::Watchable,
-        };
+
+        use myko_rs::{client::MykoClient, hyphae::Watchable};
 
         let client = expect_context::<MykoClient>();
         let cell_map = client.watch_query_map(query);
@@ -265,7 +259,10 @@ where
         let _keepalive_map = StoredValue::new(cell_map);
         let _keepalive_guard = StoredValue::new(guard);
 
-        LiveQueryMap { signals, ids: ids_read }
+        LiveQueryMap {
+            signals,
+            ids: ids_read,
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

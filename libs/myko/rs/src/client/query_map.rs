@@ -5,13 +5,12 @@ use log::{debug, error, trace};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use super::{ConnectionStatus, MykoClient, QueryRequest};
 use crate::{
     common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, query::QueryParams},
     wire::{message::MykoMessage, query::WrappedQuery},
 };
-
-use super::{ConnectionStatus, MykoClient, QueryRequest};
 
 impl MykoClient {
     /// Watch a query with per-entity reactive granularity.
