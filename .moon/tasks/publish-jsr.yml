@@ -1,0 +1,15 @@
+$schema: 'https://moonrepo.dev/schemas/tasks.json'
+
+inheritedBy:
+  tag: 'publish-jsr'
+
+tasks:
+  publish-jsr:
+    command: 'bunx'
+    args:
+      - 'jsr'
+      - 'publish'
+      - '--allow-dirty'
+      - '--allow-slow-types'
+    options:
+      cache: false

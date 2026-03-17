@@ -2,6 +2,9 @@
 name = "autosocket"
 version = "4.0.0-canary.6"
 edition = "2024"
+description = "Transport adapters shared by rship and myko clients"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/ignition-is-go/rship"
 
 [dependencies]
 log.workspace = true

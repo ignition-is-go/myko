@@ -1,0 +1,14 @@
+{
+  "exports": "./bindings/index.ts",
+  "imports": {},
+  "license": "AGPL-3.0-or-later",
+  "name": "@myko/rs",
+  "nodeModulesDir": "auto",
+  "publish": {
+    "exclude": [
+      "package.json",
+      "node_modules"
+    ]
+  },
+  "version": "4.0.0-canary.6"
+}

@@ -1,0 +1,28 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+language: 'typescript'
+stack: 'frontend'
+layer: 'library'
+tags:
+  - 'publish-jsr'
+tasks:
+  gen:
+    deps:
+      - 'myko-rs:gen'
+    command: 'true'
+    options:
+      cache: false
+  check:
+    deps:
+      - 'root:install'
+      - 'gen'
+    command: 'bunx'
+    args:
+      - 'tsc'
+      - '--noEmit'
+      - '--skipLibCheck'
+    options:
+      cache: false
+  publish-jsr:
+    deps:
+      - 'check'
+      - 'myko-rs:publish-jsr'

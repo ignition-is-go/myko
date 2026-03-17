@@ -1,0 +1,29 @@
+$schema: 'https://moonrepo.dev/schemas/tasks.json'
+
+inheritedBy:
+  tag: 'publish-crates'
+
+tasks:
+  publish-crates:
+    command: 'bash'
+    args:
+      - '-lc'
+      - |
+        set -o pipefail
+        log_file="$(mktemp)"
+
+        if cargo publish --locked 2>&1 | tee "$log_file"; then
+          rm -f "$log_file"
+          exit 0
+        fi
+
+        if grep -Eq 'already (exists on crates\.io index|uploaded)' "$log_file"; then
+          echo 'Crate version already exists on crates.io, continuing.'
+          rm -f "$log_file"
+          exit 0
+        fi
+
+        rm -f "$log_file"
+        exit 1
+    options:
+      cache: false
