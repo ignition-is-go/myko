@@ -40,7 +40,7 @@ pub fn use_connection_status() -> ReadSignal<bool> {
     {
         use myko_rs::{
             client::{ConnectionStatus, MykoClient},
-            hypha::{Signal, Watchable},
+            hyphae::{Signal, Watchable},
         };
 
         let client = expect_context::<MykoClient>();
@@ -81,7 +81,7 @@ where
     {
         use myko_rs::{
             client::MykoClient,
-            hypha::{Signal, Watchable},
+            hyphae::{Signal, Watchable},
         };
 
         let client = expect_context::<MykoClient>();
@@ -115,7 +115,7 @@ where
     {
         use myko_rs::{
             client::MykoClient,
-            hypha::{Signal, Watchable},
+            hyphae::{Signal, Watchable},
         };
 
         let client = expect_context::<MykoClient>();

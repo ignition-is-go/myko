@@ -29,7 +29,7 @@ autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.21"
 flume.workspace = true
-hypha.workspace = true
+hyphae.workspace = true
 dashmap.workspace = true
 
 # Native-only deps (store, search, codegen)

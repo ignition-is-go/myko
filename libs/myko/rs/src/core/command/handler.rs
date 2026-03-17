@@ -327,7 +327,7 @@ impl CommandContext {
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use hypha::Gettable;
+            use hyphae::Gettable;
             Ok(self
                 .server_ctx
                 .report(report, self.req.clone())

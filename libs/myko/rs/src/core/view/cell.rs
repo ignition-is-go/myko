@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hypha::{CellImmutable, CellMap, MapDiff};
+use hyphae::{CellImmutable, CellMap, MapDiff};
 
 use crate::core::item::AnyItem;
 

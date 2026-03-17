@@ -1,6 +1,6 @@
 use std::{hash::Hash, sync::Arc};
 
-use hypha::{CellImmutable, CellMap, CellMutable, MapDiff, traits::CellValue};
+use hyphae::{CellImmutable, CellMap, CellMutable, MapDiff, traits::CellValue};
 
 use super::AnyItem;
 use crate::common::with_id::WithTypedId;

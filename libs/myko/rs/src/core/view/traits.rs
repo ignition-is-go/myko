@@ -15,7 +15,7 @@ pub trait ViewIdStatic {
 }
 
 pub trait ViewItemType {
-    type Item: hypha::traits::CellValue;
+    type Item: hyphae::traits::CellValue;
     fn view_item_type(&self) -> Arc<str>;
     fn view_item_type_static() -> Arc<str>;
 }

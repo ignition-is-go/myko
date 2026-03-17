@@ -15,7 +15,7 @@ use std::{
 
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use hypha::SelectExt;
+use hyphae::SelectExt;
 use myko_rs::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},

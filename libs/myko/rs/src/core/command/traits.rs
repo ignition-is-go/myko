@@ -43,7 +43,7 @@ pub trait MykoCommand<T: DeserializeOwned + Clone + Send + Sync + 'static> {
     fn handle(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Option<Result<T, String>>, hypha::CellImmutable>;
+    ) -> hyphae::Cell<Option<Result<T, String>>, hyphae::CellImmutable>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

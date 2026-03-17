@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, PairwiseExt, TapExt};
+use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, PairwiseExt, TapExt};
 use log::info;
 use myko_rs::{
     client::{ConnectionStatus, MykoClient},

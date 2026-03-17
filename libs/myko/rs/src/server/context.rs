@@ -14,7 +14,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, WeakCellMap};
+use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, WeakCellMap};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ trait ReportCacheEntryDyn: Any + Send + Sync {
 }
 
 struct ReportCacheEntry<T> {
-    weak: hypha::cell::WeakCell<T, CellImmutable>,
+    weak: hyphae::cell::WeakCell<T, CellImmutable>,
     retained: Mutex<Option<(Cell<T, CellImmutable>, Instant)>>,
 }
 
@@ -1162,7 +1162,7 @@ impl CellServerCtx {
     pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
     where
         T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hypha::IdFor<T, MapKey = Arc<str>>,
+        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
     {
         let store = self.registry.get_or_create(T::entity_name_static());
         let map_key = id.map_key();
@@ -1177,7 +1177,7 @@ impl CellServerCtx {
     pub fn entity_snapshots<T>(&self) -> Vec<Arc<T>>
     where
         T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hypha::IdFor<T, MapKey = Arc<str>>,
+        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
     {
         let store = self.registry.get_or_create(T::entity_name_static());
         store
@@ -1194,7 +1194,7 @@ impl CellServerCtx {
     ) -> Vec<Arc<T>>
     where
         T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hypha::IdFor<T, MapKey = Arc<str>>,
+        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
     {
         ids.into_iter()
             .filter_map(|id| self.entity_snapshot::<T>(&id))
@@ -1295,7 +1295,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hypha::Gettable,
+        hyphae::Gettable,
         search::SearchIndex,
         server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,

@@ -32,12 +32,12 @@ rmp-serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 log.workspace = true
-hypha.workspace = true
+hyphae.workspace = true
 inventory = "0.3.21"
 dashmap.workspace = true
 flume.workspace = true
 
 [features]
 default = []
-inspector = ["hypha/inspector"]
-trace = ['hypha/trace']
+inspector = ["hyphae/inspector"]
+trace = ['hyphae/trace']

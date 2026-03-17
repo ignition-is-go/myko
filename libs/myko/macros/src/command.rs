@@ -102,7 +102,7 @@ pub fn myko_command_impl(options: CommandOptions, input_struct: ItemStruct) -> T
             pub fn handle(
                 &self,
                 client: &#krate::prelude::MykoClient,
-            ) -> #krate::hypha::Cell<Option<Result<#result_type_tokens, String>>, #krate::hypha::CellImmutable> {
+            ) -> #krate::hyphae::Cell<Option<Result<#result_type_tokens, String>>, #krate::hyphae::CellImmutable> {
                 client.send_command::<#struct_name, #result_type_tokens>(self)
             }
         }

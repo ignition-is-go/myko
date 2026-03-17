@@ -6,7 +6,7 @@
 
 This repo contains:
 
-- **Hypha**: A reactive dataflow framework for building complex systems
+- **Hyphae**: A reactive dataflow framework for building complex systems
 - **Myko**: An event-sourcing CQRS framework (the reusable library)
 - **Rship** (Rocketship): A control platform for orchestrating reactive event relationships in multimedia systems (the main product, built on Myko)
 - **Principle**: Logic should live in Rust. Any cross-language duplication (types, validation, serialization) must be **generated**, not manually maintained.

@@ -10,7 +10,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::{MapDiff, SelectExt};
+use hyphae::{MapDiff, SelectExt};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;
@@ -47,7 +47,7 @@ pub type QueryCellFactory = fn(
 ) -> Result<FilteredCellMap, String>;
 
 type AnyItemArc = Arc<dyn crate::core::item::AnyItem>;
-type AnyItemMap = hypha::CellMap<Arc<str>, AnyItemArc>;
+type AnyItemMap = hyphae::CellMap<Arc<str>, AnyItemArc>;
 type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;

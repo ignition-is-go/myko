@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, CellMap, MapDiff};
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff};
 
 use crate::core::item::AnyItem;
 
@@ -14,7 +14,7 @@ pub type EntityDiffCell = Cell<MapDiff<Arc<str>, Arc<dyn AnyItem>>, CellImmutabl
 /// Type alias for entity entries cell.
 pub type EntityEntriesCell = Cell<Vec<(Arc<str>, Arc<dyn AnyItem>)>, CellImmutable>;
 
-/// A reactive entity store backed by hypha's CellMap.
+/// A reactive entity store backed by hyphae's CellMap.
 ///
 /// Thread-safe via DashMap internally. Changes propagate automatically
 /// to all cell subscribers.

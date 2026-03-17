@@ -1,8 +1,8 @@
 //! Prelude module - commonly used types for convenience imports.
 
 pub use chrono::Utc;
-// Re-export hypha cell types for reports
-pub use hypha::{
+// Re-export hyphae cell types for reports
+pub use hyphae::{
     Cell, CellImmutable, CellMutable, CountByExt, Gettable, GroupByExt, MapExt, Mutable,
     ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt, Watchable,
 };

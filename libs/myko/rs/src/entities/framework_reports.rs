@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use hypha::SwitchMapExt;
-use hypha::{Cell, CellImmutable, MapExt};
+use hyphae::SwitchMapExt;
+use hyphae::{Cell, CellImmutable, MapExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;

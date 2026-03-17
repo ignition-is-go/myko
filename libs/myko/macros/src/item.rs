@@ -444,9 +444,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         let foreign_ty_ident = format_ident!("{}", bt.foreign_type);
         if fk_impl_parents.insert(bt.foreign_type.clone()) {
             has_foreign_key_impls.push(quote! {
-                impl #krate::hypha::HasForeignKey<#foreign_ty_ident> for #name
+                impl #krate::hyphae::HasForeignKey<#foreign_ty_ident> for #name
                 where
-                    #field_ty: #krate::hypha::IdFor<#foreign_ty_ident>,
+                    #field_ty: #krate::hyphae::IdFor<#foreign_ty_ident>,
                 {
                     type ForeignKey = #field_ty;
 
@@ -466,9 +466,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         let foreign_ty_ident = format_ident!("{}", ef.foreign_type);
         if fk_impl_parents.insert(ef.foreign_type.clone()) {
             has_foreign_key_impls.push(quote! {
-                impl #krate::hypha::HasForeignKey<#foreign_ty_ident> for #name
+                impl #krate::hyphae::HasForeignKey<#foreign_ty_ident> for #name
                 where
-                    #field_ty: #krate::hypha::IdFor<#foreign_ty_ident>,
+                    #field_ty: #krate::hyphae::IdFor<#foreign_ty_ident>,
                 {
                     type ForeignKey = #field_ty;
 
@@ -486,7 +486,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let expanded = quote! {
 
         use #krate::prelude::Query;
-        use #krate::hypha::MapExt as _HyphaMapExt;
+        use #krate::hyphae::MapExt as _HyphaMapExt;
 
         #[derive(
             Clone,
@@ -548,14 +548,14 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             }
         }
 
-        impl #krate::hypha::IdFor<#name> for #id_type_ident {
+        impl #krate::hyphae::IdFor<#name> for #id_type_ident {
             type MapKey = std::sync::Arc<str>;
 
             fn map_key(&self) -> Self::MapKey {
                 self.0.clone()
             }
         }
-        impl #krate::hypha::IdType for #id_type_ident {
+        impl #krate::hyphae::IdType for #id_type_ident {
             type Parent = #name;
         }
 

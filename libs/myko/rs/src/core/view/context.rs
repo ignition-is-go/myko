@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use hypha::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
 #[cfg(target_arch = "wasm32")]
-use hypha::{CellImmutable, CellMap, CellMutable};
+use hyphae::{CellImmutable, CellMap, CellMutable};
 #[cfg(not(target_arch = "wasm32"))]
 use serde::de::DeserializeOwned;
 

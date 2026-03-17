@@ -69,7 +69,7 @@
 //!
 //! Myko-rs is optimized for high-throughput, low-latency scenarios:
 //!
-//! - **Hypha cells**: Reactive queries and reports using the hypha cell library
+//! - **Hyphae cells**: Reactive queries and reports using the hyphae cell library
 //! - **Lock-free stores**: CellMap for concurrent entity access
 //! - **MessagePack serialization**: Binary format for efficient WebSocket communication
 //! - **Optional Kafka**: Run in-memory for development, add Kafka for production persistence
@@ -109,7 +109,7 @@ pub use core::{command, common, item, query, relationship, report, request, view
 
 // Re-export crates for use in macros
 pub use futures; // For proc macro generated stream adapters in typed sagas
-pub use hypha; // For cell-based queries/reports in #[myko_item]
+pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko_rs::submit! macro
 pub use partially; // For #[derive(partially::Partial)] in #[myko_item]

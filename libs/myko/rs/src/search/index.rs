@@ -211,7 +211,7 @@ impl SearchIndex {
     ///
     /// Call this after Kafka catch-up to index all pre-existing entities.
     pub fn build_from_registry(&self, registry: &crate::store::StoreRegistry) {
-        use hypha::Gettable;
+        use hyphae::Gettable;
 
         let mut count = 0;
 

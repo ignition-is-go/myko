@@ -1,6 +1,6 @@
 //! Cell-based reactive reports
 //!
-//! Provides a reactive report system backed by hypha cells instead of
+//! Provides a reactive report system backed by hyphae cells instead of
 //! the actor-based stream system.
 //!
 //! # Example
@@ -21,7 +21,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use hypha::{Cell, CellImmutable, MapExt, SelectExt};
+use hyphae::{Cell, CellImmutable, MapExt, SelectExt};
 
 use super::super::item::AnyItem;
 use crate::store::StoreRegistry;
@@ -150,7 +150,7 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use hypha::{Gettable, MapExt};
+    use hyphae::{Gettable, MapExt};
     use serde_json::Value;
 
     use super::*;

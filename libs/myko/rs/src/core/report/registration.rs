@@ -2,7 +2,7 @@
 
 use std::{any::Any, sync::Arc};
 
-use hypha::{Cell, CellImmutable, MapExt};
+use hyphae::{Cell, CellImmutable, MapExt};
 use serde_json::Value;
 
 use super::{
