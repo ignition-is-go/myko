@@ -19,6 +19,7 @@ use crate::{
     cache::CacheKey,
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
+    prelude::WithTypedId,
     wire::WrappedQuery,
 };
 
@@ -35,7 +36,7 @@ pub trait QueryIdStatic {
 }
 
 pub trait QueryItemType {
-    type Item: std::fmt::Debug + PartialEq + Send + Sync;
+    type Item: WithTypedId + std::fmt::Debug + PartialEq + Send + Sync;
     fn query_item_type(&self) -> Arc<str>;
     fn query_item_type_static() -> Arc<str>;
 }

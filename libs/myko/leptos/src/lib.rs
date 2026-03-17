@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use myko_rs::{common::with_id::WithTypedId, hyphae::IdFor};
 
 /// Initialize the myko-leptos bridge.
 ///
@@ -225,13 +226,14 @@ pub fn live_query_map<Q>(query: Q) -> LiveQueryMap<Q::Item>
 where
     Q: myko_rs::query::QueryParams + Clone + Send + Sync + 'static,
     Q::Item: myko_rs::core::item::Eventable
-        + myko_rs::common::with_id::WithId
+        + WithTypedId
         + serde::de::DeserializeOwned
         + Clone
         + std::fmt::Debug
         + PartialEq
         + Send
         + 'static,
+    <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
 {
     #[cfg(target_arch = "wasm32")]
     {
