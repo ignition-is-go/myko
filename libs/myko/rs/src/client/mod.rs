@@ -8,6 +8,7 @@ use std::{
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
+mod query_map;
 
 pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
