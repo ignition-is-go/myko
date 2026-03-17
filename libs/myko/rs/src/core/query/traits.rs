@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hypha::CellImmutable;
+use hyphae::CellImmutable;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -170,7 +170,7 @@ pub trait Query:
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Vec<Arc<<Self as QueryItemType>::Item>>, CellImmutable>;
+    ) -> hyphae::Cell<Vec<Arc<<Self as QueryItemType>::Item>>, CellImmutable>;
 }
 
 // Blanket impl of Query for QueryRequest<Q>
@@ -184,7 +184,7 @@ where
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Vec<Arc<<Self as QueryItemType>::Item>>, CellImmutable> {
+    ) -> hyphae::Cell<Vec<Arc<<Self as QueryItemType>::Item>>, CellImmutable> {
         client.watch_query::<Q>(self)
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "myko-server"
-version = "4.0.0-canary.6"
+version = "4.0.0-canary.7"
 edition = "2024"
 description = "Myko server runtime — WebSocket, Kafka, peer federation"
 license = "AGPL-3.0-or-later"
@@ -32,12 +32,12 @@ rmp-serde.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 log.workspace = true
-hypha.workspace = true
+hyphae.workspace = true
 inventory = "0.3.21"
 dashmap.workspace = true
 flume.workspace = true
 
 [features]
 default = []
-inspector = ["hypha/inspector"]
-trace = ['hypha/trace']
+inspector = ["hyphae/inspector"]
+trace = ['hyphae/trace']

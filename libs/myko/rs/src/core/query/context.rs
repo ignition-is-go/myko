@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use dashmap::DashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use hypha::{Cell, CellImmutable, MapExt};
+use hyphae::{Cell, CellImmutable, MapExt};
 #[cfg(not(target_arch = "wasm32"))]
 use serde_json::Value;
 

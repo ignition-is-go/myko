@@ -11,7 +11,7 @@ use std::{
     time::Instant,
 };
 
-use hypha::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
+use hyphae::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 
 use crate::{
     client::MykoProtocol,
@@ -170,7 +170,7 @@ impl<W: WsWriter> ClientSession<W> {
     pub fn subscribe_query(
         &mut self,
         tx: Arc<str>,
-        cell: hypha::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+        cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
@@ -236,7 +236,7 @@ impl<W: WsWriter> ClientSession<W> {
     pub fn subscribe_view(
         &mut self,
         tx: Arc<str>,
-        cell: hypha::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+        cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
         self.subscribe_view_with_id(tx, "unknown".into(), cell, window);
@@ -247,7 +247,7 @@ impl<W: WsWriter> ClientSession<W> {
         &mut self,
         tx: Arc<str>,
         view_id: Arc<str>,
-        cell: hypha::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+        cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
         let writer = self.writer.clone();
@@ -478,7 +478,7 @@ impl<W: WsWriter> ClientSession<W> {
 impl QuerySubscriptionState {
     fn apply_source_diff(
         &mut self,
-        diff: &hypha::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
     ) -> Option<PendingQueryResponse> {
         if self.window.is_none() {
@@ -490,49 +490,49 @@ impl QuerySubscriptionState {
         let mut removed_ids: HashSet<Arc<str>> = HashSet::new();
 
         match diff {
-            hypha::MapDiff::Initial { entries } => {
+            hyphae::MapDiff::Initial { entries } => {
                 self.all_items.clear();
                 for (id, item) in entries {
                     self.all_items.insert(id.clone(), item.clone());
                     changed_ids.insert(id.clone());
                 }
             }
-            hypha::MapDiff::Insert { key, value } => {
+            hyphae::MapDiff::Insert { key, value } => {
                 self.all_items.insert(key.clone(), value.clone());
                 changed_ids.insert(key.clone());
             }
-            hypha::MapDiff::Update { key, new_value, .. } => {
+            hyphae::MapDiff::Update { key, new_value, .. } => {
                 self.all_items.insert(key.clone(), new_value.clone());
                 changed_ids.insert(key.clone());
             }
-            hypha::MapDiff::Remove { key, .. } => {
+            hyphae::MapDiff::Remove { key, .. } => {
                 self.all_items.remove(key);
                 removed_ids.insert(key.clone());
             }
-            hypha::MapDiff::Batch { changes } => {
+            hyphae::MapDiff::Batch { changes } => {
                 let batch_size = changes.len();
                 for change in changes {
                     match change {
-                        hypha::MapDiff::Initial { entries } => {
+                        hyphae::MapDiff::Initial { entries } => {
                             self.all_items.clear();
                             for (id, item) in entries {
                                 self.all_items.insert(id.clone(), item.clone());
                                 changed_ids.insert(id.clone());
                             }
                         }
-                        hypha::MapDiff::Insert { key, value } => {
+                        hyphae::MapDiff::Insert { key, value } => {
                             self.all_items.insert(key.clone(), value.clone());
                             changed_ids.insert(key.clone());
                         }
-                        hypha::MapDiff::Update { key, new_value, .. } => {
+                        hyphae::MapDiff::Update { key, new_value, .. } => {
                             self.all_items.insert(key.clone(), new_value.clone());
                             changed_ids.insert(key.clone());
                         }
-                        hypha::MapDiff::Remove { key, .. } => {
+                        hyphae::MapDiff::Remove { key, .. } => {
                             self.all_items.remove(key);
                             removed_ids.insert(key.clone());
                         }
-                        hypha::MapDiff::Batch { .. } => {}
+                        hyphae::MapDiff::Batch { .. } => {}
                     }
                 }
                 if batch_size >= 64 {
@@ -551,7 +551,7 @@ impl QuerySubscriptionState {
 
     fn apply_source_diff_unwindowed(
         &mut self,
-        diff: &hypha::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
     ) -> Option<PendingQueryResponse> {
         let previous_total_count = self.all_items.len();
@@ -559,50 +559,50 @@ impl QuerySubscriptionState {
         let mut deletes: Vec<Arc<str>> = Vec::new();
 
         match diff {
-            hypha::MapDiff::Initial { entries } => {
+            hyphae::MapDiff::Initial { entries } => {
                 self.all_items.clear();
                 for (id, item) in entries {
                     self.all_items.insert(id.clone(), item.clone());
                     upsert_items.push(item.clone());
                 }
             }
-            hypha::MapDiff::Insert { key, value } => {
+            hyphae::MapDiff::Insert { key, value } => {
                 self.all_items.insert(key.clone(), value.clone());
                 upsert_items.push(value.clone());
             }
-            hypha::MapDiff::Update { key, new_value, .. } => {
+            hyphae::MapDiff::Update { key, new_value, .. } => {
                 self.all_items.insert(key.clone(), new_value.clone());
                 upsert_items.push(new_value.clone());
             }
-            hypha::MapDiff::Remove { key, .. } => {
+            hyphae::MapDiff::Remove { key, .. } => {
                 if self.all_items.remove(key).is_some() {
                     deletes.push(key.clone());
                 }
             }
-            hypha::MapDiff::Batch { changes } => {
+            hyphae::MapDiff::Batch { changes } => {
                 for change in changes {
                     match change {
-                        hypha::MapDiff::Initial { entries } => {
+                        hyphae::MapDiff::Initial { entries } => {
                             self.all_items.clear();
                             for (id, item) in entries {
                                 self.all_items.insert(id.clone(), item.clone());
                                 upsert_items.push(item.clone());
                             }
                         }
-                        hypha::MapDiff::Insert { key, value } => {
+                        hyphae::MapDiff::Insert { key, value } => {
                             self.all_items.insert(key.clone(), value.clone());
                             upsert_items.push(value.clone());
                         }
-                        hypha::MapDiff::Update { key, new_value, .. } => {
+                        hyphae::MapDiff::Update { key, new_value, .. } => {
                             self.all_items.insert(key.clone(), new_value.clone());
                             upsert_items.push(new_value.clone());
                         }
-                        hypha::MapDiff::Remove { key, .. } => {
+                        hyphae::MapDiff::Remove { key, .. } => {
                             if self.all_items.remove(key).is_some() {
                                 deletes.push(key.clone());
                             }
                         }
-                        hypha::MapDiff::Batch { .. } => {}
+                        hyphae::MapDiff::Batch { .. } => {}
                     }
                 }
             }
@@ -865,7 +865,7 @@ impl<W: WsWriter> Drop for ClientSession<W> {
 mod tests {
     use std::sync::Mutex;
 
-    use hypha::SelectExt;
+    use hyphae::SelectExt;
     use serde_json::Value;
 
     use super::*;

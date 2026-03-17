@@ -158,7 +158,7 @@ impl CellServerBuilder {
 
 /// Cell-based Myko server.
 ///
-/// Uses hypha cells for reactive queries and reports instead of actors.
+/// Uses hyphae cells for reactive queries and reports instead of actors.
 pub struct CellServer {
     /// Central entity store registry
     pub registry: Arc<StoreRegistry>,
@@ -200,9 +200,9 @@ pub struct CellServer {
     saga_event_rx: std::sync::Mutex<Option<flume::Receiver<MEvent>>>,
     /// Saga tasks kept alive for server lifetime.
     saga_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
-    /// Hypha cell inspector server (kept alive for the lifetime of the server)
+    /// Hyphae cell inspector server (kept alive for the lifetime of the server)
     #[cfg(feature = "inspector")]
-    _inspector: hypha::server::InspectorServer,
+    _inspector: hyphae::server::InspectorServer,
 }
 
 impl CellServer {
@@ -315,11 +315,11 @@ impl CellServer {
         }
         let persisters = Arc::new(persister_router);
 
-        // Start the hypha cell inspector server
+        // Start the hyphae cell inspector server
         #[cfg(feature = "inspector")]
-        let inspector = hypha::server::start_server("myko");
+        let inspector = hyphae::server::start_server("myko");
         #[cfg(feature = "inspector")]
-        log::info!("Hypha inspector on port {}", inspector.port());
+        log::info!("Hyphae inspector on port {}", inspector.port());
 
         Self {
             registry,

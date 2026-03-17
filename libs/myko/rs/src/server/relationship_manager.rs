@@ -83,7 +83,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hypha::Gettable;
+use hyphae::Gettable;
 use log::{debug, info, trace};
 
 use super::CellServerCtx;

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, CellMap, CellValue};
+use hyphae::{Cell, CellImmutable, CellMap, CellValue};
 use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 

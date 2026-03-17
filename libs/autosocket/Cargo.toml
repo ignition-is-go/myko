@@ -1,6 +1,6 @@
 [package]
 name = "autosocket"
-version = "4.0.0-canary.6"
+version = "4.0.0-canary.7"
 edition = "2024"
 
 [dependencies]
@@ -8,7 +8,7 @@ log.workspace = true
 url.workspace = true
 serde.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
-hypha.workspace = true
+hyphae.workspace = true
 flume.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

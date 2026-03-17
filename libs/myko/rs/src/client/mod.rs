@@ -13,7 +13,7 @@ mod query_map;
 pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
-use hypha::{
+use hyphae::{
     Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, SubscriptionGuard, Watchable,
 };
 use log::{debug, error, info, trace, warn};
@@ -286,7 +286,7 @@ impl MykoClient {
                     let Some(inner) = weak_for_status.upgrade() else {
                         return;
                     };
-                    let hypha::Signal::Value(status) = signal else {
+                    let hyphae::Signal::Value(status) = signal else {
                         return;
                     };
                     let conn_status = (**status).clone();
@@ -345,7 +345,7 @@ impl MykoClient {
             .socket
             .actual_connection_state()
             .subscribe(move |signal| {
-                if let hypha::Signal::Value(status) = signal
+                if let hyphae::Signal::Value(status) = signal
                     && matches!(&**status, ConnectionStatus::Disconnected)
                 {
                     this.try_failover();
@@ -356,7 +356,7 @@ impl MykoClient {
         let discovery = self.watch_query(GetPeerServers {});
         let this = self.clone();
         let discovery_guard = discovery.subscribe(move |signal| {
-            if let hypha::Signal::Value(servers) = signal {
+            if let hyphae::Signal::Value(servers) = signal {
                 this.update_known_servers_from_peers(servers.as_ref());
             }
         });
@@ -819,7 +819,7 @@ impl MykoClient {
         let send_query_id = query_id.clone();
         let frame_clone = frame.clone();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(status) = signal {
                 match &**status {
                     ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
                         Ok(_) => debug!("Watching query {send_query_id}"),
@@ -895,7 +895,7 @@ impl MykoClient {
         let send_report_id = report_id.clone();
         let frame_clone = frame.clone();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal
+            if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
                 match socket.send(frame_clone.clone()) {
@@ -1006,7 +1006,7 @@ impl MykoClient {
         let send_view_id = view_id.clone();
         let frame_clone = frame.clone();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(status) = signal {
                 match &**status {
                     ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
                         Ok(_) => debug!("Watching view {send_view_id}"),
@@ -1203,7 +1203,7 @@ impl MykoClient {
         let status_cell = self.connection_status();
         let frame_clone = frame.clone();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal
+            if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
                 let _ = socket.send(frame_clone.clone());
@@ -1249,7 +1249,7 @@ impl MykoClient {
         let status_cell = self.connection_status();
         let frame_clone = frame.clone();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal
+            if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
                 let _ = socket.send(frame_clone.clone());

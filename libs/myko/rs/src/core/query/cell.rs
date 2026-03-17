@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use hypha::{CellImmutable, CellMap};
+use hyphae::{CellImmutable, CellMap};
 
 use super::super::item::AnyItem;
 
@@ -27,5 +27,5 @@ use super::super::item::AnyItem;
 ///
 /// This is an immutable CellMap that automatically stays synchronized
 /// with its source store. The subscription is managed internally by
-/// hypha's CellMap.
+/// hyphae's CellMap.
 pub type FilteredCellMap = CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>;

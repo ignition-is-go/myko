@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hypha::CellImmutable;
+use hyphae::CellImmutable;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use ts_rs::TS;
@@ -32,7 +32,7 @@ pub trait ReportOutputType {
 }
 
 pub trait MykoReport<T> {
-    fn watch(&self, client: &MykoClient) -> hypha::Cell<Option<T>, CellImmutable>;
+    fn watch(&self, client: &MykoClient) -> hyphae::Cell<Option<T>, CellImmutable>;
 }
 
 /// Output from a report - either a value or an error
@@ -140,7 +140,7 @@ pub trait Report:
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Option<<Self as ReportOutputType>::Output>, CellImmutable>;
+    ) -> hyphae::Cell<Option<<Self as ReportOutputType>::Output>, CellImmutable>;
 }
 
 // Blanket impl of Report for ReportRequest<R>
@@ -150,7 +150,7 @@ impl<R: ReportParams> Report for ReportRequest<R> {
     fn watch(
         &self,
         client: &MykoClient,
-    ) -> hypha::Cell<Option<<Self as ReportOutputType>::Output>, CellImmutable> {
+    ) -> hyphae::Cell<Option<<Self as ReportOutputType>::Output>, CellImmutable> {
         client.watch_report::<R, <R as ReportOutputType>::Output>(self)
     }
 }

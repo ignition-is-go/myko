@@ -76,7 +76,7 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
         #derives
         #input_struct
 
-        // Registration is server-only (requires ReportFactory which depends on hypha)
+        // Registration is server-only (requires ReportFactory which depends on hyphae)
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! {
             #report_registration

@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use hypha::{Gettable, Watchable};
+use hyphae::{Gettable, Watchable};
 use myko_rs::{
     client::{ConnectionStatus, MykoClient},
     command::CommandRegistration,
@@ -77,7 +77,7 @@ impl McpServer {
 
         // Watch connection status
         let status_guard = client.connection_status().subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(status) = signal {
                 match &**status {
                     ConnectionStatus::Connected(addr) => {
                         eprintln!("[myko-mcp] Connected to {}", addr);
@@ -540,7 +540,7 @@ async fn execute_query(
             let result_tx_sub = result_tx.clone();
             let seen_initial_sub = seen_initial.clone();
             let _guard = cell.subscribe(move |signal| {
-                if let hypha::Signal::Value(items) = signal {
+                if let hyphae::Signal::Value(items) = signal {
                     let mut seen = seen_initial_sub.lock().unwrap();
                     if !*seen {
                         *seen = true;
@@ -595,7 +595,7 @@ async fn execute_report(
             let (result_tx, result_rx) = oneshot::channel::<Value>();
             let result_tx = Arc::new(std::sync::Mutex::new(Some(result_tx)));
             let _guard = cell.subscribe(move |signal| {
-                if let hypha::Signal::Value(value_opt) = signal
+                if let hyphae::Signal::Value(value_opt) = signal
                     && let Some(value) = &**value_opt
                     && let Some(tx) = result_tx.lock().unwrap().take()
                 {
@@ -629,7 +629,7 @@ async fn execute_command(
         let (tx_connected, rx_connected) = tokio::sync::oneshot::channel::<bool>();
         let tx_connected = std::sync::Mutex::new(Some(tx_connected));
         let guard = client.connection_status().subscribe(move |signal| {
-            if let hypha::Signal::Value(status) = signal
+            if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
                 && let Some(sender) = tx_connected.lock().unwrap().take()
             {
@@ -669,7 +669,7 @@ async fn execute_command(
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel::<Result<Value, String>>();
     let resp_tx = Arc::new(std::sync::Mutex::new(Some(resp_tx)));
     let _guard = result_cell.subscribe(move |signal| {
-        if let hypha::Signal::Value(result_opt) = signal
+        if let hyphae::Signal::Value(result_opt) = signal
             && let Some(result) = &**result_opt
             && let Some(sender) = resp_tx.lock().unwrap().take()
         {

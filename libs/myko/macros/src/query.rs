@@ -75,7 +75,7 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
         #derives
         #input_struct
 
-        // Registration is server-only (requires QueryFactory which depends on hypha/store)
+        // Registration is server-only (requires QueryFactory which depends on hyphae/store)
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! {
             #query_registration

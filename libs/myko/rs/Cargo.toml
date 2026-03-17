@@ -1,6 +1,6 @@
 [package]
 name = "myko-rs"
-version = "4.0.0-canary.6"
+version = "4.0.0-canary.7"
 edition = "2024"
 description = "myko in rust"
 license = "AGPL-3.0-or-later"
@@ -29,7 +29,7 @@ autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.21"
 flume.workspace = true
-hypha.workspace = true
+hyphae.workspace = true
 dashmap.workspace = true
 
 # Native-only deps (store, search, codegen)

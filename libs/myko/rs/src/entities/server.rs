@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hypha::{Cell, CellImmutable, JoinExt, MapExt, flat};
+use hyphae::{Cell, CellImmutable, JoinExt, MapExt, flat};
 
 use crate::{
     entities::client::GetAllClients,

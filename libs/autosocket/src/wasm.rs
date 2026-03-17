@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use hypha::{Cell, CellImmutable, CellMutable, Mutable};
+use hyphae::{Cell, CellImmutable, CellMutable, Mutable};
 use log::{error, info, warn};
 use send_wrapper::SendWrapper;
 use wasm_bindgen::{JsCast, closure::Closure};
