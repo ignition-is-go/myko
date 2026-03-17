@@ -149,6 +149,44 @@ impl CommandContext {
         }
     }
 
+    /// Emit a mixed batch of SET events for type-erased items.
+    ///
+    /// This is useful when a command needs to publish multiple entity types
+    /// together in one server batch.
+    pub fn emit_set_any_batch<I>(&self, items: I) -> Result<(), CommandError>
+    where
+        I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let items: Vec<_> = items.into_iter().collect();
+            if items.is_empty() {
+                return Ok(());
+            }
+
+            let source_id = Some(self.req.host_id.to_string());
+            let mut events = Vec::with_capacity(items.len());
+            for item in items {
+                events.push(MEvent {
+                    item: item.to_value(),
+                    change_type: MEventType::SET,
+                    item_type: item.entity_type().to_string(),
+                    created_at: self.req.created_at.to_string(),
+                    tx: self.req.tx.to_string(),
+                    source_id: source_id.clone(),
+                    options: None,
+                });
+            }
+            self.server_ctx.apply_event_batch(events);
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = items;
+            unreachable!();
+        }
+    }
+
     /// Emit a DEL event for an item.
     pub fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
     where
