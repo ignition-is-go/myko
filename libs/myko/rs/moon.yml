@@ -4,6 +4,8 @@ stack: 'backend'
 layer: 'library'
 tags:
   - 'rust-typegen'
+  - 'publish-jsr'
+  - 'publish-crates'
 tasks:
   gen:
     deps:
@@ -12,3 +14,11 @@ tasks:
   gen-watch:
     deps:
       - 'root:install'
+  publish-jsr:
+    deps:
+      - 'gen'
+  publish-crates:
+    deps:
+      - 'autosocket:publish-crates'
+      - 'hyphae:publish-crates'
+      - 'myko-macros:publish-crates'

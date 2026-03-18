@@ -1,0 +1,11 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+language: 'rust'
+stack: 'backend'
+layer: 'library'
+tags:
+  - 'publish-crates'
+tasks:
+  publish-crates:
+    deps:
+      - 'hyphae:publish-crates'
+      - 'myko-rs:publish-crates'

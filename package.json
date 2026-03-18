@@ -50,15 +50,12 @@
     "cs:version": "./tools/scripts/cs-update-versions.sh",
     "format:all": "prettier --write .",
     "gen": "bun run ./tools/scaffold/generate.js && bun run ./tools/scripts/generate-entity-index.js",
-    "jsr:publish": "bun run ./tools/scripts/publish-all-jsr.ts",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "postinstall": "cargo run -p release --quiet -- --sync --no-format || exit 0",
     "preinstall": "git submodule update --init --recursive",
     "prepare": "git config --local core.hooksPath .githooks",
     "py": "./tools/scripts/py.sh",
-    "py:publish": "./tools/scripts/py-publish.sh",
-    "rust:publish": "./tools/scripts/rust-publish.sh",
     "sync": "git submodule update --init --recursive",
     "test:smoke": "bun run ./tools/scripts/smoke-test.ts",
     "check": "bun run --filter '*' check",
@@ -73,5 +70,5 @@
     "node-rdkafka",
     "svelte-preprocess"
   ],
-  "version": "4.0.0-canary.7"
+  "version": "4.0.0-canary.8"
 }
