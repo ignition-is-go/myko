@@ -147,3 +147,6 @@ apps/link-ui/src-tauri/gen/*
 
 # Moon temp artifacts
 /.moon/tmp/
+
+# Old Moon publish temp-file bug artifacts
+**/[0-9]*log_file

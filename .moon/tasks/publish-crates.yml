@@ -10,18 +10,19 @@ tasks:
       - '-lc'
       - |
         set -o pipefail
-        mkdir -p .moon/tmp
-        log_file="$$(mktemp .moon/tmp/cargo-publish.XXXXXX.log)"
+        repo_root="$$(git rev-parse --show-toplevel)"
+        mkdir -p "$${repo_root}/.moon/tmp"
+        log_file="$$(mktemp "$${repo_root}/.moon/tmp/cargo-publish.XXXXXX.log")"
         cleanup() {
-          rm -f "$$log_file"
+          rm -f "$${log_file}"
         }
         trap cleanup EXIT
 
-        if cargo publish --locked 2>&1 | tee "$$log_file"; then
+        if cargo publish --locked 2>&1 | tee "$${log_file}"; then
           exit 0
         fi
 
-        if grep -Eq 'already (exists on crates\.io index|uploaded)' "$$log_file"; then
+        if grep -Eq '(crate .+ )?already exists on crates\.io index|already uploaded' "$${log_file}"; then
           echo 'Crate version already exists on crates.io, continuing.'
           exit 0
         fi
