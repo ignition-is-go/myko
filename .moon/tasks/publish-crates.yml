@@ -10,7 +10,8 @@ tasks:
       - '-lc'
       - |
         set -o pipefail
-        log_file="$$(mktemp)"
+        mkdir -p .moon/tmp
+        log_file="$$(mktemp .moon/tmp/cargo-publish.XXXXXX.log)"
         cleanup() {
           rm -f "$$log_file"
         }

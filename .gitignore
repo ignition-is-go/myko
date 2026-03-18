@@ -144,3 +144,6 @@ apps/link-ui/src-tauri/gen/*
 # bv (beads viewer) local config and caches
 .bv/
 .bacon-locations
+
+# Moon temp artifacts
+/.moon/tmp/
