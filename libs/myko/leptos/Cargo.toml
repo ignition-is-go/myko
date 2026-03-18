@@ -1,9 +1,10 @@
 [package]
 name = "myko-leptos"
 version = "4.0.0-canary.7"
+description = "Myko client for leptos"
+license = "AGPL-3.0-or-later"
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 
 [dependencies]
 leptos = { version = "0.8" }
