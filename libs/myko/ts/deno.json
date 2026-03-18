@@ -1,7 +1,7 @@
 {
   "exports": "./src_ts/index.ts",
   "imports": {
-    "@myko/rs": "jsr:@myko/rs@4.0.0-canary.8",
+    "@myko/rs": "jsr:@myko/rs@4.0.0-canary.9",
     "msgpackr": "npm:msgpackr@^1.11.0",
     "rxjs": "npm:rxjs@^7.8.1",
     "uuid": "npm:uuid@^9.0.0"
@@ -15,5 +15,5 @@
       "package.json"
     ]
   },
-  "version": "4.0.0-canary.8"
+  "version": "4.0.0-canary.9"
 }
