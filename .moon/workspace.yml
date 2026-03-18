@@ -16,6 +16,7 @@ projects:
   myko-macros: 'libs/myko/macros'
   myko-leptos: 'libs/myko/leptos'
   myko-server: 'libs/myko/server'
+  myko-rs: "libs/myko/rs"
   node-agent: 'apps/node-agent'
   opencv: 'libs/opencv'
   pulse-platform: 'libs/platform/core'
