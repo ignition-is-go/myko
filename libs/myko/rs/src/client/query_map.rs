@@ -65,16 +65,7 @@ impl MykoClient {
                     return;
                 }
 
-                // Sequence 0 = server reset, clear local state.
-                // Uses remove_many which emits empty Initial when fully clearing.
-                if response.sequence == 0 {
-                    trace!("Sequence reset: Clearing {} map", query_id_for_handler);
-                    use hyphae::traits::Gettable;
-                    let keys = map_writer.keys().get();
-                    map_writer.remove_many(keys);
-                }
-
-                // Apply upserts as a batch
+                // Parse upserts
                 let upserts: Vec<_> = response
                     .upserts
                     .into_iter()
@@ -97,13 +88,19 @@ impl MykoClient {
                         }
                     })
                     .collect();
-                if !upserts.is_empty() {
-                    map_writer.insert_many(upserts);
-                }
 
-                // Apply deletes as a batch
-                if !response.deletes.is_empty() {
-                    map_writer.remove_many(response.deletes);
+                if response.sequence == 0 {
+                    // Server reset — full state replacement as single Batch diff
+                    trace!("Sequence reset: replacing {} map", query_id_for_handler);
+                    map_writer.replace_all(upserts);
+                } else {
+                    // Incremental update
+                    if !upserts.is_empty() {
+                        map_writer.insert_many(upserts);
+                    }
+                    if !response.deletes.is_empty() {
+                        map_writer.remove_many(response.deletes);
+                    }
                 }
             }),
         );
