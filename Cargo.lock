@@ -9894,6 +9894,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
@@ -9984,6 +9985,7 @@ dependencies = [
  "rship-entities-macros",
  "rship-entities-nodes",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -10131,6 +10133,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]
