@@ -9,7 +9,7 @@ use std::{
 };
 
 use hyphae::{Cell, CellImmutable, CellMutable, Gettable, Mutable};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use tungstenite::{Message, WebSocket, connect, stream::MaybeTlsStream};
 use url::Url;
 
@@ -105,8 +105,8 @@ impl Default for AutoReconnectSocket {
 
 fn frame_to_message(frame: WsFrame) -> Message {
     match frame {
-        WsFrame::Text(s) => Message::Text(s),
-        WsFrame::Binary(b) => Message::Binary(b),
+        WsFrame::Text(s) => Message::Text(s.into()),
+        WsFrame::Binary(b) => Message::Binary(b.into()),
     }
 }
 
@@ -447,9 +447,7 @@ impl AutoReconnectSocket {
                         warn!("Websocket received Close: {:?}", frame);
                         break;
                     }
-                    Message::Frame(_) => {
-                        trace!("Websocket received raw frame");
-                    }
+                    _ => {}
                 },
                 Err(tungstenite::Error::Io(e))
                     if e.kind() == std::io::ErrorKind::WouldBlock
