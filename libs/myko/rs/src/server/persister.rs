@@ -7,10 +7,25 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::wire::MEvent;
 
+/// Error returned when event persistence fails.
+#[derive(Debug, Clone)]
+pub struct PersistError {
+    pub entity_type: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for PersistError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "persist failed for {}: {}", self.entity_type, self.message)
+    }
+}
+
+impl std::error::Error for PersistError {}
+
 /// Trait for persisting events to a durable store.
 pub trait Persister: Send + Sync + 'static {
     /// Persist a single event.
-    fn persist(&self, event: MEvent);
+    fn persist(&self, event: MEvent) -> Result<(), PersistError>;
 
     /// Whether this persister requires Kafka topic catch-up for this entity stream.
     ///
@@ -33,7 +48,7 @@ pub trait Persister: Send + Sync + 'static {
 pub struct NullPersister;
 
 impl Persister for NullPersister {
-    fn persist(&self, _event: MEvent) {}
+    fn persist(&self, _event: MEvent) -> Result<(), PersistError> { Ok(()) }
 
     fn should_register_kafka_topic(&self) -> bool {
         false
@@ -47,7 +62,7 @@ impl Persister for NullPersister {
 pub struct BlackholePersister;
 
 impl Persister for BlackholePersister {
-    fn persist(&self, _event: MEvent) {}
+    fn persist(&self, _event: MEvent) -> Result<(), PersistError> { Ok(()) }
 
     fn should_register_kafka_topic(&self) -> bool {
         false

@@ -87,6 +87,7 @@ use hyphae::Gettable;
 use log::{debug, info, trace};
 
 use super::CellServerCtx;
+use super::persister::PersistError;
 use crate::{
     core::item::AnyItem,
     event::EventOptions,
@@ -276,7 +277,7 @@ impl RelationshipManager {
     ///
     /// Handles EnsureFor: when a dependency entity is created, ensures
     /// all derived entities exist for all combinations.
-    pub fn forward_set(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) {
+    pub fn forward_set(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
         let item_type = item.entity_type();
 
         if let Some(lookups) = self.belongs_to_by_local.get(item_type) {
@@ -287,8 +288,10 @@ impl RelationshipManager {
 
         // Handle EnsureFor (dependency created → ensure derived entities exist)
         if self.ensure_for_by_dependency.contains_key(item_type) {
-            self.handle_ensure_for(&item, ctx);
+            self.handle_ensure_for(&item, ctx)?;
         }
+
+        Ok(())
     }
 
     /// Forward a DEL event for relationship processing.
@@ -297,21 +300,23 @@ impl RelationshipManager {
     /// - BelongsTo cascade deletes (parent deleted → delete children)
     /// - OwnsMany parent deletes (parent deleted → delete owned children)
     /// - OwnsMany child deletes (child deleted → update parent arrays)
-    pub fn forward_del(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) {
+    pub fn forward_del(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
         // Handle BelongsTo cascades (parent deleted → delete children)
-        self.handle_belongs_to_cascade(&item, ctx);
+        self.handle_belongs_to_cascade(&item, ctx)?;
 
         // Handle OwnsMany parent deleted → delete owned children
-        self.handle_owns_many_parent_delete(&item, ctx);
+        self.handle_owns_many_parent_delete(&item, ctx)?;
 
         // Handle OwnsMany child deleted → update parent arrays
-        self.handle_owns_many_child_delete(&item, ctx);
+        self.handle_owns_many_child_delete(&item, ctx)?;
 
         if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
             for lookup in lookups {
                 self.remove_belongs_to_child(lookup, &item.id());
             }
         }
+
+        Ok(())
     }
 
     /// Forward a batch of DEL events for relationship processing.
@@ -319,16 +324,16 @@ impl RelationshipManager {
     /// Items should all be the same entity type. This keeps cascade deletes grouped
     /// so downstream stores and views can process one wider delete wave instead of
     /// thousands of tiny per-parent cascades.
-    pub fn forward_del_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) {
+    pub fn forward_del_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) -> Result<(), PersistError> {
         if items.is_empty() {
-            return;
+            return Ok(());
         }
 
-        self.handle_belongs_to_cascade_batch(items, ctx);
-        self.handle_owns_many_parent_delete_batch(items, ctx);
+        self.handle_belongs_to_cascade_batch(items, ctx)?;
+        self.handle_owns_many_parent_delete_batch(items, ctx)?;
 
         for item in items {
-            self.handle_owns_many_child_delete(item, ctx);
+            self.handle_owns_many_child_delete(item, ctx)?;
 
             if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
                 for lookup in lookups {
@@ -336,6 +341,8 @@ impl RelationshipManager {
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Establish relations on startup (called after Kafka catchup).
@@ -344,7 +351,7 @@ impl RelationshipManager {
     /// 1. BelongsTo orphan cleanup: Delete children pointing to non-existent parents
     /// 2. OwnsMany orphan cleanup: Delete children not referenced by any parent
     /// 3. EnsureFor initialization: Create missing entities for all dependency combinations
-    pub fn establish_relations(&self, ctx: &CellServerCtx) {
+    pub fn establish_relations(&self, ctx: &CellServerCtx) -> Result<(), PersistError> {
         info!("RelationshipManager: Establishing relations on startup");
         trace!(
             "RelationshipManager: BelongsTo relations by local: {:?}",
@@ -356,15 +363,16 @@ impl RelationshipManager {
         );
 
         // 1. Orphan cleanup for BelongsTo relationships
-        self.cleanup_belongs_to_orphans(ctx);
+        self.cleanup_belongs_to_orphans(ctx)?;
 
         // 2. Orphan cleanup for OwnsMany relationships
-        self.cleanup_owns_many_orphans(ctx);
+        self.cleanup_owns_many_orphans(ctx)?;
 
         // 3. EnsureFor initialization
-        self.initialize_ensure_for(ctx);
+        self.initialize_ensure_for(ctx)?;
 
         info!("RelationshipManager: Relations established");
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -372,10 +380,10 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Handle BelongsTo cascades: when a parent is deleted, delete all children
-    fn handle_belongs_to_cascade(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) {
+    fn handle_belongs_to_cascade(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.belongs_to_by_foreign.get(item_type) else {
-            return;
+            return Ok(());
         };
 
         let parent_id = item.id();
@@ -393,17 +401,19 @@ impl RelationshipManager {
                 children.len(),
                 &parent_id
             );
-            self.publish_del_cascade_batch(ctx, &children);
+            self.publish_del_cascade_batch(ctx, &children)?;
         }
+
+        Ok(())
     }
 
-    fn handle_belongs_to_cascade_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) {
+    fn handle_belongs_to_cascade_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) -> Result<(), PersistError> {
         let Some(first) = items.first() else {
-            return;
+            return Ok(());
         };
         let item_type = first.entity_type();
         let Some(lookups) = self.belongs_to_by_foreign.get(item_type) else {
-            return;
+            return Ok(());
         };
 
         let parent_ids: Vec<Arc<str>> = items.iter().map(|item| item.id()).collect();
@@ -427,8 +437,10 @@ impl RelationshipManager {
                 children.len(),
                 parent_ids.len()
             );
-            self.publish_del_cascade_batch(ctx, &children);
+            self.publish_del_cascade_batch(ctx, &children)?;
         }
+
+        Ok(())
     }
 
     /// Find children whose FK matches a given parent ID
@@ -535,10 +547,10 @@ impl RelationshipManager {
     }
 
     /// Handle OwnsMany parent delete: delete all owned children
-    fn handle_owns_many_parent_delete(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) {
+    fn handle_owns_many_parent_delete(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.owns_many_by_local.get(item_type) else {
-            return;
+            return Ok(());
         };
 
         for lookup in lookups {
@@ -570,21 +582,23 @@ impl RelationshipManager {
                 lookup.foreign_type,
                 children.len()
             );
-            self.publish_del_cascade_batch(ctx, &children);
+            self.publish_del_cascade_batch(ctx, &children)?;
         }
+
+        Ok(())
     }
 
     fn handle_owns_many_parent_delete_batch(
         &self,
         items: &[Arc<dyn AnyItem>],
         ctx: &CellServerCtx,
-    ) {
+    ) -> Result<(), PersistError> {
         let Some(first) = items.first() else {
-            return;
+            return Ok(());
         };
         let item_type = first.entity_type();
         let Some(lookups) = self.owns_many_by_local.get(item_type) else {
-            return;
+            return Ok(());
         };
 
         for lookup in lookups {
@@ -616,15 +630,17 @@ impl RelationshipManager {
                 children.len(),
                 items.len()
             );
-            self.publish_del_cascade_batch(ctx, &children);
+            self.publish_del_cascade_batch(ctx, &children)?;
         }
+
+        Ok(())
     }
 
     /// Handle OwnsMany child delete: remove child ID from parent arrays
-    fn handle_owns_many_child_delete(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) {
+    fn handle_owns_many_child_delete(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.owns_many_by_foreign.get(item_type) else {
-            return;
+            return Ok(());
         };
 
         let child_id = item.id();
@@ -648,9 +664,11 @@ impl RelationshipManager {
             }
 
             if !updates.is_empty() {
-                self.publish_set_cascade_batch(ctx, &updates);
+                self.publish_set_cascade_batch(ctx, &updates)?;
             }
         }
+
+        Ok(())
     }
 
     /// Find parents whose owned array contains a given child ID
@@ -675,10 +693,10 @@ impl RelationshipManager {
     }
 
     /// Handle EnsureFor: when dependency created, ensure derived entities exist
-    fn handle_ensure_for(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) {
+    fn handle_ensure_for(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.ensure_for_by_dependency.get(item_type) else {
-            return;
+            return Ok(());
         };
 
         for lookup in lookups {
@@ -703,10 +721,12 @@ impl RelationshipManager {
                         lookup.local_type, combo
                     );
 
-                    self.publish_set_cascade(ctx, lookup.local_type, entity);
+                    self.publish_set_cascade(ctx, lookup.local_type, entity)?;
                 }
             }
         }
+
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -714,7 +734,7 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Cleanup orphaned children for BelongsTo relationships
-    fn cleanup_belongs_to_orphans(&self, ctx: &CellServerCtx) {
+    fn cleanup_belongs_to_orphans(&self, ctx: &CellServerCtx) -> Result<(), PersistError> {
         trace!(
             "RelationshipManager: cleanup_belongs_to_orphans - checking {} child types",
             self.belongs_to_by_local.len()
@@ -764,7 +784,7 @@ impl RelationshipManager {
                                 lookup.foreign_type,
                                 parent_ids.len()
                             );
-                            self.publish_del_cascade(ctx, child_type, &child.id());
+                            self.publish_del_cascade(ctx, child_type, &child.id())?;
                             orphan_count += 1;
                         } else {
                             valid_count += 1;
@@ -785,10 +805,12 @@ impl RelationshipManager {
                 );
             }
         }
+
+        Ok(())
     }
 
     /// Cleanup orphaned children for OwnsMany relationships
-    fn cleanup_owns_many_orphans(&self, ctx: &CellServerCtx) {
+    fn cleanup_owns_many_orphans(&self, ctx: &CellServerCtx) -> Result<(), PersistError> {
         trace!(
             "RelationshipManager: cleanup_owns_many_orphans - checking {} parent types",
             self.owns_many_by_local.len()
@@ -857,7 +879,7 @@ impl RelationshipManager {
                             parent_type,
                             referenced_ids.len()
                         );
-                        self.publish_del_cascade(ctx, lookup.foreign_type, &child_id);
+                        self.publish_del_cascade(ctx, lookup.foreign_type, &child_id)?;
                         orphan_count += 1;
                     } else {
                         valid_count += 1;
@@ -877,10 +899,12 @@ impl RelationshipManager {
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Initialize EnsureFor relationships (create missing derived entities)
-    fn initialize_ensure_for(&self, ctx: &CellServerCtx) {
+    fn initialize_ensure_for(&self, ctx: &CellServerCtx) -> Result<(), PersistError> {
         // Track which local_types we've processed to avoid duplicates
         let mut processed: HashSet<&'static str> = HashSet::new();
 
@@ -908,7 +932,7 @@ impl RelationshipManager {
                     if existing.is_none() {
                         // Create the derived entity using the factory
                         let entity = (lookup.make_entity)(&combo);
-                        self.publish_set_cascade(ctx, lookup.local_type, entity);
+                        self.publish_set_cascade(ctx, lookup.local_type, entity)?;
                         created_count += 1;
                     }
                 }
@@ -921,6 +945,8 @@ impl RelationshipManager {
                 }
             }
         }
+
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1032,26 +1058,26 @@ impl RelationshipManager {
     /// Publish a SET for cascade operations.
     ///
     /// Sets prevent_relationship_updates to avoid infinite loops.
-    fn publish_set_cascade(&self, ctx: &CellServerCtx, _entity_type: &str, item: Arc<dyn AnyItem>) {
+    fn publish_set_cascade(&self, ctx: &CellServerCtx, _entity_type: &str, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
         };
-        ctx.set_dyn_with_options(item, Some(options));
+        ctx.set_dyn_with_options(item, Some(options))
     }
 
-    fn publish_set_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) {
+    fn publish_set_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
         };
-        ctx.batch_set_dyn_with_options(items, Some(options));
+        ctx.batch_set_dyn_with_options(items, Some(options))
     }
 
     /// Publish a DEL for cascade operations.
     ///
     /// Sets prevent_relationship_updates to avoid infinite loops.
-    fn publish_del_cascade(&self, ctx: &CellServerCtx, entity_type: &str, id: &str) {
+    fn publish_del_cascade(&self, ctx: &CellServerCtx, entity_type: &str, id: &str) -> Result<(), PersistError> {
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
@@ -1064,25 +1090,27 @@ impl RelationshipManager {
                 "RelationshipManager: publish_del_cascade {} {} - entity found, deleting",
                 entity_type, id
             );
-            ctx.del_dyn_with_options(item, Some(options));
+            ctx.del_dyn_with_options(item, Some(options))?;
         } else {
             trace!(
                 "RelationshipManager: publish_del_cascade {} {} - entity NOT found in store",
                 entity_type, id
             );
         }
+
+        Ok(())
     }
 
-    fn publish_del_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) {
+    fn publish_del_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         if items.is_empty() {
-            return;
+            return Ok(());
         }
 
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
         };
-        ctx.batch_del_dyn_with_options(items, Some(options));
+        ctx.batch_del_dyn_with_options(items, Some(options))
     }
 }
 

@@ -31,7 +31,7 @@ use std::{
 use log::{error, info, trace, warn};
 use myko_rs::{
     event::{MEvent, MEventType},
-    server::{HandlerRegistry, Persister},
+    server::{HandlerRegistry, PersistError, Persister},
     store::StoreRegistry,
 };
 use rdkafka::{
@@ -82,15 +82,19 @@ impl KafkaProducerHandle {
     /// Produce an event to Kafka.
     ///
     /// The event's source_id will be set to this server's host_id.
-    pub fn produce(&self, mut event: MEvent) {
+    pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
         // Set source_id to our host_id for deduplication
         if event.source_id.is_none() {
             event.source_id = Some(self.host_id.to_string());
         }
 
         if let Err(e) = self.sender.try_send(ProduceEvent { event }) {
-            error!("Kafka producer buffer full (50k), dropping event: {e}");
+            return Err(PersistError {
+                entity_type: "unknown".to_string(),
+                message: format!("Kafka producer buffer full (50k), dropping event: {e}"),
+            });
         }
+        Ok(())
     }
 
     /// Get the host ID associated with this producer.
@@ -100,8 +104,8 @@ impl KafkaProducerHandle {
 }
 
 impl Persister for KafkaProducerHandle {
-    fn persist(&self, event: MEvent) {
-        self.produce(event);
+    fn persist(&self, event: MEvent) -> Result<(), PersistError> {
+        self.produce(event)
     }
 }
 

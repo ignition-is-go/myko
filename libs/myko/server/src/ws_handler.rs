@@ -1073,12 +1073,22 @@ impl WsHandler {
                 for event in &mut events {
                     normalize_incoming_event(event, &session.client_id);
                 }
-                let applied = ctx.apply_event_batch(events);
-                log::trace!(
-                    "Applied event batch from client {} size={}",
-                    session.client_id,
-                    applied
-                );
+                match ctx.apply_event_batch(events) {
+                    Ok(applied) => {
+                        log::trace!(
+                            "Applied event batch from client {} size={}",
+                            session.client_id,
+                            applied
+                        );
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Failed to apply event batch from client {}: {}",
+                            session.client_id,
+                            e
+                        );
+                    }
+                }
             }
 
             MykoMessage::Command(wrapped) => {

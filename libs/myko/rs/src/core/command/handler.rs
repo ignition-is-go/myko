@@ -97,8 +97,11 @@ impl CommandContext {
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.server_ctx.set_with_options(&*item, Some(options));
-            Ok(())
+            self.server_ctx.set_with_options(&*item, Some(options)).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -139,7 +142,11 @@ impl CommandContext {
                     options: None,
                 });
             }
-            self.server_ctx.apply_event_batch(events);
+            self.server_ctx.apply_event_batch(events).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })?;
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
@@ -177,7 +184,11 @@ impl CommandContext {
                     options: None,
                 });
             }
-            self.server_ctx.apply_event_batch(events);
+            self.server_ctx.apply_event_batch(events).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })?;
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
@@ -230,7 +241,11 @@ impl CommandContext {
                     options: None,
                 });
             }
-            self.server_ctx.apply_event_batch(events);
+            self.server_ctx.apply_event_batch(events).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })?;
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
@@ -251,8 +266,11 @@ impl CommandContext {
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.server_ctx.del_with_options(&*item, Some(options));
-            Ok(())
+            self.server_ctx.del_with_options(&*item, Some(options)).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })
         }
         #[cfg(target_arch = "wasm32")]
         {

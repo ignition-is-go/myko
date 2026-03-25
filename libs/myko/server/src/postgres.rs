@@ -17,7 +17,7 @@ use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use log::{error, info, trace, warn};
 use myko_rs::{
     event::{MEvent, MEventType},
-    server::{HandlerRegistry, Persister},
+    server::{HandlerRegistry, PersistError, Persister},
     store::StoreRegistry,
 };
 use postgres::fallible_iterator::FallibleIterator;
@@ -133,25 +133,25 @@ pub struct PostgresProducerHandle {
 
 impl PostgresProducerHandle {
     /// Persist an event row.
-    pub fn produce(&self, mut event: MEvent) {
+    pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
         if event.source_id.is_none() {
             event.source_id = Some(self.host_id.to_string());
         }
         match self.sender.send(event) {
-            Ok(()) => {}
+            Ok(()) => Ok(()),
             Err(mpsc::SendError(_)) => {
-                error!(
-                    "Postgres producer channel closed; refusing to drop event (producer thread not running)"
-                );
-                panic!("postgres producer channel closed");
+                Err(PersistError {
+                    entity_type: "unknown".to_string(),
+                    message: "Postgres producer channel closed (producer thread not running)".to_string(),
+                })
             }
         }
     }
 }
 
 impl Persister for PostgresProducerHandle {
-    fn persist(&self, event: MEvent) {
-        self.produce(event);
+    fn persist(&self, event: MEvent) -> Result<(), PersistError> {
+        self.produce(event)
     }
 
     fn startup_healthcheck(&self) -> Result<(), String> {

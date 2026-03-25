@@ -18,7 +18,7 @@ use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-use super::{HandlerRegistry, RelationshipManager, persister::PersisterRouter};
+use super::{HandlerRegistry, RelationshipManager, persister::{PersistError, PersisterRouter}};
 use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
@@ -295,11 +295,11 @@ impl CellServerCtx {
     /// Publish an entity (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn set<T>(&self, entity: &T)
+    pub fn set<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.set_with_options(entity, None);
+        self.set_with_options(entity, None)
     }
 
     /// Publish an entity (SET) with options.
@@ -307,7 +307,7 @@ impl CellServerCtx {
     /// Options control:
     /// - `prevent_relationship_updates`: skip cascade processing
     /// - `prevent_persist`: skip Kafka
-    pub fn set_with_options<T>(&self, entity: &T, options: Option<EventOptions>)
+    pub fn set_with_options<T>(&self, entity: &T, options: Option<EventOptions>) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
@@ -328,27 +328,29 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item, self);
+            self.relationship_manager.forward_set(item, self)?;
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_set(entity);
+            self.produce_set(entity)?;
         }
+
+        Ok(())
     }
 
     /// Delete an entity (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn del<T>(&self, entity: &T)
+    pub fn del<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        self.del_with_options(entity, None);
+        self.del_with_options(entity, None)
     }
 
     /// Delete an entity (DEL) with options.
-    pub fn del_with_options<T>(&self, entity: &T, options: Option<EventOptions>)
+    pub fn del_with_options<T>(&self, entity: &T, options: Option<EventOptions>) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
@@ -367,36 +369,37 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self);
+            self.relationship_manager.forward_del(item.clone(), self)?;
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del(entity);
+            self.produce_del(entity)?;
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
+        Ok(())
     }
 
     /// Publish a batch of entities (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn batch_set<T>(&self, entities: &[T])
+    pub fn batch_set<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_set_with_options(entities, None);
+        self.batch_set_with_options(entities, None)
     }
 
     /// Publish a batch of entities (SET) with shared options.
     ///
     /// This avoids manual `MEvent` construction and performs a grouped store insert.
-    pub fn batch_set_with_options<T>(&self, entities: &[T], options: Option<EventOptions>)
+    pub fn batch_set_with_options<T>(&self, entities: &[T], options: Option<EventOptions>) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
         if entities.is_empty() {
-            return;
+            return Ok(());
         }
 
         let options = options.unwrap_or_default();
@@ -420,39 +423,40 @@ impl CellServerCtx {
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
             for item in &items {
-                self.relationship_manager.forward_set(item.clone(), self);
+                self.relationship_manager.forward_set(item.clone(), self)?;
             }
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
             for item in &items {
-                self.produce_set_dyn(item);
+                self.produce_set_dyn(item)?;
             }
         }
 
         log::trace!("Published batch SET {} count={}", entity_type, items.len());
+        Ok(())
     }
 
     /// Delete a batch of entities (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn batch_del<T>(&self, entities: &[T])
+    pub fn batch_del<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_del_with_options(entities, None);
+        self.batch_del_with_options(entities, None)
     }
 
     /// Delete a batch of entities (DEL) with shared options.
     ///
     /// This avoids manual `MEvent` construction and performs a grouped store remove.
-    pub fn batch_del_with_options<T>(&self, entities: &[T], options: Option<EventOptions>)
+    pub fn batch_del_with_options<T>(&self, entities: &[T], options: Option<EventOptions>) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
         if entities.is_empty() {
-            return;
+            return Ok(());
         }
 
         let options = options.unwrap_or_default();
@@ -476,17 +480,18 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del_batch(&items, self);
+            self.relationship_manager.forward_del_batch(&items, self)?;
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
             for item in &items {
-                self.produce_del_dyn(item);
+                self.produce_del_dyn(item)?;
             }
         }
 
         log::trace!("Published batch DEL {} count={}", entity_type, items.len());
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -496,12 +501,12 @@ impl CellServerCtx {
     /// Publish a dynamic item (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn set_dyn(&self, item: Arc<dyn AnyItem>) {
-        self.set_dyn_with_options(item, None);
+    pub fn set_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.set_dyn_with_options(item, None)
     }
 
     /// Publish a dynamic item (SET) with options.
-    pub fn set_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) {
+    pub fn set_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) -> Result<(), PersistError> {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
@@ -518,15 +523,16 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item.clone(), self);
+            self.relationship_manager.forward_set(item.clone(), self)?;
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_set_dyn(&item);
+            self.produce_set_dyn(&item)?;
         }
 
         log::trace!("Published SET {}:{}", entity_type, id);
+        Ok(())
     }
 
     /// Publish a batch of dynamic items (SET) with shared options.
@@ -534,9 +540,9 @@ impl CellServerCtx {
         &self,
         items: &[Arc<dyn AnyItem>],
         options: Option<EventOptions>,
-    ) {
+    ) -> Result<(), PersistError> {
         if items.is_empty() {
-            return;
+            return Ok(());
         }
 
         let options = options.unwrap_or_default();
@@ -565,13 +571,13 @@ impl CellServerCtx {
 
             if !options.prevent_relationship_updates {
                 for item in &typed_items {
-                    self.relationship_manager.forward_set(item.clone(), self);
+                    self.relationship_manager.forward_set(item.clone(), self)?;
                 }
             }
 
             if !options.prevent_persist {
                 for item in &typed_items {
-                    self.produce_set_dyn(item);
+                    self.produce_set_dyn(item)?;
                 }
             }
 
@@ -581,17 +587,18 @@ impl CellServerCtx {
                 typed_items.len()
             );
         }
+        Ok(())
     }
 
     /// Delete a dynamic item (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
-    pub fn del_dyn(&self, item: Arc<dyn AnyItem>) {
-        self.del_dyn_with_options(item, None);
+    pub fn del_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.del_dyn_with_options(item, None)
     }
 
     /// Delete a dynamic item (DEL) with options.
-    pub fn del_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) {
+    pub fn del_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) -> Result<(), PersistError> {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
@@ -606,15 +613,16 @@ impl CellServerCtx {
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self);
+            self.relationship_manager.forward_del(item.clone(), self)?;
         }
 
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
-            self.produce_del_dyn(&item);
+            self.produce_del_dyn(&item)?;
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
+        Ok(())
     }
 
     /// Publish a batch of dynamic items (DEL) with shared options.
@@ -622,9 +630,9 @@ impl CellServerCtx {
         &self,
         items: &[Arc<dyn AnyItem>],
         options: Option<EventOptions>,
-    ) {
+    ) -> Result<(), PersistError> {
         if items.is_empty() {
-            return;
+            return Ok(());
         }
 
         let options = options.unwrap_or_default();
@@ -653,15 +661,16 @@ impl CellServerCtx {
 
             if !options.prevent_relationship_updates {
                 self.relationship_manager
-                    .forward_del_batch(&typed_items, self);
+                    .forward_del_batch(&typed_items, self)?;
             }
 
             if !options.prevent_persist {
                 for item in &typed_items {
-                    self.produce_del_dyn(item);
+                    self.produce_del_dyn(item)?;
                 }
             }
         }
+        Ok(())
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -675,7 +684,7 @@ impl CellServerCtx {
         entity_type: &str,
         id: &str,
         options: Option<EventOptions>,
-    ) {
+    ) -> Result<(), PersistError> {
         let options = options.unwrap_or_default();
         let id_arc: Arc<str> = id.into();
 
@@ -693,7 +702,7 @@ impl CellServerCtx {
         // Persist: produce to Kafka (unless prevented)
         if !options.prevent_persist {
             if let Some(item) = existing {
-                self.produce_del_dyn(&item);
+                self.produce_del_dyn(&item)?;
             } else {
                 log::warn!(
                     "del_by_id could not persist DEL without full entity: {}:{}",
@@ -704,27 +713,28 @@ impl CellServerCtx {
         }
 
         log::trace!("Published DEL {}:{}", entity_type, id);
+        Ok(())
     }
 
     /// Delete an entity by type/id with default options.
-    pub fn del_by_id(&self, entity_type: &str, id: &str) {
-        self.del_by_id_with_options(entity_type, id, None);
+    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
+        self.del_by_id_with_options(entity_type, id, None)
     }
 
     /// Apply a single wire event (parse -> reduce -> relationships -> persist).
     ///
     /// Returns `true` when the event was parsed and applied, `false` otherwise.
-    pub fn apply_event(&self, event: MEvent) -> bool {
-        self.apply_event_batch(vec![event]) == 1
+    pub fn apply_event(&self, event: MEvent) -> Result<bool, PersistError> {
+        Ok(self.apply_event_batch(vec![event])? == 1)
     }
 
     /// Apply a batch of wire events with a single parse pass and grouped store updates.
     ///
     /// This reduces overhead versus calling `set_dyn`/`del_dyn` for each event individually.
     /// Returns the number of successfully parsed/applied events.
-    pub fn apply_event_batch(&self, events: Vec<MEvent>) -> usize {
+    pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         let mut accepted = 0usize;
@@ -749,7 +759,7 @@ impl CellServerCtx {
         }
 
         if !immediate_events.is_empty() {
-            accepted += self.apply_event_batch_immediate(immediate_events);
+            accepted += self.apply_event_batch_immediate(immediate_events)?;
         }
 
         for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
@@ -757,12 +767,12 @@ impl CellServerCtx {
             self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
         }
 
-        accepted
+        Ok(accepted)
     }
 
-    fn apply_event_batch_immediate(&self, events: Vec<MEvent>) -> usize {
+    fn apply_event_batch_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
-            return 0;
+            return Ok(0);
         }
         let input_len = events.len();
 
@@ -808,7 +818,7 @@ impl CellServerCtx {
         }
 
         if sets.is_empty() && dels.is_empty() {
-            return 0;
+            return Ok(0);
         }
 
         log::trace!(
@@ -868,7 +878,7 @@ impl CellServerCtx {
         // Relationships
         for op in &sets {
             if !op.options.prevent_relationship_updates {
-                self.relationship_manager.forward_set(op.item.clone(), self);
+                self.relationship_manager.forward_set(op.item.clone(), self)?;
             }
         }
         let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
@@ -881,22 +891,22 @@ impl CellServerCtx {
             }
         }
         for (_, items) in dels_with_relationships {
-            self.relationship_manager.forward_del_batch(&items, self);
+            self.relationship_manager.forward_del_batch(&items, self)?;
         }
 
         // Persist
         for op in &sets {
             if !op.options.prevent_persist {
-                self.produce_set_dyn(&op.item);
+                self.produce_set_dyn(&op.item)?;
             }
         }
         for op in &dels {
             if !op.options.prevent_persist {
-                self.produce_del_dyn(&op.item);
+                self.produce_del_dyn(&op.item)?;
             }
         }
 
-        sets.len() + dels.len()
+        Ok(sets.len() + dels.len())
     }
 
     fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
@@ -914,7 +924,9 @@ impl CellServerCtx {
                     "Could not acquire ingest buffer lock for entity_type={}",
                     entity_type
                 );
-                self.apply_event_batch_immediate(events);
+                if let Err(e) = self.apply_event_batch_immediate(events) {
+                    log::error!("Failed to apply buffered events for {}: {}", entity_type, e);
+                }
                 return;
             };
 
@@ -971,7 +983,13 @@ impl CellServerCtx {
             events.len()
         );
 
-        self.apply_event_batch_immediate(events)
+        match self.apply_event_batch_immediate(events) {
+            Ok(count) => count,
+            Err(e) => {
+                log::error!("Failed to flush buffered events for {}: {}", entity_type, e);
+                0
+            }
+        }
     }
 
     #[cfg(test)]
@@ -992,47 +1010,50 @@ impl CellServerCtx {
     // Kafka production (private)
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_set<T: Eventable>(&self, entity: &T) {
+    fn produce_set<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
             let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            persister.persist(event);
+            persister.persist(event)?;
         }
         if let Some(sink) = &self.event_sink {
             let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
             let _ = sink.send(event);
         }
+        Ok(())
     }
 
-    fn produce_del<T: Eventable>(&self, entity: &T) {
+    fn produce_del<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
             let event = MEvent::del(entity, &self.host_id.to_string());
-            persister.persist(event);
+            persister.persist(event)?;
         }
         if let Some(sink) = &self.event_sink {
             let event = MEvent::del(entity, &self.host_id.to_string());
             let _ = sink.send(event);
         }
+        Ok(())
     }
 
-    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) {
+    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
             let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            persister.persist(event);
+            persister.persist(event)?;
         }
         if let Some(sink) = &self.event_sink {
             let event = MEvent::del_from_any(item, &self.host_id.to_string());
             let _ = sink.send(event);
         }
+        Ok(())
     }
 
-    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) {
+    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
             let event = MEvent::set_from_value(
                 item.entity_type(),
                 item.to_value(),
                 &self.host_id.to_string(),
             );
-            persister.persist(event);
+            persister.persist(event)?;
         }
         if let Some(sink) = &self.event_sink {
             let event = MEvent::set_from_value(
@@ -1042,6 +1063,7 @@ impl CellServerCtx {
             );
             let _ = sink.send(event);
         }
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────────
