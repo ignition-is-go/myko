@@ -488,9 +488,11 @@ impl QuerySubscriptionState {
         let previous_total_count = self.all_items.len();
         let mut changed_ids: HashSet<Arc<str>> = HashSet::new();
         let mut removed_ids: HashSet<Arc<str>> = HashSet::new();
+        let mut is_initial = false;
 
         match diff {
             hyphae::MapDiff::Initial { entries } => {
+                is_initial = true;
                 self.all_items.clear();
                 for (id, item) in entries {
                     self.all_items.insert(id.clone(), item.clone());
@@ -514,6 +516,7 @@ impl QuerySubscriptionState {
                 for change in changes {
                     match change {
                         hyphae::MapDiff::Initial { entries } => {
+                            is_initial = true;
                             self.all_items.clear();
                             for (id, item) in entries {
                                 self.all_items.insert(id.clone(), item.clone());
@@ -546,6 +549,12 @@ impl QuerySubscriptionState {
             }
         }
 
+        // NOTE(ts): MapDiff::Initial = full state replacement — reset sequence
+        // so the client performs replace_all instead of incremental update.
+        if is_initial {
+            self.sequence = 0;
+        }
+
         self.compute_windowed_response(tx, &changed_ids, &removed_ids, previous_total_count, false)
     }
 
@@ -558,8 +567,16 @@ impl QuerySubscriptionState {
         let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
         let mut deletes: Vec<Arc<str>> = Vec::new();
 
+        // NOTE(ts): MapDiff::Initial means "here is the complete new state" —
+        // reset sequence to 0 so the client performs a full replace_all instead
+        // of an incremental update. Without this, a full-clear Initial (empty
+        // entries) sends an empty diff that the client ignores, leaving stale
+        // items in the UI.
+        let mut is_initial = false;
+
         match diff {
             hyphae::MapDiff::Initial { entries } => {
+                is_initial = true;
                 self.all_items.clear();
                 for (id, item) in entries {
                     self.all_items.insert(id.clone(), item.clone());
@@ -583,6 +600,7 @@ impl QuerySubscriptionState {
                 for change in changes {
                     match change {
                         hyphae::MapDiff::Initial { entries } => {
+                            is_initial = true;
                             self.all_items.clear();
                             for (id, item) in entries {
                                 self.all_items.insert(id.clone(), item.clone());
@@ -606,6 +624,10 @@ impl QuerySubscriptionState {
                     }
                 }
             }
+        }
+
+        if is_initial {
+            self.sequence = 0;
         }
 
         let total_count = self.all_items.len();

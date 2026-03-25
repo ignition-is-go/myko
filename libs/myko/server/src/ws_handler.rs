@@ -47,8 +47,59 @@ struct WsIngestStats {
     counts_by_type: DashMap<Arc<str>, Arc<AtomicU64>>,
 }
 
+struct WsBenchmarkStats {
+    message_count: AtomicU64,
+    total_bytes: AtomicU64,
+}
+
 static WS_INGEST_STATS: OnceLock<Arc<WsIngestStats>> = OnceLock::new();
 static WS_INGEST_LOGGER_STARTED: AtomicBool = AtomicBool::new(false);
+static WS_BENCHMARK_STATS: OnceLock<Arc<WsBenchmarkStats>> = OnceLock::new();
+static WS_BENCHMARK_LOGGER_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn ws_benchmark_stats() -> Arc<WsBenchmarkStats> {
+    WS_BENCHMARK_STATS
+        .get_or_init(|| {
+            Arc::new(WsBenchmarkStats {
+                message_count: AtomicU64::new(0),
+                total_bytes: AtomicU64::new(0),
+            })
+        })
+        .clone()
+}
+
+fn ensure_ws_benchmark_logger() {
+    if WS_BENCHMARK_LOGGER_STARTED
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let stats = ws_benchmark_stats();
+    thread::Builder::new()
+        .name("ws-benchmark-logger".into())
+        .spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(1));
+
+                let count = stats.message_count.swap(0, Ordering::Relaxed);
+                let bytes = stats.total_bytes.swap(0, Ordering::Relaxed);
+
+                if count == 0 {
+                    continue;
+                }
+
+                log::info!(
+                    "WebSocket benchmark last_1s messages={} bytes={} avg_bytes={}",
+                    count,
+                    bytes,
+                    if count > 0 { bytes / count } else { 0 },
+                );
+            }
+        })
+        .expect("failed to spawn websocket benchmark logger thread");
+}
 
 fn ws_ingest_stats() -> Arc<WsIngestStats> {
     WS_INGEST_STATS
@@ -245,11 +296,9 @@ impl WsHandler {
 
         let host_id = ctx.host_id;
 
-        let ws_config = WebSocketConfig {
-            max_message_size: Some(WS_MAX_MESSAGE_SIZE_BYTES),
-            max_frame_size: Some(WS_MAX_FRAME_SIZE_BYTES),
-            ..Default::default()
-        };
+        let mut ws_config = WebSocketConfig::default();
+        ws_config.max_message_size = Some(WS_MAX_MESSAGE_SIZE_BYTES);
+        ws_config.max_frame_size = Some(WS_MAX_FRAME_SIZE_BYTES);
         let ws_stream = accept_async_with_config(stream, Some(ws_config)).await?;
         let (mut write, mut read) = ws_stream.split();
 
@@ -297,10 +346,7 @@ impl WsHandler {
             Arc::new(Mutex::new(HashMap::new()));
         let outbound_commands_by_tx: Arc<Mutex<HashMap<String, (String, Instant)>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let query_ids_by_tx_writer = query_ids_by_tx.clone();
-        let view_ids_by_tx_writer = view_ids_by_tx.clone();
-        let subscribe_started_by_tx_writer = subscribe_started_by_tx.clone();
-        let command_started_by_tx_writer = command_started_by_tx.clone();
+
         let outbound_commands_by_tx_writer = outbound_commands_by_tx.clone();
 
         // Publish Client entity
@@ -324,7 +370,6 @@ impl WsHandler {
         // Spawn task to forward messages from channel to WebSocket
         let write_task = tokio::spawn(async move {
             let _ctx = write_ctx;
-            let mut tx_emit_counts: HashMap<Arc<str>, u64> = HashMap::new();
             let mut normal_open = true;
             let mut priority_open = true;
             let mut deferred_open = true;
@@ -411,42 +456,6 @@ impl WsHandler {
                         _ => ("other", None, None, None, None, None),
                     },
                 };
-                let query_id = if kind == "query_response" {
-                    tx_id.as_ref().and_then(|tx| {
-                        query_ids_by_tx_writer
-                            .lock()
-                            .ok()
-                            .and_then(|m| m.get(tx).cloned())
-                    })
-                } else {
-                    None
-                };
-                let view_id = if kind == "view_response" {
-                    tx_id.as_ref().and_then(|tx| {
-                        view_ids_by_tx_writer
-                            .lock()
-                            .ok()
-                            .and_then(|m| m.get(tx).cloned())
-                    })
-                } else {
-                    None
-                };
-                let emit_index = tx_id.as_ref().map(|tx| {
-                    let next = tx_emit_counts.get(tx).copied().unwrap_or(0) + 1;
-                    tx_emit_counts.insert(tx.clone(), next);
-                    next
-                });
-                let subscribe_to_first_emit_ms = if emit_index == Some(1) {
-                    tx_id.as_ref().and_then(|tx| {
-                        subscribe_started_by_tx_writer
-                            .lock()
-                            .ok()
-                            .and_then(|m| m.get(tx).copied())
-                            .map(|started| started.elapsed().as_millis())
-                    })
-                } else {
-                    None
-                };
 
                 match &msg {
                     OutboundMessage::SerializedCommand { tx, command_id, .. } => {
@@ -470,19 +479,18 @@ impl WsHandler {
                     _ => {}
                 }
 
-                let serialize_started = Instant::now();
                 let ws_msg = match &msg {
                     OutboundMessage::SerializedCommand {
                         payload: EncodedCommandMessage::Json(json),
                         ..
-                    } => Message::Text(json.clone()),
+                    } => Message::Text(json.clone().into()),
                     OutboundMessage::SerializedCommand {
                         payload: EncodedCommandMessage::Msgpack(bytes),
                         ..
-                    } => Message::Binary(bytes.clone()),
+                    } => Message::Binary(bytes.clone().into()),
                     OutboundMessage::Message(msg) if use_binary_writer.load(Ordering::SeqCst) => {
                         match rmp_serde::to_vec(msg) {
-                            Ok(bytes) => Message::Binary(bytes),
+                            Ok(bytes) => Message::Binary(bytes.into()),
                             Err(e) => {
                                 log::error!("Failed to serialize message to msgpack: {}", e);
                                 continue;
@@ -490,21 +498,19 @@ impl WsHandler {
                         }
                     }
                     OutboundMessage::Message(msg) => match serde_json::to_string(msg) {
-                        Ok(json) => Message::Text(json),
+                        Ok(json) => Message::Text(json.into()),
                         Err(e) => {
                             log::error!("Failed to serialize message to JSON: {}", e);
                             continue;
                         }
                     },
                 };
-                let serialize_ms = serialize_started.elapsed().as_millis();
                 let payload_bytes = match &ws_msg {
                     Message::Binary(b) => b.len(),
                     Message::Text(t) => t.len(),
                     _ => 0,
                 };
 
-                let send_started = Instant::now();
                 if let Err(err) = write.send(ws_msg).await {
                     log::error!(
                         "WebSocket write failed for client {} from {} kind={} tx={:?} seq={:?} payload_bytes={} binary={}: {}",
@@ -518,56 +524,6 @@ impl WsHandler {
                         err
                     );
                     break;
-                }
-                let send_ms = send_started.elapsed().as_millis();
-
-                // Perf visibility for initial responses and large payloads.
-                let is_initial = seq == Some(0);
-                let is_large = payload_bytes >= 256 * 1024;
-                if (kind == "view_response" || kind == "query_response") && (is_initial || is_large)
-                {
-                    log::debug!(
-                        target: "myko_server::ws_perf",
-                        "ws_perf client={} addr={} kind={} tx={:?} emit_index={:?} subscribe_to_first_emit_ms={:?} query_id={:?} view_id={:?} seq={:?} upserts={:?} deletes={:?} total_count={:?} payload_bytes={} serialize_ms={} send_ms={} binary={}",
-                        write_client_id,
-                        write_addr,
-                        kind,
-                        tx_id,
-                        emit_index,
-                        subscribe_to_first_emit_ms,
-                        query_id,
-                        view_id,
-                        seq,
-                        upserts,
-                        deletes,
-                        total_count,
-                        payload_bytes,
-                        serialize_ms,
-                        send_ms,
-                        use_binary_writer.load(Ordering::SeqCst)
-                    );
-                }
-                if (kind == "command_response" || kind == "command_error")
-                    && let Some(tx) = tx_id.as_ref()
-                {
-                    let started_ms = command_started_by_tx_writer
-                        .lock()
-                        .ok()
-                        .and_then(|mut m| m.remove(tx))
-                        .map(|started| started.elapsed().as_millis());
-                    log::debug!(
-                        target: "myko_server::ws_perf",
-                        "ws_perf client={} addr={} kind={} tx={} command_roundtrip_ms={:?} payload_bytes={} serialize_ms={} send_ms={} binary={}",
-                        write_client_id,
-                        write_addr,
-                        kind,
-                        tx,
-                        started_ms,
-                        payload_bytes,
-                        serialize_ms,
-                        send_ms,
-                        use_binary_writer.load(Ordering::SeqCst)
-                    );
                 }
             }
             log::warn!(
@@ -622,7 +578,7 @@ impl WsHandler {
                 Message::Binary(data) => {
                     // Auto-detect: receiving binary means client wants binary responses
                     if !use_binary.load(Ordering::SeqCst) {
-                        log::info!(
+                        log::debug!(
                             "Client {} switched to binary (msgpack) protocol via auto-detect",
                             client_id
                         );
@@ -657,7 +613,7 @@ impl WsHandler {
                 Message::Text(text) => {
                     // Check for protocol switch request
                     if text == SWITCH_TO_MSGPACK {
-                        log::info!(
+                        log::debug!(
                             "Client {} switched to binary (msgpack) protocol via explicit request",
                             client_id
                         );
@@ -795,7 +751,7 @@ impl WsHandler {
                 }
 
                 log::trace!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
-                log::debug!(
+                log::trace!(
                     "Query subscribe request client={} tx={} query_id={} item_type={} window={} active_subscriptions_before={}",
                     session.client_id,
                     tx_id,
@@ -888,7 +844,7 @@ impl WsHandler {
                 }
 
                 log::trace!("View {} for {} (tx: {})", view_id, item_type, tx_id);
-                log::debug!(
+                log::trace!(
                     "View subscribe request client={} tx={} view_id={} item_type={} window={:?}",
                     session.client_id,
                     tx_id,
@@ -907,7 +863,7 @@ impl WsHandler {
                     let parsed = (view_data.parse)(wrapped.view.clone());
                     match parsed {
                         Ok(any_view) => {
-                            log::debug!(
+                            log::trace!(
                                 "View parsed successfully client={} tx={} view_id={}",
                                 session.client_id,
                                 tx_id,
@@ -920,7 +876,7 @@ impl WsHandler {
                                 ctx.clone(),
                             ) {
                                 Ok(filtered_cellmap) => {
-                                    log::debug!(
+                                    log::trace!(
                                         "View cell factory succeeded client={} tx={} view_id={}",
                                         session.client_id,
                                         tx_id,
@@ -983,7 +939,11 @@ impl WsHandler {
             }
 
             MykoMessage::QueryCancel(CancelSubscription { tx: tx_id }) => {
-                log::trace!("Query cancel: {}", tx_id);
+                log::trace!(
+                    "QueryCancel received: client={} tx={}",
+                    session.client_id,
+                    tx_id
+                );
                 let tx_id: Arc<str> = tx_id.into();
                 if let Ok(mut map) = query_ids_by_tx.lock() {
                     map.remove(&tx_id);
@@ -996,8 +956,7 @@ impl WsHandler {
 
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
                 let tx_id: Arc<str> = tx.into();
-                log::trace!("Query window update: {}", tx_id);
-                log::debug!(
+                log::trace!(
                     "Query window request client={} tx={} has_window={} active_subscriptions={}",
                     session.client_id,
                     tx_id,
@@ -1033,8 +992,7 @@ impl WsHandler {
                     .into();
                 let report_id = &wrapped.report_id;
 
-                log::trace!("Report {} (tx: {})", report_id, tx_id);
-                log::debug!(
+                log::trace!(
                     "Report subscribe request client={} tx={} report_id={} active_subscriptions_before={}",
                     session.client_id,
                     tx_id,
@@ -1087,7 +1045,12 @@ impl WsHandler {
             }
 
             MykoMessage::ReportCancel(CancelSubscription { tx: tx_id }) => {
-                log::trace!("Report cancel: {}", tx_id);
+                log::trace!(
+                    "ReportCancel received: client={} tx={} active_subscriptions_before={}",
+                    session.client_id,
+                    tx_id,
+                    session.subscription_count()
+                );
                 session.cancel(&tx_id.into());
             }
 
@@ -1129,7 +1092,7 @@ impl WsHandler {
 
                 let command_id = &wrapped.command_id;
 
-                log::debug!("Command {} (tx: {})", command_id, tx_id);
+                log::trace!("Command {} (tx: {})", command_id, tx_id,);
                 let received_at = Instant::now();
                 if let Ok(mut map) = command_started_by_tx.lock() {
                     map.insert(tx_id.clone(), received_at);
@@ -1240,7 +1203,7 @@ impl WsHandler {
                         .ok()
                         .and_then(|mut map| map.remove(&resp.tx));
                     if let Some((command_id, started)) = correlated {
-                        log::info!(
+                        log::debug!(
                             "Client command response matched outbound command client={} tx={} command_id={} roundtrip_ms={} active_subscriptions={}",
                             session.client_id,
                             resp.tx,
@@ -1294,6 +1257,14 @@ impl WsHandler {
                         );
                     }
                 }
+            }
+            MykoMessage::Benchmark(payload) => {
+                let stats = ws_benchmark_stats();
+                ensure_ws_benchmark_logger();
+                stats.message_count.fetch_add(1, Ordering::Relaxed);
+                // Estimate payload size from the JSON value
+                let size = payload.to_string().len() as u64;
+                stats.total_bytes.fetch_add(size, Ordering::Relaxed);
             }
             MykoMessage::ProtocolSwitch { protocol } => {
                 log::warn!(
@@ -1358,7 +1329,7 @@ impl WsHandler {
                 }
                 let execute_ms = execute_started.elapsed().as_millis();
                 let total_ms = job.received_at.elapsed().as_millis();
-                log::debug!(
+                log::trace!(
                     target: "myko_server::ws_perf",
                     "command_exec client={} tx={} command_id={} queue_wait_ms={} execute_ms={} total_ms={}",
                     client_id,

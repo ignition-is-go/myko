@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -42,44 +42,30 @@ type AnyItemArc = Arc<dyn AnyItem>;
 type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
 type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
 
-const REPORT_CACHE_LINGER: Duration = Duration::from_secs(15);
-
+/// Weak-ref report cache entry. The cell stays alive as long as someone is
+/// subscribed to it. When all subscribers drop, the weak ref fails to upgrade
+/// and the next request recomputes.
 trait ReportCacheEntryDyn: Any + Send + Sync {
-    fn prune_expired(&self);
     fn as_any(&self) -> &dyn Any;
+    fn is_alive(&self) -> bool;
 }
 
 struct ReportCacheEntry<T> {
     weak: hyphae::cell::WeakCell<T, CellImmutable>,
-    retained: Mutex<Option<(Cell<T, CellImmutable>, Instant)>>,
 }
 
 impl<T> ReportCacheEntry<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    fn new(cell: Cell<T, CellImmutable>) -> Self {
-        let weak = cell.downgrade();
-        let retained = Mutex::new(Some((cell, Instant::now() + REPORT_CACHE_LINGER)));
-        Self { weak, retained }
+    fn new(cell: &Cell<T, CellImmutable>) -> Self {
+        Self {
+            weak: cell.downgrade(),
+        }
     }
 
     fn get(&self) -> Option<Cell<T, CellImmutable>> {
-        self.prune_expired();
-
-        if let Some(cell) = self.weak.upgrade() {
-            self.refresh(cell.clone());
-            return Some(cell);
-        }
-
-        let retained = self.retained.lock().ok()?;
-        retained.as_ref().map(|(cell, _)| cell.clone())
-    }
-
-    fn refresh(&self, cell: Cell<T, CellImmutable>) {
-        if let Ok(mut retained) = self.retained.lock() {
-            *retained = Some((cell, Instant::now() + REPORT_CACHE_LINGER));
-        }
+        self.weak.upgrade()
     }
 }
 
@@ -87,23 +73,17 @@ impl<T> ReportCacheEntryDyn for ReportCacheEntry<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    fn prune_expired(&self) {
-        if let Ok(mut retained) = self.retained.lock()
-            && let Some((_, expires_at)) = retained.as_ref()
-            && Instant::now() >= *expires_at
-        {
-            retained.take();
-        }
-    }
-
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn is_alive(&self) -> bool {
+        self.weak.upgrade().is_some()
     }
 }
 
 struct MapCacheEntry {
     weak: WeakCellMap<Arc<str>, AnyItemArc>,
-    retained: Mutex<Option<(FilteredCellMap, Instant)>>,
 }
 
 #[derive(Default)]
@@ -125,38 +105,14 @@ impl BufferedIngestType {
 }
 
 impl MapCacheEntry {
-    fn new(map: FilteredCellMap) -> Self {
-        let weak = map.downgrade();
-        let retained = Mutex::new(Some((map, Instant::now() + REPORT_CACHE_LINGER)));
-        Self { weak, retained }
+    fn new(map: &FilteredCellMap) -> Self {
+        Self {
+            weak: map.downgrade(),
+        }
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
-        self.prune_expired();
-
-        if let Some(map) = self.weak.upgrade() {
-            let map = map.lock();
-            self.refresh(map.clone());
-            return Some(map);
-        }
-
-        let retained = self.retained.lock().ok()?;
-        retained.as_ref().map(|(map, _)| map.clone())
-    }
-
-    fn refresh(&self, map: FilteredCellMap) {
-        if let Ok(mut retained) = self.retained.lock() {
-            *retained = Some((map, Instant::now() + REPORT_CACHE_LINGER));
-        }
-    }
-
-    fn prune_expired(&self) {
-        if let Ok(mut retained) = self.retained.lock()
-            && let Some((_, expires_at)) = retained.as_ref()
-            && Instant::now() >= *expires_at
-        {
-            retained.take();
-        }
+        self.weak.upgrade().map(|map| map.lock())
     }
 }
 
@@ -281,6 +237,45 @@ impl CellServerCtx {
         self.peer_clients.len()
     }
 
+    /// Number of entries in the query cache (includes dead weak refs).
+    pub fn query_cache_len(&self) -> usize {
+        self.query_cache.len()
+    }
+
+    /// Number of entries in the view cache (includes dead weak refs).
+    pub fn view_cache_len(&self) -> usize {
+        self.view_cache.len()
+    }
+
+    /// Number of entries in the report cache (includes dead weak refs).
+    pub fn report_cache_len(&self) -> usize {
+        self.report_cache.len()
+    }
+
+    /// Count live (upgradeable) entries in the report cache.
+    pub fn report_cache_live_count(&self) -> usize {
+        self.report_cache
+            .iter()
+            .filter(|entry| entry.value().is_alive())
+            .count()
+    }
+
+    /// Count live (upgradeable) entries in the query cache.
+    pub fn query_cache_live_count(&self) -> usize {
+        self.query_cache
+            .iter()
+            .filter(|entry| entry.value().weak.upgrade().is_some())
+            .count()
+    }
+
+    /// Count live (upgradeable) entries in the view cache.
+    pub fn view_cache_live_count(&self) -> usize {
+        self.view_cache
+            .iter()
+            .filter(|entry| entry.value().weak.upgrade().is_some())
+            .count()
+    }
+
     /// Parse JSON to a typed entity using the registered item parser.
     ///
     /// Returns None if the entity type is not registered or parsing fails.
@@ -326,6 +321,8 @@ impl CellServerCtx {
             .get_or_create(entity_type)
             .insert(id.clone(), item.clone());
 
+        log::debug!("[entity] SET {} id={}", entity_type, id);
+
         // Search: index searchable fields
         self.search_index.index_item(&item);
 
@@ -338,8 +335,6 @@ impl CellServerCtx {
         if !options.prevent_persist {
             self.produce_set(entity);
         }
-
-        log::trace!("Published SET {}", id);
     }
 
     /// Delete an entity (DEL) with default options.
@@ -361,6 +356,8 @@ impl CellServerCtx {
         let entity_type = entity.entity_type();
         let id = entity.id();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
+
+        log::debug!("[entity] DEL {} id={}", entity_type, id);
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
@@ -411,6 +408,7 @@ impl CellServerCtx {
 
         for entity in entities {
             let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
+            log::debug!("[entity] SET {} id={}", entity_type, entity.id());
             self.search_index.index_item(&item);
             entries.push((entity.id(), item.clone()));
             items.push(item);
@@ -467,6 +465,7 @@ impl CellServerCtx {
         for entity in entities {
             let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
             let id = item.id();
+            log::debug!("[entity] DEL {} id={}", entity_type, id);
             self.search_index.remove_entity(&id);
             ids.push(id);
             items.push(item);
@@ -506,6 +505,8 @@ impl CellServerCtx {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
+
+        log::debug!("[entity] SET {} id={}", entity_type, id);
 
         // Reduce: update store
         self.registry
@@ -555,6 +556,7 @@ impl CellServerCtx {
                 Vec::with_capacity(typed_items.len());
 
             for item in &typed_items {
+                log::debug!("[entity] SET {} id={}", entity_type, item.id());
                 self.search_index.index_item(item);
                 entries.push((item.id(), item.clone()));
             }
@@ -593,6 +595,8 @@ impl CellServerCtx {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
+
+        log::debug!("[entity] DEL {} id={}", entity_type, id);
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
@@ -640,6 +644,7 @@ impl CellServerCtx {
 
             for item in &typed_items {
                 let id = item.id();
+                log::debug!("[entity] DEL {} id={}", entity_type, id);
                 self.search_index.remove_entity(&id);
                 ids.push(id);
             }
@@ -656,12 +661,6 @@ impl CellServerCtx {
                     self.produce_del_dyn(item);
                 }
             }
-
-            log::trace!(
-                "Published batch DEL {} count={}",
-                entity_type,
-                typed_items.len()
-            );
         }
     }
 
@@ -825,15 +824,18 @@ impl CellServerCtx {
 
         for op in &sets {
             let entity_type: Arc<str> = op.item.entity_type().into();
+            let id = op.item.id();
+            log::debug!("[entity] SET {} id={}", entity_type, id);
             inserts_by_type
                 .entry(entity_type)
                 .or_default()
-                .push((op.item.id(), op.item.clone()));
+                .push((id, op.item.clone()));
             self.search_index.index_item(&op.item);
         }
         for op in &dels {
             let entity_type: Arc<str> = op.item.entity_type().into();
             let id = op.item.id();
+            log::debug!("[entity] DEL {} id={}", entity_type, id);
             removes_by_type
                 .entry(entity_type)
                 .or_default()
@@ -1090,10 +1092,11 @@ impl CellServerCtx {
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         if let Some(existing) = self.query_cache.get(&key) {
-            existing.value().prune_expired();
             if let Some(shared) = existing.value().get() {
                 return shared;
             }
+            drop(existing);
+            self.query_cache.remove(&key);
         }
 
         let query_req = QueryRequest::with_tx(query, request.tx.clone());
@@ -1106,8 +1109,7 @@ impl CellServerCtx {
             Some(Arc::new(self.clone())),
         )
         .expect("query cell factory should not fail for typed query");
-        self.query_cache
-            .insert(key, MapCacheEntry::new(built.clone()));
+        self.query_cache.insert(key, MapCacheEntry::new(&built));
         built
     }
 
@@ -1119,10 +1121,11 @@ impl CellServerCtx {
     {
         let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
         if let Some(existing) = self.view_cache.get(&key) {
-            existing.value().prune_expired();
             if let Some(shared) = existing.value().get() {
                 return shared;
             }
+            drop(existing);
+            self.view_cache.remove(&key);
         }
 
         let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
@@ -1135,8 +1138,7 @@ impl CellServerCtx {
             Arc::new(self.clone()),
         )
         .expect("view cell factory should not fail for typed view");
-        self.view_cache
-            .insert(key, MapCacheEntry::new(built.clone()));
+        self.view_cache.insert(key, MapCacheEntry::new(&built));
         built
     }
 
@@ -1249,9 +1251,8 @@ impl CellServerCtx {
     {
         let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
 
+        // Cache hit: if the cell is still alive (has subscribers), reuse it.
         if let Some(existing) = self.report_cache.get(&key) {
-            existing.value().prune_expired();
-
             if let Some(entry) = existing
                 .value()
                 .as_any()
@@ -1260,12 +1261,16 @@ impl CellServerCtx {
             {
                 return shared;
             }
+            // Dead entry — drop the ref before removing to avoid DashMap deadlock
+            drop(existing);
+            self.report_cache.remove(&key);
         }
 
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
         let built = report.compute(nested_ctx);
         self.report_cache
-            .insert(key, Arc::new(ReportCacheEntry::new(built.clone())));
+            .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
+
         built
     }
 
