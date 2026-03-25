@@ -172,8 +172,8 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.13", features = ["v4", "serde"] }
 
 # WebSocket
-tungstenite = "0.21"
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tungstenite = "0.29"
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 
 # Actor framework
 ractor = "0.15"
