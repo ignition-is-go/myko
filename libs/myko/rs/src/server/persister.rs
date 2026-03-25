@@ -16,7 +16,11 @@ pub struct PersistError {
 
 impl std::fmt::Display for PersistError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "persist failed for {}: {}", self.entity_type, self.message)
+        write!(
+            f,
+            "persist failed for {}: {}",
+            self.entity_type, self.message
+        )
     }
 }
 
@@ -48,7 +52,9 @@ pub trait Persister: Send + Sync + 'static {
 pub struct NullPersister;
 
 impl Persister for NullPersister {
-    fn persist(&self, _event: MEvent) -> Result<(), PersistError> { Ok(()) }
+    fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+        Ok(())
+    }
 
     fn should_register_kafka_topic(&self) -> bool {
         false
@@ -62,7 +68,9 @@ impl Persister for NullPersister {
 pub struct BlackholePersister;
 
 impl Persister for BlackholePersister {
-    fn persist(&self, _event: MEvent) -> Result<(), PersistError> { Ok(()) }
+    fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+        Ok(())
+    }
 
     fn should_register_kafka_topic(&self) -> bool {
         false

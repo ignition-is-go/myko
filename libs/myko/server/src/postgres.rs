@@ -140,12 +140,11 @@ impl PostgresProducerHandle {
         let entity_type = event.item_type.clone();
         match self.sender.send(event) {
             Ok(()) => Ok(()),
-            Err(mpsc::SendError(_)) => {
-                Err(PersistError {
-                    entity_type,
-                    message: "Postgres producer channel closed (producer thread not running)".to_string(),
-                })
-            }
+            Err(mpsc::SendError(_)) => Err(PersistError {
+                entity_type,
+                message: "Postgres producer channel closed (producer thread not running)"
+                    .to_string(),
+            }),
         }
     }
 }

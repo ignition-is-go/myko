@@ -277,7 +277,11 @@ impl RelationshipManager {
     ///
     /// Handles EnsureFor: when a dependency entity is created, ensures
     /// all derived entities exist for all combinations.
-    pub fn forward_set(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
+    pub fn forward_set(
+        &self,
+        item: Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
 
         if let Some(lookups) = self.belongs_to_by_local.get(item_type) {
@@ -300,7 +304,11 @@ impl RelationshipManager {
     /// - BelongsTo cascade deletes (parent deleted → delete children)
     /// - OwnsMany parent deletes (parent deleted → delete owned children)
     /// - OwnsMany child deletes (child deleted → update parent arrays)
-    pub fn forward_del(&self, item: Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
+    pub fn forward_del(
+        &self,
+        item: Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         // Handle BelongsTo cascades (parent deleted → delete children)
         self.handle_belongs_to_cascade(&item, ctx)?;
 
@@ -324,7 +332,11 @@ impl RelationshipManager {
     /// Items should all be the same entity type. This keeps cascade deletes grouped
     /// so downstream stores and views can process one wider delete wave instead of
     /// thousands of tiny per-parent cascades.
-    pub fn forward_del_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) -> Result<(), PersistError> {
+    pub fn forward_del_batch(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         if items.is_empty() {
             return Ok(());
         }
@@ -380,7 +392,11 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Handle BelongsTo cascades: when a parent is deleted, delete all children
-    fn handle_belongs_to_cascade(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
+    fn handle_belongs_to_cascade(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.belongs_to_by_foreign.get(item_type) else {
             return Ok(());
@@ -407,7 +423,11 @@ impl RelationshipManager {
         Ok(())
     }
 
-    fn handle_belongs_to_cascade_batch(&self, items: &[Arc<dyn AnyItem>], ctx: &CellServerCtx) -> Result<(), PersistError> {
+    fn handle_belongs_to_cascade_batch(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         let Some(first) = items.first() else {
             return Ok(());
         };
@@ -547,7 +567,11 @@ impl RelationshipManager {
     }
 
     /// Handle OwnsMany parent delete: delete all owned children
-    fn handle_owns_many_parent_delete(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
+    fn handle_owns_many_parent_delete(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.owns_many_by_local.get(item_type) else {
             return Ok(());
@@ -637,7 +661,11 @@ impl RelationshipManager {
     }
 
     /// Handle OwnsMany child delete: remove child ID from parent arrays
-    fn handle_owns_many_child_delete(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
+    fn handle_owns_many_child_delete(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.owns_many_by_foreign.get(item_type) else {
             return Ok(());
@@ -693,7 +721,11 @@ impl RelationshipManager {
     }
 
     /// Handle EnsureFor: when dependency created, ensure derived entities exist
-    fn handle_ensure_for(&self, item: &Arc<dyn AnyItem>, ctx: &CellServerCtx) -> Result<(), PersistError> {
+    fn handle_ensure_for(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.ensure_for_by_dependency.get(item_type) else {
             return Ok(());
@@ -1058,7 +1090,12 @@ impl RelationshipManager {
     /// Publish a SET for cascade operations.
     ///
     /// Sets prevent_relationship_updates to avoid infinite loops.
-    fn publish_set_cascade(&self, ctx: &CellServerCtx, _entity_type: &str, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
+    fn publish_set_cascade(
+        &self,
+        ctx: &CellServerCtx,
+        _entity_type: &str,
+        item: Arc<dyn AnyItem>,
+    ) -> Result<(), PersistError> {
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
@@ -1066,7 +1103,11 @@ impl RelationshipManager {
         ctx.set_dyn_with_options(item, Some(options))
     }
 
-    fn publish_set_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+    fn publish_set_cascade_batch(
+        &self,
+        ctx: &CellServerCtx,
+        items: &[Arc<dyn AnyItem>],
+    ) -> Result<(), PersistError> {
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
@@ -1077,7 +1118,12 @@ impl RelationshipManager {
     /// Publish a DEL for cascade operations.
     ///
     /// Sets prevent_relationship_updates to avoid infinite loops.
-    fn publish_del_cascade(&self, ctx: &CellServerCtx, entity_type: &str, id: &str) -> Result<(), PersistError> {
+    fn publish_del_cascade(
+        &self,
+        ctx: &CellServerCtx,
+        entity_type: &str,
+        id: &str,
+    ) -> Result<(), PersistError> {
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
@@ -1101,7 +1147,11 @@ impl RelationshipManager {
         Ok(())
     }
 
-    fn publish_del_cascade_batch(&self, ctx: &CellServerCtx, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+    fn publish_del_cascade_batch(
+        &self,
+        ctx: &CellServerCtx,
+        items: &[Arc<dyn AnyItem>],
+    ) -> Result<(), PersistError> {
         if items.is_empty() {
             return Ok(());
         }

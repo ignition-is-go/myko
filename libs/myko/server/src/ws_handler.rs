@@ -1062,7 +1062,10 @@ impl WsHandler {
                 record_ws_ingest(std::slice::from_ref(&event));
                 normalize_incoming_event(&mut event, &session.client_id);
                 if let Err(e) = ctx.apply_event(event) {
-                    log::error!("Failed to apply event from client {}: {e}", session.client_id);
+                    log::error!(
+                        "Failed to apply event from client {}: {e}",
+                        session.client_id
+                    );
                 }
             }
 

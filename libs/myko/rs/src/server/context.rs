@@ -18,7 +18,10 @@ use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-use super::{HandlerRegistry, RelationshipManager, persister::{PersistError, PersisterRouter}};
+use super::{
+    HandlerRegistry, RelationshipManager,
+    persister::{PersistError, PersisterRouter},
+};
 use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
@@ -307,7 +310,11 @@ impl CellServerCtx {
     /// Options control:
     /// - `prevent_relationship_updates`: skip cascade processing
     /// - `prevent_persist`: skip Kafka
-    pub fn set_with_options<T>(&self, entity: &T, options: Option<EventOptions>) -> Result<(), PersistError>
+    pub fn set_with_options<T>(
+        &self,
+        entity: &T,
+        options: Option<EventOptions>,
+    ) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
@@ -350,7 +357,11 @@ impl CellServerCtx {
     }
 
     /// Delete an entity (DEL) with options.
-    pub fn del_with_options<T>(&self, entity: &T, options: Option<EventOptions>) -> Result<(), PersistError>
+    pub fn del_with_options<T>(
+        &self,
+        entity: &T,
+        options: Option<EventOptions>,
+    ) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
@@ -394,7 +405,11 @@ impl CellServerCtx {
     /// Publish a batch of entities (SET) with shared options.
     ///
     /// This avoids manual `MEvent` construction and performs a grouped store insert.
-    pub fn batch_set_with_options<T>(&self, entities: &[T], options: Option<EventOptions>) -> Result<(), PersistError>
+    pub fn batch_set_with_options<T>(
+        &self,
+        entities: &[T],
+        options: Option<EventOptions>,
+    ) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
@@ -451,7 +466,11 @@ impl CellServerCtx {
     /// Delete a batch of entities (DEL) with shared options.
     ///
     /// This avoids manual `MEvent` construction and performs a grouped store remove.
-    pub fn batch_del_with_options<T>(&self, entities: &[T], options: Option<EventOptions>) -> Result<(), PersistError>
+    pub fn batch_del_with_options<T>(
+        &self,
+        entities: &[T],
+        options: Option<EventOptions>,
+    ) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
@@ -506,7 +525,11 @@ impl CellServerCtx {
     }
 
     /// Publish a dynamic item (SET) with options.
-    pub fn set_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) -> Result<(), PersistError> {
+    pub fn set_dyn_with_options(
+        &self,
+        item: Arc<dyn AnyItem>,
+        options: Option<EventOptions>,
+    ) -> Result<(), PersistError> {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
@@ -598,7 +621,11 @@ impl CellServerCtx {
     }
 
     /// Delete a dynamic item (DEL) with options.
-    pub fn del_dyn_with_options(&self, item: Arc<dyn AnyItem>, options: Option<EventOptions>) -> Result<(), PersistError> {
+    pub fn del_dyn_with_options(
+        &self,
+        item: Arc<dyn AnyItem>,
+        options: Option<EventOptions>,
+    ) -> Result<(), PersistError> {
         let options = options.unwrap_or_default();
         let entity_type = item.entity_type();
         let id = item.id();
@@ -878,7 +905,8 @@ impl CellServerCtx {
         // Relationships
         for op in &sets {
             if !op.options.prevent_relationship_updates {
-                self.relationship_manager.forward_set(op.item.clone(), self)?;
+                self.relationship_manager
+                    .forward_set(op.item.clone(), self)?;
             }
         }
         let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
@@ -1436,18 +1464,20 @@ mod tests {
     #[test]
     fn apply_event_batch_keeps_default_entities_immediate() {
         let ctx = make_ctx();
-        let applied = ctx.apply_event_batch(vec![MEvent {
-            item: json!({
-                "id": "immediate-1",
-                "value": 7,
-            }),
-            change_type: MEventType::SET,
-            item_type: "ImmediateTestItem".to_string(),
-            created_at: "2026-03-12T00:00:00Z".to_string(),
-            tx: "tx-immediate".to_string(),
-            source_id: Some("test".to_string()),
-            options: None,
-        }]).expect("apply_event_batch should succeed");
+        let applied = ctx
+            .apply_event_batch(vec![MEvent {
+                item: json!({
+                    "id": "immediate-1",
+                    "value": 7,
+                }),
+                change_type: MEventType::SET,
+                item_type: "ImmediateTestItem".to_string(),
+                created_at: "2026-03-12T00:00:00Z".to_string(),
+                tx: "tx-immediate".to_string(),
+                source_id: Some("test".to_string()),
+                options: None,
+            }])
+            .expect("apply_event_batch should succeed");
 
         assert_eq!(applied, 1);
         let store = ctx.registry.get_or_create("ImmediateTestItem");
@@ -1457,18 +1487,20 @@ mod tests {
     #[test]
     fn apply_event_batch_buffers_opted_in_entities() {
         let ctx = make_ctx();
-        let applied = ctx.apply_event_batch(vec![MEvent {
-            item: json!({
-                "id": "buffered-1",
-                "value": 42,
-            }),
-            change_type: MEventType::SET,
-            item_type: "BufferedTestItem".to_string(),
-            created_at: "2026-03-12T00:00:00Z".to_string(),
-            tx: "tx-buffered".to_string(),
-            source_id: Some("test".to_string()),
-            options: None,
-        }]).expect("apply_event_batch should succeed");
+        let applied = ctx
+            .apply_event_batch(vec![MEvent {
+                item: json!({
+                    "id": "buffered-1",
+                    "value": 42,
+                }),
+                change_type: MEventType::SET,
+                item_type: "BufferedTestItem".to_string(),
+                created_at: "2026-03-12T00:00:00Z".to_string(),
+                tx: "tx-buffered".to_string(),
+                source_id: Some("test".to_string()),
+                options: None,
+            }])
+            .expect("apply_event_batch should succeed");
 
         assert_eq!(applied, 1);
         let store = ctx.registry.get_or_create("BufferedTestItem");
