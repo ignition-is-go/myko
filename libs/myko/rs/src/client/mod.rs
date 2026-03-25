@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::HashMap,
     sync::{
         Arc, Mutex,
@@ -111,6 +112,84 @@ fn encode_protocol(protocol: &AtomicU8, msg: &MykoMessage) -> Option<WsFrame> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Subscription cancel helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Create a guard that sends a cancel message and removes the handler on drop.
+fn query_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> SubscriptionGuard {
+    let tx_for_log = tx.clone();
+    debug!("query_cancel_guard: created for tx={}", tx_for_log);
+    SubscriptionGuard::from_callback(move || {
+        info!("query_cancel_guard: cancelling tx={}", tx);
+        inner.query_handlers.remove(&tx);
+        let msg = MykoMessage::QueryCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
+        if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
+            match inner.socket.send(frame) {
+                Ok(_) => debug!("query_cancel_guard: sent QueryCancel tx={}", tx),
+                Err(e) => warn!(
+                    "query_cancel_guard: failed to send QueryCancel tx={}: {}",
+                    tx, e
+                ),
+            }
+        }
+    })
+}
+
+fn report_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> SubscriptionGuard {
+    let tx_for_log = tx.clone();
+    debug!("report_cancel_guard: created for tx={}", tx_for_log);
+    SubscriptionGuard::from_callback(move || {
+        info!("report_cancel_guard: cancelling tx={}", tx);
+        inner.report_handlers.remove(&tx);
+        let msg = MykoMessage::ReportCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
+        if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
+            match inner.socket.send(frame) {
+                Ok(_) => debug!("report_cancel_guard: sent ReportCancel tx={}", tx),
+                Err(e) => warn!(
+                    "report_cancel_guard: failed to send ReportCancel tx={}: {}",
+                    tx, e
+                ),
+            }
+        }
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Report cache — deduplicate identical report subscriptions over the wire
+// ─────────────────────────────────────────────────────────────────────────────
+
+trait ClientReportCacheEntryDyn: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn is_alive(&self) -> bool;
+}
+
+struct ClientReportCacheEntry<T> {
+    weak: hyphae::cell::WeakCell<T, CellImmutable>,
+}
+
+impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntry<T> {
+    fn new(cell: &Cell<T, CellImmutable>) -> Self {
+        Self {
+            weak: cell.downgrade(),
+        }
+    }
+
+    fn get(&self) -> Option<Cell<T, CellImmutable>> {
+        self.weak.upgrade()
+    }
+}
+
+impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntryDyn for ClientReportCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn is_alive(&self) -> bool {
+        self.weak.upgrade().is_some()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MykoClient
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -152,6 +231,9 @@ struct MykoClientInner {
     report_handlers: DashMap<Arc<str>, ReportHandler>,
     command_response_handlers: Mutex<HashMap<String, CommandResponseHandler>>,
     command_request_handlers: DashMap<Arc<str>, CommandRequestHandler>,
+
+    // Report subscription cache — keyed by report_id:params_hash
+    report_cache: DashMap<String, Box<dyn ClientReportCacheEntryDyn>>,
 
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
@@ -318,6 +400,7 @@ impl MykoClient {
                 report_handlers,
                 command_response_handlers,
                 command_request_handlers,
+                report_cache: DashMap::new(),
                 pending_sends,
                 _read_guard: read_guard,
                 _status_guard: status_guard,
@@ -747,7 +830,7 @@ impl MykoClient {
         };
 
         let cell = Cell::new(vec![]).with_name(query_id.as_ref());
-        let cell_writer = cell.clone();
+        let cell_weak = cell.downgrade();
 
         // State for accumulating query diffs
         let state: Arc<Mutex<HashMap<Arc<str>, Arc<Q::Item>>>> = Arc::default();
@@ -759,6 +842,14 @@ impl MykoClient {
         self.inner.query_handlers.insert(
             tx.clone(),
             Box::new(move |response_value: Value| {
+                let Some(cell_writer) = cell_weak.upgrade() else {
+                    warn!(
+                        "watch_query: weak cell dead for query={} tx={}",
+                        query_id_for_handler, tx_for_handler
+                    );
+                    return;
+                };
+
                 let Ok(response) =
                     serde_json::from_value::<crate::wire::QueryResponse>(response_value)
                 else {
@@ -837,8 +928,8 @@ impl MykoClient {
             let _ = self.inner.socket.send(frame);
         }
 
-        // Tie the reconnection guard's lifetime to the cell
         cell.own(status_guard);
+        cell.own(query_cancel_guard(tx, self.inner.clone()));
 
         cell.lock()
     }
@@ -861,6 +952,26 @@ impl MykoClient {
     {
         let report: ReportRequest<R> = report.into();
         let report_id: Arc<str> = R::report_id_static().into();
+
+        // NOTE(ts): Cache key is report_id + params hash (excludes tx).
+        // Identical report params share a single WS subscription.
+        let cache_key = format!("{}:{:016x}", report_id, report.report.cache_key_hash());
+
+        // Cache hit: if the cell is still alive (has subscribers), reuse it.
+        if let Some(existing) = self.inner.report_cache.get(&cache_key) {
+            if let Some(entry) = existing
+                .value()
+                .as_any()
+                .downcast_ref::<ClientReportCacheEntry<Option<O>>>()
+                && let Some(shared) = entry.get()
+            {
+                debug!("watch_report: cache hit for {cache_key}");
+                return shared;
+            }
+            drop(existing);
+            self.inner.report_cache.remove(&cache_key);
+        }
+
         let tx: Arc<str> = report.tx.clone();
 
         let report_value = serde_json::to_value(&report).expect("Report should serialize");
@@ -870,17 +981,26 @@ impl MykoClient {
         };
 
         let cell = Cell::new(None).with_name(report_id.as_ref());
-        let cell_writer = cell.clone();
+        let cell_weak = cell.downgrade();
 
         // Register handler for report responses matching this tx
+        let report_id_for_handler = report_id.clone();
+        let tx_for_handler = tx.clone();
         self.inner.report_handlers.insert(
             tx.clone(),
-            Box::new(
-                move |response: Value| match serde_json::from_value::<O>(response) {
+            Box::new(move |response: Value| {
+                let Some(cell_writer) = cell_weak.upgrade() else {
+                    warn!(
+                        "watch_report: weak cell dead for report={} tx={}",
+                        report_id_for_handler, tx_for_handler
+                    );
+                    return;
+                };
+                match serde_json::from_value::<O>(response) {
                     Ok(data) => cell_writer.set(Some(data)),
                     Err(e) => error!("Could not parse report value: {e:?}"),
-                },
-            ),
+                }
+            }),
         );
 
         // Build the frame to send
@@ -911,8 +1031,16 @@ impl MykoClient {
         }
 
         cell.own(status_guard);
+        cell.own(report_cancel_guard(tx, self.inner.clone()));
 
-        cell.lock()
+        let locked = cell.lock();
+
+        // Store weak ref in cache — dies when all subscribers drop.
+        self.inner
+            .report_cache
+            .insert(cache_key, Box::new(ClientReportCacheEntry::new(&locked)));
+
+        locked
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -939,7 +1067,7 @@ impl MykoClient {
         let wrapped = wrap_view(tx.clone(), &view.view).expect("View should serialize");
 
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
-        let cell_writer = cell.clone();
+        let cell_weak = cell.downgrade();
 
         let state: Arc<Mutex<HashMap<Arc<str>, V::Item>>> = Arc::default();
         let tx_for_handler = tx.clone();
@@ -948,6 +1076,10 @@ impl MykoClient {
         self.inner.query_handlers.insert(
             tx.clone(),
             Box::new(move |response_value: Value| {
+                let Some(cell_writer) = cell_weak.upgrade() else {
+                    return;
+                };
+
                 let Ok(response) =
                     serde_json::from_value::<crate::wire::ViewResponse>(response_value)
                 else {
@@ -1024,6 +1156,7 @@ impl MykoClient {
         }
 
         cell.own(status_guard);
+
         cell.lock()
     }
 
@@ -1155,13 +1288,17 @@ impl MykoClient {
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
-        let cell_writer = cell.clone();
+        let cell_weak = cell.downgrade();
         let state_clone = state.clone();
         let tx_clone = tx.clone();
 
         self.inner.query_handlers.insert(
             tx.clone(),
             Box::new(move |response_value: Value| {
+                let Some(cell_writer) = cell_weak.upgrade() else {
+                    return;
+                };
+
                 let Ok(response) =
                     serde_json::from_value::<crate::wire::QueryResponse>(response_value)
                 else {
@@ -1215,6 +1352,8 @@ impl MykoClient {
         }
 
         cell.own(status_guard);
+        cell.own(query_cancel_guard(tx, self.inner.clone()));
+
         cell.lock()
     }
 
@@ -1231,11 +1370,14 @@ impl MykoClient {
             .into();
 
         let cell = Cell::new(None).with_name(report.report_id.as_str());
-        let cell_writer = cell.clone();
+        let cell_weak = cell.downgrade();
 
         self.inner.report_handlers.insert(
             tx.clone(),
             Box::new(move |response: Value| {
+                let Some(cell_writer) = cell_weak.upgrade() else {
+                    return;
+                };
                 cell_writer.set(Some(response));
             }),
         );
@@ -1261,6 +1403,8 @@ impl MykoClient {
         }
 
         cell.own(status_guard);
+        cell.own(report_cancel_guard(tx, self.inner.clone()));
+
         cell.lock()
     }
 

@@ -46,7 +46,7 @@ impl MykoClient {
 
         let map: CellMap<Arc<str>, Arc<Q::Item>> =
             CellMap::new().with_name(format!("query_map:{}", query_id));
-        let map_writer = map.clone();
+        let map_weak = map.downgrade();
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
@@ -55,6 +55,10 @@ impl MykoClient {
         self.inner.query_handlers.insert(
             tx.clone(),
             Box::new(move |response_value: Value| {
+                let Some(map_writer) = map_weak.upgrade() else {
+                    return;
+                };
+
                 let Ok(response) =
                     serde_json::from_value::<crate::wire::QueryResponse>(response_value)
                 else {
@@ -140,6 +144,7 @@ impl MykoClient {
 
         // Own the subscription guard so it lives as long as the map
         map.own(status_guard);
+        map.own(super::query_cancel_guard(tx, self.inner.clone()));
 
         map.lock()
     }

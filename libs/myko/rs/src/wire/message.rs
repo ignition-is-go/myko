@@ -81,6 +81,9 @@ pub enum MykoMessage {
     CommandError(CommandError),
     #[serde(rename = "ws:m:ping")]
     Ping(PingData),
+    /// Benchmark message — server counts messages/bytes per second, no processing
+    #[serde(rename = "ws:m:benchmark")]
+    Benchmark(serde_json::Value),
     /// Protocol switch confirmation - sent by server when client requests binary mode
     #[serde(rename = "ws:m:protocol-switch")]
     ProtocolSwitch { protocol: String },
