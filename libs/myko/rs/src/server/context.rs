@@ -1352,7 +1352,7 @@ mod tests {
     inventory::submit! {
         IngestBufferRegistration {
             entity_type: "BufferedTestItem",
-            policy: IngestBufferPolicy::TimeWindow { window_ms: 5 },
+            policy: IngestBufferPolicy::TimeWindow { window_ms: 60_000 },
         }
     }
 
