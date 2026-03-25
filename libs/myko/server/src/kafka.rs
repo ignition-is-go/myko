@@ -88,9 +88,10 @@ impl KafkaProducerHandle {
             event.source_id = Some(self.host_id.to_string());
         }
 
+        let entity_type = event.item_type.clone();
         if let Err(e) = self.sender.try_send(ProduceEvent { event }) {
             return Err(PersistError {
-                entity_type: "unknown".to_string(),
+                entity_type,
                 message: format!("Kafka producer buffer full (50k), dropping event: {e}"),
             });
         }

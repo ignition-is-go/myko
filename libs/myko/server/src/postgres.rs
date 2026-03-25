@@ -137,11 +137,12 @@ impl PostgresProducerHandle {
         if event.source_id.is_none() {
             event.source_id = Some(self.host_id.to_string());
         }
+        let entity_type = event.item_type.clone();
         match self.sender.send(event) {
             Ok(()) => Ok(()),
             Err(mpsc::SendError(_)) => {
                 Err(PersistError {
-                    entity_type: "unknown".to_string(),
+                    entity_type,
                     message: "Postgres producer channel closed (producer thread not running)".to_string(),
                 })
             }

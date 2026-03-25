@@ -1061,7 +1061,9 @@ impl WsHandler {
             MykoMessage::Event(mut event) => {
                 record_ws_ingest(std::slice::from_ref(&event));
                 normalize_incoming_event(&mut event, &session.client_id);
-                let _ = ctx.apply_event(event);
+                if let Err(e) = ctx.apply_event(event) {
+                    log::error!("Failed to apply event from client {}: {e}", session.client_id);
+                }
             }
 
             MykoMessage::EventBatch(mut events) => {
