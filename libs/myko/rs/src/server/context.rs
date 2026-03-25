@@ -1447,7 +1447,7 @@ mod tests {
             tx: "tx-immediate".to_string(),
             source_id: Some("test".to_string()),
             options: None,
-        }]);
+        }]).expect("apply_event_batch should succeed");
 
         assert_eq!(applied, 1);
         let store = ctx.registry.get_or_create("ImmediateTestItem");
@@ -1468,7 +1468,7 @@ mod tests {
             tx: "tx-buffered".to_string(),
             source_id: Some("test".to_string()),
             options: None,
-        }]);
+        }]).expect("apply_event_batch should succeed");
 
         assert_eq!(applied, 1);
         let store = ctx.registry.get_or_create("BufferedTestItem");

@@ -355,7 +355,9 @@ impl WsHandler {
             server_id: host_id.to_string().into(),
             windback: None,
         };
-        ctx.set(&client_entity);
+        if let Err(e) = ctx.set(&client_entity) {
+            log::error!("Failed to persist client entity: {e}");
+        }
 
         log::info!("Client connected: {} from {}", client_id, addr);
 
@@ -691,7 +693,9 @@ impl WsHandler {
         }
 
         // Delete Client entity
-        ctx.del(&client_entity);
+        if let Err(e) = ctx.del(&client_entity) {
+            log::error!("Failed to delete client entity: {e}");
+        }
 
         log::info!("Client disconnected: {}", client_id);
 

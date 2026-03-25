@@ -597,7 +597,9 @@ impl CellServer {
 
     /// Establish relationship invariants.
     pub fn establish_relations(&self) {
-        self.relationship_manager.establish_relations(&self.ctx());
+        if let Err(e) = self.relationship_manager.establish_relations(&self.ctx()) {
+            log::error!("Failed to establish relations: {e}");
+        }
     }
 
     /// Check if the server is ready to accept connections.

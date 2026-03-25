@@ -74,7 +74,9 @@ impl PeerRegistry {
                         "Local server {} missing from GetAllServers; re-advertising",
                         self_host_id
                     );
-                    ctx.set(&local_server);
+                    if let Err(e) = ctx.set(&local_server) {
+                        log::error!("Failed to re-advertise local server: {e}");
+                    }
                 }
             }
         })
@@ -113,7 +115,9 @@ impl PeerRegistry {
                     server.port
                 );
                 ctx.unregister_peer_client(server.id.as_ref());
-                ctx.del(server.as_ref());
+                if let Err(e) = ctx.del(server.as_ref()) {
+                    log::error!("Failed to delete stale server entry: {e}");
+                }
                 continue;
             }
 
@@ -143,7 +147,9 @@ impl PeerRegistry {
                     remove_connection_handles.remove(&remove_server.id);
                     remove_state_guards.remove(&remove_server.id);
                     remove_ctx.unregister_peer_client(remove_server.id.as_ref());
-                    remove_ctx.del(remove_server.as_ref());
+                    if let Err(e) = remove_ctx.del(remove_server.as_ref()) {
+                        log::error!("Failed to delete peer server: {e}");
+                    }
                 }
             });
 
@@ -206,7 +212,9 @@ impl PeerRegistry {
             server.address,
             server.port
         );
-        ctx.set(&server);
+        if let Err(e) = ctx.set(&server) {
+            log::error!("Failed to publish local server bootstrap advert: {e}");
+        }
 
         Self {
             _peers_guard: peer_sub,
