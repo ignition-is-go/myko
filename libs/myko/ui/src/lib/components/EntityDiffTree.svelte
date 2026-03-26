@@ -48,5 +48,5 @@
     <span class="text-base-content/40">{stats.unchanged} unchanged</span>
   </div>
 
-  <EntityDiffNode node={tree} {showUnchanged} />
+  <EntityDiffNode node={tree} {showUnchanged} isRoot />
 </div>

@@ -6,12 +6,24 @@
   interface Props {
     node: EntityDiff;
     showUnchanged?: boolean;
+    /** Whether this is the root node (always visible). */
+    isRoot?: boolean;
   }
 
-  let { node, showUnchanged = false }: Props = $props();
-  let expanded = $state(node.status === 'modified');
+  let { node, showUnchanged = false, isRoot = false }: Props = $props();
+  let expanded = $state(node.status !== 'unchanged' || isRoot);
 
-  const visible = $derived(showUnchanged || node.status !== 'unchanged');
+  const hasChangedDescendant = $derived.by((): boolean => {
+    const check = (n: EntityDiff): boolean => {
+      if (n.status !== 'unchanged') return true;
+      return n.children.some(check);
+    };
+    return node.children.some(check);
+  });
+
+  const visible = $derived(
+    isRoot || showUnchanged || node.status !== 'unchanged' || hasChangedDescendant,
+  );
   const hasDetails = $derived(
     (node.fields && node.fields.length > 0) || node.children.length > 0,
   );
@@ -41,7 +53,7 @@
 
       {#if node.children.length > 0}
         <div class="pl-2">
-          {#each node.children as child}
+          {#each node.children as child (child.type + ':' + child.id)}
             <svelte:self node={child} {showUnchanged} />
           {/each}
         </div>

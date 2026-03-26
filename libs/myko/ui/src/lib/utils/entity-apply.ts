@@ -5,6 +5,10 @@ export interface ApplyPlan {
   toDel: ExportedEntity[];  // Shallowest removed entities only
 }
 
+/** Common FK field names that point to a parent entity. */
+const PARENT_FK_CANDIDATES = ['scopeId', 'scope_id', 'projectId', 'project_id',
+  'serviceId', 'instanceId', 'targetId', 'sessionId', 'bundleId', 'trackId'];
+
 /**
  * Compute the minimal SET/DEL operations to apply an import.
  */
@@ -27,8 +31,11 @@ export function computeApplyPlan(
   const removedIds = new Set(allRemoved.keys());
   const toDel: ExportedEntity[] = [];
   for (const [_id, entity] of allRemoved) {
-    const parentId = (entity.data.scopeId as string) ?? (entity.data.scope_id as string);
-    if (!parentId || !removedIds.has(parentId)) {
+    const hasRemovedParent = PARENT_FK_CANDIDATES.some((fk) => {
+      const parentId = entity.data[fk] as string | undefined;
+      return parentId && removedIds.has(parentId);
+    });
+    if (!hasRemovedParent) {
       toDel.push(entity);
     }
   }

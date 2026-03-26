@@ -6,11 +6,32 @@ import type { EntityDiff, ExportedEntity, DiffStatus, FieldDiff } from './entity
  *
  * TODO(ts): Generate this map from Rust relationship registrations.
  */
-const PARENT_FK_FIELDS: Record<string, string> = {
-  Scene: 'scopeId',
-  Binding: 'scopeId',
-  BindingNode: 'scopeId',
-  // Add other entity types as needed
+const PARENT_FK_FIELDS: Record<string, string[]> = {
+  // Project children
+  Scene: ['scopeId'],
+  ActiveScene: ['scopeId'],
+  Appearance: ['scopeId'],
+  Alert: ['scopeId'],
+  Bundle: ['scopeId'],
+  Feed: ['scopeId'],
+  Space: ['scopeId'],
+  Service: ['projectId'],
+  Link: ['projectId'],
+  Fixture: ['projectId'],
+  Camera: ['projectId'],
+  LedWall: ['projectId'],
+  Screen: ['projectId'],
+  Point: ['projectId'],
+  EventTrack: ['scopeId'],
+  // Scene children
+  Binding: ['scopeId'],
+  // Binding children
+  BindingNode: ['scopeId'],
+  // Other scoped entities
+  BundleStatus: ['sessionId', 'bundleId'],
+  Instance: ['serviceId'],
+  Action: ['instanceId'],
+  Emitter: ['targetId'],
 };
 
 /**
@@ -23,6 +44,10 @@ function entityName(data: Record<string, unknown>): string {
 
 /**
  * Build an EntityDiff tree from a flat diff map.
+ *
+ * Entities with known parent FK fields are placed under their parent.
+ * Entities without a parent mapping (or whose parent isn't in the diff)
+ * are placed as direct children of the root so they remain visible.
  *
  * @param rootType - The root entity type
  * @param rootId - The root entity ID
@@ -38,6 +63,7 @@ export function buildDiffTree(
   const allNodes = new Map<string, EntityDiff>();
   const idToKey = new Map<string, string>();
   const childrenByParent = new Map<string, EntityDiff[]>();
+  const placed = new Set<string>();
 
   for (const [key, diff] of diffs) {
     const [type, id] = key.split(':');
@@ -56,16 +82,22 @@ export function buildDiffTree(
   // Build parent-child relationships
   for (const [key, diff] of diffs) {
     const [type] = key.split(':');
-    const fkField = PARENT_FK_FIELDS[type];
-    if (fkField) {
-      const parentId = diff.entity.data[fkField] as string | undefined;
-      if (parentId) {
-        const parentKey = idToKey.get(parentId);
-        if (parentKey) {
-          if (!childrenByParent.has(parentKey)) {
-            childrenByParent.set(parentKey, []);
+    const fkFields = PARENT_FK_FIELDS[type];
+    if (fkFields) {
+      let foundParent = false;
+      for (const fkField of fkFields) {
+        const parentId = diff.entity.data[fkField] as string | undefined;
+        if (parentId) {
+          const parentKey = idToKey.get(parentId);
+          if (parentKey) {
+            if (!childrenByParent.has(parentKey)) {
+              childrenByParent.set(parentKey, []);
+            }
+            childrenByParent.get(parentKey)!.push(allNodes.get(key)!);
+            placed.add(key);
+            foundParent = true;
+            break;
           }
-          childrenByParent.get(parentKey)!.push(allNodes.get(key)!);
         }
       }
     }
@@ -76,13 +108,23 @@ export function buildDiffTree(
     node.children = childrenByParent.get(key) ?? [];
   }
 
-  // Return root node
+  // Get or create root node
   const rootKey = `${rootType}:${rootId}`;
-  return allNodes.get(rootKey) ?? {
+  const rootNode = allNodes.get(rootKey) ?? {
     type: rootType,
     id: rootId,
-    status: 'unchanged',
+    status: 'unchanged' as DiffStatus,
     name: rootId,
     children: [],
   };
+  placed.add(rootKey);
+
+  // Orphaned entities (not the root, not placed under any parent) become root children
+  for (const [key, node] of allNodes) {
+    if (!placed.has(key)) {
+      rootNode.children.push(node);
+    }
+  }
+
+  return rootNode;
 }
