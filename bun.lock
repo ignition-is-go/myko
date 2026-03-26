@@ -490,6 +490,7 @@
         "@faker-js/faker": "^9.9.0",
         "@mdi/js": "^7.4.47",
         "@myko/ts": "workspace:*",
+        "@myko/ui": "workspace:*",
         "@myko/ui-svelte": "workspace:*",
         "@panzoom/panzoom": "^4.6.1",
         "@playwright/test": "^1.58.2",

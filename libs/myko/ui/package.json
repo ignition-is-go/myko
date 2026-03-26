@@ -28,6 +28,22 @@
     "./runes": {
       "types": "./src/lib/runes/index.ts",
       "svelte": "./src/lib/runes/index.ts"
+    },
+    "./utils/entity-diff": {
+      "types": "./src/lib/utils/entity-diff.ts",
+      "default": "./src/lib/utils/entity-diff.ts"
+    },
+    "./utils/entity-tree": {
+      "types": "./src/lib/utils/entity-tree.ts",
+      "default": "./src/lib/utils/entity-tree.ts"
+    },
+    "./utils/entity-apply": {
+      "types": "./src/lib/utils/entity-apply.ts",
+      "default": "./src/lib/utils/entity-apply.ts"
+    },
+    "./components/EntityDiffTree.svelte": {
+      "svelte": "./src/lib/components/EntityDiffTree.svelte",
+      "default": "./src/lib/components/EntityDiffTree.svelte"
     }
   },
   "name": "@myko/ui",
