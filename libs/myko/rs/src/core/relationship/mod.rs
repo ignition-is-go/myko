@@ -107,6 +107,9 @@ pub enum Relation {
         foreign_type: &'static str,
         /// Function to extract the FK value from a child entity
         extract_fk: FkExtractor,
+        /// If true, this child type is excluded from entity tree exports.
+        /// The relationship still cascades on delete — only tree traversal is affected.
+        exclude_from_tree: bool,
     },
 
     /// Parent entity owns an array of child IDs.
@@ -293,6 +296,7 @@ mod tests {
             local_type: "Binding",
             foreign_type: "Scene",
             extract_fk: dummy_fk_extractor,
+            exclude_from_tree: false,
         };
 
         let owns_many = Relation::OwnsMany {

@@ -179,6 +179,7 @@ impl RelationshipManager {
                     local_type,
                     foreign_type,
                     extract_fk,
+                    exclude_from_tree: _,
                 } => {
                     trace!(
                         "RelationshipManager: Registered BelongsTo {} -> {}",

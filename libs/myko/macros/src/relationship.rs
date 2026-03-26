@@ -16,6 +16,8 @@ pub struct BelongsToInfo {
     pub foreign_type: String,
     /// Whether the field type is Option<T>
     pub is_optional: bool,
+    /// If true, exclude this child from entity tree exports
+    pub exclude_from_tree: bool,
 }
 
 /// Information about an owns_many relationship on a field
@@ -111,6 +113,7 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
         || path.is_ident("myko_client_id")
         || path.is_ident("fallback_to_id")
         || path.is_ident("searchable")
+        || path.is_ident("exclude_from_tree")
 }
 
 /// Check if a type is Option<T>
@@ -128,6 +131,10 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
     let field_name = field.ident.as_ref()?.to_string();
     let field_name_json = to_camel_case(&field_name);
     let is_optional = is_option_type(&field.ty);
+    let exclude_from_tree = field
+        .attrs
+        .iter()
+        .any(|a| a.path().is_ident("exclude_from_tree"));
 
     for attr in &field.attrs {
         if attr.path().is_ident("belongs_to")
@@ -139,6 +146,7 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
                 field_name_json,
                 foreign_type,
                 is_optional,
+                exclude_from_tree,
             });
         }
     }
@@ -415,6 +423,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             }
         };
 
+        let exclude_from_tree = bt.exclude_from_tree;
         registrations.push(quote! {
             #krate::submit! {
                 #krate::relationship::RelationRegistration {
@@ -422,6 +431,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                         local_type: #local_type,
                         foreign_type: #foreign_type,
                         extract_fk: #extract_fk,
+                        exclude_from_tree: #exclude_from_tree,
                     }
                 }
             }
