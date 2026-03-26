@@ -11,7 +11,6 @@ Rust-first monorepo with Svelte/SvelteKit UI. Prefer Rust for new backend/domain
 
 - Core systems: Hyphae (reactive dataflow), Myko (event-sourcing/CQRS), Rship (platform on Myko).
 - Important paths: `apps/server/`, `apps/ui/`, `apps/execs/`, `libs/myko/rs/`, `libs/entities/rs/`, `libs/sdk/rs/`, `libs/sdk/ts/`, `tools/`.
-- This repo uses `bd`; close finished local work with `bd close <id>` then `bd sync --flush-only`.
 
 ## Core Rules
 
