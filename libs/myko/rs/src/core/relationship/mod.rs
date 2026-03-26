@@ -105,6 +105,8 @@ pub enum Relation {
         local_type: &'static str,
         /// Entity type being referenced (parent)
         foreign_type: &'static str,
+        /// The camelCase JSON field name of the FK (e.g., "scopeId", "projectId")
+        fk_field_json: &'static str,
         /// Function to extract the FK value from a child entity
         extract_fk: FkExtractor,
         /// If true, this child type is excluded from entity tree exports.
@@ -295,6 +297,7 @@ mod tests {
         let belongs_to = Relation::BelongsTo {
             local_type: "Binding",
             foreign_type: "Scene",
+            fk_field_json: "scopeId",
             extract_fk: dummy_fk_extractor,
             exclude_from_tree: false,
         };

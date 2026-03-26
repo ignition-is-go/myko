@@ -95,6 +95,7 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
                 foreign_type,
                 extract_fk,
                 exclude_from_tree,
+                ..
             } => {
                 if *exclude_from_tree {
                     continue;

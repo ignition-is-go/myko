@@ -9,8 +9,7 @@ use syn::{Attribute, Field, ItemStruct, Path};
 pub struct BelongsToInfo {
     /// Field name in Rust (snake_case)
     pub field_name: String,
-    /// Field name in JSON (camelCase) - reserved for future use
-    #[allow(dead_code)]
+    /// Field name in JSON (camelCase)
     pub field_name_json: String,
     /// Foreign entity type name
     pub foreign_type: String,
@@ -424,12 +423,14 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         };
 
         let exclude_from_tree = bt.exclude_from_tree;
+        let fk_field_json = &bt.field_name_json;
         registrations.push(quote! {
             #krate::submit! {
                 #krate::relationship::RelationRegistration {
                     relation: #krate::relationship::Relation::BelongsTo {
                         local_type: #local_type,
                         foreign_type: #foreign_type,
+                        fk_field_json: #fk_field_json,
                         extract_fk: #extract_fk,
                         exclude_from_tree: #exclude_from_tree,
                     }
