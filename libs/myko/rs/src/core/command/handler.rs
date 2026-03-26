@@ -289,6 +289,31 @@ impl CommandContext {
         }
     }
 
+    /// Emit a batch of pre-built MEvents (SET or DEL).
+    ///
+    /// This is useful for type-erased imports where the caller already has
+    /// the raw JSON and entity type strings.
+    pub fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx
+                .apply_event_batch(events)
+                .map_err(|e| CommandError {
+                    tx: self.req.tx.to_string(),
+                    command_id: self.command_id.to_string(),
+                    message: e.to_string(),
+                })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = events;
+            unreachable!();
+        }
+    }
+
+
+
+
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.

@@ -272,27 +272,58 @@ impl ReportHandler for EventsForTransaction {
 // Import/Export Commands
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Command to import wrapped items into the system.
-/// Returns the number of items that were processed.
+/// Command to import items into the system as SET events, and optionally
+/// delete items as DEL events. Returns the total number of events applied.
+///
+/// Used by the entity tree import/export system to apply diffs.
 #[myko_macros::myko_command(usize)]
 pub struct ImportItems {
+    /// Items to SET (add or update).
     pub items: Vec<WrappedItem<Value>>,
+    /// Items to DEL (remove). Only the shallowest removed entities should be
+    /// included — the relationship manager cascades deletions to children.
+    #[serde(default)]
+    pub delete_items: Vec<WrappedItem<Value>>,
 }
 
 impl crate::command::CommandHandler for ImportItems {
     fn execute(
         self,
-        _ctx: crate::command::CommandContext,
+        ctx: crate::command::CommandContext,
     ) -> Result<usize, crate::command::CommandError> {
-        // TODO(ts): Implement raw event emission for imports
-        // This requires emitting MEvent directly to the event bus,
-        // which needs either:
-        // 1. A new emit_raw method on CommandContext
-        // 2. Access to the event manager directly
-        //
-        // For now, return the count to indicate success
-        // The actual import functionality needs deeper integration
-        Ok(self.items.len())
+        use crate::wire::{MEvent, MEventType};
+
+        let tx = ctx.tx().to_string();
+        let source_id = Some(ctx.host_id().to_string());
+        let created_at = ctx.created_at().to_string();
+
+        let mut events = Vec::with_capacity(self.items.len() + self.delete_items.len());
+
+        for wrapped in &self.items {
+            events.push(MEvent {
+                item: wrapped.item.clone(),
+                change_type: MEventType::SET,
+                item_type: wrapped.item_type.to_string(),
+                created_at: created_at.clone(),
+                tx: tx.clone(),
+                source_id: source_id.clone(),
+                options: None,
+            });
+        }
+
+        for wrapped in &self.delete_items {
+            events.push(MEvent {
+                item: wrapped.item.clone(),
+                change_type: MEventType::DEL,
+                item_type: wrapped.item_type.to_string(),
+                created_at: created_at.clone(),
+                tx: tx.clone(),
+                source_id: source_id.clone(),
+                options: None,
+            });
+        }
+
+        ctx.emit_event_batch(events)
     }
 }
 
