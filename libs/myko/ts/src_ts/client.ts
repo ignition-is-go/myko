@@ -1644,7 +1644,7 @@ export class MykoClient {
       if (managed?.ws.readyState === WebSocket.OPEN) {
         const encoded =
           this.protocol === MykoProtocol.MSGPACK
-            ? packr.pack(message)
+            ? new Uint8Array(packr.pack(message))
             : JSON.stringify(message)
         managed.ws.send(encoded)
         this.upMsgCounter.next()
