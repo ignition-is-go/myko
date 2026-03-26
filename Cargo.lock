@@ -9724,6 +9724,7 @@ dependencies = [
  "rship-entities-teams",
  "rship-entities-timing",
  "rship-entities-ui",
+ "rship-entities-value-track",
  "rship-entities-variables",
  "rship-entities-vfx",
  "rship-entities-visualization",
@@ -10375,6 +10376,22 @@ dependencies = [
  "serde_json",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "rship-entities-value-track"
+version = "4.0.0-canary.14"
+dependencies = [
+ "hyphae",
+ "myko-macros",
+ "myko-rs",
+ "ordered-float",
+ "rship-entities-core",
+ "rship-entities-foundation",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "serde",
+ "ts-rs",
 ]
 
 [[package]]
