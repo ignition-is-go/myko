@@ -1,39 +1,10 @@
 import type { EntityDiff, ExportedEntity, DiffStatus, FieldDiff } from './entity-diff.js';
 
 /**
- * Known parent FK fields. Maps child entity type to its parent FK field name.
- * This is Rship-specific — the framework doesn't expose relationship metadata to the client.
- *
- * TODO(ts): Generate this map from Rust relationship registrations.
+ * Maps child entity type to its parent FK field names (camelCase).
+ * Provided by the consuming application — generated from Rust relationship registrations.
  */
-const PARENT_FK_FIELDS: Record<string, string[]> = {
-  // Project children
-  Scene: ['scopeId'],
-  ActiveScene: ['scopeId'],
-  Appearance: ['scopeId'],
-  Alert: ['scopeId'],
-  Bundle: ['scopeId'],
-  Feed: ['scopeId'],
-  Space: ['scopeId'],
-  Service: ['projectId'],
-  Link: ['projectId'],
-  Fixture: ['projectId'],
-  Camera: ['projectId'],
-  LedWall: ['projectId'],
-  Screen: ['projectId'],
-  Point: ['projectId'],
-  EventTrack: ['scopeId'],
-  // Scene children
-  Binding: ['scopeId'],
-  // Binding children
-  BindingNode: ['scopeId'],
-  // Other scoped entities
-  BindingNodeConnection: ['startNodeId'],
-  BundleStatus: ['sessionId', 'bundleId'],
-  Instance: ['serviceId'],
-  Action: ['instanceId'],
-  Emitter: ['targetId'],
-};
+export type ParentFkFields = Record<string, string[]>;
 
 /**
  * Extract a display name from entity data.
@@ -59,6 +30,7 @@ export function buildDiffTree(
   rootType: string,
   rootId: string,
   diffs: Map<string, { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity }>,
+  parentFkFields: ParentFkFields,
 ): EntityDiff {
   // Build flat EntityDiff nodes and index by ID for parent lookup
   const allNodes = new Map<string, EntityDiff>();
@@ -83,7 +55,7 @@ export function buildDiffTree(
   // Build parent-child relationships
   for (const [key, diff] of diffs) {
     const [type] = key.split(':');
-    const fkFields = PARENT_FK_FIELDS[type];
+    const fkFields = parentFkFields[type];
     if (fkFields) {
       let foundParent = false;
       for (const fkField of fkFields) {

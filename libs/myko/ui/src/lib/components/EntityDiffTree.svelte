@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ExportedEntity } from '../utils/entity-diff.js';
   import { diffEntityLists } from '../utils/entity-diff.js';
+  import type { ParentFkFields } from '../utils/entity-tree.js';
   import { buildDiffTree } from '../utils/entity-tree.js';
   import EntityDiffNode from './EntityDiffNode.svelte';
 
@@ -13,14 +14,16 @@
     current: ExportedEntity[];
     /** Entities from the incoming source (file or snapshot) */
     incoming: ExportedEntity[];
+    /** Maps child entity type to parent FK field names */
+    parentFkFields: ParentFkFields;
     /** Whether to show unchanged entities */
     showUnchanged?: boolean;
   }
 
-  let { rootType, rootId, current, incoming, showUnchanged = false }: Props = $props();
+  let { rootType, rootId, current, incoming, parentFkFields, showUnchanged = false }: Props = $props();
 
   const diffs = $derived(diffEntityLists(current, incoming));
-  const tree = $derived(buildDiffTree(rootType, rootId, diffs));
+  const tree = $derived(buildDiffTree(rootType, rootId, diffs, parentFkFields));
 
   const stats = $derived.by(() => {
     let added = 0, removed = 0, modified = 0, unchanged = 0;

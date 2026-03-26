@@ -5,15 +5,15 @@ export interface ApplyPlan {
   toDel: ExportedEntity[];  // Shallowest removed entities only
 }
 
-/** Common FK field names that point to a parent entity. */
-const PARENT_FK_CANDIDATES = ['scopeId', 'scope_id', 'projectId', 'project_id',
-  'serviceId', 'instanceId', 'targetId', 'sessionId', 'bundleId', 'trackId'];
-
 /**
  * Compute the minimal SET/DEL operations to apply an import.
+ *
+ * @param diffs - Flat diff map from diffEntityLists()
+ * @param allFkFields - All FK field names used in BelongsTo relationships (for cascade detection)
  */
 export function computeApplyPlan(
   diffs: Map<string, { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity }>,
+  allFkFields: string[],
 ): ApplyPlan {
   const toSet: ExportedEntity[] = [];
   const allRemoved = new Map<string, ExportedEntity>();
@@ -31,7 +31,7 @@ export function computeApplyPlan(
   const removedIds = new Set(allRemoved.keys());
   const toDel: ExportedEntity[] = [];
   for (const [_id, entity] of allRemoved) {
-    const hasRemovedParent = PARENT_FK_CANDIDATES.some((fk) => {
+    const hasRemovedParent = allFkFields.some((fk) => {
       const parentId = entity.data[fk] as string | undefined;
       return parentId && removedIds.has(parentId);
     });
