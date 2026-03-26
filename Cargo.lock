@@ -10205,6 +10205,7 @@ dependencies = [
  "rship-entities-sequencing",
  "rship-entities-tags",
  "rship-entities-timing",
+ "rship-entities-value-track",
  "rship-entities-variables",
  "rship-sync",
  "serde",
