@@ -28,6 +28,7 @@ const PARENT_FK_FIELDS: Record<string, string[]> = {
   // Binding children
   BindingNode: ['scopeId'],
   // Other scoped entities
+  BindingNodeConnection: ['startNodeId'],
   BundleStatus: ['sessionId', 'bundleId'],
   Instance: ['serviceId'],
   Action: ['instanceId'],
@@ -103,11 +104,6 @@ export function buildDiffTree(
     }
   }
 
-  // Attach children
-  for (const [key, node] of allNodes) {
-    node.children = childrenByParent.get(key) ?? [];
-  }
-
   // Get or create root node
   const rootKey = `${rootType}:${rootId}`;
   const rootNode = allNodes.get(rootKey) ?? {
@@ -119,11 +115,41 @@ export function buildDiffTree(
   };
   placed.add(rootKey);
 
+  // Attach children from FK relationships
+  for (const [key, node] of allNodes) {
+    node.children = childrenByParent.get(key) ?? [];
+  }
+
   // Orphaned entities (not the root, not placed under any parent) become root children
   for (const [key, node] of allNodes) {
     if (!placed.has(key)) {
       rootNode.children.push(node);
     }
+  }
+
+  // Deduplicate all children arrays — entities reachable via multiple FK paths
+  // (e.g., BindingNodeConnection with both start_node_id and end_node_id) could
+  // appear more than once
+  for (const node of allNodes.values()) {
+    if (node.children.length > 0) {
+      const seen = new Set<string>();
+      node.children = node.children.filter((c) => {
+        const k = `${c.type}:${c.id}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+  }
+  // Also dedup root if it was created fresh (not from allNodes)
+  if (rootNode.children.length > 0) {
+    const seen = new Set<string>();
+    rootNode.children = rootNode.children.filter((c) => {
+      const k = `${c.type}:${c.id}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   }
 
   return rootNode;
