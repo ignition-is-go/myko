@@ -2,6 +2,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cell;
+pub mod export_tree;
 mod handler;
 #[cfg(not(target_arch = "wasm32"))]
 mod registration;
@@ -29,6 +30,9 @@ pub use traits::{
     AnyReport, CountResult, MykoReport, Report, ReportId, ReportIdStatic, ReportOutput,
     ReportOutputType, ReportParams,
 };
+
+// Re-export entity tree export types
+pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 
 // Re-export wire types for backwards compatibility
 pub use crate::wire::{ReportError, ReportResponse, WrappedReport, wrap_report};
