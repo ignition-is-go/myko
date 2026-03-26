@@ -29,7 +29,7 @@ function entityName(data: Record<string, unknown>): string {
 export function buildDiffTree(
   rootType: string,
   rootId: string,
-  diffs: Map<string, { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity }>,
+  diffs: Map<string, { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity; currentEntity?: ExportedEntity }>,
   parentFkFields: ParentFkFields,
 ): EntityDiff {
   // Build flat EntityDiff nodes and index by ID for parent lookup
@@ -46,6 +46,8 @@ export function buildDiffTree(
       status: diff.status,
       name: entityName(diff.entity.data),
       fields: diff.fields,
+      currentData: diff.currentEntity?.data,
+      incomingData: diff.status === 'modified' ? diff.entity.data : undefined,
       children: [],
     };
     allNodes.set(key, node);

@@ -17,6 +17,10 @@ export interface EntityDiff {
   name?: string;
   /** Field-level changes — only populated for 'modified' status. */
   fields?: FieldDiff[];
+  /** The current (server) entity data — only populated for 'modified' status. */
+  currentData?: Record<string, unknown>;
+  /** The incoming entity data — only populated for 'modified' status. */
+  incomingData?: Record<string, unknown>;
   children: EntityDiff[];
 }
 
@@ -49,7 +53,7 @@ export function diffEntityLists(
 
   const result = new Map<
     string,
-    { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity }
+    { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity; currentEntity?: ExportedEntity }
   >();
 
   // Check incoming entities against current
@@ -60,7 +64,7 @@ export function diffEntityLists(
     } else {
       const fields = diffFields(cur.data, inc.data);
       if (fields.length > 0) {
-        result.set(key, { status: 'modified', fields, entity: inc });
+        result.set(key, { status: 'modified', fields, entity: inc, currentEntity: cur });
       } else {
         result.set(key, { status: 'unchanged', entity: inc });
       }

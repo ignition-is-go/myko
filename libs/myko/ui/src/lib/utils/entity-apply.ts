@@ -10,15 +10,18 @@ export interface ApplyPlan {
  *
  * @param diffs - Flat diff map from diffEntityLists()
  * @param allFkFields - All FK field names used in BelongsTo relationships (for cascade detection)
+ * @param excluded - Optional set of "Type:id" keys to skip (user chose to keep current version)
  */
 export function computeApplyPlan(
   diffs: Map<string, { status: DiffStatus; fields?: FieldDiff[]; entity: ExportedEntity }>,
   allFkFields: string[],
+  excluded?: Set<string>,
 ): ApplyPlan {
   const toSet: ExportedEntity[] = [];
   const allRemoved = new Map<string, ExportedEntity>();
 
-  for (const [_key, diff] of diffs) {
+  for (const [key, diff] of diffs) {
+    if (excluded?.has(key)) continue;
     if (diff.status === 'added' || diff.status === 'modified') {
       toSet.push(diff.entity);
     } else if (diff.status === 'removed') {
