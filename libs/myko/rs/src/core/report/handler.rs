@@ -14,6 +14,8 @@ use crate::item::typed_map_from_any_item_with_typed_id;
 use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::store::StoreRegistry;
 use crate::{
     cache::CacheKey,
     common::{
@@ -246,6 +248,15 @@ impl ReportContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.server_ctx.peer_clients_tick()
+    }
+
+    /// Access the store registry for type-erased entity lookups.
+    ///
+    /// This enables reports that need to traverse entities by runtime-determined
+    /// type names (e.g., entity tree export walking relationship graphs).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn registry(&self) -> Arc<StoreRegistry> {
+        self.server_ctx.registry.clone()
     }
 }
 
