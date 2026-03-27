@@ -2,6 +2,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cell;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod export_tree;
 mod handler;
 #[cfg(not(target_arch = "wasm32"))]
@@ -32,6 +33,7 @@ pub use traits::{
 };
 
 // Re-export entity tree export types
+#[cfg(not(target_arch = "wasm32"))]
 pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 
 // Re-export wire types for backwards compatibility
