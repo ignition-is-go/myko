@@ -147,3 +147,4 @@ apps/link-ui/src-tauri/gen/*
 
 # Old Moon publish temp-file bug artifacts
 **/[0-9]*log_file
+.superpowers/
