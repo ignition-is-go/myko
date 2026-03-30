@@ -25,6 +25,15 @@ pub struct ViewBuildCellCtx<TView: ViewItemType> {
     pub view_context: ViewCellContext,
 }
 
+/// Build the reactive CellMap for a view.
+///
+/// # Ordering
+///
+/// Views are **sorted by their CellMap key** (the `id` field on each view item).
+/// The wire protocol sorts items lexicographically by key before sending them
+/// to clients. To control sort order, use a compound key like
+/// `format!("{sort_field}\x1F{unique_id}")` where `\x1F` (Unit Separator) sorts
+/// before all printable characters.
 pub trait ViewHandler: ViewItemType + Sized {
     fn build_cell(ctx: ViewBuildCellCtx<Self>) -> super::cell::TypedViewCellMap<Self::Item>
     where
