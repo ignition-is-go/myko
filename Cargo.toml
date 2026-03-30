@@ -44,6 +44,7 @@ members = [
   "libs/entities/cameras",
   "libs/entities/surfaces",
   "libs/entities/ui",
+  "libs/entities/blend-engine",
   "libs/entities/value-track",
   "libs/entities/scene",
   "libs/entities/engine",
@@ -262,6 +263,7 @@ rship-entities-ui = { version = "4.0.0-canary.15", path = "libs/entities/ui" }
 rship-entities-variables = { version = "4.0.0-canary.15", path = "libs/entities/variables" }
 rship-entities-vfx = { version = "4.0.0-canary.15", path = "libs/entities/vfx" }
 rship-entities-visualization = { version = "4.0.0-canary.15", path = "libs/entities/visualization" }
+rship-entities-blend-engine = { version = "4.0.0-canary.15", path = "libs/entities/blend-engine" }
 rship-entities-value-track = {version = "4.0.0-canary.14", path = "libs/entities/value-track"}
 rship-sdk = { version = "4.0.0-canary.15", path = "libs/sdk/rs" }
 rship-sync = { version = "4.0.0-canary.15", path = "libs/sync" }
