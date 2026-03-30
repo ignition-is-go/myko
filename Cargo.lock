@@ -9688,6 +9688,7 @@ dependencies = [
  "rship-entities-assets",
  "rship-entities-assignment",
  "rship-entities-audit",
+ "rship-entities-blend-engine",
  "rship-entities-cameras",
  "rship-entities-color",
  "rship-entities-compositing",
@@ -9783,6 +9784,24 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs",
+]
+
+[[package]]
+name = "rship-entities-blend-engine"
+version = "4.0.0-canary.15"
+dependencies = [
+ "chrono",
+ "hyphae",
+ "myko-macros",
+ "myko-rs",
+ "rship-entities-core",
+ "rship-entities-foundation",
+ "rship-entities-macros",
+ "rship-entities-nodes",
+ "rship-entities-variables",
+ "serde",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]
