@@ -6,10 +6,10 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tantivy::{
-    Index, IndexReader, IndexWriter, TantivyDocument,
+    Index, IndexReader, IndexWriter, TantivyDocument, Term,
     collector::TopDocs,
-    query::QueryParser,
-    schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT},
+    query::{BooleanQuery, FuzzyTermQuery, Occur, Query, TermQuery},
+    schema::{Field, IndexRecordOption, OwnedValue, STORED, STRING, Schema, TEXT},
 };
 
 use super::{extract_searchable_text, iter_searchable};
@@ -151,6 +151,10 @@ impl SearchIndex {
     ///
     /// Returns matching entity IDs (up to `limit` results).
     /// Automatically commits any pending writes before searching.
+    ///
+    /// Each word in the query becomes a fuzzy prefix match: it matches any
+    /// indexed term that starts with the word (prefix) OR is within edit
+    /// distance 1 (typo tolerance). All words must match (AND semantics).
     pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
         if query.is_empty() || limit == 0 {
             return vec![];
@@ -161,28 +165,38 @@ impl SearchIndex {
 
         let searcher = self.reader.searcher();
 
-        // Build a query that searches content AND filters by entity_type
-        let query_parser = QueryParser::for_index(searcher.index(), vec![self.content_field]);
+        // Filter by entity_type (STRING field — exact match)
+        let type_query: Box<dyn Query> = Box::new(TermQuery::new(
+            Term::from_field_text(self.entity_type_field, entity_type),
+            IndexRecordOption::Basic,
+        ));
 
-        // Combine entity type filter with content query
-        let combined_query = format!("entity_type:\"{}\" AND ({})", entity_type, query);
+        // Each word becomes: prefix-fuzzy (distance=1, prefix=true)
+        // This matches terms that start with the word OR are within 1 edit
+        let mut must_clauses: Vec<(Occur, Box<dyn Query>)> = vec![(Occur::Must, type_query)];
 
-        let parsed = match query_parser.parse_query(&combined_query) {
-            Ok(q) => q,
-            Err(e) => {
-                log::debug!("SearchIndex: query parse error for '{}': {}", query, e);
-                // Fall back to a quoted phrase query
-                match query_parser.parse_query(&format!(
-                    "entity_type:\"{}\" AND \"{}\"",
-                    entity_type, query
-                )) {
-                    Ok(q) => q,
-                    Err(_) => return vec![],
-                }
+        for word in query.split_whitespace() {
+            let lower = word.to_lowercase();
+            let term = Term::from_field_text(self.content_field, &lower);
+            // Prefix match: "ba" → "base1", "base2"
+            let prefix: Box<dyn Query> =
+                Box::new(FuzzyTermQuery::new_prefix(term.clone(), 0, true));
+            // Only add fuzzy for words >= 4 chars to avoid noisy short-term matches
+            if lower.len() >= 4 {
+                let fuzzy: Box<dyn Query> = Box::new(FuzzyTermQuery::new(term, 1, true));
+                let either = BooleanQuery::from(vec![
+                    (Occur::Should, prefix),
+                    (Occur::Should, fuzzy),
+                ]);
+                must_clauses.push((Occur::Must, Box::new(either)));
+            } else {
+                must_clauses.push((Occur::Must, prefix));
             }
-        };
+        }
 
-        let top_docs = match searcher.search(&parsed, &TopDocs::with_limit(limit)) {
+        let combined = BooleanQuery::from(must_clauses);
+
+        let top_docs = match searcher.search(&combined, &TopDocs::with_limit(limit)) {
             Ok(docs) => docs,
             Err(e) => {
                 log::error!("SearchIndex: search error: {}", e);
@@ -321,5 +335,40 @@ mod tests {
         index.index_entity("TestEntity", "id-1", "hello world");
         index.commit();
         assert!(index.search("TestEntity", "hello", 0).is_empty());
+    }
+
+    #[test]
+    fn test_prefix_search() {
+        let index = SearchIndex::new();
+        index.index_entity("Target", "id-1", "base1");
+        index.index_entity("Target", "id-2", "base2");
+        index.index_entity("Target", "id-3", "camera");
+        index.commit();
+
+        // "ba" should match "base1" and "base2" via prefix
+        let results = index.search("Target", "ba", 10);
+        assert_eq!(results.len(), 2, "prefix 'ba' should match base1 and base2, got: {:?}", results);
+
+        // "base" should match "base1" and "base2"
+        let results = index.search("Target", "base", 10);
+        assert_eq!(results.len(), 2, "prefix 'base' should match base1 and base2, got: {:?}", results);
+
+        // "cam" should match "camera"
+        let results = index.search("Target", "cam", 10);
+        assert_eq!(results.len(), 1, "prefix 'cam' should match camera, got: {:?}", results);
+
+        // Fuzzy only for 4+ char words: "camra" should match "camera"
+        let results = index.search("Target", "camra", 10);
+        assert_eq!(results.len(), 1, "fuzzy 'camra' should match camera, got: {:?}", results);
+
+        // Short fuzzy should NOT match: "ba" should not fuzzy-match "A"
+        let results = index.search("Target", "ba", 10);
+        assert_eq!(results.len(), 2, "'ba' should only prefix-match base1/base2, got: {:?}", results);
+
+        // Multi-word: both words must match
+        index.index_entity("Target", "id-4", "light panel front");
+        index.commit();
+        let results = index.search("Target", "light front", 10);
+        assert_eq!(results.len(), 1, "multi-word should match id-4, got: {:?}", results);
     }
 }
