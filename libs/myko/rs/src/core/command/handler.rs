@@ -311,9 +311,6 @@ impl CommandContext {
         }
     }
 
-
-
-
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
