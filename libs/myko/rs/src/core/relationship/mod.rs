@@ -130,6 +130,8 @@ pub enum Relation {
         extract_ids: ArrayExtractor,
         /// Function to remove an ID from parent and return updated entity as Value
         remove_id: ArrayRemover,
+        /// If true, exclude this child type from entity tree exports.
+        exclude_from_tree: bool,
     },
 
     /// Auto-create entity for each combination of dependencies.
@@ -146,6 +148,8 @@ pub enum Relation {
         /// Takes slice of dependency IDs in same order as dependencies array.
         /// Returns complete entity with id, hash, FK fields, and default values.
         make_entity: EntityFactory,
+        /// If true, exclude this entity type from entity tree exports.
+        exclude_from_tree: bool,
     },
 }
 
@@ -307,6 +311,7 @@ mod tests {
             foreign_type: "BindingNode",
             extract_ids: dummy_array_extractor,
             remove_id: dummy_array_remover,
+            exclude_from_tree: false,
         };
 
         // Verify we can match on variants

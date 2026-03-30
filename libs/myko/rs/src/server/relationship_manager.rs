@@ -206,6 +206,7 @@ impl RelationshipManager {
                     foreign_type,
                     extract_ids,
                     remove_id,
+                    ..
                 } => {
                     trace!(
                         "RelationshipManager: Registered OwnsMany {} ->> {}",
@@ -230,6 +231,7 @@ impl RelationshipManager {
                     local_type,
                     dependencies,
                     make_entity,
+                    ..
                 } => {
                     trace!(
                         "RelationshipManager: Registered EnsureFor {} for {:?}",

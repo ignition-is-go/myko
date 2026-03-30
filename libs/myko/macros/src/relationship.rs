@@ -29,6 +29,8 @@ pub struct OwnsManyInfo {
     pub field_name_json: String,
     /// Owned entity type name
     pub foreign_type: String,
+    /// If true, exclude this child from entity tree exports
+    pub exclude_from_tree: bool,
 }
 
 /// Information about a single ensure_for dependency on a field
@@ -40,13 +42,15 @@ pub struct EnsureForFieldInfo {
     pub field_name_json: String,
     /// Foreign entity type name (the dependency)
     pub foreign_type: String,
+    /// If true, exclude this child from entity tree exports
+    pub exclude_from_tree: bool,
 }
 
 /// Information about ensure_for relationships on the struct (collected from fields)
 #[derive(Debug)]
 pub struct EnsureForInfo {
-    /// Dependencies (foreign_type, local_key, local_key_json)
-    pub dependencies: Vec<(String, String, String)>,
+    /// Dependencies (foreign_type, local_key, local_key_json, exclude_from_tree)
+    pub dependencies: Vec<(String, String, String, bool)>,
 }
 
 /// Information about a default_value on a field
@@ -156,6 +160,10 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
 pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
     let field_name = field.ident.as_ref()?.to_string();
     let field_name_json = to_camel_case(&field_name);
+    let exclude_from_tree = field
+        .attrs
+        .iter()
+        .any(|a| a.path().is_ident("exclude_from_tree"));
 
     for attr in &field.attrs {
         if attr.path().is_ident("owns_many")
@@ -166,6 +174,7 @@ pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
                 field_name,
                 field_name_json,
                 foreign_type,
+                exclude_from_tree,
             });
         }
     }
@@ -193,6 +202,10 @@ pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
 pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
     let field_name = field.ident.as_ref()?.to_string();
     let field_name_json = to_camel_case(&field_name);
+    let exclude_from_tree = field
+        .attrs
+        .iter()
+        .any(|a| a.path().is_ident("exclude_from_tree"));
 
     for attr in &field.attrs {
         if attr.path().is_ident("ensure_for")
@@ -203,6 +216,7 @@ pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
                 field_name,
                 field_name_json,
                 foreign_type,
+                exclude_from_tree,
             });
         }
     }
@@ -352,6 +366,7 @@ impl RelationshipInfo {
                             ef.foreign_type.clone(),
                             ef.field_name.clone(),
                             ef.field_name_json.clone(),
+                            ef.exclude_from_tree,
                         )
                     })
                     .collect(),
@@ -443,6 +458,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
     for om in &info.owns_many {
         let field_ident = syn::Ident::new(&om.field_name, proc_macro2::Span::call_site());
         let foreign_type = &om.foreign_type;
+        let exclude_from_tree = om.exclude_from_tree;
 
         registrations.push(quote! {
             #krate::submit! {
@@ -461,6 +477,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                                 std::sync::Arc::new(updated) as std::sync::Arc<dyn #krate::item::AnyItem>
                             })
                         },
+                        exclude_from_tree: #exclude_from_tree,
                     }
                 }
             }
@@ -469,10 +486,11 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
 
     // Generate EnsureFor registration if present
     if let Some(ref ef) = info.ensure_for() {
+        let exclude_from_tree = ef.dependencies.iter().any(|(_, _, _, ex)| *ex);
         let deps: Vec<_> = ef
             .dependencies
             .iter()
-            .map(|(ft, lk, _lkj)| {
+            .map(|(ft, lk, _lkj, _ex)| {
                 let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 quote! {
                     #krate::relationship::EnsureForDependency {
@@ -493,7 +511,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .dependencies
             .iter()
             .enumerate()
-            .map(|(i, (_, lk, _lkj))| {
+            .map(|(i, (_, lk, _lkj, _ex))| {
                 let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 let idx = syn::Index::from(i);
                 quote! {
@@ -521,6 +539,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                     relation: #krate::relationship::Relation::EnsureFor {
                         local_type: #local_type,
                         dependencies: &[#(#deps),*],
+                        exclude_from_tree: #exclude_from_tree,
                         make_entity: |dep_ids: &[std::sync::Arc<str>]| {
                             let mut entity = #local_type_ident::default();
                             entity.id = uuid::Uuid::new_v4().to_string().into();

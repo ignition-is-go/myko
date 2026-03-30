@@ -110,8 +110,12 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
                 local_type,
                 foreign_type,
                 extract_ids,
+                exclude_from_tree,
                 ..
             } => {
+                if *exclude_from_tree {
+                    continue;
+                }
                 // Parent is local_type, child is foreign_type.
                 map.entry(local_type).or_default().push(ChildRelation {
                     child_type: foreign_type,
@@ -121,8 +125,12 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
             Relation::EnsureFor {
                 local_type,
                 dependencies,
+                exclude_from_tree,
                 ..
             } => {
+                if *exclude_from_tree {
+                    continue;
+                }
                 // For each dependency, the dependency's foreign_type is a parent
                 // that can reach local_type children (single-axis to avoid Cartesian).
                 for dep in *dependencies {
