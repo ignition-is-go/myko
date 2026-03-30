@@ -9799,7 +9799,9 @@ dependencies = [
  "rship-entities-macros",
  "rship-entities-nodes",
  "rship-entities-variables",
+ "rship-sync",
  "serde",
+ "serde_json",
  "ts-rs",
  "uuid",
 ]
@@ -9883,6 +9885,7 @@ dependencies = [
  "myko-server",
  "rship-entities",
  "rship-entities-assignment",
+ "rship-entities-blend-engine",
  "rship-entities-color",
  "rship-entities-core",
  "rship-entities-external",
