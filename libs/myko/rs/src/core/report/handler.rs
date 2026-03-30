@@ -258,6 +258,27 @@ impl ReportContext {
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.server_ctx.registry.clone()
     }
+
+    /// Execute a command directly from a report/cell-node context.
+    ///
+    /// This creates a new server transaction and executes the command handler
+    /// synchronously. Errors are logged but not propagated — fire-and-forget
+    /// semantics appropriate for reactive side-effects.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn execute_command<C: crate::command::CommandHandler>(&self, cmd: C) {
+        let command_id = C::command_id_static();
+        let request = self.server_ctx.new_server_transaction();
+        let cmd_id: Arc<str> = Arc::from(command_id);
+        let cmd_ctx =
+            crate::command::CommandContext::new(cmd_id, request, Arc::new((*self.server_ctx).clone()));
+
+        match cmd.execute(cmd_ctx) {
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("Failed to execute command {}: {:?}", command_id, e);
+            }
+        }
+    }
 }
 
 /// Trait for report handlers - defines how a report computes its output.
