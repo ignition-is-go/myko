@@ -46,8 +46,8 @@ export function buildDiffTree(
       status: diff.status,
       name: entityName(diff.entity.data),
       fields: diff.fields,
-      currentData: diff.currentEntity?.data,
-      incomingData: diff.status === 'modified' ? diff.entity.data : undefined,
+      currentData: diff.currentEntity?.data ?? (diff.status === 'removed' ? diff.entity.data : undefined),
+      incomingData: diff.status === 'added' || diff.status === 'modified' ? diff.entity.data : undefined,
       children: [],
     };
     allNodes.set(key, node);
