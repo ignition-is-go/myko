@@ -100,6 +100,7 @@ members = [
   "apps/execs/weather",
   "apps/execs/noise-rs",
   "apps/execs/exec-debugger",
+  "apps/execs/exec-debugger/ui",
   "apps/execs/pangolin",
   "apps/execs/ndi",
   "apps/execs/dante",

@@ -3445,6 +3445,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "exec-debugger-ui"
+version = "4.0.0-canary.17"
+dependencies = [
+ "console_error_panic_hook",
+ "gloo-net",
+ "leptos",
+ "leptos_meta",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
