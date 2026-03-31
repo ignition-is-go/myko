@@ -4,13 +4,14 @@ use hyphae::{Cell, CellImmutable, MapExt};
 use myko_macros::{myko_command, myko_report, myko_report_output};
 
 use crate::{
-    entities::server::{ServerId, Server}, prelude::*, report::{ReportContext, ReportHandler}
+    entities::server::{Server, ServerId},
+    prelude::*,
+    report::{ReportContext, ReportHandler},
 };
 
 #[myko_item]
 pub struct Client {
-
-	#[belongs_to(Server)]
+    #[belongs_to(Server)]
     pub server_id: ServerId,
 
     /// ISO timestamp for windback mode. When set, the client sees historical state
