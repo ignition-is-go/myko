@@ -184,10 +184,8 @@ impl SearchIndex {
             // Only add fuzzy for words >= 4 chars to avoid noisy short-term matches
             if lower.len() >= 4 {
                 let fuzzy: Box<dyn Query> = Box::new(FuzzyTermQuery::new(term, 1, true));
-                let either = BooleanQuery::from(vec![
-                    (Occur::Should, prefix),
-                    (Occur::Should, fuzzy),
-                ]);
+                let either =
+                    BooleanQuery::from(vec![(Occur::Should, prefix), (Occur::Should, fuzzy)]);
                 must_clauses.push((Occur::Must, Box::new(either)));
             } else {
                 must_clauses.push((Occur::Must, prefix));
@@ -347,28 +345,58 @@ mod tests {
 
         // "ba" should match "base1" and "base2" via prefix
         let results = index.search("Target", "ba", 10);
-        assert_eq!(results.len(), 2, "prefix 'ba' should match base1 and base2, got: {:?}", results);
+        assert_eq!(
+            results.len(),
+            2,
+            "prefix 'ba' should match base1 and base2, got: {:?}",
+            results
+        );
 
         // "base" should match "base1" and "base2"
         let results = index.search("Target", "base", 10);
-        assert_eq!(results.len(), 2, "prefix 'base' should match base1 and base2, got: {:?}", results);
+        assert_eq!(
+            results.len(),
+            2,
+            "prefix 'base' should match base1 and base2, got: {:?}",
+            results
+        );
 
         // "cam" should match "camera"
         let results = index.search("Target", "cam", 10);
-        assert_eq!(results.len(), 1, "prefix 'cam' should match camera, got: {:?}", results);
+        assert_eq!(
+            results.len(),
+            1,
+            "prefix 'cam' should match camera, got: {:?}",
+            results
+        );
 
         // Fuzzy only for 4+ char words: "camra" should match "camera"
         let results = index.search("Target", "camra", 10);
-        assert_eq!(results.len(), 1, "fuzzy 'camra' should match camera, got: {:?}", results);
+        assert_eq!(
+            results.len(),
+            1,
+            "fuzzy 'camra' should match camera, got: {:?}",
+            results
+        );
 
         // Short fuzzy should NOT match: "ba" should not fuzzy-match "A"
         let results = index.search("Target", "ba", 10);
-        assert_eq!(results.len(), 2, "'ba' should only prefix-match base1/base2, got: {:?}", results);
+        assert_eq!(
+            results.len(),
+            2,
+            "'ba' should only prefix-match base1/base2, got: {:?}",
+            results
+        );
 
         // Multi-word: both words must match
         index.index_entity("Target", "id-4", "light panel front");
         index.commit();
         let results = index.search("Target", "light front", 10);
-        assert_eq!(results.len(), 1, "multi-word should match id-4, got: {:?}", results);
+        assert_eq!(
+            results.len(),
+            1,
+            "multi-word should match id-4, got: {:?}",
+            results
+        );
     }
 }

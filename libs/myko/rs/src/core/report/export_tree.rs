@@ -74,11 +74,17 @@ struct ChildRelation {
 
 enum ChildKind {
     /// BelongsTo: scan the child store for entities whose FK matches the parent ID.
-    BelongsTo { extract_fk: crate::relationship::FkExtractor },
+    BelongsTo {
+        extract_fk: crate::relationship::FkExtractor,
+    },
     /// OwnsMany: extract child IDs directly from the parent entity.
-    OwnsMany { extract_ids: crate::relationship::ArrayExtractor },
+    OwnsMany {
+        extract_ids: crate::relationship::ArrayExtractor,
+    },
     /// EnsureFor: scan the local (ensured) store for entities whose FK matches the parent ID.
-    EnsureFor { extract_fk: crate::relationship::FkExtractor },
+    EnsureFor {
+        extract_fk: crate::relationship::FkExtractor,
+    },
 }
 
 /// Build a map from parent entity type -> list of child relations.
@@ -103,7 +109,9 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
                 // Parent is foreign_type, child is local_type.
                 map.entry(foreign_type).or_default().push(ChildRelation {
                     child_type: local_type,
-                    kind: ChildKind::BelongsTo { extract_fk: *extract_fk },
+                    kind: ChildKind::BelongsTo {
+                        extract_fk: *extract_fk,
+                    },
                 });
             }
             Relation::OwnsMany {
@@ -119,7 +127,9 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
                 // Parent is local_type, child is foreign_type.
                 map.entry(local_type).or_default().push(ChildRelation {
                     child_type: foreign_type,
-                    kind: ChildKind::OwnsMany { extract_ids: *extract_ids },
+                    kind: ChildKind::OwnsMany {
+                        extract_ids: *extract_ids,
+                    },
                 });
             }
             Relation::EnsureFor {
@@ -134,10 +144,14 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
                 // For each dependency, the dependency's foreign_type is a parent
                 // that can reach local_type children (single-axis to avoid Cartesian).
                 for dep in *dependencies {
-                    map.entry(dep.foreign_type).or_default().push(ChildRelation {
-                        child_type: local_type,
-                        kind: ChildKind::EnsureFor { extract_fk: dep.extract_fk },
-                    });
+                    map.entry(dep.foreign_type)
+                        .or_default()
+                        .push(ChildRelation {
+                            child_type: local_type,
+                            kind: ChildKind::EnsureFor {
+                                extract_fk: dep.extract_fk,
+                            },
+                        });
                 }
             }
         }
