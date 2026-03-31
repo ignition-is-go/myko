@@ -9799,7 +9799,6 @@ dependencies = [
  "rship-entities-macros",
  "rship-entities-nodes",
  "rship-entities-variables",
- "rship-sync",
  "serde",
  "serde_json",
  "ts-rs",
