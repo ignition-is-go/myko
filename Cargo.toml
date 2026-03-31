@@ -99,6 +99,7 @@ members = [
   "apps/execs/brightsign",
   "apps/execs/weather",
   "apps/execs/noise-rs",
+  "apps/execs/exec-debugger",
   "apps/execs/pangolin",
   "apps/execs/ndi",
   "apps/execs/dante",
