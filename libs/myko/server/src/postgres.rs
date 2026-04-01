@@ -102,6 +102,26 @@ impl PostgresHistoryStore {
             .collect::<Result<Vec<_>, _>>()
     }
 
+    /// Read events with `id > after_id` and `created_at <= until`, ascending.
+    pub fn load_until(
+        &self,
+        after_id: i64,
+        until: &str,
+        limit: i64,
+    ) -> Result<Vec<PersistedEvent>, String> {
+        let mut client = connect_pg_client(&self.config, "history(load_until)")?;
+        let sql = format!(
+            "SELECT id, created_at::text, event::text FROM {} WHERE id > $1 AND created_at <= $2::timestamptz ORDER BY id ASC LIMIT $3",
+            qi(&self.config.table)
+        );
+        let rows = client
+            .query(&sql, &[&after_id, &until, &limit])
+            .map_err(|e| format!("history query failed: {e}"))?;
+        rows.into_iter()
+            .map(row_to_persisted_event)
+            .collect::<Result<Vec<_>, _>>()
+    }
+
     /// Read events in a time window, ascending.
     pub fn load_between(
         &self,
@@ -120,6 +140,78 @@ impl PostgresHistoryStore {
         rows.into_iter()
             .map(row_to_persisted_event)
             .collect::<Result<Vec<_>, _>>()
+    }
+}
+
+/// HistoryReplayProvider backed by PostgresHistoryStore.
+pub struct PostgresHistoryReplayProvider {
+    config: PostgresConfig,
+}
+
+impl PostgresHistoryReplayProvider {
+    pub fn new(config: PostgresConfig) -> Self {
+        Self { config }
+    }
+}
+
+impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn replay_to_store(
+        &self,
+        until: &str,
+        handler_registry: &HandlerRegistry,
+    ) -> Result<Arc<StoreRegistry>, String> {
+        let history = PostgresHistoryStore::new(self.config.clone())?;
+        let registry = StoreRegistry::new();
+
+        let batch_size: i64 = 10_000;
+        let mut after_id: i64 = 0;
+        let mut total: usize = 0;
+
+        loop {
+            let batch = history.load_until(after_id, until, batch_size)?;
+            if batch.is_empty() {
+                break;
+            }
+
+            for persisted in &batch {
+                let event = &persisted.event;
+                let id: Arc<str> = event
+                    .item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .into();
+
+                let store = registry.get_or_create(&event.item_type);
+
+                match event.change_type {
+                    MEventType::SET => {
+                        if let Some(parse) = handler_registry.get_item_parser(&event.item_type) {
+                            if let Ok(item) = parse(event.item.clone()) {
+                                store.insert(item.id(), item);
+                            }
+                        }
+                    }
+                    MEventType::DEL => {
+                        store.remove(&id);
+                    }
+                }
+            }
+
+            total += batch.len();
+            after_id = batch.last().unwrap().id;
+
+            if batch.len() < batch_size as usize {
+                break;
+            }
+        }
+
+        info!(
+            "Replayed {} events up to {} into temporary store",
+            total, until
+        );
+
+        Ok(Arc::new(registry))
     }
 }
 

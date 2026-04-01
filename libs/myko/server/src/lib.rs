@@ -37,8 +37,8 @@ use myko_rs::{
 use uuid::Uuid;
 
 use crate::postgres::{
-    CellPostgresConsumer, CellPostgresProducer, PostgresConfig, PostgresHistoryStore,
-    PostgresProducerHandle,
+    CellPostgresConsumer, CellPostgresProducer, PostgresConfig, PostgresHistoryReplayProvider,
+    PostgresHistoryStore, PostgresProducerHandle,
 };
 
 /// Cell-based Myko server configuration.
@@ -375,6 +375,11 @@ impl CellServer {
 
     /// Get a server context for module use.
     pub fn ctx(&self) -> CellServerCtx {
+        let history_replay: Option<Arc<dyn myko_rs::server::HistoryReplayProvider>> =
+            self.config.postgres.as_ref().map(|pg| {
+                Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
+                    as Arc<dyn myko_rs::server::HistoryReplayProvider>
+            });
         CellServerCtx::new(
             self.host_id,
             self.registry.clone(),
@@ -384,7 +389,7 @@ impl CellServer {
             self.search_index.clone(),
             self.peer_clients.clone(),
             Some(self.saga_event_tx.clone()),
-            None,
+            history_replay,
         )
     }
 
