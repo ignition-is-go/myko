@@ -153,6 +153,8 @@ pub struct CellServerCtx {
     report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>>>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>>>,
+    /// Optional history replay provider for point-in-time snapshots.
+    history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
 }
 
 impl CellServerCtx {
@@ -167,6 +169,7 @@ impl CellServerCtx {
         search_index: Arc<SearchIndex>,
         peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
         event_sink: Option<flume::Sender<MEvent>>,
+        history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
     ) -> Self {
         Self {
             host_id,
@@ -182,6 +185,7 @@ impl CellServerCtx {
             view_cache: Arc::new(DashMap::new()),
             report_cache: Arc::new(DashMap::new()),
             ingest_buffers: Arc::new(DashMap::new()),
+            history_replay,
         }
     }
 
@@ -199,6 +203,11 @@ impl CellServerCtx {
     /// Get the search index.
     pub fn search_index(&self) -> &Arc<SearchIndex> {
         &self.search_index
+    }
+
+    /// Get the history replay provider, if configured.
+    pub fn history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>> {
+        self.history_replay.as_ref()
     }
 
     /// Register or replace a live peer client for a server id.
@@ -1457,6 +1466,7 @@ mod tests {
             Arc::new(PersisterRouter::default()),
             Arc::new(SearchIndex::new()),
             Arc::new(dashmap::DashMap::new()),
+            None,
             None,
         )
     }

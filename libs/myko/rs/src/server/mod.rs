@@ -16,6 +16,7 @@ pub mod client_registry;
 mod client_session;
 mod context;
 mod handler_registry;
+pub mod history_replay;
 pub mod persister;
 mod protocol;
 mod relationship_manager;
@@ -24,6 +25,7 @@ pub use client_registry::{client_registry, init_client_registry, try_client_regi
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
+pub use history_replay::HistoryReplayProvider;
 pub use persister::{BlackholePersister, NullPersister, PersistError, Persister, PersisterRouter};
 pub use protocol::{message_to_json, message_to_msgpack};
 pub use relationship_manager::RelationshipManager;

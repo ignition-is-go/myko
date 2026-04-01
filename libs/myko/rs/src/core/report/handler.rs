@@ -258,6 +258,18 @@ impl ReportContext {
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.server_ctx.registry.clone()
     }
+
+    /// Replay historical events into a temporary StoreRegistry.
+    ///
+    /// Returns an error if no HistoryReplayProvider is configured.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn replay_store(&self, until: &str) -> Result<Arc<StoreRegistry>, String> {
+        let provider = self
+            .server_ctx
+            .history_replay()
+            .ok_or_else(|| "No history replay provider configured".to_string())?;
+        provider.replay_to_store(until, &self.server_ctx.handler_registry)
+    }
 }
 
 /// Trait for report handlers - defines how a report computes its output.

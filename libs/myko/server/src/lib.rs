@@ -384,6 +384,7 @@ impl CellServer {
             self.search_index.clone(),
             self.peer_clients.clone(),
             Some(self.saga_event_tx.clone()),
+            None,
         )
     }
 
@@ -483,6 +484,7 @@ impl CellServer {
                             search_index.clone(),
                             peer_clients.clone(),
                             Some(saga_event_tx.clone()),
+                            None,
                         )),
                     );
 
