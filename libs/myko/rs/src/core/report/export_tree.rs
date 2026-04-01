@@ -60,7 +60,8 @@ pub struct ExportEntityTree {
     pub root_id: Arc<str>,
     /// ISO 8601 timestamp — when set, replays events up to this time
     /// into a temporary store and exports from that instead of the live store.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
     pub as_of: Option<Arc<str>>,
 }
 
