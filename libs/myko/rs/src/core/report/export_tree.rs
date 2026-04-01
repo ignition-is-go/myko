@@ -58,6 +58,10 @@ pub struct ExportEntityTree {
     pub root_type: Arc<str>,
     /// ID of the root entity.
     pub root_id: Arc<str>,
+    /// ISO 8601 timestamp — when set, replays events up to this time
+    /// into a temporary store and exports from that instead of the live store.
+    #[serde(default)]
+    pub as_of: Option<Arc<str>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,14 +69,14 @@ pub struct ExportEntityTree {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Describes how to find children of a given parent entity type.
-struct ChildRelation {
+pub struct ChildRelation {
     /// The child entity type.
-    child_type: &'static str,
+    pub child_type: &'static str,
     /// How to discover child IDs from the parent.
-    kind: ChildKind,
+    pub kind: ChildKind,
 }
 
-enum ChildKind {
+pub enum ChildKind {
     /// BelongsTo: scan the child store for entities whose FK matches the parent ID.
     BelongsTo {
         extract_fk: crate::relationship::FkExtractor,
@@ -91,7 +95,7 @@ enum ChildKind {
 ///
 /// This processes all registered relationships once and inverts them into
 /// a lookup table suitable for BFS traversal.
-fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
+pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
     let mut map: HashMap<&'static str, Vec<ChildRelation>> = HashMap::new();
 
     for reg in iter_relations() {
@@ -167,7 +171,7 @@ fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
 /// Walk the entity tree via BFS starting from `(root_type, root_id)`.
 ///
 /// Returns all reachable entities (including the root) as `ExportedEntity` values.
-fn walk_tree(
+pub fn walk_tree(
     root_type: &str,
     root_id: &str,
     registry: &StoreRegistry,
@@ -264,7 +268,25 @@ impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
 
     fn compute(&self, ctx: crate::report::ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
-        let registry = ctx.registry();
+        let registry = if let Some(as_of) = &self.as_of {
+            match ctx.replay_store(as_of) {
+                Ok(r) => r,
+                Err(err) => {
+                    log::error!("Failed to replay history for as_of={}: {}", as_of, err);
+                    return Cell::new(Arc::new(EntityTreeExport {
+                        version: 1,
+                        root_type: self.root_type.clone(),
+                        root_id: self.root_id.clone(),
+                        exported_at: Utc::now().to_rfc3339(),
+                        entities: vec![],
+                    }))
+                    .lock();
+                }
+            }
+        } else {
+            ctx.registry()
+        };
+
         let adjacency = build_adjacency_map();
         let entities = walk_tree(&self.root_type, &self.root_id, &registry, &adjacency);
 
