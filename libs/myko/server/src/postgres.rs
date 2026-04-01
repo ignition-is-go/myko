@@ -110,12 +110,16 @@ impl PostgresHistoryStore {
         limit: i64,
     ) -> Result<Vec<PersistedEvent>, String> {
         let mut client = connect_pg_client(&self.config, "history(load_until)")?;
+        // NOTE(ts): Validate timestamp format to prevent SQL injection
+        if !until.chars().all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c)) {
+            return Err(format!("Invalid timestamp format: {}", until));
+        }
         let sql = format!(
-            "SELECT id, created_at::text, event::text FROM {} WHERE id > $1 AND created_at <= $2::timestamptz ORDER BY id ASC LIMIT $3",
-            qi(&self.config.table)
+            "SELECT id, created_at::text, event::text FROM {} WHERE id > {} AND created_at <= '{}'::timestamptz ORDER BY id ASC LIMIT {}",
+            qi(&self.config.table), after_id, until, limit
         );
         let rows = client
-            .query(&sql, &[&after_id, &until, &limit])
+            .query(&sql, &[])
             .map_err(|e| format!("history query failed: {e}"))?;
         rows.into_iter()
             .map(row_to_persisted_event)
@@ -160,55 +164,63 @@ impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
         until: &str,
         handler_registry: &HandlerRegistry,
     ) -> Result<Arc<StoreRegistry>, String> {
-        let history = PostgresHistoryStore::new(self.config.clone())?;
+        eprintln!("[HistoryReplay] loading snapshot as of {} from {}", until, self.config.url);
+
+        // NOTE(ts): Validate timestamp format to prevent SQL injection
+        if !until.chars().all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c)) {
+            return Err(format!("Invalid timestamp format: {}", until));
+        }
+
+        let mut client = connect_pg_client(&self.config, "history_replay")?;
+        let table = qi(&self.config.table);
         let registry = StoreRegistry::new();
 
-        let batch_size: i64 = 10_000;
-        let mut after_id: i64 = 0;
-        let mut total: usize = 0;
+        // NOTE(ts): Use DISTINCT ON to get the latest event per entity as of the
+        // timestamp, same approach as the bootstrap snapshot but time-bounded.
+        // Only include entities whose latest event is a SET (not deleted).
+        let sql = format!(
+            "
+            WITH latest AS (
+                SELECT DISTINCT ON (item_type, item_id)
+                    id, change_type
+                FROM {table}
+                WHERE created_at <= '{until}'::timestamptz
+                ORDER BY item_type, item_id, id DESC
+            )
+            SELECT e.event::text
+            FROM latest
+            JOIN {table} e ON e.id = latest.id
+            WHERE latest.change_type = 'SET'
+            ORDER BY e.id ASC
+            "
+        );
 
-        loop {
-            let batch = history.load_until(after_id, until, batch_size)?;
-            if batch.is_empty() {
-                break;
-            }
+        let rows = client
+            .query(&sql, &[])
+            .map_err(|e| format!("history snapshot query failed: {e}"))?;
 
-            for persisted in &batch {
-                let event = &persisted.event;
-                let id: Arc<str> = event
-                    .item
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .into();
-
-                let store = registry.get_or_create(&event.item_type);
-
-                match event.change_type {
-                    MEventType::SET => {
-                        if let Some(parse) = handler_registry.get_item_parser(&event.item_type) {
-                            if let Ok(item) = parse(event.item.clone()) {
-                                store.insert(item.id(), item);
-                            }
+        let mut count = 0usize;
+        for row in &rows {
+            let event_json: String = row.get(0);
+            match MEvent::from_str_trim(&event_json) {
+                Ok(event) => {
+                    if let Some(parse) = handler_registry.get_item_parser(&event.item_type) {
+                        if let Ok(item) = parse(event.item.clone()) {
+                            let store = registry.get_or_create(&event.item_type);
+                            store.insert(item.id(), item);
+                            count += 1;
                         }
                     }
-                    MEventType::DEL => {
-                        store.remove(&id);
-                    }
                 }
-            }
-
-            total += batch.len();
-            after_id = batch.last().unwrap().id;
-
-            if batch.len() < batch_size as usize {
-                break;
+                Err(err) => {
+                    eprintln!("[HistoryReplay] invalid event row: {}", err);
+                }
             }
         }
 
-        info!(
-            "Replayed {} events up to {} into temporary store",
-            total, until
+        eprintln!(
+            "[HistoryReplay] loaded {} entities from {} rows as of {}",
+            count, rows.len(), until
         );
 
         Ok(Arc::new(registry))
