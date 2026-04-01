@@ -9722,6 +9722,7 @@ dependencies = [
  "futures-util",
  "log",
  "myko-rs",
+ "rship-entities-annotations",
  "rship-entities-assets",
  "rship-entities-assignment",
  "rship-entities-audit",
@@ -9768,6 +9769,16 @@ dependencies = [
  "rship-entities-visualization",
  "rship-sync",
  "serde_json",
+]
+
+[[package]]
+name = "rship-entities-annotations"
+version = "4.0.0-canary.18"
+dependencies = [
+ "hyphae",
+ "rship-entities-foundation",
+ "rship-entities-macros",
+ "rship-entities-nodes",
 ]
 
 [[package]]

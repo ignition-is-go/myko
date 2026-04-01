@@ -31,6 +31,7 @@ members = [
   "libs/entities/scheduling",
   "libs/entities/nmos",
   "libs/entities/networking",
+  "libs/entities/annotations",
   "libs/entities/assets",
   "libs/entities/media",
   "libs/entities/infrastructure",
@@ -222,6 +223,7 @@ pulse-platform = { version = "4.0.0-canary.18", path = "libs/platform/core" }
 rs-macros = { version = "4.0.0-canary.18", path = "libs/rs-macros" }
 rship-asset-store-core = {version = "4.0.0-canary.18", path="libs/asset-store/core"}
 rship-entities = { version = "4.0.0-canary.18", path = "libs/entities/rs" }
+rship-entities-annotations = { version = "4.0.0-canary.18", path = "libs/entities/annotations" }
 rship-entities-assets = { version = "4.0.0-canary.18", path = "libs/entities/assets" }
 rship-entities-assignment = { version = "4.0.0-canary.18", path = "libs/entities/assignment" }
 rship-entities-audit = { version = "4.0.0-canary.18", path = "libs/entities/audit" }
