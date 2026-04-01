@@ -8,6 +8,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     time::Duration,
 };
@@ -122,52 +123,40 @@ impl PostgresHistoryStore {
     }
 }
 
+/// Message sent to the producer thread: event + oneshot for the result.
+type ProducerRequest = (MEvent, mpsc::SyncSender<Result<(), PersistError>>);
+
 /// Handle to the PostgreSQL producer.
 #[derive(Clone)]
 pub struct PostgresProducerHandle {
-    client: Arc<std::sync::Mutex<Option<Client>>>,
+    sender: mpsc::SyncSender<ProducerRequest>,
     host_id: Uuid,
     config: PostgresConfig,
 }
 
 impl PostgresProducerHandle {
-    /// Persist an event row synchronously, returning errors immediately.
+    /// Persist an event row. Sends to the background producer thread and
+    /// blocks until the insert completes, returning any error immediately.
     pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
         if event.source_id.is_none() {
             event.source_id = Some(self.host_id.to_string());
         }
         let entity_type = event.item_type.clone();
 
-        let mut guard = self.client.lock().unwrap();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        self.sender
+            .send((event, result_tx))
+            .map_err(|_| PersistError {
+                entity_type: entity_type.clone(),
+                message: "Postgres producer thread not running".to_string(),
+            })?;
 
-        // NOTE(ts): Reconnect if needed
-        if guard.is_none() {
-            *guard = connect_producer_client(&self.config);
-        }
-
-        let Some(client) = guard.as_mut() else {
-            return Err(PersistError {
+        result_rx.recv().unwrap_or_else(|_| {
+            Err(PersistError {
                 entity_type,
-                message: format!(
-                    "Postgres producer connection failed (url: {})",
-                    self.config.url,
-                ),
-            });
-        };
-
-        match insert_event(client, &self.config, event) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                let msg = format_pg_error("insert_event(producer)", Some(&self.config.url), &err);
-                error!("{}", msg);
-                // NOTE(ts): Clear the client so the next call reconnects
-                *guard = None;
-                Err(PersistError {
-                    entity_type,
-                    message: msg,
-                })
-            }
-        }
+                message: "Postgres producer thread dropped result channel".to_string(),
+            })
+        })
     }
 }
 
@@ -183,7 +172,7 @@ impl Persister for PostgresProducerHandle {
     }
 }
 
-/// PostgreSQL producer — synchronous, fail-fast persistence.
+/// PostgreSQL producer — background thread with fail-fast error propagation.
 pub struct CellPostgresProducer {
     handle: PostgresProducerHandle,
 }
@@ -194,11 +183,13 @@ impl CellPostgresProducer {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
 
-        let initial_client = connect_producer_client(config);
+        let (tx, rx) = mpsc::sync_channel::<ProducerRequest>(config.producer_buffer);
+        let cfg = config.clone();
+        std::thread::spawn(move || run_producer_loop(cfg, rx));
 
         Ok(Self {
             handle: PostgresProducerHandle {
-                client: Arc::new(std::sync::Mutex::new(initial_client)),
+                sender: tx,
                 host_id,
                 config: config.clone(),
             },
@@ -208,6 +199,42 @@ impl CellPostgresProducer {
     /// Get a shareable persister handle.
     pub fn handle(&self) -> PostgresProducerHandle {
         self.handle.clone()
+    }
+}
+
+fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>) {
+    let mut client: Option<Client> = None;
+
+    while let Ok((event, result_tx)) = rx.recv() {
+        if client.is_none() {
+            client = connect_producer_client(&config);
+        }
+
+        let result = if let Some(c) = client.as_mut() {
+            match insert_event(c, &config, event) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    let msg =
+                        format_pg_error("insert_event(producer)", Some(&config.url), &err);
+                    error!("{}", msg);
+                    client = None;
+                    Err(PersistError {
+                        entity_type: String::new(),
+                        message: msg,
+                    })
+                }
+            }
+        } else {
+            Err(PersistError {
+                entity_type: String::new(),
+                message: format!(
+                    "Postgres producer connection failed (url: {})",
+                    config.url,
+                ),
+            })
+        };
+
+        let _ = result_tx.send(result);
     }
 }
 
