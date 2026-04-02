@@ -327,7 +327,11 @@ impl CellPostgresProducer {
     }
 }
 
-fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>, health: Arc<PersistHealth>) {
+fn run_producer_loop(
+    config: PostgresConfig,
+    rx: mpsc::Receiver<ProducerRequest>,
+    health: Arc<PersistHealth>,
+) {
     let mut client: Option<Client> = None;
     let mut retry: Option<MEvent> = None;
 
