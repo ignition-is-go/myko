@@ -12,7 +12,9 @@ use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use hyphae::{Cell, CellImmutable, MapExt};
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::MapExt;
+use hyphae::{Cell, CellImmutable};
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::{DedupedExt, interval};
 use serde::{Deserialize, Serialize};

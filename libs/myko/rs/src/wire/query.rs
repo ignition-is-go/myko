@@ -8,7 +8,6 @@ use ts_rs::TS;
 
 use super::item::WrappedItem;
 use super::shared::value_with_tx;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::core::item::AnyItem;
 use crate::core::query::{QueryId, QueryItemType};
 
