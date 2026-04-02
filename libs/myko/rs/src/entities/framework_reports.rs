@@ -7,10 +7,14 @@ use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::SwitchMapExt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::Ordering;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use hyphae::{Cell, CellImmutable, DedupedExt, MapExt, interval};
+use hyphae::{Cell, CellImmutable, MapExt};
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::{DedupedExt, interval};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
