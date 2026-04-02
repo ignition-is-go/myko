@@ -23,11 +23,11 @@ pub use command::{
     wrap_command_request,
 };
 pub use event::{EventOptions, MEvent, MEventType};
-pub use item::WrappedItem;
+pub use item::{WrappedItem, WrappedItemValue};
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
 pub use query::{
-    QueryChange, QueryError, QueryResponse, QueryResult, QueryWindow, QueryWindowUpdate,
-    WrappedQuery, wrap_query,
+    ClientQueryChange, ClientQueryResponse, QueryChange, QueryError, QueryResponse, QueryResult,
+    QueryWindow, QueryWindowUpdate, WrappedQuery, wrap_query,
 };
 pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
 pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view};
@@ -43,13 +43,12 @@ crate::register_ts_export!(
     command::CommandResponse,
     command::WrappedCommand,
     command::CommandError,
-    query::QueryResponse,
-    query::QueryChange,
+    // NOTE(ts): QueryResponse and QueryChange no longer derive TS — manual TS export needed later
     query::WrappedQuery,
     query::QueryError,
     query::QueryWindow,
     query::QueryWindowUpdate,
-    item::WrappedItem<serde_json::Value>,
+    item::WrappedItemValue,
     report::ReportResponse,
     report::WrappedReport,
     report::ReportError,

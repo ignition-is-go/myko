@@ -43,7 +43,7 @@ pub enum MykoMessage {
     #[serde(rename = "ws:m:query")]
     Query(WrappedQuery),
     #[serde(rename = "ws:m:query-response")]
-    QueryResponse(QueryResponse),
+    QueryResponse(#[ts(type = "any")] QueryResponse),
     #[serde(rename = "ws:m:query-cancel")]
     QueryCancel(CancelSubscription),
     #[serde(rename = "ws:m:query-window")]
@@ -51,7 +51,7 @@ pub enum MykoMessage {
     #[serde(rename = "ws:m:view")]
     View(WrappedView),
     #[serde(rename = "ws:m:view-response")]
-    ViewResponse(ViewResponse),
+    ViewResponse(#[ts(type = "any")] ViewResponse),
     #[serde(rename = "ws:m:view-cancel")]
     ViewCancel(CancelSubscription),
     #[serde(rename = "ws:m:view-window")]

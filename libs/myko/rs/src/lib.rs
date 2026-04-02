@@ -115,6 +115,7 @@ pub use inventory::submit; // For myko_rs::submit! macro
 pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
+pub use erased_serde; // For AnyItem::erased_serialize in generated code
 pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko_rs::TS)]

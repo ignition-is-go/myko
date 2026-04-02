@@ -151,13 +151,12 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use hyphae::{Gettable, MapExt};
-    use serde_json::Value;
 
     use super::*;
-    use crate::common::{to_value::ToValue, with_id::WithId};
+    use crate::common::with_id::WithId;
 
     // Test entity
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone, PartialEq, serde::Serialize)]
     struct TestTarget {
         id: Arc<str>,
         name: String,
@@ -170,16 +169,6 @@ mod tests {
         }
     }
 
-    impl ToValue for TestTarget {
-        fn to_value(&self) -> Value {
-            serde_json::json!({
-                "id": self.id.as_ref(),
-                "name": self.name,
-                "online": self.online
-            })
-        }
-    }
-
     impl AnyItem for TestTarget {
         fn as_any(&self) -> &dyn std::any::Any {
             self
@@ -187,6 +176,12 @@ mod tests {
 
         fn entity_type(&self) -> &'static str {
             "TestTarget"
+        }
+
+        fn content_hash(&self) -> &Arc<str> {
+            static EMPTY: std::sync::LazyLock<Arc<str>> =
+                std::sync::LazyLock::new(|| Arc::from(""));
+            &EMPTY
         }
 
         fn equals(&self, other: &dyn AnyItem) -> bool {

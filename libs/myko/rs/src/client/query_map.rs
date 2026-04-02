@@ -60,7 +60,7 @@ impl MykoClient {
                 };
 
                 let Ok(response) =
-                    serde_json::from_value::<crate::wire::QueryResponse>(response_value)
+                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
                 else {
                     return;
                 };

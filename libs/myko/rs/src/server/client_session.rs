@@ -78,11 +78,11 @@ pub struct PendingQueryResponse {
 
 impl PendingQueryResponse {
     pub fn into_wire(self) -> QueryResponse {
-        let upserts: Vec<WrappedItem<serde_json::Value>> = self
+        let upserts: Vec<WrappedItem> = self
             .upsert_items
             .iter()
             .map(|item| WrappedItem {
-                item: item.to_value(),
+                item: item.clone(),
                 item_type: item.entity_type().into(),
             })
             .collect();
@@ -892,7 +892,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        common::{to_value::ToValue, with_id::WithId},
+        common::with_id::WithId,
         store::StoreRegistry,
     };
 
@@ -963,7 +963,7 @@ mod tests {
     }
 
     // Test entity
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone, PartialEq, serde::Serialize)]
     struct TestEntity {
         id: Arc<str>,
         name: String,
@@ -975,15 +975,6 @@ mod tests {
         }
     }
 
-    impl ToValue for TestEntity {
-        fn to_value(&self) -> Value {
-            serde_json::json!({
-                "id": self.id.as_ref(),
-                "name": self.name
-            })
-        }
-    }
-
     impl AnyItem for TestEntity {
         fn as_any(&self) -> &dyn std::any::Any {
             self
@@ -991,6 +982,12 @@ mod tests {
 
         fn entity_type(&self) -> &'static str {
             "TestEntity"
+        }
+
+        fn content_hash(&self) -> &Arc<str> {
+            static EMPTY: std::sync::LazyLock<Arc<str>> =
+                std::sync::LazyLock::new(|| Arc::from(""));
+            &EMPTY
         }
 
         fn equals(&self, other: &dyn AnyItem) -> bool {

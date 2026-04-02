@@ -5,13 +5,13 @@ use std::{any::Any, fmt::Debug, sync::Arc};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::common::{to_value::ToValue, with_id::WithId};
+use crate::common::with_id::WithId;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AnyItem - Type-erased item trait
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub trait AnyItem: WithId + ToValue + Any + Debug + Send + Sync + 'static {
+pub trait AnyItem: WithId + erased_serde::Serialize + Any + Debug + Send + Sync + 'static {
     /// Returns self as &dyn Any for downcasting.
     fn as_any(&self) -> &dyn Any;
 
@@ -21,6 +21,11 @@ pub trait AnyItem: WithId + ToValue + Any + Debug + Send + Sync + 'static {
     /// Typed equality across erased items.
     fn equals(&self, other: &dyn AnyItem) -> bool;
 }
+
+// Generate `impl serde::Serialize for dyn AnyItem` via erased_serde.
+// This enables direct serialization of type-erased items without going
+// through serde_json::Value first.
+erased_serde::serialize_trait_object!(AnyItem);
 
 impl PartialEq for dyn AnyItem {
     fn eq(&self, other: &Self) -> bool {

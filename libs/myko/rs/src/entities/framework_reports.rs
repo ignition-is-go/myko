@@ -21,7 +21,7 @@ use ts_rs::TS;
 
 use crate::{
     report::{ReportContext, ReportHandler},
-    wire::{MEvent, WrappedItem},
+    wire::{MEvent, WrappedItemValue},
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,11 +286,11 @@ impl ReportHandler for EventsForTransaction {
 #[myko_macros::myko_command(usize)]
 pub struct ImportItems {
     /// Items to SET (add or update).
-    pub items: Vec<WrappedItem<Value>>,
+    pub items: Vec<WrappedItemValue>,
     /// Items to DEL (remove). Only the shallowest removed entities should be
     /// included — the relationship manager cascades deletions to children.
     #[serde(default)]
-    pub delete_items: Vec<WrappedItem<Value>>,
+    pub delete_items: Vec<WrappedItemValue>,
 }
 
 impl crate::command::CommandHandler for ImportItems {

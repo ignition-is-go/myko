@@ -533,71 +533,85 @@ impl MykoClient {
         };
         inner.last_message.set(Some(value.clone()));
 
-        let parsed = match serde_json::from_value::<MykoMessage>(value.clone()) {
-            Ok(msg) => msg,
-            Err(_) => return,
-        };
+        // Fast-path: extract event tag and data from the raw Value to avoid
+        // deserializing QueryResponse/ViewResponse through MykoMessage (which
+        // would require round-tripping Arc<dyn AnyItem> through serde).
+        let event_tag = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        let data = || value.get("data").cloned().unwrap_or(serde_json::Value::Null);
 
-        match parsed {
-            MykoMessage::QueryResponse(response) => {
-                let tx: Arc<str> = response.tx.clone();
-                if let Some(handler) = inner.query_handlers.get(&tx)
-                    && let Ok(response_value) = serde_json::to_value(&response)
+        match event_tag {
+            "ws:m:query-response" | "ws:m:view-response" => {
+                let data_val = data();
+                let tx_str = data_val
+                    .get("tx")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let tx: Arc<str> = Arc::from(tx_str);
+                if let Some(handler) = inner.query_handlers.get(&tx) {
+                    handler(data_val);
+                }
+            }
+            "ws:m:report-response" => {
+                if let Ok(response) =
+                    serde_json::from_value::<crate::wire::ReportResponse>(data())
                 {
-                    handler(response_value);
-                }
-            }
-            MykoMessage::ViewResponse(response) => {
-                let tx: Arc<str> = response.tx.clone();
-                if let Some(handler) = inner.query_handlers.get(&tx)
-                    && let Ok(response_value) = serde_json::to_value(&response)
-                {
-                    handler(response_value);
-                }
-            }
-            MykoMessage::ReportResponse(response) => {
-                let tx: Arc<str> = response.tx.clone().into();
-                if let Some(handler) = inner.report_handlers.get(&tx) {
-                    handler(response.response);
-                }
-            }
-            MykoMessage::CommandResponse(response) => {
-                let mut handlers = inner.command_response_handlers.lock().unwrap();
-                if let Some(handler) = handlers.remove(&response.tx) {
-                    handler(Ok(response.response));
-                }
-            }
-            MykoMessage::CommandError(err) => {
-                let mut handlers = inner.command_response_handlers.lock().unwrap();
-                if let Some(handler) = handlers.remove(&err.tx) {
-                    handler(Err(err.message));
-                }
-            }
-            MykoMessage::Command(wrapped) => {
-                let command_id: Arc<str> = wrapped.command_id.clone().into();
-                if let Some(handler) = inner.command_request_handlers.get(&command_id) {
-                    let tx = wrapped
-                        .command
-                        .get("tx")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if tx.is_empty() {
-                        return;
+                    let tx: Arc<str> = response.tx.clone().into();
+                    if let Some(handler) = inner.report_handlers.get(&tx) {
+                        handler(response.response);
                     }
-                    let responder = CommandResponder {
-                        socket: inner.socket.clone(),
-                        protocol: inner.protocol.clone(),
-                        tx,
-                        command_id: command_id.clone(),
-                    };
-                    handler(wrapped.command, responder);
                 }
             }
-            MykoMessage::Ping(PingData { timestamp, .. }) => {
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                let ping_ms = now_ms.saturating_sub(timestamp) as u64;
-                inner.ping_ms.set(Some(ping_ms));
+            "ws:m:command-response" => {
+                if let Ok(response) =
+                    serde_json::from_value::<crate::wire::CommandResponse>(data())
+                {
+                    let mut handlers = inner.command_response_handlers.lock().unwrap();
+                    if let Some(handler) = handlers.remove(&response.tx) {
+                        handler(Ok(response.response));
+                    }
+                }
+            }
+            "ws:m:command-error" => {
+                if let Ok(err) =
+                    serde_json::from_value::<crate::wire::CommandError>(data())
+                {
+                    let mut handlers = inner.command_response_handlers.lock().unwrap();
+                    if let Some(handler) = handlers.remove(&err.tx) {
+                        handler(Err(err.message));
+                    }
+                }
+            }
+            "ws:m:command" => {
+                if let Ok(wrapped) =
+                    serde_json::from_value::<crate::wire::WrappedCommand>(data())
+                {
+                    let command_id: Arc<str> = wrapped.command_id.clone().into();
+                    if let Some(handler) = inner.command_request_handlers.get(&command_id) {
+                        let tx = wrapped
+                            .command
+                            .get("tx")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if tx.is_empty() {
+                            return;
+                        }
+                        let responder = CommandResponder {
+                            socket: inner.socket.clone(),
+                            protocol: inner.protocol.clone(),
+                            tx,
+                            command_id: command_id.clone(),
+                        };
+                        handler(wrapped.command, responder);
+                    }
+                }
+            }
+            "ws:m:ping" => {
+                if let Ok(ping) = serde_json::from_value::<PingData>(data()) {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let ping_ms = now_ms.saturating_sub(ping.timestamp) as u64;
+                    inner.ping_ms.set(Some(ping_ms));
+                }
             }
             _ => {}
         }
@@ -851,7 +865,7 @@ impl MykoClient {
                 };
 
                 let Ok(response) =
-                    serde_json::from_value::<crate::wire::QueryResponse>(response_value)
+                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
                 else {
                     return;
                 };
@@ -1081,7 +1095,7 @@ impl MykoClient {
                 };
 
                 let Ok(response) =
-                    serde_json::from_value::<crate::wire::ViewResponse>(response_value)
+                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
                 else {
                     return;
                 };
@@ -1300,7 +1314,7 @@ impl MykoClient {
                 };
 
                 let Ok(response) =
-                    serde_json::from_value::<crate::wire::QueryResponse>(response_value)
+                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
                 else {
                     return;
                 };

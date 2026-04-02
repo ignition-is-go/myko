@@ -11,3 +11,4 @@ impl<T: Serialize> ToValue for T {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
 }
+

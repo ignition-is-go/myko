@@ -25,7 +25,7 @@ use super::{
 use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
-    common::with_id::{WithId, WithTypedId},
+    common::{to_value::ToValue, with_id::{WithId, WithTypedId}},
     core::item::{
         AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
     },
@@ -1392,6 +1392,12 @@ mod tests {
             "BufferedTestItem"
         }
 
+        fn content_hash(&self) -> &Arc<str> {
+            static EMPTY: std::sync::LazyLock<Arc<str>> =
+                std::sync::LazyLock::new(|| Arc::from(""));
+            &EMPTY
+        }
+
         fn equals(&self, other: &dyn AnyItem) -> bool {
             other
                 .as_any()
@@ -1439,6 +1445,12 @@ mod tests {
 
         fn entity_type(&self) -> &'static str {
             "ImmediateTestItem"
+        }
+
+        fn content_hash(&self) -> &Arc<str> {
+            static EMPTY: std::sync::LazyLock<Arc<str>> =
+                std::sync::LazyLock::new(|| Arc::from(""));
+            &EMPTY
         }
 
         fn equals(&self, other: &dyn AnyItem) -> bool {

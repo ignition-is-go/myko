@@ -5,6 +5,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::common::to_value::ToValue;
+
 use tantivy::{
     Index, IndexReader, IndexWriter, TantivyDocument, Term,
     collector::TopDocs,

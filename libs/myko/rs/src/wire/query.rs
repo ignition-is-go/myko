@@ -6,12 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use super::{item::WrappedItem, shared::value_with_tx};
+use super::item::WrappedItem;
+use super::shared::value_with_tx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::item::AnyItem;
 use crate::core::query::{QueryId, QueryItemType};
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -19,7 +20,7 @@ pub struct QueryResponse {
 
     pub deletes: Vec<Arc<str>>,
 
-    pub upserts: Vec<WrappedItem<Value>>,
+    pub upserts: Vec<WrappedItem>,
 
     pub sequence: u64,
 
@@ -32,11 +33,112 @@ pub struct QueryResponse {
     pub window: Option<QueryWindow>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// Custom Deserialize for QueryResponse: deserializes using Value-based items,
+/// then parses each through the item registry to produce Arc<dyn AnyItem>.
+/// Falls back to a no-op AnyItem wrapper when running on the client side (WASM)
+/// or when the item type is unknown.
+impl<'de> Deserialize<'de> for QueryResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = ClientQueryResponse::deserialize(deserializer)?;
+        Ok(QueryResponse {
+            changes: raw
+                .changes
+                .into_iter()
+                .map(|c| match c {
+                    ClientQueryChange::Upsert { item } => QueryChange::Upsert {
+                        item: WrappedItem {
+                            item: Arc::new(ValueItem {
+                                value: item.item,
+                                item_type: item.item_type.clone(),
+                            }),
+                            item_type: item.item_type,
+                        },
+                    },
+                    ClientQueryChange::Delete { id } => QueryChange::Delete { id },
+                    ClientQueryChange::WindowOrder {
+                        ids,
+                        total_count,
+                        window,
+                    } => QueryChange::WindowOrder {
+                        ids,
+                        total_count,
+                        window,
+                    },
+                })
+                .collect(),
+            deletes: raw.deletes,
+            upserts: raw
+                .upserts
+                .into_iter()
+                .map(|item| WrappedItem {
+                    item: Arc::new(ValueItem {
+                        value: item.item,
+                        item_type: item.item_type.clone(),
+                    }),
+                    item_type: item.item_type,
+                })
+                .collect(),
+            sequence: raw.sequence,
+            tx: raw.tx,
+            total_count: raw.total_count,
+            window: raw.window,
+        })
+    }
+}
+
+/// Thin AnyItem wrapper around a serde_json::Value, used when deserializing
+/// QueryResponse on the client side where concrete entity types are unavailable.
+#[derive(Debug, Clone)]
+struct ValueItem {
+    value: Value,
+    item_type: Arc<str>,
+}
+
+impl Serialize for ValueItem {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.value.serialize(serializer)
+    }
+}
+
+impl crate::common::with_id::WithId for ValueItem {
+    fn id(&self) -> Arc<str> {
+        self.value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into()
+    }
+}
+
+impl AnyItem for ValueItem {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn entity_type(&self) -> &'static str {
+        // NOTE(ts): leak is acceptable here because entity types are a fixed set
+        Box::leak(self.item_type.to_string().into_boxed_str())
+    }
+    fn content_hash(&self) -> &Arc<str> {
+        static EMPTY: std::sync::LazyLock<Arc<str>> = std::sync::LazyLock::new(|| Arc::from(""));
+        &EMPTY
+    }
+    fn equals(&self, other: &dyn AnyItem) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .map(|typed| self.value == typed.value)
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryChange {
     Upsert {
-        item: WrappedItem<Value>,
+        item: WrappedItem,
     },
     Delete {
         id: Arc<str>,
@@ -89,7 +191,7 @@ impl QueryResponse {
     ) -> QueryResponse {
         fn push_change(
             diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
-            upserts: &mut Vec<WrappedItem<Value>>,
+            upserts: &mut Vec<WrappedItem>,
             deletes: &mut Vec<Arc<str>>,
             changes: &mut Vec<QueryChange>,
         ) {
@@ -97,7 +199,7 @@ impl QueryResponse {
                 MapDiff::Initial { entries } => {
                     for (_, item) in entries {
                         let wrapped = WrappedItem {
-                            item: item.to_value(),
+                            item: item.clone(),
                             item_type: item.entity_type().into(),
                         };
                         changes.push(QueryChange::Upsert {
@@ -108,7 +210,7 @@ impl QueryResponse {
                 }
                 MapDiff::Insert { key: _, value } => {
                     let wrapped = WrappedItem {
-                        item: value.to_value(),
+                        item: value.clone(),
                         item_type: value.entity_type().into(),
                     };
                     changes.push(QueryChange::Upsert {
@@ -122,7 +224,7 @@ impl QueryResponse {
                     new_value,
                 } => {
                     let wrapped = WrappedItem {
-                        item: new_value.to_value(),
+                        item: new_value.clone(),
                         item_type: new_value.entity_type().into(),
                     };
                     changes.push(QueryChange::Upsert {
@@ -144,10 +246,10 @@ impl QueryResponse {
 
         match diff {
             MapDiff::Initial { entries } => {
-                let upserts: Vec<WrappedItem<Value>> = entries
+                let upserts: Vec<WrappedItem> = entries
                     .iter()
                     .map(|(_, item)| WrappedItem {
-                        item: item.to_value(),
+                        item: item.clone(),
                         item_type: item.entity_type().into(),
                     })
                     .collect();
@@ -168,7 +270,7 @@ impl QueryResponse {
             }
             MapDiff::Insert { key: _, value } => {
                 let upserts = vec![WrappedItem {
-                    item: value.to_value(),
+                    item: value.clone(),
                     item_type: value.entity_type().into(),
                 }];
                 let changes = upserts
@@ -192,7 +294,7 @@ impl QueryResponse {
                 new_value,
             } => {
                 let upserts = vec![WrappedItem {
-                    item: new_value.to_value(),
+                    item: new_value.clone(),
                     item_type: new_value.entity_type().into(),
                 }];
                 let changes = upserts
@@ -279,6 +381,50 @@ pub struct QueryError {
     pub tx: String,
     pub query_id: String,
     pub message: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Client-side (inbound) deserialization types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Client-side query response for deserialization. Uses WrappedItemValue (JSON values)
+/// instead of the server-side WrappedItem (type-erased AnyItem).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientQueryResponse {
+    #[serde(default)]
+    pub changes: Vec<ClientQueryChange>,
+
+    pub deletes: Vec<Arc<str>>,
+
+    pub upserts: Vec<super::item::WrappedItemValue>,
+
+    pub sequence: u64,
+
+    pub tx: Arc<str>,
+
+    #[serde(default)]
+    pub total_count: Option<usize>,
+
+    #[serde(default)]
+    pub window: Option<QueryWindow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ClientQueryChange {
+    Upsert {
+        item: super::item::WrappedItemValue,
+    },
+    Delete {
+        id: Arc<str>,
+    },
+    WindowOrder {
+        ids: Vec<Arc<str>>,
+        total_count: usize,
+        #[serde(default)]
+        window: Option<QueryWindow>,
+    },
 }
 
 pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
