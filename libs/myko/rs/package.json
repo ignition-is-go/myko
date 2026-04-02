@@ -1,6 +1,6 @@
 {
   "name": "@myko/rs",
-  "version": "4.0.0-canary.20",
+  "version": "4.0.0-canary.21",
   "type": "module",
   "main": "./bindings/index.ts",
   "types": "./bindings/index.ts",
