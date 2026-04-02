@@ -26,6 +26,6 @@ pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
 pub use history_replay::HistoryReplayProvider;
-pub use persister::{BlackholePersister, NullPersister, PersistError, Persister, PersisterRouter};
+pub use persister::{BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter};
 pub use protocol::{message_to_json, message_to_msgpack};
 pub use relationship_manager::RelationshipManager;

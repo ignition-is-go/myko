@@ -3,7 +3,13 @@
 //! Implementations may be sync (in-memory/no-op) or internally async (Kafka).
 //! The `persist` call is fire-and-forget — the implementation handles delivery.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use crate::wire::MEvent;
 
@@ -26,6 +32,46 @@ impl std::fmt::Display for PersistError {
 
 impl std::error::Error for PersistError {}
 
+/// Shared health state for a persister, readable from any thread.
+#[derive(Debug, Default)]
+pub struct PersistHealth {
+    /// Events queued but not yet written to the durable store.
+    pub queued: AtomicU64,
+    /// Lifetime count of successfully persisted events.
+    pub total_persisted: AtomicU64,
+    /// Lifetime count of failed persist attempts.
+    pub total_errors: AtomicU64,
+    /// Consecutive failures since last success (resets to 0 on success).
+    pub consecutive_errors: AtomicU64,
+    /// Most recent error message, if any.
+    pub last_error: std::sync::RwLock<Option<String>>,
+}
+
+impl PersistHealth {
+    pub fn record_enqueue(&self) {
+        self.queued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_success(&self) {
+        self.queued.fetch_sub(1, Ordering::Relaxed);
+        self.total_persisted.fetch_add(1, Ordering::Relaxed);
+        self.consecutive_errors.store(0, Ordering::Relaxed);
+    }
+
+    pub fn record_error(&self, msg: String) {
+        self.queued.fetch_sub(1, Ordering::Relaxed);
+        self.total_errors.fetch_add(1, Ordering::Relaxed);
+        self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.write().unwrap() = Some(msg);
+    }
+
+    pub fn record_dropped(&self, msg: String) {
+        self.total_errors.fetch_add(1, Ordering::Relaxed);
+        self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.write().unwrap() = Some(msg);
+    }
+}
+
 /// Trait for persisting events to a durable store.
 pub trait Persister: Send + Sync + 'static {
     /// Persist a single event.
@@ -45,6 +91,15 @@ pub trait Persister: Send + Sync + 'static {
     /// (broker, credentials, etc.) are not healthy.
     fn startup_healthcheck(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Health counters for monitoring persist throughput and errors.
+    fn health(&self) -> Arc<PersistHealth> {
+        // Default: always-healthy, zero counters
+        static HEALTHY: std::sync::OnceLock<Arc<PersistHealth>> = std::sync::OnceLock::new();
+        HEALTHY
+            .get_or_init(|| Arc::new(PersistHealth::default()))
+            .clone()
     }
 }
 
@@ -110,6 +165,24 @@ impl PersisterRouter {
         self.resolve(entity_type)
             .map(|p| p.should_register_kafka_topic())
             .unwrap_or(false)
+    }
+
+    /// Get the shared health state from the default persister.
+    ///
+    /// Returns live atomic counters — callers can poll these to read
+    /// current values. Returns a static zero-health if no default persister
+    /// is configured.
+    pub fn default_health(&self) -> Arc<PersistHealth> {
+        self.default
+            .as_ref()
+            .map(|p| p.health())
+            .unwrap_or_else(|| {
+                static HEALTHY: std::sync::OnceLock<Arc<PersistHealth>> =
+                    std::sync::OnceLock::new();
+                HEALTHY
+                    .get_or_init(|| Arc::new(PersistHealth::default()))
+                    .clone()
+            })
     }
 
     /// Run startup healthchecks for all resolved persisters across known entity types.
