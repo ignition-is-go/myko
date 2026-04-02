@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Instant,
 };
 
 use crate::wire::MEvent;
@@ -32,8 +33,11 @@ impl std::fmt::Display for PersistError {
 
 impl std::error::Error for PersistError {}
 
+/// Duration of the sliding rate window for writes_per_second calculation.
+const RATE_WINDOW_SECS: f64 = 1.0;
+
 /// Shared health state for a persister, readable from any thread.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PersistHealth {
     /// Events queued but not yet written to the durable store.
     pub queued: AtomicU64,
@@ -45,6 +49,24 @@ pub struct PersistHealth {
     pub consecutive_errors: AtomicU64,
     /// Most recent error message, if any.
     pub last_error: std::sync::RwLock<Option<String>>,
+    /// Persisted count at the start of the current rate window.
+    rate_window_count: AtomicU64,
+    /// Start of the current rate window.
+    rate_window_start: std::sync::RwLock<Instant>,
+}
+
+impl Default for PersistHealth {
+    fn default() -> Self {
+        Self {
+            queued: AtomicU64::new(0),
+            total_persisted: AtomicU64::new(0),
+            total_errors: AtomicU64::new(0),
+            consecutive_errors: AtomicU64::new(0),
+            last_error: std::sync::RwLock::new(None),
+            rate_window_count: AtomicU64::new(0),
+            rate_window_start: std::sync::RwLock::new(Instant::now()),
+        }
+    }
 }
 
 impl PersistHealth {
@@ -55,6 +77,15 @@ impl PersistHealth {
     pub fn record_success(&self) {
         self.queued.fetch_sub(1, Ordering::Relaxed);
         self.total_persisted.fetch_add(1, Ordering::Relaxed);
+        if self.consecutive_errors.swap(0, Ordering::Relaxed) > 0 {
+            *self.last_error.write().unwrap() = None;
+        }
+    }
+
+    /// Record a batch of successful writes, decrementing queued by `count`.
+    pub fn record_success_batch(&self, count: u64) {
+        self.queued.fetch_sub(count, Ordering::Relaxed);
+        self.total_persisted.fetch_add(count, Ordering::Relaxed);
         if self.consecutive_errors.swap(0, Ordering::Relaxed) > 0 {
             *self.last_error.write().unwrap() = None;
         }
@@ -78,6 +109,30 @@ impl PersistHealth {
         self.total_errors.fetch_add(1, Ordering::Relaxed);
         self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
         *self.last_error.write().unwrap() = Some(msg);
+    }
+
+    /// Compute writes per second over a sliding window.
+    ///
+    /// Each call checks whether the window has elapsed. If so, it rotates the
+    /// window and returns the rate from the completed window. Otherwise it
+    /// returns the instantaneous rate within the current window.
+    pub fn writes_per_second(&self) -> f64 {
+        let current_total = self.total_persisted.load(Ordering::Relaxed);
+        let mut start = self.rate_window_start.write().unwrap();
+        let elapsed = start.elapsed().as_secs_f64();
+
+        if elapsed >= RATE_WINDOW_SECS {
+            let window_count = self.rate_window_count.swap(current_total, Ordering::Relaxed);
+            let delta = current_total.saturating_sub(window_count);
+            *start = Instant::now();
+            delta as f64 / elapsed
+        } else if elapsed > 0.0 {
+            let window_count = self.rate_window_count.load(Ordering::Relaxed);
+            let delta = current_total.saturating_sub(window_count);
+            delta as f64 / elapsed
+        } else {
+            0.0
+        }
     }
 }
 

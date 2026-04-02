@@ -355,6 +355,8 @@ pub struct PersistHealthStatus {
     pub last_error: Option<String>,
     /// Whether the persister is currently healthy (no consecutive errors).
     pub healthy: bool,
+    /// Writes per second over a sliding window.
+    pub writes_per_second: f64,
 }
 
 /// Report that returns the current health of the persist subsystem.
@@ -376,6 +378,7 @@ impl ReportHandler for GetPersistHealth {
                 let total_errors = health.total_errors.load(Ordering::Relaxed);
                 let consecutive_errors = health.consecutive_errors.load(Ordering::Relaxed);
                 let last_error = health.last_error.read().unwrap().clone();
+                let writes_per_second = health.writes_per_second();
                 Arc::new(PersistHealthStatus {
                     queued,
                     total_persisted,
@@ -383,6 +386,7 @@ impl ReportHandler for GetPersistHealth {
                     consecutive_errors,
                     last_error,
                     healthy: consecutive_errors == 0,
+                    writes_per_second,
                 })
             })
             .deduped()
@@ -401,6 +405,7 @@ impl ReportHandler for GetPersistHealth {
             consecutive_errors: 0,
             last_error: None,
             healthy: true,
+            writes_per_second: 0.0,
         }))
         .lock()
     }

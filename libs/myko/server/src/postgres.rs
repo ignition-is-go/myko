@@ -27,6 +27,7 @@ const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
 const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
+const PG_PRODUCER_MAX_BATCH: usize = 256;
 
 /// PostgreSQL configuration.
 #[derive(Debug, Clone)]
@@ -329,34 +330,43 @@ impl CellPostgresProducer {
 
 fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>, health: Arc<PersistHealth>) {
     let mut client: Option<Client> = None;
-    let mut retry: Option<MEvent> = None;
+    let mut retry_batch: Vec<MEvent> = Vec::new();
 
     loop {
-        // NOTE(ts): Take the retry event first, otherwise recv the next from the channel.
-        let event = if let Some(ev) = retry.take() {
-            ev
+        // NOTE(ts): Collect a batch — start with any retry events, then drain the channel.
+        let mut batch: Vec<MEvent> = Vec::new();
+        if !retry_batch.is_empty() {
+            std::mem::swap(&mut batch, &mut retry_batch);
         } else {
             match rx.recv() {
-                Ok(ev) => ev,
+                Ok(ev) => batch.push(ev),
                 Err(_) => break, // channel closed
             }
-        };
+        }
+        // NOTE(ts): Drain additional ready events up to the batch limit.
+        while batch.len() < PG_PRODUCER_MAX_BATCH {
+            match rx.try_recv() {
+                Ok(ev) => batch.push(ev),
+                Err(_) => break,
+            }
+        }
 
         if client.is_none() {
             client = connect_producer_client(&config);
         }
 
+        let batch_len = batch.len();
         if let Some(c) = client.as_mut() {
-            match insert_event(c, &config, event.clone()) {
+            match insert_event_batch(c, &config, &batch) {
                 Ok(()) => {
-                    health.record_success();
+                    health.record_success_batch(batch_len as u64);
                 }
                 Err(err) => {
-                    let msg = format_pg_error("insert_event(producer)", Some(&config.url), &err);
+                    let msg = format_pg_error("insert_event_batch(producer)", Some(&config.url), &err);
                     error!("{}", msg);
                     health.record_error_no_dequeue(msg);
                     client = None;
-                    retry = Some(event);
+                    retry_batch = batch;
                     // NOTE(ts): Back off before retrying to avoid tight-looping on persistent failures.
                     std::thread::sleep(Duration::from_secs(1));
                 }
@@ -368,7 +378,7 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>
             );
             error!("{}", msg);
             health.record_error_no_dequeue(msg);
-            retry = Some(event);
+            retry_batch = batch;
             std::thread::sleep(Duration::from_secs(1));
         }
     }
@@ -393,39 +403,90 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
     }
 }
 
-fn insert_event(
+fn insert_event_batch(
     client: &mut Client,
     config: &PostgresConfig,
-    event: MEvent,
+    events: &[MEvent],
 ) -> Result<(), ::postgres::Error> {
-    let table = qi(&config.table);
-    let sql = format!(
-        "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
-    );
-    let item_id = event
-        .item
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let event_json = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
-    let change_type = match event.change_type {
-        MEventType::SET => "SET",
-        MEventType::DEL => "DEL",
-    };
+    if events.is_empty() {
+        return Ok(());
+    }
 
-    client.execute(
-        &sql,
-        &[
-            &event.item_type,
-            &item_id,
-            &change_type,
-            &event.created_at,
-            &event.tx,
-            &event.source_id,
-            &event_json,
-        ],
-    )?;
+    let table = qi(&config.table);
+
+    // NOTE(ts): Single event — skip transaction overhead.
+    if events.len() == 1 {
+        let event = &events[0];
+        let sql = format!(
+            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
+        );
+        let item_id = event
+            .item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let change_type = match event.change_type {
+            MEventType::SET => "SET",
+            MEventType::DEL => "DEL",
+        };
+        client.execute(
+            &sql,
+            &[
+                &event.item_type,
+                &item_id,
+                &change_type,
+                &event.created_at,
+                &event.tx,
+                &event.source_id,
+                &event_json,
+            ],
+        )?;
+        return Ok(());
+    }
+
+    // NOTE(ts): Build a multi-row INSERT for the batch within a single transaction.
+    let mut sql = format!(
+        "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES "
+    );
+    let mut params: Vec<Box<dyn postgres::types::ToSql + Sync>> = Vec::with_capacity(events.len() * 7);
+    for (i, event) in events.iter().enumerate() {
+        if i > 0 {
+            sql.push_str(", ");
+        }
+        let base = i * 7;
+        sql.push_str(&format!(
+            "(${}, ${}, ${}, (${}::text)::timestamptz, ${}, (${}::text), (${}::text)::jsonb)",
+            base + 1, base + 2, base + 3, base + 4, base + 5, base + 6, base + 7
+        ));
+        let item_id = event
+            .item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let change_type = match event.change_type {
+            MEventType::SET => "SET",
+            MEventType::DEL => "DEL",
+        };
+        params.push(Box::new(event.item_type.clone()));
+        params.push(Box::new(item_id));
+        params.push(Box::new(change_type.to_string()));
+        params.push(Box::new(event.created_at.clone()));
+        params.push(Box::new(event.tx.clone()));
+        params.push(Box::new(event.source_id.clone()));
+        params.push(Box::new(event_json));
+    }
+
+    let param_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
+        params.iter().map(|p| p.as_ref()).collect();
+
+    let mut txn = client.transaction()?;
+    txn.execute(&sql, &param_refs)?;
+    txn.commit()?;
+
     Ok(())
 }
 
