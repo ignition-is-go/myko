@@ -273,7 +273,10 @@ impl crate::report::ReportHandler for ExportEntityTree {
             match ctx.replay_store(as_of) {
                 Ok(r) => r,
                 Err(err) => {
-                    eprintln!("[ExportEntityTree] replay_store FAILED: as_of={} err={}", as_of, err);
+                    eprintln!(
+                        "[ExportEntityTree] replay_store FAILED: as_of={} err={}",
+                        as_of, err
+                    );
                     return Cell::new(Arc::new(EntityTreeExport {
                         version: 1,
                         root_type: self.root_type.clone(),
@@ -296,7 +299,10 @@ impl crate::report::ReportHandler for ExportEntityTree {
         );
         let adjacency = build_adjacency_map();
         let entities = walk_tree(&self.root_type, &self.root_id, &registry, &adjacency);
-        eprintln!("[ExportEntityTree] walk_tree found {} entities", entities.len());
+        eprintln!(
+            "[ExportEntityTree] walk_tree found {} entities",
+            entities.len()
+        );
 
         Cell::new(Arc::new(EntityTreeExport {
             version: 1,

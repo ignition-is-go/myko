@@ -1,6 +1,6 @@
 [package]
 name = "myko-server"
-version = "4.0.0-canary.18"
+version = "4.0.0-canary.20"
 edition = "2024"
 description = "Myko server runtime — WebSocket, Kafka, peer federation"
 license = "AGPL-3.0-or-later"
