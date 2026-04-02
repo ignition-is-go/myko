@@ -29,6 +29,13 @@ pub fn write_serde_cache_key<T: Serialize>(value: &T, state: &mut dyn Hasher) {
     }
 }
 
+/// Compute a u64 content hash by serializing a value to JSON and hashing the bytes.
+pub fn serde_content_hash<T: Serialize>(value: &T) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    write_serde_cache_key(value, &mut hasher);
+    hasher.finish()
+}
+
 pub fn write_str_key(state: &mut dyn Hasher, value: &str) {
     state.write_usize(value.len());
     state.write(value.as_bytes());
