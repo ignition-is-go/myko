@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::SwitchMapExt;
-use hyphae::{Cell, CellImmutable, MapExt};
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use hyphae::{Cell, CellImmutable, DedupedExt, MapExt, interval};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
@@ -328,6 +331,78 @@ impl crate::command::CommandHandler for ImportItems {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Persist Health
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Health snapshot for the persist subsystem.
+#[myko_macros::myko_report_output]
+pub struct PersistHealthStatus {
+    /// Events queued but not yet written.
+    pub queued: u64,
+    /// Lifetime successful writes.
+    pub total_persisted: u64,
+    /// Lifetime failed writes.
+    pub total_errors: u64,
+    /// Consecutive failures since last success.
+    pub consecutive_errors: u64,
+    /// Most recent error message, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub last_error: Option<String>,
+    /// Whether the persister is currently healthy (no consecutive errors).
+    pub healthy: bool,
+}
+
+/// Report that returns the current health of the persist subsystem.
+/// Polls every 500ms and deduplicates, so subscribers only receive updates
+/// when values actually change.
+#[myko_macros::myko_report(PersistHealthStatus)]
+pub struct GetPersistHealth {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ReportHandler for GetPersistHealth {
+    type Output = PersistHealthStatus;
+
+    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
+        let health = ctx.persist_health();
+        interval(Duration::from_millis(500))
+            .map(move |_tick| {
+                let queued = health.queued.load(Ordering::Relaxed);
+                let total_persisted = health.total_persisted.load(Ordering::Relaxed);
+                let total_errors = health.total_errors.load(Ordering::Relaxed);
+                let consecutive_errors = health.consecutive_errors.load(Ordering::Relaxed);
+                let last_error = health.last_error.read().unwrap().clone();
+                Arc::new(PersistHealthStatus {
+                    queued,
+                    total_persisted,
+                    total_errors,
+                    consecutive_errors,
+                    last_error,
+                    healthy: consecutive_errors == 0,
+                })
+            })
+            .deduped()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ReportHandler for GetPersistHealth {
+    type Output = PersistHealthStatus;
+
+    fn compute(&self, _ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
+        Cell::new(Arc::new(PersistHealthStatus {
+            queued: 0,
+            total_persisted: 0,
+            total_errors: 0,
+            consecutive_errors: 0,
+            last_error: None,
+            healthy: true,
+        }))
+        .lock()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ts-rs Export Registrations
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -336,5 +411,6 @@ crate::register_ts_export!(
     ItemStub,
     EntitySnapshotDifferenceData,
     LogLevel,
-    EventContainer
+    EventContainer,
+    PersistHealthStatus
 );
