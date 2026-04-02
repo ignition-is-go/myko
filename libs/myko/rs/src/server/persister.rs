@@ -55,7 +55,9 @@ impl PersistHealth {
     pub fn record_success(&self) {
         self.queued.fetch_sub(1, Ordering::Relaxed);
         self.total_persisted.fetch_add(1, Ordering::Relaxed);
-        self.consecutive_errors.store(0, Ordering::Relaxed);
+        if self.consecutive_errors.swap(0, Ordering::Relaxed) > 0 {
+            *self.last_error.write().unwrap() = None;
+        }
     }
 
     pub fn record_error(&self, msg: String) {
