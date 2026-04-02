@@ -434,7 +434,7 @@ impl WsHandler {
                         }
                     }
                 };
-                let (kind, tx_id, seq, upserts, deletes, total_count) = match &msg {
+                let (kind, tx_id, seq, _upserts, _deletes, _total_count) = match &msg {
                     OutboundMessage::SerializedCommand { tx, .. } => {
                         ("command", Some(tx.clone()), None, None, None, None)
                     }

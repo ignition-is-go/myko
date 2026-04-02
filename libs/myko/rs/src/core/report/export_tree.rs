@@ -218,14 +218,13 @@ pub fn walk_tree(
                         continue;
                     };
                     for (child_id, child_item) in child_store.snapshot() {
-                        if let Some(fk) = extract_fk(child_item.as_any()) {
-                            if fk == entity_id {
+                        if let Some(fk) = extract_fk(child_item.as_any())
+                            && fk == entity_id {
                                 let key = (Arc::<str>::from(child_rel.child_type), child_id);
                                 if visited.insert(key.clone()) {
                                     queue.push_back(key);
                                 }
                             }
-                        }
                     }
                 }
                 ChildKind::OwnsMany { extract_ids } => {
@@ -245,14 +244,13 @@ pub fn walk_tree(
                         continue;
                     };
                     for (ensured_id, ensured_item) in ensured_store.snapshot() {
-                        if let Some(fk) = extract_fk(ensured_item.as_any()) {
-                            if fk == entity_id {
+                        if let Some(fk) = extract_fk(ensured_item.as_any())
+                            && fk == entity_id {
                                 let key = (Arc::<str>::from(child_rel.child_type), ensured_id);
                                 if visited.insert(key.clone()) {
                                     queue.push_back(key);
                                 }
                             }
-                        }
                     }
                 }
             }

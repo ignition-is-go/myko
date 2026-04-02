@@ -217,13 +217,12 @@ impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
             let event_json: String = row.get(0);
             match MEvent::from_str_trim(&event_json) {
                 Ok(event) => {
-                    if let Some(parse) = handler_registry.get_item_parser(&event.item_type) {
-                        if let Ok(item) = parse(event.item.clone()) {
+                    if let Some(parse) = handler_registry.get_item_parser(&event.item_type)
+                        && let Ok(item) = parse(event.item.clone()) {
                             let store = registry.get_or_create(&event.item_type);
                             store.insert(item.id(), item);
                             count += 1;
                         }
-                    }
                 }
                 Err(err) => {
                     eprintln!("[HistoryReplay] invalid event row: {}", err);
