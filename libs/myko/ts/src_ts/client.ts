@@ -758,7 +758,7 @@ export class MykoClient {
           if (item?.id) acc.set(item.id, wrapped)
         }
         return acc
-      }, new Map<string, WrappedItem<unknown>>()),
+      }, new Map<string, WrappedItem>()),
       map((items) => [...items.values()].map((w) => w.item) as QueryResult<Q>),
       finalize(() => {
         this.sharedQueries.delete(cacheKey)
@@ -795,7 +795,7 @@ export class MykoClient {
           if (item?.id) acc.set(item.id, wrapped)
         }
         return acc
-      }, new Map<string, WrappedItem<unknown>>()),
+      }, new Map<string, WrappedItem>()),
       map((items) => [...items.values()].map((w) => w.item) as ViewResult<V>),
       finalize(() => {
         this.sharedViews.delete(cacheKey)
@@ -823,7 +823,7 @@ export class MykoClient {
         sequence: BigInt(r.data.sequence),
         deletes: r.data.deletes.slice(),
         upserts: r.data.upserts.map(
-          (w: WrappedItem<JsonValue>) => w.item,
+          (w: WrappedItem) => w.item,
         ) as QueryItem<Q>[],
       })),
       finalize(() => {
@@ -855,7 +855,7 @@ export class MykoClient {
         sequence: BigInt(r.data.sequence),
         deletes: r.data.deletes.slice(),
         upserts: r.data.upserts.map(
-          (w: WrappedItem<JsonValue>) => w.item,
+          (w: WrappedItem) => w.item,
         ) as ViewItem<V>[],
       })),
       finalize(() => {
@@ -896,7 +896,7 @@ export class MykoClient {
           totalCount?: number
           window?: QueryWindow | null
           changes?: Array<
-            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'upsert'; item: WrappedItem }
             | { kind: 'delete'; id: string }
             | {
                 kind: 'windowOrder'
@@ -920,7 +920,7 @@ export class MykoClient {
         }
 
         const order = data.changes?.find(
-          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+          (change: NonNullable<typeof data.changes>[number]): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
             change.kind === 'windowOrder',
         )
         if (order) {
@@ -933,7 +933,7 @@ export class MykoClient {
 
         return state
       }, {
-        cache: new Map<string, WrappedItem<JsonValue>>(),
+        cache: new Map<string, WrappedItem>(),
         visibleIds: [] as string[],
       }),
       map((state) =>
@@ -950,7 +950,7 @@ export class MykoClient {
           totalCount?: number
           window?: QueryWindow | null
           changes?: Array<
-            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'upsert'; item: WrappedItem }
             | { kind: 'delete'; id: string }
             | {
                 kind: 'windowOrder'
@@ -962,7 +962,7 @@ export class MykoClient {
           >
         }
         const order = data.changes?.find(
-          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+          (change: NonNullable<typeof data.changes>[number]): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
             change.kind === 'windowOrder',
         )
         const orderTotalCount = order?.totalCount ?? order?.total_count
@@ -1010,7 +1010,7 @@ export class MykoClient {
           totalCount?: number
           window?: QueryWindow | null
           changes?: Array<
-            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'upsert'; item: WrappedItem }
             | { kind: 'delete'; id: string }
             | {
                 kind: 'windowOrder'
@@ -1034,7 +1034,7 @@ export class MykoClient {
         }
 
         const order = data.changes?.find(
-          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+          (change: NonNullable<typeof data.changes>[number]): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
             change.kind === 'windowOrder',
         )
         if (order) {
@@ -1045,7 +1045,7 @@ export class MykoClient {
 
         return state
       }, {
-        cache: new Map<string, WrappedItem<JsonValue>>(),
+        cache: new Map<string, WrappedItem>(),
         visibleIds: [] as string[],
       }),
       map((state) =>
@@ -1062,7 +1062,7 @@ export class MykoClient {
           totalCount?: number
           window?: QueryWindow | null
           changes?: Array<
-            | { kind: 'upsert'; item: WrappedItem<JsonValue> }
+            | { kind: 'upsert'; item: WrappedItem }
             | { kind: 'delete'; id: string }
             | {
                 kind: 'windowOrder'
@@ -1074,7 +1074,7 @@ export class MykoClient {
           >
         }
         const order = data.changes?.find(
-          (change): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
+          (change: NonNullable<typeof data.changes>[number]): change is Extract<NonNullable<typeof data.changes>[number], { kind: 'windowOrder' }> =>
             change.kind === 'windowOrder',
         )
         const orderTotalCount = order?.totalCount ?? order?.total_count
