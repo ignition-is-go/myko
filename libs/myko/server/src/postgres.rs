@@ -111,12 +111,18 @@ impl PostgresHistoryStore {
     ) -> Result<Vec<PersistedEvent>, String> {
         let mut client = connect_pg_client(&self.config, "history(load_until)")?;
         // NOTE(ts): Validate timestamp format to prevent SQL injection
-        if !until.chars().all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c)) {
+        if !until
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c))
+        {
             return Err(format!("Invalid timestamp format: {}", until));
         }
         let sql = format!(
             "SELECT id, created_at::text, event::text FROM {} WHERE id > {} AND created_at <= '{}'::timestamptz ORDER BY id ASC LIMIT {}",
-            qi(&self.config.table), after_id, until, limit
+            qi(&self.config.table),
+            after_id,
+            until,
+            limit
         );
         let rows = client
             .query(&sql, &[])
@@ -164,10 +170,16 @@ impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
         until: &str,
         handler_registry: &HandlerRegistry,
     ) -> Result<Arc<StoreRegistry>, String> {
-        eprintln!("[HistoryReplay] loading snapshot as of {} from {}", until, self.config.url);
+        eprintln!(
+            "[HistoryReplay] loading snapshot as of {} from {}",
+            until, self.config.url
+        );
 
         // NOTE(ts): Validate timestamp format to prevent SQL injection
-        if !until.chars().all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c)) {
+        if !until
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c))
+        {
             return Err(format!("Invalid timestamp format: {}", until));
         }
 
@@ -220,7 +232,9 @@ impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
 
         eprintln!(
             "[HistoryReplay] loaded {} entities from {} rows as of {}",
-            count, rows.len(), until
+            count,
+            rows.len(),
+            until
         );
 
         Ok(Arc::new(registry))
@@ -318,8 +332,7 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>
             match insert_event(c, &config, event) {
                 Ok(()) => Ok(()),
                 Err(err) => {
-                    let msg =
-                        format_pg_error("insert_event(producer)", Some(&config.url), &err);
+                    let msg = format_pg_error("insert_event(producer)", Some(&config.url), &err);
                     error!("{}", msg);
                     client = None;
                     Err(PersistError {
@@ -331,10 +344,7 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>
         } else {
             Err(PersistError {
                 entity_type: String::new(),
-                message: format!(
-                    "Postgres producer connection failed (url: {})",
-                    config.url,
-                ),
+                message: format!("Postgres producer connection failed (url: {})", config.url,),
             })
         };
 
