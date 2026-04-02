@@ -3,18 +3,21 @@
 //! BFS walks the relationship graph from a root entity, collecting all
 //! descendant entities into a flat `EntityTreeExport` structure.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 
 use chrono::Utc;
 use hyphae::{Cell, CellImmutable};
-
-use crate::common::to_value::ToValue;
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
 
-use crate::relationship::{Relation, iter_relations};
-use crate::store::StoreRegistry;
+use crate::{
+    common::to_value::ToValue,
+    relationship::{Relation, iter_relations},
+    store::StoreRegistry,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output types
@@ -219,12 +222,13 @@ pub fn walk_tree(
                     };
                     for (child_id, child_item) in child_store.snapshot() {
                         if let Some(fk) = extract_fk(child_item.as_any())
-                            && fk == entity_id {
-                                let key = (Arc::<str>::from(child_rel.child_type), child_id);
-                                if visited.insert(key.clone()) {
-                                    queue.push_back(key);
-                                }
+                            && fk == entity_id
+                        {
+                            let key = (Arc::<str>::from(child_rel.child_type), child_id);
+                            if visited.insert(key.clone()) {
+                                queue.push_back(key);
                             }
+                        }
                     }
                 }
                 ChildKind::OwnsMany { extract_ids } => {
@@ -245,12 +249,13 @@ pub fn walk_tree(
                     };
                     for (ensured_id, ensured_item) in ensured_store.snapshot() {
                         if let Some(fk) = extract_fk(ensured_item.as_any())
-                            && fk == entity_id {
-                                let key = (Arc::<str>::from(child_rel.child_type), ensured_id);
-                                if visited.insert(key.clone()) {
-                                    queue.push_back(key);
-                                }
+                            && fk == entity_id
+                        {
+                            let key = (Arc::<str>::from(child_rel.child_type), ensured_id);
+                            if visited.insert(key.clone()) {
+                                queue.push_back(key);
                             }
+                        }
                     }
                 }
             }

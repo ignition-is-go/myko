@@ -17,9 +17,10 @@ pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 pub use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::QueryBuildCellCtx;
-pub use crate::core::common::content_hash::ContentHash;
 pub use crate::{
-    cache::{CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key},
+    cache::{
+        CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key,
+    },
     client::MykoClient,
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
@@ -30,9 +31,12 @@ pub use crate::{
         with_id::{WithId, WithTypedId},
         with_transaction::WithTransaction,
     },
-    core::item::{
-        AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
-        ItemRegistration,
+    core::{
+        common::content_hash::ContentHash,
+        item::{
+            AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
+            ItemRegistration,
+        },
     },
     query::{
         AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,

@@ -218,11 +218,12 @@ impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
             match MEvent::from_str_trim(&event_json) {
                 Ok(event) => {
                     if let Some(parse) = handler_registry.get_item_parser(&event.item_type)
-                        && let Ok(item) = parse(event.item.clone()) {
-                            let store = registry.get_or_create(&event.item_type);
-                            store.insert(item.id(), item);
-                            count += 1;
-                        }
+                        && let Ok(item) = parse(event.item.clone())
+                    {
+                        let store = registry.get_or_create(&event.item_type);
+                        store.insert(item.id(), item);
+                        count += 1;
+                    }
                 }
                 Err(err) => {
                     eprintln!("[HistoryReplay] invalid event row: {}", err);
@@ -327,7 +328,11 @@ impl CellPostgresProducer {
     }
 }
 
-fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>, health: Arc<PersistHealth>) {
+fn run_producer_loop(
+    config: PostgresConfig,
+    rx: mpsc::Receiver<ProducerRequest>,
+    health: Arc<PersistHealth>,
+) {
     let mut client: Option<Client> = None;
     let mut retry_batch: Vec<MEvent> = Vec::new();
 
@@ -361,7 +366,8 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>
                     health.record_success_batch(batch_len as u64);
                 }
                 Err(err) => {
-                    let msg = format_pg_error("insert_event_batch(producer)", Some(&config.url), &err);
+                    let msg =
+                        format_pg_error("insert_event_batch(producer)", Some(&config.url), &err);
                     error!("{}", msg);
                     health.record_error_no_dequeue(msg);
                     client = None;
@@ -449,7 +455,8 @@ fn insert_event_batch(
     let mut sql = format!(
         "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES "
     );
-    let mut params: Vec<Box<dyn postgres::types::ToSql + Sync>> = Vec::with_capacity(events.len() * 7);
+    let mut params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
+        Vec::with_capacity(events.len() * 7);
     for (i, event) in events.iter().enumerate() {
         if i > 0 {
             sql.push_str(", ");
@@ -457,7 +464,13 @@ fn insert_event_batch(
         let base = i * 7;
         sql.push_str(&format!(
             "(${}, ${}, ${}, (${}::text)::timestamptz, ${}, (${}::text), (${}::text)::jsonb)",
-            base + 1, base + 2, base + 3, base + 4, base + 5, base + 6, base + 7
+            base + 1,
+            base + 2,
+            base + 3,
+            base + 4,
+            base + 5,
+            base + 6,
+            base + 7
         ));
         let item_id = event
             .item

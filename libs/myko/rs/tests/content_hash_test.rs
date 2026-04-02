@@ -9,8 +9,7 @@
 
 #![cfg(feature = "bench")]
 
-use myko_rs::bench_entities::BenchItem;
-use myko_rs::prelude::*;
+use myko_rs::{bench_entities::BenchItem, prelude::*};
 
 fn make_item(id: &str, name: &str, category: &str, value: i64) -> BenchItem {
     let mut item = BenchItem {
@@ -29,7 +28,10 @@ fn identical_entities_have_equal_hashes() {
     let a = make_item("item-1", "Widget", "tools", 42);
     let b = make_item("item-1", "Widget", "tools", 42);
 
-    assert_eq!(a.hash, b.hash, "identical field values must produce equal hashes");
+    assert_eq!(
+        a.hash, b.hash,
+        "identical field values must produce equal hashes"
+    );
     assert_eq!(a, b, "items with equal hashes must be equal via PartialEq");
 }
 
@@ -38,7 +40,10 @@ fn different_field_values_produce_different_hashes() {
     let a = make_item("item-1", "Widget", "tools", 42);
     let b = make_item("item-1", "Widget", "tools", 99);
 
-    assert_ne!(a.hash, b.hash, "differing field values must produce different hashes");
+    assert_ne!(
+        a.hash, b.hash,
+        "differing field values must produce different hashes"
+    );
     assert_ne!(a, b, "items with different hashes must not be equal");
 }
 

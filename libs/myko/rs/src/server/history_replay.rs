@@ -1,8 +1,8 @@
 //! Trait for replaying persisted events into a temporary store.
 
-use crate::server::HandlerRegistry;
-use crate::store::StoreRegistry;
 use std::sync::Arc;
+
+use crate::{server::HandlerRegistry, store::StoreRegistry};
 
 /// Provider for replaying historical events into a temporary StoreRegistry.
 ///

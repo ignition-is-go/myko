@@ -886,10 +886,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::{
-        common::with_id::WithId,
-        store::StoreRegistry,
-    };
+    use crate::{common::with_id::WithId, store::StoreRegistry};
 
     // Mock writer that collects messages
     struct MockWriter {

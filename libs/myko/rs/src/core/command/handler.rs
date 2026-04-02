@@ -4,12 +4,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::common::to_value::ToValue;
-
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 use crate::{
     command::CommandError,
+    common::to_value::ToValue,
     entities::client::ClientId,
     event::EventOptions,
     item::Eventable,

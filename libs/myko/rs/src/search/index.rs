@@ -5,8 +5,6 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::common::to_value::ToValue;
-
 use tantivy::{
     Index, IndexReader, IndexWriter, TantivyDocument, Term,
     collector::TopDocs,
@@ -15,7 +13,7 @@ use tantivy::{
 };
 
 use super::{extract_searchable_text, iter_searchable};
-use crate::core::item::AnyItem;
+use crate::{common::to_value::ToValue, core::item::AnyItem};
 
 /// Thread-safe full-text search index backed by tantivy.
 ///

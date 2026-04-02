@@ -4,9 +4,6 @@
 //! all entity types rather than specific domain entities.
 
 use std::sync::Arc;
-
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::SwitchMapExt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
@@ -14,6 +11,8 @@ use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::MapExt;
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::SwitchMapExt;
 use hyphae::{Cell, CellImmutable};
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::{DedupedExt, interval};

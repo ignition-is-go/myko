@@ -6,8 +6,8 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -122,7 +122,9 @@ impl PersistHealth {
         let elapsed = start.elapsed().as_secs_f64();
 
         if elapsed >= RATE_WINDOW_SECS {
-            let window_count = self.rate_window_count.swap(current_total, Ordering::Relaxed);
+            let window_count = self
+                .rate_window_count
+                .swap(current_total, Ordering::Relaxed);
             let delta = current_total.saturating_sub(window_count);
             *start = Instant::now();
             delta as f64 / elapsed

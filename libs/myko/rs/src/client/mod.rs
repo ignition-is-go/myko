@@ -537,23 +537,24 @@ impl MykoClient {
         // deserializing QueryResponse/ViewResponse through MykoMessage (which
         // would require round-tripping Arc<dyn AnyItem> through serde).
         let event_tag = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
-        let data = || value.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        let data = || {
+            value
+                .get("data")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null)
+        };
 
         match event_tag {
             "ws:m:query-response" | "ws:m:view-response" => {
                 let data_val = data();
-                let tx_str = data_val
-                    .get("tx")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let tx_str = data_val.get("tx").and_then(|v| v.as_str()).unwrap_or("");
                 let tx: Arc<str> = Arc::from(tx_str);
                 if let Some(handler) = inner.query_handlers.get(&tx) {
                     handler(data_val);
                 }
             }
             "ws:m:report-response" => {
-                if let Ok(response) =
-                    serde_json::from_value::<crate::wire::ReportResponse>(data())
+                if let Ok(response) = serde_json::from_value::<crate::wire::ReportResponse>(data())
                 {
                     let tx: Arc<str> = response.tx.clone().into();
                     if let Some(handler) = inner.report_handlers.get(&tx) {
@@ -562,8 +563,7 @@ impl MykoClient {
                 }
             }
             "ws:m:command-response" => {
-                if let Ok(response) =
-                    serde_json::from_value::<crate::wire::CommandResponse>(data())
+                if let Ok(response) = serde_json::from_value::<crate::wire::CommandResponse>(data())
                 {
                     let mut handlers = inner.command_response_handlers.lock().unwrap();
                     if let Some(handler) = handlers.remove(&response.tx) {
@@ -572,9 +572,7 @@ impl MykoClient {
                 }
             }
             "ws:m:command-error" => {
-                if let Ok(err) =
-                    serde_json::from_value::<crate::wire::CommandError>(data())
-                {
+                if let Ok(err) = serde_json::from_value::<crate::wire::CommandError>(data()) {
                     let mut handlers = inner.command_response_handlers.lock().unwrap();
                     if let Some(handler) = handlers.remove(&err.tx) {
                         handler(Err(err.message));
@@ -582,9 +580,7 @@ impl MykoClient {
                 }
             }
             "ws:m:command" => {
-                if let Ok(wrapped) =
-                    serde_json::from_value::<crate::wire::WrappedCommand>(data())
-                {
+                if let Ok(wrapped) = serde_json::from_value::<crate::wire::WrappedCommand>(data()) {
                     let command_id: Arc<str> = wrapped.command_id.clone().into();
                     if let Some(handler) = inner.command_request_handlers.get(&command_id) {
                         let tx = wrapped

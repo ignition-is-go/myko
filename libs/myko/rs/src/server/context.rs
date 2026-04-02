@@ -25,7 +25,10 @@ use super::{
 use crate::{
     cache::CacheKey,
     client::{ConnectionStatus, MykoClient},
-    common::{to_value::ToValue, with_id::{WithId, WithTypedId}},
+    common::{
+        to_value::ToValue,
+        with_id::{WithId, WithTypedId},
+    },
     core::item::{
         AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
     },

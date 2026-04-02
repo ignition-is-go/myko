@@ -814,12 +814,8 @@ impl WsHandler {
                             let query_id = query_id.clone();
                             let sub_tx = subscribe_tx.clone();
                             tokio::task::spawn_blocking(move || {
-                                match cell_factory(
-                                    any_query,
-                                    registry,
-                                    request_context,
-                                    Some(ctx),
-                                ) {
+                                match cell_factory(any_query, registry, request_context, Some(ctx))
+                                {
                                     Ok(filtered_cellmap) => {
                                         let _ = sub_tx.send(SubscriptionReady::Query {
                                             tx_id,
@@ -922,12 +918,7 @@ impl WsHandler {
                             let priority_tx = priority_tx.clone();
                             let drop_logger = drop_logger.clone();
                             tokio::task::spawn_blocking(move || {
-                                match cell_factory(
-                                    any_view,
-                                    registry,
-                                    request_context,
-                                    ctx,
-                                ) {
+                                match cell_factory(any_view, registry, request_context, ctx) {
                                     Ok(filtered_cellmap) => {
                                         log::trace!(
                                             "View cell factory succeeded tx={} view_id={}",
@@ -947,13 +938,13 @@ impl WsHandler {
                                             view_id_clone,
                                             e
                                         );
-                                        if let Err(err) =
-                                            priority_tx.try_send(MykoMessage::ViewError(ViewError {
+                                        if let Err(err) = priority_tx.try_send(
+                                            MykoMessage::ViewError(ViewError {
                                                 tx: tx_id.to_string(),
                                                 view_id: view_id_clone.to_string(),
                                                 message: e,
-                                            }))
-                                        {
+                                            }),
+                                        ) {
                                             drop_logger.on_drop("ViewError", &err);
                                         }
                                     }
