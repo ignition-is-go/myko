@@ -23,21 +23,21 @@ impl Serialize for SerializableItem<'_> {
 /// Wrapper for items in wire protocol responses.
 /// Holds a type-erased AnyItem and serializes it directly to the output format.
 #[derive(Clone)]
-pub struct WrappedItem {
+pub struct ErasedWrappedItem {
     pub item: Arc<dyn AnyItem>,
     pub item_type: Arc<str>,
 }
 
-impl std::fmt::Debug for WrappedItem {
+impl std::fmt::Debug for ErasedWrappedItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WrappedItem")
+        f.debug_struct("ErasedWrappedItem")
             .field("item_type", &self.item_type)
             .field("id", &self.item.id())
             .finish()
     }
 }
 
-impl Serialize for WrappedItem {
+impl Serialize for ErasedWrappedItem {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let mut s = serializer.serialize_struct("WrappedItem", 2)?;
@@ -48,11 +48,10 @@ impl Serialize for WrappedItem {
     }
 }
 
-/// Inbound wire type: a JSON-valued item wrapper for deserialization (e.g., import commands).
-/// This preserves the original generic WrappedItem<Value> shape for client-to-server messages.
+/// JSON-valued item wrapper for deserialization and TS export.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct WrappedItemValue {
+pub struct WrappedItem {
     pub item: serde_json::Value,
     pub item_type: Arc<str>,
 }

@@ -23,7 +23,7 @@ pub use command::{
     wrap_command_request,
 };
 pub use event::{EventOptions, MEvent, MEventType};
-pub use item::{WrappedItem, WrappedItemValue};
+pub use item::{ErasedWrappedItem, WrappedItem};
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
 pub use query::{
     ClientQueryChange, ClientQueryResponse, QueryChange, QueryError, QueryResponse, QueryResult,
@@ -48,7 +48,7 @@ crate::register_ts_export!(
     query::QueryError,
     query::QueryWindow,
     query::QueryWindowUpdate,
-    item::WrappedItemValue,
+    item::WrappedItem,
     report::ReportResponse,
     report::WrappedReport,
     report::ReportError,

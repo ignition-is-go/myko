@@ -42,9 +42,9 @@ export function getItemName(
 
 /**
  * Compatibility alias for MWrappedItem.
- * In the new system, use WrappedItem<T> from @myko/rs.
+ * In the new system, use WrappedItem from @myko/rs.
  */
-export type MWrappedItem<T = unknown> = WrappedItem<T>
+export type MWrappedItem<T = unknown> = WrappedItem
 
 /**
  * Compatibility alias for MItemStub.

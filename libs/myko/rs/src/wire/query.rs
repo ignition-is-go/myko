@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use super::{item::WrappedItem, shared::value_with_tx};
+use super::{item::ErasedWrappedItem, shared::value_with_tx};
 use crate::core::{
     item::AnyItem,
     query::{QueryId, QueryItemType},
@@ -20,7 +20,7 @@ pub struct QueryResponse {
 
     pub deletes: Vec<Arc<str>>,
 
-    pub upserts: Vec<WrappedItem>,
+    pub upserts: Vec<ErasedWrappedItem>,
 
     pub sequence: u64,
 
@@ -49,7 +49,7 @@ impl<'de> Deserialize<'de> for QueryResponse {
                 .into_iter()
                 .map(|c| match c {
                     ClientQueryChange::Upsert { item } => QueryChange::Upsert {
-                        item: WrappedItem {
+                        item: ErasedWrappedItem {
                             item: Arc::new(ValueItem {
                                 value: item.item,
                                 item_type: item.item_type.clone(),
@@ -73,7 +73,7 @@ impl<'de> Deserialize<'de> for QueryResponse {
             upserts: raw
                 .upserts
                 .into_iter()
-                .map(|item| WrappedItem {
+                .map(|item| ErasedWrappedItem {
                     item: Arc::new(ValueItem {
                         value: item.item,
                         item_type: item.item_type.clone(),
@@ -134,7 +134,7 @@ impl AnyItem for ValueItem {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum QueryChange {
     Upsert {
-        item: WrappedItem,
+        item: ErasedWrappedItem,
     },
     Delete {
         id: Arc<str>,
@@ -187,14 +187,14 @@ impl QueryResponse {
     ) -> QueryResponse {
         fn push_change(
             diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
-            upserts: &mut Vec<WrappedItem>,
+            upserts: &mut Vec<ErasedWrappedItem>,
             deletes: &mut Vec<Arc<str>>,
             changes: &mut Vec<QueryChange>,
         ) {
             match diff {
                 MapDiff::Initial { entries } => {
                     for (_, item) in entries {
-                        let wrapped = WrappedItem {
+                        let wrapped = ErasedWrappedItem {
                             item: item.clone(),
                             item_type: item.entity_type().into(),
                         };
@@ -205,7 +205,7 @@ impl QueryResponse {
                     }
                 }
                 MapDiff::Insert { key: _, value } => {
-                    let wrapped = WrappedItem {
+                    let wrapped = ErasedWrappedItem {
                         item: value.clone(),
                         item_type: value.entity_type().into(),
                     };
@@ -219,7 +219,7 @@ impl QueryResponse {
                     old_value: _,
                     new_value,
                 } => {
-                    let wrapped = WrappedItem {
+                    let wrapped = ErasedWrappedItem {
                         item: new_value.clone(),
                         item_type: new_value.entity_type().into(),
                     };
@@ -242,9 +242,9 @@ impl QueryResponse {
 
         match diff {
             MapDiff::Initial { entries } => {
-                let upserts: Vec<WrappedItem> = entries
+                let upserts: Vec<ErasedWrappedItem> = entries
                     .iter()
-                    .map(|(_, item)| WrappedItem {
+                    .map(|(_, item)| ErasedWrappedItem {
                         item: item.clone(),
                         item_type: item.entity_type().into(),
                     })
@@ -265,7 +265,7 @@ impl QueryResponse {
                 }
             }
             MapDiff::Insert { key: _, value } => {
-                let upserts = vec![WrappedItem {
+                let upserts = vec![ErasedWrappedItem {
                     item: value.clone(),
                     item_type: value.entity_type().into(),
                 }];
@@ -289,7 +289,7 @@ impl QueryResponse {
                 old_value: _,
                 new_value,
             } => {
-                let upserts = vec![WrappedItem {
+                let upserts = vec![ErasedWrappedItem {
                     item: new_value.clone(),
                     item_type: new_value.entity_type().into(),
                 }];
@@ -383,8 +383,8 @@ pub struct QueryError {
 // Client-side (inbound) deserialization types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Client-side query response for deserialization. Uses WrappedItemValue (JSON values)
-/// instead of the server-side WrappedItem (type-erased AnyItem).
+/// Client-side query response for deserialization. Uses WrappedItem (JSON values)
+/// instead of the server-side ErasedWrappedItem (type-erased AnyItem).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientQueryResponse {
@@ -393,7 +393,7 @@ pub struct ClientQueryResponse {
 
     pub deletes: Vec<Arc<str>>,
 
-    pub upserts: Vec<super::item::WrappedItemValue>,
+    pub upserts: Vec<super::item::WrappedItem>,
 
     pub sequence: u64,
 
@@ -410,7 +410,7 @@ pub struct ClientQueryResponse {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ClientQueryChange {
     Upsert {
-        item: super::item::WrappedItemValue,
+        item: super::item::WrappedItem,
     },
     Delete {
         id: Arc<str>,

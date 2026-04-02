@@ -19,7 +19,7 @@ use crate::{
     report::AnyOutput,
     wire::{
         EncodedCommandMessage, MykoMessage, QueryChange, QueryResponse, QueryWindow, ReportError,
-        ReportResponse, WrappedItem,
+        ReportResponse, ErasedWrappedItem,
     },
 };
 
@@ -78,10 +78,10 @@ pub struct PendingQueryResponse {
 
 impl PendingQueryResponse {
     pub fn into_wire(self) -> QueryResponse {
-        let upserts: Vec<WrappedItem> = self
+        let upserts: Vec<ErasedWrappedItem> = self
             .upsert_items
             .iter()
-            .map(|item| WrappedItem {
+            .map(|item| ErasedWrappedItem {
                 item: item.clone(),
                 item_type: item.entity_type().into(),
             })

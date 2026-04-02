@@ -54,7 +54,7 @@ pub use crate::{
     wire::{
         CancelSubscription, CommandError, CommandResponse, MEvent, MEventType, MykoMessage,
         PingData, QueryChange, QueryError, QueryResponse, ReportError, ReportResponse,
-        WrappedCommand, WrappedItem, WrappedItemValue, WrappedQuery, WrappedReport,
+        WrappedCommand, ErasedWrappedItem, WrappedItem, WrappedQuery, WrappedReport,
     },
 };
 // Server-only re-exports (tokio-free types only; CellServer lives in myko-server)
