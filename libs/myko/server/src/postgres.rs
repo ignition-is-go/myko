@@ -17,7 +17,7 @@ use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use log::{error, info, trace, warn};
 use myko_rs::{
     event::{MEvent, MEventType},
-    server::{HandlerRegistry, PersistError, Persister},
+    server::{HandlerRegistry, PersistError, PersistHealth, Persister},
     store::StoreRegistry,
 };
 use postgres::fallible_iterator::FallibleIterator;
@@ -227,8 +227,7 @@ impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     }
 }
 
-/// Message sent to the producer thread: event + oneshot for the result.
-type ProducerRequest = (MEvent, mpsc::SyncSender<Result<(), PersistError>>);
+type ProducerRequest = MEvent;
 
 /// Handle to the PostgreSQL producer.
 #[derive(Clone)]
@@ -236,37 +235,51 @@ pub struct PostgresProducerHandle {
     sender: mpsc::SyncSender<ProducerRequest>,
     host_id: Uuid,
     config: PostgresConfig,
+    health: Arc<PersistHealth>,
 }
 
 impl PostgresProducerHandle {
-    /// Persist an event row. Sends to the background producer thread and
-    /// blocks until the insert completes, returning any error immediately.
+    /// Persist an event. Enqueues to the background producer thread and
+    /// returns immediately. Returns Err only if the channel is full (backpressure).
     pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
         if event.source_id.is_none() {
             event.source_id = Some(self.host_id.to_string());
         }
         let entity_type = event.item_type.clone();
 
-        let (result_tx, result_rx) = mpsc::sync_channel(1);
-        self.sender
-            .send((event, result_tx))
-            .map_err(|_| PersistError {
-                entity_type: entity_type.clone(),
-                message: "Postgres producer thread not running".to_string(),
-            })?;
-
-        result_rx.recv().unwrap_or_else(|_| {
-            Err(PersistError {
-                entity_type,
-                message: "Postgres producer thread dropped result channel".to_string(),
-            })
-        })
+        match self.sender.try_send(event) {
+            Ok(()) => {
+                self.health.record_enqueue();
+                Ok(())
+            }
+            Err(mpsc::TrySendError::Full(_)) => {
+                let msg = "Postgres producer channel full (backpressure)".to_string();
+                warn!("{}", msg);
+                self.health.record_dropped(msg.clone());
+                Err(PersistError {
+                    entity_type,
+                    message: msg,
+                })
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                let msg = "Postgres producer thread not running".to_string();
+                self.health.record_dropped(msg.clone());
+                Err(PersistError {
+                    entity_type,
+                    message: msg,
+                })
+            }
+        }
     }
 }
 
 impl Persister for PostgresProducerHandle {
     fn persist(&self, event: MEvent) -> Result<(), PersistError> {
         self.produce(event)
+    }
+
+    fn health(&self) -> Arc<PersistHealth> {
+        self.health.clone()
     }
 
     fn startup_healthcheck(&self) -> Result<(), String> {
@@ -287,15 +300,18 @@ impl CellPostgresProducer {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
 
+        let health = Arc::new(PersistHealth::default());
         let (tx, rx) = mpsc::sync_channel::<ProducerRequest>(config.producer_buffer);
         let cfg = config.clone();
-        std::thread::spawn(move || run_producer_loop(cfg, rx));
+        let thread_health = health.clone();
+        std::thread::spawn(move || run_producer_loop(cfg, rx, thread_health));
 
         Ok(Self {
             handle: PostgresProducerHandle {
                 sender: tx,
                 host_id,
                 config: config.clone(),
+                health,
             },
         })
     }
@@ -306,39 +322,34 @@ impl CellPostgresProducer {
     }
 }
 
-fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>) {
+fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>, health: Arc<PersistHealth>) {
     let mut client: Option<Client> = None;
 
-    while let Ok((event, result_tx)) = rx.recv() {
+    while let Ok(event) = rx.recv() {
         if client.is_none() {
             client = connect_producer_client(&config);
         }
 
-        let result = if let Some(c) = client.as_mut() {
+        if let Some(c) = client.as_mut() {
             match insert_event(c, &config, event) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    health.record_success();
+                }
                 Err(err) => {
-                    let msg =
-                        format_pg_error("insert_event(producer)", Some(&config.url), &err);
+                    let msg = format_pg_error("insert_event(producer)", Some(&config.url), &err);
                     error!("{}", msg);
+                    health.record_error(msg);
                     client = None;
-                    Err(PersistError {
-                        entity_type: String::new(),
-                        message: msg,
-                    })
                 }
             }
         } else {
-            Err(PersistError {
-                entity_type: String::new(),
-                message: format!(
-                    "Postgres producer connection failed (url: {})",
-                    config.url,
-                ),
-            })
-        };
-
-        let _ = result_tx.send(result);
+            let msg = format!(
+                "Postgres producer connection failed (url: {})",
+                redact_pg_url(&config.url),
+            );
+            error!("{}", msg);
+            health.record_error(msg);
+        }
     }
 }
 
