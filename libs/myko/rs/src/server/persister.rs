@@ -70,6 +70,13 @@ impl PersistHealth {
         self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
         *self.last_error.write().unwrap() = Some(msg);
     }
+
+    /// Record an error without decrementing queued (event will be retried).
+    pub fn record_error_no_dequeue(&self, msg: String) {
+        self.total_errors.fetch_add(1, Ordering::Relaxed);
+        self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
+        *self.last_error.write().unwrap() = Some(msg);
+    }
 }
 
 /// Trait for persisting events to a durable store.

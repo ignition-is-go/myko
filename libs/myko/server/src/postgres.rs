@@ -246,7 +246,7 @@ type ProducerRequest = MEvent;
 /// Handle to the PostgreSQL producer.
 #[derive(Clone)]
 pub struct PostgresProducerHandle {
-    sender: mpsc::SyncSender<ProducerRequest>,
+    sender: mpsc::Sender<ProducerRequest>,
     host_id: Uuid,
     config: PostgresConfig,
     health: Arc<PersistHealth>,
@@ -261,21 +261,12 @@ impl PostgresProducerHandle {
         }
         let entity_type = event.item_type.clone();
 
-        match self.sender.try_send(event) {
+        match self.sender.send(event) {
             Ok(()) => {
                 self.health.record_enqueue();
                 Ok(())
             }
-            Err(mpsc::TrySendError::Full(_)) => {
-                let msg = "Postgres producer channel full (backpressure)".to_string();
-                warn!("{}", msg);
-                self.health.record_dropped(msg.clone());
-                Err(PersistError {
-                    entity_type,
-                    message: msg,
-                })
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
+            Err(_) => {
                 let msg = "Postgres producer thread not running".to_string();
                 self.health.record_dropped(msg.clone());
                 Err(PersistError {
@@ -315,7 +306,7 @@ impl CellPostgresProducer {
         validate_ident(&config.channel)?;
 
         let health = Arc::new(PersistHealth::default());
-        let (tx, rx) = mpsc::sync_channel::<ProducerRequest>(config.producer_buffer);
+        let (tx, rx) = mpsc::channel::<ProducerRequest>();
         let cfg = config.clone();
         let thread_health = health.clone();
         std::thread::spawn(move || run_producer_loop(cfg, rx, thread_health));
@@ -338,22 +329,36 @@ impl CellPostgresProducer {
 
 fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>, health: Arc<PersistHealth>) {
     let mut client: Option<Client> = None;
+    let mut retry: Option<MEvent> = None;
 
-    while let Ok(event) = rx.recv() {
+    loop {
+        // NOTE(ts): Take the retry event first, otherwise recv the next from the channel.
+        let event = if let Some(ev) = retry.take() {
+            ev
+        } else {
+            match rx.recv() {
+                Ok(ev) => ev,
+                Err(_) => break, // channel closed
+            }
+        };
+
         if client.is_none() {
             client = connect_producer_client(&config);
         }
 
         if let Some(c) = client.as_mut() {
-            match insert_event(c, &config, event) {
+            match insert_event(c, &config, event.clone()) {
                 Ok(()) => {
                     health.record_success();
                 }
                 Err(err) => {
                     let msg = format_pg_error("insert_event(producer)", Some(&config.url), &err);
                     error!("{}", msg);
-                    health.record_error(msg);
+                    health.record_error_no_dequeue(msg);
                     client = None;
+                    retry = Some(event);
+                    // NOTE(ts): Back off before retrying to avoid tight-looping on persistent failures.
+                    std::thread::sleep(Duration::from_secs(1));
                 }
             }
         } else {
@@ -362,7 +367,9 @@ fn run_producer_loop(config: PostgresConfig, rx: mpsc::Receiver<ProducerRequest>
                 redact_pg_url(&config.url),
             );
             error!("{}", msg);
-            health.record_error(msg);
+            health.record_error_no_dequeue(msg);
+            retry = Some(event);
+            std::thread::sleep(Duration::from_secs(1));
         }
     }
 }
