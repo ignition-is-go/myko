@@ -264,6 +264,21 @@ struct CommandJob {
     received_at: Instant,
 }
 
+/// Result of an async subscription build (query or view cell_factory).
+enum SubscriptionReady {
+    Query {
+        tx_id: Arc<str>,
+        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko_rs::item::AnyItem>, hyphae::CellImmutable>,
+        window: Option<myko_rs::wire::QueryWindow>,
+    },
+    View {
+        tx_id: Arc<str>,
+        view_id: Arc<str>,
+        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko_rs::item::AnyItem>, hyphae::CellImmutable>,
+        window: Option<myko_rs::wire::QueryWindow>,
+    },
+}
+
 enum OutboundMessage {
     Message(MykoMessage),
     SerializedCommand {
@@ -308,6 +323,7 @@ impl WsHandler {
         let (deferred_tx, mut deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, mut priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommandJob>();
+        let (subscribe_tx, mut subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
 
         // Protocol: default to JSON, switch to binary only if client opts in
         let use_binary = Arc::new(AtomicBool::new(false));
@@ -565,119 +581,131 @@ impl WsHandler {
             }
         });
 
-        // Process incoming messages
-        while let Some(msg) = read.next().await {
-            let ctx = ctx.clone();
-            let msg = match msg {
-                Ok(m) => m,
-                Err(e) => {
-                    log::error!("WebSocket read error from {}: {}", client_id, e);
-                    break;
-                }
-            };
-
-            match msg {
-                Message::Binary(data) => {
-                    // Auto-detect: receiving binary means client wants binary responses
-                    if !use_binary.load(Ordering::SeqCst) {
-                        log::debug!(
-                            "Client {} switched to binary (msgpack) protocol via auto-detect",
-                            client_id
-                        );
-                        use_binary.store(true, Ordering::SeqCst);
-                    }
-
-                    match rmp_serde::from_slice::<MykoMessage>(&data) {
-                        Ok(myko_msg) => {
-                            if let Err(e) = Self::handle_message(
-                                &mut session,
-                                ctx,
-                                &priority_tx,
-                                drop_logger.as_ref(),
-                                &query_ids_by_tx,
-                                &view_ids_by_tx,
-                                &subscribe_started_by_tx,
-                                &command_started_by_tx,
-                                &outbound_commands_by_tx,
-                                &command_tx,
-                                myko_msg,
-                            ) {
-                                log::error!("Error handling message: {}", e);
-                            }
-                            // Allow writer task to make progress during startup burst.
-                            tokio::task::yield_now().await;
+        // Process incoming messages and completed subscription builds concurrently.
+        // NOTE(ts): View/query cell_factory calls are spawned on the blocking thread pool
+        // so they don't block command processing or other messages.
+        loop {
+            tokio::select! {
+                // Completed subscription builds — register with session
+                Some(ready) = subscribe_rx.recv() => {
+                    match ready {
+                        SubscriptionReady::Query { tx_id, cellmap, window } => {
+                            session.subscribe_query(tx_id, cellmap, window);
                         }
-                        Err(e) => {
-                            log::warn!("Failed to parse message from {}: {}", client_id, e);
+                        SubscriptionReady::View { tx_id, view_id, cellmap, window } => {
+                            session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
                         }
                     }
                 }
-                Message::Text(text) => {
-                    // Check for protocol switch request
-                    if text == SWITCH_TO_MSGPACK {
-                        log::debug!(
-                            "Client {} switched to binary (msgpack) protocol via explicit request",
-                            client_id
-                        );
-                        // Send confirmation FIRST (still in JSON mode)
-                        if let Err(e) = priority_tx.try_send(MykoMessage::ProtocolSwitch {
-                            protocol: "msgpack".into(),
-                        }) {
-                            drop_logger.on_drop("ProtocolSwitch", &e);
-                        }
-                        // Then switch to binary for subsequent messages
-                        use_binary.store(true, Ordering::SeqCst);
-                        continue;
-                    }
-
-                    match serde_json::from_str::<MykoMessage>(&text) {
-                        Ok(myko_msg) => {
-                            if let Err(e) = Self::handle_message(
-                                &mut session,
-                                ctx,
-                                &priority_tx,
-                                drop_logger.as_ref(),
-                                &query_ids_by_tx,
-                                &view_ids_by_tx,
-                                &subscribe_started_by_tx,
-                                &command_started_by_tx,
-                                &outbound_commands_by_tx,
-                                &command_tx,
-                                myko_msg,
-                            ) {
-                                log::error!("Error handling message: {}", e);
-                            }
-                            // Allow writer task to make progress during startup burst.
-                            tokio::task::yield_now().await;
-                        }
+                // Incoming WebSocket messages
+                msg = read.next() => {
+                    let Some(msg) = msg else { break };
+                    let ctx = ctx.clone();
+                    let msg = match msg {
+                        Ok(m) => m,
                         Err(e) => {
-                            log::warn!(
-                                "Failed to parse JSON message from {}: {} | raw: {}",
-                                client_id,
-                                e,
-                                if text.len() > 1000 {
-                                    &text[..1000]
-                                } else {
-                                    &text
+                            log::error!("WebSocket read error from {}: {}", client_id, e);
+                            break;
+                        }
+                    };
+
+                    match msg {
+                        Message::Binary(data) => {
+                            if !use_binary.load(Ordering::SeqCst) {
+                                log::debug!(
+                                    "Client {} switched to binary (msgpack) protocol via auto-detect",
+                                    client_id
+                                );
+                                use_binary.store(true, Ordering::SeqCst);
+                            }
+
+                            match rmp_serde::from_slice::<MykoMessage>(&data) {
+                                Ok(myko_msg) => {
+                                    if let Err(e) = Self::handle_message(
+                                        &mut session,
+                                        ctx,
+                                        &priority_tx,
+                                        &drop_logger,
+                                        &query_ids_by_tx,
+                                        &view_ids_by_tx,
+                                        &subscribe_started_by_tx,
+                                        &command_started_by_tx,
+                                        &outbound_commands_by_tx,
+                                        &command_tx,
+                                        &subscribe_tx,
+                                        myko_msg,
+                                    ) {
+                                        log::error!("Error handling message: {}", e);
+                                    }
+                                    tokio::task::yield_now().await;
                                 }
-                            );
+                                Err(e) => {
+                                    log::warn!("Failed to parse message from {}: {}", client_id, e);
+                                }
+                            }
                         }
+                        Message::Text(text) => {
+                            if text == SWITCH_TO_MSGPACK {
+                                log::debug!(
+                                    "Client {} switched to binary (msgpack) protocol via explicit request",
+                                    client_id
+                                );
+                                if let Err(e) = priority_tx.try_send(MykoMessage::ProtocolSwitch {
+                                    protocol: "msgpack".into(),
+                                }) {
+                                    drop_logger.on_drop("ProtocolSwitch", &e);
+                                }
+                                use_binary.store(true, Ordering::SeqCst);
+                                continue;
+                            }
+
+                            match serde_json::from_str::<MykoMessage>(&text) {
+                                Ok(myko_msg) => {
+                                    if let Err(e) = Self::handle_message(
+                                        &mut session,
+                                        ctx,
+                                        &priority_tx,
+                                        &drop_logger,
+                                        &query_ids_by_tx,
+                                        &view_ids_by_tx,
+                                        &subscribe_started_by_tx,
+                                        &command_started_by_tx,
+                                        &outbound_commands_by_tx,
+                                        &command_tx,
+                                        &subscribe_tx,
+                                        myko_msg,
+                                    ) {
+                                        log::error!("Error handling message: {}", e);
+                                    }
+                                    tokio::task::yield_now().await;
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Failed to parse JSON message from {}: {} | raw: {}",
+                                        client_id,
+                                        e,
+                                        if text.len() > 1000 {
+                                            &text[..1000]
+                                        } else {
+                                            &text
+                                        }
+                                    );
+                                }
+                            }
+                        }
+                        Message::Ping(data) => {
+                            log::trace!("Ping from {}", client_id);
+                            let _ = data;
+                        }
+                        Message::Pong(_) => {
+                            log::trace!("Pong from {}", client_id);
+                        }
+                        Message::Close(frame) => {
+                            log::warn!("Client {} sent close frame: {:?}", client_id, frame);
+                            break;
+                        }
+                        Message::Frame(_) => {}
                     }
-                }
-                Message::Ping(data) => {
-                    // Pong is sent automatically by tungstenite
-                    log::trace!("Ping from {}", client_id);
-                    let _ = data; // silence unused warning
-                }
-                Message::Pong(_) => {
-                    log::trace!("Pong from {}", client_id);
-                }
-                Message::Close(frame) => {
-                    log::warn!("Client {} sent close frame: {:?}", client_id, frame);
-                    break;
-                }
-                Message::Frame(_) => {
-                    // Raw frames - ignore
                 }
             }
         }
@@ -708,13 +736,14 @@ impl WsHandler {
         session: &mut ClientSession<W>,
         ctx: Arc<CellServerCtx>,
         priority_tx: &mpsc::Sender<MykoMessage>,
-        drop_logger: &DropLogger,
+        drop_logger: &Arc<DropLogger>,
         query_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
         view_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
         subscribe_started_by_tx: &Arc<Mutex<HashMap<Arc<str>, Instant>>>,
         command_started_by_tx: &Arc<Mutex<HashMap<Arc<str>, Instant>>>,
         outbound_commands_by_tx: &Arc<Mutex<HashMap<String, (String, Instant)>>>,
         command_tx: &mpsc::UnboundedSender<CommandJob>,
+        subscribe_tx: &mpsc::UnboundedSender<SubscriptionReady>,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let handler_registry = ctx.handler_registry.clone();
@@ -772,32 +801,41 @@ impl WsHandler {
                 ));
 
                 if let Some(query_data) = handler_registry.get_query(query_id) {
-                    // Parse the query JSON to the concrete type
                     let parsed = (query_data.parse)(wrapped.query.clone());
                     match parsed {
                         Ok(any_query) => {
-                            // Create the cell using the factory (with host_id for server context)
-                            match (query_data.cell_factory)(
-                                any_query,
-                                registry.clone(),
-                                request_context.clone(),
-                                Some(ctx.clone()),
-                            ) {
-                                Ok(filtered_cellmap) => {
-                                    session.subscribe_query(
-                                        tx_id,
-                                        filtered_cellmap,
-                                        wrapped.window.clone(),
-                                    );
+                            // NOTE(ts): Spawn cell_factory on blocking pool so it doesn't
+                            // block command processing or other messages.
+                            let cell_factory = query_data.cell_factory;
+                            let registry = registry.clone();
+                            let request_context = request_context.clone();
+                            let ctx = ctx.clone();
+                            let window = wrapped.window.clone();
+                            let query_id = query_id.clone();
+                            let sub_tx = subscribe_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                match cell_factory(
+                                    any_query,
+                                    registry,
+                                    request_context,
+                                    Some(ctx),
+                                ) {
+                                    Ok(filtered_cellmap) => {
+                                        let _ = sub_tx.send(SubscriptionReady::Query {
+                                            tx_id,
+                                            cellmap: filtered_cellmap,
+                                            window,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to create query cell for {}: {}",
+                                            query_id,
+                                            e
+                                        );
+                                    }
                                 }
-                                Err(e) => {
-                                    log::error!(
-                                        "Failed to create query cell for {}: {}",
-                                        query_id,
-                                        e
-                                    );
-                                }
-                            }
+                            });
                         }
                         Err(e) => {
                             log::error!(
@@ -873,43 +911,54 @@ impl WsHandler {
                                 tx_id,
                                 view_id
                             );
-                            match (view_data.cell_factory)(
-                                any_view,
-                                registry.clone(),
-                                request_context,
-                                ctx.clone(),
-                            ) {
-                                Ok(filtered_cellmap) => {
-                                    log::trace!(
-                                        "View cell factory succeeded client={} tx={} view_id={}",
-                                        session.client_id,
-                                        tx_id,
-                                        view_id
-                                    );
-                                    session.subscribe_view_with_id(
-                                        tx_id,
-                                        view_id.clone(),
-                                        filtered_cellmap,
-                                        wrapped.window.clone(),
-                                    );
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "Failed to create view cell for {}: {}",
-                                        view_id,
-                                        e
-                                    );
-                                    if let Err(err) =
-                                        priority_tx.try_send(MykoMessage::ViewError(ViewError {
-                                            tx: tx_id.to_string(),
-                                            view_id: view_id.to_string(),
-                                            message: e,
-                                        }))
-                                    {
-                                        drop_logger.on_drop("ViewError", &err);
+                            // NOTE(ts): Spawn cell_factory on blocking pool so it doesn't
+                            // block command processing or other messages.
+                            let cell_factory = view_data.cell_factory;
+                            let registry = registry.clone();
+                            let ctx = ctx.clone();
+                            let window = wrapped.window.clone();
+                            let view_id_clone = view_id.clone();
+                            let sub_tx = subscribe_tx.clone();
+                            let priority_tx = priority_tx.clone();
+                            let drop_logger = drop_logger.clone();
+                            tokio::task::spawn_blocking(move || {
+                                match cell_factory(
+                                    any_view,
+                                    registry,
+                                    request_context,
+                                    ctx,
+                                ) {
+                                    Ok(filtered_cellmap) => {
+                                        log::trace!(
+                                            "View cell factory succeeded tx={} view_id={}",
+                                            tx_id,
+                                            view_id_clone
+                                        );
+                                        let _ = sub_tx.send(SubscriptionReady::View {
+                                            tx_id,
+                                            view_id: view_id_clone,
+                                            cellmap: filtered_cellmap,
+                                            window,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to create view cell for {}: {}",
+                                            view_id_clone,
+                                            e
+                                        );
+                                        if let Err(err) =
+                                            priority_tx.try_send(MykoMessage::ViewError(ViewError {
+                                                tx: tx_id.to_string(),
+                                                view_id: view_id_clone.to_string(),
+                                                message: e,
+                                            }))
+                                        {
+                                            drop_logger.on_drop("ViewError", &err);
+                                        }
                                     }
                                 }
-                            }
+                            });
                         }
                         Err(e) => {
                             let message = format!("Failed to parse view {}: {}", view_id, e);
