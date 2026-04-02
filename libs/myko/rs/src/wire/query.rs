@@ -121,10 +121,6 @@ impl AnyItem for ValueItem {
         // NOTE(ts): leak is acceptable here because entity types are a fixed set
         Box::leak(self.item_type.to_string().into_boxed_str())
     }
-    fn content_hash(&self) -> &Arc<str> {
-        static EMPTY: std::sync::LazyLock<Arc<str>> = std::sync::LazyLock::new(|| Arc::from(""));
-        &EMPTY
-    }
     fn equals(&self, other: &dyn AnyItem) -> bool {
         other
             .as_any()

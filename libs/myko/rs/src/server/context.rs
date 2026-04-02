@@ -1392,12 +1392,6 @@ mod tests {
             "BufferedTestItem"
         }
 
-        fn content_hash(&self) -> &Arc<str> {
-            static EMPTY: std::sync::LazyLock<Arc<str>> =
-                std::sync::LazyLock::new(|| Arc::from(""));
-            &EMPTY
-        }
-
         fn equals(&self, other: &dyn AnyItem) -> bool {
             other
                 .as_any()
@@ -1445,12 +1439,6 @@ mod tests {
 
         fn entity_type(&self) -> &'static str {
             "ImmediateTestItem"
-        }
-
-        fn content_hash(&self) -> &Arc<str> {
-            static EMPTY: std::sync::LazyLock<Arc<str>> =
-                std::sync::LazyLock::new(|| Arc::from(""));
-            &EMPTY
         }
 
         fn equals(&self, other: &dyn AnyItem) -> bool {
