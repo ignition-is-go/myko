@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::{
     HandlerRegistry, RelationshipManager,
-    persister::{PersistError, PersisterRouter},
+    persister::{PersistError, PersistHealth, PersisterRouter},
 };
 use crate::{
     cache::CacheKey,
@@ -247,6 +247,11 @@ impl CellServerCtx {
     /// Number of currently tracked peer clients.
     pub fn peer_client_count(&self) -> usize {
         self.peer_clients.len()
+    }
+
+    /// Get the live persist health counters from the default persister.
+    pub fn persist_health(&self) -> Arc<PersistHealth> {
+        self.persisters.default_health()
     }
 
     /// Number of entries in the query cache (includes dead weak refs).

@@ -15,6 +15,8 @@ use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::server::PersistHealth;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::store::StoreRegistry;
 use crate::{
     cache::CacheKey,
@@ -248,6 +250,12 @@ impl ReportContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.server_ctx.peer_clients_tick()
+    }
+
+    /// Get the live persist health counters (queued, errors, throughput).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn persist_health(&self) -> Arc<PersistHealth> {
+        self.server_ctx.persist_health()
     }
 
     /// Access the store registry for type-erased entity lookups.
