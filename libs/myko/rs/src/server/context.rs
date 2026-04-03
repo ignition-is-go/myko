@@ -296,6 +296,26 @@ impl CellServerCtx {
             .count()
     }
 
+    /// Remove dead weak-ref entries from all caches.
+    /// Returns (query_removed, view_removed, report_removed).
+    pub fn sweep_dead_cache_entries(&self) -> (usize, usize, usize) {
+        let q_before = self.query_cache.len();
+        self.query_cache
+            .retain(|_, entry| entry.weak.upgrade().is_some());
+        let q_removed = q_before - self.query_cache.len();
+
+        let v_before = self.view_cache.len();
+        self.view_cache
+            .retain(|_, entry| entry.weak.upgrade().is_some());
+        let v_removed = v_before - self.view_cache.len();
+
+        let r_before = self.report_cache.len();
+        self.report_cache.retain(|_, entry| entry.is_alive());
+        let r_removed = r_before - self.report_cache.len();
+
+        (q_removed, v_removed, r_removed)
+    }
+
     /// Parse JSON to a typed entity using the registered item parser.
     ///
     /// Returns None if the entity type is not registered or parsing fails.
