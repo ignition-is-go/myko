@@ -10,11 +10,11 @@ use crate::core::item::AnyItem;
 /// # Example
 /// ```rust,no_run
 /// use std::{any::Any, sync::Arc};
-/// use myko_rs::common::{to_value::ToValue, with_id::WithId};
+/// use myko_rs::common::with_id::WithId;
 /// use myko_rs::item::AnyItem;
 /// use myko_rs::utils::downcast_item;
 ///
-/// #[derive(Clone, Debug, PartialEq)]
+/// #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 /// struct Server {
 ///     id: Arc<str>,
 /// }
@@ -22,12 +22,6 @@ use crate::core::item::AnyItem;
 /// impl WithId for Server {
 ///     fn id(&self) -> Arc<str> {
 ///         self.id.clone()
-///     }
-/// }
-///
-/// impl ToValue for Server {
-///     fn to_value(&self) -> serde_json::Value {
-///         serde_json::json!({ "id": self.id.as_ref() })
 ///     }
 /// }
 ///
