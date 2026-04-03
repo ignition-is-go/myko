@@ -18,8 +18,8 @@ use crate::{
     core::item::AnyItem,
     report::AnyOutput,
     wire::{
-        EncodedCommandMessage, MykoMessage, QueryChange, QueryResponse, QueryWindow, ReportError,
-        ReportResponse, ErasedWrappedItem,
+        EncodedCommandMessage, ErasedWrappedItem, MykoMessage, QueryChange, QueryResponse,
+        QueryWindow, ReportError, ReportResponse,
     },
 };
 
