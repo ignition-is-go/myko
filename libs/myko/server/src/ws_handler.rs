@@ -32,7 +32,7 @@ use myko_rs::{
         MEventType, MykoMessage, PingData, QueryWindowUpdate, ViewError, ViewWindowUpdate,
     },
 };
-use tokio::{net::TcpStream, sync::mpsc};
+use tokio::{net::TcpStream, sync::mpsc, time::interval};
 use tokio_tungstenite::{
     accept_async_with_config,
     tungstenite::{Message, protocol::WebSocketConfig},
@@ -556,12 +556,15 @@ impl WsHandler {
 
         // Execute commands on a dedicated worker so ping/cancel traffic is never
         // blocked by long-running command handlers.
+        let command_started_cleanup = command_started_by_tx.clone();
         let command_task = tokio::spawn(async move {
             while let Some(job) = command_rx.recv().await {
                 let command_ctx = command_ctx.clone();
                 let command_priority_tx = command_priority_tx.clone();
                 let command_drop_logger = command_drop_logger.clone();
                 let command_client_id = command_client_id.clone();
+                let tx_id = job.tx_id.clone();
+                let started_map = command_started_cleanup.clone();
                 match tokio::task::spawn_blocking(move || {
                     Self::execute_command_job(
                         command_ctx,
@@ -578,22 +581,53 @@ impl WsHandler {
                         log::error!("Command worker panicked: {}", e);
                     }
                 }
+                // NOTE(ts): Clean up timing entry after command completes (success or panic).
+                if let Ok(mut map) = started_map.lock() {
+                    map.remove(&tx_id);
+                }
             }
         });
 
         // Process incoming messages and completed subscription builds concurrently.
         // NOTE(ts): View/query cell_factory calls are spawned on the blocking thread pool
         // so they don't block command processing or other messages.
+        let mut outbound_ttl_interval = interval(Duration::from_secs(10));
+        outbound_ttl_interval.tick().await; // NOTE(ts): consume the immediate first tick
         loop {
             tokio::select! {
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
+                    let tx_id = match &ready {
+                        SubscriptionReady::Query { tx_id, .. } => tx_id.clone(),
+                        SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
+                    };
+                    if let Ok(mut map) = subscribe_started_by_tx.lock() {
+                        map.remove(&tx_id);
+                    }
                     match ready {
                         SubscriptionReady::Query { tx_id, cellmap, window } => {
                             session.subscribe_query(tx_id, cellmap, window);
                         }
                         SubscriptionReady::View { tx_id, view_id, cellmap, window } => {
                             session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
+                        }
+                    }
+                }
+                // NOTE(ts): Sweep outbound command entries older than 10s.
+                // Responses normally arrive quickly; stale entries are from
+                // dropped connections or commands that will never get a response.
+                _ = outbound_ttl_interval.tick() => {
+                    if let Ok(mut map) = outbound_commands_by_tx.lock() {
+                        let before = map.len();
+                        map.retain(|_, (_, started)| started.elapsed() < Duration::from_secs(10));
+                        let removed = before - map.len();
+                        if removed > 0 {
+                            log::debug!(
+                                "Outbound command TTL sweep client={}: removed {} stale entries, {} remaining",
+                                session.client_id,
+                                removed,
+                                map.len()
+                            );
                         }
                     }
                 }
