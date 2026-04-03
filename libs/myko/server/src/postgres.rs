@@ -8,7 +8,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
     time::Duration,
 };
@@ -38,8 +37,6 @@ pub struct PostgresConfig {
     pub table: String,
     /// LISTEN/NOTIFY channel name.
     pub channel: String,
-    /// Producer channel capacity before backpressure/drop on try_send.
-    pub producer_buffer: usize,
 }
 
 /// Persisted event row fetched from Postgres.
@@ -61,16 +58,10 @@ impl PostgresConfig {
         let table = std::env::var("MYKO_POSTGRES_TABLE").unwrap_or_else(|_| "myko_events".into());
         let channel =
             std::env::var("MYKO_POSTGRES_CHANNEL").unwrap_or_else(|_| "myko_events_notify".into());
-        let producer_buffer = std::env::var("MYKO_POSTGRES_PRODUCER_BUFFER")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(50_000);
         Some(Self {
             url,
             table,
             channel,
-            producer_buffer,
         })
     }
 }
@@ -247,7 +238,7 @@ type ProducerRequest = MEvent;
 /// Handle to the PostgreSQL producer.
 #[derive(Clone)]
 pub struct PostgresProducerHandle {
-    sender: mpsc::Sender<ProducerRequest>,
+    sender: flume::Sender<ProducerRequest>,
     host_id: Uuid,
     config: PostgresConfig,
     health: Arc<PersistHealth>,
@@ -307,7 +298,7 @@ impl CellPostgresProducer {
         validate_ident(&config.channel)?;
 
         let health = Arc::new(PersistHealth::default());
-        let (tx, rx) = mpsc::channel::<ProducerRequest>();
+        let (tx, rx) = flume::unbounded::<ProducerRequest>();
         let cfg = config.clone();
         let thread_health = health.clone();
         std::thread::spawn(move || run_producer_loop(cfg, rx, thread_health));
@@ -330,7 +321,7 @@ impl CellPostgresProducer {
 
 fn run_producer_loop(
     config: PostgresConfig,
-    rx: mpsc::Receiver<ProducerRequest>,
+    rx: flume::Receiver<ProducerRequest>,
     health: Arc<PersistHealth>,
 ) {
     let mut client: Option<Client> = None;
