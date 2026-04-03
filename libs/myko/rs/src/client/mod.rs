@@ -304,7 +304,8 @@ impl MykoClient {
         transport: Arc<dyn SocketTransport>,
         options: MykoClientOptions,
     ) -> MykoClient {
-        let protocol = Arc::new(AtomicU8::new(MykoProtocol::MSGPACK as u8));
+        // NOTE(ts): Force JSON until msgpack report-response round-trip is diagnosed
+        let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON as u8));
         let last_message = Cell::new(None).with_name("last_message");
         let ping_ms = Cell::new(None).with_name("ping_ms");
 
@@ -537,6 +538,7 @@ impl MykoClient {
         // deserializing QueryResponse/ViewResponse through MykoMessage (which
         // would require round-tripping Arc<dyn AnyItem> through serde).
         let event_tag = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+
         let data = || {
             value
                 .get("data")
@@ -645,7 +647,17 @@ impl MykoClient {
     fn decode_message(frame: &WsFrame) -> Option<Value> {
         match frame {
             WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
-            WsFrame::Binary(bytes) => rmp_serde::from_slice::<Value>(bytes).ok(),
+            WsFrame::Binary(bytes) => match rmp_serde::from_slice::<Value>(bytes) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    warn!(
+                        "msgpack decode failed ({} bytes): {}",
+                        bytes.len(),
+                        e
+                    );
+                    None
+                }
+            },
         }
     }
 
