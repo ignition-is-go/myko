@@ -650,11 +650,7 @@ impl MykoClient {
             WsFrame::Binary(bytes) => match rmp_serde::from_slice::<Value>(bytes) {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    warn!(
-                        "msgpack decode failed ({} bytes): {}",
-                        bytes.len(),
-                        e
-                    );
+                    warn!("msgpack decode failed ({} bytes): {}", bytes.len(), e);
                     None
                 }
             },
