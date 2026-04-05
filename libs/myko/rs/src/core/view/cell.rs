@@ -46,12 +46,13 @@ where
     }
 
     let output = CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
-    let output_clone = output.clone();
+    let weak = output.downgrade();
     let guard = typed.subscribe_diffs(move |diff| {
+        let Some(output) = weak.upgrade() else { return };
         let mapped = map_any_diff(diff);
         match mapped {
-            MapDiff::Batch { changes } => output_clone.apply_batch(changes),
-            other => output_clone.apply_batch(vec![other]),
+            MapDiff::Batch { changes } => output.apply_batch(changes),
+            other => output.apply_batch(vec![other]),
         }
     });
     output.own_guard(guard);

@@ -83,10 +83,11 @@ pub fn typed_map_from_any_item<T: CellValue + 'static>(
     context: &'static str,
 ) -> CellMap<Arc<str>, T, CellImmutable> {
     let typed = CellMap::<Arc<str>, T>::new();
-    let typed_clone = typed.clone();
+    let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
+        let Some(typed) = weak.upgrade() else { return };
         let typed_diff = downcast_any_item_map_diff::<T>(diff, context);
-        apply_map_diff(&typed_clone, &typed_diff);
+        apply_map_diff(&typed, &typed_diff);
     });
     typed.own_guard(guard);
     typed.lock()
@@ -97,10 +98,11 @@ pub fn typed_map_arc_from_any_item<T: std::fmt::Debug + PartialEq + Send + Sync 
     context: &'static str,
 ) -> CellMap<Arc<str>, Arc<T>, CellImmutable> {
     let typed = CellMap::<Arc<str>, Arc<T>>::new();
-    let typed_clone = typed.clone();
+    let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
+        let Some(typed) = weak.upgrade() else { return };
         let typed_diff = downcast_any_item_map_diff_arc::<T>(diff, context);
-        apply_map_diff(&typed_clone, &typed_diff);
+        apply_map_diff(&typed, &typed_diff);
     });
     typed.own_guard(guard);
     typed.lock()
@@ -114,12 +116,13 @@ where
     T: CellValue + WithTypedId + Send + Sync + 'static,
 {
     let typed = CellMap::<<T as WithTypedId>::Id, Arc<T>>::new();
-    let typed_clone = typed.clone();
+    let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
+        let Some(typed) = weak.upgrade() else { return };
         let typed_diff = downcast_any_item_map_diff_arc::<T>(diff, context);
         let mut changes: Vec<MapDiff<<T as WithTypedId>::Id, Arc<T>>> = Vec::new();
         remap_diff_to_typed_id(&typed_diff, &mut changes);
-        typed_clone.apply_batch(changes);
+        typed.apply_batch(changes);
     });
     typed.own_guard(guard);
     typed.lock()
