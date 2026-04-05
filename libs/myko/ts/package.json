@@ -1,6 +1,6 @@
 {
   "name": "@myko/ts",
-  "version": "4.0.0-canary.25",
+  "version": "4.0.0-canary.26",
   "description": "Pure TypeScript client for Myko servers",
   "type": "module",
   "main": "dist/index.js",

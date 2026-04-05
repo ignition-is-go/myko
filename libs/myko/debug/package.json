@@ -4,5 +4,5 @@
   "main": "./src/index.ts",
   "name": "@myko/debug",
   "types": "./src/index.ts",
-  "version": "4.0.0-canary.25"
+  "version": "4.0.0-canary.26"
 }
