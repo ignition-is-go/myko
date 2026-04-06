@@ -17,13 +17,12 @@ use myko::{
 fn make_bench_item_event(id: &str, name: &str) -> MEvent {
     let item = BenchItem {
         id: id.into(),
-        hash: format!("hash-{}", id).into(),
         name: name.to_string(),
         category: "test".to_string(),
         value: 42,
     };
 
-    MEvent::from_item(&item, MEventType::SET, format!("tx-{}", id))
+    MEvent::from_item(&item, MEventType::SET, &format!("tx-{}", id))
 }
 
 fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
@@ -34,6 +33,7 @@ fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
         change_type,
         created_at: chrono::Utc::now().to_rfc3339(),
         source_id: None,
+        options: None,
     }
 }
 
@@ -80,13 +80,12 @@ fn test_saga_filter_chain() {
         MEvent::from_item(
             &BenchItem {
                 id: "id-3".into(),
-                hash: "h".into(),
                 name: "Third".to_string(),
                 category: "test".to_string(),
                 value: 0,
             },
             MEventType::DEL,
-            "tx-3".to_string(),
+            "tx-3",
         ),
     ]);
 
@@ -131,13 +130,12 @@ fn test_saga_of_change_type() {
         MEvent::from_item(
             &BenchItem {
                 id: "id-2".into(),
-                hash: "h".into(),
                 name: "Second".to_string(),
                 category: "test".to_string(),
                 value: 0,
             },
             MEventType::DEL,
-            "tx-2".to_string(),
+            "tx-2",
         ),
         make_bench_item_event("id-3", "Third"),
     ]);

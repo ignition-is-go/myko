@@ -106,6 +106,7 @@ where
 /// Each entity has its own RwSignal — only subscribers to that specific entity
 /// are notified on update. The `ids` signal tracks the full ID list for `<For>`
 /// iteration and is updated once per diff (not per-entity).
+#[allow(dead_code, clippy::type_complexity)]
 fn apply_diff<T: Clone + Send + Sync + 'static>(
     signals: &StoredValue<std::collections::HashMap<Arc<str>, RwSignal<Option<Arc<T>>>>>,
     ids_write: &WriteSignal<Vec<Arc<str>>>,
@@ -283,6 +284,7 @@ where
 /// The inner CellMap is kept alive via StoredValue to maintain the diff subscription.
 #[derive(Clone, Copy)]
 pub struct LiveQueryMap<T: Clone + Send + Sync + 'static> {
+    #[allow(clippy::type_complexity)]
     signals: StoredValue<std::collections::HashMap<Arc<str>, RwSignal<Option<Arc<T>>>>>,
     /// Reactive list of entity IDs (for `<For>` iteration)
     pub ids: ReadSignal<Vec<Arc<str>>>,
