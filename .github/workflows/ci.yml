@@ -38,6 +38,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
 
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
       - run: cargo install cargo-flux
       - run: cargo flux run release
         env:
