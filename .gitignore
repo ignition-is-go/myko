@@ -1,5 +1,3 @@
-# See http://help.github.com/ignore-files/ for more about ignoring files.
-
 # compiled output
 **/dist
 **/pub
@@ -14,6 +12,7 @@
 
 # python
 __pycache__
+*.egg-info
 
 # IDEs and editors
 /.idea
@@ -35,108 +34,31 @@ __pycache__
 /.sass-cache
 /connect.lock
 /coverage
-/libpeerconnection.log
 npm-debug.log
 yarn-error.log
 testem.log
 /typings
-/libs/rship-logging/src/logs/*
-
-/libs/generated/version.ts
-
-apps/rship/gateway/libs/rship-logging/*
-apps/rship/server/libs/rship-logging/*
-apps/rship/pixera/libs/rship-logging/*
-apps/rship/dirigera/libs/rship-logging/*
-apps/rship/ableton/libs/rship-logging/*
-apps/sherlock/server/libs/rship-logging/*
-apps/rship/ventuz/libs/rship-logging/*
-apps/testbed/libs/rship-logging/*
-
-**/dev-deploy
-**/dev-deploy**
 
 # System Files
 .DS_Store
 Thumbs.db
 
-yarn.lock
-
-# electron build files
-/out
-
 # local environment overrides
-**/environment.local.ts
-generated/version.ts
-dump/
-!**/__mocks__/*
-**/mongoReplPreset/globalConfig.json
-
-#Sherlock DB Files
-db/**/*.sherlock
-
-#Test Results and Coverage
-testResults.json
-libs/rship/metadata-core/coverage
-
-#Watson Config
-apps/sherlock/watson-cli/src/watson.config.json
-report.20200917.151057.27164.0.001.json
-
-# release test log files
-release-test_*.log
-
-#github token
-token.txt
-
-#intake config
-apps/intake/intake-config.json
-
-#heapSnapshots
-*.heapsnapshot
-
-#logs
-libs/logging/src/logs/*
-
-#intake dumps
-imports
-build/config.gypi
-.redisConsole.log
-
-# local utils
-
-.turbo
-.angular
 .env
-libs/generated/version.ts
+dump/
 
 # rust
-
 /target/
 **/target/claude
 
-# pnpm-store
-
-.pnpm-store
-
-# Xcode user state
-rship-swift.xcworkspace/xcuserdata/max.xcuserdatad/UserInterfaceState.xcuserstate
-apps/rship/visionOS/src/visionOS/Packages/RealityKitContent/Package.realitycomposerpro/WorkspaceData/max.rcuserdata
-apps/rship/link-ui/src-tauri/gen/
-
+# logs
 *.log
 *.log.*
 
-*.egg-info
-apps/labs/bun-webview/main
+# C# build output
 libs/myko/csharp/bin/*
 libs/myko/csharp/obj/*
 nupkgs
-apps/link-ui/src-tauri/gen/*
-
-# Crush
-.crush/
-
 
 # Claude Code local settings
 .claude/settings.local.json

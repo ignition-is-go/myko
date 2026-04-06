@@ -11,24 +11,13 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
-  "include": ["apps", "libs"],
+  "include": ["libs"],
   "exclude": [
     "node_modules",
     "**/node_modules",
     "**/dist",
     "**/build",
     "./target",
-    "./tools",
-    "**/*.cjs",
-    "libs/streamdeck",
-    "libs/ableton",
-    "libs/electron-ipc-store",
-    "libs/svelte-schema-form",
-    "apps/execs",
-    "apps/docs.rship.io",
-    "apps/adapters",
-    "apps/labs",
-    "apps/ui",
-    "apps/link-ui"
+    "**/*.cjs"
   ]
 }

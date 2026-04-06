@@ -49,18 +49,10 @@
   },
   "files": {
     "includes": [
-      "apps/**/*.ts",
-      "apps/**/*.tsx",
-      "apps/**/*.js",
-      "apps/**/*.jsx",
       "libs/**/*.ts",
       "libs/**/*.tsx",
       "libs/**/*.js",
-      "libs/**/*.jsx",
-      "!apps/labs/scratch/**",
-      "!libs/ableton/src/lib/max4node/**",
-      "!libs/svelte-schema-form/**",
-      "!libs/mediamtx/generated/**"
+      "libs/**/*.jsx"
     ],
     "ignoreUnknown": true
   },
