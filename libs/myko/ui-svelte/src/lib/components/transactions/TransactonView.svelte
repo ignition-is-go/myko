@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ID } from '@myko/ts';
+	import type { ID } from '@myko/core';
 	import TransactionDetails from './TransactionDetails.svelte';
 
 	let open = $state(false);

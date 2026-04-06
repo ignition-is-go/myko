@@ -1,5 +1,5 @@
 <script lang="ts" generics="Q extends Query<unknown>">
-	import type { Query, QueryItem } from '@myko/ts';
+	import type { Query, QueryItem } from '@myko/core';
 	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
 	import type { Snippet } from 'svelte';
 

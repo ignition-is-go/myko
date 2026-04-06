@@ -4,11 +4,9 @@ dev = { channel = "canary", prerelease = true }
 
 [tasks.check]
 workspace_batchable = true
+depends_on = ["gen"]
 cargo = ["cargo", "check", "--target-dir", "target/claude"]
 bun = ["bun", "run", "check"]
-
-[tasks.check.ecosystem_depends_on]
-js = ["cargo:gen"]
 
 [tasks.build]
 workspace_batchable = true
@@ -25,7 +23,7 @@ cargo = ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warn
 bun = ["bun", "run", "lint"]
 
 [tasks.gen]
-cargo = ["cargo", "run", "--bin", "typegen"]
+default = ["cargo", "run", "-p", "myko", "--bin", "typegen", "--", "src/generated"]
 
 [tasks.publish]
 cascade = "all"

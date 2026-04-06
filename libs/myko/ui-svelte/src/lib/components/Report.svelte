@@ -1,5 +1,5 @@
 <script lang="ts" generics="R extends Report<unknown>">
-	import type { Report, ReportResult } from '@myko/ts';
+	import type { Report, ReportResult } from '@myko/core';
 	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
 	import type { Snippet } from 'svelte';
 

@@ -23,4 +23,4 @@ export {
 } from '../composables';
 
 // Re-export useful types from @myko/ts
-export { ConnectionStatus } from '@myko/ts';
+export { ConnectionStatus } from '@myko/core';

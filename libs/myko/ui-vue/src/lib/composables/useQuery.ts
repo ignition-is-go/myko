@@ -1,5 +1,5 @@
 import { onUnmounted, computed, type ComputedRef, type Ref } from 'vue';
-import type { QueryReturn, QueryItem } from '@myko/ts';
+import type { QueryReturn, QueryItem } from '@myko/core';
 import { getMykoClient, type ReactiveQuery } from '../services/vue-client';
 
 export interface UseQueryReturn<Q extends QueryReturn<unknown>> {

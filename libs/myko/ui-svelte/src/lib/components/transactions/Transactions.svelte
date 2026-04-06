@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { myko as client } from '../../services/svelte-client.svelte.js';
-	import { EntitySnapshotDifference, type ID } from '@myko/ts';
+	import { EntitySnapshotDifference, type ID } from '@myko/core';
 	import { setContext } from 'svelte';
 	import { watchResize } from 'svelte-watch-resize';
 	import { TRANSACTIONS_VIEW_STATE, TransactionsViewState } from '../state/viewstate.svelte';

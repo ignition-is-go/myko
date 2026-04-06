@@ -31,7 +31,7 @@
     "tasks": ["build", "check"]
   },
   "dependencies": {
-    "@myko/ts": "workspace:*"
+    "@myko/core": "workspace:*"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.2",

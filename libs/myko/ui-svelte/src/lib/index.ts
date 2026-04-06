@@ -15,4 +15,4 @@ export {
 } from './services/svelte-client.svelte.js';
 
 // Re-export useful types from @myko/ts
-export { ConnectionStatus } from '@myko/ts';
+export { ConnectionStatus } from '@myko/core';

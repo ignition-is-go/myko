@@ -15,7 +15,7 @@ import {
 	type QueryReturn,
 	type ReportResult,
 	type ReportReturn
-} from '@myko/ts';
+} from '@myko/core';
 import { ref, shallowRef, shallowReactive, type Ref, type ShallowRef } from 'vue';
 import { Subject, type Observable, type Subscription } from 'rxjs';
 

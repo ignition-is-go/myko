@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { myko as client } from '../../services/svelte-client.svelte.js';
-	import { EventsForTransaction, type ID } from '@myko/ts';
+	import { EventsForTransaction, type ID } from '@myko/core';
 	import { fromISOMemo, FULL_DATE_FORMAT } from '../state/viewstate.svelte.js';
 
 	const { tx }: { tx: ID } = $props();

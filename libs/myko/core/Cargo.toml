@@ -10,7 +10,7 @@ repository = "https://github.com/ignition-is-go/myko"
 
 
 [package.metadata.flux]
-tasks = ["check", "build", "test", "lint", "gen", "publish", "release"]
+tasks = ["check", "build", "test", "lint", "publish", "release"]
 
 [dependencies]
 # Core deps (available on all targets)

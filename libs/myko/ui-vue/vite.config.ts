@@ -20,7 +20,7 @@ export default defineConfig({
 			formats: ['es']
 		},
 		rollupOptions: {
-			external: ['vue', '@myko/ts', 'rxjs'],
+			external: ['vue', '@myko/core', 'rxjs'],
 			output: {
 				preserveModules: false
 			}

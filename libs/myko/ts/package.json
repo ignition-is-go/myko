@@ -1,13 +1,13 @@
 {
-  "name": "@myko/ts",
+  "name": "@myko/core",
   "version": "4.0.0-canary.26",
-  "description": "Pure TypeScript client for Myko servers",
+  "description": "Myko client and generated types",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "default": "./src_ts/index.ts"
+      "default": "./src/index.ts"
     }
   },
   "scripts": {
@@ -16,7 +16,6 @@
     "test": "echo 'no tests yet'"
   },
   "dependencies": {
-    "@myko/core": "workspace:*",
     "msgpackr": "^1.11.0",
     "rxjs": "^7.8.1",
     "uuid": "^9.0.0"
@@ -29,6 +28,7 @@
     "dist"
   ],
   "flux": {
-    "tasks": ["build", "check", "publish"]
+    "tasks": ["build", "check", "gen", "publish"],
+    "bridges": ["cargo:myko"]
   }
 }

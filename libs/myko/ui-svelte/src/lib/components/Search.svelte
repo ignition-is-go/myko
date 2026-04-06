@@ -1,5 +1,5 @@
 <script lang="ts" generics="T extends { id: string }">
-	import { EntitySearch, type Query } from '@myko/ts';
+	import { EntitySearch, type Query } from '@myko/core';
 	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
 	import type { Snippet } from 'svelte';
 

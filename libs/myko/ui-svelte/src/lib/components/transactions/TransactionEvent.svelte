@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { MEvent } from '@myko/ts';
+	import type { MEvent } from '@myko/core';
 	import { getContext } from 'svelte';
 	import {
 		fromISOMemo,

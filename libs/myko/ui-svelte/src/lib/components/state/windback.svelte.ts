@@ -5,7 +5,7 @@ import {
 	WindbackStatus,
 	type MItemStub,
 	type WindbackStatusOutput
-} from '@myko/ts';
+} from '@myko/core';
 import { DateTime } from 'luxon';
 
 export class WindbackState {

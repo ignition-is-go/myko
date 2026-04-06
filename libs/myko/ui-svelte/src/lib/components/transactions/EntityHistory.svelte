@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { myko as client } from '../../services/svelte-client.svelte.js';
-	import { ChildEntitiesAllTime, EventsForEntity, type EventContainer, type ID } from '@myko/ts';
+	import { ChildEntitiesAllTime, EventsForEntity, type EventContainer, type ID } from '@myko/core';
 	import { startWith } from 'rxjs';
 	import { getContext } from 'svelte';
 	import {

@@ -33,7 +33,7 @@
     "tasks": ["build", "check"]
   },
   "dependencies": {
-    "@myko/ts": "workspace:*"
+    "@myko/core": "workspace:*"
   },
   "devDependencies": {
     "@sveltejs/adapter-auto": "^3.0.0",

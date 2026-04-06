@@ -4,6 +4,9 @@ index.js
 index.d.ts
 dist/
 
+# Generated bindings (produced by typegen)
+src/generated/
+
 # Dependencies
 node_modules/
 

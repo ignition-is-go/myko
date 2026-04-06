@@ -1,5 +1,5 @@
 import { onUnmounted, type ShallowRef } from 'vue';
-import type { ReportReturn, ReportResult } from '@myko/ts';
+import type { ReportReturn, ReportResult } from '@myko/core';
 import { getMykoClient, type ReactiveReport } from '../services/vue-client';
 
 export interface UseReportReturn<R extends ReportReturn<unknown>> {

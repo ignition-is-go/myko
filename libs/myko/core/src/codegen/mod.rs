@@ -117,8 +117,7 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
     types
 }
 
-pub fn generate_item_types() -> Result<(), anyhow::Error> {
-    let directory_path = "bindings";
+pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
     let file_name = "index.ts";
 
     fs::create_dir_all(directory_path)?;
@@ -862,6 +861,6 @@ mod tests {
 
     #[test]
     fn generate_index() {
-        generate_item_types().expect("Failed to generate index.ts");
+        generate_item_types("bindings").expect("Failed to generate index.ts");
     }
 }

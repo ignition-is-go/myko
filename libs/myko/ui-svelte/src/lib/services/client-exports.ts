@@ -18,4 +18,4 @@ export { default as Report } from '../components/Report.svelte';
 export { default as Search } from '../components/Search.svelte';
 
 // Re-export useful types from @myko/ts
-export { ConnectionStatus, type ClientStats } from '@myko/ts';
+export { ConnectionStatus, type ClientStats } from '@myko/core';

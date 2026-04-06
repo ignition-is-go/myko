@@ -6,7 +6,7 @@
 		ServerLogLevel,
 		SetLogLevel,
 		type Server
-	} from '@myko/ts';
+	} from '@myko/core';
 	import { DateTime } from 'luxon';
 	import { Observable, interval, switchMap } from 'rxjs';
 	import { onDestroy } from 'svelte';

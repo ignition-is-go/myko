@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { GetConnectedServer } from '@myko/ts';
+	import { GetConnectedServer } from '@myko/core';
 	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
 
 	interface Props {

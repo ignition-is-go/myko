@@ -25,7 +25,7 @@ import {
 	type ViewResult,
 	type Report,
 	type ReportResult
-} from '@myko/ts';
+} from '@myko/core';
 import { SvelteMap } from 'svelte/reactivity';
 import { Subject, type Observable, type Subscription } from 'rxjs';
 import { untrack } from 'svelte';

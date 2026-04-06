@@ -14,19 +14,14 @@
         "typescript": "^6.0.2",
       },
     },
-    "libs/myko/core": {
-      "name": "@myko/core",
-      "version": "4.0.0-canary.26",
-    },
     "libs/myko/debug": {
       "name": "@myko/debug",
       "version": "4.0.0-canary.26",
     },
     "libs/myko/ts": {
-      "name": "@myko/ts",
+      "name": "@myko/core",
       "version": "4.0.0-canary.26",
       "dependencies": {
-        "@myko/core": "workspace:*",
         "msgpackr": "^1.11.0",
         "rxjs": "^7.8.1",
         "uuid": "^9.0.0",
@@ -68,7 +63,7 @@
       "name": "@myko/ui-svelte",
       "version": "4.0.0-canary.26",
       "dependencies": {
-        "@myko/ts": "workspace:*",
+        "@myko/core": "workspace:*",
       },
       "devDependencies": {
         "@sveltejs/adapter-auto": "^3.0.0",
@@ -99,7 +94,7 @@
       "name": "@myko/ui-vue",
       "version": "4.0.0-canary.26",
       "dependencies": {
-        "@myko/ts": "workspace:*",
+        "@myko/core": "workspace:*",
       },
       "devDependencies": {
         "@types/luxon": "^3.4.2",
@@ -221,11 +216,9 @@
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.3", "", { "os": "win32", "cpu": "x64" }, "sha512-x0fWaQtYp4E6sktbsdAqnehxDgEc/VwM7uLsRCYWaiGu0ykYdZPiS8zCWdnjHwyiumousxfBm4SO31eXqwEZhQ=="],
 
-    "@myko/core": ["@myko/core@workspace:libs/myko/core"],
+    "@myko/core": ["@myko/core@workspace:libs/myko/ts"],
 
     "@myko/debug": ["@myko/debug@workspace:libs/myko/debug"],
-
-    "@myko/ts": ["@myko/ts@workspace:libs/myko/ts"],
 
     "@myko/ui": ["@myko/ui@workspace:libs/myko/ui"],
 
@@ -731,7 +724,7 @@
 
     "@microsoft/tsdoc-config/resolve": ["resolve@1.19.0", "", { "dependencies": { "is-core-module": "^2.1.0", "path-parse": "^1.0.6" } }, "sha512-rArEXAgsBG4UgRGcynxWIWKFvh/XZCcS8UJdHhwy91zwAvCZIbcs+vAbflgBnNjYMs/i/i+/Ux6IZhML1yPvxg=="],
 
-    "@myko/ts/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+    "@myko/core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@myko/ui/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

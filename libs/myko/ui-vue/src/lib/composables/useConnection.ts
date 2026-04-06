@@ -1,5 +1,5 @@
 import { computed, type ComputedRef, type Ref } from 'vue';
-import { ConnectionStatus } from '@myko/ts';
+import { ConnectionStatus } from '@myko/core';
 import { getMykoClient } from '../services/vue-client';
 
 export interface UseConnectionReturn {
