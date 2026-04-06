@@ -29,6 +29,6 @@
     "dist"
   ],
   "flux": {
-    "tasks": ["build", "check"]
+    "tasks": ["build", "check", "publish"]
   }
 }

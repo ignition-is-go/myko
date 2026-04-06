@@ -11,6 +11,7 @@
     "bindings"
   ],
   "flux": {
+    "tasks": ["publish"],
     "bridges": ["cargo:myko-rs"]
   }
 }
