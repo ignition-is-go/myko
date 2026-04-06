@@ -25,12 +25,12 @@
   },
   "exports": {
     ".": {
-      "svelte": "./src/lib/index.ts",
-      "default": "./src/lib/index.ts"
+      "default": "./src/lib/index.ts",
+      "svelte": "./src/lib/index.ts"
     },
     "./client": {
-      "svelte": "./src/lib/services/client-exports.ts",
-      "default": "./src/lib/services/client-exports.ts"
+      "default": "./src/lib/services/client-exports.ts",
+      "svelte": "./src/lib/services/client-exports.ts"
     }
   },
   "flux": {
@@ -58,5 +58,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.0.0-canary.27"
+  "version": "4.0.0-canary.29"
 }
