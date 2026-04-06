@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { GetConnectedServer } from '@myko/ts';
 	import { getMykoClient, type SvelteMykoClient } from '../services/svelte-client.svelte.js';
-	import { onDestroy } from 'svelte';
 
 	interface Props {
 		/** Optional client instance (defaults to global singleton) */
@@ -18,8 +17,7 @@
 	const isConnected = $derived(resolvedClient.isConnected);
 
 	// Query for connected server
-	const serverQuery = resolvedClient.query(new GetConnectedServer({}));
-	onDestroy(() => serverQuery.release());
+	const serverQuery = resolvedClient.liveQuery(() => new GetConnectedServer({}));
 
 	const server = $derived([...serverQuery.items.values()][0]);
 </script>

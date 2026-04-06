@@ -7,6 +7,9 @@ workspace_batchable = true
 cargo = ["cargo", "check", "--target-dir", "target/claude"]
 bun = ["bun", "run", "check"]
 
+[tasks.check.ecosystem_depends_on]
+js = ["cargo:gen"]
+
 [tasks.build]
 workspace_batchable = true
 cargo = ["cargo", "build"]

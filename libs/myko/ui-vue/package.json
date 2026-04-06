@@ -30,8 +30,10 @@
   "flux": {
     "tasks": ["build", "check"]
   },
+  "dependencies": {
+    "@myko/ts": "workspace:*"
+  },
   "devDependencies": {
-    "@myko/ts": "workspace:*",
     "@types/luxon": "^3.4.2",
     "@vitejs/plugin-vue": "^5.0.0",
     "luxon": "^3.5.0",

@@ -14,19 +14,19 @@
         "typescript": "^6.0.2",
       },
     },
-    "libs/myko/debug": {
-      "name": "@myko/debug",
+    "libs/myko/core": {
+      "name": "@myko/core",
       "version": "4.0.0-canary.26",
     },
-    "libs/myko/rs": {
-      "name": "@myko/rs",
+    "libs/myko/debug": {
+      "name": "@myko/debug",
       "version": "4.0.0-canary.26",
     },
     "libs/myko/ts": {
       "name": "@myko/ts",
       "version": "4.0.0-canary.26",
       "dependencies": {
-        "@myko/rs": "workspace:*",
+        "@myko/core": "workspace:*",
         "msgpackr": "^1.11.0",
         "rxjs": "^7.8.1",
         "uuid": "^9.0.0",
@@ -67,8 +67,10 @@
     "libs/myko/ui-svelte": {
       "name": "@myko/ui-svelte",
       "version": "4.0.0-canary.26",
-      "devDependencies": {
+      "dependencies": {
         "@myko/ts": "workspace:*",
+      },
+      "devDependencies": {
         "@sveltejs/adapter-auto": "^3.0.0",
         "@sveltejs/kit": "^2.0.0",
         "@sveltejs/package": "^2.0.0",
@@ -96,8 +98,10 @@
     "libs/myko/ui-vue": {
       "name": "@myko/ui-vue",
       "version": "4.0.0-canary.26",
-      "devDependencies": {
+      "dependencies": {
         "@myko/ts": "workspace:*",
+      },
+      "devDependencies": {
         "@types/luxon": "^3.4.2",
         "@vitejs/plugin-vue": "^5.0.0",
         "luxon": "^3.5.0",
@@ -217,9 +221,9 @@
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.3", "", { "os": "win32", "cpu": "x64" }, "sha512-x0fWaQtYp4E6sktbsdAqnehxDgEc/VwM7uLsRCYWaiGu0ykYdZPiS8zCWdnjHwyiumousxfBm4SO31eXqwEZhQ=="],
 
-    "@myko/debug": ["@myko/debug@workspace:libs/myko/debug"],
+    "@myko/core": ["@myko/core@workspace:libs/myko/core"],
 
-    "@myko/rs": ["@myko/rs@workspace:libs/myko/rs"],
+    "@myko/debug": ["@myko/debug@workspace:libs/myko/debug"],
 
     "@myko/ts": ["@myko/ts@workspace:libs/myko/ts"],
 

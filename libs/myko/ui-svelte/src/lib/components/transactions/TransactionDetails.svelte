@@ -4,7 +4,7 @@
 	import { fromISOMemo, FULL_DATE_FORMAT } from '../state/viewstate.svelte.js';
 
 	const { tx }: { tx: ID } = $props();
-	const events = client.watchReport(new EventsForTransaction(tx));
+	const events = client.watchReport(new EventsForTransaction({ transactionId: tx }));
 </script>
 
 {#if $events}
