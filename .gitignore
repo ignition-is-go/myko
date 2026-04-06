@@ -48,6 +48,7 @@ Thumbs.db
 dump/
 
 # rust
+/.cargo/
 /target/
 **/target/claude
 
