@@ -9,7 +9,7 @@
 //! - `Persister` trait — abstraction for event persistence
 //! - Protocol serialization helpers
 //!
-//! The full server runtime (WebSocket accept loop, Kafka, peer registry) lives
+//! The full server runtime (WebSocket accept loop, Postgres, peer registry) lives
 //! in the `myko-server` crate.
 
 pub mod client_registry;

@@ -129,7 +129,7 @@ impl SearchIndex {
 
     /// Commit pending index changes.
     ///
-    /// Call this after a batch of indexing operations (e.g., after Kafka catch-up).
+    /// Call this after a batch of indexing operations (e.g., after durable backend catch-up).
     pub fn commit(&self) {
         let Ok(mut writer) = self.writer.lock() else {
             log::error!("SearchIndex: writer mutex poisoned");
@@ -221,7 +221,7 @@ impl SearchIndex {
 
     /// Build the initial index from all entities currently in the store registry.
     ///
-    /// Call this after Kafka catch-up to index all pre-existing entities.
+    /// Call this after durable backend catch-up to index all pre-existing entities.
     pub fn build_from_registry(&self, registry: &crate::store::StoreRegistry) {
         use hyphae::Gettable;
 

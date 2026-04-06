@@ -346,7 +346,7 @@ impl CellServerCtx {
     ///
     /// Options control:
     /// - `prevent_relationship_updates`: skip cascade processing
-    /// - `prevent_persist`: skip Kafka
+    /// - `prevent_persist`: skip durable backend
     pub fn set_with_options<T>(
         &self,
         entity: &T,
@@ -375,7 +375,7 @@ impl CellServerCtx {
             self.relationship_manager.forward_set(item, self)?;
         }
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             self.produce_set(entity)?;
         }
@@ -420,7 +420,7 @@ impl CellServerCtx {
             self.relationship_manager.forward_del(item.clone(), self)?;
         }
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             self.produce_del(entity)?;
         }
@@ -479,7 +479,7 @@ impl CellServerCtx {
             }
         }
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             for item in &items {
                 self.produce_set_dyn(item)?;
@@ -539,7 +539,7 @@ impl CellServerCtx {
             self.relationship_manager.forward_del_batch(&items, self)?;
         }
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             for item in &items {
                 self.produce_del_dyn(item)?;
@@ -586,7 +586,7 @@ impl CellServerCtx {
             self.relationship_manager.forward_set(item.clone(), self)?;
         }
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             self.produce_set_dyn(&item)?;
         }
@@ -680,7 +680,7 @@ impl CellServerCtx {
             self.relationship_manager.forward_del(item.clone(), self)?;
         }
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             self.produce_del_dyn(&item)?;
         }
@@ -740,7 +740,7 @@ impl CellServerCtx {
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
     ///
     /// This is useful for explicit tombstoning of entities (e.g. disconnected peers)
-    /// where we must ensure a DEL event is produced to Kafka.
+    /// where we must ensure a DEL event is produced to durable backend.
     ///
     /// Note: relationship cascades require the full item and are therefore skipped here.
     pub fn del_by_id_with_options(
@@ -763,7 +763,7 @@ impl CellServerCtx {
         // Search: remove from index
         self.search_index.remove_entity(id);
 
-        // Persist: produce to Kafka (unless prevented)
+        // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
             if let Some(item) = existing {
                 self.produce_del_dyn(&item)?;
@@ -1072,7 +1072,7 @@ impl CellServerCtx {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Kafka production (private)
+    // durable backend production (private)
     // ─────────────────────────────────────────────────────────────────────────
 
     fn produce_set<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {

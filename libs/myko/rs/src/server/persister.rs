@@ -1,6 +1,6 @@
 //! Trait for persisting events to a durable store.
 //!
-//! Implementations may be sync (in-memory/no-op) or internally async (Kafka).
+//! Implementations may be sync (in-memory/no-op) or internally async.
 //! The `persist` call is fire-and-forget — the implementation handles delivery.
 
 use std::{
@@ -143,14 +143,6 @@ pub trait Persister: Send + Sync + 'static {
     /// Persist a single event.
     fn persist(&self, event: MEvent) -> Result<(), PersistError>;
 
-    /// Whether this persister requires Kafka topic catch-up for this entity stream.
-    ///
-    /// Durable persisters (Kafka-backed) should return `true`.
-    /// Ephemeral/no-op persisters should return `false`.
-    fn should_register_kafka_topic(&self) -> bool {
-        true
-    }
-
     /// Startup healthcheck hook.
     ///
     /// Persisters can override this to fail server startup when dependencies
@@ -176,25 +168,14 @@ impl Persister for NullPersister {
     fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
         Ok(())
     }
-
-    fn should_register_kafka_topic(&self) -> bool {
-        false
-    }
 }
 
 /// No-op persister that intentionally drops all events for selected entity types.
-///
-/// Use this when an entity stream should never be durable and should be treated as
-/// immediately caught up during Kafka initialization.
 pub struct BlackholePersister;
 
 impl Persister for BlackholePersister {
     fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
         Ok(())
-    }
-
-    fn should_register_kafka_topic(&self) -> bool {
-        false
     }
 }
 
@@ -224,13 +205,6 @@ impl PersisterRouter {
             .get(entity_type)
             .cloned()
             .or_else(|| self.default.clone())
-    }
-
-    /// Whether this entity type should be included in Kafka catch-up topic registration.
-    pub fn should_register_kafka_topic(&self, entity_type: &str) -> bool {
-        self.resolve(entity_type)
-            .map(|p| p.should_register_kafka_topic())
-            .unwrap_or(false)
     }
 
     /// Get the shared health state from the default persister.

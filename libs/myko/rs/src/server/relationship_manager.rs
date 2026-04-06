@@ -359,7 +359,7 @@ impl RelationshipManager {
         Ok(())
     }
 
-    /// Establish relations on startup (called after Kafka catchup).
+    /// Establish relations on startup (called after durable backend catchup).
     ///
     /// This performs:
     /// 1. BelongsTo orphan cleanup: Delete children pointing to non-existent parents

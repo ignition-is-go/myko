@@ -24,10 +24,10 @@
 //! │      │              │             │                   │                  │
 //! │      │              │             │             CellMap<id, item>        │
 //! │      │              ▼             │                   │                  │
-//! │      │        KafkaProducer       │                   ▼                  │
+//! │      │         Persister          │                   ▼                  │
 //! │      │              │             │         Query/Report cells           │
 //! │      │              ▼             │                   │                  │
-//! │      │           Kafka ◄─────────────── KafkaConsumer                    │
+//! │      │       Durable Backend ◄────────── Consumer                        │
 //! │      │                                                                   │
 //! │      ◄────────────────────── (subscription updates)                      │
 //! └──────────────────────────────────────────────────────────────────────────┘
@@ -72,7 +72,7 @@
 //! - **Hyphae cells**: Reactive queries and reports using the hyphae cell library
 //! - **Lock-free stores**: CellMap for concurrent entity access
 //! - **MessagePack serialization**: Binary format for efficient WebSocket communication
-//! - **Optional Kafka**: Run in-memory for development, add Kafka for production persistence
+//! - **Pluggable persistence**: Run in-memory for development, add Postgres for production persistence
 //!
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
 

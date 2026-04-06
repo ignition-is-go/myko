@@ -2,7 +2,6 @@
 //!
 //! This crate contains the tokio-dependent parts of the Myko server:
 //! - `CellServer` — server lifecycle (durable catch-up init, WS accept loop)
-//! - `kafka` — Kafka producer/consumer (implements `Persister` trait)
 //! - `postgres` — PostgreSQL producer/consumer (event-table + LISTEN/NOTIFY)
 //! - `ws_handler` — WebSocket connection handling
 //! - `peer_registry` — federation with other servers
@@ -10,7 +9,6 @@
 //!
 //! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko_rs::server`.
 
-pub mod kafka;
 pub mod mcp;
 pub mod peer_registry;
 pub mod postgres;
@@ -28,7 +26,6 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use kafka::{CellKafkaConsumer, CellKafkaProducer, KafkaConfig, KafkaProducerHandle};
 pub use myko_rs::server::*;
 use myko_rs::{
     client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,
@@ -46,15 +43,13 @@ use crate::postgres::{
 pub struct CellServerConfig {
     /// Address to bind the WebSocket server
     pub bind_addr: SocketAddr,
-    /// Optional Kafka configuration for event persistence/distribution
-    pub kafka: Option<KafkaConfig>,
     /// Optional Postgres configuration for event persistence/distribution
     pub postgres: Option<PostgresConfig>,
     /// Server host ID (auto-generated if not provided)
     pub host_id: Option<Uuid>,
     /// Optional peer registry configuration for federation
     pub peer_registry: Option<peer_registry::PeerRegistryConfig>,
-    /// Default persister override (falls back to Kafka producer when unset and Kafka is enabled)
+    /// Default persister override
     pub default_persister: Option<Arc<dyn Persister>>,
     /// Per-entity persister overrides keyed by entity type name
     pub persister_overrides: HashMap<String, Arc<dyn Persister>>,
@@ -65,7 +60,6 @@ pub struct CellServerConfig {
 pub struct CellServerBuilder {
     bind_addr: Option<SocketAddr>,
     host_id: Option<Uuid>,
-    kafka: Option<KafkaConfig>,
     postgres: Option<PostgresConfig>,
     peer_registry: Option<peer_registry::PeerRegistryConfig>,
     default_persister: Option<Arc<dyn Persister>>,
@@ -90,12 +84,6 @@ impl CellServerBuilder {
     /// Set the server host ID (auto-generated if not set).
     pub fn with_host_id(mut self, id: Uuid) -> Self {
         self.host_id = Some(id);
-        self
-    }
-
-    /// Configure Kafka for event persistence/distribution.
-    pub fn with_kafka(mut self, config: KafkaConfig) -> Self {
-        self.kafka = Some(config);
         self
     }
 
@@ -128,7 +116,7 @@ impl CellServerBuilder {
         self
     }
 
-    /// Register a callback to run after Kafka catch-up and relation establishment,
+    /// Register a callback to run after initialization and relation establishment,
     /// but before the WebSocket accept loop starts. Use this for starting subsystems
     /// that need entity data (e.g., scene engine).
     pub fn after_init(mut self, f: impl FnOnce(&CellServer) + Send + 'static) -> Self {
@@ -144,7 +132,6 @@ impl CellServerBuilder {
 
         let mut server = CellServer::new(CellServerConfig {
             bind_addr,
-            kafka: self.kafka,
             postgres: self.postgres,
             host_id: self.host_id,
             peer_registry: self.peer_registry,
@@ -166,8 +153,6 @@ pub struct CellServer {
     pub handler_registry: Arc<HandlerRegistry>,
     /// Relationship manager for cascade operations
     pub relationship_manager: Arc<RelationshipManager>,
-    /// Optional Kafka producer handle
-    pub kafka_producer: Option<KafkaProducerHandle>,
     /// Optional Postgres producer handle
     pub postgres_producer: Option<PostgresProducerHandle>,
     /// Full-text search index
@@ -178,21 +163,17 @@ pub struct CellServer {
     pub host_id: Uuid,
     /// Server configuration
     config: CellServerConfig,
-    /// Kafka producer (kept alive)
-    _kafka_producer_owner: Option<CellKafkaProducer>,
-    /// Kafka consumer (kept alive)
-    kafka_consumer: Option<CellKafkaConsumer>,
     /// Postgres producer (kept alive)
     _postgres_producer_owner: Option<CellPostgresProducer>,
     /// Postgres consumer (kept alive)
     postgres_consumer: Option<CellPostgresConsumer>,
     /// Whether the server is ready to accept connections
     ready: Arc<AtomicBool>,
-    /// Peer registry for federation (initialized after Kafka catch-up)
+    /// Peer registry for federation (initialized after catch-up)
     peer_registry_instance: RwLock<Option<peer_registry::PeerRegistry>>,
     /// Live peer clients shared with report context.
     peer_clients: Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>,
-    /// Callback to run after init (Kafka catch-up + relations) but before WS loop
+    /// Callback to run after init (catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
     /// Sender for local+replicated event fan-out to saga runtime.
     saga_event_tx: flume::Sender<MEvent>,
@@ -221,7 +202,6 @@ impl CellServer {
         // Initialize the client registry for WebSocket client message dispatch
         init_client_registry();
 
-        // Initialize Kafka if configured
         let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
         let (postgres_producer_owner, postgres_producer, postgres_consumer) =
             if let Some(ref postgres_config) = config.postgres {
@@ -251,63 +231,20 @@ impl CellServer {
                 (None, None, None)
             };
 
-        let (kafka_producer_owner, kafka_producer, kafka_consumer) = if config.postgres.is_none() {
-            if let Some(kafka_config) = config.kafka.as_ref() {
-                match CellKafkaProducer::new(kafka_config, host_id) {
-                    Ok(producer) => {
-                        let handle = producer.handle();
-
-                        // Start consumer with handler registry and registry
-                        let consumer = match CellKafkaConsumer::start(
-                            kafka_config,
-                            host_id,
-                            handler_registry.clone(),
-                            registry.clone(),
-                        ) {
-                            Ok(c) => Some(c),
-                            Err(e) => {
-                                log::error!("Failed to start Kafka consumer: {}", e);
-                                None
-                            }
-                        };
-
-                        (Some(producer), Some(handle), consumer)
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create Kafka producer: {}", e);
-                        (None, None, None)
-                    }
-                }
-            } else {
-                (None, None, None)
-            }
-        } else {
-            if config.postgres.is_some() && config.kafka.is_some() {
-                log::warn!(
-                    "Both Postgres and Kafka configured; Kafka disabled because Postgres is active"
-                );
-            }
-            (None, None, None)
-        };
-
         // If no durable consumer, server is immediately ready
-        let ready = Arc::new(AtomicBool::new(
-            kafka_consumer.is_none() && postgres_consumer.is_none(),
-        ));
+        let ready = Arc::new(AtomicBool::new(postgres_consumer.is_none()));
 
         // Initialize full-text search index
         let search_index = Arc::new(SearchIndex::new());
 
         // Build persister routing:
         // - explicit default from config if provided
-        // - otherwise Kafka producer handle when available
+        // - otherwise Postgres producer handle when available
         // - explicit per-entity overrides always win
         let mut persister_router = PersisterRouter::default();
         if let Some(default_persister) = config.default_persister.clone() {
             persister_router.set_default(Some(default_persister));
         } else if let Some(handle) = postgres_producer.clone() {
-            persister_router.set_default(Some(Arc::new(handle) as Arc<dyn Persister>));
-        } else if let Some(handle) = kafka_producer.clone() {
             persister_router.set_default(Some(Arc::new(handle) as Arc<dyn Persister>));
         }
         for (entity_type, persister) in &config.persister_overrides {
@@ -325,14 +262,11 @@ impl CellServer {
             registry,
             handler_registry,
             relationship_manager,
-            kafka_producer,
             postgres_producer,
             search_index,
             persisters,
             host_id,
             config,
-            _kafka_producer_owner: kafka_producer_owner,
-            kafka_consumer,
             _postgres_producer_owner: postgres_producer_owner,
             postgres_consumer,
             ready,
@@ -511,11 +445,6 @@ impl CellServer {
         }
     }
 
-    /// Get the Kafka producer handle (if Kafka is enabled).
-    pub fn kafka_producer(&self) -> Option<KafkaProducerHandle> {
-        self.kafka_producer.clone()
-    }
-
     /// Create a Postgres-backed history store for replay/windback operations.
     pub fn postgres_history_store(&self) -> Result<Option<PostgresHistoryStore>, String> {
         self.config
@@ -523,68 +452,6 @@ impl CellServer {
             .clone()
             .map(PostgresHistoryStore::new)
             .transpose()
-    }
-
-    /// Register a topic with the Kafka consumer.
-    pub fn register_kafka_topic(&self, entity_type: &str) {
-        if let Some(ref consumer) = self.kafka_consumer {
-            consumer.register_topic(entity_type);
-        }
-    }
-
-    /// Register multiple entity types with the Kafka consumer.
-    pub fn register_kafka_topics(&self, entity_types: &[&str]) {
-        if let Some(ref consumer) = self.kafka_consumer {
-            consumer.register_topics(entity_types);
-        }
-    }
-
-    /// Register all known entity types with the Kafka consumer.
-    pub fn register_all_kafka_topics(&self) {
-        if let Some(ref consumer) = self.kafka_consumer {
-            for entity_type in self.handler_registry.entity_types() {
-                if self.persisters.should_register_kafka_topic(entity_type) {
-                    consumer.register_topic(entity_type);
-                } else {
-                    log::trace!(
-                        "Skipping Kafka topic registration for {} (non-durable persister)",
-                        entity_type
-                    );
-                }
-            }
-        }
-    }
-
-    /// Signal that initial Kafka topic registration is complete.
-    pub fn finish_kafka_registration(&self) {
-        if let Some(ref consumer) = self.kafka_consumer {
-            consumer.finish_initial_registration();
-        } else {
-            self.ready.store(true, Ordering::SeqCst);
-        }
-    }
-
-    /// Initialize Kafka with all known entity types and wait for catch-up.
-    pub fn init_kafka_and_wait(&self, timeout: Duration) -> Result<(), String> {
-        if self.kafka_consumer.is_none() {
-            self.ready.store(true, Ordering::SeqCst);
-            return Ok(());
-        }
-
-        self.register_all_kafka_topics();
-        self.finish_kafka_registration();
-        self.wait_for_kafka_catchup(timeout)
-    }
-
-    /// Wait for Kafka to catch up to all registered topics.
-    pub fn wait_for_kafka_catchup(&self, timeout: Duration) -> Result<(), String> {
-        if let Some(ref consumer) = self.kafka_consumer {
-            consumer.wait_until_caught_up(timeout)?;
-            self.ready.store(true, Ordering::SeqCst);
-            Ok(())
-        } else {
-            Ok(())
-        }
     }
 
     /// Initialize Postgres replay/listener and wait for catch-up.
@@ -618,16 +485,7 @@ impl CellServer {
             }
             return false;
         }
-        if let Some(ref consumer) = self.kafka_consumer {
-            if consumer.is_caught_up() {
-                self.ready.store(true, Ordering::SeqCst);
-                true
-            } else {
-                false
-            }
-        } else {
-            true
-        }
+        true
     }
 
     /// Run the server with full initialization.
@@ -655,15 +513,9 @@ impl CellServer {
             self.init_postgres_and_wait(timeout)
                 .map_err(|reason| format!("Postgres startup catch-up failed: {reason}"))?;
             log::info!("Postgres caught up, ready to accept connections");
-        } else if self.kafka_consumer.is_some() {
-            log::info!("Waiting for Kafka to catch up...");
-            let timeout = std::time::Duration::from_secs(300);
-            self.init_kafka_and_wait(timeout)
-                .map_err(|reason| format!("Kafka startup catch-up failed: {reason}"))?;
-            log::info!("Kafka caught up, ready to accept connections");
         }
 
-        // Build search index from store data (after Kafka catch-up)
+        // Build search index from store data (after catch-up)
         log::info!("Building search index...");
         self.search_index.build_from_registry(&self.registry);
 
@@ -760,7 +612,6 @@ mod tests {
     fn test_server_creation() {
         let config = CellServerConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            kafka: None,
             postgres: None,
             host_id: None,
             peer_registry: None,
@@ -776,7 +627,6 @@ mod tests {
         let host_id = Uuid::new_v4();
         let config = CellServerConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            kafka: None,
             postgres: None,
             host_id: Some(host_id),
             peer_registry: None,

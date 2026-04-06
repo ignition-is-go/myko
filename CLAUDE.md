@@ -47,7 +47,7 @@ Event-sourcing CQRS framework. Pattern: **Commands → Events → State → Quer
 
 - **myko-rs** (`libs/myko/rs`): Rust server/client — the canonical implementation
 - **myko-macros** (`libs/myko/macros`): `#[myko_item]` generates queries, reports, commands
-- **myko-server** (`libs/myko/server`): Server runtime — WebSocket, Kafka, peer federation
+- **myko-server** (`libs/myko/server`): Server runtime — WebSocket, Postgres, peer federation
 - **myko-leptos** (`libs/myko/leptos`): Leptos/web-ui integration
 
 **Other languages** (`libs/myko/ts`, `libs/myko/py`, `libs/myko/cpp`, etc.): Ports/bindings of the framework.
@@ -84,7 +84,7 @@ Include initials: `// TODO(ts): ...` or `// NOTE(ts): ...`
 
 ### Event Sourcing + CQRS
 
-1. Command sent → 2. Handler validates → 3. Events persisted to Kafka → 4. Sagas react → 5. Queries return state
+1. Command sent → 2. Handler validates → 3. Events persisted → 4. Sagas react → 5. Queries return state
 
 ### Myko Item Macro
 

@@ -2,7 +2,7 @@
 name = "myko-server"
 version = "4.0.0-canary.26"
 edition = "2024"
-description = "Myko server runtime — WebSocket, Kafka, peer federation"
+description = "Myko server runtime — WebSocket, peer federation"
 license = "AGPL-3.0-or-later"
 
 [package.metadata.flux]
@@ -18,9 +18,6 @@ tokio-tungstenite.workspace = true
 tungstenite.workspace = true
 tokio-util.workspace = true
 
-# Kafka
-rdkafka = { version = "0.36.2", features = ["cmake-build"] }
-openssl = { version = "0.10.35", features = ["vendored"] }
 postgres = "0.19.9"
 
 # Async utilities

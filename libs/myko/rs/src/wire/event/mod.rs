@@ -23,8 +23,8 @@ pub struct EventOptions {
     /// Used to prevent infinite loops during cascade processing.
     #[serde(default)]
     pub prevent_relationship_updates: bool,
-    /// When true, the event is not persisted to Kafka.
-    /// Used for events from Kafka (to avoid re-publishing).
+    /// When true, the event is not persisted to durable backend.
+    /// Used for events from durable backend (to avoid re-publishing).
     #[serde(default)]
     pub prevent_persist: bool,
     /// When true, this event was replicated from a peer server.

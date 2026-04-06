@@ -1,6 +1,6 @@
 //! PostgreSQL producer and consumer for the cell-based server.
 //!
-//! Architecture mirrors Kafka:
+//! Architecture:
 //! - Producer persists `MEvent` rows into a durable table.
 //! - Consumer replays table rows (catch-up), then follows new inserts via LISTEN/NOTIFY.
 
