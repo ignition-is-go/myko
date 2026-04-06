@@ -1,3 +1,0 @@
-#!/bin/sh
-command -v cargo >/dev/null 2>&1 && cargo run -p release --quiet -- --sync --no-format
-exit 0
