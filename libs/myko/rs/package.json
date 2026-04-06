@@ -9,5 +9,8 @@
   },
   "files": [
     "bindings"
-  ]
+  ],
+  "flux": {
+    "bridges": ["cargo:myko-rs"]
+  }
 }

@@ -27,6 +27,9 @@
   "peerDependencies": {
     "vue": "^3.4.0"
   },
+  "flux": {
+    "tasks": ["build", "check"]
+  },
   "devDependencies": {
     "@myko/ts": "workspace:*",
     "@types/luxon": "^3.4.2",

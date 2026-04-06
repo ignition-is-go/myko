@@ -6,6 +6,9 @@ license = "AGPL-3.0-or-later"
 edition.workspace = true
 authors.workspace = true
 
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
 [dependencies]
 leptos = { version = "0.8" }
 serde = { workspace = true }

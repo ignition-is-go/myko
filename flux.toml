@@ -1,0 +1,45 @@
+[channels]
+main = "production"
+dev = { channel = "canary", prerelease = true }
+
+[tasks.check]
+workspace_batchable = true
+cargo = ["cargo", "check", "--target-dir", "target/claude"]
+bun = ["bun", "run", "check"]
+
+[tasks.build]
+workspace_batchable = true
+cargo = ["cargo", "build"]
+bun = ["bun", "run", "build"]
+
+[tasks.test]
+workspace_batchable = true
+cargo = ["cargo", "test"]
+bun = ["bun", "test"]
+
+[tasks.lint]
+cargo = ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+bun = ["bun", "run", "lint"]
+
+[tasks.gen]
+cargo = ["cargo", "run", "--bin", "typegen"]
+
+[tasks.publish]
+cascade = "all"
+autoapply = "inherit"
+depends_on = ["build", "test"]
+cargo = ["cargo", "publish"]
+
+[tasks.release]
+cascade = "none"
+cargo = """ROOT=$(git rev-parse --show-toplevel) \
+  && VERSION=$(cargo flux version --root "$ROOT") \
+  && cargo flux stamp "$VERSION" --root "$ROOT" \
+  && cargo update --workspace --manifest-path "$ROOT/Cargo.toml" \
+  && cargo fmt --all --manifest-path "$ROOT/Cargo.toml" \
+  && cd "$ROOT" && bun install \
+  && git add -A \
+  && git commit -m "chore(release): v$VERSION" \
+  && git tag "v$VERSION" -m "Release $VERSION" \
+  && git push origin HEAD "v$VERSION" \
+  && cargo flux run publish --root "$ROOT" """

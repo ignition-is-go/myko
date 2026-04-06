@@ -29,6 +29,9 @@
   "peerDependencies": {
     "svelte": "^5.0.0"
   },
+  "flux": {
+    "tasks": ["build", "check"]
+  },
   "devDependencies": {
     "@myko/ts": "workspace:*",
     "@sveltejs/adapter-auto": "^3.0.0",

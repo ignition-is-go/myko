@@ -15,18 +15,18 @@ Myko event-sourcing CQRS framework. Rust-first with multi-language bindings (TS,
 
 - Rust first unless you are working inside an established legacy TS path.
 - Reuse existing Myko patterns for registration, logging, env loading, and server wiring.
-- All formatting and testing should go through Moon tasks, not direct formatter/test runner commands.
+- All formatting and testing should go through `cargo flux` tasks, not direct formatter/test runner commands.
 - Comments should explain why, not what.
 - Use TODO/NOTE sparingly and include initials or an issue tag, e.g. `TODO(ts): ...`.
 
 ## Workspace Commands
 
 ```bash
-moon run root:install
-moon run root:check
+bun install
+cargo flux run check
 ```
 
-- Prefer `moon run <project>:<task>` over calling underlying package scripts directly.
+- Prefer `cargo flux run <task>` over calling underlying package scripts directly.
 
 ## Rust Commands
 
@@ -46,7 +46,7 @@ cargo fmt --all
 Run inside the relevant crate when changing exported Rust types:
 
 ```bash
-moon run myko-rs:gen
+cargo flux run gen
 ```
 
 ## Single-Test Commands
@@ -64,7 +64,7 @@ cargo test -p myko-rs my_test_name --target-dir target/agent -- --exact --nocapt
 ## Validation Guidance
 
 - Rust-only change: usually run `cargo check -p <crate> --target-dir target/agent`.
-- Rust behavior change: prefer `moon run <project>:test`; if you need narrower coverage, expose that scoped command through Moon.
+- Rust behavior change: prefer `cargo flux run test`; if you need narrower coverage, run `cargo test -p <crate>` directly.
 - Do not start long-running dev servers unless the user asks.
 
 ## Formatting And Imports

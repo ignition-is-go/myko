@@ -8,6 +8,9 @@ documentation = "https://docs.rs/myko-macros"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
 [lib]
 proc-macro = true
 

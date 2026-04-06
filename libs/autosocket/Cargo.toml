@@ -6,6 +6,9 @@ description = "Transport adapters shared by rship and myko clients"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/ignition-is-go/rship"
 
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
 [dependencies]
 log.workspace = true
 url.workspace = true

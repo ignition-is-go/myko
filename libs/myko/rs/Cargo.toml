@@ -9,6 +9,9 @@ homepage = "https://docs.rs/myko-rs"
 repository = "https://github.com/ignition-is-go/rship"
 
 
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "gen", "publish", "release"]
+
 [dependencies]
 # Core deps (available on all targets)
 serde.workspace = true

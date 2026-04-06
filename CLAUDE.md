@@ -21,7 +21,10 @@ bun install                           # Install dependencies
 bun run format:all                    # Prettier
 
 # Type generation (Rust → TypeScript)
-bunx @moonrepo/cli run myko-rs:gen
+cargo flux run gen
+
+# Release (version from commits, stamp, tag, push, publish)
+cargo flux run release
 ```
 
 ## Cargo
@@ -109,7 +112,8 @@ Auto-generates: `GetAllTargets`, `GetTargetsByIds`, `GetTargetsByQuery`, `CountA
 
 - **Rust First**: New logic belongs in Rust. TypeScript is for bindings and legacy support only.
 - **Generated Types**: Never manually maintain duplicate types — generate TS from Rust definitions.
-- **Type Generation**: `moon run myko-rs:gen` generates TS bindings.
+- **Type Generation**: `cargo flux run gen` generates TS bindings.
+- **Release**: `cargo flux run release` — calculates version from conventional commits, stamps all manifests, commits, tags, pushes, and publishes crates in dependency order.
 - **JS Runtime**: Bun, not Node.js.
 - **Package Manager**: bun workspaces
 

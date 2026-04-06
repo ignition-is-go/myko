@@ -72,8 +72,9 @@ dashmap = "6.1.0"
 partially = { version = "0.2", features = ["derive"] }
 
 # Internal crates
+hyphae = { version="0.4.0" }
+
 autosocket = { version = "4.0.0-canary.26", path = "libs/autosocket" }
-hyphae = { path = "../hyphae/hyphae" }
 myko-leptos = { version = "4.0.0-canary.26", path = "libs/myko/leptos" }
 myko-macros = { version = "4.0.0-canary.26", path = "libs/myko/macros" }
 myko-rs = { version = "4.0.0-canary.26", path = "libs/myko/rs" }

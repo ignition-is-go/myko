@@ -27,5 +27,8 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "flux": {
+    "tasks": ["build", "check"]
+  }
 }
