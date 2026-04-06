@@ -10,6 +10,7 @@ bun = ["bun", "run", "check"]
 
 [tasks.build]
 workspace_batchable = true
+depends_on = ["gen"]
 cargo = ["cargo", "build"]
 bun = ["bun", "run", "build"]
 
