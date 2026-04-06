@@ -1,8 +1,8 @@
 import { onUnmounted, computed, type ComputedRef, type Ref } from 'vue';
-import type { QueryReturn, QueryItem } from '@myko/core';
+import type { Query, QueryItem } from '@myko/core';
 import { getMykoClient, type ReactiveQuery } from '../services/vue-client';
 
-export interface UseQueryReturn<Q extends QueryReturn<unknown>> {
+export interface UseQueryReturn<Q extends Query<unknown>> {
 	/** Reactive map of items by ID */
 	items: Map<string, QueryItem<Q> & { id: string }>;
 	/** Array of all items (computed for convenience) */
@@ -35,7 +35,7 @@ export interface UseQueryReturn<Q extends QueryReturn<unknown>> {
  * </template>
  * ```
  */
-export function useQuery<Q extends QueryReturn<unknown>>(
+export function useQuery<Q extends Query<unknown>>(
 	queryFactory: Q
 ): UseQueryReturn<Q> {
 	const client = getMykoClient();

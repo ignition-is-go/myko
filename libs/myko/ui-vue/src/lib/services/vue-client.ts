@@ -9,12 +9,13 @@
 import {
 	ConnectionStatus,
 	MykoClient,
-	type CommandReturn,
+	type Command,
+	type CommandResult,
 	type QueryDiff,
 	type QueryItem,
-	type QueryReturn,
+	type Query,
 	type ReportResult,
-	type ReportReturn
+	type Report
 } from '@myko/core';
 import { ref, shallowRef, shallowReactive, type Ref, type ShallowRef } from 'vue';
 import { Subject, type Observable, type Subscription } from 'rxjs';
@@ -31,8 +32,8 @@ export type CommandError = {
 	error: Error;
 };
 
-/** Reactive query result using reactive Map - generic over the QueryReturn factory type */
-export type ReactiveQuery<Q extends QueryReturn<unknown>> = {
+/** Reactive query result using reactive Map - generic over the Query factory type */
+export type ReactiveQuery<Q extends Query<unknown>> = {
 	/** Reactive map of items by ID */
 	readonly items: Map<string, QueryItem<Q> & { id: string }>;
 	/** Whether the query has received its first response */
@@ -41,8 +42,8 @@ export type ReactiveQuery<Q extends QueryReturn<unknown>> = {
 	release: () => void;
 };
 
-/** Reactive report result - generic over the ReportReturn factory type */
-export type ReactiveReport<R extends ReportReturn<unknown>> = {
+/** Reactive report result - generic over the Report factory type */
+export type ReactiveReport<R extends Report<unknown>> = {
 	/** Current value (reactive via ref) */
 	readonly value: ShallowRef<ReportResult<R> | undefined>;
 	/** Release this consumer's reference (unsubscribes when last consumer releases) */
@@ -166,7 +167,7 @@ export class VueMykoClient {
 	 * </template>
 	 * ```
 	 */
-	query<Q extends QueryReturn<unknown>>(queryFactory: Q): ReactiveQuery<Q> {
+	query<Q extends Query<unknown>>(queryFactory: Q): ReactiveQuery<Q> {
 		type Item = QueryItem<Q> & { id: string };
 		const cacheKey = this.getCacheKey('query', queryFactory);
 
@@ -179,14 +180,14 @@ export class VueMykoClient {
 			const resolved = ref(false);
 
 			const subscription = this.client.watchQueryDiff(queryFactory).subscribe({
-				next: (diff: QueryDiff<Item>) => {
+				next: (diff) => {
 					if (diff.sequence === 0n) {
 						items.clear();
 					}
 					for (const id of diff.deletes) {
 						items.delete(id);
 					}
-					for (const item of diff.upserts) {
+					for (const item of diff.upserts as Item[]) {
 						items.set(item.id, item);
 					}
 					resolved.value = true;
@@ -240,7 +241,7 @@ export class VueMykoClient {
 	 * </template>
 	 * ```
 	 */
-	report<R extends ReportReturn<unknown>>(reportFactory: R): ReactiveReport<R> {
+	report<R extends Report<unknown>>(reportFactory: R): ReactiveReport<R> {
 		type Result = ReportResult<R>;
 		const cacheKey = this.getCacheKey('report', reportFactory);
 
@@ -251,13 +252,13 @@ export class VueMykoClient {
 			// Create new shared report with reactive state
 			const value = shallowRef<Result | undefined>(undefined);
 			const subscription = this.client.watchReport(reportFactory).subscribe({
-				next: (result: Result) => {
+				next: (result) => {
 					value.value = result;
 				}
 			});
 
 			shared = {
-				value,
+				value: value as ShallowRef<Result | undefined>,
 				subscription,
 				refCount: 0
 			};
@@ -270,7 +271,7 @@ export class VueMykoClient {
 		let released = false;
 
 		return {
-			value: shared!.value,
+			value: shared!.value as ShallowRef<Result | undefined>,
 			release: () => {
 				if (released) return;
 				released = true;
@@ -302,9 +303,9 @@ export class VueMykoClient {
 	 * </script>
 	 * ```
 	 */
-	async sendCommand<C extends CommandReturn<unknown>>(
+	async sendCommand<C extends Command<unknown>>(
 		commandFactory: C
-	): Promise<C extends CommandReturn<infer R> ? R : unknown> {
+	): Promise<CommandResult<C>> {
 		const commandId = commandFactory.commandId;
 		try {
 			const response = await this.client.sendCommand(commandFactory);

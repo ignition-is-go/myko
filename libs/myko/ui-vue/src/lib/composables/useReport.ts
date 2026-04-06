@@ -1,8 +1,8 @@
 import { onUnmounted, type ShallowRef } from 'vue';
-import type { ReportReturn, ReportResult } from '@myko/core';
+import type { Report, ReportResult } from '@myko/core';
 import { getMykoClient, type ReactiveReport } from '../services/vue-client';
 
-export interface UseReportReturn<R extends ReportReturn<unknown>> {
+export interface UseReportReturn<R extends Report<unknown>> {
 	/** Current value (reactive via ref) */
 	value: ShallowRef<ReportResult<R> | undefined>;
 	/** Manually release the subscription (also called on unmount) */
@@ -28,7 +28,7 @@ export interface UseReportReturn<R extends ReportReturn<unknown>> {
  * </template>
  * ```
  */
-export function useReport<R extends ReportReturn<unknown>>(
+export function useReport<R extends Report<unknown>>(
 	reportFactory: R
 ): UseReportReturn<R> {
 	const client = getMykoClient();
