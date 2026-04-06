@@ -25,12 +25,8 @@
   },
   "exports": {
     ".": {
-      "default": "./src/lib/index.ts",
-      "svelte": "./src/lib/index.ts"
-    },
-    "./client": {
-      "default": "./src/lib/services/client-exports.ts",
-      "svelte": "./src/lib/services/client-exports.ts"
+      "svelte": "./src/lib/index.ts",
+      "default": "./src/lib/index.ts"
     }
   },
   "flux": {
