@@ -16,13 +16,9 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./src/lib/index.ts"
     }
   },
-  "files": [
-    "dist"
-  ],
   "flux": {
     "tasks": [
       "build",
@@ -30,7 +26,7 @@
       "publish"
     ]
   },
-  "main": "./dist/index.js",
+  "main": "./src/lib/index.ts",
   "name": "@myko/ui-vue",
   "peerDependencies": {
     "vue": "^3.4.0"
@@ -43,6 +39,6 @@
     "lint": "prettier --check ."
   },
   "type": "module",
-  "types": "./dist/index.d.ts",
+  "types": "./src/lib/index.ts",
   "version": "4.1.0-canary.1"
 }
