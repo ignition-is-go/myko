@@ -36,7 +36,8 @@
   "flux": {
     "tasks": [
       "build",
-      "check"
+      "check",
+      "publish"
     ]
   },
   "name": "@myko/ui-svelte",

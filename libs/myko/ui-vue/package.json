@@ -30,7 +30,8 @@
   "flux": {
     "tasks": [
       "build",
-      "check"
+      "check",
+      "publish"
     ]
   },
   "main": "./dist/index.js",
