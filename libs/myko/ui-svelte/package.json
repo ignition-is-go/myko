@@ -58,5 +58,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.0.0-canary.30"
+  "version": "4.0.0-canary.31"
 }
