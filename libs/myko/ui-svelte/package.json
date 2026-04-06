@@ -25,8 +25,8 @@
   },
   "exports": {
     ".": {
-      "svelte": "./src/lib/index.ts",
-      "default": "./src/lib/index.ts"
+      "default": "./src/lib/index.ts",
+      "svelte": "./src/lib/index.ts"
     }
   },
   "flux": {
@@ -55,5 +55,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.1.0-canary.1"
+  "version": "4.1.0-canary.2"
 }
