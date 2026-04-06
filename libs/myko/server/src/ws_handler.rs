@@ -16,7 +16,7 @@ use std::{
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use hyphae::SelectExt;
-use myko_rs::{
+use myko::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
@@ -268,14 +268,14 @@ struct CommandJob {
 enum SubscriptionReady {
     Query {
         tx_id: Arc<str>,
-        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko_rs::item::AnyItem>, hyphae::CellImmutable>,
-        window: Option<myko_rs::wire::QueryWindow>,
+        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>,
+        window: Option<myko::wire::QueryWindow>,
     },
     View {
         tx_id: Arc<str>,
         view_id: Arc<str>,
-        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko_rs::item::AnyItem>, hyphae::CellImmutable>,
-        window: Option<myko_rs::wire::QueryWindow>,
+        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>,
+        window: Option<myko::wire::QueryWindow>,
     },
 }
 
@@ -406,7 +406,7 @@ impl WsHandler {
                     maybe = deferred_rx.recv(), if deferred_open => {
                         match maybe {
                             Some(DeferredOutbound::Report(tx, output)) => {
-                                OutboundMessage::Message(MykoMessage::ReportResponse(myko_rs::wire::ReportResponse {
+                                OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
                                     response: output.to_value(),
                                     tx: tx.to_string(),
                                 }))
@@ -1481,11 +1481,11 @@ impl WsWriter for ChannelWriter {
         }
     }
 
-    fn protocol(&self) -> myko_rs::client::MykoProtocol {
+    fn protocol(&self) -> myko::client::MykoProtocol {
         if self.use_binary_writer.load(Ordering::SeqCst) {
-            myko_rs::client::MykoProtocol::MSGPACK
+            myko::client::MykoProtocol::MSGPACK
         } else {
-            myko_rs::client::MykoProtocol::JSON
+            myko::client::MykoProtocol::JSON
         }
     }
 

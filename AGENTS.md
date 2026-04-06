@@ -9,7 +9,7 @@ Myko event-sourcing CQRS framework. Rust-first with multi-language bindings (TS,
 ## Quick Context
 
 - Core: Myko (event-sourcing/CQRS framework), Autosocket (WebSocket transport), Hyphae (external reactive dataflow dep)
-- Important paths: `libs/myko/rs/`, `libs/myko/macros/`, `libs/myko/server/`, `libs/myko/leptos/`, `libs/autosocket/`
+- Important paths: `libs/myko/core/`, `libs/myko/macros/`, `libs/myko/server/`, `libs/myko/leptos/`, `libs/autosocket/`
 
 ## Core Rules
 
@@ -55,10 +55,10 @@ cargo flux run gen
 
 ```bash
 # Single crate
-cargo test -p myko-rs --target-dir target/agent -- --nocapture
+cargo test -p myko --target-dir target/agent -- --nocapture
 
 # Single inline/unit test by exact name
-cargo test -p myko-rs my_test_name --target-dir target/agent -- --exact --nocapture
+cargo test -p myko my_test_name --target-dir target/agent -- --exact --nocapture
 ```
 
 ## Validation Guidance
@@ -89,7 +89,7 @@ cargo test -p myko-rs my_test_name --target-dir target/agent -- --exact --nocapt
 
 ## Types And Architecture
 
-- Canonical domain types live in Rust under `libs/myko/rs/`.
+- Canonical domain types live in Rust under `libs/myko/core/`.
 - Generate TS bindings from Rust exports instead of duplicating shapes manually.
 - Prefer explicit types on public APIs and non-obvious return values.
 
@@ -115,4 +115,4 @@ cargo test -p myko-rs my_test_name --target-dir target/agent -- --exact --nocapt
 
 ## Useful References
 
-- `libs/myko/rs/OPTIMIZATION.md`
+- `libs/myko/core/OPTIMIZATION.md`

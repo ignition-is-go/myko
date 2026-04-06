@@ -17,7 +17,7 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
 
     let struct_name = &input_struct.ident;
     let struct_name_str = struct_name.to_string();
-    let krate = crate::myko_rs_path();
+    let krate = crate::myko_path();
 
     quote! {
         #input_struct

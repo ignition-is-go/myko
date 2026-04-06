@@ -1,0 +1,58 @@
+[package]
+name = "myko"
+version = "4.0.0-canary.26"
+edition = "2024"
+description = "myko in rust"
+license = "AGPL-3.0-or-later"
+documentation = "https://docs.rs/myko"
+homepage = "https://docs.rs/myko"
+repository = "https://github.com/ignition-is-go/myko"
+
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "gen", "publish", "release"]
+
+[dependencies]
+# Core deps (available on all targets)
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+partially.workspace = true
+futures.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+myko-macros.workspace = true
+rmp-serde.workspace = true
+erased-serde.workspace = true
+pin-project-lite.workspace = true
+url.workspace = true
+chrono.workspace = true
+log.workspace = true
+anyhow.workspace = true
+autosocket.workspace = true
+ts-rs = { workspace = true, features = ["serde-json-impl"] }
+inventory = "0.3.21"
+flume.workspace = true
+hyphae.workspace = true
+dashmap.workspace = true
+
+# Native-only deps (store, search, codegen)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dprint-plugin-typescript = "0.95.12"
+tantivy = "0.22"
+crossbeam.workspace = true
+
+# WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window"] }
+# uuid needs js feature for WASM RNG support
+uuid = { version = "1", features = ["js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+
+[features]
+default = []
+bench = []
+doc-gen = []

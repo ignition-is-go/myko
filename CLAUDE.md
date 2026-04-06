@@ -45,7 +45,7 @@ Event-sourcing CQRS framework. Pattern: **Commands → Events → State → Quer
 
 **Rust (primary)**:
 
-- **myko-rs** (`libs/myko/rs`): Rust server/client — the canonical implementation
+- **myko** (`libs/myko/core`): Rust server/client — the canonical implementation
 - **myko-macros** (`libs/myko/macros`): `#[myko_item]` generates queries, reports, commands
 - **myko-server** (`libs/myko/server`): Server runtime — WebSocket, Postgres, peer federation
 - **myko-leptos** (`libs/myko/leptos`): Leptos/web-ui integration
@@ -143,4 +143,4 @@ When types or logic need to exist in multiple languages:
 
 ## Performance
 
-See `libs/myko/rs/OPTIMIZATION.md` for optimization strategies and benchmarks.
+See `libs/myko/core/OPTIMIZATION.md` for optimization strategies and benchmarks.

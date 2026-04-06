@@ -1,6 +1,6 @@
-//! C++ bindings for myko-rs
+//! C++ bindings for myko
 //!
-//! This crate provides C++ bindings for the Rust myko-rs library using cxx,
+//! This crate provides C++ bindings for the Rust myko library using cxx,
 //! enabling C++ applications to use WebSocket connectivity to Myko servers.
 
 use once_cell::sync::Lazy;
@@ -13,13 +13,13 @@ static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 
 /// Wrapper around MykoClient for C++ interop
 pub struct MykoClientWrapper {
-    inner: Arc<myko_rs::client::MykoClient>,
+    inner: Arc<myko::client::MykoClient>,
 }
 
 impl MykoClientWrapper {
     fn new() -> Self {
         Self {
-            inner: Arc::new(myko_rs::client::MykoClient::new()),
+            inner: Arc::new(myko::client::MykoClient::new()),
         }
     }
 
@@ -40,7 +40,7 @@ impl MykoClientWrapper {
         let inner = self.inner.clone();
         RUNTIME.block_on(async {
             let status = inner.get_connection_status().await;
-            matches!(status, myko_rs::client::ConnectionStatus::Connected(_))
+            matches!(status, myko::client::ConnectionStatus::Connected(_))
         })
     }
 
@@ -49,7 +49,7 @@ impl MykoClientWrapper {
         let json = event_json.to_string();
 
         RUNTIME.block_on(async {
-            match serde_json::from_str::<myko_rs::event::MEvent>(&json) {
+            match serde_json::from_str::<myko::event::MEvent>(&json) {
                 Ok(event) => {
                     match inner.send_event(event) {
                         Ok(()) => String::new(),

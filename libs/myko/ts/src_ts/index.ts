@@ -4,11 +4,11 @@
  * Browser-compatible WebSocket client with RxJS Observables.
  */
 
-import type { ID, MEvent, WrappedItem, ItemStub, LogLevel } from '@myko/rs'
+import type { ID, MEvent, WrappedItem, ItemStub, LogLevel } from '@myko/core'
 
-// Re-export all Rust-generated types from @myko/rs
+// Re-export all Rust-generated types from @myko/core
 // This includes the ID type alias (ID = string)
-export * from '@myko/rs'
+export * from '@myko/core'
 
 // Explicitly re-export type-only exports that don't come through `export *`
 export type { LogLevel }
@@ -42,13 +42,13 @@ export function getItemName(
 
 /**
  * Compatibility alias for MWrappedItem.
- * In the new system, use WrappedItem from @myko/rs.
+ * In the new system, use WrappedItem from @myko/core.
  */
 export type MWrappedItem<T = unknown> = WrappedItem
 
 /**
  * Compatibility alias for MItemStub.
- * In the new system, use ItemStub from @myko/rs.
+ * In the new system, use ItemStub from @myko/core.
  */
 export type MItemStub = ItemStub
 
@@ -66,9 +66,9 @@ export const LOG_RANK = [
 
 /**
  * GetEventLog is now ServerEventLog in the Rust system.
- * @deprecated Use ServerEventLog from @myko/rs instead
+ * @deprecated Use ServerEventLog from @myko/core instead
  */
-// Note: ServerEventLog is re-exported from @myko/rs via export * above
+// Note: ServerEventLog is re-exported from @myko/core via export * above
 
 // Export the client
 export {

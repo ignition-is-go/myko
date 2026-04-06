@@ -1,6 +1,6 @@
-//! Python bindings for myko-rs
+//! Python bindings for myko
 //!
-//! This crate provides PyO3 bindings for the Rust myko-rs library,
+//! This crate provides PyO3 bindings for the Rust myko library,
 //! enabling Python applications to use reactive queries, reports, and commands.
 
 use pyo3::prelude::*;
@@ -22,7 +22,7 @@ pub enum ConnectionStatus {
 /// queries, reports, and commands.
 #[pyclass]
 pub struct MykoClient {
-    inner: Arc<myko_rs::client::MykoClient>,
+    inner: Arc<myko::client::MykoClient>,
     runtime: Arc<tokio::runtime::Runtime>,
 }
 
@@ -34,7 +34,7 @@ impl MykoClient {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
 
-        let client = myko_rs::client::MykoClient::new();
+        let client = myko::client::MykoClient::new();
 
         Ok(Self {
             inner: Arc::new(client),
@@ -60,11 +60,11 @@ impl MykoClient {
             self.runtime.block_on(async {
                 let status = inner.get_connection_status().await;
                 match status {
-                    myko_rs::client::ConnectionStatus::Connected(_) => Ok(ConnectionStatus::Connected),
-                    myko_rs::client::ConnectionStatus::Idle
-                    | myko_rs::client::ConnectionStatus::Connecting(_)
-                    | myko_rs::client::ConnectionStatus::Reconnecting(_)
-                    | myko_rs::client::ConnectionStatus::Disconnected => {
+                    myko::client::ConnectionStatus::Connected(_) => Ok(ConnectionStatus::Connected),
+                    myko::client::ConnectionStatus::Idle
+                    | myko::client::ConnectionStatus::Connecting(_)
+                    | myko::client::ConnectionStatus::Reconnecting(_)
+                    | myko::client::ConnectionStatus::Disconnected => {
                         Ok(ConnectionStatus::Disconnected)
                     }
                 }
@@ -88,7 +88,7 @@ impl MykoClient {
         let event_json: serde_json::Value = pythonize::depythonize(&event)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to serialize event: {}", e)))?;
 
-        let event: myko_rs::event::MEvent = serde_json::from_value(event_json)
+        let event: myko::event::MEvent = serde_json::from_value(event_json)
             .map_err(|e| PyRuntimeError::new_err(format!("Invalid event format: {}", e)))?;
 
         let inner = self.inner.clone();

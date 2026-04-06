@@ -14,7 +14,7 @@ use std::{
 
 use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use log::{error, info, trace, warn};
-use myko_rs::{
+use myko::{
     event::{MEvent, MEventType},
     server::{HandlerRegistry, PersistError, PersistHealth, Persister},
     store::StoreRegistry,
@@ -156,7 +156,7 @@ impl PostgresHistoryReplayProvider {
     }
 }
 
-impl myko_rs::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     fn replay_to_store(
         &self,
         until: &str,

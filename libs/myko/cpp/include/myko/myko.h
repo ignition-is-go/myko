@@ -1,6 +1,6 @@
 #pragma once
 
-// myko-rs C++ bindings
+// myko C++ bindings
 //
 // This header provides C++ bindings for the Myko event-sourcing framework.
 //

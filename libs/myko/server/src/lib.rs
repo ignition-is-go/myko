@@ -7,14 +7,14 @@
 //! - `peer_registry` — federation with other servers
 //! - `mcp` — Model Context Protocol server
 //!
-//! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko_rs::server`.
+//! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko::server`.
 
 pub mod mcp;
 pub mod peer_registry;
 pub mod postgres;
 pub mod ws_handler;
 
-// Re-export all tokio-free server types from myko-rs
+// Re-export all tokio-free server types from myko
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -26,8 +26,8 @@ use std::{
 };
 
 use futures_util::StreamExt;
-pub use myko_rs::server::*;
-use myko_rs::{
+pub use myko::server::*;
+use myko::{
     client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,
     search::SearchIndex, store::StoreRegistry, wire::MEvent,
 };
@@ -309,10 +309,10 @@ impl CellServer {
 
     /// Get a server context for module use.
     pub fn ctx(&self) -> CellServerCtx {
-        let history_replay: Option<Arc<dyn myko_rs::server::HistoryReplayProvider>> =
+        let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
             self.config.postgres.as_ref().map(|pg| {
                 Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
-                    as Arc<dyn myko_rs::server::HistoryReplayProvider>
+                    as Arc<dyn myko::server::HistoryReplayProvider>
             });
         CellServerCtx::new(
             self.host_id,
@@ -360,7 +360,7 @@ impl CellServer {
             let saga_name = saga.name().to_string();
             let saga_name_for_stream = saga_name.clone();
             let event_rx = event_tx.subscribe();
-            let events: myko_rs::saga::EventStream = Box::pin(futures_util::stream::unfold(
+            let events: myko::saga::EventStream = Box::pin(futures_util::stream::unfold(
                 event_rx,
                 move |mut event_rx| {
                     let saga_name_for_stream = saga_name_for_stream.clone();
@@ -385,7 +385,7 @@ impl CellServer {
                 },
             ));
 
-            let saga_ctx = Arc::new(myko_rs::saga::SagaContext::with_event_sink(
+            let saga_ctx = Arc::new(myko::saga::SagaContext::with_event_sink(
                 self.host_id,
                 self.registry.clone(),
                 self.saga_event_tx.clone(),

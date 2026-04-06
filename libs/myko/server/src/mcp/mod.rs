@@ -23,7 +23,7 @@
 //! my_entities::link();
 //!
 //! // Start the MCP server
-//! let server = myko_rs::mcp::McpServer::new();
+//! let server = myko::mcp::McpServer::new();
 //! server.run_stdio()?;
 //! ```
 //!

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use myko_rs::{common::with_id::WithTypedId, hyphae::IdFor};
+use myko::{common::with_id::WithTypedId, hyphae::IdFor};
 
 /// Initialize the myko-leptos bridge.
 ///
@@ -12,9 +12,9 @@ use myko_rs::{common::with_id::WithTypedId, hyphae::IdFor};
 pub fn provide_myko(address: &str) {
     #[cfg(target_arch = "wasm32")]
     {
-        use myko_rs::client::MykoClient;
+        use myko::client::MykoClient;
         let client = MykoClient::new();
-        client.set_protocol(myko_rs::client::MykoProtocol::JSON);
+        client.set_protocol(myko::client::MykoProtocol::JSON);
         client.set_address(Some(address.to_string()));
         provide_context(client);
     }
@@ -27,7 +27,7 @@ pub fn provide_myko(address: &str) {
 pub fn disconnect_myko() {
     #[cfg(target_arch = "wasm32")]
     {
-        use myko_rs::client::MykoClient;
+        use myko::client::MykoClient;
         let client = expect_context::<MykoClient>();
         client.set_address(None);
     }
@@ -39,7 +39,7 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 
     #[cfg(target_arch = "wasm32")]
     {
-        use myko_rs::{
+        use myko::{
             client::{ConnectionStatus, MykoClient},
             hyphae::{Signal, Watchable},
         };
@@ -67,9 +67,9 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 /// `Q` is the query type (e.g. `GetAllServers`).
 pub fn live_query<Q>(query: Q) -> ReadSignal<Vec<Arc<Q::Item>>>
 where
-    Q: myko_rs::query::QueryParams + Clone + Send + Sync + 'static,
-    Q::Item: myko_rs::core::item::Eventable
-        + myko_rs::common::with_id::WithId
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
         + serde::de::DeserializeOwned
         + Clone
         + std::fmt::Debug
@@ -80,7 +80,7 @@ where
 
     #[cfg(target_arch = "wasm32")]
     {
-        use myko_rs::{
+        use myko::{
             client::MykoClient,
             hyphae::{Signal, Watchable},
         };
@@ -109,9 +109,9 @@ where
 fn apply_diff<T: Clone + Send + Sync + 'static>(
     signals: &StoredValue<std::collections::HashMap<Arc<str>, RwSignal<Option<Arc<T>>>>>,
     ids_write: &WriteSignal<Vec<Arc<str>>>,
-    diff: &myko_rs::hyphae::MapDiff<Arc<str>, Arc<T>>,
+    diff: &myko::hyphae::MapDiff<Arc<str>, Arc<T>>,
 ) {
-    use myko_rs::hyphae::MapDiff;
+    use myko::hyphae::MapDiff;
     match diff {
         MapDiff::Initial { entries } => {
             signals.update_value(|map| {
@@ -224,8 +224,8 @@ fn apply_diff<T: Clone + Send + Sync + 'static>(
 /// Returns a `LiveQueryMap` handle for looking up individual entities.
 pub fn live_query_map<Q>(query: Q) -> LiveQueryMap<Q::Item>
 where
-    Q: myko_rs::query::QueryParams + Clone + Send + Sync + 'static,
-    Q::Item: myko_rs::core::item::Eventable
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
         + WithTypedId
         + serde::de::DeserializeOwned
         + Clone
@@ -239,7 +239,7 @@ where
     {
         use std::collections::HashMap;
 
-        use myko_rs::{client::MykoClient, hyphae::Watchable};
+        use myko::{client::MykoClient, hyphae::Watchable};
 
         let client = expect_context::<MykoClient>();
         let cell_map = client.watch_query_map(query);
@@ -311,14 +311,14 @@ impl<T: Clone + Send + Sync + 'static> LiveQueryMap<T> {
 /// `Some(Err(message))` when the server responds.
 pub fn send_command<C, R>(cmd: C) -> ReadSignal<Option<Result<R, String>>>
 where
-    C: serde::Serialize + Clone + myko_rs::core::command::CommandId + 'static,
+    C: serde::Serialize + Clone + myko::core::command::CommandId + 'static,
     R: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
 {
     let (read, write) = signal(None);
 
     #[cfg(target_arch = "wasm32")]
     {
-        use myko_rs::{
+        use myko::{
             client::MykoClient,
             hyphae::{Signal, Watchable},
         };

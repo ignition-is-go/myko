@@ -10,7 +10,7 @@ tasks = ["check", "build", "test", "lint", "publish"]
 
 [dependencies]
 # Internal
-myko-rs.workspace = true
+myko.workspace = true
 
 # Async runtime
 tokio.workspace = true

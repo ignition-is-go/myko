@@ -20,42 +20,42 @@ mod saga;
 mod setter;
 mod view;
 
-/// Returns whether we are compiling inside the myko-rs crate itself.
-pub(crate) fn is_myko_rs_crate() -> bool {
+/// Returns whether we are compiling inside the myko crate itself.
+pub(crate) fn is_myko_crate() -> bool {
     std::env::var("CARGO_PKG_NAME")
-        .map(|name| name == "myko-rs")
+        .map(|name| name == "myko")
         .unwrap_or(false)
 }
 
-/// Returns the path to use for `myko_rs` depending on the current crate.
-/// When compiling myko-rs itself, returns `crate`; otherwise returns `myko_rs`.
-pub(crate) fn myko_rs_path() -> syn::Path {
-    if is_myko_rs_crate() {
+/// Returns the path to use for `myko` depending on the current crate.
+/// When compiling myko itself, returns `crate`; otherwise returns `myko`.
+pub(crate) fn myko_path() -> syn::Path {
+    if is_myko_crate() {
         syn::Path::from(syn::Ident::new("crate", Span::call_site()))
     } else {
-        syn::Path::from(syn::Ident::new("myko_rs", Span::call_site()))
+        syn::Path::from(syn::Ident::new("myko", Span::call_site()))
     }
 }
 
 /// Context for generating serde/partially derive paths in macros.
-/// When inside myko-rs, uses direct crate paths. When outside, uses re-exports.
+/// When inside myko, uses direct crate paths. When outside, uses re-exports.
 pub(crate) struct DeriveCtx {
-    /// Path to myko_rs (either `crate` or `myko_rs`)
+    /// Path to myko (either `crate` or `myko`)
     pub krate: syn::Path,
-    /// Path for serde derives (either `serde` or `myko_rs::serde`)
+    /// Path for serde derives (either `serde` or `myko::serde`)
     pub serde_path: proc_macro2::TokenStream,
-    /// String value for #[serde(crate = "...")] — None when inside myko-rs
+    /// String value for #[serde(crate = "...")] — None when inside myko
     pub serde_crate_attr: Option<String>,
-    /// Path for partially derives (either `partially` or `myko_rs::partially`)
+    /// Path for partially derives (either `partially` or `myko::partially`)
     pub partially_path: proc_macro2::TokenStream,
-    /// String value for #[partially(crate = "...")] — None when inside myko-rs
+    /// String value for #[partially(crate = "...")] — None when inside myko
     pub partially_crate_attr: Option<String>,
 }
 
 impl DeriveCtx {
     pub fn new() -> Self {
-        let krate = myko_rs_path();
-        if is_myko_rs_crate() {
+        let krate = myko_path();
+        if is_myko_crate() {
             Self {
                 krate,
                 serde_path: quote!(serde),
@@ -64,13 +64,13 @@ impl DeriveCtx {
                 partially_crate_attr: None,
             }
         } else {
-            let serde_crate_str = "myko_rs::serde".to_string();
-            let partially_crate_str = "myko_rs::partially".to_string();
+            let serde_crate_str = "myko::serde".to_string();
+            let partially_crate_str = "myko::partially".to_string();
             Self {
                 krate,
-                serde_path: quote!(myko_rs::serde),
+                serde_path: quote!(myko::serde),
                 serde_crate_attr: Some(serde_crate_str),
-                partially_path: quote!(myko_rs::partially),
+                partially_path: quote!(myko::partially),
                 partially_crate_attr: Some(partially_crate_str),
             }
         }
@@ -364,7 +364,7 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Query-style declaration syntax:
 /// `#[myko_view(ViewItemType)]`
-/// and then implement `myko_rs::prelude::ViewHandler` for the params type with:
+/// and then implement `myko::prelude::ViewHandler` for the params type with:
 /// `fn build_cell(ctx: ViewBuildCellCtx<Self>) -> FilteredViewCellMap`.
 #[proc_macro_attribute]
 pub fn myko_view(attr: TokenStream, input: TokenStream) -> TokenStream {
@@ -408,7 +408,7 @@ pub fn myko_view_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 /// impl GetParentTargets {
 ///     pub fn compute(
 ///         report: std::sync::Arc<Self>,
-///         ctx: myko_rs::prelude::ReportContext,
+///         ctx: myko::prelude::ReportContext,
 ///     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Vec<Target>> + Send>> {
 ///         // Use ctx.query() and ctx.report() for reactive dependencies
 ///         Box::pin(async_stream::stream! {
@@ -541,15 +541,15 @@ pub fn derive_message_events(input: TokenStream) -> TokenStream {
 /// #[myko_saga]
 /// pub struct CleanupSaga;
 ///
-/// impl myko_rs::saga::SagaHandler for CleanupSaga {
-///     type EventItem = myko_rs::entities::client::Client;
+/// impl myko::saga::SagaHandler for CleanupSaga {
+///     type EventItem = myko::entities::client::Client;
 ///     type Command = HandleClientDisconnected;
-///     const EVENT_TYPE: myko_rs::event::MEventType = myko_rs::event::MEventType::DEL;
+///     const EVENT_TYPE: myko::event::MEventType = myko::event::MEventType::DEL;
 ///
 ///     fn handle(
 ///         item: Self::EventItem,
-///         event: myko_rs::event::MEvent,
-///         ctx: std::sync::Arc<myko_rs::saga::SagaContext>,
+///         event: myko::event::MEvent,
+///         ctx: std::sync::Arc<myko::saga::SagaContext>,
 ///     ) -> Option<Self::Command> {
 ///         // Saga logic here
 ///         None
@@ -576,10 +576,10 @@ pub fn myko_saga(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// }
 ///
 /// // Expands to:
-/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko_rs::TS)]
+/// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko::TS)]
 /// #[serde(rename_all = "camelCase")]
 /// pub struct ServerStatsOutput { ... }
-/// myko_rs::register_ts_export!(ServerStatsOutput);
+/// myko::register_ts_export!(ServerStatsOutput);
 /// ```
 #[proc_macro_attribute]
 pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream {

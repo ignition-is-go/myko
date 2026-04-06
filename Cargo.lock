@@ -1849,25 +1849,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
-name = "myko-leptos"
-version = "4.0.0-canary.26"
-dependencies = [
- "leptos",
- "myko-rs",
- "serde",
-]
-
-[[package]]
-name = "myko-macros"
-version = "4.0.0-canary.26"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "myko-rs"
+name = "myko"
 version = "4.0.0-canary.26"
 dependencies = [
  "anyhow",
@@ -1901,6 +1883,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "myko-leptos"
+version = "4.0.0-canary.26"
+dependencies = [
+ "leptos",
+ "myko",
+ "serde",
+]
+
+[[package]]
+name = "myko-macros"
+version = "4.0.0-canary.26"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "myko-server"
 version = "4.0.0-canary.26"
 dependencies = [
@@ -1911,7 +1911,7 @@ dependencies = [
  "hyphae",
  "inventory",
  "log",
- "myko-rs",
+ "myko",
  "postgres",
  "rmp-serde",
  "serde",

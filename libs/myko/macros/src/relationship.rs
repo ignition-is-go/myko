@@ -413,7 +413,7 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
 pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> TokenStream {
     let mut registrations = Vec::new();
     let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
-    let krate = crate::myko_rs_path();
+    let krate = crate::myko_path();
 
     // Generate BelongsTo registrations
     for bt in &info.belongs_to {

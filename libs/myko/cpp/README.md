@@ -1,6 +1,6 @@
-# myko-rs C++ Bindings
+# myko C++ Bindings
 
-C++ bindings for the Rust myko-rs library using [cxx](https://cxx.rs/), providing WebSocket connectivity to Myko servers.
+C++ bindings for the Rust myko library using [cxx](https://cxx.rs/), providing WebSocket connectivity to Myko servers.
 
 ## Building
 
@@ -117,7 +117,7 @@ When linking manually, you need to link against:
 
 This library uses cxx to create safe bindings between Rust and C++:
 
-- Rust code wraps `myko_rs::client::MykoClient`
+- Rust code wraps `myko::client::MykoClient`
 - cxx generates both Rust and C++ code for the bridge
 - A global Tokio runtime handles async operations
 - JSON is used for event serialization (type-safe variants planned)

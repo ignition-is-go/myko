@@ -12,7 +12,7 @@ tasks = ["check", "build", "test", "lint", "publish"]
 [dependencies]
 leptos = { version = "0.8" }
 serde = { workspace = true }
-myko-rs = { workspace = true }
+myko = { workspace = true }
 
 [lints]
 workspace = true

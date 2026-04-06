@@ -14,7 +14,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use hyphae::{Cell, CellImmutable, Signal, SubscriptionGuard, TapExt, Watchable};
 use log::info;
-use myko_rs::{
+use myko::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
     server::CellServerCtx,
 };

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-  "libs/myko/rs",
+  "libs/myko/core",
   "libs/myko/macros",
   "libs/myko/server",
   "libs/myko/leptos",
@@ -77,5 +77,5 @@ hyphae = { version="0.4.0" }
 autosocket = { version = "4.0.0-canary.26", path = "libs/autosocket" }
 myko-leptos = { version = "4.0.0-canary.26", path = "libs/myko/leptos" }
 myko-macros = { version = "4.0.0-canary.26", path = "libs/myko/macros" }
-myko-rs = { version = "4.0.0-canary.26", path = "libs/myko/rs" }
+myko = { version = "4.0.0-canary.26", path = "libs/myko/core" }
 myko-server = { version = "4.0.0-canary.26", path = "libs/myko/server" }

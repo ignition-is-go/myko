@@ -6,7 +6,7 @@ use std::{
 };
 
 use hyphae::{Gettable, Watchable};
-use myko_rs::{
+use myko::{
     client::{ConnectionStatus, MykoClient},
     command::CommandRegistration,
     query::QueryRegistration,

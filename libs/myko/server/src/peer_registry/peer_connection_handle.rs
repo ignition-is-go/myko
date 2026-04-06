@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, PairwiseExt, TapExt};
 use log::info;
-use myko_rs::{
+use myko::{
     client::{ConnectionStatus, MykoClient},
     entities::server::{GetConnectedServer, Server},
 };

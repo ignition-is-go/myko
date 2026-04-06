@@ -17,7 +17,7 @@ import {
   type WrappedQuery,
   type WrappedReport,
   type WrappedView,
-} from '@myko/rs'
+} from '@myko/core'
 import { Packr, Unpackr } from 'msgpackr'
 import {
   bufferCount,

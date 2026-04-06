@@ -90,7 +90,7 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
     let entity_ident = format_ident!("{}", entity_name);
     let id_type_ident = format_ident!("{}Id", entity_name);
     let get_by_id_ident = format_ident!("Get{}ById", entity_name);
-    let krate = crate::myko_rs_path();
+    let krate = crate::myko_path();
 
     let commands: Vec<TokenStream> = setters
     .iter()
