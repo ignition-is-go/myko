@@ -31,7 +31,7 @@ cascade = "all"
 autoapply = "inherit"
 depends_on = ["build", "test"]
 cargo = ["cargo", "publish"]
-bun = ["bunx", "jsr", "publish", "--allow-dirty", "--allow-slow-types"]
+bun = "bunx jsr publish --allow-dirty --allow-slow-types --token=\"$JSR_TOKEN\""
 
 [tasks.release]
 cascade = "none"
