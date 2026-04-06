@@ -1373,6 +1373,12 @@ impl CellServerCtx {
     }
 }
 
+impl std::fmt::Debug for CellServerCtx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CellServerCtx").finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1547,11 +1553,5 @@ mod tests {
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
         assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
-    }
-}
-
-impl std::fmt::Debug for CellServerCtx {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CellServerCtx").finish()
     }
 }

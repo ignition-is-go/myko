@@ -883,7 +883,6 @@ mod tests {
     use std::sync::Mutex;
 
     use hyphae::SelectExt;
-    use serde_json::Value;
 
     use super::*;
     use crate::{common::with_id::WithId, store::StoreRegistry};

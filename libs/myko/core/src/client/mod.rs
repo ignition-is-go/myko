@@ -160,7 +160,6 @@ fn report_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscriptio
 
 trait ClientReportCacheEntryDyn: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
-    fn is_alive(&self) -> bool;
 }
 
 struct ClientReportCacheEntry<T> {
@@ -182,10 +181,6 @@ impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntry<T> {
 impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntryDyn for ClientReportCacheEntry<T> {
     fn as_any(&self) -> &dyn Any {
         self
-    }
-
-    fn is_alive(&self) -> bool {
-        self.weak.upgrade().is_some()
     }
 }
 
@@ -851,6 +846,7 @@ impl MykoClient {
         let cell_weak = cell.downgrade();
 
         // State for accumulating query diffs
+        #[allow(clippy::type_complexity)]
         let state: Arc<Mutex<HashMap<Arc<str>, Arc<Q::Item>>>> = Arc::default();
 
         let tx_for_handler = tx.clone();

@@ -12,9 +12,6 @@
 //!
 //! We add a custom `GetBenchItemsByCategory` for category-based filtering.
 
-use partially::Partial;
-use serde::{Deserialize, Serialize};
-
 use crate::prelude::*;
 
 /// A simple entity for benchmarking with category-based filtering.
