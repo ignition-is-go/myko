@@ -1,34 +1,41 @@
 {
-  "name": "@myko/core",
-  "version": "4.0.0-canary.26",
-  "description": "Myko client and generated types",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "default": "./src/index.ts"
-    }
-  },
-  "scripts": {
-    "build": "tsc",
-    "check": "tsc --noEmit --skipLibCheck",
-    "test": "echo 'no tests yet'"
-  },
   "dependencies": {
     "msgpackr": "^1.11.0",
     "rxjs": "^7.8.1",
     "uuid": "^9.0.0"
   },
+  "description": "Myko client and generated types",
   "devDependencies": {
     "@types/uuid": "^9.0.0",
     "typescript": "^5.3.3"
+  },
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    }
   },
   "files": [
     "dist"
   ],
   "flux": {
-    "tasks": ["build", "check", "gen", "publish"],
-    "bridges": ["cargo:myko"]
-  }
+    "bridges": [
+      "cargo:myko"
+    ],
+    "tasks": [
+      "build",
+      "check",
+      "gen",
+      "publish"
+    ]
+  },
+  "main": "dist/index.js",
+  "name": "@myko/core",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit --skipLibCheck",
+    "test": "echo 'no tests yet'"
+  },
+  "type": "module",
+  "types": "dist/index.d.ts",
+  "version": "4.0.0-canary.27"
 }

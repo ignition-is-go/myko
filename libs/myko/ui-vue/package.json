@@ -1,35 +1,4 @@
 {
-  "name": "@myko/ui-vue",
-  "version": "4.0.0-canary.26",
-  "scripts": {
-    "build": "vite build",
-    "dev": "vite build --watch",
-    "check": "vue-tsc --noEmit",
-    "format": "prettier --write .",
-    "lint": "prettier --check ."
-  },
-  "type": "module",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./client": {
-      "import": "./dist/client.js",
-      "types": "./dist/client.d.ts"
-    }
-  },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "peerDependencies": {
-    "vue": "^3.4.0"
-  },
-  "flux": {
-    "tasks": ["build", "check"]
-  },
   "dependencies": {
     "@myko/core": "workspace:*"
   },
@@ -44,5 +13,39 @@
     "vite-plugin-dts": "^3.7.0",
     "vue": "^3.4.0",
     "vue-tsc": "^2.0.0"
-  }
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client.js",
+      "types": "./dist/client.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "flux": {
+    "tasks": [
+      "build",
+      "check"
+    ]
+  },
+  "main": "./dist/index.js",
+  "name": "@myko/ui-vue",
+  "peerDependencies": {
+    "vue": "^3.4.0"
+  },
+  "scripts": {
+    "build": "vite build",
+    "check": "vue-tsc --noEmit",
+    "dev": "vite build --watch",
+    "format": "prettier --write .",
+    "lint": "prettier --check ."
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "version": "4.0.0-canary.27"
 }

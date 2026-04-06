@@ -172,7 +172,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autosocket"
-version = "4.0.0-canary.26"
+version = "4.0.0-canary.27"
 dependencies = [
  "dashmap",
  "flume",
@@ -890,7 +890,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1850,7 +1850,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "myko"
-version = "4.0.0-canary.26"
+version = "4.0.0-canary.27"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-version = "4.0.0-canary.26"
+version = "4.0.0-canary.27"
 dependencies = [
  "leptos",
  "myko",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "4.0.0-canary.26"
+version = "4.0.0-canary.27"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "4.0.0-canary.26"
+version = "4.0.0-canary.27"
 dependencies = [
  "chrono",
  "dashmap",
@@ -2744,7 +2744,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2757,7 +2757,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3107,6 +3107,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
+ "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
 
@@ -3504,7 +3505,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4192,7 +4193,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

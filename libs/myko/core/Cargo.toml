@@ -1,6 +1,6 @@
 [package]
 name = "myko"
-version = "4.0.0-canary.26"
+version = "4.0.0-canary.27"
 edition = "2024"
 description = "myko in rust"
 license = "AGPL-3.0-or-later"
@@ -31,14 +31,14 @@ log.workspace = true
 anyhow.workspace = true
 autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
-inventory = "0.3.21"
+inventory = "0.3.24"
 flume.workspace = true
 hyphae.workspace = true
 dashmap.workspace = true
 
 # Native-only deps (store, search, codegen)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-dprint-plugin-typescript = "0.95.12"
+dprint-plugin-typescript = "0.95.15"
 tantivy = "0.22"
 crossbeam.workspace = true
 

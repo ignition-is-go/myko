@@ -1,17 +1,4 @@
 {
-  "name": "myko",
-  "version": "0.4.0",
-  "private": true,
-  "license": "MIT",
-  "packageManager": "bun@1.3.4",
-  "workspaces": [
-    "libs/myko/**"
-  ],
-  "scripts": {
-    "format:all": "prettier --write .",
-    "lint": "biome lint .",
-    "lint:fix": "biome lint --write ."
-  },
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
     "@tsconfig/bun": "^1.0.10",
@@ -20,5 +7,18 @@
     "prettier": "3.8.1",
     "prettier-plugin-organize-imports": "^4.3.0",
     "typescript": "^6.0.2"
-  }
+  },
+  "license": "MIT",
+  "name": "myko",
+  "packageManager": "bun@1.3.4",
+  "private": true,
+  "scripts": {
+    "format:all": "prettier --write .",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write ."
+  },
+  "version": "4.0.0-canary.27",
+  "workspaces": [
+    "libs/myko/**"
+  ]
 }
