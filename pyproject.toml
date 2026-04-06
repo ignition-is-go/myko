@@ -1,15 +1,13 @@
 [project]
-name = "rship"
-version = "0.1.0"
-description = "Add your description here"
+name = "myko"
+version = "0.4.0"
+description = "Myko event-sourcing CQRS framework"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
 [tool.uv.workspace]
-members = ["libs/myko/python", "apps/execs/demo-py", "libs/sdk/python"]
-
+members = ["libs/myko/python"]
 
 [tool.uv.sources]
 myko = { workspace = true }
-rship-sdk = { workspace = true }

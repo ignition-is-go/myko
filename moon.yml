@@ -1,9 +1,5 @@
 $schema: 'https://moonrepo.dev/schemas/project.json'
 tasks:
-  clean:
-    command: './tools/scripts/clean-artifacts.sh'
-    options:
-      cache: false
   install:
     options:
       cache: false
@@ -19,14 +15,3 @@ tasks:
       cache: false
     command: 'cargo'
     args: ['test']
-  live:
-    options:
-      cache: false
-      runFromWorkspaceRoot: true
-    env:
-      CHANNEL: 'live'
-    command: 'bunx'
-    args:
-      - '@moonrepo/cli'
-      - 'run'
-      - ':publish'
