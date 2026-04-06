@@ -1,122 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-  "apps/asset_store",
-  "apps/link-cli",
-  "apps/link-ui/src-tauri",
-  "apps/ui/src-tauri",
-  "apps/linkd",
-  "apps/rship_mcp",
-  "apps/server",
-  "apps/sync_server",
   "libs/myko/rs",
   "libs/myko/macros",
-  "libs/link/core",
-  "libs/entities/foundation",
-  "libs/entities/core",
-  "libs/entities/tags",
-  "libs/entities/teams",
-  "libs/entities/machine",
-  "libs/entities/physical",
-  "libs/entities/link",
-  "libs/entities/audit",
-  "libs/entities/status",
-  "libs/entities/runtime",
-  "libs/entities/spatialization",
-  "libs/entities/external",
-  "libs/entities/assignment",
-  "libs/entities/feedback",
-  "libs/entities/variables",
-  "libs/entities/timing",
-  "libs/entities/scheduling",
-  "libs/entities/nmos",
-  "libs/entities/networking",
-  "libs/entities/annotations",
-  "libs/entities/assets",
-  "libs/entities/media",
-  "libs/entities/infrastructure",
-  "libs/entities/sequencing",
-  "libs/entities/visualization",
-  "libs/entities/vfx",
-  "libs/entities/lighting",
-  "libs/entities/color",
-  "libs/entities/compositing",
-  "libs/entities/rive",
-  "libs/entities/cameras",
-  "libs/entities/surfaces",
-  "libs/entities/ui",
-  "libs/entities/blend-engine",
-  "libs/entities/value-track",
-  "libs/entities/scene",
-  "libs/entities/engine",
-  "libs/entities/nodes",
-  "libs/entities/nodes-runtime",
-  "libs/entities/math",
-  "libs/entities/logic",
-  "libs/entities/lists",
-  "libs/entities/objects",
-  "libs/entities/string",
-  "libs/entities/generators",
-  "libs/entities/rs",
-  "libs/entities/macros",
-  "libs/sdk/rs",
-  "libs/platform/core",
-  "libs/rs-macros",
-  "libs/sync",
-  "libs/opencv",
-  "libs/asset-store/core",
-  "libs/autosocket",
-  "libs/hyphae/hyphae",
-  "libs/display/core",
-  "libs/display/output",
-  "libs/display/nvidia",
-  "tools/gen-executor",
-  # Executors
-  "apps/execs/osc",
-  "apps/execs/http",
-  "apps/execs/mqtt",
-  "apps/execs/serial-port",
-  "apps/execs/ltc-timecode",
-  "apps/execs/mtc-timecode",
-  "apps/execs/qlab",
-  "apps/execs/disguise",
-  "apps/execs/eos",
-  "apps/execs/ptp",
-  "apps/execs/atem",
-  "apps/execs/vmix",
-  "apps/execs/resolume",
-  "apps/execs/visca",
-  "apps/execs/freed",
-  "apps/execs/brompton",
-  "apps/execs/qsys",
-  "apps/execs/natnet",
-  "apps/execs/reaper",
-  "apps/execs/novastar",
-  "apps/execs/crestron",
-  "apps/execs/yamaha",
-  "apps/execs/digico",
-  "apps/execs/extron",
-  "apps/execs/amx",
-  "apps/execs/brightsign",
-  "apps/execs/weather",
-  "apps/execs/noise-rs",
-  "apps/execs/exec-debugger",
-  "apps/execs/exec-debugger/ui",
-  "apps/execs/pangolin",
-  "apps/execs/ndi",
-  "apps/execs/dante",
-  "apps/execs/nmos",
-  "apps/execs/network-discovery",
-  "apps/execs/test-pulse",
-  "apps/execs/test-pulse/ui",
-  # Node Agent
-  "apps/node-agent",
-  # Tools
-  "tools/release",
   "libs/myko/server",
   "libs/myko/leptos",
-  "apps/link-ui/ui",
-  "apps/labs/leptos-playground",
+  "libs/autosocket",
 ]
 
 [workspace.package]
@@ -136,24 +25,13 @@ panic = "abort"
 disallowed_types = "deny"
 
 [workspace.dependencies]
-# Tauri (kept in lockstep across desktop apps)
-tauri = "2.10.2"
-tauri-build = "2.5.5"
-tauri-plugin-dialog = "2.6.0"
-tauri-plugin-opener = "2.5.3"
-tauri-plugin-deep-link = "2.4.7"
-tauri-plugin-store = "2.4.2"
-tauri-plugin-single-instance = "2.4.0"
-
 # Core async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7"
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
-rmp = "0.8"
 rmp-serde = "1.1"
 erased-serde = "0.4"
 
@@ -169,9 +47,6 @@ anyhow = "1.0"
 
 # Logging
 log = "0.4"
-env_logger = "0.11"
-tracing = "0.1"
-tracing-subscriber = "0.3"
 
 # Time/UUID
 chrono = { version = "0.4", features = ["serde"] }
@@ -180,9 +55,6 @@ uuid = { version = "1.13", features = ["v4", "serde"] }
 # WebSocket
 tungstenite = "0.29"
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
-
-# Actor framework
-ractor = "0.15"
 
 # Proc macros
 proc-macro2 = "1.0"
@@ -196,80 +68,13 @@ ts-rs = "11.1"
 url = "2.5"
 crossbeam = "0.8"
 flume = "0.11"
-arc-swap = "1.7.1"
 dashmap = "6.1.0"
-futures-core = "0.3"
-ordered-float = { version = "5.1", features = ["serde"] }
 partially = { version = "0.2", features = ["derive"] }
-regex = "1"
-dotenv = "0.15"
-
-# HTTP client
-reqwest = { version = "0.12", features = ["json", "stream"] }
-
-# Node.js bindings
-napi = { version = "2.12", default-features = false, features = ["napi4", "async"] }
-napi-derive = "2.12"
-napi-build = "2.0"
 
 # Internal crates
 autosocket = { version = "4.0.0-canary.26", path = "libs/autosocket" }
-hyphae = { version = "0.4.0", path = "libs/hyphae/hyphae" }
-link = { version = "4.0.0-canary.26", path = "libs/link/core" }
+hyphae = { path = "../hyphae/hyphae" }
 myko-leptos = { version = "4.0.0-canary.26", path = "libs/myko/leptos" }
 myko-macros = { version = "4.0.0-canary.26", path = "libs/myko/macros" }
 myko-rs = { version = "4.0.0-canary.26", path = "libs/myko/rs" }
 myko-server = { version = "4.0.0-canary.26", path = "libs/myko/server" }
-pulse-platform = { version = "4.0.0-canary.26", path = "libs/platform/core" }
-rs-macros = { version = "4.0.0-canary.26", path = "libs/rs-macros" }
-rship-asset-store-core = {version = "4.0.0-canary.26", path="libs/asset-store/core"}
-rship-entities = { version = "4.0.0-canary.26", path = "libs/entities/rs" }
-rship-entities-annotations = { version = "4.0.0-canary.26", path = "libs/entities/annotations" }
-rship-entities-assets = { version = "4.0.0-canary.26", path = "libs/entities/assets" }
-rship-entities-assignment = { version = "4.0.0-canary.26", path = "libs/entities/assignment" }
-rship-entities-audit = { version = "4.0.0-canary.26", path = "libs/entities/audit" }
-rship-entities-cameras = { version = "4.0.0-canary.26", path = "libs/entities/cameras" }
-rship-entities-color = { version = "4.0.0-canary.26", path = "libs/entities/color" }
-rship-entities-compositing = { version = "4.0.0-canary.26", path = "libs/entities/compositing" }
-rship-entities-core = { version = "4.0.0-canary.26", path = "libs/entities/core" }
-rship-entities-engine = { version = "4.0.0-canary.26", path = "libs/entities/engine" }
-rship-entities-external = { version = "4.0.0-canary.26", path = "libs/entities/external" }
-rship-entities-feedback = { version = "4.0.0-canary.26", path = "libs/entities/feedback" }
-rship-entities-foundation = { version = "4.0.0-canary.26", path = "libs/entities/foundation" }
-rship-entities-generators = { version = "4.0.0-canary.26", path = "libs/entities/generators" }
-rship-entities-infrastructure = { version = "4.0.0-canary.26", path = "libs/entities/infrastructure" }
-rship-entities-lighting = { version = "4.0.0-canary.26", path = "libs/entities/lighting" }
-rship-entities-link = { version = "4.0.0-canary.26", path = "libs/entities/link" }
-rship-entities-lists = { version = "4.0.0-canary.26", path = "libs/entities/lists" }
-rship-entities-logic = { version = "4.0.0-canary.26", path = "libs/entities/logic" }
-rship-entities-machine = { version = "4.0.0-canary.26", path = "libs/entities/machine" }
-rship-entities-macros = { version = "4.0.0-canary.26", path = "libs/entities/macros" }
-rship-entities-math = { version = "4.0.0-canary.26", path = "libs/entities/math" }
-rship-entities-media = { version = "4.0.0-canary.26", path = "libs/entities/media" }
-rship-entities-networking = { version = "4.0.0-canary.26", path = "libs/entities/networking" }
-rship-entities-nmos = { version = "4.0.0-canary.26", path = "libs/entities/nmos" }
-rship-entities-nodes = { version = "4.0.0-canary.26", path = "libs/entities/nodes" }
-rship-entities-nodes-runtime = { version = "4.0.0-canary.26", path = "libs/entities/nodes-runtime" }
-rship-entities-objects = { version = "4.0.0-canary.26", path = "libs/entities/objects" }
-rship-entities-physical = { version = "4.0.0-canary.26", path = "libs/entities/physical" }
-rship-entities-rive = { version = "4.0.0-canary.26", path = "libs/entities/rive" }
-rship-entities-runtime = { version = "4.0.0-canary.26", path = "libs/entities/runtime" }
-rship-entities-spatialization = { version = "4.0.0-canary.26", path = "libs/entities/spatialization" }
-rship-entities-scene = { version = "4.0.0-canary.26", path = "libs/entities/scene" }
-rship-entities-scheduling = { version = "4.0.0-canary.26", path = "libs/entities/scheduling" }
-rship-entities-sequencing = { version = "4.0.0-canary.26", path = "libs/entities/sequencing" }
-rship-entities-status = { version = "4.0.0-canary.26", path = "libs/entities/status" }
-rship-entities-string = { version = "4.0.0-canary.26", path = "libs/entities/string" }
-rship-entities-surfaces = { version = "4.0.0-canary.26", path = "libs/entities/surfaces" }
-rship-entities-tags = { version = "4.0.0-canary.26", path = "libs/entities/tags" }
-rship-entities-teams = { version = "4.0.0-canary.26", path = "libs/entities/teams" }
-rship-entities-timing = { version = "4.0.0-canary.26", path = "libs/entities/timing" }
-rship-entities-ui = { version = "4.0.0-canary.26", path = "libs/entities/ui" }
-rship-entities-variables = { version = "4.0.0-canary.26", path = "libs/entities/variables" }
-rship-entities-vfx = { version = "4.0.0-canary.26", path = "libs/entities/vfx" }
-rship-entities-visualization = { version = "4.0.0-canary.26", path = "libs/entities/visualization" }
-rship-entities-blend-engine = { version = "4.0.0-canary.26", path = "libs/entities/blend-engine" }
-rship-entities-value-track = {version = "4.0.0-canary.26", path = "libs/entities/value-track"}
-
-rship-sdk = { version = "4.0.0-canary.26", path = "libs/sdk/rs" }
-rship-sync = { version = "4.0.0-canary.26", path = "libs/sync" }
