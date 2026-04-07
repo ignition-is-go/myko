@@ -1,0 +1,14 @@
+{
+  "name": "@myko/ui-svelte",
+  "version": "4.1.0-canary.2",
+  "exports": "./src/lib/index.ts",
+  "license": "AGPL-3.0-or-later",
+  "publish": {
+    "exclude": [
+      "node_modules",
+      "package.json",
+      ".svelte-kit",
+      "dist"
+    ]
+  }
+}
