@@ -41,16 +41,15 @@ jobs:
           fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
-        with:
-          registry-url: https://registry.npmjs.org
       - uses: Swatinem/rust-cache@v2
 
       - run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "//registry.npmjs.org/:_authToken=\${NPM_TOKEN}" > ~/.npmrc
       - run: bun install
       - run: cargo install cargo-flux
       - run: cargo flux run release
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
