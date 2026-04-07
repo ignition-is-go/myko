@@ -31,7 +31,9 @@ cascade = "all"
 autoapply = "inherit"
 depends_on = ["build", "test"]
 cargo = ["cargo", "publish"]
-bun = ["npm", "publish", "--provenance", "--access", "public"]
+bun = """BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "dev") \
+  && if [ "$BRANCH" = "main" ]; then TAG=latest; else TAG=canary; fi \
+  && npm publish --provenance --access public --tag "$TAG" """
 
 [tasks.release]
 cascade = "none"
