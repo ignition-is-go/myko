@@ -1,6 +1,6 @@
 [package]
 name = "myko-leptos"
-version = "4.2.0-canary.3"
+version = "4.2.0-canary.5"
 description = "Myko client for leptos"
 license = "AGPL-3.0-or-later"
 edition.workspace = true
