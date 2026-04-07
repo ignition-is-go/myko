@@ -37,13 +37,13 @@
     ]
   },
   "name": "@myko/ui-svelte",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ignition-is-go/myko",
-    "directory": "libs/myko/ui-svelte"
-  },
   "peerDependencies": {
     "svelte": "^5.0.0"
+  },
+  "repository": {
+    "directory": "libs/myko/ui-svelte",
+    "type": "git",
+    "url": "https://github.com/ignition-is-go/myko"
   },
   "scripts": {
     "build": "vite build && svelte-kit sync && svelte-package",
@@ -60,5 +60,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.2.0-canary.9"
+  "version": "4.2.0-canary.10"
 }
