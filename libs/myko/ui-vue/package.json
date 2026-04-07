@@ -28,13 +28,13 @@
   },
   "main": "./src/lib/index.ts",
   "name": "@myko/ui-vue",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ignition-is-go/myko",
-    "directory": "libs/myko/ui-vue"
-  },
   "peerDependencies": {
     "vue": "^3.4.0"
+  },
+  "repository": {
+    "directory": "libs/myko/ui-vue",
+    "type": "git",
+    "url": "https://github.com/ignition-is-go/myko"
   },
   "scripts": {
     "build": "vue-tsc --noEmit",
@@ -45,5 +45,5 @@
   },
   "type": "module",
   "types": "./src/lib/index.ts",
-  "version": "4.2.0-canary.9"
+  "version": "4.2.0-canary.10"
 }
