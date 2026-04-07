@@ -1,0 +1,13 @@
+{
+  "exports": "./src/lib/index.ts",
+  "license": "AGPL-3.0-or-later",
+  "name": "@myko/ui-vue",
+  "publish": {
+    "exclude": [
+      "node_modules",
+      "package.json",
+      "dist"
+    ]
+  },
+  "version": "4.1.1-canary.2"
+}
