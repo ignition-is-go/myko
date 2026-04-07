@@ -172,11 +172,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autosocket"
-<<<<<<< HEAD
 version = "4.0.0"
-=======
-version = "4.1.0-canary.2"
->>>>>>> dev
 dependencies = [
  "dashmap",
  "flume",
@@ -932,9 +928,9 @@ checksum = "9afc2bd4d5a73106dd53d10d73d3401c2f32730ba2c0b93ddb888a8983680471"
 
 [[package]]
 name = "fastrand"
-version = "2.4.0"
+version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a043dc74da1e37d6afe657061213aa6f425f855399a11d3463c6ecccc4dfda1f"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "find-msvc-tools"
@@ -1854,11 +1850,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "myko"
-<<<<<<< HEAD
 version = "4.0.0"
-=======
-version = "4.1.0-canary.2"
->>>>>>> dev
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1892,11 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-<<<<<<< HEAD
 version = "4.0.0"
-=======
-version = "4.1.0-canary.2"
->>>>>>> dev
 dependencies = [
  "leptos",
  "myko",
@@ -1905,11 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-<<<<<<< HEAD
 version = "4.0.0"
-=======
-version = "4.1.0-canary.2"
->>>>>>> dev
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1918,11 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-<<<<<<< HEAD
 version = "4.0.0"
-=======
-version = "4.1.0-canary.2"
->>>>>>> dev
 dependencies = [
  "chrono",
  "dashmap",
