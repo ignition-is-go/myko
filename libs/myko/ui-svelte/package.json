@@ -27,36 +27,38 @@
     ".": {
       "default": "./src/lib/index.ts",
       "svelte": "./src/lib/index.ts"
-    },
-    "./client": {
-      "default": "./src/lib/services/client-exports.ts",
-      "svelte": "./src/lib/services/client-exports.ts"
     }
   },
   "flux": {
     "tasks": [
       "build",
-      "check"
+      "check",
+      "publish"
     ]
   },
   "name": "@myko/ui-svelte",
   "peerDependencies": {
     "svelte": "^5.0.0"
   },
+  "repository": {
+    "directory": "libs/myko/ui-svelte",
+    "type": "git",
+    "url": "https://github.com/ignition-is-go/myko"
+  },
   "scripts": {
-    "build": "vite build && svelte-kit sync && svelte-package && publint",
-    "build:watch": "vite build && svelte-kit sync && svelte-package && publint && chokidar 'src/**/*.ts' 'src/**/*.svelte' -c 'vite build && svelte-kit sync && svelte-package && publint'",
+    "build": "vite build && svelte-kit sync && svelte-package",
+    "build:watch": "vite build && svelte-kit sync && svelte-package && chokidar 'src/**/*.ts' 'src/**/*.svelte' -c 'vite build && svelte-kit sync && svelte-package'",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "dev": "vite dev",
     "format": "prettier --write .",
     "lint": "prettier --check .",
-    "package": "svelte-kit sync && svelte-package && publint",
+    "package": "svelte-kit sync && svelte-package",
     "preview": "vite preview"
   },
   "sideEffects": [
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.1.1"
+  "version": "4.2.0-canary.11"
 }

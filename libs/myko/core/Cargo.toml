@@ -1,6 +1,6 @@
 [package]
 name = "myko"
-version = "4.1.1"
+version = "4.2.0-canary.11"
 edition = "2024"
 description = "myko in rust"
 license = "AGPL-3.0-or-later"

@@ -17,7 +17,7 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write ."
   },
-  "version": "4.1.1",
+  "version": "4.2.0-canary.11",
   "workspaces": [
     "libs/myko/**"
   ]
