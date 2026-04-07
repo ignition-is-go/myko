@@ -32,7 +32,7 @@
     "vue": "^3.4.0"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vue-tsc --noEmit",
     "check": "vue-tsc --noEmit",
     "dev": "vite build --watch",
     "format": "prettier --write .",
