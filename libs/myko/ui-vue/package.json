@@ -16,36 +16,29 @@
   },
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./client": {
-      "import": "./dist/client.js",
-      "types": "./dist/client.d.ts"
+      "default": "./src/lib/index.ts"
     }
   },
-  "files": [
-    "dist"
-  ],
   "flux": {
     "tasks": [
       "build",
-      "check"
+      "check",
+      "publish"
     ]
   },
-  "main": "./dist/index.js",
+  "main": "./src/lib/index.ts",
   "name": "@myko/ui-vue",
   "peerDependencies": {
     "vue": "^3.4.0"
   },
   "scripts": {
-    "build": "vite build",
+    "build": "vue-tsc --noEmit",
     "check": "vue-tsc --noEmit",
     "dev": "vite build --watch",
     "format": "prettier --write .",
     "lint": "prettier --check ."
   },
   "type": "module",
-  "types": "./dist/index.d.ts",
+  "types": "./src/lib/index.ts",
   "version": "4.1.2-canary.1"
 }
