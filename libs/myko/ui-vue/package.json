@@ -28,6 +28,11 @@
   },
   "main": "./src/lib/index.ts",
   "name": "@myko/ui-vue",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ignition-is-go/myko",
+    "directory": "libs/myko/ui-vue"
+  },
   "peerDependencies": {
     "vue": "^3.4.0"
   },
