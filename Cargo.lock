@@ -172,7 +172,11 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autosocket"
+<<<<<<< HEAD
 version = "4.0.0"
+=======
+version = "4.1.0-canary.2"
+>>>>>>> dev
 dependencies = [
  "dashmap",
  "flume",
@@ -1850,7 +1854,11 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "myko"
+<<<<<<< HEAD
 version = "4.0.0"
+=======
+version = "4.1.0-canary.2"
+>>>>>>> dev
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1884,7 +1892,11 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
+<<<<<<< HEAD
 version = "4.0.0"
+=======
+version = "4.1.0-canary.2"
+>>>>>>> dev
 dependencies = [
  "leptos",
  "myko",
@@ -1893,7 +1905,11 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
+<<<<<<< HEAD
 version = "4.0.0"
+=======
+version = "4.1.0-canary.2"
+>>>>>>> dev
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1902,7 +1918,11 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
+<<<<<<< HEAD
 version = "4.0.0"
+=======
+version = "4.1.0-canary.2"
+>>>>>>> dev
 dependencies = [
  "chrono",
  "dashmap",
