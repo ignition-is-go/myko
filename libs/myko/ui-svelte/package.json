@@ -25,10 +25,14 @@
   },
   "exports": {
     ".": {
-      "default": "./src/lib/index.ts",
-      "svelte": "./src/lib/index.ts"
+      "types": "./dist/index.d.ts",
+      "svelte": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "flux": {
     "tasks": [
       "build",

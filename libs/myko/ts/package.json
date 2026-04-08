@@ -11,9 +11,13 @@
   },
   "exports": {
     ".": {
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist"
+  ],
   "flux": {
     "bridges": [
       "cargo:myko"
@@ -25,7 +29,7 @@
       "publish"
     ]
   },
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "name": "@myko/core",
   "repository": {
     "directory": "libs/myko/ts",
@@ -38,6 +42,6 @@
     "test": "echo 'no tests yet'"
   },
   "type": "module",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "version": "4.4.1"
 }
