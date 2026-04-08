@@ -1,6 +1,6 @@
 [package]
 name = "autosocket"
-version = "4.2.1-canary.6"
+version = "4.2.1"
 edition = "2024"
 description = "Transport adapters shared by rship and myko clients"
 license = "AGPL-3.0-or-later"

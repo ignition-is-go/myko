@@ -45,5 +45,5 @@
   },
   "type": "module",
   "types": "./src/lib/index.ts",
-  "version": "4.2.1-canary.6"
+  "version": "4.2.1"
 }
