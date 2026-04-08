@@ -20,5 +20,8 @@
   "version": "4.2.3-canary.1",
   "workspaces": [
     "libs/myko/**"
-  ]
+  ],
+  "overrides": {
+    "@myko/core": "file:libs/myko/ts"
+  }
 }

@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@myko/core": "workspace:*"
+    "@myko/core": "^4.2.0"
   },
   "devDependencies": {
     "@sveltejs/adapter-auto": "^3.0.0",
