@@ -10,6 +10,9 @@
   },
   "license": "MIT",
   "name": "myko",
+  "overrides": {
+    "@myko/core": "file:libs/myko/ts"
+  },
   "packageManager": "bun@1.3.4",
   "private": true,
   "scripts": {
@@ -17,11 +20,8 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write ."
   },
-  "version": "4.2.3-canary.1",
+  "version": "4.3.0-canary.1",
   "workspaces": [
     "libs/myko/**"
-  ],
-  "overrides": {
-    "@myko/core": "file:libs/myko/ts"
-  }
+  ]
 }
