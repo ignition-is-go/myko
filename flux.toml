@@ -31,6 +31,6 @@ cascade = "all"
 autoapply = "inherit"
 depends_on = ["gen"]
 cargo = ["cargo", "publish"]
-bun = """BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "dev") \
-  && if [ "$BRANCH" = "main" ]; then TAG=latest; else TAG=canary; fi \
+bun = """VERSION=$(node -p "require('./package.json').version") \
+  && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
   && npm publish --provenance --access public --tag "$TAG" """
