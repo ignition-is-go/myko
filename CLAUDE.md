@@ -23,8 +23,8 @@ bun run format:all                    # Prettier
 # Type generation (Rust → TypeScript)
 cargo flux run gen
 
-# Release (version from commits, stamp, tag, push, publish)
-cargo flux run release
+# Release happens automatically via CI:
+# push to main/dev → stamp + tag + GitHub Release → publish
 ```
 
 ## Cargo
@@ -113,7 +113,7 @@ Auto-generates: `GetAllTargets`, `GetTargetsByIds`, `GetTargetsByQuery`, `CountA
 - **Rust First**: New logic belongs in Rust. TypeScript is for bindings and legacy support only.
 - **Generated Types**: Never manually maintain duplicate types — generate TS from Rust definitions.
 - **Type Generation**: `cargo flux run gen` generates TS bindings.
-- **Release**: `cargo flux run release` — calculates version from conventional commits, stamps all manifests, commits, tags, pushes, and publishes crates in dependency order.
+- **Release**: Automated via CI — push to main/dev stamps versions, creates GitHub Release, which triggers publish to crates.io and npm.
 - **JS Runtime**: Bun, not Node.js.
 - **Package Manager**: bun workspaces
 
