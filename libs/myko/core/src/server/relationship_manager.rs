@@ -737,14 +737,15 @@ impl RelationshipManager {
             // Get all combinations of dependency entities
             let combinations = self.get_dependency_combinations(ctx, &lookup.dependencies);
 
+            // Snapshot the store once outside the combo loop to avoid
+            // re-materializing entries() for every combination
+            let store = ctx.registry.get_or_create(lookup.local_type);
+            let existing_items = store.snapshot();
+
             for combo in combinations {
                 // Check if derived entity already exists
-                let existing = self.find_ensure_for_entity(
-                    ctx,
-                    lookup.local_type,
-                    &lookup.dependencies,
-                    &combo,
-                );
+                let existing =
+                    Self::find_ensure_for_entity_in(&existing_items, &lookup.dependencies, &combo);
 
                 if existing.is_none() {
                     // Create the derived entity using the factory
@@ -952,13 +953,16 @@ impl RelationshipManager {
                 // Get all combinations of dependency entities
                 let combinations = self.get_dependency_combinations(ctx, &lookup.dependencies);
 
+                // Snapshot once outside the combo loop
+                let store = ctx.registry.get_or_create(lookup.local_type);
+                let existing_items = store.snapshot();
+
                 let mut created_count = 0;
 
                 for combo in combinations {
                     // Check if derived entity already exists
-                    let existing = self.find_ensure_for_entity(
-                        ctx,
-                        lookup.local_type,
+                    let existing = Self::find_ensure_for_entity_in(
+                        &existing_items,
                         &lookup.dependencies,
                         &combo,
                     );
@@ -1001,12 +1005,7 @@ impl RelationshipManager {
     /// Get all entities of a type
     fn get_all_items(&self, ctx: &CellServerCtx, entity_type: &str) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
-        store
-            .entries()
-            .get()
-            .into_iter()
-            .map(|(_, item)| item)
-            .collect()
+        store.snapshot().into_iter().map(|(_, item)| item).collect()
     }
 
     /// Get all combinations of dependency entity IDs for EnsureFor
@@ -1056,10 +1055,9 @@ impl RelationshipManager {
     }
 
     /// Find an EnsureFor entity matching the given dependency IDs
-    fn find_ensure_for_entity(
-        &self,
-        ctx: &CellServerCtx,
-        local_type: &str,
+    /// from a pre-computed snapshot of existing items.
+    fn find_ensure_for_entity_in(
+        items: &[(Arc<str>, Arc<dyn AnyItem>)],
         dependencies: &[EnsureForDependency],
         combo: &[Arc<str>],
     ) -> Option<Arc<dyn AnyItem>> {
@@ -1067,10 +1065,7 @@ impl RelationshipManager {
             return None;
         }
 
-        // Get all entities of the local type and filter by matching all FK values
-        let store = ctx.registry.get_or_create(local_type);
-
-        store.entries().get().into_iter().find_map(|(_, item)| {
+        items.iter().find_map(|(_, item)| {
             // Check if all dependency FKs match the combo values
             let all_match = dependencies
                 .iter()
@@ -1081,7 +1076,7 @@ impl RelationshipManager {
                         .unwrap_or(false)
                 });
 
-            if all_match { Some(item) } else { None }
+            if all_match { Some(item.clone()) } else { None }
         })
     }
 

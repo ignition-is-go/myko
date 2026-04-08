@@ -315,15 +315,17 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             type Output = Option<std::sync::Arc<#name>>;
 
             fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
-                use #krate::prelude::MapExt;
+                use #krate::prelude::{MapExt, Eventable};
 
-                let id = self.id.clone();
-
-                // Query by ID and return the first match as a shared entity snapshot.
-                let query = #get_by_ids_query_ident { ids: vec![id] };
-                ctx.query_map_by_str(query)
-                    .entries()
-                    .map(|items| std::sync::Arc::new(items.first().map(|(_, item)| item.clone())))
+                let id: std::sync::Arc<str> = self.id.clone().into();
+                let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
+                store.get(&id).map(move |opt| {
+                    std::sync::Arc::new(opt.as_ref().map(|any_item| {
+                        std::sync::Arc::new(any_item.as_any().downcast_ref::<#name>().expect(
+                            concat!("downcast failed in ", stringify!(#get_by_id_report_ident))
+                        ).clone())
+                    }))
+                })
             }
         }
     };
