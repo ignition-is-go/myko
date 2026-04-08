@@ -16,7 +16,6 @@ use crate::query::FilteredCellMap;
 use crate::server::CellServerCtx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::PersistHealth;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::store::StoreRegistry;
 use crate::{
     cache::CacheKey,
@@ -40,6 +39,8 @@ use crate::{
 pub struct ReportContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
     pub req: Arc<RequestContext>,
+    /// Store registry for reactive entity lookups (available on all targets).
+    pub(crate) registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<CellServerCtx>,
 }
@@ -51,7 +52,12 @@ impl ReportContext {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<CellServerCtx>) -> Self {
-        Self { req, server_ctx }
+        let registry = server_ctx.registry.clone();
+        Self {
+            req,
+            registry,
+            server_ctx,
+        }
     }
 
     /// Get the transaction ID.
@@ -262,9 +268,8 @@ impl ReportContext {
     ///
     /// This enables reports that need to traverse entities by runtime-determined
     /// type names (e.g., entity tree export walking relationship graphs).
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn registry(&self) -> Arc<StoreRegistry> {
-        self.server_ctx.registry.clone()
+        self.registry.clone()
     }
 
     /// Replay historical events into a temporary StoreRegistry.
