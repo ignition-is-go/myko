@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@myko/core": "^4.2.0"
+    "@myko/core": "^4.3.0-canary.2"
   },
   "devDependencies": {
     "@sveltejs/adapter-auto": "^3.0.0",
@@ -60,5 +60,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.3.0-canary.1"
+  "version": "4.3.0-canary.2"
 }
