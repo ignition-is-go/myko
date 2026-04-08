@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@myko/core": "^4.4.0-canary.3"
+    "@myko/core": "^4.4.0-canary.4"
   },
   "devDependencies": {
     "@sveltejs/adapter-auto": "^3.0.0",
@@ -25,8 +25,8 @@
   },
   "exports": {
     ".": {
-      "svelte": "./src/lib/index.ts",
-      "default": "./src/lib/index.ts"
+      "default": "./src/lib/index.ts",
+      "svelte": "./src/lib/index.ts"
     }
   },
   "flux": {
@@ -60,5 +60,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.4.0-canary.3"
+  "version": "4.4.0-canary.4"
 }
