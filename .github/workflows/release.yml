@@ -69,4 +69,9 @@ jobs:
           git commit -m "chore(release): v$VERSION"
           git tag "v$VERSION" -m "Release $VERSION"
           git push origin HEAD "v$VERSION"
-          gh release create "v$VERSION" --title "v$VERSION" --generate-notes
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          if [ "$BRANCH" = "main" ]; then
+            gh release create "v$VERSION" --title "v$VERSION" --generate-notes --latest
+          else
+            gh release create "v$VERSION" --title "v$VERSION" --generate-notes --prerelease
+          fi
