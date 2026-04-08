@@ -60,5 +60,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "4.2.2"
+  "version": "4.2.3-canary.1"
 }
