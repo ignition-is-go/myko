@@ -25,9 +25,11 @@
   },
   "exports": {
     ".": {
-      "default": "./src/lib/index.ts",
-      "svelte": "./src/lib/index.ts"
-    }
+      "svelte": "./src/lib/index.ts",
+      "default": "./src/lib/index.ts"
+    },
+    "./utils/*": "./src/lib/utils/*.ts",
+    "./components/*": "./src/lib/components/*"
   },
   "flux": {
     "tasks": [
