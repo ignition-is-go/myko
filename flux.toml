@@ -29,22 +29,8 @@ default = ["cargo", "run", "-p", "myko", "--bin", "typegen", "--", "src/generate
 [tasks.publish]
 cascade = "all"
 autoapply = "inherit"
-depends_on = ["build", "test"]
+depends_on = ["gen"]
 cargo = ["cargo", "publish"]
 bun = """BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "dev") \
   && if [ "$BRANCH" = "main" ]; then TAG=latest; else TAG=canary; fi \
   && npm publish --provenance --access public --tag "$TAG" """
-
-[tasks.release]
-cascade = "none"
-cargo = """ROOT=$(git rev-parse --show-toplevel) \
-  && VERSION=$(cargo flux version --root "$ROOT") \
-  && cargo flux stamp "$VERSION" --root "$ROOT" \
-  && cargo update --workspace --manifest-path "$ROOT/Cargo.toml" \
-  && cargo fmt --all --manifest-path "$ROOT/Cargo.toml" \
-  && cd "$ROOT" && bun install \
-  && git add -A \
-  && git commit -m "chore(release): v$VERSION" \
-  && git tag "v$VERSION" -m "Release $VERSION" \
-  && git push origin HEAD "v$VERSION" \
-  && cargo flux run publish --root "$ROOT" """
