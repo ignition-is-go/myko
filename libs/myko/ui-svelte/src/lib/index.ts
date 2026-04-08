@@ -6,8 +6,17 @@ export { default as Report } from './components/Report.svelte';
 export { default as Search } from './components/Search.svelte';
 export { default as ServerView } from './components/ServerView.svelte';
 export { default as Transactions } from './components/transactions/Transactions.svelte';
+export { default as EntityDiffTree } from './components/EntityDiffTree.svelte';
+export { default as EntityDiffBadge } from './components/EntityDiffBadge.svelte';
+export { default as EntityDiffFields } from './components/EntityDiffFields.svelte';
+export { default as EntityDiffNode } from './components/EntityDiffNode.svelte';
 export * from './components/state/windback.svelte.js';
 export * from './components/windback/index.js';
+
+// Utils
+export * from './utils/entity-diff';
+export * from './utils/entity-tree';
+export * from './utils/entity-apply';
 
 // Svelte-friendly Myko client
 export {
