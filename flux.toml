@@ -29,7 +29,7 @@ default = ["cargo", "run", "-p", "myko", "--bin", "typegen", "--", "src/generate
 [tasks.publish]
 cascade = "all"
 autoapply = "inherit"
-depends_on = ["gen"]
+depends_on = ["build"]
 cargo = ["cargo", "publish"]
 bun = """VERSION=$(node -p "require('./package.json').version") \
   && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
