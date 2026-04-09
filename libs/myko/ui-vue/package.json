@@ -16,8 +16,23 @@
   },
   "exports": {
     ".": {
+      "types": "./src/lib/index.ts",
       "default": "./src/lib/index.ts"
     }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.mjs",
+        "require": "./dist/index.cjs"
+      }
+    },
+    "main": "./dist/index.cjs",
+    "types": "./dist/index.d.ts"
   },
   "flux": {
     "tasks": [
@@ -37,7 +52,7 @@
     "url": "https://github.com/ignition-is-go/myko"
   },
   "scripts": {
-    "build": "vue-tsc --noEmit",
+    "build": "vue-tsc --noEmit && vite build",
     "check": "vue-tsc --noEmit",
     "dev": "vite build --watch",
     "format": "prettier --write .",
