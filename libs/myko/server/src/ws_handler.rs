@@ -1134,6 +1134,7 @@ impl WsHandler {
 
             MykoMessage::Event(mut event) => {
                 record_ws_ingest(std::slice::from_ref(&event));
+                event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id);
                 if let Err(e) = ctx.apply_event(event) {
                     log::error!(
@@ -1154,6 +1155,7 @@ impl WsHandler {
                     );
                 }
                 for event in &mut events {
+                    event.sanitize_null_bytes();
                     normalize_incoming_event(event, &session.client_id);
                 }
                 match ctx.apply_event_batch(events) {
