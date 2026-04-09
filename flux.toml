@@ -31,6 +31,8 @@ cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
 cargo = ["cargo", "publish"]
-bun = """VERSION=$(node -p "require('./package.json').version") \
+bun = """cp package.json package.json.bak \
+  && bun "$(git rev-parse --show-toplevel)/scripts/apply-publish-config.ts" \
+  && VERSION=$(bun -p "require('./package.json').version") \
   && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
-  && npm publish --provenance --access public --tag "$TAG" """
+  && npm publish --provenance --access public --tag "$TAG" ; mv package.json.bak package.json"""
