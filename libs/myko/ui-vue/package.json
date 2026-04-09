@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@myko/core": "^4.4.5"
+    "@myko/core": "^4.4.6"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.2",
@@ -16,24 +16,13 @@
   },
   "exports": {
     ".": {
-      "types": "./src/lib/index.ts",
-      "default": "./src/lib/index.ts"
+      "default": "./src/lib/index.ts",
+      "types": "./src/lib/index.ts"
     }
   },
   "files": [
     "dist"
   ],
-  "publishConfig": {
-    "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "import": "./dist/index.mjs",
-        "require": "./dist/index.cjs"
-      }
-    },
-    "main": "./dist/index.cjs",
-    "types": "./dist/index.d.ts"
-  },
   "flux": {
     "tasks": [
       "build",
@@ -45,6 +34,17 @@
   "name": "@myko/ui-vue",
   "peerDependencies": {
     "vue": "^3.4.0"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "import": "./dist/index.mjs",
+        "require": "./dist/index.cjs",
+        "types": "./dist/index.d.ts"
+      }
+    },
+    "main": "./dist/index.cjs",
+    "types": "./dist/index.d.ts"
   },
   "repository": {
     "directory": "libs/myko/ui-vue",
@@ -60,5 +60,5 @@
   },
   "type": "module",
   "types": "./src/lib/index.ts",
-  "version": "4.4.5"
+  "version": "4.4.6"
 }
