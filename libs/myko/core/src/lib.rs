@@ -88,7 +88,6 @@ pub mod entities;
 pub mod search;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod utils;
 pub mod wire;
