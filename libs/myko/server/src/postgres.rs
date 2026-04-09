@@ -28,6 +28,25 @@ const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
 
+/// Strip null bytes that PostgreSQL rejects in text/jsonb columns.
+/// Handles both literal \0 bytes and JSON-escaped \u0000 sequences.
+fn strip_null_bytes(field: &str, s: &str) -> String {
+    let has_literal = s.as_bytes().contains(&0);
+    let has_escaped = s.contains("\\u0000");
+    if has_literal || has_escaped {
+        warn!(
+            "Stripped null bytes from pg field '{}' (literal={}, escaped={}): {:?}",
+            field,
+            has_literal,
+            has_escaped,
+            if s.len() > 500 { &s[..500] } else { s }
+        );
+        s.replace('\0', "").replace("\\u0000", "")
+    } else {
+        s.to_string()
+    }
+}
+
 /// PostgreSQL configuration.
 #[derive(Debug, Clone)]
 pub struct PostgresConfig {
@@ -360,6 +379,40 @@ fn run_producer_loop(
                     let msg =
                         format_pg_error("insert_event_batch(producer)", Some(&config.url), &err);
                     error!("{}", msg);
+                    // NOTE(ts): Dump the first event in the batch to find the null byte source.
+                    if let Some(evt) = batch.first() {
+                        let json = serde_json::to_string(evt).unwrap_or_default();
+                        // NOTE(ts): Check for literal 0x00 bytes
+                        for (i, b) in json.as_bytes().iter().enumerate() {
+                            if *b == 0 {
+                                let start = i.saturating_sub(20);
+                                let end = (i + 20).min(json.len());
+                                error!(
+                                    "Found literal null byte at offset {} in event_json, surrounding bytes: {:?}",
+                                    i, &json.as_bytes()[start..end]
+                                );
+                                break;
+                            }
+                        }
+                        // NOTE(ts): Check for escaped \u0000
+                        if let Some(pos) = json.find("\\u0000") {
+                            let start = pos.saturating_sub(40);
+                            let end = (pos + 46).min(json.len());
+                            error!(
+                                "Found escaped \\u0000 at offset {} in event_json, context: {}",
+                                pos, &json[start..end]
+                            );
+                        }
+                        // NOTE(ts): If neither found, dump the item_type and first 200 chars
+                        error!(
+                            "Failing batch event[0]: item_type={:?} item_id={:?} source_id={:?} json_len={} json_prefix={:?}",
+                            evt.item_type,
+                            evt.item.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                            evt.source_id,
+                            json.len(),
+                            if json.len() > 200 { &json[..200] } else { &json }
+                        );
+                    }
                     health.record_error_no_dequeue(msg);
                     client = None;
                     retry_batch = batch;
@@ -416,26 +469,38 @@ fn insert_event_batch(
         let sql = format!(
             "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
         );
-        let item_id = event
-            .item
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let item_id = strip_null_bytes(
+            "item_id",
+            event
+                .item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown"),
+        );
+        let event_json = strip_null_bytes(
+            "event",
+            &serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string()),
+        );
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
         };
+        let item_type = strip_null_bytes("item_type", &event.item_type);
+        let created_at = strip_null_bytes("created_at", &event.created_at);
+        let tx = strip_null_bytes("tx", &event.tx);
+        let source_id = event
+            .source_id
+            .as_deref()
+            .map(|s| strip_null_bytes("source_id", s));
         client.execute(
             &sql,
             &[
-                &event.item_type,
+                &item_type,
                 &item_id,
                 &change_type,
-                &event.created_at,
-                &event.tx,
-                &event.source_id,
+                &created_at,
+                &tx,
+                &source_id,
                 &event_json,
             ],
         )?;
@@ -463,23 +528,33 @@ fn insert_event_batch(
             base + 6,
             base + 7
         ));
-        let item_id = event
-            .item
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let item_id = strip_null_bytes(
+            "item_id",
+            event
+                .item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown"),
+        );
+        let event_json = strip_null_bytes(
+            "event",
+            &serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string()),
+        );
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
         };
-        params.push(Box::new(event.item_type.clone()));
+        params.push(Box::new(strip_null_bytes("item_type", &event.item_type)));
         params.push(Box::new(item_id));
         params.push(Box::new(change_type.to_string()));
-        params.push(Box::new(event.created_at.clone()));
-        params.push(Box::new(event.tx.clone()));
-        params.push(Box::new(event.source_id.clone()));
+        params.push(Box::new(strip_null_bytes("created_at", &event.created_at)));
+        params.push(Box::new(strip_null_bytes("tx", &event.tx)));
+        params.push(Box::new(
+            event
+                .source_id
+                .as_deref()
+                .map(|s| strip_null_bytes("source_id", s)),
+        ));
         params.push(Box::new(event_json));
     }
 
