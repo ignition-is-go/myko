@@ -545,6 +545,16 @@ impl WsHandler {
                     break;
                 }
             }
+            // NOTE(ts): Unregister from client registry immediately so the node
+            // executor stops serializing commands into a dead channel.
+            if let Some(registry) = try_client_registry() {
+                registry.unregister(&write_client_id);
+                log::info!(
+                    "WebSocket writer unregistered client {} from {} (write task exiting)",
+                    write_client_id,
+                    write_addr,
+                );
+            }
             log::warn!(
                 "WebSocket writer task exiting for client {} from {} normal_open={} priority_open={} deferred_open={}",
                 write_client_id,
