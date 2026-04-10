@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "4.5.0"
+version = "4.6.0"
 edition = "2024"
 authors = ["Trevor"]
 license = "MIT OR Apache-2.0"
@@ -74,8 +74,8 @@ partially = { version = "0.2", features = ["derive"] }
 hyphae = { version = "^0.6.0" }
 
 # Internal crates
-autosocket = { version = "4.5.0", path = "libs/autosocket" }
-myko-leptos = { version = "4.5.0", path = "libs/myko/leptos" }
-myko-macros = { version = "4.5.0", path = "libs/myko/macros" }
-myko = { version = "4.5.0", path = "libs/myko/core" }
-myko-server = { version = "4.5.0", path = "libs/myko/server" }
+autosocket = { version = "4.6.0", path = "libs/autosocket" }
+myko-leptos = { version = "4.6.0", path = "libs/myko/leptos" }
+myko-macros = { version = "4.6.0", path = "libs/myko/macros" }
+myko = { version = "4.6.0", path = "libs/myko/core" }
+myko-server = { version = "4.6.0", path = "libs/myko/server" }
