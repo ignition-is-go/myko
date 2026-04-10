@@ -119,6 +119,10 @@ pub struct SagaRegistration {
     pub saga_id: &'static str,
     /// Factory function to create an instance of the saga.
     pub create: fn() -> Arc<dyn AnySaga>,
+    /// Entity type this saga listens for (for dispatch filtering).
+    pub event_entity_type: &'static str,
+    /// Change type this saga listens for (for dispatch filtering).
+    pub event_change_type: MEventType,
 }
 
 inventory::collect!(SagaRegistration);

@@ -82,6 +82,8 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
             #krate::saga::SagaRegistration {
                 saga_id: #struct_name_str,
                 create: || std::sync::Arc::new(#struct_name) as std::sync::Arc<dyn #krate::saga::AnySaga>,
+                event_entity_type: <<#struct_name as #krate::saga::SagaHandler>::EventItem as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                event_change_type: <#struct_name as #krate::saga::SagaHandler>::EVENT_TYPE,
             }
         }
     }

@@ -342,46 +342,29 @@ impl CellServer {
         };
 
         log::info!("Starting saga runtime with {} saga(s)", registrations.len());
-        let (event_tx, _) = tokio::sync::broadcast::channel::<MEvent>(8192);
-        let event_tx_dispatch = event_tx.clone();
 
-        let dispatcher = tokio::spawn(async move {
-            while let Ok(event) = rx.recv_async().await {
-                let _ = event_tx_dispatch.send(event);
-            }
-        });
-        self.saga_tasks
-            .lock()
-            .expect("saga_tasks mutex poisoned")
-            .push(dispatcher);
+        // NOTE(ts): One unbounded flume channel per saga, with dispatch-side filtering
+        // so sagas only receive events matching their entity type and change type.
+        struct SagaChannel {
+            tx: flume::Sender<MEvent>,
+            entity_type: &'static str,
+            change_type: myko::event::MEventType,
+        }
+        let mut saga_channels: Vec<SagaChannel> = Vec::new();
 
         for registration in registrations {
             let saga = (registration.create)();
             let saga_name = saga.name().to_string();
-            let saga_name_for_stream = saga_name.clone();
-            let event_rx = event_tx.subscribe();
+            let (saga_tx, saga_rx) = flume::unbounded::<MEvent>();
+            saga_channels.push(SagaChannel {
+                tx: saga_tx,
+                entity_type: registration.event_entity_type,
+                change_type: registration.event_change_type,
+            });
             let events: myko::saga::EventStream = Box::pin(futures_util::stream::unfold(
-                event_rx,
-                move |mut event_rx| {
-                    let saga_name_for_stream = saga_name_for_stream.clone();
-                    async move {
-                        loop {
-                            match event_rx.recv().await {
-                                Ok(event) => return Some((event, event_rx)),
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                    log::warn!(
-                                        "Saga {} lagged; skipped {} events",
-                                        saga_name_for_stream,
-                                        skipped
-                                    );
-                                    continue;
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                    return None;
-                                }
-                            }
-                        }
-                    }
+                saga_rx,
+                move |saga_rx| async move {
+                    saga_rx.recv_async().await.ok().map(|event| (event, saga_rx))
                 },
             ));
 
@@ -443,6 +426,22 @@ impl CellServer {
                 .expect("saga_tasks mutex poisoned")
                 .push(handle);
         }
+
+        // NOTE(ts): Dispatcher fans out events to saga channels, filtering by
+        // entity type and change type so each saga only receives relevant events.
+        let dispatcher = tokio::spawn(async move {
+            while let Ok(event) = rx.recv_async().await {
+                for ch in &saga_channels {
+                    if event.item_type == ch.entity_type && event.change_type == ch.change_type {
+                        let _ = ch.tx.send(event.clone());
+                    }
+                }
+            }
+        });
+        self.saga_tasks
+            .lock()
+            .expect("saga_tasks mutex poisoned")
+            .push(dispatcher);
     }
 
     /// Create a Postgres-backed history store for replay/windback operations.
