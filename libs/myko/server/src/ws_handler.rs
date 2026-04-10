@@ -369,6 +369,7 @@ impl WsHandler {
         let client_entity = Client {
             id: ClientId(client_id.clone()),
             server_id: host_id.to_string().into(),
+            address: Some(Arc::from(addr.to_string())),
             windback: None,
         };
         if let Err(e) = ctx.set(&client_entity) {
@@ -759,7 +760,7 @@ impl WsHandler {
             log::error!("Failed to delete client entity: {e}");
         }
 
-        log::info!("Client disconnected: {}", client_id);
+        log::info!("Client disconnected: {} from {}", client_id, addr);
 
         Ok(())
     }

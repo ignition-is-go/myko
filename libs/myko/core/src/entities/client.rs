@@ -14,6 +14,10 @@ pub struct Client {
     #[belongs_to(Server)]
     pub server_id: ServerId,
 
+    /// Remote address of the WebSocket connection (e.g., "192.168.1.5:54320").
+    #[serde(default)]
+    pub address: Option<Arc<str>>,
+
     /// ISO timestamp for windback mode. When set, the client sees historical state
     /// as of this timestamp instead of live state.
     pub windback: Option<Arc<str>>,
@@ -125,6 +129,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
         let updated_client = Client {
             id: client.id.clone(),
             server_id: client.server_id.clone(),
+            address: client.address.clone(),
             windback: Some(self.windback.clone()),
         };
 
@@ -167,6 +172,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         let updated_client = Client {
             id: client.id.clone(),
             server_id: client.server_id.clone(),
+            address: client.address.clone(),
             windback: None,
         };
 
