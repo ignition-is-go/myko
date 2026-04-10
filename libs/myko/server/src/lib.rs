@@ -364,7 +364,11 @@ impl CellServer {
             let events: myko::saga::EventStream = Box::pin(futures_util::stream::unfold(
                 saga_rx,
                 move |saga_rx| async move {
-                    saga_rx.recv_async().await.ok().map(|event| (event, saga_rx))
+                    saga_rx
+                        .recv_async()
+                        .await
+                        .ok()
+                        .map(|event| (event, saga_rx))
                 },
             ));
 
