@@ -71,7 +71,7 @@ flume = "0.11"
 dashmap = "6.1.0"
 partially = { version = "0.2", features = ["derive"] }
 
-hyphae = { version = "^0.5.1" }
+hyphae = { version = "^0.6.0" }
 
 # Internal crates
 autosocket = { version = "4.4.8", path = "libs/autosocket" }
