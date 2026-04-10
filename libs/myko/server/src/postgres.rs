@@ -351,6 +351,13 @@ fn run_producer_loop(
         }
 
         let batch_len = batch.len();
+        let pending = rx.len();
+        if pending > 1000 {
+            trace!(
+                "Postgres producer backlog: {} pending events in channel",
+                pending
+            );
+        }
         if let Some(c) = client.as_mut() {
             match insert_event_batch(c, &config, &batch) {
                 Ok(()) => {

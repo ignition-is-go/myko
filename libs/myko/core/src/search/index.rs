@@ -81,6 +81,12 @@ impl SearchIndex {
     /// Extracts searchable text from the item's JSON value and adds/updates it in the index.
     /// If the entity type has no searchable fields, this is a no-op.
     pub fn index_item(&self, item: &Arc<dyn AnyItem>) {
+        // NOTE(ts): Skip indexing when MYKO_SEARCH_INDEX_DISABLED is set (for memory profiling).
+        static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *DISABLED.get_or_init(|| std::env::var("MYKO_SEARCH_INDEX_DISABLED").is_ok()) {
+            return;
+        }
+
         let entity_type = item.entity_type();
         let Some(fields) = self.searchable_fields.get(entity_type) else {
             return;

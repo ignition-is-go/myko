@@ -926,7 +926,20 @@ impl CellServerCtx {
                 entries.len()
             );
             let store = self.registry.get_or_create(entity_type.as_ref());
+            let count = entries.len();
+            let before = store.snapshot().len();
             store.insert_many(entries);
+            let after = store.snapshot().len();
+            if after != before || count > 100 {
+                log::info!(
+                    "insert_many {}: submitted={} store_before={} store_after={} net_new={}",
+                    entity_type,
+                    count,
+                    before,
+                    after,
+                    after as i64 - before as i64
+                );
+            }
         }
         for (entity_type, keys) in removes_by_type {
             log::trace!(
