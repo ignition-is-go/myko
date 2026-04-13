@@ -340,12 +340,7 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Now mutate items to trigger the outer query → switch_map → new inner query_map
     // Each mutation changes the item list, causing switch_map to recreate
     for round in 0..20 {
-        insert_bench_item(
-            &ctx,
-            &format!("new-{}", round),
-            "alpha",
-            100 + round as i64,
-        );
+        insert_bench_item(&ctx, &format!("new-{}", round), "alpha", 100 + round as i64);
     }
 
     // Report should reflect the new items
@@ -419,10 +414,15 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
         live_count <= 10,
         "live query cache entries ({}) should be bounded during active use, \
          but found {} total cache entries — old entries are being kept alive",
-        live_count, total_count,
+        live_count,
+        total_count,
     );
 
     drop(report_cell);
     ctx.sweep_dead_cache_entries();
-    assert_eq!(ctx.query_cache_live_count(), 0, "all entries should be dead after drop");
+    assert_eq!(
+        ctx.query_cache_live_count(),
+        0,
+        "all entries should be dead after drop"
+    );
 }
