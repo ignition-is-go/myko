@@ -40,10 +40,7 @@ impl ServerOwnershipManager {
     }
 
     /// Pick the server with the lowest item count from the given set.
-    fn least_loaded(
-        live_ids: &[ServerId],
-        counts: &HashMap<Arc<str>, usize>,
-    ) -> Option<ServerId> {
+    fn least_loaded(live_ids: &[ServerId], counts: &HashMap<Arc<str>, usize>) -> Option<ServerId> {
         live_ids
             .iter()
             .min_by_key(|id| counts.get(id.0.as_ref()).copied().unwrap_or(0))
@@ -110,13 +107,8 @@ impl ServerOwnershipManager {
         let req = ctx.new_server_transaction();
         let servers_cell = ctx.query_map(GetAllServers {}, req).items();
 
-        let prev_ids: std::sync::Mutex<HashSet<Arc<str>>> = std::sync::Mutex::new(
-            servers_cell
-                .get()
-                .iter()
-                .map(|s| s.id.0.clone())
-                .collect(),
-        );
+        let prev_ids: std::sync::Mutex<HashSet<Arc<str>>> =
+            std::sync::Mutex::new(servers_cell.get().iter().map(|s| s.id.0.clone()).collect());
 
         let ctx = ctx.clone();
         servers_cell.subscribe(move |signal| {
@@ -124,8 +116,7 @@ impl ServerOwnershipManager {
                 return;
             };
 
-            let current_ids: HashSet<Arc<str>> =
-                servers.iter().map(|s| s.id.0.clone()).collect();
+            let current_ids: HashSet<Arc<str>> = servers.iter().map(|s| s.id.0.clone()).collect();
 
             let mut prev = prev_ids.lock().unwrap();
             let removed: Vec<Arc<str>> = prev.difference(&current_ids).cloned().collect();

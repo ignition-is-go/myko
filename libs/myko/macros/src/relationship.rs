@@ -338,7 +338,10 @@ pub fn parse_server_owned(field: &Field) -> Option<ServerOwnedFieldInfo> {
 
     for attr in &field.attrs {
         if attr.path().is_ident("server_owned") {
-            return Some(ServerOwnedFieldInfo { field_name, field_name_json });
+            return Some(ServerOwnedFieldInfo {
+                field_name,
+                field_name_json,
+            });
         }
     }
     None
