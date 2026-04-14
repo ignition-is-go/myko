@@ -82,6 +82,15 @@ pub struct FallbackToIdFieldInfo {
     pub field_name_json: String,
 }
 
+/// Information about a server_owned attribute on a field.
+/// When present, the framework auto-manages this ServerId field —
+/// populating on creation and redistributing on peer death.
+#[derive(Debug)]
+pub struct ServerOwnedFieldInfo {
+    /// Field name in JSON (camelCase)
+    pub field_name_json: String,
+}
+
 /// Information about a searchable field for full-text search indexing.
 #[derive(Debug)]
 pub struct SearchableFieldInfo {
@@ -117,6 +126,7 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
         || path.is_ident("fallback_to_id")
         || path.is_ident("searchable")
         || path.is_ident("exclude_from_tree")
+        || path.is_ident("server_owned")
 }
 
 /// Check if a type is Option<T>
@@ -306,6 +316,32 @@ pub fn parse_fallback_to_id(field: &Field) -> Option<FallbackToIdFieldInfo> {
     None
 }
 
+/// Parse server_owned attribute from a field.
+///
+/// When present, the framework auto-manages this ServerId field —
+/// populating on creation and redistributing on peer death.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct Instance {
+///     #[server_owned]
+///     pub server_id: Option<Arc<str>>,
+/// }
+/// ```
+pub fn parse_server_owned(field: &Field) -> Option<ServerOwnedFieldInfo> {
+    let field_name = field.ident.as_ref()?.to_string();
+    let field_name_json = to_camel_case(&field_name);
+
+    for attr in &field.attrs {
+        if attr.path().is_ident("server_owned") {
+            return Some(ServerOwnedFieldInfo { field_name_json });
+        }
+    }
+    None
+}
+
 /// Parse searchable attribute from a field.
 ///
 /// When present, this field will be included in full-text search indexing.
@@ -349,6 +385,7 @@ pub struct RelationshipInfo {
     pub client_id_field: Option<ClientIdFieldInfo>,
     pub fallback_to_id_fields: Vec<FallbackToIdFieldInfo>,
     pub searchable_fields: Vec<SearchableFieldInfo>,
+    pub server_owned_field: Option<ServerOwnedFieldInfo>,
 }
 
 impl RelationshipInfo {
@@ -402,6 +439,9 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
             }
             if let Some(sf) = parse_searchable(field) {
                 info.searchable_fields.push(sf);
+            }
+            if let Some(so) = parse_server_owned(field) {
+                info.server_owned_field = Some(so);
             }
         }
     }
@@ -574,6 +614,21 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         registrations.push(quote! {
             #krate::submit! {
                 #krate::relationship::FallbackToIdRegistration {
+                    entity_type: #local_type,
+                    field_name_json: #field_name_json,
+                }
+            }
+        });
+    }
+
+    // Generate ServerOwned registration if present
+    if let Some(ref so) = info.server_owned_field {
+        let field_name_json = &so.field_name_json;
+
+        registrations.push(quote! {
+            #[cfg(not(target_arch = "wasm32"))]
+            #krate::submit! {
+                #krate::relationship::ServerOwnedRegistration {
                     entity_type: #local_type,
                     field_name_json: #field_name_json,
                 }
