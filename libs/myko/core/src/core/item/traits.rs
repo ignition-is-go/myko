@@ -20,6 +20,18 @@ pub trait AnyItem: WithId + erased_serde::Serialize + Any + Debug + Send + Sync 
 
     /// Typed equality across erased items.
     fn equals(&self, other: &dyn AnyItem) -> bool;
+
+    /// Returns the current `#[server_owned]` field value, if this item has one.
+    fn server_owner(&self) -> Option<&str> {
+        None
+    }
+
+    /// Returns a clone of this item with the `#[server_owned]` field set to `server_id`.
+    /// Returns `None` if this item has no `#[server_owned]` field.
+    fn bake_server_owner(&self, server_id: &str) -> Option<Arc<dyn AnyItem>> {
+        let _ = server_id;
+        None
+    }
 }
 
 // Generate `impl serde::Serialize for dyn AnyItem` via erased_serde.

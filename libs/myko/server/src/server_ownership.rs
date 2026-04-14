@@ -31,15 +31,8 @@ impl ServerOwnershipManager {
         for reg in iter_server_owned_registrations() {
             let store = ctx.registry.get_or_create(reg.entity_type);
             for (_, item) in store.snapshot() {
-                if let Ok(json) = serde_json::to_value(item.as_ref()) {
-                    if let Some(server_id) = json
-                        .get(reg.field_name_json)
-                        .and_then(|v| v.as_str())
-                    {
-                        if !server_id.is_empty() {
-                            *counts.entry(Arc::from(server_id)).or_default() += 1;
-                        }
-                    }
+                if let Some(owner) = item.server_owner() {
+                    *counts.entry(Arc::from(owner)).or_default() += 1;
                 }
             }
         }
@@ -76,13 +69,7 @@ impl ServerOwnershipManager {
             let items: Vec<_> = store.snapshot().into_iter().map(|(_, item)| item).collect();
 
             for item in &items {
-                let Ok(mut json) = serde_json::to_value(item.as_ref()) else {
-                    continue;
-                };
-                let current_owner = json
-                    .get(reg.field_name_json)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let current_owner = item.server_owner().unwrap_or("");
 
                 if !current_owner.is_empty() && live_set.contains(current_owner) {
                     continue; // healthy
@@ -92,14 +79,7 @@ impl ServerOwnershipManager {
                     continue;
                 };
 
-                if let Some(obj) = json.as_object_mut() {
-                    obj.insert(
-                        reg.field_name_json.to_string(),
-                        serde_json::Value::String(new_owner.0.to_string()),
-                    );
-                }
-
-                if let Some(patched) = ctx.parse_item(reg.entity_type, &json) {
+                if let Some(patched) = item.bake_server_owner(&new_owner.0) {
                     ctx.set_dyn_with_options(
                         patched,
                         Some(EventOptions {

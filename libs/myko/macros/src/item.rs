@@ -485,6 +485,25 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // Generate setter commands for fields with #[myko_rename] or #[myko_setter]
     let setter_commands = setter::generate_setter_commands(&name_str, &setter_fields);
 
+    // Generate server_owner / bake_server_owner overrides for #[server_owned] fields
+    let server_owned_impls = if let Some(ref so) = rel_info.server_owned_field {
+        let field_ident = format_ident!("{}", so.field_name);
+        quote! {
+            fn server_owner(&self) -> Option<&str> {
+                let s: &str = &self.#field_ident;
+                if s.is_empty() { None } else { Some(s) }
+            }
+
+            fn bake_server_owner(&self, server_id: &str) -> Option<std::sync::Arc<dyn #krate::prelude::AnyItem>> {
+                let mut patched = self.clone();
+                patched.#field_ident = server_id.to_string().into();
+                Some(std::sync::Arc::new(patched))
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
 
         use #krate::prelude::Query;
@@ -593,6 +612,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                     .map(|typed| self == typed)
                     .unwrap_or(false)
             }
+
+            #server_owned_impls
         }
 
         impl #krate::prelude::WithId for #name {

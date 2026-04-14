@@ -87,6 +87,8 @@ pub struct FallbackToIdFieldInfo {
 /// populating on creation and redistributing on peer death.
 #[derive(Debug)]
 pub struct ServerOwnedFieldInfo {
+    /// Field name in Rust (snake_case)
+    pub field_name: String,
     /// Field name in JSON (camelCase)
     pub field_name_json: String,
 }
@@ -336,7 +338,7 @@ pub fn parse_server_owned(field: &Field) -> Option<ServerOwnedFieldInfo> {
 
     for attr in &field.attrs {
         if attr.path().is_ident("server_owned") {
-            return Some(ServerOwnedFieldInfo { field_name_json });
+            return Some(ServerOwnedFieldInfo { field_name, field_name_json });
         }
     }
     None
