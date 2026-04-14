@@ -20,7 +20,10 @@ use myko::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
-    relationship::{iter_client_id_registrations, iter_fallback_to_id_registrations},
+    relationship::{
+        iter_client_id_registrations, iter_fallback_to_id_registrations,
+        iter_server_owned_registrations,
+    },
     report::AnyOutput,
     request::RequestContext,
     server::{
@@ -170,7 +173,7 @@ fn record_ws_ingest(events: &[MEvent]) {
     }
 }
 
-fn normalize_incoming_event(event: &mut MEvent, client_id: &str) {
+fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
     if event.change_type != MEventType::SET {
         return;
     }
@@ -183,6 +186,23 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str) {
                     reg.field_name_json.to_string(),
                     serde_json::Value::String(client_id.to_string()),
                 );
+            }
+            break;
+        }
+    }
+
+    // Auto-populate #[server_owned] fields with this server's ID
+    for reg in iter_server_owned_registrations() {
+        if reg.entity_type == event.item_type {
+            if let Some(obj) = event.item.as_object_mut() {
+                let field = reg.field_name_json;
+                let current = obj.get(field).and_then(|v| v.as_str()).unwrap_or("");
+                if current.is_empty() {
+                    obj.insert(
+                        field.to_string(),
+                        serde_json::Value::String(host_id.to_string()),
+                    );
+                }
             }
             break;
         }
@@ -1146,7 +1166,7 @@ impl WsHandler {
             MykoMessage::Event(mut event) => {
                 record_ws_ingest(std::slice::from_ref(&event));
                 event.sanitize_null_bytes();
-                normalize_incoming_event(&mut event, &session.client_id);
+                normalize_incoming_event(&mut event, &session.client_id, host_id);
                 if let Err(e) = ctx.apply_event(event) {
                     log::error!(
                         "Failed to apply event from client {}: {e}",
@@ -1167,7 +1187,7 @@ impl WsHandler {
                 }
                 for event in &mut events {
                     event.sanitize_null_bytes();
-                    normalize_incoming_event(event, &session.client_id);
+                    normalize_incoming_event(event, &session.client_id, host_id);
                 }
                 match ctx.apply_event_batch(events) {
                     Ok(applied) => {

@@ -12,7 +12,10 @@
 pub mod mcp;
 pub mod peer_registry;
 pub mod postgres;
+pub mod server_ownership;
 pub mod ws_handler;
+
+pub use server_ownership::ServerOwnershipManager;
 
 // Re-export all tokio-free server types from myko
 use std::{
@@ -181,6 +184,8 @@ pub struct CellServer {
     saga_event_rx: std::sync::Mutex<Option<flume::Receiver<MEvent>>>,
     /// Saga tasks kept alive for server lifetime.
     saga_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Server ownership death-watch guard (kept alive for server lifetime).
+    _server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
     /// Hyphae cell inspector server (kept alive for the lifetime of the server)
     #[cfg(feature = "inspector")]
     _inspector: hyphae::server::InspectorServer,
@@ -276,6 +281,7 @@ impl CellServer {
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
+            _server_ownership_guard: std::sync::Mutex::new(None),
             #[cfg(feature = "inspector")]
             _inspector: inspector,
         }
@@ -525,6 +531,17 @@ impl CellServer {
         // Establish relations (cleanup orphans, ensure required entities)
         log::info!("Establishing relations...");
         self.establish_relations();
+
+        // Claim orphaned server-owned items and start death watch
+        log::info!("Checking server-owned item ownership...");
+        if let Err(e) = ServerOwnershipManager::claim_orphaned(&self.ctx()) {
+            log::error!("Failed to claim orphaned server-owned items: {}", e);
+        }
+        let ownership_guard = ServerOwnershipManager::watch_peer_deaths(&self.ctx());
+        *self
+            ._server_ownership_guard
+            .lock()
+            .expect("server_ownership_guard mutex poisoned") = Some(ownership_guard);
 
         // Bind WebSocket listener first so peer publication only happens once
         // the gateway is actually available.

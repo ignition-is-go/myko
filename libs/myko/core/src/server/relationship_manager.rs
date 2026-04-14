@@ -92,7 +92,7 @@ use crate::{
     event::EventOptions,
     relationship::{
         ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
-        iter_relations,
+        iter_relations, iter_server_owned_registrations,
     },
 };
 
@@ -1090,9 +1090,40 @@ impl RelationshipManager {
     fn publish_set_cascade(
         &self,
         ctx: &CellServerCtx,
-        _entity_type: &str,
+        entity_type: &str,
         item: Arc<dyn AnyItem>,
     ) -> Result<(), PersistError> {
+        // Check if this entity type has server_owned fields that need populating
+        let server_owned_field =
+            iter_server_owned_registrations().find(|reg| reg.entity_type == entity_type);
+
+        if let Some(reg) = server_owned_field {
+            if let Ok(mut json) = serde_json::to_value(item.as_ref()) {
+                let needs_patch = json
+                    .get(reg.field_name_json)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .is_empty();
+
+                if needs_patch {
+                    if let Some(obj) = json.as_object_mut() {
+                        obj.insert(
+                            reg.field_name_json.to_string(),
+                            serde_json::Value::String(ctx.host_id.to_string()),
+                        );
+                    }
+                    if let Some(patched) = ctx.parse_item(entity_type, &json) {
+                        let options = EventOptions {
+                            prevent_relationship_updates: true,
+                            ..Default::default()
+                        };
+                        return ctx.set_dyn_with_options(patched, Some(options));
+                    }
+                }
+            }
+        }
+
+        // Original path — no server_owned fields or no patching needed
         let options = EventOptions {
             prevent_relationship_updates: true,
             ..Default::default()
