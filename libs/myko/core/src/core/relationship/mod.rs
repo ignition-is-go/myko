@@ -247,6 +247,24 @@ pub fn iter_client_id_registrations() -> impl Iterator<Item = &'static ClientIdR
     inventory::iter::<ClientIdRegistration>()
 }
 
+/// Registration for fields decorated with `#[server_owned]`.
+/// The framework auto-populates these with a valid ServerId and
+/// redistributes when servers join/leave the cluster.
+pub struct ServerOwnedRegistration {
+    /// Entity type that has the server_owned field
+    pub entity_type: &'static str,
+    /// Field name in JSON (camelCase)
+    pub field_name_json: &'static str,
+}
+
+// Collect all server_owned registrations at compile time
+inventory::collect!(ServerOwnedRegistration);
+
+/// Iterator over all registered server_owned fields
+pub fn iter_server_owned_registrations() -> impl Iterator<Item = &'static ServerOwnedRegistration> {
+    inventory::iter::<ServerOwnedRegistration>()
+}
+
 /// Registration for a field that should fall back to the entity's own `id` if null/missing.
 ///
 /// When a SET event is processed, if this field is null or absent in the JSON,
