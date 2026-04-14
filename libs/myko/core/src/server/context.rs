@@ -131,10 +131,7 @@ impl MapCacheEntry {
     ///
     /// `F` is called at most once per projection type to create the typed map
     /// from the untyped source. Subsequent calls return the cached projection.
-    fn get_or_create_typed<K, V, F>(
-        &self,
-        create: F,
-    ) -> Option<CellMap<K, V, CellImmutable>>
+    fn get_or_create_typed<K, V, F>(&self, create: F) -> Option<CellMap<K, V, CellImmutable>>
     where
         K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
         V: hyphae::traits::CellValue + 'static,
@@ -1203,7 +1200,15 @@ impl CellServerCtx {
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
@@ -1228,7 +1233,8 @@ impl CellServerCtx {
     ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item:
+            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let _untyped = self.query_map_untyped(query, request);
@@ -1503,10 +1509,7 @@ impl CellServerCtx {
     }
 
     /// Try to get a cached report cell. Returns None if missing or dead.
-    fn try_get_cached_report<R>(
-        &self,
-        key: &str,
-    ) -> Option<Cell<Arc<R::Output>, CellImmutable>>
+    fn try_get_cached_report<R>(&self, key: &str) -> Option<Cell<Arc<R::Output>, CellImmutable>>
     where
         R: ReportHandler + 'static,
     {

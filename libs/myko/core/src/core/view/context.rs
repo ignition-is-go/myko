@@ -1,12 +1,6 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
-#[cfg(target_arch = "wasm32")]
-use hyphae::{CellImmutable, CellMap, CellMutable};
-#[cfg(not(target_arch = "wasm32"))]
-use serde::de::DeserializeOwned;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::view::ViewFactory;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -23,6 +17,12 @@ use crate::{
     query::QueryParams,
     request::RequestContext,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
+#[cfg(target_arch = "wasm32")]
+use hyphae::{CellImmutable, CellMap, CellMutable};
+#[cfg(not(target_arch = "wasm32"))]
+use serde::de::DeserializeOwned;
 
 #[derive(Clone)]
 pub struct ViewContext {
@@ -86,10 +86,17 @@ impl ViewCellContext {
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
     {
-        self.server_ctx
-            .query_map(query, self.request_ctx.clone())
+        self.server_ctx.query_map(query, self.request_ctx.clone())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -99,7 +106,15 @@ impl ViewCellContext {
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
     {
         CellMap::<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellMutable>::new().lock()
     }
@@ -183,10 +198,17 @@ impl ViewContext {
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
     {
-        self.server_ctx
-            .query_map(query, self.req.clone())
+        self.server_ctx.query_map(query, self.req.clone())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -196,7 +218,15 @@ impl ViewContext {
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
         Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
     {
         CellMap::<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellMutable>::new().lock()
     }
