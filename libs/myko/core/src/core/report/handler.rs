@@ -9,8 +9,6 @@ use crate::client::{ConnectionStatus, MykoClient};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::view::{TypedViewCellMap, ViewFactory};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::item::typed_map_from_any_item_with_typed_id;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
@@ -107,10 +105,7 @@ impl ReportContext {
             + CellValue
             + 'static,
     {
-        typed_map_from_any_item_with_typed_id(
-            self.server_ctx.query_map_untyped(query, self.req.clone()),
-            "ReportContext::query_map",
-        )
+        self.server_ctx.query_map(query, self.req.clone())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -153,7 +148,7 @@ impl ReportContext {
             + CellValue
             + 'static,
     {
-        self.server_ctx.query_map(query, self.req.clone())
+        self.server_ctx.query_map_by_str(query, self.req.clone())
     }
 
     #[cfg(target_arch = "wasm32")]

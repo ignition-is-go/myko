@@ -133,7 +133,7 @@ where
             items_equal,
         } = config;
         let local_cell = local_ctx
-            .query_map(local_query, local_ctx.new_server_transaction())
+            .query_map_by_str(local_query, local_ctx.new_server_transaction())
             .entries()
             .map(|entries: &Vec<(Arc<str>, Arc<T>)>| {
                 entries

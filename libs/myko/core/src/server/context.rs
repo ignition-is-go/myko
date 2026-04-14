@@ -31,6 +31,7 @@ use crate::{
     },
     core::item::{
         AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
+        typed_map_from_any_item_with_typed_id,
     },
     query::{
         FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
@@ -90,6 +91,10 @@ where
 
 struct MapCacheEntry {
     weak: WeakCellMap<Arc<str>, AnyItemArc>,
+    /// Lazily-created typed projections keyed by `TypeId` of the output
+    /// `CellMap<K, V>`. Each value is a type-erased weak cell map that can be
+    /// downcast back to the concrete `WeakCellMap<K, V>`.
+    typed: Mutex<HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -114,11 +119,46 @@ impl MapCacheEntry {
     fn new(map: &FilteredCellMap) -> Self {
         Self {
             weak: map.downgrade(),
+            typed: Mutex::new(HashMap::new()),
         }
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
         self.weak.upgrade().map(|map| map.lock())
+    }
+
+    /// Get or create a typed projection of this untyped map.
+    ///
+    /// `F` is called at most once per projection type to create the typed map
+    /// from the untyped source. Subsequent calls return the cached projection.
+    fn get_or_create_typed<K, V, F>(
+        &self,
+        create: F,
+    ) -> Option<CellMap<K, V, CellImmutable>>
+    where
+        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
+        V: hyphae::traits::CellValue + 'static,
+        F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
+    {
+        let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
+        let mut typed = self.typed.lock().unwrap();
+
+        // Try to upgrade an existing weak ref
+        if let Some(entry) = typed.get(&type_key) {
+            if let Some(weak) = entry.downcast_ref::<WeakCellMap<K, V>>() {
+                if let Some(strong) = weak.upgrade() {
+                    return Some(strong.lock());
+                }
+            }
+            // Dead — remove stale entry
+            typed.remove(&type_key);
+        }
+
+        // Create from the untyped source
+        let source = self.weak.upgrade()?.lock();
+        let built = create(source);
+        typed.insert(type_key, Box::new(built.downgrade()));
+        Some(built)
     }
 }
 
@@ -1152,23 +1192,54 @@ impl CellServerCtx {
     // Query methods
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Run a reactive query and return a typed map keyed by the item's typed id.
+    ///
+    /// The typed projection is cached — multiple callers with the same query
+    /// share a single underlying map instead of each creating their own copy.
+    pub fn query_map<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        // Hold the untyped map alive so the weak ref in the cache entry stays valid.
+        let _untyped = self.query_map_untyped(query, request);
+        if let Some(entry) = self.query_cache.get(&key) {
+            if let Some(typed) = entry.value().get_or_create_typed(|source| {
+                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
+            }) {
+                return typed;
+            }
+        }
+        unreachable!("query_map_untyped just populated the cache")
+    }
+
     /// Run a reactive query and return a typed map keyed by canonical string ids.
     ///
-    /// Use `query_map_untyped()` when framework internals need erased `AnyItem`.
-    pub fn query_map<Q>(
+    /// Prefer `query_map()` unless you specifically need string ids.
+    pub fn query_map_by_str<Q>(
         &self,
         query: Q,
         request: Arc<RequestContext>,
     ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item:
-            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q: QueryParams + 'static,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        typed_map_arc_from_any_item(
-            self.query_map_untyped(query, request),
-            "CellServerCtx::query_map",
-        )
+        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let _untyped = self.query_map_untyped(query, request);
+        if let Some(entry) = self.query_cache.get(&key) {
+            if let Some(typed) = entry.value().get_or_create_typed(|source| {
+                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
+            }) {
+                return typed;
+            }
+        }
+        unreachable!("query_map_untyped just populated the cache")
     }
 
     /// Run a reactive query.
@@ -1301,7 +1372,16 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        typed_map_arc_from_any_item(self.view_map_untyped(view, request), "CellServerCtx::view")
+        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        let _untyped = self.view_map_untyped(view, request);
+        if let Some(entry) = self.view_cache.get(&key) {
+            if let Some(typed) = entry.value().get_or_create_typed(|source| {
+                typed_map_arc_from_any_item(source, "CellServerCtx::view")
+            }) {
+                return typed;
+            }
+        }
+        unreachable!("view_map_untyped just populated the cache")
     }
 
     /// Get a one-shot typed entity snapshot by id.

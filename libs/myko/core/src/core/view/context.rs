@@ -6,21 +6,23 @@ use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
 use hyphae::{CellImmutable, CellMap, CellMutable};
 #[cfg(not(target_arch = "wasm32"))]
 use serde::de::DeserializeOwned;
-
-#[cfg(target_arch = "wasm32")]
-use crate::query::QueryParams;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::view::ViewFactory;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     cache::CacheKey,
     item::downcast_any_item_map_diff,
-    query::{FilteredCellMap, QueryFactory, QueryHandler, QueryParams},
+    query::{FilteredCellMap, QueryFactory, QueryHandler},
     report::{ReportHandler, ReportId},
     server::CellServerCtx,
     store::StoreRegistry,
 };
-use crate::{common::with_id::WithTypedId, request::RequestContext};
+use crate::{
+    common::with_id::{WithId, WithTypedId},
+    core::item::Eventable,
+    query::QueryParams,
+    request::RequestContext,
+};
 
 #[derive(Clone)]
 pub struct ViewContext {
@@ -83,13 +85,11 @@ impl ViewCellContext {
         query: Q,
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
+        Q: QueryParams + 'static,
+        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        crate::item::typed_map_from_any_item_with_typed_id(
-            self.query_map_untyped(query),
-            "ViewCellContext::query_map",
-        )
+        self.server_ctx
+            .query_map(query, self.request_ctx.clone())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -98,8 +98,8 @@ impl ViewCellContext {
         _query: Q,
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
+        Q: QueryParams + 'static,
+        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         CellMap::<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellMutable>::new().lock()
     }
@@ -182,13 +182,11 @@ impl ViewContext {
         query: Q,
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
+        Q: QueryParams + 'static,
+        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        crate::item::typed_map_from_any_item_with_typed_id(
-            self.query_map_untyped(query),
-            "ViewContext::query_map",
-        )
+        self.server_ctx
+            .query_map(query, self.req.clone())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -197,8 +195,8 @@ impl ViewContext {
         _query: Q,
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryParams + Clone + Send + Sync + 'static,
-        Q::Item: Clone + std::fmt::Debug + Send + Sync + WithTypedId + 'static,
+        Q: QueryParams + 'static,
+        Q::Item: Eventable + WithId + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         CellMap::<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellMutable>::new().lock()
     }
