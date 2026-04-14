@@ -154,6 +154,9 @@ pub struct CellServerCtx {
     view_cache: Arc<DashMap<String, MapCacheEntry>>,
     /// Top-level cache for reactive report cells with short-lived strong retention.
     report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>>>,
+    /// Per-key coordination for concurrent report/query/view computation.
+    /// Prevents duplicate computation when multiple threads request the same key.
+    compute_gates: Arc<DashMap<String, Arc<std::sync::Mutex<()>>>>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>>>,
     /// Optional history replay provider for point-in-time snapshots.
@@ -187,6 +190,7 @@ impl CellServerCtx {
             query_cache: Arc::new(DashMap::new()),
             view_cache: Arc::new(DashMap::new()),
             report_cache: Arc::new(DashMap::new()),
+            compute_gates: Arc::new(DashMap::new()),
             ingest_buffers: Arc::new(DashMap::new()),
             history_replay,
         }
@@ -1191,12 +1195,22 @@ impl CellServerCtx {
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        if let Some(existing) = self.query_cache.get(&key) {
-            if let Some(shared) = existing.value().get() {
-                return shared;
-            }
-            drop(existing);
-            self.query_cache.remove(&key);
+
+        // Fast path
+        if let Some(cell) = self.try_get_cached_query(&key) {
+            return cell;
+        }
+
+        let gate = self
+            .compute_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+            .clone();
+        let _lock = gate.lock().unwrap();
+
+        // Re-check after gate
+        if let Some(cell) = self.try_get_cached_query(&key) {
+            return cell;
         }
 
         let query_req = QueryRequest::with_tx(query, request.tx.clone());
@@ -1213,6 +1227,16 @@ impl CellServerCtx {
         built
     }
 
+    fn try_get_cached_query(&self, key: &str) -> Option<FilteredCellMap> {
+        let existing = self.query_cache.get(key)?;
+        if let Some(shared) = existing.value().get() {
+            return Some(shared);
+        }
+        drop(existing);
+        self.query_cache.remove(key);
+        None
+    }
+
     /// Build a reactive view cell map (type-erased for framework internals).
     pub fn view_map_untyped<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
     where
@@ -1220,12 +1244,22 @@ impl CellServerCtx {
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        if let Some(existing) = self.view_cache.get(&key) {
-            if let Some(shared) = existing.value().get() {
-                return shared;
-            }
-            drop(existing);
-            self.view_cache.remove(&key);
+
+        // Fast path
+        if let Some(cell) = self.try_get_cached_view(&key) {
+            return cell;
+        }
+
+        let gate = self
+            .compute_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+            .clone();
+        let _lock = gate.lock().unwrap();
+
+        // Re-check after gate
+        if let Some(cell) = self.try_get_cached_view(&key) {
+            return cell;
         }
 
         let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
@@ -1240,6 +1274,16 @@ impl CellServerCtx {
         .expect("view cell factory should not fail for typed view");
         self.view_cache.insert(key, MapCacheEntry::new(&built));
         built
+    }
+
+    fn try_get_cached_view(&self, key: &str) -> Option<FilteredViewCellMap> {
+        let existing = self.view_cache.get(key)?;
+        if let Some(shared) = existing.value().get() {
+            return Some(shared);
+        }
+        drop(existing);
+        self.view_cache.remove(key);
+        None
     }
 
     /// Back-compat alias for type-erased view map.
@@ -1351,19 +1395,23 @@ impl CellServerCtx {
     {
         let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
 
-        // Cache hit: if the cell is still alive (has subscribers), reuse it.
-        if let Some(existing) = self.report_cache.get(&key) {
-            if let Some(entry) = existing
-                .value()
-                .as_any()
-                .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
-                && let Some(shared) = entry.get()
-            {
-                return shared;
-            }
-            // Dead entry — drop the ref before removing to avoid DashMap deadlock
-            drop(existing);
-            self.report_cache.remove(&key);
+        // Fast path: cache hit with live cell.
+        if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            return cell;
+        }
+
+        // NOTE(ts): Per-key gate prevents duplicate computation when multiple threads
+        // request the same report concurrently. First thread computes, others wait.
+        let gate = self
+            .compute_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+            .clone();
+        let _lock = gate.lock().unwrap();
+
+        // Re-check after acquiring the gate — another thread may have computed while we waited.
+        if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            return cell;
         }
 
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
@@ -1372,6 +1420,29 @@ impl CellServerCtx {
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
 
         built
+    }
+
+    /// Try to get a cached report cell. Returns None if missing or dead.
+    fn try_get_cached_report<R>(
+        &self,
+        key: &str,
+    ) -> Option<Cell<Arc<R::Output>, CellImmutable>>
+    where
+        R: ReportHandler + 'static,
+    {
+        let existing = self.report_cache.get(key)?;
+        if let Some(entry) = existing
+            .value()
+            .as_any()
+            .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
+            && let Some(shared) = entry.get()
+        {
+            return Some(shared);
+        }
+        // Dead entry — drop the ref before removing to avoid DashMap deadlock
+        drop(existing);
+        self.report_cache.remove(key);
+        None
     }
 
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {
