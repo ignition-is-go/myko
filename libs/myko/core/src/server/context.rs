@@ -1210,11 +1210,15 @@ impl CellServerCtx {
             }
         }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache.insert(key.clone(), MapCacheEntry::new(&untyped));
+        self.query_cache
+            .insert(key.clone(), MapCacheEntry::new(&untyped));
         let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry.value().get_or_create_typed(|source| {
-            typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
-        }).expect("typed projection from freshly inserted entry")
+        entry
+            .value()
+            .get_or_create_typed(|source| {
+                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
+            })
+            .expect("typed projection from freshly inserted entry")
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -1240,11 +1244,15 @@ impl CellServerCtx {
             }
         }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache.insert(key.clone(), MapCacheEntry::new(&untyped));
+        self.query_cache
+            .insert(key.clone(), MapCacheEntry::new(&untyped));
         let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry.value().get_or_create_typed(|source| {
-            typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
-        }).expect("typed projection from freshly inserted entry")
+        entry
+            .value()
+            .get_or_create_typed(|source| {
+                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
+            })
+            .expect("typed projection from freshly inserted entry")
     }
 
     /// Run a reactive query.
