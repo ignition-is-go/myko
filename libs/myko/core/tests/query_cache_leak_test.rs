@@ -112,13 +112,13 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     drop(selector);
 
     // Sweep should reclaim dead entries
-    let (q_removed, _, _) = ctx.sweep_dead_cache_entries();
+    ctx.sweep_dead_cache_entries();
     let cache_final = ctx.query_cache_len();
 
     // After dropping all references, sweep should clean up most/all cache entries
     assert!(
-        q_removed > 0,
-        "sweep should have removed dead query cache entries, but removed 0 \
+        cache_final < cache_after,
+        "sweep should have removed dead query cache entries \
          (cache before={}, after switch={}, final={})",
         cache_before,
         cache_after,
@@ -239,15 +239,15 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
     drop(selector);
 
     // Sweep
-    let (q_removed, _, _) = ctx.sweep_dead_cache_entries();
+    ctx.sweep_dead_cache_entries();
     let live_after = ctx.query_cache_live_count();
 
     // All query cache entries should be reclaimable after dropping the switch_map
     assert_eq!(
         live_after, 0,
         "expected 0 live cache entries after dropping switch_map, found {} \
-         (total before drop={}, live before drop={}, swept={})",
-        live_after, total_before_drop, live_before_drop, q_removed,
+         (total before drop={}, live before drop={})",
+        live_after, total_before_drop, live_before_drop,
     );
 }
 
@@ -351,20 +351,20 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Drop the report cell — everything should become reclaimable
     drop(report_cell);
 
-    let (q_swept, _, r_swept) = ctx.sweep_dead_cache_entries();
+    ctx.sweep_dead_cache_entries();
     let cache_final = ctx.query_cache_live_count();
     let report_cache_final = ctx.report_cache_live_count();
 
     assert_eq!(
         cache_final, 0,
         "expected 0 live query cache entries after dropping report, found {} \
-         (cache grew to {} during mutations, swept {})",
-        cache_final, cache_during, q_swept,
+         (cache grew to {} during mutations)",
+        cache_final, cache_during,
     );
     assert_eq!(
         report_cache_final, 0,
-        "expected 0 live report cache entries after dropping report, found {} (swept {})",
-        report_cache_final, r_swept,
+        "expected 0 live report cache entries after dropping report, found {}",
+        report_cache_final,
     );
 }
 

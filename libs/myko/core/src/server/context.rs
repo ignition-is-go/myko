@@ -338,23 +338,12 @@ impl CellServerCtx {
     }
 
     /// Remove dead weak-ref entries from all caches.
-    /// Returns (query_removed, view_removed, report_removed).
-    pub fn sweep_dead_cache_entries(&self) -> (usize, usize, usize) {
-        let q_before = self.query_cache.len();
+    pub fn sweep_dead_cache_entries(&self) {
         self.query_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
-        let q_removed = q_before - self.query_cache.len();
-
-        let v_before = self.view_cache.len();
         self.view_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
-        let v_removed = v_before - self.view_cache.len();
-
-        let r_before = self.report_cache.len();
         self.report_cache.retain(|_, entry| entry.is_alive());
-        let r_removed = r_before - self.report_cache.len();
-
-        (q_removed, v_removed, r_removed)
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -1212,7 +1201,7 @@ impl CellServerCtx {
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
-        let _untyped = self.query_map_untyped(query, request);
+        let untyped = self.query_map_untyped(query, request);
         if let Some(entry) = self.query_cache.get(&key) {
             if let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
@@ -1220,7 +1209,12 @@ impl CellServerCtx {
                 return typed;
             }
         }
-        unreachable!("query_map_untyped just populated the cache")
+        // Concurrent cache sweep may have evicted the entry — re-insert and retry
+        self.query_cache.insert(key.clone(), MapCacheEntry::new(&untyped));
+        let entry = self.query_cache.get(&key).expect("just re-inserted");
+        entry.value().get_or_create_typed(|source| {
+            typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
+        }).expect("typed projection from freshly inserted entry")
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -1237,7 +1231,7 @@ impl CellServerCtx {
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        let _untyped = self.query_map_untyped(query, request);
+        let untyped = self.query_map_untyped(query, request);
         if let Some(entry) = self.query_cache.get(&key) {
             if let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
@@ -1245,7 +1239,12 @@ impl CellServerCtx {
                 return typed;
             }
         }
-        unreachable!("query_map_untyped just populated the cache")
+        // Concurrent cache sweep may have evicted the entry — re-insert and retry
+        self.query_cache.insert(key.clone(), MapCacheEntry::new(&untyped));
+        let entry = self.query_cache.get(&key).expect("just re-inserted");
+        entry.value().get_or_create_typed(|source| {
+            typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
+        }).expect("typed projection from freshly inserted entry")
     }
 
     /// Run a reactive query.
