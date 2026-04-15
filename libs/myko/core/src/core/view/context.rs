@@ -17,12 +17,12 @@ use crate::{
     query::QueryParams,
     request::RequestContext,
 };
+use serde::de::DeserializeOwned;
+
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
 #[cfg(target_arch = "wasm32")]
 use hyphae::{CellImmutable, CellMap, CellMutable};
-#[cfg(not(target_arch = "wasm32"))]
-use serde::de::DeserializeOwned;
 
 #[derive(Clone)]
 pub struct ViewContext {
