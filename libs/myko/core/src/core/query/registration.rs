@@ -204,8 +204,11 @@ impl BelongsToSourceIndex {
                 // floor — a full-clear source diff (e.g. the last matching
                 // row being deleted via `remove_many`) never reached
                 // bucket subscribers.
-                let existing_fks: Vec<Arc<str>> =
-                    self.buckets.iter().map(|entry| entry.key().clone()).collect();
+                let existing_fks: Vec<Arc<str>> = self
+                    .buckets
+                    .iter()
+                    .map(|entry| entry.key().clone())
+                    .collect();
                 for fk in &existing_fks {
                     if !grouped.contains_key(fk) {
                         if let Some(entry) = self.buckets.get(fk) {
