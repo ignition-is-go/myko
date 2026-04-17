@@ -194,7 +194,31 @@ impl BelongsToSourceIndex {
                             .push((id.clone(), item.clone()));
                     }
                 }
-                self.buckets.clear();
+
+                // Every currently-existing bucket needs to receive the new
+                // state — if its FK is absent from `grouped`, that bucket is
+                // now empty and must emit `Initial { empty }` so downstream
+                // subscribers observe the drop. Previously this path just
+                // cleared `self.buckets` and relied on ownership drop to
+                // clean up, which silently dropped removal events on the
+                // floor — a full-clear source diff (e.g. the last matching
+                // row being deleted via `remove_many`) never reached
+                // bucket subscribers.
+                let existing_fks: Vec<Arc<str>> =
+                    self.buckets.iter().map(|entry| entry.key().clone()).collect();
+                for fk in &existing_fks {
+                    if !grouped.contains_key(fk) {
+                        if let Some(entry) = self.buckets.get(fk) {
+                            entry.value().apply_batch(vec![MapDiff::Initial {
+                                entries: Vec::new(),
+                            }]);
+                        }
+                    }
+                }
+
+                // Update buckets to reflect the new groupings. Existing
+                // buckets receive a fresh `Initial`; new FKs lazily create
+                // their bucket via `bucket_for`.
                 for (fk, bucket_entries) in grouped {
                     self.bucket_for(fk).apply_batch(vec![MapDiff::Initial {
                         entries: bucket_entries,
