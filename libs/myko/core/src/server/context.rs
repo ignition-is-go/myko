@@ -142,11 +142,10 @@ impl MapCacheEntry {
 
         // Try to upgrade an existing weak ref
         if let Some(entry) = typed.get(&type_key) {
-            if let Some(weak) = entry.downcast_ref::<WeakCellMap<K, V>>() {
-                if let Some(strong) = weak.upgrade() {
+            if let Some(weak) = entry.downcast_ref::<WeakCellMap<K, V>>()
+                && let Some(strong) = weak.upgrade() {
                     return Some(strong.lock());
                 }
-            }
             // Dead — remove stale entry
             typed.remove(&type_key);
         }
@@ -1202,13 +1201,12 @@ impl CellServerCtx {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key) {
-            if let Some(typed) = entry.value().get_or_create_typed(|source| {
+        if let Some(entry) = self.query_cache.get(&key)
+            && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
             }) {
                 return typed;
             }
-        }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
         self.query_cache
             .insert(key.clone(), MapCacheEntry::new(&untyped));
@@ -1236,13 +1234,12 @@ impl CellServerCtx {
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key) {
-            if let Some(typed) = entry.value().get_or_create_typed(|source| {
+        if let Some(entry) = self.query_cache.get(&key)
+            && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
             }) {
                 return typed;
             }
-        }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
         self.query_cache
             .insert(key.clone(), MapCacheEntry::new(&untyped));
@@ -1387,13 +1384,12 @@ impl CellServerCtx {
     {
         let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
         let _untyped = self.view_map_untyped(view, request);
-        if let Some(entry) = self.view_cache.get(&key) {
-            if let Some(typed) = entry.value().get_or_create_typed(|source| {
+        if let Some(entry) = self.view_cache.get(&key)
+            && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "CellServerCtx::view")
             }) {
                 return typed;
             }
-        }
         unreachable!("view_map_untyped just populated the cache")
     }
 
