@@ -10,11 +10,13 @@
 //! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko::server`.
 
 pub mod mcp;
+pub mod peer_persister;
 pub mod peer_registry;
 pub mod postgres;
 pub mod server_ownership;
 pub mod ws_handler;
 
+pub use peer_persister::PeerPersister;
 pub use server_ownership::ServerOwnershipManager;
 
 // Re-export all tokio-free server types from myko
@@ -56,6 +58,10 @@ pub struct CellServerConfig {
     pub default_persister: Option<Arc<dyn Persister>>,
     /// Per-entity persister overrides keyed by entity type name
     pub persister_overrides: HashMap<String, Arc<dyn Persister>>,
+    /// Optional pre-constructed peer-client map. When provided, it will be
+    /// used as-is (so any `PeerPersister` built against the same `Arc`
+    /// shares the live map). If `None`, the server creates its own.
+    pub peer_clients: Option<Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>>,
 }
 
 /// Builder for creating a CellServer.
@@ -67,6 +73,10 @@ pub struct CellServerBuilder {
     peer_registry: Option<peer_registry::PeerRegistryConfig>,
     default_persister: Option<Arc<dyn Persister>>,
     persister_overrides: HashMap<String, Arc<dyn Persister>>,
+    /// Optional pre-constructed peer-client map — useful when a
+    /// `PeerPersister` must reference the same map the server will use.
+    /// Defaults to a fresh empty map if not provided.
+    peer_clients: Option<Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>>,
     after_init: Option<AfterInitCallback>,
 }
 
@@ -119,6 +129,19 @@ impl CellServerBuilder {
         self
     }
 
+    /// Provide a pre-constructed peer-client map. The server's peer
+    /// registry will populate it as peers connect. Pass the same `Arc`
+    /// into `PeerPersister::new(...)` when you register a
+    /// `with_persister_override(..., PeerPersister)` so the persister
+    /// shares the live map.
+    pub fn with_peer_clients(
+        mut self,
+        peer_clients: Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>,
+    ) -> Self {
+        self.peer_clients = Some(peer_clients);
+        self
+    }
+
     /// Register a callback to run after initialization and relation establishment,
     /// but before the WebSocket accept loop starts. Use this for starting subsystems
     /// that need entity data (e.g., scene engine).
@@ -140,6 +163,7 @@ impl CellServerBuilder {
             peer_registry: self.peer_registry,
             default_persister: self.default_persister,
             persister_overrides: self.persister_overrides,
+            peer_clients: self.peer_clients,
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server
@@ -263,6 +287,11 @@ impl CellServer {
         #[cfg(feature = "inspector")]
         log::info!("Hyphae inspector on port {}", inspector.port());
 
+        let peer_clients = config
+            .peer_clients
+            .clone()
+            .unwrap_or_else(|| Arc::new(dashmap::DashMap::new()));
+
         Self {
             registry,
             handler_registry,
@@ -276,7 +305,7 @@ impl CellServer {
             postgres_consumer,
             ready,
             peer_registry_instance: RwLock::new(None),
-            peer_clients: Arc::new(dashmap::DashMap::new()),
+            peer_clients,
             after_init: std::sync::Mutex::new(None),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
@@ -637,6 +666,7 @@ mod tests {
             peer_registry: None,
             default_persister: None,
             persister_overrides: HashMap::new(),
+            peer_clients: None,
         };
         let server = CellServer::new(config);
         assert!(Arc::strong_count(&server.registry) >= 1);
@@ -652,6 +682,7 @@ mod tests {
             peer_registry: None,
             default_persister: None,
             persister_overrides: HashMap::new(),
+            peer_clients: None,
         };
         let server = CellServer::new(config);
         assert_eq!(server.host_id, host_id);
