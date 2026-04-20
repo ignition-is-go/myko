@@ -211,11 +211,12 @@ impl BelongsToSourceIndex {
                     .collect();
                 for fk in &existing_fks {
                     if !grouped.contains_key(fk)
-                        && let Some(entry) = self.buckets.get(fk) {
-                            entry.value().apply_batch(vec![MapDiff::Initial {
-                                entries: Vec::new(),
-                            }]);
-                        }
+                        && let Some(entry) = self.buckets.get(fk)
+                    {
+                        entry.value().apply_batch(vec![MapDiff::Initial {
+                            entries: Vec::new(),
+                        }]);
+                    }
                 }
 
                 // Update buckets to reflect the new groupings. Existing

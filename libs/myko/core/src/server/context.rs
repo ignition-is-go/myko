@@ -143,9 +143,10 @@ impl MapCacheEntry {
         // Try to upgrade an existing weak ref
         if let Some(entry) = typed.get(&type_key) {
             if let Some(weak) = entry.downcast_ref::<WeakCellMap<K, V>>()
-                && let Some(strong) = weak.upgrade() {
-                    return Some(strong.lock());
-                }
+                && let Some(strong) = weak.upgrade()
+            {
+                return Some(strong.lock());
+            }
             // Dead — remove stale entry
             typed.remove(&type_key);
         }
@@ -1204,9 +1205,10 @@ impl CellServerCtx {
         if let Some(entry) = self.query_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
-            }) {
-                return typed;
-            }
+            })
+        {
+            return typed;
+        }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
         self.query_cache
             .insert(key.clone(), MapCacheEntry::new(&untyped));
@@ -1237,9 +1239,10 @@ impl CellServerCtx {
         if let Some(entry) = self.query_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
-            }) {
-                return typed;
-            }
+            })
+        {
+            return typed;
+        }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
         self.query_cache
             .insert(key.clone(), MapCacheEntry::new(&untyped));
@@ -1387,9 +1390,10 @@ impl CellServerCtx {
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "CellServerCtx::view")
-            }) {
-                return typed;
-            }
+            })
+        {
+            return typed;
+        }
         unreachable!("view_map_untyped just populated the cache")
     }
 
