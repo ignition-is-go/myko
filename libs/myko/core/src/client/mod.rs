@@ -233,8 +233,23 @@ struct MykoClientInner {
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
 
+    // Report-response dispatch: the WS read thread hands incoming
+    // `report-response` payloads off to a dedicated worker so the hot
+    // reactive fan-out (Cell::set → notify chain → arc_swap CAS →
+    // subscriber map closures) runs off the WS read path. Without this,
+    // a slow subscriber tree back-pressures frame decoding and incoming
+    // report frames pile up in the TCP buffer.
+    //
+    // Order is preserved: a single worker drains this channel FIFO, so
+    // report responses execute in the exact order they arrived from the
+    // server — including responses for the same tx. Other frame types
+    // (query/command/ping) stay synchronous in `handle_frame`; they're
+    // low-rate and often depend on synchronous completion semantics.
+    report_dispatch_tx: flume::Sender<(Arc<str>, serde_json::Value)>,
+
     // Guards that keep subscriptions alive
     _read_guard: CallbackGuard,
+    _report_dispatch_guard: CallbackGuard,
     _status_guard: SubscriptionGuard,
 }
 
@@ -311,6 +326,12 @@ impl MykoClient {
         let command_request_handlers: DashMap<Arc<str>, CommandRequestHandler> = DashMap::new();
         let pending_sends: Mutex<Vec<WsFrame>> = Mutex::new(Vec::new());
 
+        // Report-response dispatch channel. Unbounded, single-consumer.
+        // See the field comment on `report_dispatch_tx` for rationale —
+        // the WS read thread must not run the reactive fan-out inline.
+        let (report_dispatch_tx, report_dispatch_rx) =
+            flume::unbounded::<(Arc<str>, serde_json::Value)>();
+
         // We need to set up the callbacks, but they reference the inner struct.
         // Use a two-step initialization: create with noop guards, then replace.
         let inner = Arc::new_cyclic(|weak| {
@@ -351,6 +372,59 @@ impl MykoClient {
                                 break;
                             };
                             Self::handle_frame(&inner, &frame);
+                        }
+                    });
+                    CallbackGuard::noop()
+                }
+            };
+
+            // Dedicated worker for report-response payloads. Drains the
+            // channel FIFO and calls each registered handler synchronously
+            // — so the order of handler invocations is identical to the
+            // order of incoming frames. The WS read thread enqueues and
+            // returns immediately.
+            let report_dispatch_guard = {
+                let weak_for_dispatch = weak.clone();
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let cancelled_for_thread = Arc::clone(&cancelled);
+                    let rx = report_dispatch_rx.clone();
+                    let handle = std::thread::spawn(move || {
+                        loop {
+                            if cancelled_for_thread.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                                Ok((tx, response)) => {
+                                    let Some(inner) = weak_for_dispatch.upgrade() else {
+                                        break;
+                                    };
+                                    if let Some(handler) = inner.report_handlers.get(&tx) {
+                                        handler(response);
+                                    }
+                                }
+                                Err(flume::RecvTimeoutError::Timeout) => {}
+                                Err(flume::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                    });
+                    CallbackGuard::new(move || {
+                        cancelled.store(true, Ordering::SeqCst);
+                        let _ = handle.join();
+                    })
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let rx = report_dispatch_rx.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        while let Ok((tx, response)) = rx.recv_async().await {
+                            let Some(inner) = weak_for_dispatch.upgrade() else {
+                                break;
+                            };
+                            if let Some(handler) = inner.report_handlers.get(&tx) {
+                                handler(response);
+                            }
                         }
                     });
                     CallbackGuard::noop()
@@ -398,7 +472,9 @@ impl MykoClient {
                 command_request_handlers,
                 report_cache: DashMap::new(),
                 pending_sends,
+                report_dispatch_tx,
                 _read_guard: read_guard,
+                _report_dispatch_guard: report_dispatch_guard,
                 _status_guard: status_guard,
             }
         });
@@ -553,10 +629,15 @@ impl MykoClient {
             "ws:m:report-response" => {
                 if let Ok(response) = serde_json::from_value::<crate::wire::ReportResponse>(data())
                 {
+                    // Dispatch off the WS read thread — the handler runs
+                    // the full reactive fan-out (Cell::set → notify →
+                    // subscriber map closures), which can be many ms.
+                    // Keeping that off this loop lets the decoder keep
+                    // pulling frames and avoids TCP backpressure.
+                    // Order is preserved: the worker drains the channel
+                    // FIFO, so same-tx responses execute in send order.
                     let tx: Arc<str> = response.tx.clone().into();
-                    if let Some(handler) = inner.report_handlers.get(&tx) {
-                        handler(response.response);
-                    }
+                    let _ = inner.report_dispatch_tx.send((tx, response.response));
                 }
             }
             "ws:m:command-response" => {
