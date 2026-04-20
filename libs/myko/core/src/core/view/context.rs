@@ -1,6 +1,12 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
+#[cfg(target_arch = "wasm32")]
+use hyphae::{CellImmutable, CellMap, CellMutable};
+use serde::de::DeserializeOwned;
+
+#[cfg(not(target_arch = "wasm32"))]
 use crate::view::ViewFactory;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -17,12 +23,6 @@ use crate::{
     query::QueryParams,
     request::RequestContext,
 };
-use serde::de::DeserializeOwned;
-
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
-#[cfg(target_arch = "wasm32")]
-use hyphae::{CellImmutable, CellMap, CellMutable};
 
 #[derive(Clone)]
 pub struct ViewContext {

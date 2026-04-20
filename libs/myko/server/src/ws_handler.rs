@@ -97,7 +97,7 @@ fn ensure_ws_benchmark_logger() {
                     "WebSocket benchmark last_1s messages={} bytes={} avg_bytes={}",
                     count,
                     bytes,
-                    if count > 0 { bytes / count } else { 0 },
+                    bytes / count
                 );
             }
         })

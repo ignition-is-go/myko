@@ -14,7 +14,6 @@ use crate::query::FilteredCellMap;
 use crate::server::CellServerCtx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::PersistHealth;
-use crate::store::StoreRegistry;
 use crate::{
     cache::CacheKey,
     common::{
@@ -25,6 +24,7 @@ use crate::{
     query::QueryParams,
     report::ReportId,
     request::RequestContext,
+    store::StoreRegistry,
 };
 
 /// Context provided to report handlers for accessing dependencies.

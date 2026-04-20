@@ -16,9 +16,6 @@ pub mod postgres;
 pub mod server_ownership;
 pub mod ws_handler;
 
-pub use peer_persister::PeerPersister;
-pub use server_ownership::ServerOwnershipManager;
-
 // Re-export all tokio-free server types from myko
 use std::{
     collections::HashMap,
@@ -36,6 +33,8 @@ use myko::{
     client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,
     search::SearchIndex, store::StoreRegistry, wire::MEvent,
 };
+pub use peer_persister::PeerPersister;
+pub use server_ownership::ServerOwnershipManager;
 use uuid::Uuid;
 
 use crate::postgres::{

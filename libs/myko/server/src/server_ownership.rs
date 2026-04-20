@@ -1,5 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use myko::{
     entities::server::{GetAllServers, ServerId},
