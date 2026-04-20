@@ -50,7 +50,7 @@ log = "0.4"
 
 # Time/UUID
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.23", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "v5", "serde"] }
 
 # WebSocket
 tungstenite = "0.29"
@@ -71,7 +71,7 @@ flume = "0.11"
 dashmap = "6.1.0"
 partially = { version = "0.2", features = ["derive"] }
 
-hyphae = { version = "^0.6.2" }
+hyphae = { version = "^0.6.3" }
 
 # Internal crates
 autosocket = { version = "4.7.4", path = "libs/autosocket" }
