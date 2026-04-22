@@ -1,8 +1,8 @@
 //! Wire protocol types for commands.
 
+use crate::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::TS;
 
 use super::message::WS_EVENT_COMMAND;
 use crate::{

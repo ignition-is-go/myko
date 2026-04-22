@@ -694,7 +694,9 @@ struct SubtypeArgs {
 impl syn::parse::Parse for SubtypeArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(Self { extra_derives: Vec::new() });
+            return Ok(Self {
+                extra_derives: Vec::new(),
+            });
         }
         // Accept `derive(Foo, Bar, Baz)` as the single invocation.
         let meta: syn::Meta = input.parse()?;
@@ -718,7 +720,10 @@ impl syn::parse::Parse for SubtypeArgs {
     }
 }
 
-fn myko_subtype_expand(extra_derives: Vec<syn::Path>, mut item: syn::Item) -> proc_macro2::TokenStream {
+fn myko_subtype_expand(
+    extra_derives: Vec<syn::Path>,
+    mut item: syn::Item,
+) -> proc_macro2::TokenStream {
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
@@ -750,7 +755,11 @@ fn myko_subtype_expand(extra_derives: Vec<syn::Path>, mut item: syn::Item) -> pr
                     gate_ts_attrs(&mut field.attrs);
                 }
             }
-            (e.ident.clone(), attrs_have_serde_rename_all(&e.attrs), false)
+            (
+                e.ident.clone(),
+                attrs_have_serde_rename_all(&e.attrs),
+                false,
+            )
         }
         other => {
             return syn::Error::new_spanned(

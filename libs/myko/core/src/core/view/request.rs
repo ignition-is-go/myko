@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use crate::TS;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use crate::TS;
 use uuid::Uuid;
 
 use super::traits::{

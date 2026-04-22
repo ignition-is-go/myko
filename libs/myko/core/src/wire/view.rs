@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::TS;
 
 use super::{
     query::{QueryResponse, QueryWindow},

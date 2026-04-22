@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+use crate::TS;
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::MapExt;
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,7 +19,6 @@ use hyphae::{Cell, CellImmutable};
 use hyphae::{DedupedExt, interval};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::TS;
 
 use crate::{
     report::{ReportContext, ReportHandler},

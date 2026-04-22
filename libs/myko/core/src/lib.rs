@@ -128,10 +128,10 @@ pub use ts_rs;
 // touching their source — hand-written `#[derive(myko::TS)]` becomes
 // a no-op, and macro-emitted `#[cfg_attr(feature = "ts-export", derive(myko::TS))]`
 // doesn't run the derive at all.
-#[cfg(feature = "ts-export")]
-pub use ts_rs::TS;
 #[cfg(not(feature = "ts-export"))]
 pub use myko_macros::TsNoop as TS;
+#[cfg(feature = "ts-export")]
+pub use ts_rs::TS;
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
 

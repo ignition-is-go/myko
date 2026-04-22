@@ -1,8 +1,8 @@
 //! Wire protocol types for reports.
 
+use crate::TS;
 use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
-use crate::TS;
 
 use crate::core::report::ReportId;
 

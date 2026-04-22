@@ -2,9 +2,9 @@
 
 use std::{fmt::Debug, sync::Arc};
 
+use crate::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::TS;
 use uuid::Uuid;
 
 use super::traits::{AnyReport, ReportId, ReportIdStatic, ReportOutputType, ReportParams};
