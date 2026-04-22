@@ -726,13 +726,21 @@ fn myko_subtype_expand(extra_derives: Vec<syn::Path>, mut item: syn::Item) -> pr
     // Common setup: gate user-written `#[ts(...)]` attrs, extract name for
     // the `register_ts_export!` call. Also normalize visibility expectations
     // to either struct or enum — other shapes aren't meaningful as subtypes.
-    let (name, has_rename_all) = match &mut item {
+    //
+    // `is_struct` controls whether we default to `#[serde(rename_all = "camelCase")]`.
+    // For structs, Rust field names are snake_case and wire is camelCase → we need
+    // the rename. For enums, Rust variants are PascalCase (matching the wire form
+    // used historically in this codebase) so auto-renaming to camelCase would
+    // silently change the serialized representation and break existing stored
+    // data. Enums that want a non-default casing must supply their own
+    // `#[serde(rename_all = ...)]`.
+    let (name, has_rename_all, is_struct) = match &mut item {
         syn::Item::Struct(s) => {
             gate_ts_attrs(&mut s.attrs);
             for field in s.fields.iter_mut() {
                 gate_ts_attrs(&mut field.attrs);
             }
-            (s.ident.clone(), attrs_have_serde_rename_all(&s.attrs))
+            (s.ident.clone(), attrs_have_serde_rename_all(&s.attrs), true)
         }
         syn::Item::Enum(e) => {
             gate_ts_attrs(&mut e.attrs);
@@ -742,7 +750,7 @@ fn myko_subtype_expand(extra_derives: Vec<syn::Path>, mut item: syn::Item) -> pr
                     gate_ts_attrs(&mut field.attrs);
                 }
             }
-            (e.ident.clone(), attrs_have_serde_rename_all(&e.attrs))
+            (e.ident.clone(), attrs_have_serde_rename_all(&e.attrs), false)
         }
         other => {
             return syn::Error::new_spanned(
@@ -759,12 +767,12 @@ fn myko_subtype_expand(extra_derives: Vec<syn::Path>, mut item: syn::Item) -> pr
         quote!(, #(#extra_derives),*)
     };
 
-    // Only emit the default camelCase rename when the user hasn't already
-    // supplied one — otherwise serde would error on duplicate attributes.
-    let serde_rename_attr = if has_rename_all {
-        quote!()
-    } else {
+    // Only emit the default camelCase rename on structs when the user hasn't
+    // already supplied one.
+    let serde_rename_attr = if is_struct && !has_rename_all {
         ctx.serde_attr(quote!(rename_all = "camelCase"))
+    } else {
+        quote!()
     };
 
     // Inline the `register_ts_export!` body so we skip an extra macro dispatch
