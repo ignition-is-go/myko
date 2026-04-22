@@ -31,10 +31,51 @@
 //! ```
 
 mod entity_search;
+#[cfg(feature = "search")]
 mod index;
 
 pub use entity_search::{EntitySearch, EntitySearchResult};
+#[cfg(feature = "search")]
 pub use index::SearchIndex;
+
+// When the `search` feature is off, expose a no-op `SearchIndex` with the
+// same public surface. Keeps downstream code (server context, myko-server)
+// compiling and behaving predictably (searches return empty, indexing is a
+// no-op) without threading feature gates through every call site.
+#[cfg(not(feature = "search"))]
+mod stub_index {
+    use std::sync::Arc;
+
+    use crate::core::item::AnyItem;
+
+    pub struct SearchIndex;
+
+    impl SearchIndex {
+        pub fn new() -> Self {
+            Self
+        }
+        pub fn index_item(&self, _item: &Arc<dyn AnyItem>) {}
+        pub fn remove_entity(&self, _entity_id: &str) {}
+        pub fn commit(&self) {}
+        pub fn search(&self, _entity_type: &str, _query: &str, _limit: usize) -> Vec<Arc<str>> {
+            Vec::new()
+        }
+        pub fn is_searchable(&self, _entity_type: &str) -> bool {
+            false
+        }
+        pub fn build_from_registry(&self, _registry: &crate::store::StoreRegistry) {}
+    }
+
+    impl Default for SearchIndex {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+}
+
+#[cfg(not(feature = "search"))]
+pub use stub_index::SearchIndex;
+
 use serde_json::Value;
 
 /// Registration for searchable entity types.

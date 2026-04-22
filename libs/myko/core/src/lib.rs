@@ -79,7 +79,7 @@
 // Main module structure
 pub mod cache;
 pub mod client;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "codegen"))]
 pub mod codegen;
 pub mod codegen_types;
 pub mod core;

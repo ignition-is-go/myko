@@ -38,8 +38,11 @@ dashmap.workspace = true
 
 # Native-only deps (store, search, codegen)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-dprint-plugin-typescript = "0.95.15"
-tantivy = "0.22"
+# Heavy deps gated behind features — see [features] below. Entity crates and
+# downstream builds that don't need TS codegen or full-text search can skip
+# the swc/dprint tree (codegen) and the tantivy tree (search) entirely.
+dprint-plugin-typescript = { version = "0.95.15", optional = true }
+tantivy = { version = "0.22", optional = true }
 crossbeam.workspace = true
 
 # WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
@@ -56,3 +59,21 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 default = []
 bench = []
 doc-gen = []
+# TypeScript codegen (dprint-plugin-typescript + swc). Required only by the
+# typegen/docgen binaries. Enabling this pulls ~8s of compile time onto the
+# critical path via the swc parser tree.
+codegen = ["dep:dprint-plugin-typescript"]
+# Full-text entity search (tantivy). Required by myko-server's SearchIndex.
+# When disabled, `SearchIndex` is a no-op stub and `ReportContext::search`
+# returns empty results, so downstream crates compile unchanged.
+search = ["dep:tantivy"]
+
+# Typegen/docgen bins need the codegen feature — declared explicitly so
+# `cargo build -p myko` doesn't try to compile them without the feature.
+[[bin]]
+name = "typegen"
+required-features = ["codegen"]
+
+[[bin]]
+name = "docgen"
+required-features = ["codegen"]

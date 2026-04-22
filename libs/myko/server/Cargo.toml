@@ -10,7 +10,10 @@ tasks = ["check", "build", "test", "lint", "publish"]
 
 [dependencies]
 # Internal
-myko.workspace = true
+# myko-server instantiates `SearchIndex::new()` unconditionally, so it needs
+# the real (tantivy-backed) implementation. Consumers that only use myko
+# (e.g. entity crates) skip the tantivy compile by not pulling myko-server.
+myko = { workspace = true, features = ["search"] }
 
 # Async runtime
 tokio.workspace = true
