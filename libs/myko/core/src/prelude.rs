@@ -7,8 +7,9 @@ pub use hyphae::{
     ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt, Watchable,
 };
 pub use myko_macros::*;
-// Re-export ts_rs::TS for derive macros
-pub use ts_rs::TS;
+// Re-export TS for derive macros — conditional on the `ts-export` feature
+// at the lib.rs level, so downstream derives go through the same switch.
+pub use crate::TS;
 pub use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]

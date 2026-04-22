@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 
 use super::{
     query::{QueryResponse, QueryWindow},

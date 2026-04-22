@@ -8,7 +8,7 @@ pub struct CommandOptions {
 }
 
 /// Generates command trait implementations and registers the command handler.
-pub fn myko_command_impl(options: CommandOptions, input_struct: ItemStruct) -> TokenStream {
+pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) -> TokenStream {
     let CommandOptions {
         result_type,
         custom_serialize,
@@ -20,12 +20,21 @@ pub fn myko_command_impl(options: CommandOptions, input_struct: ItemStruct) -> T
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
+    // Gate user-written `#[ts(...)]` attrs behind the ts-export feature.
+    crate::gate_ts_attrs(&mut input_struct.attrs);
+    for field in input_struct.fields.iter_mut() {
+        crate::gate_ts_attrs(&mut field.attrs);
+    }
+
+    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
+
     // Create args struct (identical to main struct for backward compatibility)
     // TODO(ts): Remove Args pattern once all call sites are updated to use CommandRequest
     let mut args_struct = input_struct.clone();
     args_struct.ident = args_struct_name.clone();
     args_struct.attrs = vec![
-        syn::parse_quote!(#[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]),
+        syn::parse_quote!(#[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]),
+        syn::parse_quote!(#ts_cfg_derive),
     ];
     // Add serde rename attr
     let serde_rename_attr_clone = ctx.serde_attr(quote!(rename_all = "camelCase"));
@@ -47,12 +56,14 @@ pub fn myko_command_impl(options: CommandOptions, input_struct: ItemStruct) -> T
 
     let derives = if custom_serialize {
         quote! {
-            #[derive(Clone, Debug, #serde_path::Deserialize, #krate::TS)]
+            #[derive(Clone, Debug, #serde_path::Deserialize)]
+            #ts_cfg_derive
             #serde_rename_attr
         }
     } else {
         quote! {
-            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #ts_cfg_derive
             #serde_rename_attr
         }
     };

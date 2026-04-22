@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize, ser::Error};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 
 use crate::core::report::ReportId;
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
+use crate::TS;
 use uuid::Uuid;
 
 use super::traits::{

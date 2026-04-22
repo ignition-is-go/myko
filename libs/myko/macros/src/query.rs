@@ -11,31 +11,46 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
+    // Also gate any user-written `#[ts(...)]` attrs on the fields; see the
+    // comment on `gate_ts_attrs` in the crate root.
+    crate::gate_ts_attrs(&mut input_struct.attrs);
+    for field in input_struct.fields.iter_mut() {
+        crate::gate_ts_attrs(&mut field.attrs);
+    }
+
     // Check if struct has no fields (empty)
     let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
         || matches!(&input_struct.fields, syn::Fields::Unit);
+
+    // TS derive wrapped in cfg_attr — only active when the consuming crate
+    // has `ts-export` on.
+    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
 
     // Apply derives (add Default for empty structs)
     let derives = if is_empty {
         if non_hash_cache_key {
             quote! {
-                #[derive(Clone, Debug, Default, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #[derive(Clone, Debug, Default, #serde_path::Serialize, #serde_path::Deserialize)]
+                #ts_cfg_derive
                 #serde_rename_attr
             }
         } else {
             quote! {
-                #[derive(Clone, Debug, Default, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+                #[derive(Clone, Debug, Default, Hash, #serde_path::Serialize, #serde_path::Deserialize)]
+                #ts_cfg_derive
                 #serde_rename_attr
             }
         }
     } else if non_hash_cache_key {
         quote! {
-            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #ts_cfg_derive
             #serde_rename_attr
         }
     } else {
         quote! {
-            #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+            #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize)]
+            #ts_cfg_derive
             #serde_rename_attr
         }
     };

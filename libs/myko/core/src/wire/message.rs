@@ -11,14 +11,14 @@ use super::{
 pub const WS_EVENT_COMMAND: &str = "ws:m:command";
 
 /// Cancel subscription payload - just the transaction ID
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, crate::TS)]
 #[ts(export)]
 pub struct CancelSubscription {
     pub tx: String,
 }
 
 /// Ping payload for latency measurement
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, crate::TS)]
 #[ts(export)]
 pub struct PingData {
     /// Unique identifier to correlate ping/pong
@@ -36,7 +36,7 @@ pub struct MessageEventRegistration {
 
 inventory::collect!(MessageEventRegistration);
 
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, myko_macros::MessageEvents)]
+#[derive(Debug, Clone, Serialize, Deserialize, crate::TS, myko_macros::MessageEvents)]
 #[ts(export)]
 #[serde(tag = "event", content = "data")]
 pub enum MykoMessage {

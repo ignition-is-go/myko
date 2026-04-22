@@ -112,17 +112,39 @@ pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko::submit! macro
+// Re-export all attribute/derive macros so downstream crates can consume them
+// as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
+// `myko-macros` dependency.
+pub use myko_macros::*;
 pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
-pub use ts_rs::{self, TS};
+pub use ts_rs;
+// `myko::TS` resolves to the real `ts_rs::TS` derive+trait when the
+// consuming crate has `ts-export` on, and to a noop derive that emits
+// nothing (but still claims the `#[ts(...)]` helper attrs so they don't
+// become orphan attributes) when off. Routing everything through
+// `myko::TS` lets entity crates opt out of the expensive derive without
+// touching their source — hand-written `#[derive(myko::TS)]` becomes
+// a no-op, and macro-emitted `#[cfg_attr(feature = "ts-export", derive(myko::TS))]`
+// doesn't run the derive at all.
+#[cfg(feature = "ts-export")]
+pub use ts_rs::TS;
+#[cfg(not(feature = "ts-export"))]
+pub use myko_macros::TsNoop as TS;
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
 
 /// Register a type for ts-rs export.
+///
+/// When the consuming crate has `ts-export` off, this expands to nothing —
+/// the registered fn would require `$ty: ts_rs::TS` but we don't emit
+/// that impl in that configuration. Types that should be exported during
+/// typegen must pick up `ts-export` via their crate's feature forwarding.
 #[macro_export]
 macro_rules! register_ts_export {
     ($ty:ty) => {
+        #[cfg(feature = "ts-export")]
         $crate::inventory::submit! {
             $crate::codegen_types::TsExportRegistration {
                 type_name: stringify!($ty),

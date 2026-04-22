@@ -18,7 +18,7 @@ use hyphae::{Cell, CellImmutable};
 use hyphae::{DedupedExt, interval};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 
 use crate::{
     report::{ReportContext, ReportHandler},

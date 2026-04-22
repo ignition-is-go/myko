@@ -5,7 +5,7 @@ use std::{fmt::Debug, sync::Arc};
 use hyphae::CellImmutable;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 
 use super::{handler::ReportHandler, request::ReportRequest};
 use crate::{

@@ -73,11 +73,18 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         }
     });
 
+    // Rewrite any `#[ts(...)]` attrs on the container/fields so they only
+    // apply when the consuming crate has `ts-export` on — the ts-rs TS
+    // derive we're about to emit conditionally would otherwise leave these
+    // orphaned and break compilation when the feature is off.
+    crate::gate_ts_attrs(&mut input_struct.attrs);
+
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
         // Strip relationship and setter attributes from each field
         for field in named.iter_mut() {
             relationship::strip_relationship_attrs(field);
             setter::strip_setter_attrs(field);
+            crate::gate_ts_attrs(&mut field.attrs);
         }
 
         let id = quote! { id };
@@ -107,17 +114,39 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // NOTE(ts): `partially` forwards all container attributes (including #[serde(crate = ...)])
     // from the main struct to the Partial struct automatically, so we must NOT also add
     // `attribute(serde(crate = ...))` — that would cause "duplicate serde attribute `crate`".
+    // TS derive (and the matching `ts(optional_fields)` attr on `partially`) are wrapped in
+    // `cfg_attr(feature = "ts-export", ...)` so they only fire when the consuming crate
+    // has `ts-export` on. We emit two cfg_attr forms of the `partially(...)` attribute —
+    // one with TS, one without — because `partially` can't be invoked twice on the same
+    // struct, and its derive list / attribute list need to stay in sync with whether TS
+    // is active.
     let derives = if !rel_info.ensure_for_fields.is_empty() {
         quote! {
-            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
+            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug)]
+            #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
             #serde_rename_attr
-            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, myko_macros::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
+            #[cfg_attr(
+                feature = "ts-export",
+                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))
+            )]
+            #[cfg_attr(
+                not(feature = "ts-export"),
+                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches))
+            )]
         }
     } else {
         quote! {
-            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
+            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug)]
+            #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
             #serde_rename_attr
-            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, myko_macros::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
+            #[cfg_attr(
+                feature = "ts-export",
+                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))
+            )]
+            #[cfg_attr(
+                not(feature = "ts-export"),
+                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches))
+            )]
         }
     };
 
@@ -136,7 +165,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             };
 
         quote! {
-            #[derive(#serde_path::Deserialize, #krate::TS)]
+            #[derive(#serde_path::Deserialize)]
+            #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
             #serde_rename_attr
             #helper_struct
 
@@ -162,7 +192,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
     let get_all_query = quote! {
 
-        #[myko_macros::myko_query(#name)]
+        #[#krate::myko_query(#name)]
         pub struct #get_all_query_ident {}
 
         impl #krate::prelude::QueryHandler for #get_all_query_ident {
@@ -176,7 +206,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let get_by_ids_query_ident = format_ident!("Get{}sByIds", name_str);
 
     let get_by_ids_query = quote! {
-        #[myko_macros::myko_query(#name)]
+        #[#krate::myko_query(#name)]
         pub struct #get_by_ids_query_ident {
             pub ids: Vec<#id_type_ident>,
         }
@@ -223,8 +253,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         .collect();
 
     let get_by_partial_query = quote! {
-        #[myko_macros::myko_non_hash_cache_key]
-        #[myko_macros::myko_query(#name)]
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_query(#name)]
          pub struct #get_by_partial_ident(pub #partial_ident);
 
          impl #krate::prelude::QueryHandler for #get_by_partial_ident {
@@ -251,7 +281,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let count_result_ident = format_ident!("{}Count", name_str);
 
     let count_result_type = quote! {
-        #[myko_macros::myko_report_output]
+        #[#krate::myko_report_output]
         pub struct #count_result_ident {
             pub count: usize,
         }
@@ -261,7 +291,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let count_all_report_ident = format_ident!("CountAll{}s", name_str);
 
     let count_all_report = quote! {
-        #[myko_macros::myko_report(#count_result_ident)]
+        #[#krate::myko_report(#count_result_ident)]
         pub struct #count_all_report_ident {}
 
         impl #krate::prelude::ReportHandler for #count_all_report_ident {
@@ -283,8 +313,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let count_report_ident = format_ident!("Count{}s", name_str);
 
     let count_report = quote! {
-        #[myko_macros::myko_non_hash_cache_key]
-        #[myko_macros::myko_report(#count_result_ident)]
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(#count_result_ident)]
         pub struct #count_report_ident(pub #partial_ident);
 
         impl #krate::prelude::ReportHandler for #count_report_ident {
@@ -306,7 +336,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let get_by_id_report_ident = format_ident!("Get{}ById", name_str);
 
     let get_by_id_report = quote! {
-        #[myko_macros::myko_report(Option<std::sync::Arc<#name>>)]
+        #[#krate::myko_report(Option<std::sync::Arc<#name>>)]
         pub struct #get_by_id_report_ident {
             pub id: #id_type_ident,
         }
@@ -338,7 +368,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
     let delete_command = quote! {
         /// Result type for Delete command
-        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug)]
+        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
         #delete_serde_attr
         pub struct #delete_result_ident {
             pub deleted: bool,
@@ -347,7 +378,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #krate::register_ts_export!(#delete_result_ident);
 
         /// Command to delete a single entity by ID
-        #[myko_macros::myko_command(#delete_result_ident)]
+        #[#krate::myko_command(#delete_result_ident)]
         pub struct #delete_command_ident {
             pub id: #id_type_ident,
         }
@@ -383,7 +414,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
     let delete_many_command = quote! {
         /// Result type for bulk Delete command
-        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug)]
+        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
         #delete_serde_attr
         pub struct #delete_many_result_ident {
             pub deleted_count: usize,
@@ -392,7 +424,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #krate::register_ts_export!(#delete_many_result_ident);
 
         /// Command to delete multiple entities by ID
-        #[myko_macros::myko_command(#delete_many_result_ident)]
+        #[#krate::myko_command(#delete_many_result_ident)]
         pub struct #delete_many_command_ident {
             pub ids: Vec<#id_type_ident>,
         }
@@ -520,9 +552,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             #serde_path::Serialize,
             #serde_path::Deserialize,
             Debug,
-            #krate::TS
         )]
-        #[ts(type = "string")]
+        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[cfg_attr(feature = "ts-export", ts(type = "string"))]
         pub struct #id_type_ident(pub std::sync::Arc<str>);
 
         impl std::ops::Deref for #id_type_ident {

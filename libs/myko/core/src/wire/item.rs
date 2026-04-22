@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
+use crate::TS;
 
 use crate::core::item::AnyItem;
 

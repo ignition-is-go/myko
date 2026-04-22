@@ -37,7 +37,7 @@ use crate::{
 
 /// Wire protocol for encoding messages.
 /// Defaults to MSGPACK for better performance - server auto-detects binary frames.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::TS)]
 #[ts(export)]
 pub enum MykoProtocol {
     JSON = 0,

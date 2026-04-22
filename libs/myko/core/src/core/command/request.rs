@@ -4,7 +4,7 @@ use std::{fmt::Debug, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 use uuid::Uuid;
 
 use super::traits::{AnyCommand, CommandId, CommandIdStatic, CommandParams, CommandResultType};

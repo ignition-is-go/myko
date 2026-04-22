@@ -62,11 +62,18 @@ doc-gen = []
 # TypeScript codegen (dprint-plugin-typescript + swc). Required only by the
 # typegen/docgen binaries. Enabling this pulls ~8s of compile time onto the
 # critical path via the swc parser tree.
-codegen = ["dep:dprint-plugin-typescript"]
+codegen = ["dep:dprint-plugin-typescript", "ts-export"]
 # Full-text entity search (tantivy). Required by myko-server's SearchIndex.
 # When disabled, `SearchIndex` is a no-op stub and `ReportContext::search`
 # returns empty results, so downstream crates compile unchanged.
 search = ["dep:tantivy"]
+# When enabled, myko's proc-macros emit `#[derive(ts_rs::TS)]` and keep
+# `#[ts(...)]` field attributes. Off by default — entity crates compile
+# ~319 fewer `impl TS for _` blocks each, saving meaningful time in the
+# entity-crate fan-out phase. Activated transitively by `codegen` (typegen
+# needs the TS impls) and propagated through entity crates via their own
+# `ts-export` feature forwards (see rship-entities umbrella).
+ts-export = []
 
 # Typegen/docgen bins need the codegen feature — declared explicitly so
 # `cargo build -p myko` doesn't try to compile them without the feature.

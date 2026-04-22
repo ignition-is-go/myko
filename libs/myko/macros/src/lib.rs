@@ -151,6 +151,43 @@ fn take_marker_attr(input_struct: &mut syn::ItemStruct, attr_name: &str) -> bool
     found
 }
 
+/// Noop replacement for `ts_rs::TS` derive — emits no trait impls and
+/// declares the `ts` helper attribute so user-written `#[ts(...)]` in
+/// entity source doesn't error out when `ts_rs::TS` is absent.
+///
+/// `myko::TS` routes to this derive when the consuming crate has
+/// `ts-export` off. When on, `myko::TS` resolves to `ts_rs::TS` instead
+/// and full TS impls are generated.
+#[proc_macro_derive(TsNoop, attributes(ts))]
+pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
+/// Rewrite any `#[ts(...)]` attributes in the provided list so they're
+/// only applied when the consuming crate has the `ts-export` feature on.
+///
+/// Emitting `#[ts(...)]` unconditionally would error when the ts-rs TS
+/// derive isn't also active (they're orphan helper attributes without
+/// their derive). We can't detect the feature at proc-macro runtime —
+/// `CARGO_FEATURE_*` env vars aren't exposed to proc macros — so we
+/// defer the gating to the consuming crate's compile by wrapping each
+/// attr with `#[cfg_attr(feature = "ts-export", ts(...))]`. At that
+/// point the feature flag resolves and the attr appears only where TS
+/// also appears.
+pub(crate) fn gate_ts_attrs(attrs: &mut Vec<syn::Attribute>) {
+    use syn::parse_quote;
+    for attr in attrs.iter_mut() {
+        if !attr.path().is_ident("ts") {
+            continue;
+        }
+        // Preserve the inner meta list and rebuild as cfg_attr.
+        let inner_meta = attr.meta.clone();
+        let new_attr: syn::Attribute =
+            parse_quote!(#[cfg_attr(feature = "ts-export", #inner_meta)]);
+        *attr = new_attr;
+    }
+}
+
 #[proc_macro_attribute]
 pub fn myko_manual_cache_key(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as syn::ItemStruct);
@@ -583,16 +620,22 @@ pub fn myko_saga(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as syn::ItemStruct);
+    let mut input = parse_macro_input!(input as syn::ItemStruct);
     let name = &input.ident;
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
+    gate_ts_attrs(&mut input.attrs);
+    for field in input.fields.iter_mut() {
+        gate_ts_attrs(&mut field.attrs);
+    }
+
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
-        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize)]
+        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
         #serde_rename_attr
         #input
 
@@ -600,4 +643,157 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
     };
 
     expanded.into()
+}
+
+/// Declare a data subtype used by myko entities (field types, payloads,
+/// enum variants carried on commands/queries/reports/views). Bundles the
+/// standard derives + serde camelCase rename + conditional TS export +
+/// `register_ts_export!` so subtype definitions don't repeat 3–4 lines of
+/// boilerplate each.
+///
+/// Default derives: `Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize`.
+/// Always added: `#[cfg_attr(feature = "ts-export", derive(myko::TS))]`,
+/// `#[cfg_attr(feature = "ts-export", ts(export))]`, and
+/// `#[serde(rename_all = "camelCase")]`. Emits a `register_ts_export!`
+/// call after the item so typegen picks it up when the feature is on.
+///
+/// Extra derives (e.g. `Default`, `Eq`, `Hash`, `Copy`) can be requested
+/// via `derive(...)` — they're appended to the default list.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[myko_subtype]
+/// pub struct UserData {
+///     pub id: UserId,
+/// }
+///
+/// #[myko_subtype(derive(Default, Eq))]
+/// pub enum NetworkEventType {
+///     Added,
+///     Removed,
+/// }
+///
+/// #[myko_subtype(derive(Default, Eq, Hash))]
+/// pub struct DeviceShareKey {
+///     pub device_id: Arc<str>,
+///     pub user_id: Arc<str>,
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn myko_subtype(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let extra_derives = parse_macro_input!(attr as SubtypeArgs).extra_derives;
+    let item: syn::Item = parse_macro_input!(input as syn::Item);
+    myko_subtype_expand(extra_derives, item).into()
+}
+
+struct SubtypeArgs {
+    extra_derives: Vec<syn::Path>,
+}
+
+impl syn::parse::Parse for SubtypeArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self { extra_derives: Vec::new() });
+        }
+        // Accept `derive(Foo, Bar, Baz)` as the single invocation.
+        let meta: syn::Meta = input.parse()?;
+        if let syn::Meta::List(list) = meta {
+            if list.path.is_ident("derive") {
+                let punct: syn::punctuated::Punctuated<syn::Path, syn::Token![,]> =
+                    list.parse_args_with(syn::punctuated::Punctuated::parse_terminated)?;
+                return Ok(Self {
+                    extra_derives: punct.into_iter().collect(),
+                });
+            }
+            return Err(syn::Error::new_spanned(
+                &list.path,
+                "expected `derive(...)` argument",
+            ));
+        }
+        Err(syn::Error::new_spanned(
+            meta,
+            "expected `derive(...)` argument",
+        ))
+    }
+}
+
+fn myko_subtype_expand(extra_derives: Vec<syn::Path>, mut item: syn::Item) -> proc_macro2::TokenStream {
+    let ctx = DeriveCtx::new();
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+
+    // Common setup: gate user-written `#[ts(...)]` attrs, extract name for
+    // the `register_ts_export!` call. Also normalize visibility expectations
+    // to either struct or enum — other shapes aren't meaningful as subtypes.
+    let (name, has_rename_all) = match &mut item {
+        syn::Item::Struct(s) => {
+            gate_ts_attrs(&mut s.attrs);
+            for field in s.fields.iter_mut() {
+                gate_ts_attrs(&mut field.attrs);
+            }
+            (s.ident.clone(), attrs_have_serde_rename_all(&s.attrs))
+        }
+        syn::Item::Enum(e) => {
+            gate_ts_attrs(&mut e.attrs);
+            for variant in e.variants.iter_mut() {
+                gate_ts_attrs(&mut variant.attrs);
+                for field in variant.fields.iter_mut() {
+                    gate_ts_attrs(&mut field.attrs);
+                }
+            }
+            (e.ident.clone(), attrs_have_serde_rename_all(&e.attrs))
+        }
+        other => {
+            return syn::Error::new_spanned(
+                other,
+                "#[myko_subtype] only supports `struct` and `enum` items",
+            )
+            .to_compile_error();
+        }
+    };
+
+    let extra_derive_tokens = if extra_derives.is_empty() {
+        quote!()
+    } else {
+        quote!(, #(#extra_derives),*)
+    };
+
+    // Only emit the default camelCase rename when the user hasn't already
+    // supplied one — otherwise serde would error on duplicate attributes.
+    let serde_rename_attr = if has_rename_all {
+        quote!()
+    } else {
+        ctx.serde_attr(quote!(rename_all = "camelCase"))
+    };
+
+    // Inline the `register_ts_export!` body so we skip an extra macro dispatch
+    // per subtype — one fewer round-trip at ~360 call sites adds up. The cfg
+    // check on the consuming crate's `ts-export` feature is preserved: when
+    // off, this expands to nothing.
+    quote! {
+        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize #extra_derive_tokens)]
+        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[cfg_attr(feature = "ts-export", ts(export))]
+        #serde_rename_attr
+        #item
+
+        #[cfg(feature = "ts-export")]
+        #krate::inventory::submit! {
+            #krate::codegen_types::TsExportRegistration {
+                type_name: stringify!(#name),
+                export_fn: || <#name as #krate::ts_rs::TS>::export(),
+            }
+        }
+    }
+}
+
+/// Returns true if any attribute in the slice is `#[serde(... rename_all = "...")]`.
+/// Used by `myko_subtype` to skip its default camelCase rename when the user
+/// already wrote a different one (e.g. snake_case for enum variants).
+fn attrs_have_serde_rename_all(attrs: &[syn::Attribute]) -> bool {
+    use quote::ToTokens;
+    attrs.iter().any(|a| {
+        a.path().is_ident("serde") && a.to_token_stream().to_string().contains("rename_all")
+    })
 }

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 
 use super::message::WS_EVENT_COMMAND;
 use crate::{

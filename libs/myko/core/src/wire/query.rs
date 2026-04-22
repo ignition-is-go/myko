@@ -4,7 +4,7 @@ use std::sync::Arc;
 use hyphae::MapDiff;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
+use crate::TS;
 
 use super::{item::ErasedWrappedItem, shared::value_with_tx};
 use crate::core::{
