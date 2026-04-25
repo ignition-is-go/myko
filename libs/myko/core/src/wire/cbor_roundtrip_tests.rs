@@ -79,4 +79,101 @@ mod tests {
             value,
         );
     }
+
+    /// Gate test: ciborium must round-trip MykoMessage::ReportResponse cleanly.
+    /// If this fails, the CBOR migration halts and the spec is reopened.
+    #[test]
+    fn report_response_roundtrip_cbor() {
+        let original = sample_report_response();
+
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&original, &mut bytes).expect("ciborium encode");
+
+        let roundtripped: MykoMessage =
+            ciborium::de::from_reader(bytes.as_slice()).expect("ciborium decode");
+
+        let original_json = serde_json::to_value(&original).unwrap();
+        let roundtripped_json = serde_json::to_value(&roundtripped).unwrap();
+        assert_eq!(
+            original_json, roundtripped_json,
+            "ciborium roundtrip should preserve ReportResponse"
+        );
+    }
+
+    /// Gate test for the actual rmp_serde dispatch-path bug diagnosed in
+    /// `report_response_dispatch_via_msgpack_documents_failure`.
+    ///
+    /// The client decodes incoming binary frames as `serde_json::Value`
+    /// (see client/mod.rs WsFrame::Binary arm) and dispatches via
+    /// `value.get("event")`. For ciborium to be a viable replacement, the
+    /// `MykoMessage → bytes → Value` path must produce a `Value::Object`
+    /// with the "event" and "data" keys intact, NOT a `Value::Array` like
+    /// rmp_serde's compact tagged-enum encoding produces.
+    #[test]
+    fn report_response_dispatch_via_cbor_preserves_event_tag() {
+        let original = sample_report_response();
+
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&original, &mut bytes).expect("ciborium encode");
+
+        let value: serde_json::Value =
+            ciborium::de::from_reader(bytes.as_slice()).expect("decode as Value");
+
+        assert!(
+            value.is_object(),
+            "ciborium should produce Value::Object for tagged-enum encoding; got: {:?}",
+            value,
+        );
+
+        let event_tag = value.get("event").and_then(|v| v.as_str());
+        assert_eq!(
+            event_tag,
+            Some("ws:m:report-response"),
+            "ciborium should preserve the 'event' key for dispatch; got value: {:?}",
+            value,
+        );
+
+        assert!(
+            value.get("data").is_some(),
+            "ciborium should preserve the 'data' key alongside 'event'; got value: {:?}",
+            value,
+        );
+    }
+
+    fn assert_roundtrip(msg: MykoMessage) {
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&msg, &mut bytes).expect("ciborium encode");
+        let roundtripped: MykoMessage =
+            ciborium::de::from_reader(bytes.as_slice()).expect("ciborium decode");
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::to_value(&roundtripped).unwrap(),
+            "roundtrip mismatch for {:?}",
+            msg,
+        );
+    }
+
+    #[test]
+    fn ping_roundtrip_cbor() {
+        assert_roundtrip(MykoMessage::Ping(crate::wire::PingData {
+            id: "ping-1".into(),
+            timestamp: 1_700_000_000_000,
+        }));
+    }
+
+    #[test]
+    fn query_cancel_roundtrip_cbor() {
+        assert_roundtrip(MykoMessage::QueryCancel(crate::wire::CancelSubscription {
+            tx: "tx-cancel-1".into(),
+        }));
+    }
+
+    #[test]
+    fn command_error_roundtrip_cbor() {
+        assert_roundtrip(MykoMessage::CommandError(crate::wire::CommandError {
+            tx: "tx-cmd-1".into(),
+            command_id: "MyCommand".into(),
+            message: "validation failed: name is required".into(),
+        }));
+    }
 }
