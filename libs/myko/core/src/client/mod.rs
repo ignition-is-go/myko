@@ -717,7 +717,8 @@ impl MykoClient {
                 Ok(WsFrame::Text(json))
             }
             MykoProtocol::MSGPACK => {
-                let bytes = rmp_serde::to_vec(msg).map_err(|e| e.to_string())?;
+                let mut bytes = Vec::new();
+                ciborium::ser::into_writer(msg, &mut bytes).map_err(|e| e.to_string())?;
                 Ok(WsFrame::Binary(bytes))
             }
         }
@@ -727,10 +728,10 @@ impl MykoClient {
     fn decode_message(frame: &WsFrame) -> Option<Value> {
         match frame {
             WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
-            WsFrame::Binary(bytes) => match rmp_serde::from_slice::<Value>(bytes) {
+            WsFrame::Binary(bytes) => match ciborium::de::from_reader::<Value, _>(bytes.as_slice()) {
                 Ok(v) => Some(v),
                 Err(e) => {
-                    warn!("msgpack decode failed ({} bytes): {}", bytes.len(), e);
+                    warn!("CBOR decode failed ({} bytes): {}", bytes.len(), e);
                     None
                 }
             },
