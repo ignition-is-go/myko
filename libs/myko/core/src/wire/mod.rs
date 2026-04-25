@@ -37,6 +37,7 @@ pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view
 
 // Ensure core wire types are exported to TS bindings for downstream packages.
 crate::register_ts_export!(
+    crate::client::MykoProtocol,
     event::MEventType,
     event::EventOptions,
     event::MEvent,
