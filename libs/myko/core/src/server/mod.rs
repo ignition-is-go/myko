@@ -29,5 +29,5 @@ pub use history_replay::HistoryReplayProvider;
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
 };
-pub use protocol::{message_to_json, message_to_msgpack};
+pub use protocol::{message_to_cbor, message_to_json};
 pub use relationship_manager::RelationshipManager;
