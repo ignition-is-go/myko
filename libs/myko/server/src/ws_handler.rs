@@ -7,7 +7,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -42,7 +42,6 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 use uuid::Uuid;
-
 
 struct WsIngestStats {
     counts_by_type: DashMap<Arc<str>, Arc<AtomicU64>>,

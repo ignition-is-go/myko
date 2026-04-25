@@ -6,9 +6,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::wire::{
-        CancelSubscription, CommandError, MykoMessage, PingData, ReportResponse,
-    };
+    use crate::wire::{CancelSubscription, CommandError, MykoMessage, PingData, ReportResponse};
     use serde_json::json;
 
     fn sample_report_response() -> MykoMessage {

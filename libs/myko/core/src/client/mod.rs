@@ -727,7 +727,8 @@ impl MykoClient {
     fn decode_message(frame: &WsFrame) -> Option<Value> {
         match frame {
             WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
-            WsFrame::Binary(bytes) => match ciborium::de::from_reader::<Value, _>(bytes.as_slice()) {
+            WsFrame::Binary(bytes) => match ciborium::de::from_reader::<Value, _>(bytes.as_slice())
+            {
                 Ok(v) => Some(v),
                 Err(e) => {
                     warn!("CBOR decode failed ({} bytes): {}", bytes.len(), e);
