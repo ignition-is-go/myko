@@ -160,11 +160,12 @@ Each step is independently shippable. Until a given language client is migrated,
 
 Reasoning:
 
-- The current msgpack path is broken for at least one variant (the `// Force JSON until msgpack report-response round-trip is diagnosed` workaround is direct evidence). Keeping a deprecated msgpack alias means keeping a known-broken path alive in the codebase.
-- Cross-version skew is bounded: every myko language client lives in this monorepo and ships in lockstep. Any client at a version that doesn't yet support CBOR simply continues using JSON; the server's negotiation logic accommodates this without any fallback path.
+- **No production users are successfully on msgpack today.** The current msgpack path is broken for at least one variant (the `// Force JSON until msgpack report-response round-trip is diagnosed` workaround in `core/src/client/mod.rs` is direct evidence) and every working client is on JSON. There is no installed base to preserve compatibility with.
+- Keeping a deprecated msgpack alias means keeping a known-broken path alive in the codebase for no benefit.
+- Cross-version skew during the rollout is bounded: every myko language client lives in this monorepo and ships in lockstep. Any client at a version that doesn't yet support CBOR simply continues using JSON; the server's capability-via-demonstration negotiation accommodates this without any fallback path.
 - The protocol-switch handshake message is being deleted regardless, so there is no "switch to old binary format" path to preserve.
 
-A stricter posture (one release with both msgpack and CBOR supported, then a release that drops msgpack) is possible but doubles the wire-test matrix for a release cycle of paranoia that the bounded cross-version situation does not justify.
+A stricter posture (one release with both msgpack and CBOR supported, then a release that drops msgpack) is possible but doubles the wire-test matrix for a release cycle of paranoia that the absence of an installed base does not justify.
 
 ---
 
