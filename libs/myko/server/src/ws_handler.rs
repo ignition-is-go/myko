@@ -524,7 +524,7 @@ impl WsHandler {
                         ..
                     } => Message::Text(json.clone().into()),
                     OutboundMessage::SerializedCommand {
-                        payload: EncodedCommandMessage::Msgpack(bytes),
+                        payload: EncodedCommandMessage::Cbor(bytes),
                         ..
                     } => Message::Binary(bytes.clone().into()),
                     OutboundMessage::Message(msg) if use_binary_writer.load(Ordering::SeqCst) => {
