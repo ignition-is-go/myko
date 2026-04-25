@@ -24,7 +24,7 @@ cargo = ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warn
 bun = ["bun", "run", "lint"]
 
 [tasks.gen]
-default = ["cargo", "run", "-p", "myko", "--bin", "typegen", "--", "src/generated"]
+default = ["cargo", "run", "--features", "codegen", "-p", "myko", "--bin", "typegen", "--", "src/generated"]
 
 [tasks.publish]
 cascade = "all"
