@@ -82,18 +82,32 @@ public class MykoClient : IDisposable
 
     private void OnMessageReceived(ResponseMessage message)
     {
-        if (string.IsNullOrEmpty(message.Text))
-            return;
-            
         try
         {
-            var jsonDocument = JsonDocument.Parse(message.Text);
-            // Notify subscribers of the raw message
-            MessageReceived?.Invoke(this, message.Text);
+            string json;
+            if (message.Binary is { Length: > 0 })
+            {
+                // Binary CBOR frame: decode to a CBOR value tree, then transcode to
+                // a JSON string so existing string-based subscribers work unchanged.
+                var cbor = PeterO.Cbor.CBORObject.DecodeFromBytes(message.Binary);
+                json = cbor.ToJSONString();
+            }
+            else if (!string.IsNullOrEmpty(message.Text))
+            {
+                json = message.Text;
+            }
+            else
+            {
+                return;
+            }
+
+            var jsonDocument = JsonDocument.Parse(json);
+            // Notify subscribers of the message as a JSON string
+            MessageReceived?.Invoke(this, json);
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Error parsing message: {Message}", message.Text);
+            _logger?.LogError(ex, "Error parsing message");
         }
     }
 
@@ -141,12 +155,17 @@ public class MykoClient : IDisposable
         // Wrap the event in a MykoMessage envelope like the Rust SDK does
         var mykoMessage = new MykoEventMessage(eventData);
 
+        // Serialize to JSON in the existing camelCase shape, then transcode the
+        // value tree to CBOR bytes for the wire. The server detects binary frames
+        // and replies in CBOR; no handshake is needed.
         var json = JsonSerializer.Serialize(mykoMessage, new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
+        var cbor = PeterO.Cbor.CBORObject.FromJSONString(json);
+        byte[] bytes = cbor.EncodeToBytes();
 
-        _client.Send(json);
+        _client.Send(bytes);
         await Task.CompletedTask;
     }
 
