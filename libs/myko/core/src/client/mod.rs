@@ -318,7 +318,6 @@ impl MykoClient {
         transport: Arc<dyn SocketTransport>,
         options: MykoClientOptions,
     ) -> MykoClient {
-        // NOTE(ts): Force JSON until msgpack report-response round-trip is diagnosed
         let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON as u8));
         let last_message = Cell::new(None).with_name("last_message");
         let ping_ms = Cell::new(None).with_name("ping_ms");
