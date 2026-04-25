@@ -679,7 +679,7 @@ impl WsHandler {
                         Message::Binary(data) => {
                             if !use_binary.load(Ordering::SeqCst) {
                                 log::debug!(
-                                    "Client {} switched to binary (msgpack) protocol via auto-detect",
+                                    "Client {} switched to binary (CBOR) protocol via auto-detect",
                                     client_id
                                 );
                                 use_binary.store(true, Ordering::SeqCst);
@@ -1517,7 +1517,7 @@ impl WsWriter for ChannelWriter {
 
     fn protocol(&self) -> myko::client::MykoProtocol {
         if self.use_binary_writer.load(Ordering::SeqCst) {
-            myko::client::MykoProtocol::MSGPACK
+            myko::client::MykoProtocol::CBOR
         } else {
             myko::client::MykoProtocol::JSON
         }
