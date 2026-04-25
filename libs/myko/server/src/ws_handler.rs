@@ -42,9 +42,6 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-/// Protocol switch message sent by client to enable binary (msgpack) encoding.
-/// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.
-const SWITCH_TO_MSGPACK: &str = "myko:switch-to-msgpack";
 
 struct WsIngestStats {
     counts_by_type: DashMap<Arc<str>, Arc<AtomicU64>>,
@@ -711,20 +708,6 @@ impl WsHandler {
                             }
                         }
                         Message::Text(text) => {
-                            if text == SWITCH_TO_MSGPACK {
-                                log::debug!(
-                                    "Client {} switched to binary (msgpack) protocol via explicit request",
-                                    client_id
-                                );
-                                if let Err(e) = priority_tx.try_send(MykoMessage::ProtocolSwitch {
-                                    protocol: "msgpack".into(),
-                                }) {
-                                    drop_logger.on_drop("ProtocolSwitch", &e);
-                                }
-                                use_binary.store(true, Ordering::SeqCst);
-                                continue;
-                            }
-
                             match serde_json::from_str::<MykoMessage>(&text) {
                                 Ok(myko_msg) => {
                                     if let Err(e) = Self::handle_message(
