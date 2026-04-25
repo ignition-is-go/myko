@@ -45,25 +45,37 @@ mod tests {
     /// response object and tx string are packed into an inner array instead of an object
     /// with `response`/`tx` keys). This is the silent data-loss bug that forced JSON mode.
     #[test]
-    #[ignore = "documents the rmp_serde failure that motivated CBOR migration"]
-    fn report_response_roundtrip_msgpack_documents_failure() {
+    #[ignore = "documents the rmp_serde dispatch-path failure that motivated CBOR migration"]
+    fn report_response_dispatch_via_msgpack_documents_failure() {
         let original = sample_report_response();
-        let bytes = rmp_serde::to_vec(&original).expect("encode should succeed");
-        let decoded: Result<MykoMessage, _> = rmp_serde::from_slice(&bytes);
 
-        // Either decode fails, or the result is not equal to the original.
-        // Both outcomes are wrong; we record the actual outcome in the
-        // assertion message for posterity.
-        match decoded {
-            Err(e) => panic!("rmp_serde decode failed (expected): {}", e),
-            Ok(roundtripped) => {
-                let original_json = serde_json::to_value(&original).unwrap();
-                let roundtripped_json = serde_json::to_value(&roundtripped).unwrap();
-                assert_eq!(
-                    original_json, roundtripped_json,
-                    "rmp_serde roundtrip mismatch"
-                );
-            }
-        }
+        // Encode through the same path the server uses (rmp_serde::to_vec).
+        let bytes = rmp_serde::to_vec(&original).expect("encode should succeed");
+
+        // Decode as serde_json::Value, mirroring the client dispatch path
+        // at libs/myko/core/src/client/mod.rs (the WsFrame::Binary arm,
+        // which uses rmp_serde::from_slice::<Value>(...)).
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("decode as Value should succeed");
+
+        // The dispatcher reads value.get("event") to route messages.
+        // rmp_serde's default array encoding produces a Value::Array,
+        // not a Value::Object, so this lookup returns None and the
+        // message is silently dropped.
+        let event_tag = value.get("event");
+        assert!(
+            event_tag.is_none(),
+            "rmp_serde unexpectedly produced an object with 'event' key — \
+             the dispatch-path bug may have been fixed elsewhere; got: {:?}",
+            value,
+        );
+
+        // Also assert the shape: it should be a Value::Array.
+        assert!(
+            value.is_array(),
+            "rmp_serde should produce a Value::Array (compact tagged-enum encoding); \
+             got: {:?}",
+            value,
+        );
     }
 }
