@@ -291,8 +291,9 @@ export class MykoClient {
   private peerDiscoverySubscription: Subscription | null = null
   private useSecureWebSocket = false
 
-  // Protocol defaults to JSON for maximum compatibility. Clients opt into CBOR via setProtocol().
-  private protocol: MykoProtocol = MykoProtocol.JSON
+  // Protocol defaults to CBOR for binary efficiency. The server auto-detects format
+  // from frame type, so no handshake or manual configuration is needed.
+  private protocol: MykoProtocol = MykoProtocol.CBOR
 
   constructor() {
     this.setConnectionStatus(ConnectionStatus.Disconnected, 'init')
@@ -304,7 +305,7 @@ export class MykoClient {
     this.connectionLogLevelThreshold = level
   }
 
-  /** Set the wire protocol (JSON or CBOR). Default is JSON. */
+  /** Set the wire protocol (JSON or CBOR). Default is CBOR. */
   setProtocol(protocol: MykoProtocol): void {
     this.protocol = protocol
   }

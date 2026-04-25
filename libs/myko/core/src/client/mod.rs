@@ -36,7 +36,8 @@ use crate::{
 };
 
 /// Wire protocol for encoding messages.
-/// Defaults to JSON; clients opt into CBOR by calling `set_protocol`.
+/// Defaults to CBOR for binary efficiency. Use `set_protocol(MykoProtocol::JSON)`
+/// to opt out for debugging or external interop scenarios.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::TS)]
 #[ts(export)]
 pub enum MykoProtocol {
@@ -318,7 +319,7 @@ impl MykoClient {
         transport: Arc<dyn SocketTransport>,
         options: MykoClientOptions,
     ) -> MykoClient {
-        let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON as u8));
+        let protocol = Arc::new(AtomicU8::new(MykoProtocol::CBOR as u8));
         let last_message = Cell::new(None).with_name("last_message");
         let ping_ms = Cell::new(None).with_name("ping_ms");
 
@@ -698,7 +699,7 @@ impl MykoClient {
     // Protocol and encoding
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Set the wire protocol (JSON or CBOR). Default is JSON.
+    /// Set the wire protocol (JSON or CBOR). Default is CBOR.
     pub fn set_protocol(&self, protocol: MykoProtocol) {
         self.inner.protocol.store(protocol as u8, Ordering::SeqCst);
     }
