@@ -24,7 +24,7 @@ use std::{collections::HashSet, sync::Arc};
 use hyphae::{Cell, CellImmutable, MapExt, Pipeline, SelectExt};
 
 use super::super::item::AnyItem;
-use crate::store::StoreRegistry;
+use crate::store::{EntityStore, StoreRegistry};
 
 /// Context for cell-based report handlers.
 ///
@@ -44,9 +44,9 @@ impl CellReportContext {
     ///
     /// Returns a cell that updates whenever any entity of this type changes.
     pub fn query_all(&self, entity_type: &str) -> Cell<Vec<Arc<dyn AnyItem>>, CellImmutable> {
-        self.registry
-            .get_or_create(entity_type)
-            .select(|_| true)
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected = hyphae::MapQuery::materialize(store.select(|_| true));
+        selected
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
             .materialize()
@@ -61,9 +61,10 @@ impl CellReportContext {
         ids: Vec<Arc<str>>,
     ) -> Cell<Vec<Arc<dyn AnyItem>>, CellImmutable> {
         let id_set: HashSet<Arc<str>> = ids.into_iter().collect();
-        self.registry
-            .get_or_create(entity_type)
-            .select(move |item| id_set.contains(&item.id()))
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected =
+            hyphae::MapQuery::materialize(store.select(move |item| id_set.contains(&item.id())));
+        selected
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
             .materialize()
@@ -80,9 +81,9 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        self.registry
-            .get_or_create(entity_type)
-            .select(predicate)
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected = hyphae::MapQuery::materialize(store.select(predicate));
+        selected
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
             .materialize()
@@ -96,9 +97,10 @@ impl CellReportContext {
         entity_type: &str,
         id: Arc<str>,
     ) -> Cell<Option<Arc<dyn AnyItem>>, CellImmutable> {
-        self.registry
-            .get_or_create(entity_type)
-            .select(move |item| *item.id() == *id)
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected =
+            hyphae::MapQuery::materialize(store.select(move |item| *item.id() == *id));
+        selected
             .entries()
             .map(|entries| entries.iter().next().map(|(_, item)| item.clone()))
             .materialize()
@@ -109,10 +111,8 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        self.registry
-            .get_or_create(entity_type)
-            .select(predicate)
-            .len()
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        hyphae::MapQuery::materialize(store.select(predicate)).len()
     }
 
     /// Execute a sub-report and get its reactive output.

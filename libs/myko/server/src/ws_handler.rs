@@ -913,7 +913,9 @@ impl WsHandler {
                         "No registered query handler for {}, falling back to select all",
                         query_id
                     );
-                    let cellmap = registry.get_or_create(entity_type).select(|_| true);
+                    let store: myko::store::EntityStore =
+                        (*registry.get_or_create(entity_type)).clone();
+                    let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
                     session.subscribe_query(tx_id, cellmap, wrapped.window.clone());
                 }
             }

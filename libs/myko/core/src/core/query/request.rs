@@ -14,6 +14,8 @@ use super::traits::{
 };
 use crate::common::with_transaction::WithTransaction;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::core::item::AnyItem;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::core::query::cell::FilteredCellMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -106,11 +108,16 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_view(ctx: QueryBuildCellCtx<Self>) -> Option<FilteredCellMap> {
+    fn build_view(
+        ctx: QueryBuildCellCtx<Self>,
+    ) -> Option<impl hyphae::MapQuery<Arc<str>, Arc<dyn AnyItem>>> {
+        // Materialize at the wrapper boundary so the outer `Option<impl MapQuery>`
+        // has a concrete type the borrow checker can infer through.
         Q::build_view(QueryBuildCellCtx {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
         })
+        .map(hyphae::MapQuery::materialize)
     }
 }
 

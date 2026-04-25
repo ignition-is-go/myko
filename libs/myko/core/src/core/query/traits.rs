@@ -2,7 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hyphae::CellImmutable;
+use hyphae::{CellImmutable, MapQuery};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -62,13 +62,21 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Optional set-wise reactive builder for complex many-to-many joins.
     ///
     /// When implemented, this is preferred by the runtime over per-item
-    /// `test_entity` evaluation and should return the final filtered map.
+    /// `test_entity` evaluation and should return a reactive map plan that
+    /// the runtime materializes once at the registration boundary. Returning
+    /// `impl MapQuery<...>` lets impls compose `inner_join`, `project_map`,
+    /// `select_cell`, etc. without forcing intermediate `CellMap` allocations.
+    /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
+    /// via the blanket impl on `ReactiveMap`, so simple impls returning a
+    /// pre-built map continue to work unchanged.
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_view(_ctx: QueryBuildCellCtx<Self>) -> Option<FilteredCellMap>
+    fn build_view(
+        _ctx: QueryBuildCellCtx<Self>,
+    ) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
     where
         Self: Send + Sync + 'static,
     {
-        None
+        None::<FilteredCellMap>
     }
 }
 

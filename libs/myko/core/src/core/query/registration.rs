@@ -388,14 +388,14 @@ where
     Q::Item:
         DeserializeOwned + Eventable + WithId + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
-    source.select(move |item_any: &AnyItemArc| {
+    hyphae::MapQuery::materialize(source.select(move |item_any: &AnyItemArc| {
         let item = downcast_any_item_arc::<Q::Item>(item_any, "filter_query_over_source");
         Q::test_entity(QueryTestCtx {
             item,
             query: query.clone(),
             query_context: query_context.clone(),
         })
-    })
+    }))
 }
 
 /// Registration entry for a query type.
@@ -470,17 +470,21 @@ where
             query: query.clone(),
             query_context: query_cell_ctx.clone(),
         }) {
-            return Ok(built);
+            return Ok(hyphae::MapQuery::materialize(built));
         }
 
-        let store = registry.get_or_create(&Q::query_item_type_static());
-        Ok(store.select(move |item_any: &AnyItemArc| {
-            let item = downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
-            Q::test_entity(QueryTestCtx {
-                item,
-                query: query.clone(),
-                query_context: query_ctx.clone(),
-            })
-        }))
+        let store: crate::store::EntityStore =
+            (*registry.get_or_create(&Q::query_item_type_static())).clone();
+        Ok(hyphae::MapQuery::materialize(store.select(
+            move |item_any: &AnyItemArc| {
+                let item =
+                    downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
+                Q::test_entity(QueryTestCtx {
+                    item,
+                    query: query.clone(),
+                    query_context: query_ctx.clone(),
+                })
+            },
+        )))
     }
 }

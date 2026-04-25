@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use hyphae::MapQuery;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -35,7 +36,14 @@ pub struct ViewBuildCellCtx<TView: ViewItemType> {
 /// `format!("{sort_field}\x1F{unique_id}")` where `\x1F` (Unit Separator) sorts
 /// before all printable characters.
 pub trait ViewHandler: ViewItemType + Sized {
-    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> super::cell::TypedViewCellMap<Self::Item>
+    /// Build a reactive map plan for this view.
+    ///
+    /// Returns `impl MapQuery<Arc<str>, Arc<Self::Item>>` so impls can chain
+    /// `inner_join`, `project_map`, `select_cell`, etc. without materializing
+    /// intermediate `CellMap`s. The framework materializes once at the
+    /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
+    /// still satisfy the bound via the blanket impl on `ReactiveMap`.
+    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
     where
         Self: Send + Sync + 'static;
 }
