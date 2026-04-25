@@ -1002,7 +1002,7 @@ mod tests {
         let writer = ArcMockWriter(mock.clone());
         let mut session = ClientSession::new("client-1".into(), writer);
 
-        let cellmap = store.select(|_| true);
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
         session.subscribe_query("tx-1".into(), cellmap, None);
 
         // Should have received initial data
@@ -1021,7 +1021,7 @@ mod tests {
         let writer = ArcMockWriter(mock.clone());
         let mut session = ClientSession::new("client-1".into(), writer);
 
-        let cellmap = store.select(|_| true);
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
         session.subscribe_query("tx-1".into(), cellmap, None);
         assert_eq!(session.subscription_count(), 1);
 
@@ -1040,8 +1040,8 @@ mod tests {
             let writer = ArcMockWriter(mock.clone());
             let mut session = ClientSession::new("client-1".into(), writer);
 
-            let cellmap1 = store.select(|_| true);
-            let cellmap2 = store.select(|_| true);
+            let cellmap1 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+            let cellmap2 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
             session.subscribe_query("tx-1".into(), cellmap1, None);
             session.subscribe_query("tx-2".into(), cellmap2, None);
 
@@ -1062,7 +1062,7 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let id: Arc<str> = "a".into();
-        let cellmap = store.select(move |item| *item.id() == *id);
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(move |item| *item.id() == *id));
         session.subscribe_query("tx-1".into(), cellmap, None);
 
         // Should have received initial data
@@ -1084,7 +1084,7 @@ mod tests {
         let writer = ArcMockWriter(mock.clone());
         let mut session = ClientSession::new("client-1".into(), writer);
 
-        let cellmap = store.select(|_| true);
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
         session.subscribe_query("tx-1".into(), cellmap, None);
 
         let initial_count = mock.message_count();
@@ -1124,7 +1124,7 @@ mod tests {
         let writer = ArcMockWriter(mock.clone());
         let mut session = ClientSession::new("client-1".into(), writer);
 
-        let cellmap = store.select(|_| true);
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
         session.subscribe_view(
             "tx-view-1".into(),
             cellmap,
@@ -1165,7 +1165,7 @@ mod tests {
         let writer = ArcMockWriter(mock.clone());
         let mut session = ClientSession::new("client-1".into(), writer);
 
-        let cellmap = store.select(|_| true);
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
         session.subscribe_view(
             "tx-view-1".into(),
             cellmap,

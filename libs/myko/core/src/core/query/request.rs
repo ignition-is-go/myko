@@ -15,8 +15,6 @@ use super::traits::{
 use crate::common::with_transaction::WithTransaction;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::item::AnyItem;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::query::cell::FilteredCellMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
