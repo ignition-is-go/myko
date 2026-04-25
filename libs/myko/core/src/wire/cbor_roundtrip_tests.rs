@@ -6,7 +6,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::wire::{MykoMessage, ReportResponse};
+    use crate::wire::{
+        CancelSubscription, CommandError, MykoMessage, PingData, ReportResponse,
+    };
     use serde_json::json;
 
     fn sample_report_response() -> MykoMessage {
@@ -82,6 +84,11 @@ mod tests {
 
     /// Gate test: ciborium must round-trip MykoMessage::ReportResponse cleanly.
     /// If this fails, the CBOR migration halts and the spec is reopened.
+    ///
+    /// This test exercises the `bytes -> MykoMessage` decode path. The
+    /// `report_response_dispatch_via_cbor_preserves_event_tag` test below
+    /// covers the `bytes -> serde_json::Value` decode path used by the
+    /// client dispatcher and is the more critical of the two.
     #[test]
     fn report_response_roundtrip_cbor() {
         let original = sample_report_response();
@@ -133,6 +140,9 @@ mod tests {
             value,
         );
 
+        // Content fidelity of the `data` payload is covered by the round-trip
+        // test above; here we only need the key to be present so the dispatcher
+        // can route the message.
         assert!(
             value.get("data").is_some(),
             "ciborium should preserve the 'data' key alongside 'event'; got value: {:?}",
@@ -155,7 +165,7 @@ mod tests {
 
     #[test]
     fn ping_roundtrip_cbor() {
-        assert_roundtrip(MykoMessage::Ping(crate::wire::PingData {
+        assert_roundtrip(MykoMessage::Ping(PingData {
             id: "ping-1".into(),
             timestamp: 1_700_000_000_000,
         }));
@@ -163,14 +173,14 @@ mod tests {
 
     #[test]
     fn query_cancel_roundtrip_cbor() {
-        assert_roundtrip(MykoMessage::QueryCancel(crate::wire::CancelSubscription {
+        assert_roundtrip(MykoMessage::QueryCancel(CancelSubscription {
             tx: "tx-cancel-1".into(),
         }));
     }
 
     #[test]
     fn command_error_roundtrip_cbor() {
-        assert_roundtrip(MykoMessage::CommandError(crate::wire::CommandError {
+        assert_roundtrip(MykoMessage::CommandError(CommandError {
             tx: "tx-cmd-1".into(),
             command_id: "MyCommand".into(),
             message: "validation failed: name is required".into(),
