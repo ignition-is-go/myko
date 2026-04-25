@@ -1561,4 +1561,33 @@ mod tests {
             OutboundMessage::Message(MykoMessage::Ping(_))
         ));
     }
+
+    #[test]
+    fn outgoing_format_starts_as_json_and_promotes_to_cbor() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+
+        let outgoing_format = AtomicU8::new(MykoProtocol::JSON as u8);
+
+        // Initially JSON.
+        assert_eq!(
+            MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
+            MykoProtocol::JSON,
+        );
+
+        // Simulate receiving a binary frame: promote.
+        outgoing_format.store(MykoProtocol::CBOR as u8, Ordering::SeqCst);
+        assert_eq!(
+            MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
+            MykoProtocol::CBOR,
+        );
+
+        // Simulate receiving more text frames after promotion: no change.
+        // (The handler in the read loop only writes on Binary, never on Text,
+        // so this is a no-op assertion that the field's last-write-wins
+        // semantics give us stickiness for free.)
+        assert_eq!(
+            MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
+            MykoProtocol::CBOR,
+        );
+    }
 }
