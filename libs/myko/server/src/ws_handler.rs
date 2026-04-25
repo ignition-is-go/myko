@@ -685,7 +685,7 @@ impl WsHandler {
                                 use_binary.store(true, Ordering::SeqCst);
                             }
 
-                            match rmp_serde::from_slice::<MykoMessage>(&data) {
+                            match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
                                 Ok(myko_msg) => {
                                     if let Err(e) = Self::handle_message(
                                         &mut session,
