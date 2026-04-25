@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, PairwiseExt, TapExt};
+use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, PairwiseExt, Pipeline, TapExt};
 use log::info;
 use myko::{
     client::{ConnectionStatus, MykoClient},
@@ -57,6 +57,7 @@ impl PeerConnectionHandle {
                     s.1
                 )
             })
+            .materialize()
             .deduped()
             .map(move |status| match status {
                 (_, ConnectionStatus::Connected(_)) => PeerConnectionCycle::Connected,
@@ -67,7 +68,8 @@ impl PeerConnectionHandle {
                     PeerConnectionCycle::Failed
                 }
                 _ => PeerConnectionCycle::Pending,
-            });
+            })
+            .materialize();
 
         let identity_server_id = server_ent.id.clone();
 
@@ -83,7 +85,8 @@ impl PeerConnectionHandle {
                 }
 
                 IdentityCycle::Correct
-            });
+            })
+            .materialize();
 
         let signal_server_id = server_ent.id.clone();
         let signal_server_address = server_ent.address.clone();
@@ -105,7 +108,8 @@ impl PeerConnectionHandle {
                     (PeerConnectionCycle::Failed, _) => PeerState::Delete,
                     (_, _) => PeerState::Keep,
                 }
-            });
+            })
+            .materialize();
 
         Self {
             server_ent,

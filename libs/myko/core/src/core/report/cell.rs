@@ -21,7 +21,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt, SelectExt};
+use hyphae::{Cell, CellImmutable, MapExt, Pipeline, SelectExt};
 
 use super::super::item::AnyItem;
 use crate::store::StoreRegistry;
@@ -49,6 +49,7 @@ impl CellReportContext {
             .select(|_| true)
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
+            .materialize()
     }
 
     /// Query entities by IDs.
@@ -65,6 +66,7 @@ impl CellReportContext {
             .select(move |item| id_set.contains(&item.id()))
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
+            .materialize()
     }
 
     /// Query entities by predicate.
@@ -83,6 +85,7 @@ impl CellReportContext {
             .select(predicate)
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
+            .materialize()
     }
 
     /// Query a single entity by ID.
@@ -98,6 +101,7 @@ impl CellReportContext {
             .select(move |item| *item.id() == *id)
             .entries()
             .map(|entries| entries.iter().next().map(|(_, item)| item.clone()))
+            .materialize()
     }
 
     /// Count entities matching a predicate.
@@ -150,7 +154,7 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use hyphae::{Gettable, MapExt};
+    use hyphae::{Gettable, MapExt, Pipeline};
 
     use super::*;
     use crate::common::with_id::WithId;
@@ -210,6 +214,7 @@ mod tests {
                 }
             })
             .map(|targets| targets.len())
+            .materialize()
         }
     }
 
@@ -220,13 +225,15 @@ mod tests {
         type Output = Vec<String>;
 
         fn compute(&self, ctx: &CellReportContext) -> Cell<Self::Output, CellImmutable> {
-            ctx.query_all("Target").map(|targets| {
-                targets
-                    .iter()
-                    .filter_map(|item| item.as_any().downcast_ref::<TestTarget>())
-                    .map(|t| t.name.clone())
-                    .collect()
-            })
+            ctx.query_all("Target")
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .filter_map(|item| item.as_any().downcast_ref::<TestTarget>())
+                        .map(|t| t.name.clone())
+                        .collect()
+                })
+                .materialize()
         }
     }
 
@@ -287,6 +294,7 @@ mod tests {
             let threshold = self.threshold;
             ctx.report(OnlineTargetCount)
                 .map(move |count| *count >= threshold)
+                .materialize()
         }
     }
 

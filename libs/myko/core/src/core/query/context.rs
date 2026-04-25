@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use dashmap::DashMap;
 #[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, CellImmutable, MapExt};
+use hyphae::{Cell, CellImmutable, MapExt, Pipeline};
 #[cfg(not(target_arch = "wasm32"))]
 use serde_json::Value;
 
@@ -121,16 +121,18 @@ impl QueryCellContext {
         let any_report: Arc<dyn AnyReport> = Arc::new(wrapped);
         let erased = R::cell_factory(any_report, self.request_ctx.clone(), server_ctx)
             .map_err(|e| e.to_string())?;
-        Ok(erased.map(|output| {
-            Arc::new(
-                output
-                    .as_ref()
-                    .as_any()
-                    .downcast_ref::<<R as ReportOutputType>::Output>()
-                    .expect("Report output downcast should match ReportFactory type")
-                    .clone(),
-            )
-        }))
+        Ok(erased
+            .map(|output| {
+                Arc::new(
+                    output
+                        .as_ref()
+                        .as_any()
+                        .downcast_ref::<<R as ReportOutputType>::Output>()
+                        .expect("Report output downcast should match ReportFactory type")
+                        .clone(),
+                )
+            })
+            .materialize())
     }
 
     pub fn registry(&self) -> Arc<StoreRegistry> {

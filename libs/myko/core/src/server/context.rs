@@ -14,7 +14,9 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, WeakCellMap};
+use hyphae::{
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, Pipeline, WeakCellMap,
+};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -1508,7 +1510,10 @@ impl CellServerCtx {
         }
 
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
-        let built = report.compute(nested_ctx);
+        // The trait returns `impl Pipeline<...>`; materialize once here so the
+        // cache and downstream consumers get a concrete `Cell`. This is the only
+        // materialization per report, regardless of how deep the inner chain is.
+        let built = report.compute(nested_ctx).materialize();
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
 

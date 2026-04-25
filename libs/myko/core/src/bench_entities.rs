@@ -54,7 +54,7 @@ pub struct SwitchMapReport {
 impl ReportHandler for SwitchMapReport {
     type Output = Vec<String>;
 
-    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
+    fn compute(&self, ctx: ReportContext) -> impl Pipeline<Arc<Self::Output>> {
         let category = self.category.clone();
 
         // Outer: watch all items matching the category

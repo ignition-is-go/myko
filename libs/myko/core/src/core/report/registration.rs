@@ -2,7 +2,7 @@
 
 use std::{any::Any, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt};
+use hyphae::{Cell, CellImmutable, MapExt, Pipeline};
 use serde_json::Value;
 
 use super::{
@@ -136,6 +136,7 @@ impl<R: ReportParams> ReportFactory for R {
         let report_name = format!("report:{}", report_id);
         Ok(cell
             .map(|output| output.clone() as Arc<dyn AnyOutput>)
+            .materialize()
             .with_name(report_name.as_str()))
     }
 }

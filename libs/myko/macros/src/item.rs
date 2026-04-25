@@ -297,7 +297,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #count_all_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Pipeline<std::sync::Arc<Self::Output>>
+                 {
                 use #krate::prelude::MapExt;
 
                 // Query all items and count them
@@ -320,7 +324,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Pipeline<std::sync::Arc<Self::Output>>
+                 {
                 use #krate::prelude::MapExt;
 
                 // Query by partial filter and count results
@@ -344,7 +352,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
             type Output = Option<std::sync::Arc<#name>>;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Pipeline<std::sync::Arc<Self::Output>>
+                 {
                 use #krate::prelude::{MapExt, Eventable};
 
                 let id: std::sync::Arc<str> = self.id.clone().into();
