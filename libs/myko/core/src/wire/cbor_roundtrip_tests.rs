@@ -28,9 +28,10 @@ mod tests {
 
     /// Documents the failure mode that motivated this migration.
     ///
-    /// If this test ever PASSES with rmp_serde, the workaround at
-    /// client/mod.rs (the JSON-forced default) can be reconsidered
-    /// independently of the CBOR migration.
+    /// This test passes by design today: it asserts the rmp_serde array-encoding
+    /// failure is present, so it serves as a historical record of the bug, not as
+    /// a regression alarm. It will be deleted along with the rmp_serde dependency
+    /// in Task 18 of the migration plan.
     ///
     /// Observed failure (diagnosed 2026-04-24): the direct MykoMessage→msgpack→MykoMessage
     /// roundtrip via rmp_serde actually PASSES. The real failure is in the client dispatch
