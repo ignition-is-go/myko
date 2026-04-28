@@ -15,8 +15,8 @@ pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, Mutable, Pipeline, SubscriptionGuard,
-    Watchable,
+    Cell, CellImmutable, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable, Pipeline,
+    SubscriptionGuard, Watchable,
 };
 use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

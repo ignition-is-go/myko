@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use hyphae::{Cell, CellImmutable, Pipeline, Signal, SubscriptionGuard, TapExt, Watchable};
+use hyphae::{Cell, CellImmutable, Pipeline, MaterializeDefinite, Signal, SubscriptionGuard, TapExt, Watchable};
 use log::info;
 use myko::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},

@@ -15,7 +15,8 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, Pipeline, WeakCellMap,
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MaterializeDefinite, Mutable,
+    Pipeline, WeakCellMap,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;

@@ -300,7 +300,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Pipeline<std::sync::Arc<Self::Output>>
+            ) -> impl #krate::prelude::MaterializeDefinite<std::sync::Arc<Self::Output>>
                  {
                 use #krate::prelude::MapExt;
 
@@ -327,7 +327,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Pipeline<std::sync::Arc<Self::Output>>
+            ) -> impl #krate::prelude::MaterializeDefinite<std::sync::Arc<Self::Output>>
                  {
                 use #krate::prelude::MapExt;
 
@@ -355,7 +355,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Pipeline<std::sync::Arc<Self::Output>>
+            ) -> impl #krate::prelude::MaterializeDefinite<std::sync::Arc<Self::Output>>
                  {
                 use #krate::prelude::{MapExt, Eventable};
 

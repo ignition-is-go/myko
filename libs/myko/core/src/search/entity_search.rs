@@ -92,7 +92,7 @@ impl ReportHandler for EntitySearch {
     fn compute(
         &self,
         ctx: ReportContext,
-    ) -> impl hyphae::Pipeline<Arc<Self::Output>> {
+    ) -> impl hyphae::MaterializeDefinite<Arc<Self::Output>> {
         // Perform search via ReportContext (sync call)
         let ids = ctx.search(&self.entity_type, &self.query, self.limit);
 

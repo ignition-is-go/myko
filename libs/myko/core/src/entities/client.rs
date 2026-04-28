@@ -41,7 +41,7 @@ pub struct ClientStatus {
 impl ReportHandler for ClientStatus {
     type Output = ClientStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl Pipeline<Arc<Self::Output>> {
+    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
         let client_id = self.client_id.clone();
 
         // Query all clients and check if one with our id exists
@@ -74,7 +74,7 @@ pub struct WindbackStatus {}
 impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl Pipeline<Arc<Self::Output>> {
+    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
         let client_id = ctx
             .client_id()
             .map(|id| ClientId::from(Arc::<str>::from(id)));

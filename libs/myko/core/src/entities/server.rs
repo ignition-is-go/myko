@@ -83,7 +83,7 @@ pub struct ServerStats {}
 impl ReportHandler for ServerStats {
     type Output = ServerStatsOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl Pipeline<Arc<Self::Output>> {
+    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
         // Combine server and client cells - emit whenever either changes
         ctx.query_map(GetConnectedServer {})
             .entries()

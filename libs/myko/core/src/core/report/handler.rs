@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, CellMap, CellValue, Pipeline};
+use hyphae::{Cell, CellImmutable, CellMap, CellValue, MaterializeDefinite};
 use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
@@ -320,7 +320,7 @@ impl ReportContext {
 ///   fn compute(
 ///     &self,
 ///     ctx: ReportContext,
-///   ) -> impl Pipeline<Arc<Self::Output>> {
+///   ) -> impl MaterializeDefinite<Arc<Self::Output>> {
 ///     ctx.query(GetTargetsByQuery { active: Some(true), ..Default::default() })
 ///       .map(|items| Arc::new(ActiveTargetCount { count: items.len() }))
 ///   }
@@ -345,20 +345,23 @@ pub trait ReportHandler: Sized {
     /// Report arguments are parsed by the framework and passed as `&self`,
     /// so fields are directly accessible (e.g., `self.target_id`).
     ///
-    /// # Returning a `Pipeline` (not a `Cell`)
+    /// # Returning a `MaterializeDefinite` pipeline (not a `Cell`)
     ///
-    /// `compute` returns `impl Pipeline<Arc<Output>>` rather than a concrete
-    /// `Cell`, so reports can chain `.map(...)`, `.filter(...)`, and other
-    /// hyphae operators without materializing an intermediate cell. The
-    /// framework materializes once at the registration boundary, so each
-    /// report incurs at most one cell allocation regardless of the chain
-    /// depth of `ctx.report(...)` calls.
+    /// `compute` returns `impl MaterializeDefinite<Arc<Output>>` rather than a
+    /// concrete `Cell`, so reports can chain `.map(...)`, `.tap(...)`, etc. on
+    /// hyphae's lazy operators without materializing an intermediate cell.
+    /// `MaterializeDefinite` is the bound for pipelines that have a known
+    /// initial value (definite seedness) and can be compiled into a `Cell`
+    /// via `.materialize()`. The framework type-erases the output and
+    /// materializes once at the registration boundary, so each report
+    /// incurs at most one cell allocation regardless of the chain depth of
+    /// `ctx.report(...)` calls.
     ///
     /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
-    /// `deduped`, etc. already implement `Pipeline<U>`, so returning them
-    /// directly is fine.
+    /// `deduped`, etc. already implement `MaterializeDefinite<U>`, so
+    /// returning them directly is fine.
     fn compute(
         &self,
         ctx: ReportContext,
-    ) -> impl Pipeline<Arc<Self::Output>>;
+    ) -> impl MaterializeDefinite<Arc<Self::Output>>;
 }

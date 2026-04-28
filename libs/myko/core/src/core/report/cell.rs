@@ -21,7 +21,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt, Pipeline, SelectExt};
+use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite, Pipeline, SelectExt};
 
 use super::super::item::AnyItem;
 use crate::store::{EntityStore, StoreRegistry};
@@ -154,7 +154,7 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use hyphae::{Gettable, MapExt, Pipeline};
+    use hyphae::{Gettable, MapExt, MaterializeDefinite, Pipeline};
 
     use super::*;
     use crate::common::with_id::WithId;

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use hyphae::{JoinExt, MapExt, Pipeline, Signal, SubscriptionGuard, Watchable};
+use hyphae::{JoinExt, MapExt, Pipeline, MaterializeDefinite, Signal, SubscriptionGuard, Watchable};
 use log::{debug, error};
 use serde::de::DeserializeOwned;
 
