@@ -1062,7 +1062,8 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let id: Arc<str> = "a".into();
-        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(move |item| *item.id() == *id));
+        let cellmap =
+            hyphae::MapQuery::materialize((*store).clone().select(move |item| *item.id() == *id));
         session.subscribe_query("tx-1".into(), cellmap, None);
 
         // Should have received initial data

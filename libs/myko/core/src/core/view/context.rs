@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt, Pipeline, MaterializeDefinite};
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt, MaterializeDefinite};
 #[cfg(target_arch = "wasm32")]
 use hyphae::{CellImmutable, CellMap, CellMutable};
 use serde::de::DeserializeOwned;

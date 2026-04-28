@@ -477,8 +477,7 @@ where
             (*registry.get_or_create(&Q::query_item_type_static())).clone();
         Ok(hyphae::MapQuery::materialize(store.select(
             move |item_any: &AnyItemArc| {
-                let item =
-                    downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
+                let item = downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
                 Q::test_entity(QueryTestCtx {
                     item,
                     query: query.clone(),

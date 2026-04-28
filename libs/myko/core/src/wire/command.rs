@@ -1,11 +1,11 @@
 //! Wire protocol types for commands.
 
-use crate::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::message::WS_EVENT_COMMAND;
 use crate::{
+    TS,
     client::MykoProtocol,
     core::command::{CommandId, CommandRequest},
 };

@@ -8,11 +8,11 @@ pub use hyphae::{
     SelectCellExt, SelectExt, Watchable,
 };
 pub use myko_macros::*;
+pub use uuid::Uuid;
+
 // Re-export TS for derive macros — conditional on the `ts-export` feature
 // at the lib.rs level, so downstream derives go through the same switch.
 pub use crate::TS;
-pub use uuid::Uuid;
-
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 #[cfg(not(target_arch = "wasm32"))]

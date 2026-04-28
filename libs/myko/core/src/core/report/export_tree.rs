@@ -273,7 +273,10 @@ pub fn walk_tree(
 impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
 
-    fn compute(&self, ctx: crate::report::ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
+    fn compute(
+        &self,
+        ctx: crate::report::ReportContext,
+    ) -> impl MaterializeDefinite<Arc<Self::Output>> {
         let registry = if let Some(as_of) = &self.as_of {
             match ctx.replay_store(as_of) {
                 Ok(r) => r,

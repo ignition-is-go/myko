@@ -176,8 +176,7 @@ impl ReportContext {
     pub fn query_map_untyped<Q>(&self, query: Q) -> FilteredCellMap
     where
         Q: QueryParams + 'static,
-        Q::Item:
-            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug,
     {
         self.server_ctx.query_map_untyped(query, self.req.clone())
     }
@@ -360,8 +359,5 @@ pub trait ReportHandler: Sized {
     /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
     /// `deduped`, etc. already implement `MaterializeDefinite<U>`, so
     /// returning them directly is fine.
-    fn compute(
-        &self,
-        ctx: ReportContext,
-    ) -> impl MaterializeDefinite<Arc<Self::Output>>;
+    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>>;
 }

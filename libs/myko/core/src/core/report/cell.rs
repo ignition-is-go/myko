@@ -21,7 +21,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite, Pipeline, SelectExt};
+use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite, SelectExt};
 
 use super::super::item::AnyItem;
 use crate::store::{EntityStore, StoreRegistry};
@@ -98,8 +98,7 @@ impl CellReportContext {
         id: Arc<str>,
     ) -> Cell<Option<Arc<dyn AnyItem>>, CellImmutable> {
         let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
-        let selected =
-            hyphae::MapQuery::materialize(store.select(move |item| *item.id() == *id));
+        let selected = hyphae::MapQuery::materialize(store.select(move |item| *item.id() == *id));
         selected
             .entries()
             .map(|entries| entries.iter().next().map(|(_, item)| item.clone()))

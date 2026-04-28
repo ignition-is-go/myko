@@ -73,10 +73,9 @@ mod stub_index {
     }
 }
 
+use serde_json::Value;
 #[cfg(not(feature = "search"))]
 pub use stub_index::SearchIndex;
-
-use serde_json::Value;
 
 /// Registration for searchable entity types.
 ///

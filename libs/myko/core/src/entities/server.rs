@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{JoinExt, MapExt, Pipeline, flat};
+use hyphae::{JoinExt, MapExt, flat};
 
 use crate::{
     entities::client::GetAllClients,

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{MapExt, Pipeline};
+use hyphae::MapExt;
 use myko_macros::{myko_command, myko_report, myko_report_output};
 
 use crate::{
