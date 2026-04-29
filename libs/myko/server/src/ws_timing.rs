@@ -76,7 +76,6 @@ pub fn message_kind(msg: &MykoMessage) -> &'static str {
         MykoMessage::CommandError(_) => "CommandError",
         MykoMessage::Ping(_) => "Ping",
         MykoMessage::Benchmark(_) => "Benchmark",
-        MykoMessage::ProtocolSwitch { .. } => "ProtocolSwitch",
     }
 }
 

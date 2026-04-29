@@ -1417,14 +1417,6 @@ impl WsHandler {
                 let size = payload.to_string().len() as u64;
                 stats.total_bytes.fetch_add(size, Ordering::Relaxed);
             }
-            MykoMessage::ProtocolSwitch { protocol } => {
-                log::warn!(
-                    "Unexpected client message kind=protocol_switch_ack client={} protocol={} active_subscriptions={}",
-                    session.client_id,
-                    protocol,
-                    session.subscription_count()
-                );
-            }
         }
 
         Ok(())
