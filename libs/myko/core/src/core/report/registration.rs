@@ -6,7 +6,6 @@ use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite};
 use serde_json::Value;
 
 use super::{
-    handler::{ReportContext, ReportHandler},
     request::ReportRequest,
     traits::{AnyReport, ReportParams},
 };
@@ -125,12 +124,14 @@ impl<R: ReportParams> ReportFactory for R {
                 )
             })?;
 
-        // Create a ReportContext with host_id - report args are accessed via &self in compute
-        let ctx = ReportContext::new(request_ctx, server_ctx);
-
-        // Call the inner report's compute method
         let report_id = R::report_id_static();
-        let cell = <R as ReportHandler>::compute(&request.report, ctx);
+
+        // Route through the canonical cached path so WS / QueryContext callers
+        // share the same cached cell as internal sub-report subscribers (those
+        // that go through `ReportContext::report`). Previously this called
+        // `<R as ReportHandler>::compute()` directly, bypassing the cache and
+        // producing a fresh cell graph for every WS subscribe.
+        let cell = server_ctx.report(request.report, request_ctx);
 
         // Map to type-erased output for the WS/report subscription layer.
         let report_name = format!("report:{}", report_id);

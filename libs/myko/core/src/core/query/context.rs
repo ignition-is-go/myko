@@ -3,11 +3,7 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use dashmap::DashMap;
-#[cfg(not(target_arch = "wasm32"))]
 use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite};
-#[cfg(not(target_arch = "wasm32"))]
-use serde_json::Value;
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
@@ -44,7 +40,6 @@ pub struct QueryCellContext {
     pub query_context: Arc<QueryContext>,
     registry: Arc<StoreRegistry>,
     server_ctx: Option<Arc<CellServerCtx>>,
-    subquery_cache: Arc<DashMap<String, FilteredCellMap>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,11 +55,14 @@ impl QueryCellContext {
             query_context,
             registry,
             server_ctx,
-            subquery_cache: Arc::new(DashMap::new()),
         }
     }
 
     /// Build a reactive CellMap for another query using the same request context.
+    ///
+    /// Delegates to `CellServerCtx::query_map_untyped`, which is the canonical
+    /// cached path. A previous local `subquery_cache` was removed so that
+    /// dedupe lives in exactly one place (the server context).
     pub fn query<Q>(&self, query: Q) -> Result<FilteredCellMap, String>
     where
         Q: QueryFactory + Clone,
@@ -77,30 +75,20 @@ impl QueryCellContext {
             + Sync
             + 'static,
     {
-        let key = Self::subquery_cache_key(
-            &serde_json::to_value(&query).unwrap_or(Value::Null),
-            Q::query_id_static().as_ref(),
-            &self.request_ctx.host_id.to_string(),
-        );
-        if let Some(existing) = self.subquery_cache.get(&key) {
-            return Ok(existing.value().clone());
-        }
         if let Some(server_ctx) = self.server_ctx.clone() {
-            let built = server_ctx.query_map_untyped(query, self.request_ctx.clone());
-            self.subquery_cache.insert(key, built.clone());
-            return Ok(built);
+            return Ok(server_ctx.query_map_untyped(query, self.request_ctx.clone()));
         }
 
+        // Fallback for test/wasm contexts that don't carry a CellServerCtx.
+        // Builds the cell directly via the type's cell factory.
         let wrapped = QueryRequest::with_tx(query, self.request_ctx.tx.clone());
         let any_query: Arc<dyn AnyQuery> = Arc::new(wrapped);
-        let built = Q::cell_factory(
+        Q::cell_factory(
             any_query,
             self.registry.clone(),
             self.request_ctx.clone(),
             self.server_ctx.clone(),
-        )?;
-        self.subquery_cache.insert(key, built.clone());
-        Ok(built)
+        )
     }
 
     /// Build a reactive cell for a report using the same request context.
@@ -137,11 +125,5 @@ impl QueryCellContext {
 
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
-    }
-
-    fn subquery_cache_key(query_value: &Value, query_id: &str, host_id: &str) -> String {
-        let payload =
-            serde_json::to_string(query_value).unwrap_or_else(|_| format!("{query_value:?}"));
-        format!("{host_id}:{query_id}:{payload}")
     }
 }
