@@ -48,6 +48,60 @@ const packr = new Packr({ encodeUndefinedAsNil: true })
 const unpackr = new Unpackr({})
 const EVENT_BATCH = 'ws:m:event-batch'
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WS message-throughput instrumentation
+// ─────────────────────────────────────────────────────────────────────────────
+// Counterpart to the server's `ws_timing` module. Counts inbound/outbound
+// messages by `event` kind into per-window buckets, logs a single summary
+// line every WINDOW_MS so we can diagnose "server CPU idle but loads slow"
+// — comparing client send/recv rates to the server's ws_timing log lines
+// tells us whether time is in server-reply latency, client-send pacing, or
+// network round-trip.
+const WS_TIMING_WINDOW_MS = 250
+const wsTimingInbound = new Map<string, number>()
+const wsTimingOutbound = new Map<string, number>()
+let wsTimingTimer: ReturnType<typeof setInterval> | null = null
+
+function recordWsInbound(kind: string): void {
+  wsTimingInbound.set(kind, (wsTimingInbound.get(kind) ?? 0) + 1)
+}
+function recordWsOutbound(kind: string): void {
+  wsTimingOutbound.set(kind, (wsTimingOutbound.get(kind) ?? 0) + 1)
+}
+/** Strip the `ws:m:` prefix and CamelCase the kind so it matches the
+ *  server-side `message_kind` tag verbatim (e.g. "ws:m:report" → "Report",
+ *  "ws:m:query-response" → "QueryResponse"). */
+function eventKindShort(event: string): string {
+  const stripped = event.startsWith('ws:m:') ? event.slice(5) : event
+  return stripped
+    .split('-')
+    .map((part) =>
+      part.length > 0 ? part[0].toUpperCase() + part.slice(1) : part,
+    )
+    .join('')
+}
+
+function ensureWsTimingLogger(): void {
+  if (wsTimingTimer) return
+  wsTimingTimer = setInterval(() => {
+    if (wsTimingInbound.size === 0 && wsTimingOutbound.size === 0) return
+    const inEntries = [...wsTimingInbound.entries()].sort((a, b) => b[1] - a[1])
+    const outEntries = [...wsTimingOutbound.entries()].sort(
+      (a, b) => b[1] - a[1],
+    )
+    const inTotal = inEntries.reduce((s, [, n]) => s + n, 0)
+    const outTotal = outEntries.reduce((s, [, n]) => s + n, 0)
+    const inFmt = inEntries.map(([k, n]) => `${k}=${n}`).join(', ')
+    const outFmt = outEntries.map(([k, n]) => `${k}=${n}`).join(', ')
+    // eslint-disable-next-line no-console
+    console.info(
+      `[ws_timing window=${WS_TIMING_WINDOW_MS}ms] in=${inTotal} [${inFmt}] out=${outTotal} [${outFmt}]`,
+    )
+    wsTimingInbound.clear()
+    wsTimingOutbound.clear()
+  }, WS_TIMING_WINDOW_MS)
+}
+
 function stableStringify(value: unknown): string | null {
   const seen = new WeakSet<object>()
   try {
@@ -256,6 +310,29 @@ export class MykoClient {
   private reportErrors = new Subject<ReportErrorMessage>()
   private pingResponses = new Subject<PingMessage>()
   private commandIncoming = new Subject<CommandIncomingMessage>()
+
+  // Per-tx response routing. Replaces the previous pattern of every
+  // `watch{Report,Query,View}` subscription doing `filter(r => r.data.tx === tx)`
+  // on a shared Subject — that scaled as O(active_subscriptions × messages),
+  // costing measurable seconds during scene-load bursts. Direct dispatch is O(1).
+  private reportResponseRoutes = new Map<string, Subject<ReportResponseMessage>>()
+  private queryResponseRoutes = new Map<string, Subject<QueryResponseMessage>>()
+  private viewResponseRoutes = new Map<string, Subject<QueryResponseMessage>>()
+  private queryErrorRoutes = new Map<string, Subject<QueryErrorMessage>>()
+  private viewErrorRoutes = new Map<string, Subject<QueryErrorMessage>>()
+  private reportErrorRoutes = new Map<string, Subject<ReportErrorMessage>>()
+
+  // Lighter-weight direct-callback routing for `subscribeReport` — avoids
+  // allocating an RxJS Subject per anchor when the consumer just needs a
+  // single callback (which is the case for liveReport in the Svelte runtime).
+  private reportValueCallbacks = new Map<
+    string,
+    (msg: ReportResponseMessage) => void
+  >()
+  private reportErrorCallbacks = new Map<
+    string,
+    (msg: ReportErrorMessage) => void
+  >()
 
   // State observables
   private connectionStatusSubject = new ReplaySubject<ConnectionStatus>(1)
@@ -572,19 +649,23 @@ export class MykoClient {
     })
     this.send({ event: MykoEvent.Query, data: wrappedQuery })
 
-    const responses$ = new Observable<QueryResponseMessage>((subscriber) => {
-      const responseSub = this.queryResponses
-        .pipe(filter((r) => r.data.tx === tx))
-        .subscribe({
-          next: (response) => subscriber.next(response),
-          error: (error) => subscriber.error(error),
-        })
+    // Direct per-tx routing: see reportResponseRoutes/queryResponseRoutes for
+    // background. Each subscription registers its Subject in routeMessage's map
+    // so dispatch is O(1) instead of an O(active) filter walk per WS frame.
+    const responseRoute = new Subject<QueryResponseMessage>()
+    const errorRoute = new Subject<QueryErrorMessage>()
+    this.queryResponseRoutes.set(tx, responseRoute)
+    this.queryErrorRoutes.set(tx, errorRoute)
 
-      const errorSub = this.queryErrors
-        .pipe(filter((error) => error.data.tx === tx))
-        .subscribe((error) => {
-          subscriber.error(new Error(error.data.message))
-        })
+    const responses$ = new Observable<QueryResponseMessage>((subscriber) => {
+      const responseSub = responseRoute.subscribe({
+        next: (response) => subscriber.next(response),
+        error: (error) => subscriber.error(error),
+      })
+
+      const errorSub = errorRoute.subscribe((error) => {
+        subscriber.error(new Error(error.data.message))
+      })
 
       return () => {
         responseSub.unsubscribe()
@@ -603,6 +684,10 @@ export class MykoClient {
         this.activeQueryNames.delete(tx)
         this.subscriptionStartMs.delete(tx)
         this.firstResponseLogged.delete(tx)
+        this.queryResponseRoutes.delete(tx)
+        this.queryErrorRoutes.delete(tx)
+        responseRoute.complete()
+        errorRoute.complete()
         this.send({ event: MykoEvent.QueryCancel, data: { tx } })
       }),
     )
@@ -677,19 +762,20 @@ export class MykoClient {
     })
     this.send({ event: MykoEvent.View, data: wrappedView })
 
-    const responses$ = new Observable<QueryResponseMessage>((subscriber) => {
-      const responseSub = this.queryResponses
-        .pipe(filter((r) => r.data.tx === tx))
-        .subscribe({
-          next: (response) => subscriber.next(response),
-          error: (error) => subscriber.error(error),
-        })
+    const responseRoute = new Subject<QueryResponseMessage>()
+    const errorRoute = new Subject<QueryErrorMessage>()
+    this.viewResponseRoutes.set(tx, responseRoute)
+    this.viewErrorRoutes.set(tx, errorRoute)
 
-      const errorSub = this.queryErrors
-        .pipe(filter((error) => error.data.tx === tx))
-        .subscribe((error) => {
-          subscriber.error(new Error(error.data.message))
-        })
+    const responses$ = new Observable<QueryResponseMessage>((subscriber) => {
+      const responseSub = responseRoute.subscribe({
+        next: (response) => subscriber.next(response),
+        error: (error) => subscriber.error(error),
+      })
+
+      const errorSub = errorRoute.subscribe((error) => {
+        subscriber.error(new Error(error.data.message))
+      })
 
       return () => {
         responseSub.unsubscribe()
@@ -703,6 +789,10 @@ export class MykoClient {
           viewName,
           activeViewsBefore: this.activeViews.size,
         })
+        this.viewResponseRoutes.delete(tx)
+        this.viewErrorRoutes.delete(tx)
+        responseRoute.complete()
+        errorRoute.complete()
         this.activeViews.delete(tx)
         this.activeViewNames.delete(tx)
         this.subscriptionStartMs.delete(tx)
@@ -1100,6 +1190,68 @@ export class MykoClient {
     }
   }
 
+  /**
+   * Subscribe a single report with direct callbacks, bypassing RxJS entirely.
+   *
+   * `watchReport` returns an Observable wrapped in pipe(map, finalize,
+   * shareReplay, map) — each subscriber walks that operator chain, allocates
+   * a Subject per tx, and walks Subscriber chains on emission. This bypass
+   * stores callbacks in a flat Map and lets routeMessage call them directly,
+   * which matters when a workspace mounts hundreds of anchor subscriptions
+   * in a single Svelte microtask.
+   *
+   * Caller gets a dispose function. No deduplication — the caller owns the
+   * subscription lifetime.
+   */
+  subscribeReport<R extends Report<unknown>>(
+    report: R,
+    onValue: (value: ReportResult<R>) => void,
+    onError?: (error: Error) => void,
+  ): () => void {
+    const tx = uuid()
+    const reportName =
+      (report as { constructor?: { name?: string } }).constructor?.name ??
+      report.reportId
+    const wrappedReport: WrappedReport = {
+      report: { ...report.report, tx },
+      reportId: report.reportId,
+    }
+
+    this.activeReports.set(tx, wrappedReport)
+    this.activeReportNames.set(tx, reportName)
+    if (this.willLogConnection('report_subscribe')) {
+      this.logConnection('report_subscribe', {
+        tx,
+        reportId: wrappedReport.reportId,
+        reportName,
+        report: report.report,
+        activeReports: this.activeReports.size,
+      })
+    }
+    this.send({ event: MykoEvent.Report, data: wrappedReport })
+
+    this.reportValueCallbacks.set(tx, (r) => {
+      onValue(r.data.response as ReportResult<R>)
+    })
+    if (onError) {
+      this.reportErrorCallbacks.set(tx, (r) => {
+        onError(new Error(r.data.message))
+      })
+    }
+
+    let disposed = false
+    return () => {
+      if (disposed) return
+      disposed = true
+      this.reportValueCallbacks.delete(tx)
+      this.reportErrorCallbacks.delete(tx)
+      this.activeReports.delete(tx)
+      this.activeReportNames.delete(tx)
+      this.send({ event: MykoEvent.ReportCancel, data: { tx } })
+    }
+  }
+
+
   /** Watch a report with automatic deduplication */
   watchReport<R extends Report<unknown>>(
     report: R,
@@ -1129,16 +1281,10 @@ export class MykoClient {
     })
     this.send({ event: MykoEvent.Report, data: wrappedReport })
 
-    const shared$ = this.reportResponses.pipe(
-      filter((r) => r.data.tx === tx),
-      map((r) => {
-        this.logConnection('report_response', {
-          tx,
-          reportId: wrappedReport.reportId,
-          reportName,
-        })
-        return r
-      }),
+    const responseRoute = new Subject<ReportResponseMessage>()
+    this.reportResponseRoutes.set(tx, responseRoute)
+
+    const shared$ = responseRoute.pipe(
       map((r) => r.data.response as ReportResult<R>),
       finalize(() => {
         this.logConnection('report_cancel', {
@@ -1150,6 +1296,8 @@ export class MykoClient {
         this.sharedReports.delete(cacheKey)
         this.activeReports.delete(tx)
         this.activeReportNames.delete(tx)
+        this.reportResponseRoutes.delete(tx)
+        responseRoute.complete()
         this.send({ event: MykoEvent.ReportCancel, data: { tx } })
       }),
       shareReplay({ bufferSize: 1, refCount: true }),
@@ -1459,6 +1607,8 @@ export class MykoClient {
         // Handle Blob asynchronously - convert to ArrayBuffer first
         data.arrayBuffer().then((buffer) => {
           const decoded = unpackr.unpack(new Uint8Array(buffer)) as MykoMessage
+          recordWsInbound(eventKindShort((decoded as { event: string }).event))
+          ensureWsTimingLogger()
           this.routeMessage(decoded)
         })
         return
@@ -1466,6 +1616,8 @@ export class MykoClient {
         return
       }
 
+      recordWsInbound(eventKindShort((message as { event: string }).event))
+      ensureWsTimingLogger()
       this.routeMessage(message)
     } catch {
       // Ignore parse errors
@@ -1475,80 +1627,77 @@ export class MykoClient {
   private routeMessage(message: MykoMessage): void {
     switch (message.event) {
       case MykoEvent.QueryResponse:
-        this.maybeLogFirstResponseTiming('query', message.data.tx, {
-          queryId: this.activeQueries.get(message.data.tx)?.queryId,
-          queryName:
-            this.activeQueryNames.get(message.data.tx) ??
-            this.activeQueries.get(message.data.tx)?.queryId ??
-            'unknown',
-          sequence: message.data.sequence,
-          upserts: message.data.upserts.length,
-          deletes: message.data.deletes.length,
-        })
-        this.logConnection('query_response', {
-          tx: message.data.tx,
-          queryId: this.activeQueries.get(message.data.tx)?.queryId,
-          queryItemType: this.activeQueries.get(message.data.tx)?.queryItemType,
-          queryName:
-            this.activeQueryNames.get(message.data.tx) ??
-            this.activeQueries.get(message.data.tx)?.queryId ??
-            'unknown',
-          sequence: message.data.sequence,
-          upserts: message.data.upserts.length,
-          deletes: message.data.deletes.length,
-          changes: (message.data as { changes?: unknown[] }).changes?.length ?? 0,
-          totalCount:
-            (message.data as { totalCount?: number; total_count?: number }).totalCount ??
-            (message.data as { totalCount?: number; total_count?: number }).total_count ??
-            null,
-          window: (message.data as { window?: QueryWindow | null }).window ?? null,
-        })
-        const queryPublishStarted = this.nowMs()
+        if (this.willLogConnection('query_response')) {
+          this.maybeLogFirstResponseTiming('query', message.data.tx, {
+            queryId: this.activeQueries.get(message.data.tx)?.queryId,
+            queryName:
+              this.activeQueryNames.get(message.data.tx) ??
+              this.activeQueries.get(message.data.tx)?.queryId ??
+              'unknown',
+            sequence: message.data.sequence,
+            upserts: message.data.upserts.length,
+            deletes: message.data.deletes.length,
+          })
+          this.logConnection('query_response', {
+            tx: message.data.tx,
+            queryId: this.activeQueries.get(message.data.tx)?.queryId,
+            queryItemType: this.activeQueries.get(message.data.tx)?.queryItemType,
+            queryName:
+              this.activeQueryNames.get(message.data.tx) ??
+              this.activeQueries.get(message.data.tx)?.queryId ??
+              'unknown',
+            sequence: message.data.sequence,
+            upserts: message.data.upserts.length,
+            deletes: message.data.deletes.length,
+            changes: (message.data as { changes?: unknown[] }).changes?.length ?? 0,
+            totalCount:
+              (message.data as { totalCount?: number; total_count?: number }).totalCount ??
+              (message.data as { totalCount?: number; total_count?: number }).total_count ??
+              null,
+            window: (message.data as { window?: QueryWindow | null }).window ?? null,
+          })
+        }
+        this.queryResponseRoutes.get(message.data.tx)?.next(message)
         this.queryResponses.next(message)
-        this.logConnection('query_publish_ms', {
-          tx: message.data.tx,
-          sequence: message.data.sequence,
-          publishMs: Number((this.nowMs() - queryPublishStarted).toFixed(2)),
-        })
         break
-      case MykoEvent.ViewResponse:
+      case MykoEvent.ViewResponse: {
         // ViewResponse and QueryResponse share the same payload shape.
         const viewMessage = message as unknown as QueryResponseMessage
-        this.maybeLogFirstResponseTiming(
-          'view',
-          viewMessage.data.tx,
-          {
-            viewId: this.activeViews.get(viewMessage.data.tx)?.viewId,
-            viewName:
-              this.activeViewNames.get(viewMessage.data.tx) ??
-              this.activeViews.get(viewMessage.data.tx)?.viewId ??
-              'unknown',
+        if (this.willLogConnection('view_response')) {
+          this.maybeLogFirstResponseTiming(
+            'view',
+            viewMessage.data.tx,
+            {
+              viewId: this.activeViews.get(viewMessage.data.tx)?.viewId,
+              viewName:
+                this.activeViewNames.get(viewMessage.data.tx) ??
+                this.activeViews.get(viewMessage.data.tx)?.viewId ??
+                'unknown',
+              sequence: viewMessage.data.sequence,
+              upserts: viewMessage.data.upserts.length,
+              deletes: viewMessage.data.deletes.length,
+            },
+          )
+          this.logConnection('view_response', {
+            tx: viewMessage.data.tx,
             sequence: viewMessage.data.sequence,
             upserts: viewMessage.data.upserts.length,
             deletes: viewMessage.data.deletes.length,
-          },
-        )
-        this.logConnection('view_response', {
-          tx: viewMessage.data.tx,
-          sequence: viewMessage.data.sequence,
-          upserts: viewMessage.data.upserts.length,
-          deletes: viewMessage.data.deletes.length,
-          changes: (viewMessage.data as { changes?: unknown[] }).changes?.length ?? 0,
-          totalCount: (viewMessage.data as { totalCount?: number; total_count?: number })
-            .totalCount ??
-            (viewMessage.data as { totalCount?: number; total_count?: number }).total_count ??
-            null,
-          window: (viewMessage.data as { window?: QueryWindow | null }).window ?? null,
-        })
-        const viewPublishStarted = this.nowMs()
+            changes: (viewMessage.data as { changes?: unknown[] }).changes?.length ?? 0,
+            totalCount: (viewMessage.data as { totalCount?: number; total_count?: number })
+              .totalCount ??
+              (viewMessage.data as { totalCount?: number; total_count?: number }).total_count ??
+              null,
+            window: (viewMessage.data as { window?: QueryWindow | null }).window ?? null,
+          })
+        }
+        this.viewResponseRoutes.get(viewMessage.data.tx)?.next(viewMessage)
         this.queryResponses.next(viewMessage)
-        this.logConnection('view_publish_ms', {
-          tx: viewMessage.data.tx,
-          sequence: viewMessage.data.sequence,
-          publishMs: Number((this.nowMs() - viewPublishStarted).toFixed(2)),
-        })
         break
+      }
       case MykoEvent.ReportResponse:
+        this.reportValueCallbacks.get(message.data.tx)?.(message)
+        this.reportResponseRoutes.get(message.data.tx)?.next(message)
         this.reportResponses.next(message)
         break
       case MykoEvent.CommandResponse:
@@ -1558,6 +1707,7 @@ export class MykoClient {
         this.commandErrors.next(message as CommandErrorMessage)
         break
       case MykoEvent.QueryError:
+        this.queryErrorRoutes.get(message.data.tx)?.next(message as QueryErrorMessage)
         this.queryErrors.next(message as QueryErrorMessage)
         this.logConnection('query_error', {
           tx: message.data.tx,
@@ -1571,6 +1721,7 @@ export class MykoClient {
         })
         break
       case MykoEvent.ViewError:
+        this.viewErrorRoutes.get(message.data.tx)?.next(message as unknown as QueryErrorMessage)
         this.queryErrors.next(message as unknown as QueryErrorMessage)
         this.logConnection('view_error', {
           tx: message.data.tx,
@@ -1584,6 +1735,8 @@ export class MykoClient {
         })
         break
       case MykoEvent.ReportError:
+        this.reportErrorCallbacks.get(message.data.tx)?.(message as ReportErrorMessage)
+        this.reportErrorRoutes.get(message.data.tx)?.next(message as ReportErrorMessage)
         this.reportErrors.next(message as ReportErrorMessage)
         this.logConnection('report_error', {
           tx: message.data.tx,
@@ -1648,6 +1801,10 @@ export class MykoClient {
             : JSON.stringify(message)
         managed.ws.send(encoded)
         this.upMsgCounter.next()
+        // Tap for ws_timing summary. Use the short kind suffix (after
+        // `ws:m:`) for a tighter log line.
+        recordWsOutbound(eventKindShort(event))
+        ensureWsTimingLogger()
         return
       }
     }
@@ -1822,6 +1979,16 @@ export class MykoClient {
       verbose: 5,
     }
     return priority[level] <= priority[this.connectionLogLevelThreshold]
+  }
+
+  /**
+   * Check whether a given event would be logged at the current verbosity.
+   * Use this to gate expensive details-object construction at hot call sites
+   * (e.g. per-response log calls during scene-load bursts).
+   */
+  willLogConnection(event: string): boolean {
+    const level = this.connectionLogLevel(event)
+    return this.shouldLogConnection(level)
   }
 
   private logConnection(event: string, details: Record<string, unknown>): void {
