@@ -89,7 +89,7 @@ pub fn start_periodic_logger() {
 
     let _ = thread::Builder::new()
         .name("myko-ws-timing".to_string())
-        .spawn(move || run_logger_loop())
+        .spawn(run_logger_loop)
         .map_err(|e| {
             log::warn!(
                 target: "myko_server::ws_timing",
@@ -132,7 +132,7 @@ fn drain_counts(counts: &DashMap<&'static str, AtomicU64>) -> Vec<(&'static str,
             if n == 0 { None } else { Some((*e.key(), n)) }
         })
         .collect();
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|b| std::cmp::Reverse(b.1));
     out
 }
 

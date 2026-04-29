@@ -18,9 +18,9 @@ mod context;
 mod handler_registry;
 pub mod history_replay;
 pub mod persister;
-pub mod report_cache_stats;
 mod protocol;
 mod relationship_manager;
+pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};

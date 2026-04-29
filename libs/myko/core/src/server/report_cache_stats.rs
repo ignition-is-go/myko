@@ -100,7 +100,7 @@ fn emit_window() {
     if snap.is_empty() {
         return;
     }
-    snap.sort_by(|a, b| (b.1 + b.2 + b.3).cmp(&(a.1 + a.2 + a.3)));
+    snap.sort_by_key(|b| std::cmp::Reverse(b.1 + b.2 + b.3));
     let total_hits: u64 = snap.iter().map(|s| s.1 + s.2).sum();
     let total_misses: u64 = snap.iter().map(|s| s.3).sum();
     let detail = snap

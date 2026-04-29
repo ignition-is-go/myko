@@ -1579,10 +1579,9 @@ impl WsWriter for ChannelWriter {
             tx,
             command_id,
             payload,
-        }) {
-            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
-                self.drop_logger.on_drop("serialized_command", &e);
-            }
+        }) && !matches!(e, mpsc::error::TrySendError::Closed(_))
+        {
+            self.drop_logger.on_drop("serialized_command", &e);
         }
     }
 
@@ -1593,10 +1592,9 @@ impl WsWriter for ChannelWriter {
         if let Err(e) = self
             .deferred_tx
             .try_send(DeferredOutbound::Report(tx, output))
+            && !matches!(e, mpsc::error::TrySendError::Closed(_))
         {
-            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
-                self.drop_logger.on_drop("ReportResponseDeferred", &e);
-            }
+            self.drop_logger.on_drop("ReportResponseDeferred", &e);
         }
     }
 
@@ -1607,10 +1605,9 @@ impl WsWriter for ChannelWriter {
         if let Err(e) = self
             .deferred_tx
             .try_send(DeferredOutbound::Query { response, is_view })
+            && !matches!(e, mpsc::error::TrySendError::Closed(_))
         {
-            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
-                self.drop_logger.on_drop("QueryResponseDeferred", &e);
-            }
+            self.drop_logger.on_drop("QueryResponseDeferred", &e);
         }
     }
 }
