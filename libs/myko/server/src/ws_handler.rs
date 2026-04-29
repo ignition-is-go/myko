@@ -7,7 +7,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -18,6 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use hyphae::SelectExt;
 use myko::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
+    client::MykoProtocol,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
     relationship::{
@@ -341,8 +342,9 @@ impl WsHandler {
         let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommandJob>();
         let (subscribe_tx, mut subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
 
-        // Protocol: default to JSON, switch to binary only if client opts in
-        let use_binary = Arc::new(AtomicBool::new(false));
+        // Outgoing format for this session: defaults to JSON, sticky-promotes
+        // to CBOR on the first received binary frame. Never demotes.
+        let outgoing_format = Arc::new(AtomicU8::new(MykoProtocol::JSON as u8));
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
@@ -351,7 +353,7 @@ impl WsHandler {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
-            use_binary_writer: use_binary.clone(),
+            outgoing_format: outgoing_format.clone(),
         };
 
         // Register writer in the global client registry (if initialized)
@@ -359,7 +361,7 @@ impl WsHandler {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
-            use_binary_writer: use_binary.clone(),
+            outgoing_format: outgoing_format.clone(),
         });
         if let Some(registry) = try_client_registry() {
             registry.register(client_id.clone(), writer_arc);
@@ -367,7 +369,7 @@ impl WsHandler {
 
         let mut session = ClientSession::new(client_id.clone(), writer);
 
-        let use_binary_writer = use_binary.clone();
+        let outgoing_format_writer = outgoing_format.clone();
         let query_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let view_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
@@ -534,7 +536,10 @@ impl WsHandler {
                         payload: EncodedCommandMessage::Cbor(bytes),
                         ..
                     } => Message::Binary(bytes.clone().into()),
-                    OutboundMessage::Message(msg) if use_binary_writer.load(Ordering::SeqCst) => {
+                    OutboundMessage::Message(msg)
+                        if outgoing_format_writer.load(Ordering::SeqCst)
+                            == MykoProtocol::CBOR as u8 =>
+                    {
                         let mut bytes = Vec::new();
                         match ciborium::ser::into_writer(msg, &mut bytes) {
                             Ok(()) => Message::Binary(bytes.into()),
@@ -567,7 +572,7 @@ impl WsHandler {
                         tx_id,
                         seq,
                         payload_bytes,
-                        use_binary_writer.load(Ordering::SeqCst),
+                        outgoing_format_writer.load(Ordering::SeqCst) == MykoProtocol::CBOR as u8,
                         err
                     );
                     break;
@@ -684,12 +689,12 @@ impl WsHandler {
 
                     match msg {
                         Message::Binary(data) => {
-                            if !use_binary.load(Ordering::SeqCst) {
+                            if outgoing_format.load(Ordering::SeqCst) != MykoProtocol::CBOR as u8 {
                                 log::debug!(
-                                    "Client {} switched to binary (CBOR) protocol via auto-detect",
+                                    "Client {} promoted outgoing format to CBOR via demonstration",
                                     client_id
                                 );
-                                use_binary.store(true, Ordering::SeqCst);
+                                outgoing_format.store(MykoProtocol::CBOR as u8, Ordering::SeqCst);
                             }
 
                             match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
@@ -1523,7 +1528,7 @@ struct ChannelWriter {
     tx: mpsc::Sender<OutboundMessage>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
     drop_logger: Arc<DropLogger>,
-    use_binary_writer: Arc<AtomicBool>,
+    outgoing_format: Arc<AtomicU8>,
 }
 
 impl ChannelWriter {
@@ -1565,12 +1570,8 @@ impl WsWriter for ChannelWriter {
         }
     }
 
-    fn protocol(&self) -> myko::client::MykoProtocol {
-        if self.use_binary_writer.load(Ordering::SeqCst) {
-            myko::client::MykoProtocol::CBOR
-        } else {
-            myko::client::MykoProtocol::JSON
-        }
+    fn protocol(&self) -> MykoProtocol {
+        MykoProtocol::from(self.outgoing_format.load(Ordering::SeqCst))
     }
 
     fn send_serialized_command(
@@ -1635,7 +1636,7 @@ mod tests {
             tx,
             deferred_tx,
             drop_logger,
-            use_binary_writer: Arc::new(AtomicBool::new(false)),
+            outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON as u8)),
         };
 
         let msg = MykoMessage::Ping(PingData {
