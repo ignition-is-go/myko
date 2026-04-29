@@ -32,4 +32,4 @@ export {
 } from './services/svelte-client.svelte';
 
 // Re-export useful types from @myko/core
-export { ConnectionStatus, type ClientStats } from '@myko/core';
+export { ConnectionStatus, MykoProtocol, type ClientStats } from '@myko/core';

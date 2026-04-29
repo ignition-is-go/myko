@@ -9,6 +9,7 @@
 import {
 	ConnectionStatus,
 	MykoClient,
+	MykoProtocol,
 	type ClientStats,
 	type Command,
 	type CommandResult,
@@ -268,6 +269,11 @@ export class SvelteMykoClient {
 	/** Set authentication token for commands */
 	setToken(token: string | null): void {
 		this.client.setToken(token);
+	}
+
+	/** Set the wire protocol (JSON or CBOR). Default is JSON. */
+	setProtocol(protocol: MykoProtocol): void {
+		this.client.setProtocol(protocol);
 	}
 
 	/** Disconnect from the server */
