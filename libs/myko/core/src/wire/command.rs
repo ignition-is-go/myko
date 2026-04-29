@@ -89,7 +89,7 @@ pub fn encode_command_message<C: CommandId + Serialize>(
         MykoProtocol::JSON => serde_json::to_string(&message)
             .map(EncodedCommandMessage::Json)
             .map_err(|err| err.to_string()),
-        MykoProtocol::MSGPACK => {
+        MykoProtocol::CBOR => {
             let mut bytes = Vec::new();
             ciborium::ser::into_writer(&message, &mut bytes).map_err(|e| e.to_string())?;
             Ok(EncodedCommandMessage::Cbor(bytes))

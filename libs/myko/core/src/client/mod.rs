@@ -37,19 +37,19 @@ use crate::{
 };
 
 /// Wire protocol for encoding messages.
-/// Defaults to MSGPACK for better performance - server auto-detects binary frames.
+/// Defaults to JSON; clients opt into CBOR by calling `set_protocol`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::TS)]
 #[ts(export)]
 pub enum MykoProtocol {
     JSON = 0,
-    MSGPACK = 1,
+    CBOR = 1,
 }
 
 impl From<u8> for MykoProtocol {
     fn from(v: u8) -> Self {
         match v {
             0 => MykoProtocol::JSON,
-            _ => MykoProtocol::MSGPACK,
+            _ => MykoProtocol::CBOR,
         }
     }
 }
@@ -108,7 +108,7 @@ impl CommandResponder {
 fn encode_protocol(protocol: &AtomicU8, msg: &MykoMessage) -> Option<WsFrame> {
     match MykoProtocol::from(protocol.load(Ordering::SeqCst)) {
         MykoProtocol::JSON => serde_json::to_string(msg).ok().map(WsFrame::Text),
-        MykoProtocol::MSGPACK => {
+        MykoProtocol::CBOR => {
             let mut bytes = Vec::new();
             ciborium::ser::into_writer(msg, &mut bytes).ok()?;
             Some(WsFrame::Binary(bytes))
@@ -700,7 +700,7 @@ impl MykoClient {
     // Protocol and encoding
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Set the wire protocol (JSON or MSGPACK). Default is MSGPACK.
+    /// Set the wire protocol (JSON or CBOR). Default is JSON.
     pub fn set_protocol(&self, protocol: MykoProtocol) {
         self.inner.protocol.store(protocol as u8, Ordering::SeqCst);
     }
@@ -717,7 +717,7 @@ impl MykoClient {
                 let json = serde_json::to_string(msg).map_err(|e| e.to_string())?;
                 Ok(WsFrame::Text(json))
             }
-            MykoProtocol::MSGPACK => {
+            MykoProtocol::CBOR => {
                 let mut bytes = Vec::new();
                 ciborium::ser::into_writer(msg, &mut bytes).map_err(|e| e.to_string())?;
                 Ok(WsFrame::Binary(bytes))
