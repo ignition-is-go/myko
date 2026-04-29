@@ -41,12 +41,53 @@ import {
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
-// CBOR encodes `undefined` as a distinct major-type-7 simple value by default, but our Rust
-// server deserializes binary frames into `serde_json::Value`, which has no `undefined`. CBOR's
-// natural mapping for absent values is `null`, and cbor-x's defaults treat `undefined` as null
-// when encoding plain JS values, matching what the Rust side expects.
-const cborEncoder = new Encoder({})
-const cborDecoder = new Decoder({})
+// cbor-x's defaults emit several non-standard extensions (the "records" structure
+// compression, tag 259 for maps with non-string keys, typed-array tags) that other
+// CBOR implementations — including the Rust server's `ciborium` decoder targeting
+// `MykoMessage` / `serde_json::Value` — don't understand. Force plain RFC 8949
+// CBOR so the wire is interchangeable.
+const cborEncoder = new Encoder({
+  useRecords: false,
+  mapsAsObjects: true,
+  useTag259ForMaps: false,
+  tagUint8Array: false,
+})
+const cborDecoder = new Decoder({
+  useRecords: false,
+  mapsAsObjects: true,
+  useTag259ForMaps: false,
+})
+
+// Recursively strip `undefined` object values before CBOR encoding. cbor-x writes
+// undefined as the standard CBOR simple-value 23 (0xf7), and Rust's serde decoder
+// rejects that for fields like `Vec<T>` (no `null`-to-empty coercion). Omitting the
+// key entirely lets the server's `#[serde(default)]` attributes fill in defaults,
+// which matches how MessagePack used to behave with `encodeUndefinedAsNil: true`.
+// Arrays preserve their length and pass undefined through as null (the only valid
+// CBOR encoding for a missing positional value).
+function stripUndefined<T>(value: T): T {
+  if (value === undefined) return null as unknown as T
+  if (value === null) return value
+  if (Array.isArray(value)) {
+    const out = new Array(value.length)
+    for (let i = 0; i < value.length; i++) {
+      const v = value[i]
+      out[i] = v === undefined ? null : stripUndefined(v)
+    }
+    return out as unknown as T
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const key in obj) {
+      const v = obj[key]
+      if (v === undefined) continue
+      out[key] = stripUndefined(v)
+    }
+    return out as unknown as T
+  }
+  return value
+}
 const EVENT_BATCH = 'ws:m:event-batch'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1800,7 +1841,7 @@ export class MykoClient {
       if (managed?.ws.readyState === WebSocket.OPEN) {
         const encoded =
           this.protocol === MykoProtocol.CBOR
-            ? cborEncoder.encode(message)
+            ? cborEncoder.encode(stripUndefined(message))
             : JSON.stringify(message)
         managed.ws.send(encoded)
         this.upMsgCounter.next()
