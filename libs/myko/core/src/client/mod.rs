@@ -108,7 +108,11 @@ impl CommandResponder {
 fn encode_protocol(protocol: &AtomicU8, msg: &MykoMessage) -> Option<WsFrame> {
     match MykoProtocol::from(protocol.load(Ordering::SeqCst)) {
         MykoProtocol::JSON => serde_json::to_string(msg).ok().map(WsFrame::Text),
-        MykoProtocol::MSGPACK => rmp_serde::to_vec(msg).ok().map(WsFrame::Binary),
+        MykoProtocol::MSGPACK => {
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(msg, &mut bytes).ok()?;
+            Some(WsFrame::Binary(bytes))
+        }
     }
 }
 
