@@ -15,6 +15,9 @@ pub mod report;
 mod shared;
 pub mod view;
 
+#[cfg(test)]
+mod cbor_roundtrip_tests;
+
 // Re-export deprecated function for backwards compat
 #[allow(deprecated)]
 pub use command::wrap_command;
