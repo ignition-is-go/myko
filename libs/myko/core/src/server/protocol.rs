@@ -4,9 +4,11 @@
 
 pub use crate::wire::MykoMessage;
 
-/// Serialize a MykoMessage to MessagePack bytes.
-pub fn message_to_msgpack(msg: &MykoMessage) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-    rmp_serde::to_vec(msg)
+/// Serialize a MykoMessage to CBOR bytes.
+pub fn message_to_cbor(msg: &MykoMessage) -> Result<Vec<u8>, ciborium::ser::Error<std::io::Error>> {
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(msg, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Serialize a MykoMessage to JSON.
