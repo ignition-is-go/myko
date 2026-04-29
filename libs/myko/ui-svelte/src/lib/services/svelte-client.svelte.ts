@@ -63,6 +63,62 @@ function requestKey(kind: 'query' | 'view' | 'report', request: unknown): string
 	return serialized ? `${kind}:${serialized}` : null;
 }
 
+/**
+ * Frame-paced callback dispatcher for incoming report values.
+ *
+ * Default behaviour: every queued callback runs on the next animation frame.
+ * This already coalesces multiple updates per anchor into a single Svelte
+ * effect cascade per frame and combines bursts spanning several WS frames.
+ *
+ * Burst handling: when the queue grows past `BURST_THRESHOLD` (i.e. an
+ * initial scene load lands hundreds of pending updates at once), the flush
+ * processes only `BURST_BATCH` callbacks per frame and reschedules the rest.
+ * That spreads the cost across multiple frames so the main thread can paint
+ * between chunks. Steady-state high-frequency updates stay below the
+ * threshold and run every frame with no added lag.
+ *
+ * This logic belongs in the Svelte client (browser-specific) — the core
+ * MykoClient stays runtime-agnostic.
+ */
+const BURST_THRESHOLD = 96;
+const BURST_BATCH = 32;
+let pendingValueCallbacks: Array<() => void> = [];
+let valueFlushScheduled = false;
+
+function scheduleFlush(): void {
+	if (valueFlushScheduled) return;
+	valueFlushScheduled = true;
+	if (typeof requestAnimationFrame === 'function') {
+		requestAnimationFrame(flushPendingValues);
+	} else {
+		setTimeout(flushPendingValues, 0);
+	}
+}
+
+function scheduleValueDispatch(cb: () => void): void {
+	pendingValueCallbacks.push(cb);
+	scheduleFlush();
+}
+
+function flushPendingValues(): void {
+	valueFlushScheduled = false;
+	if (pendingValueCallbacks.length <= BURST_THRESHOLD) {
+		// Normal path: process everything queued this frame. Per-anchor
+		// coalescing in liveReport keeps the queue size proportional to the
+		// number of distinct anchors with new data, so this scales naturally.
+		const drained = pendingValueCallbacks;
+		pendingValueCallbacks = [];
+		for (const cb of drained) cb();
+		return;
+	}
+
+	// Burst: spread across multiple frames so the user sees mounted nodes
+	// before the entire value cascade lands.
+	const batch = pendingValueCallbacks.splice(0, BURST_BATCH);
+	for (const cb of batch) cb();
+	if (pendingValueCallbacks.length > 0) scheduleFlush();
+}
+
 /** Command sent event (before response) */
 export type CommandSent = {
 	commandId: string;
@@ -261,11 +317,19 @@ export class SvelteMykoClient {
 			return requestKey('report', report);
 		});
 
+		// Use the direct-callback subscribeReport instead of `watchReport().subscribe`.
+		// The Observable form wraps the per-tx Subject in `pipe(map, finalize,
+		// shareReplay, map)` — each subscriber walks that operator chain on
+		// subscribe, and a workspace with hundreds of anchor views was paying
+		// measurable cost in RxJS plumbing during scene mount.
+		//
+		// Cell writes (`value = result`) are routed through the frame-paced
+		// dispatcher so a burst of incoming responses doesn't all cascade
+		// through Svelte effects in a single task.
 		$effect(() => {
 			const key = reportKey;
 			const report = untrack(factory);
 
-			// If factory returns null/undefined, don't subscribe
 			if (!report) {
 				value = undefined;
 				error = undefined;
@@ -279,17 +343,34 @@ export class SvelteMykoClient {
 
 			error = undefined;
 
-			const subscription = this.client.watchReport(report).subscribe({
-				next: (result: Result) => {
-					value = result;
-					error = undefined;
-				},
-				error: (e) => {
-					error = e instanceof Error ? e : new Error(String(e));
-				}
-			});
+			let disposed = false;
+			let latestResult: Result | undefined = undefined;
+			let hasPending = false;
 
-			return () => subscription.unsubscribe();
+			const dispose = this.client.subscribeReport(
+				report,
+				(result: Result) => {
+					if (disposed) return;
+					latestResult = result;
+					if (hasPending) return;
+					hasPending = true;
+					scheduleValueDispatch(() => {
+						hasPending = false;
+						if (disposed) return;
+						value = latestResult;
+						error = undefined;
+					});
+				},
+				(e: Error) => {
+					if (disposed) return;
+					error = e;
+				}
+			);
+
+			return () => {
+				disposed = true;
+				dispose();
+			};
 		});
 
 		return {
