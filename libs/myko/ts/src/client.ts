@@ -18,7 +18,7 @@ import {
   type WrappedReport,
   type WrappedView,
 } from './generated'
-import { Packr, Unpackr } from 'msgpackr'
+import { Decoder, Encoder } from 'cbor-x'
 import {
   bufferCount,
   bufferTime,
@@ -41,11 +41,12 @@ import {
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
 
-// msgpackr defaults can emit extension types for values that don't exist in JSON (notably
-// `undefined`). Our Rust server deserializes msgpack into `serde_json::Value`, so ensure we
-// encode `undefined` as nil/null instead of an extension.
-const packr = new Packr({ encodeUndefinedAsNil: true })
-const unpackr = new Unpackr({})
+// CBOR encodes `undefined` as a distinct major-type-7 simple value by default, but our Rust
+// server deserializes binary frames into `serde_json::Value`, which has no `undefined`. CBOR's
+// natural mapping for absent values is `null`, and cbor-x's defaults treat `undefined` as null
+// when encoding plain JS values, matching what the Rust side expects.
+const cborEncoder = new Encoder({})
+const cborDecoder = new Decoder({})
 const EVENT_BATCH = 'ws:m:event-batch'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,7 +154,7 @@ export enum ConnectionStatus {
 /** Wire protocol for encoding messages */
 export enum MykoProtocol {
   JSON = 'JSON',
-  MSGPACK = 'MSGPACK',
+  CBOR = 'CBOR',
 }
 
 type ConnectionLogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug' | 'verbose'
@@ -369,7 +370,7 @@ export class MykoClient {
   private peerDiscoverySubscription: Subscription | null = null
   private useSecureWebSocket = false
 
-  // Protocol defaults to JSON for maximum compatibility (no msgpack extensions, bigint issues, etc).
+  // Protocol defaults to JSON for maximum compatibility (no CBOR tag handling, bigint issues, etc).
   private protocol: MykoProtocol = MykoProtocol.JSON
 
   constructor() {
@@ -382,7 +383,7 @@ export class MykoClient {
     this.connectionLogLevelThreshold = level
   }
 
-  /** Set the wire protocol (JSON or MSGPACK). Default is MSGPACK. */
+  /** Set the wire protocol (JSON or CBOR). Default is JSON. */
   setProtocol(protocol: MykoProtocol): void {
     this.protocol = protocol
   }
@@ -564,9 +565,9 @@ export class MykoClient {
     const nowMs = Date.now()
     // IMPORTANT: the Rust server expects `timestamp: i64`.
     // - JSON cannot encode bigint, so use number in JSON mode.
-    // - msgpack can encode bigint as int64, so use bigint in MSGPACK mode.
+    // - CBOR can encode bigint as a tagged integer, so use bigint in CBOR mode.
     const timestamp =
-      this.protocol === MykoProtocol.MSGPACK ? BigInt(nowMs) : nowMs
+      this.protocol === MykoProtocol.CBOR ? BigInt(nowMs) : nowMs
 
     this.send({
       event: MykoEvent.Ping,
@@ -1488,7 +1489,7 @@ export class MykoClient {
       knownServers: this.getServers(),
     })
     const ws = new WebSocket(address)
-    ws.binaryType = 'arraybuffer' // Receive binary messages as ArrayBuffer for msgpack
+    ws.binaryType = 'arraybuffer' // Receive binary messages as ArrayBuffer for CBOR
     const managed: ManagedSocket = {
       ws,
       address,
@@ -1601,12 +1602,14 @@ export class MykoClient {
         // JSON text message
         message = JSON.parse(data) as MykoMessage
       } else if (data instanceof ArrayBuffer) {
-        // Binary msgpack message
-        message = unpackr.unpack(new Uint8Array(data)) as MykoMessage
+        // Binary CBOR message
+        message = cborDecoder.decode(new Uint8Array(data)) as MykoMessage
       } else if (data instanceof Blob) {
         // Handle Blob asynchronously - convert to ArrayBuffer first
         data.arrayBuffer().then((buffer) => {
-          const decoded = unpackr.unpack(new Uint8Array(buffer)) as MykoMessage
+          const decoded = cborDecoder.decode(
+            new Uint8Array(buffer),
+          ) as MykoMessage
           recordWsInbound(eventKindShort((decoded as { event: string }).event))
           ensureWsTimingLogger()
           this.routeMessage(decoded)
@@ -1796,8 +1799,8 @@ export class MykoClient {
       const managed = this.sockets.get(this.currentServer)
       if (managed?.ws.readyState === WebSocket.OPEN) {
         const encoded =
-          this.protocol === MykoProtocol.MSGPACK
-            ? new Uint8Array(packr.pack(message))
+          this.protocol === MykoProtocol.CBOR
+            ? cborEncoder.encode(message)
             : JSON.stringify(message)
         managed.ws.send(encoded)
         this.upMsgCounter.next()
