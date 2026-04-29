@@ -539,10 +539,11 @@ impl WsHandler {
                         ..
                     } => Message::Binary(bytes.clone().into()),
                     OutboundMessage::Message(msg) if use_binary_writer.load(Ordering::SeqCst) => {
-                        match rmp_serde::to_vec(msg) {
-                            Ok(bytes) => Message::Binary(bytes.into()),
+                        let mut bytes = Vec::new();
+                        match ciborium::ser::into_writer(msg, &mut bytes) {
+                            Ok(()) => Message::Binary(bytes.into()),
                             Err(e) => {
-                                log::error!("Failed to serialize message to msgpack: {}", e);
+                                log::error!("Failed to serialize message to CBOR: {}", e);
                                 continue;
                             }
                         }

@@ -1959,6 +1959,7 @@ name = "myko-server"
 version = "4.9.0"
 dependencies = [
  "chrono",
+ "ciborium",
  "dashmap",
  "flume",
  "futures-util",
