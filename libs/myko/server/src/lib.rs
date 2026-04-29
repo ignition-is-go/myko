@@ -15,6 +15,7 @@ pub mod peer_registry;
 pub mod postgres;
 pub mod server_ownership;
 pub mod ws_handler;
+pub mod ws_timing;
 
 // Re-export all tokio-free server types from myko
 use std::{
@@ -596,6 +597,15 @@ impl CellServer {
         }
 
         self.start_saga_runtime();
+
+        // WS message-throughput summary thread. Emits a single log line every
+        // 250ms with inbound/outbound counts per message kind. Used for
+        // diagnosing server-vs-client pacing during slow loads.
+        crate::ws_timing::start_periodic_logger();
+
+        // Report-cache hit/miss summary thread. Replaces the per-call debug
+        // log spam that was dominating I/O during loads.
+        myko::server::report_cache_stats::start_periodic_logger();
 
         log::info!("Server started");
         self.run_ws_accept_loop(listener).await

@@ -1490,9 +1490,11 @@ impl CellServerCtx {
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
         let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
+        let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            crate::server::report_cache_stats::record_hit(&report_id);
             return cell;
         }
 
@@ -1507,6 +1509,7 @@ impl CellServerCtx {
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            crate::server::report_cache_stats::record_hit_after_gate(&report_id);
             return cell;
         }
 
@@ -1517,6 +1520,8 @@ impl CellServerCtx {
         let built = report.compute(nested_ctx).materialize();
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
+
+        crate::server::report_cache_stats::record_miss(&report_id);
 
         built
     }

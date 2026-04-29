@@ -18,6 +18,7 @@ mod context;
 mod handler_registry;
 pub mod history_replay;
 pub mod persister;
+pub mod report_cache_stats;
 mod protocol;
 mod relationship_manager;
 

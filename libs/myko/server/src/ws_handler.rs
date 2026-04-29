@@ -455,6 +455,17 @@ impl WsHandler {
                         }
                     }
                 };
+                // Per-message timing tap (outbound). Counts by kind into the
+                // global ws_timing instrumentation. Counterpart to the inbound
+                // tap in `handle_message`.
+                match &msg {
+                    OutboundMessage::SerializedCommand { .. } => {
+                        crate::ws_timing::record_outbound("Command")
+                    }
+                    OutboundMessage::Message(m) => {
+                        crate::ws_timing::record_outbound(crate::ws_timing::message_kind(m))
+                    }
+                };
                 let (kind, tx_id, seq, _upserts, _deletes, _total_count) = match &msg {
                     OutboundMessage::SerializedCommand { tx, .. } => {
                         ("command", Some(tx.clone()), None, None, None, None)
@@ -775,15 +786,35 @@ impl WsHandler {
             }
         }
 
-        // Cleanup
-        drop(session); // Drops all subscription guards
+        // Cleanup. Order matters:
+        // 1. Abort the write/command tasks first so their channel receivers
+        //    are dropped — `ChannelWriter` clones held by subscriber
+        //    callbacks then short-circuit via `tx_dead()` / `deferred_dead()`
+        //    instead of doing useless work and emitting log spam while we
+        //    tear down the session.
+        // 2. Unregister the client writer from the global registry so other
+        //    parts of the system stop dispatching commands here.
+        // 3. Move the session drop to a blocking thread. `drop(session)`
+        //    cancels each subscription guard, and hyphae's per-cell
+        //    unsubscribe is O(N) in the cell's subscriber list (Vec clone +
+        //    filter + ArcSwap store), so a session with thousands of
+        //    subscriptions can take significant CPU time. Doing it on the
+        //    async runtime would block other connections' tasks; the
+        //    blocking pool is the right place for this.
         write_task.abort();
         command_task.abort();
-
-        // Unregister from client registry
         if let Some(registry) = try_client_registry() {
             registry.unregister(&client_id);
         }
+
+        let drop_client_id = client_id.clone();
+        tokio::task::spawn_blocking(move || {
+            drop(session); // Drops all subscription guards
+            log::trace!(
+                "Client session subscriptions torn down for {}",
+                drop_client_id
+            );
+        });
 
         // Delete Client entity
         if let Err(e) = ctx.del(&client_entity) {
@@ -811,6 +842,10 @@ impl WsHandler {
         subscribe_tx: &mpsc::UnboundedSender<SubscriptionReady>,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Per-message timing tap. Counts inbound messages by kind into the
+        // global instrumentation. Periodic summarizer logs the deltas.
+        crate::ws_timing::record_inbound(crate::ws_timing::message_kind(&msg));
+
         let handler_registry = ctx.handler_registry.clone();
 
         let registry = ctx.registry.clone();
@@ -1508,11 +1543,42 @@ struct ChannelWriter {
     use_binary_writer: Arc<AtomicBool>,
 }
 
+impl ChannelWriter {
+    /// Cheap "is the writer task gone?" check used to short-circuit
+    /// subscriber callbacks for a disconnected client. `Sender::is_closed`
+    /// returns true once the matching receiver is dropped, which happens as
+    /// soon as the write task exits. Avoiding the work here prevents the
+    /// "buffer full / channel closed" log storm we used to see for 10+
+    /// seconds after every disconnect while the session was still tearing
+    /// down its subscription guards.
+    #[inline]
+    fn tx_dead(&self) -> bool {
+        self.tx.is_closed()
+    }
+
+    #[inline]
+    fn deferred_dead(&self) -> bool {
+        self.deferred_tx.is_closed()
+    }
+}
+
 impl WsWriter for ChannelWriter {
     fn send(&self, msg: MykoMessage) {
-        // Use try_send since we're in sync context
+        // Fast path: writer is gone. Don't try to send and don't log; the
+        // dead-channel state is expected after the client disconnects, and
+        // a dropped subscription will follow shortly when the session
+        // teardown finishes. Avoiding the log+counter prevents the
+        // "buffer full / channel closed" warning storm we used to see for
+        // 10+ seconds after every disconnect.
+        if self.tx_dead() {
+            return;
+        }
         if let Err(e) = self.tx.try_send(OutboundMessage::Message(msg)) {
-            self.drop_logger.on_drop("message", &e);
+            // Closed errors here race with the writer task exiting between
+            // the is_dead check and the try_send; suppress them too.
+            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
+                self.drop_logger.on_drop("message", &e);
+            }
         }
     }
 
@@ -1530,30 +1596,45 @@ impl WsWriter for ChannelWriter {
         command_id: String,
         payload: EncodedCommandMessage,
     ) {
+        if self.tx_dead() {
+            return;
+        }
         if let Err(e) = self.tx.try_send(OutboundMessage::SerializedCommand {
             tx,
             command_id,
             payload,
         }) {
-            self.drop_logger.on_drop("serialized_command", &e);
+            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
+                self.drop_logger.on_drop("serialized_command", &e);
+            }
         }
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
+        if self.deferred_dead() {
+            return;
+        }
         if let Err(e) = self
             .deferred_tx
             .try_send(DeferredOutbound::Report(tx, output))
         {
-            self.drop_logger.on_drop("ReportResponseDeferred", &e);
+            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
+                self.drop_logger.on_drop("ReportResponseDeferred", &e);
+            }
         }
     }
 
     fn send_query_response(&self, response: PendingQueryResponse, is_view: bool) {
+        if self.deferred_dead() {
+            return;
+        }
         if let Err(e) = self
             .deferred_tx
             .try_send(DeferredOutbound::Query { response, is_view })
         {
-            self.drop_logger.on_drop("QueryResponseDeferred", &e);
+            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
+                self.drop_logger.on_drop("QueryResponseDeferred", &e);
+            }
         }
     }
 }
