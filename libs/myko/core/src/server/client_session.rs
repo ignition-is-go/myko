@@ -927,9 +927,8 @@ mod tests {
                 EncodedCommandMessage::Json(json) => {
                     serde_json::from_str(&json).expect("Serialized command JSON should decode")
                 }
-                EncodedCommandMessage::Msgpack(bytes) => {
-                    rmp_serde::from_slice(&bytes).expect("Serialized command msgpack should decode")
-                }
+                EncodedCommandMessage::Cbor(bytes) => ciborium::de::from_reader(bytes.as_slice())
+                    .expect("Serialized command CBOR should decode"),
             };
             self.send(msg);
         }
