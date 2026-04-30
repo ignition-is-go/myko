@@ -153,7 +153,7 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use hyphae::{Gettable, MapExt, MaterializeDefinite, Pipeline};
+    use hyphae::{Gettable, MapExt, MaterializeDefinite};
 
     use super::*;
     use crate::common::with_id::WithId;

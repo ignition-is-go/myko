@@ -84,6 +84,7 @@ impl ReportHandler for SwitchMapReport {
                             .collect::<Vec<_>>(),
                     )
                 })
+                .materialize()
         })
     }
 }
