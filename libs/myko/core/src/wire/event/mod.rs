@@ -1,12 +1,10 @@
-use std::{io::Cursor, sync::Arc};
+use std::sync::Arc;
 
-use crate::TS;
 use chrono::Utc;
-use rmp_serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{common::to_value::ToValue, core::item::AnyItem, item::Eventable};
+use crate::{TS, common::to_value::ToValue, core::item::AnyItem, item::Eventable};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub enum MEventType {
@@ -74,10 +72,8 @@ impl MEvent {
         serde_json::from_str(s)
     }
 
-    pub fn from_mp(s: &[u8]) -> Result<MEvent, rmp_serde::decode::Error> {
-        let cur = Cursor::new(s);
-        let mut de = Deserializer::new(cur);
-        Deserialize::deserialize(&mut de)
+    pub fn from_cbor(s: &[u8]) -> Result<MEvent, ciborium::de::Error<std::io::Error>> {
+        ciborium::de::from_reader(s)
     }
 
     pub fn item_json(&self) -> Value {

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, CellMap, CellValue};
+use hyphae::{Cell, CellImmutable, CellMap, CellValue, MaterializeDefinite};
 use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
@@ -176,8 +176,7 @@ impl ReportContext {
     pub fn query_map_untyped<Q>(&self, query: Q) -> FilteredCellMap
     where
         Q: QueryParams + 'static,
-        Q::Item:
-            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug,
     {
         self.server_ctx.query_map_untyped(query, self.req.clone())
     }
@@ -229,8 +228,8 @@ impl ReportContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn view<V>(&self, view: V) -> TypedViewCellMap<V::Item>
     where
-        V: ViewFactory + Clone + Send + Sync + 'static,
-        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+        V: ViewFactory + Clone,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug,
     {
         self.server_ctx.view(view, self.req.clone())
     }
@@ -317,13 +316,16 @@ impl ReportContext {
 /// impl ReportHandler for GetActiveTargetCount {
 ///   type Output = ActiveTargetCount;
 ///
-///   fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable> {
+///   fn compute(
+///     &self,
+///     ctx: ReportContext,
+///   ) -> impl MaterializeDefinite<Arc<Self::Output>> {
 ///     ctx.query(GetTargetsByQuery { active: Some(true), ..Default::default() })
 ///       .map(|items| Arc::new(ActiveTargetCount { count: items.len() }))
 ///   }
 /// }
 /// ```
-pub trait ReportHandler: Sized + Send + Sync + 'static {
+pub trait ReportHandler: Sized {
     type Output: Serialize
         + DeserializeOwned
         + Clone
@@ -334,12 +336,28 @@ pub trait ReportHandler: Sized + Send + Sync + 'static {
         + ToValue
         + 'static;
 
-    /// Compute the report output as a shared reactive cell.
+    /// Compute the report output as a reactive pipeline.
     ///
     /// This method is called once when the report is first subscribed to.
-    /// The returned cell automatically updates whenever dependencies change.
+    /// The returned pipeline automatically updates whenever dependencies change.
     ///
     /// Report arguments are parsed by the framework and passed as `&self`,
     /// so fields are directly accessible (e.g., `self.target_id`).
-    fn compute(&self, ctx: ReportContext) -> Cell<Arc<Self::Output>, CellImmutable>;
+    ///
+    /// # Returning a `MaterializeDefinite` pipeline (not a `Cell`)
+    ///
+    /// `compute` returns `impl MaterializeDefinite<Arc<Output>>` rather than a
+    /// concrete `Cell`, so reports can chain `.map(...)`, `.tap(...)`, etc. on
+    /// hyphae's lazy operators without materializing an intermediate cell.
+    /// `MaterializeDefinite` is the bound for pipelines that have a known
+    /// initial value (definite seedness) and can be compiled into a `Cell`
+    /// via `.materialize()`. The framework type-erases the output and
+    /// materializes once at the registration boundary, so each report
+    /// incurs at most one cell allocation regardless of the chain depth of
+    /// `ctx.report(...)` calls.
+    ///
+    /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
+    /// `deduped`, etc. already implement `MaterializeDefinite<U>`, so
+    /// returning them directly is fine.
+    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>>;
 }

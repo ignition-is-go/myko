@@ -7,7 +7,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -18,6 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use hyphae::SelectExt;
 use myko::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
+    client::MykoProtocol,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
     relationship::{
@@ -41,10 +42,6 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 use uuid::Uuid;
-
-/// Protocol switch message sent by client to enable binary (msgpack) encoding.
-/// Must match ProtocolMessages.SwitchToMSGPACK in TypeScript client.
-const SWITCH_TO_MSGPACK: &str = "myko:switch-to-msgpack";
 
 struct WsIngestStats {
     counts_by_type: DashMap<Arc<str>, Arc<AtomicU64>>,
@@ -345,8 +342,9 @@ impl WsHandler {
         let (command_tx, mut command_rx) = mpsc::unbounded_channel::<CommandJob>();
         let (subscribe_tx, mut subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
 
-        // Protocol: default to JSON, switch to binary only if client opts in
-        let use_binary = Arc::new(AtomicBool::new(false));
+        // Outgoing format for this session: defaults to JSON, sticky-promotes
+        // to CBOR on the first received binary frame. Never demotes.
+        let outgoing_format = Arc::new(AtomicU8::new(MykoProtocol::JSON as u8));
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
@@ -355,7 +353,7 @@ impl WsHandler {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
-            use_binary_writer: use_binary.clone(),
+            outgoing_format: outgoing_format.clone(),
         };
 
         // Register writer in the global client registry (if initialized)
@@ -363,7 +361,7 @@ impl WsHandler {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
-            use_binary_writer: use_binary.clone(),
+            outgoing_format: outgoing_format.clone(),
         });
         if let Some(registry) = try_client_registry() {
             registry.register(client_id.clone(), writer_arc);
@@ -371,7 +369,7 @@ impl WsHandler {
 
         let mut session = ClientSession::new(client_id.clone(), writer);
 
-        let use_binary_writer = use_binary.clone();
+        let outgoing_format_writer = outgoing_format.clone();
         let query_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let view_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
@@ -455,6 +453,17 @@ impl WsHandler {
                         }
                     }
                 };
+                // Per-message timing tap (outbound). Counts by kind into the
+                // global ws_timing instrumentation. Counterpart to the inbound
+                // tap in `handle_message`.
+                match &msg {
+                    OutboundMessage::SerializedCommand { .. } => {
+                        crate::ws_timing::record_outbound("Command")
+                    }
+                    OutboundMessage::Message(m) => {
+                        crate::ws_timing::record_outbound(crate::ws_timing::message_kind(m))
+                    }
+                };
                 let (kind, tx_id, seq, _upserts, _deletes, _total_count) = match &msg {
                     OutboundMessage::SerializedCommand { tx, .. } => {
                         ("command", Some(tx.clone()), None, None, None, None)
@@ -524,14 +533,18 @@ impl WsHandler {
                         ..
                     } => Message::Text(json.clone().into()),
                     OutboundMessage::SerializedCommand {
-                        payload: EncodedCommandMessage::Msgpack(bytes),
+                        payload: EncodedCommandMessage::Cbor(bytes),
                         ..
                     } => Message::Binary(bytes.clone().into()),
-                    OutboundMessage::Message(msg) if use_binary_writer.load(Ordering::SeqCst) => {
-                        match rmp_serde::to_vec(msg) {
-                            Ok(bytes) => Message::Binary(bytes.into()),
+                    OutboundMessage::Message(msg)
+                        if outgoing_format_writer.load(Ordering::SeqCst)
+                            == MykoProtocol::CBOR as u8 =>
+                    {
+                        let mut bytes = Vec::new();
+                        match ciborium::ser::into_writer(msg, &mut bytes) {
+                            Ok(()) => Message::Binary(bytes.into()),
                             Err(e) => {
-                                log::error!("Failed to serialize message to msgpack: {}", e);
+                                log::error!("Failed to serialize message to CBOR: {}", e);
                                 continue;
                             }
                         }
@@ -559,7 +572,7 @@ impl WsHandler {
                         tx_id,
                         seq,
                         payload_bytes,
-                        use_binary_writer.load(Ordering::SeqCst),
+                        outgoing_format_writer.load(Ordering::SeqCst) == MykoProtocol::CBOR as u8,
                         err
                     );
                     break;
@@ -676,15 +689,15 @@ impl WsHandler {
 
                     match msg {
                         Message::Binary(data) => {
-                            if !use_binary.load(Ordering::SeqCst) {
+                            if outgoing_format.load(Ordering::SeqCst) != MykoProtocol::CBOR as u8 {
                                 log::debug!(
-                                    "Client {} switched to binary (msgpack) protocol via auto-detect",
+                                    "Client {} promoted outgoing format to CBOR via demonstration",
                                     client_id
                                 );
-                                use_binary.store(true, Ordering::SeqCst);
+                                outgoing_format.store(MykoProtocol::CBOR as u8, Ordering::SeqCst);
                             }
 
-                            match rmp_serde::from_slice::<MykoMessage>(&data) {
+                            match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
                                 Ok(myko_msg) => {
                                     if let Err(e) = Self::handle_message(
                                         &mut session,
@@ -710,20 +723,6 @@ impl WsHandler {
                             }
                         }
                         Message::Text(text) => {
-                            if text == SWITCH_TO_MSGPACK {
-                                log::debug!(
-                                    "Client {} switched to binary (msgpack) protocol via explicit request",
-                                    client_id
-                                );
-                                if let Err(e) = priority_tx.try_send(MykoMessage::ProtocolSwitch {
-                                    protocol: "msgpack".into(),
-                                }) {
-                                    drop_logger.on_drop("ProtocolSwitch", &e);
-                                }
-                                use_binary.store(true, Ordering::SeqCst);
-                                continue;
-                            }
-
                             match serde_json::from_str::<MykoMessage>(&text) {
                                 Ok(myko_msg) => {
                                     if let Err(e) = Self::handle_message(
@@ -775,15 +774,35 @@ impl WsHandler {
             }
         }
 
-        // Cleanup
-        drop(session); // Drops all subscription guards
+        // Cleanup. Order matters:
+        // 1. Abort the write/command tasks first so their channel receivers
+        //    are dropped — `ChannelWriter` clones held by subscriber
+        //    callbacks then short-circuit via `tx_dead()` / `deferred_dead()`
+        //    instead of doing useless work and emitting log spam while we
+        //    tear down the session.
+        // 2. Unregister the client writer from the global registry so other
+        //    parts of the system stop dispatching commands here.
+        // 3. Move the session drop to a blocking thread. `drop(session)`
+        //    cancels each subscription guard, and hyphae's per-cell
+        //    unsubscribe is O(N) in the cell's subscriber list (Vec clone +
+        //    filter + ArcSwap store), so a session with thousands of
+        //    subscriptions can take significant CPU time. Doing it on the
+        //    async runtime would block other connections' tasks; the
+        //    blocking pool is the right place for this.
         write_task.abort();
         command_task.abort();
-
-        // Unregister from client registry
         if let Some(registry) = try_client_registry() {
             registry.unregister(&client_id);
         }
+
+        let drop_client_id = client_id.clone();
+        tokio::task::spawn_blocking(move || {
+            drop(session); // Drops all subscription guards
+            log::trace!(
+                "Client session subscriptions torn down for {}",
+                drop_client_id
+            );
+        });
 
         // Delete Client entity
         if let Err(e) = ctx.del(&client_entity) {
@@ -811,6 +830,10 @@ impl WsHandler {
         subscribe_tx: &mpsc::UnboundedSender<SubscriptionReady>,
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Per-message timing tap. Counts inbound messages by kind into the
+        // global instrumentation. Periodic summarizer logs the deltas.
+        crate::ws_timing::record_inbound(crate::ws_timing::message_kind(&msg));
+
         let handler_registry = ctx.handler_registry.clone();
 
         let registry = ctx.registry.clone();
@@ -913,7 +936,9 @@ impl WsHandler {
                         "No registered query handler for {}, falling back to select all",
                         query_id
                     );
-                    let cellmap = registry.get_or_create(entity_type).select(|_| true);
+                    let store: myko::store::EntityStore =
+                        (*registry.get_or_create(entity_type)).clone();
+                    let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
                     session.subscribe_query(tx_id, cellmap, wrapped.window.clone());
                 }
             }
@@ -1392,14 +1417,6 @@ impl WsHandler {
                 let size = payload.to_string().len() as u64;
                 stats.total_bytes.fetch_add(size, Ordering::Relaxed);
             }
-            MykoMessage::ProtocolSwitch { protocol } => {
-                log::warn!(
-                    "Unexpected client message kind=protocol_switch_ack client={} protocol={} active_subscriptions={}",
-                    session.client_id,
-                    protocol,
-                    session.subscription_count()
-                );
-            }
         }
 
         Ok(())
@@ -1503,23 +1520,50 @@ struct ChannelWriter {
     tx: mpsc::Sender<OutboundMessage>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
     drop_logger: Arc<DropLogger>,
-    use_binary_writer: Arc<AtomicBool>,
+    outgoing_format: Arc<AtomicU8>,
+}
+
+impl ChannelWriter {
+    /// Cheap "is the writer task gone?" check used to short-circuit
+    /// subscriber callbacks for a disconnected client. `Sender::is_closed`
+    /// returns true once the matching receiver is dropped, which happens as
+    /// soon as the write task exits. Avoiding the work here prevents the
+    /// "buffer full / channel closed" log storm we used to see for 10+
+    /// seconds after every disconnect while the session was still tearing
+    /// down its subscription guards.
+    #[inline]
+    fn tx_dead(&self) -> bool {
+        self.tx.is_closed()
+    }
+
+    #[inline]
+    fn deferred_dead(&self) -> bool {
+        self.deferred_tx.is_closed()
+    }
 }
 
 impl WsWriter for ChannelWriter {
     fn send(&self, msg: MykoMessage) {
-        // Use try_send since we're in sync context
+        // Fast path: writer is gone. Don't try to send and don't log; the
+        // dead-channel state is expected after the client disconnects, and
+        // a dropped subscription will follow shortly when the session
+        // teardown finishes. Avoiding the log+counter prevents the
+        // "buffer full / channel closed" warning storm we used to see for
+        // 10+ seconds after every disconnect.
+        if self.tx_dead() {
+            return;
+        }
         if let Err(e) = self.tx.try_send(OutboundMessage::Message(msg)) {
-            self.drop_logger.on_drop("message", &e);
+            // Closed errors here race with the writer task exiting between
+            // the is_dead check and the try_send; suppress them too.
+            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
+                self.drop_logger.on_drop("message", &e);
+            }
         }
     }
 
-    fn protocol(&self) -> myko::client::MykoProtocol {
-        if self.use_binary_writer.load(Ordering::SeqCst) {
-            myko::client::MykoProtocol::MSGPACK
-        } else {
-            myko::client::MykoProtocol::JSON
-        }
+    fn protocol(&self) -> MykoProtocol {
+        MykoProtocol::from(self.outgoing_format.load(Ordering::SeqCst))
     }
 
     fn send_serialized_command(
@@ -1528,28 +1572,40 @@ impl WsWriter for ChannelWriter {
         command_id: String,
         payload: EncodedCommandMessage,
     ) {
+        if self.tx_dead() {
+            return;
+        }
         if let Err(e) = self.tx.try_send(OutboundMessage::SerializedCommand {
             tx,
             command_id,
             payload,
-        }) {
+        }) && !matches!(e, mpsc::error::TrySendError::Closed(_))
+        {
             self.drop_logger.on_drop("serialized_command", &e);
         }
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
+        if self.deferred_dead() {
+            return;
+        }
         if let Err(e) = self
             .deferred_tx
             .try_send(DeferredOutbound::Report(tx, output))
+            && !matches!(e, mpsc::error::TrySendError::Closed(_))
         {
             self.drop_logger.on_drop("ReportResponseDeferred", &e);
         }
     }
 
     fn send_query_response(&self, response: PendingQueryResponse, is_view: bool) {
+        if self.deferred_dead() {
+            return;
+        }
         if let Err(e) = self
             .deferred_tx
             .try_send(DeferredOutbound::Query { response, is_view })
+            && !matches!(e, mpsc::error::TrySendError::Closed(_))
         {
             self.drop_logger.on_drop("QueryResponseDeferred", &e);
         }
@@ -1569,7 +1625,7 @@ mod tests {
             tx,
             deferred_tx,
             drop_logger,
-            use_binary_writer: Arc::new(AtomicBool::new(false)),
+            outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON as u8)),
         };
 
         let msg = MykoMessage::Ping(PingData {
@@ -1583,5 +1639,34 @@ mod tests {
             received,
             OutboundMessage::Message(MykoMessage::Ping(_))
         ));
+    }
+
+    #[test]
+    fn outgoing_format_starts_as_json_and_promotes_to_cbor() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+
+        let outgoing_format = AtomicU8::new(MykoProtocol::JSON as u8);
+
+        // Initially JSON.
+        assert_eq!(
+            MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
+            MykoProtocol::JSON,
+        );
+
+        // Simulate receiving a binary frame: promote.
+        outgoing_format.store(MykoProtocol::CBOR as u8, Ordering::SeqCst);
+        assert_eq!(
+            MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
+            MykoProtocol::CBOR,
+        );
+
+        // Simulate receiving more text frames after promotion: no change.
+        // (The handler in the read loop only writes on Binary, never on Text,
+        // so this is a no-op assertion that the field's last-write-wins
+        // semantics give us stickiness for free.)
+        assert_eq!(
+            MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
+            MykoProtocol::CBOR,
+        );
     }
 }

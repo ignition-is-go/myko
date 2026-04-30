@@ -1,6 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use hyphae::{JoinExt, MapExt, Signal, SubscriptionGuard, Watchable};
+use hyphae::{JoinExt, MapExt, MaterializeDefinite, Signal, SubscriptionGuard, Watchable};
 use log::{debug, error};
 use serde::de::DeserializeOwned;
 
@@ -140,7 +140,8 @@ where
                     .iter()
                     .map(|(_, item)| item.clone())
                     .collect::<Vec<_>>()
-            });
+            })
+            .materialize();
         let remote_cell = client.watch_query(remote_query);
         let joined = local_cell.join(&remote_cell);
         let sync_client = client.clone();

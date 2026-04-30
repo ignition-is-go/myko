@@ -174,7 +174,7 @@ pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
 /// attr with `#[cfg_attr(feature = "ts-export", ts(...))]`. At that
 /// point the feature flag resolves and the attr appears only where TS
 /// also appears.
-pub(crate) fn gate_ts_attrs(attrs: &mut Vec<syn::Attribute>) {
+pub(crate) fn gate_ts_attrs(attrs: &mut [syn::Attribute]) {
     use syn::parse_quote;
     for attr in attrs.iter_mut() {
         if !attr.path().is_ident("ts") {

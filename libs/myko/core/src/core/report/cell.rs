@@ -21,10 +21,10 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt, SelectExt};
+use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite, SelectExt};
 
 use super::super::item::AnyItem;
-use crate::store::StoreRegistry;
+use crate::store::{EntityStore, StoreRegistry};
 
 /// Context for cell-based report handlers.
 ///
@@ -44,11 +44,12 @@ impl CellReportContext {
     ///
     /// Returns a cell that updates whenever any entity of this type changes.
     pub fn query_all(&self, entity_type: &str) -> Cell<Vec<Arc<dyn AnyItem>>, CellImmutable> {
-        self.registry
-            .get_or_create(entity_type)
-            .select(|_| true)
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected = hyphae::MapQuery::materialize(store.select(|_| true));
+        selected
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
+            .materialize()
     }
 
     /// Query entities by IDs.
@@ -60,11 +61,13 @@ impl CellReportContext {
         ids: Vec<Arc<str>>,
     ) -> Cell<Vec<Arc<dyn AnyItem>>, CellImmutable> {
         let id_set: HashSet<Arc<str>> = ids.into_iter().collect();
-        self.registry
-            .get_or_create(entity_type)
-            .select(move |item| id_set.contains(&item.id()))
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected =
+            hyphae::MapQuery::materialize(store.select(move |item| id_set.contains(&item.id())));
+        selected
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
+            .materialize()
     }
 
     /// Query entities by predicate.
@@ -78,11 +81,12 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        self.registry
-            .get_or_create(entity_type)
-            .select(predicate)
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected = hyphae::MapQuery::materialize(store.select(predicate));
+        selected
             .entries()
             .map(|entries| entries.iter().map(|(_, item)| item.clone()).collect())
+            .materialize()
     }
 
     /// Query a single entity by ID.
@@ -93,11 +97,12 @@ impl CellReportContext {
         entity_type: &str,
         id: Arc<str>,
     ) -> Cell<Option<Arc<dyn AnyItem>>, CellImmutable> {
-        self.registry
-            .get_or_create(entity_type)
-            .select(move |item| *item.id() == *id)
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        let selected = hyphae::MapQuery::materialize(store.select(move |item| *item.id() == *id));
+        selected
             .entries()
             .map(|entries| entries.iter().next().map(|(_, item)| item.clone()))
+            .materialize()
     }
 
     /// Count entities matching a predicate.
@@ -105,10 +110,8 @@ impl CellReportContext {
     where
         F: Fn(&Arc<dyn AnyItem>) -> bool + Send + Sync + 'static,
     {
-        self.registry
-            .get_or_create(entity_type)
-            .select(predicate)
-            .len()
+        let store: EntityStore = (*self.registry.get_or_create(entity_type)).clone();
+        hyphae::MapQuery::materialize(store.select(predicate)).len()
     }
 
     /// Execute a sub-report and get its reactive output.
@@ -150,7 +153,7 @@ pub trait CellReportHandler: Sized + Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use hyphae::{Gettable, MapExt};
+    use hyphae::{Gettable, MapExt, MaterializeDefinite};
 
     use super::*;
     use crate::common::with_id::WithId;
@@ -210,6 +213,7 @@ mod tests {
                 }
             })
             .map(|targets| targets.len())
+            .materialize()
         }
     }
 
@@ -220,13 +224,15 @@ mod tests {
         type Output = Vec<String>;
 
         fn compute(&self, ctx: &CellReportContext) -> Cell<Self::Output, CellImmutable> {
-            ctx.query_all("Target").map(|targets| {
-                targets
-                    .iter()
-                    .filter_map(|item| item.as_any().downcast_ref::<TestTarget>())
-                    .map(|t| t.name.clone())
-                    .collect()
-            })
+            ctx.query_all("Target")
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .filter_map(|item| item.as_any().downcast_ref::<TestTarget>())
+                        .map(|t| t.name.clone())
+                        .collect()
+                })
+                .materialize()
         }
     }
 
@@ -287,6 +293,7 @@ mod tests {
             let threshold = self.threshold;
             ctx.report(OnlineTargetCount)
                 .map(move |count| *count >= threshold)
+                .materialize()
         }
     }
 

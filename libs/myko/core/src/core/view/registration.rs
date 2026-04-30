@@ -109,6 +109,6 @@ where
             "ViewFactory::cell_factory using build_cell view_id={}",
             V::view_id_static()
         );
-        Ok(erase_typed_view_map(built))
+        Ok(erase_typed_view_map(hyphae::MapQuery::materialize(built)))
     }
 }

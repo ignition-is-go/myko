@@ -14,7 +14,10 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, Mutable, WeakCellMap};
+use hyphae::{
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MaterializeDefinite, Mutable,
+    WeakCellMap,
+};
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -1487,9 +1490,11 @@ impl CellServerCtx {
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
         let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
+        let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            crate::server::report_cache_stats::record_hit(&report_id);
             return cell;
         }
 
@@ -1504,13 +1509,19 @@ impl CellServerCtx {
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            crate::server::report_cache_stats::record_hit_after_gate(&report_id);
             return cell;
         }
 
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
-        let built = report.compute(nested_ctx);
+        // The trait returns `impl Pipeline<...>`; materialize once here so the
+        // cache and downstream consumers get a concrete `Cell`. This is the only
+        // materialization per report, regardless of how deep the inner chain is.
+        let built = report.compute(nested_ctx).materialize();
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
+
+        crate::server::report_cache_stats::record_miss(&report_id);
 
         built
     }

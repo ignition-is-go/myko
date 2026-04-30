@@ -215,6 +215,31 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
                 ctx.query.ids.contains(&ctx.item.id.clone().into())
             }
+
+            // Skip the O(N) test_entity scan over every item in the store
+            // during initial-list construction. We know the exact ids we
+            // care about, so subscribe to those per-key cells directly.
+            // `test_entity` semantics still hold because the resulting map
+            // only ever contains keys from `ctx.query.ids`.
+            #[cfg(not(target_arch = "wasm32"))]
+            fn build_view(
+                ctx: #krate::prelude::QueryBuildCellCtx<Self>,
+            ) -> Option<#krate::prelude::FilteredCellMap>
+            where
+                Self: std::marker::Send + std::marker::Sync + 'static,
+            {
+                let ids: Vec<std::sync::Arc<str>> = ctx
+                    .query
+                    .ids
+                    .iter()
+                    .map(|id| std::sync::Arc::<str>::from(id.as_ref()))
+                    .collect();
+                let store = ctx
+                    .query_context
+                    .registry()
+                    .get_or_create(#name_str);
+                Some(#krate::query::build_ids_source_map(&store, &ids))
+            }
         }
 
     };
@@ -297,7 +322,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #count_all_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::MaterializeDefinite<std::sync::Arc<Self::Output>>
+                 {
                 use #krate::prelude::MapExt;
 
                 // Query all items and count them
@@ -320,7 +349,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::MaterializeDefinite<std::sync::Arc<Self::Output>>
+                 {
                 use #krate::prelude::MapExt;
 
                 // Query by partial filter and count results
@@ -344,7 +377,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
             type Output = Option<std::sync::Arc<#name>>;
 
-            fn compute(&self, ctx: #krate::prelude::ReportContext) -> #krate::prelude::Cell<std::sync::Arc<Self::Output>, #krate::prelude::CellImmutable> {
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::MaterializeDefinite<std::sync::Arc<Self::Output>>
+                 {
                 use #krate::prelude::{MapExt, Eventable};
 
                 let id: std::sync::Arc<str> = self.id.clone().into();

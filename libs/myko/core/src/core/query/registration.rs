@@ -378,6 +378,42 @@ pub fn build_belongs_to_source_map(
     index.bucket_for(foreign_id).as_ref().clone().lock()
 }
 
+/// Build a `FilteredCellMap` containing only the entries at the given ids,
+/// using direct per-key store lookups instead of an O(N) `test_entity` scan.
+///
+/// Used by `Get<Entity>sByIds::build_view` so the initial query result is
+/// constructed in O(M) where M = ids.len(). Per-key cells from the store
+/// keep the result reactive to inserts / updates / deletes for those
+/// specific ids; `test_entity` semantics still hold because the returned
+/// map only ever contains keys from `ids`.
+pub fn build_ids_source_map(
+    store: &Arc<crate::store::EntityStore>,
+    ids: &[Arc<str>],
+) -> FilteredCellMap {
+    use hyphae::{Signal, Watchable};
+
+    let result: hyphae::CellMap<Arc<str>, AnyItemArc> = hyphae::CellMap::new();
+    for id in ids {
+        let key_cell = store.get(id);
+        let result_for_cb = result.clone();
+        let key_for_cb = id.clone();
+        let guard = key_cell.subscribe(move |signal| {
+            if let Signal::Value(arc_opt) = signal {
+                match arc_opt.as_ref() {
+                    Some(item) => {
+                        result_for_cb.insert(key_for_cb.clone(), item.clone());
+                    }
+                    None => {
+                        result_for_cb.remove(&key_for_cb);
+                    }
+                }
+            }
+        });
+        result.own(guard);
+    }
+    result.lock()
+}
+
 pub fn filter_query_over_source<Q>(
     source: FilteredCellMap,
     query: Arc<Q>,
@@ -388,14 +424,14 @@ where
     Q::Item:
         DeserializeOwned + Eventable + WithId + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
-    source.select(move |item_any: &AnyItemArc| {
+    hyphae::MapQuery::materialize(source.select(move |item_any: &AnyItemArc| {
         let item = downcast_any_item_arc::<Q::Item>(item_any, "filter_query_over_source");
         Q::test_entity(QueryTestCtx {
             item,
             query: query.clone(),
             query_context: query_context.clone(),
         })
-    })
+    }))
 }
 
 /// Registration entry for a query type.
@@ -470,17 +506,20 @@ where
             query: query.clone(),
             query_context: query_cell_ctx.clone(),
         }) {
-            return Ok(built);
+            return Ok(hyphae::MapQuery::materialize(built));
         }
 
-        let store = registry.get_or_create(&Q::query_item_type_static());
-        Ok(store.select(move |item_any: &AnyItemArc| {
-            let item = downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
-            Q::test_entity(QueryTestCtx {
-                item,
-                query: query.clone(),
-                query_context: query_ctx.clone(),
-            })
-        }))
+        let store: crate::store::EntityStore =
+            (*registry.get_or_create(&Q::query_item_type_static())).clone();
+        Ok(hyphae::MapQuery::materialize(store.select(
+            move |item_any: &AnyItemArc| {
+                let item = downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
+                Q::test_entity(QueryTestCtx {
+                    item,
+                    query: query.clone(),
+                    query_context: query_ctx.clone(),
+                })
+            },
+        )))
     }
 }

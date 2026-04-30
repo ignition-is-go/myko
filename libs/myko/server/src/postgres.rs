@@ -13,7 +13,7 @@ use std::{
 };
 
 use ::postgres::{Client, Config as PgClientConfig, NoTls};
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use myko::{
     event::{MEvent, MEventType},
     server::{HandlerRegistry, PersistError, PersistHealth, Persister},
@@ -356,6 +356,27 @@ fn run_producer_loop(
             trace!(
                 "Postgres producer backlog: {} pending events in channel",
                 pending
+            );
+        }
+        if log::log_enabled!(log::Level::Debug) {
+            let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
+                std::collections::BTreeMap::new();
+            for ev in &batch {
+                let kind = match ev.change_type {
+                    MEventType::SET => "SET",
+                    MEventType::DEL => "DEL",
+                };
+                *counts.entry((ev.item_type.as_str(), kind)).or_insert(0) += 1;
+            }
+            let summary: Vec<String> = counts
+                .iter()
+                .map(|((t, k), n)| format!("{}:{}={}", t, k, n))
+                .collect();
+            debug!(
+                "[pg-producer] batch_len={} pending_after={} kinds=[{}]",
+                batch_len,
+                pending,
+                summary.join(", ")
             );
         }
         if let Some(c) = client.as_mut() {

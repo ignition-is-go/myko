@@ -20,6 +20,7 @@ pub mod history_replay;
 pub mod persister;
 mod protocol;
 mod relationship_manager;
+pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
@@ -29,5 +30,5 @@ pub use history_replay::HistoryReplayProvider;
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
 };
-pub use protocol::{message_to_json, message_to_msgpack};
+pub use protocol::{message_to_cbor, message_to_json};
 pub use relationship_manager::RelationshipManager;

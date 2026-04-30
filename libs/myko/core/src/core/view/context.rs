@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt};
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff, MapExt, MaterializeDefinite};
 #[cfg(target_arch = "wasm32")]
 use hyphae::{CellImmutable, CellMap, CellMutable};
 use serde::de::DeserializeOwned;
@@ -128,6 +128,7 @@ impl ViewCellContext {
         self.query_map_untyped(query)
             .diffs()
             .map(|diff| downcast_any_item_map_diff::<Q::Item>(diff, "ViewCellContext::query_diff"))
+            .materialize()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -240,6 +241,7 @@ impl ViewContext {
         self.query_map_untyped(query)
             .diffs()
             .map(|diff| downcast_any_item_map_diff::<Q::Item>(diff, "ViewContext::query_diff"))
+            .materialize()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

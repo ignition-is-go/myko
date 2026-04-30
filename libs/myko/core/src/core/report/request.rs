@@ -2,13 +2,12 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use crate::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::traits::{AnyReport, ReportId, ReportIdStatic, ReportOutputType, ReportParams};
-use crate::common::with_transaction::WithTransaction;
+use crate::{TS, common::with_transaction::WithTransaction};
 
 /// Wraps report parameters with transaction metadata.
 ///

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::TS;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -8,7 +7,10 @@ use super::{
     query::{QueryResponse, QueryWindow},
     shared::value_with_tx,
 };
-use crate::core::view::{ViewId, ViewItemType};
+use crate::{
+    TS,
+    core::view::{ViewId, ViewItemType},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use crate::TS;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -10,7 +9,7 @@ use uuid::Uuid;
 use super::traits::{
     AnyView, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
 };
-use crate::common::with_transaction::WithTransaction;
+use crate::{TS, common::with_transaction::WithTransaction};
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -93,11 +92,13 @@ impl<V: ViewItemType> ViewItemType for ViewRequest<V> {
 }
 
 impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest<V> {
-    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> super::cell::TypedViewCellMap<Self::Item> {
-        V::build_cell(ViewBuildCellCtx {
+    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> impl hyphae::MapQuery<Arc<str>, Arc<Self::Item>> {
+        // Materialize at the wrapper so the impl-trait return type infers
+        // through the inner build_cell call uniformly.
+        hyphae::MapQuery::materialize(V::build_cell(ViewBuildCellCtx {
             view: Arc::new(ctx.view.view.clone()),
             view_context: ctx.view_context,
-        })
+        }))
     }
 }
 

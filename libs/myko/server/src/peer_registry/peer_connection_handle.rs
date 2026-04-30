@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, PairwiseExt, TapExt};
+use hyphae::{
+    Cell, CellImmutable, DedupedExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty,
+    PairwiseExt, TapExt,
+};
 use log::info;
 use myko::{
     client::{ConnectionStatus, MykoClient},
@@ -45,6 +48,9 @@ impl PeerConnectionHandle {
         let status_log_address = server_ent.address.clone();
         let status_log_port = server_ent.port;
 
+        // `pairwise()` is `Empty`-seeded: the first source emission has no
+        // prior partner, so the materialized cell starts as `None` and flips
+        // to `Some((prev, current))` once the second emission lands.
         let connection_status = client
             .connection_status()
             .pairwise()
@@ -57,17 +63,19 @@ impl PeerConnectionHandle {
                     s.1
                 )
             })
+            .materialize()
             .deduped()
-            .map(move |status| match status {
-                (_, ConnectionStatus::Connected(_)) => PeerConnectionCycle::Connected,
-                (ConnectionStatus::Connected(_), ConnectionStatus::Disconnected) => {
+            .map(move |status| match status.as_ref() {
+                Some((_, ConnectionStatus::Connected(_))) => PeerConnectionCycle::Connected,
+                Some((ConnectionStatus::Connected(_), ConnectionStatus::Disconnected)) => {
                     PeerConnectionCycle::Failed
                 }
-                (ConnectionStatus::Connecting(_), ConnectionStatus::Disconnected) => {
+                Some((ConnectionStatus::Connecting(_), ConnectionStatus::Disconnected)) => {
                     PeerConnectionCycle::Failed
                 }
                 _ => PeerConnectionCycle::Pending,
-            });
+            })
+            .materialize();
 
         let identity_server_id = server_ent.id.clone();
 
@@ -83,7 +91,8 @@ impl PeerConnectionHandle {
                 }
 
                 IdentityCycle::Correct
-            });
+            })
+            .materialize();
 
         let signal_server_id = server_ent.id.clone();
         let signal_server_address = server_ent.address.clone();
@@ -105,7 +114,8 @@ impl PeerConnectionHandle {
                     (PeerConnectionCycle::Failed, _) => PeerState::Delete,
                     (_, _) => PeerState::Keep,
                 }
-            });
+            })
+            .materialize();
 
         Self {
             server_ent,

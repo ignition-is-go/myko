@@ -2,10 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::TS;
 use serde::{Deserialize, Serialize};
 
-use crate::core::item::AnyItem;
+use crate::{TS, core::item::AnyItem};
 
 /// Wrapper that implements serde::Serialize by delegating through erased_serde.
 ///

@@ -112,14 +112,6 @@ pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko::submit! macro
-// Re-export all attribute/derive macros so downstream crates can consume them
-// as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
-// `myko-macros` dependency.
-pub use myko_macros::*;
-pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
-pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
-pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
-pub use ts_rs;
 // `myko::TS` resolves to the real `ts_rs::TS` derive+trait when the
 // consuming crate has `ts-export` on, and to a noop derive that emits
 // nothing (but still claims the `#[ts(...)]` helper attrs so they don't
@@ -130,6 +122,14 @@ pub use ts_rs;
 // doesn't run the derive at all.
 #[cfg(not(feature = "ts-export"))]
 pub use myko_macros::TsNoop as TS;
+// Re-export all attribute/derive macros so downstream crates can consume them
+// as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
+// `myko-macros` dependency.
+pub use myko_macros::*;
+pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
+pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
+pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
+pub use ts_rs;
 #[cfg(feature = "ts-export")]
 pub use ts_rs::TS;
 // Re-export wire types at top level for backwards compatibility
