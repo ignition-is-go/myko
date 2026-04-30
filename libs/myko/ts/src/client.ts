@@ -49,13 +49,13 @@ import { v4 as uuid } from 'uuid'
 const cborEncoder = new Encoder({
   useRecords: false,
   mapsAsObjects: true,
-  useTag259ForMaps: false,
+  // useTag259ForMaps: false,
   tagUint8Array: false,
 })
 const cborDecoder = new Decoder({
   useRecords: false,
   mapsAsObjects: true,
-  useTag259ForMaps: false,
+  // useTag259ForMaps: false,
 })
 
 // Recursively strip `undefined` object values before CBOR encoding. cbor-x writes
