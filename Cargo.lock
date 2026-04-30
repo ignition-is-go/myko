@@ -172,7 +172,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autosocket"
-version = "4.9.0"
+version = "4.10.0"
 dependencies = [
  "dashmap",
  "flume",
@@ -1343,6 +1343,8 @@ dependencies = [
 [[package]]
 name = "hyphae"
 version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f52a21a221d451a17f6d9d524335ca8da8572bb36707b40c202173f24edb378b"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1903,7 +1905,7 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 
 [[package]]
 name = "myko"
-version = "4.9.0"
+version = "4.10.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1937,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-version = "4.9.0"
+version = "4.10.0"
 dependencies = [
  "leptos",
  "myko",
@@ -1946,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "4.9.0"
+version = "4.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1955,7 +1957,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "4.9.0"
+version = "4.10.0"
 dependencies = [
  "chrono",
  "ciborium",
