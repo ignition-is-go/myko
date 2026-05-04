@@ -607,6 +607,10 @@ impl CellServer {
         // log spam that was dominating I/O during loads.
         myko::server::report_cache_stats::start_periodic_logger();
 
+        // Per-search summary thread. One log line per window listing each
+        // search that completed (entity_type, result count, elapsed).
+        myko::search::search_stats::start_periodic_logger();
+
         log::info!("Server started");
         self.run_ws_accept_loop(listener).await
     }

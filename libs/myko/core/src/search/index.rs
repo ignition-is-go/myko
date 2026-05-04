@@ -10,8 +10,9 @@
 //! registry needs the type to find the right `SearchIndex<T>` shim.
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use super::{build_typed_registry, typed};
+use super::{build_typed_registry, search_stats, typed};
 use crate::core::item::AnyItem;
 
 /// Process-wide search dispatcher. Constructs one per-type `SearchIndex<T>`
@@ -63,11 +64,15 @@ impl SearchIndex {
             limit,
             ..typed::SearchOptions::default()
         };
-        self.registry
+        let started = Instant::now();
+        let hits: Vec<Arc<str>> = self
+            .registry
             .search(entity_type, query, opts)
             .into_iter()
             .map(|h| h.id)
-            .collect()
+            .collect();
+        search_stats::record_search(entity_type, hits.len(), started.elapsed());
+        hits
     }
 
     /// True if a `SearchIndex<T>` is registered for this entity type.

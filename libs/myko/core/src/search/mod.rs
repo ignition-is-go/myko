@@ -37,6 +37,8 @@
 mod entity_search;
 #[cfg(feature = "search")]
 mod index;
+#[cfg(feature = "search")]
+pub mod search_stats;
 /// Per-type, monomorphized search indexes. Always compiled (light deps) —
 /// the `search` feature only gates the `SearchIndex` *wrapper* that exposes
 /// these to downstream call sites.
