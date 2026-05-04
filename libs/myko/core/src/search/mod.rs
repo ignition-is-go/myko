@@ -1,8 +1,7 @@
 //! Full-text search infrastructure for Myko entities.
 //!
-//! This module provides full-text search capabilities using tantivy with RAM directory
-//! for in-memory indexing. Entities can mark fields as `#[searchable]` and the search
-//! index is updated automatically when entities are stored or removed.
+//! Entities mark fields with `#[searchable]` and the index updates
+//! automatically as the server context applies SET/DEL events.
 //!
 //! ## Usage
 //!
@@ -23,16 +22,25 @@
 //! ## Architecture
 //!
 //! ```text
-//! CellServerCtx (set/del) --> SearchIndex --> tantivy RAM index
+//! CellServerCtx (set/del) --> SearchIndex (compat wrapper)
 //!                                  |
-//!                            SearchableRegistration (inventory)
+//!                            typed::SearchRegistry (per-type)
+//!                                  |
+//!                          typed::SearchIndex<T>  (exact + nucleo + Levenshtein)
 //!                                  |
 //!                         EntitySearch report --> returns matching IDs
 //! ```
+//!
+//! The legacy tantivy backend was replaced in favor of `typed::SearchIndex<T>`
+//! — see `SPEC.md` for design and the typed module for implementation.
 
 mod entity_search;
 #[cfg(feature = "search")]
 mod index;
+/// Per-type, monomorphized search indexes. Always compiled (light deps) —
+/// the `search` feature only gates the `SearchIndex` *wrapper* that exposes
+/// these to downstream call sites.
+pub mod typed;
 
 pub use entity_search::{EntitySearch, EntitySearchResult};
 #[cfg(feature = "search")]
@@ -55,7 +63,7 @@ mod stub_index {
             Self
         }
         pub fn index_item(&self, _item: &Arc<dyn AnyItem>) {}
-        pub fn remove_entity(&self, _entity_id: &str) {}
+        pub fn remove_entity(&self, _entity_type: &str, _entity_id: &str) {}
         pub fn commit(&self) {}
         pub fn search(&self, _entity_type: &str, _query: &str, _limit: usize) -> Vec<Arc<str>> {
             Vec::new()
@@ -73,18 +81,24 @@ mod stub_index {
     }
 }
 
-use serde_json::Value;
 #[cfg(not(feature = "search"))]
 pub use stub_index::SearchIndex;
 
-/// Registration for searchable entity types.
-///
-/// This is collected via `inventory` and used by SearchIndex to know which fields to index.
+/// Registration for searchable entity types. Collected via `inventory` and
+/// used by `build_typed_registry` to construct the per-type
+/// `SearchIndex<T>` shims at startup.
 pub struct SearchableRegistration {
-    /// Entity type name (e.g., "Target")
+    /// Entity type name (e.g., "Target").
     pub entity_type: &'static str,
-    /// JSON field names that are searchable (camelCase as they appear in serialized form)
+    /// Searchable JSON field names (camelCase). Carried for back-compat
+    /// with consumers that introspect the inventory; the typed search path
+    /// no longer uses this — the macro-emitted `Searchable` impl handles
+    /// extraction directly off the typed entity.
     pub fields: &'static [&'static str],
+    /// Constructs the per-type `SearchIndex<T>` in the typed `SearchRegistry`.
+    /// `Some` for entities whose macro emits the typed `Searchable` impl
+    /// (i.e. anything with at least one `#[searchable]` field).
+    pub register_typed: Option<fn(&mut typed::SearchRegistry)>,
 }
 
 inventory::collect!(SearchableRegistration);
@@ -94,53 +108,24 @@ pub fn iter_searchable() -> impl Iterator<Item = &'static SearchableRegistration
     inventory::iter::<SearchableRegistration>()
 }
 
-/// Extract searchable text from an item value given the searchable fields.
-///
-/// Concatenates all searchable field values into a single string for indexing.
-pub fn extract_searchable_text(item: &Value, fields: &[&str]) -> String {
-    let Some(obj) = item.as_object() else {
-        return String::new();
-    };
-
-    fields
-        .iter()
-        .filter_map(|field| {
-            obj.get(*field).and_then(|v| match v {
-                Value::String(s) => Some(s.as_str()),
-                Value::Number(n) => Some(n.to_string()).map(|s| s.leak() as &str),
-                Value::Bool(b) => Some(if *b { "true" } else { "false" }),
-                _ => None,
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+/// Build a `typed::SearchRegistry` populated with one `SearchIndex<T>` per
+/// entity that registered a `register_typed` closure.
+pub fn build_typed_registry() -> typed::SearchRegistry {
+    let mut registry = typed::SearchRegistry::new();
+    for reg in iter_searchable() {
+        if let Some(register) = reg.register_typed {
+            register(&mut registry);
+        }
+    }
+    registry
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
+// `extract_searchable_text` and its JSON-by-string-key path are gone. The
+// typed registry consumes `&dyn AnyItem` directly via the macro-generated
+// `Searchable` impl — no serde round-trip on the write path.
 
-    use super::*;
-
-    #[test]
-    fn test_extract_searchable_text() {
-        let item = json!({
-            "name": "Test Target",
-            "category": "Audio",
-            "serviceId": "svc-123"
-        });
-
-        let text = extract_searchable_text(&item, &["name", "category"]);
-        assert_eq!(text, "Test Target Audio");
-    }
-
-    #[test]
-    fn test_extract_searchable_text_missing_fields() {
-        let item = json!({
-            "name": "Test Target"
-        });
-
-        let text = extract_searchable_text(&item, &["name", "category"]);
-        assert_eq!(text, "Test Target");
-    }
+/// Default `limit` for macro-generated typed `Search<T>` reports. Referenced
+/// by `#[serde(default = "...")]` so unspecified limits use this constant.
+pub fn default_search_limit() -> usize {
+    100
 }

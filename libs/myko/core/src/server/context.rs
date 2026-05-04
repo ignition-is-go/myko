@@ -188,17 +188,20 @@ pub struct CellServerCtx {
     peer_clients_tick: Cell<u64, CellMutable>,
     /// Optional event sink used to fan out applied events to saga runtimes.
     event_sink: Option<flume::Sender<MEvent>>,
+    // AHash on the cache + dispatch maps below: every subscriber and every
+    // applied event goes through one or more of these. Bench: ~1.6× faster
+    // DashMap lookups vs default SipHash.
     /// Top-level cache for reactive query maps.
-    query_cache: Arc<DashMap<String, MapCacheEntry>>,
+    query_cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>>,
     /// Top-level cache for reactive view maps.
-    view_cache: Arc<DashMap<String, MapCacheEntry>>,
+    view_cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>>,
     /// Top-level cache for reactive report cells with short-lived strong retention.
-    report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>>>,
+    report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>, ahash::RandomState>>,
     /// Per-key coordination for concurrent report/query/view computation.
     /// Prevents duplicate computation when multiple threads request the same key.
-    compute_gates: Arc<DashMap<String, Arc<std::sync::Mutex<()>>>>,
+    compute_gates: Arc<DashMap<String, Arc<std::sync::Mutex<()>>, ahash::RandomState>>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
-    ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>>>,
+    ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
 }
@@ -227,11 +230,11 @@ impl CellServerCtx {
             peer_clients,
             peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
             event_sink,
-            query_cache: Arc::new(DashMap::new()),
-            view_cache: Arc::new(DashMap::new()),
-            report_cache: Arc::new(DashMap::new()),
-            compute_gates: Arc::new(DashMap::new()),
-            ingest_buffers: Arc::new(DashMap::new()),
+            query_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            view_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            report_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
         }
     }
@@ -351,14 +354,20 @@ impl CellServerCtx {
 
     /// Parse JSON to a typed entity using the registered item parser.
     ///
+    /// Takes the `Value` by ownership so we don't pay a deep-clone of the
+    /// nested-enum tree on every applied event. Bench `from_value_with_clone`
+    /// shows the clone is ~136 ns/event on a typical entity payload — small
+    /// per event, but multiplied by the apply_event_batch hot path it's the
+    /// cheapest non-breaking win on the ingest path.
+    ///
     /// Returns None if the entity type is not registered or parsing fails.
     pub fn parse_item(
         &self,
         entity_type: &str,
-        json: &serde_json::Value,
+        json: serde_json::Value,
     ) -> Option<Arc<dyn AnyItem>> {
         let parse = self.handler_registry.get_item_parser(entity_type)?;
-        parse(json.clone()).ok()
+        parse(json).ok()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -446,7 +455,7 @@ impl CellServerCtx {
         self.registry.get_or_create(entity_type).remove(&id);
 
         // Search: remove from index
-        self.search_index.remove_entity(&id);
+        self.search_index.remove_entity(entity_type, &id);
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
@@ -559,7 +568,7 @@ impl CellServerCtx {
             let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
             let id = item.id();
             log::debug!("[entity] DEL {} id={}", entity_type, id);
-            self.search_index.remove_entity(&id);
+            self.search_index.remove_entity(entity_type, &id);
             ids.push(id);
             items.push(item);
         }
@@ -706,7 +715,7 @@ impl CellServerCtx {
         self.registry.get_or_create(entity_type).remove(&id);
 
         // Search: remove from index
-        self.search_index.remove_entity(&id);
+        self.search_index.remove_entity(entity_type, &id);
 
         // Relationships: process cascades (unless prevented)
         if !options.prevent_relationship_updates {
@@ -750,7 +759,7 @@ impl CellServerCtx {
             for item in &typed_items {
                 let id = item.id();
                 log::debug!("[entity] DEL {} id={}", entity_type, id);
-                self.search_index.remove_entity(&id);
+                self.search_index.remove_entity(entity_type, &id);
                 ids.push(id);
             }
 
@@ -794,7 +803,7 @@ impl CellServerCtx {
         self.registry.get_or_create(entity_type).remove(&id_arc);
 
         // Search: remove from index
-        self.search_index.remove_entity(id);
+        self.search_index.remove_entity(entity_type, id);
 
         // Persist: produce to durable backend (unless prevented)
         if !options.prevent_persist {
@@ -890,25 +899,21 @@ impl CellServerCtx {
 
         for event in events {
             let options = event.options.clone().unwrap_or_default();
+            let item_type = event.item_type;
+            let item_value = event.item;
             match event.change_type {
                 MEventType::SET => {
-                    if let Some(item) = self.parse_item(&event.item_type, &event.item) {
+                    if let Some(item) = self.parse_item(&item_type, item_value) {
                         sets.push(SetOp { item, options });
                     } else {
-                        log::warn!(
-                            "Unknown entity type or parse error for SET: {}",
-                            event.item_type
-                        );
+                        log::warn!("Unknown entity type or parse error for SET: {item_type}");
                     }
                 }
                 MEventType::DEL => {
-                    if let Some(item) = self.parse_item(&event.item_type, &event.item) {
+                    if let Some(item) = self.parse_item(&item_type, item_value) {
                         dels.push(DelOp { item, options });
                     } else {
-                        log::warn!(
-                            "Unknown entity type or parse error for DEL: {}",
-                            event.item_type
-                        );
+                        log::warn!("Unknown entity type or parse error for DEL: {item_type}");
                     }
                 }
             }
@@ -940,14 +945,15 @@ impl CellServerCtx {
             self.search_index.index_item(&op.item);
         }
         for op in &dels {
-            let entity_type: Arc<str> = op.item.entity_type().into();
+            let entity_type_static = op.item.entity_type();
+            let entity_type: Arc<str> = entity_type_static.into();
             let id = op.item.id();
             log::debug!("[entity] DEL {} id={}", entity_type, id);
             removes_by_type
                 .entry(entity_type)
                 .or_default()
                 .push(id.clone());
-            self.search_index.remove_entity(&id);
+            self.search_index.remove_entity(entity_type_static, &id);
         }
 
         // Reduce: one diff emission per entity type per operation kind.
@@ -1624,6 +1630,11 @@ mod tests {
             entity_type: "BufferedTestItem",
             crate_name: env!("CARGO_PKG_NAME"),
             parse: BufferedTestItem::parse,
+            parse_bytes: BufferedTestItem::parse_bytes,
+            serialize_json: |any| {
+                let typed = any.as_any().downcast_ref::<BufferedTestItem>().unwrap();
+                ::serde_json::value::to_raw_value(typed)
+            },
         }
     }
 
@@ -1673,6 +1684,11 @@ mod tests {
             entity_type: "ImmediateTestItem",
             crate_name: env!("CARGO_PKG_NAME"),
             parse: ImmediateTestItem::parse,
+            parse_bytes: ImmediateTestItem::parse_bytes,
+            serialize_json: |any| {
+                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().unwrap();
+                ::serde_json::value::to_raw_value(typed)
+            },
         }
     }
 

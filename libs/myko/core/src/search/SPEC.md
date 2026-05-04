@@ -111,34 +111,37 @@ The whole `SearchIndex<T>` struct is `pub(crate)`. The user-facing surface is
 the macro-generated `Search{T}` report per entity type — see
 [Public API](#public-api).
 
-## Crate layout
+## Module layout
 
-The new crate lives at `libs/myko/search/`, named `myko-search`, matching the
-sibling-crate convention (`myko-core`, `myko-server`, `myko-macros`,
-`myko-leptos`). It is consumed by `myko-core` (which constructs and routes the
-indexes) and depended on transitively by `myko-server`.
+The implementation lives inside `myko-core` at `libs/myko/core/src/search/typed/`
+— a sibling of the existing `search/` module that hosts the tantivy path. Keeping
+it in-tree avoids a new crate boundary that would buy nothing: the index talks
+directly to `AnyItem`, the macro-generated registrations, and the typed entity
+stores, all of which already live in `myko-core`. A separate crate would force
+those types through a public surface for no architectural gain.
 
 ```
-libs/myko/search/
-├── Cargo.toml
-└── src/
-    ├── lib.rs              # public re-exports
+libs/myko/core/src/search/
+├── mod.rs                  # public re-exports + no-op stub for non-search builds
+├── index.rs                # legacy tantivy SearchIndex (deleted in phase 4)
+├── entity_search.rs        # stringly-typed EntitySearch shim
+└── typed/
+    ├── mod.rs              # public re-exports
     ├── index.rs            # SearchIndex<T> struct, mutation API (pub(crate))
     ├── interner.rs         # IdInterner — Arc<str> ↔ u32
-    ├── matchers/
-    │   ├── mod.rs
-    │   ├── exact.rs        # HashMap<Box<str>, RoaringBitmap>
-    │   ├── subsequence.rs  # nucleo wrapper, thread-local matcher pool
-    │   └── typo.rs         # strsim::levenshtein with length prefilter
+    ├── searchable.rs       # Searchable trait
     ├── score.rs            # Score enum, Ord impl
     ├── registry.rs         # entity_type → Arc<dyn DynSearchIndex> dispatch
-    └── extractor.rs        # SearchableField trait + per-type registration
+    └── hit.rs              # Hit<Id>, SearchResult<T>
 ```
 
-`myko-core` keeps the existing `search` module path, but it becomes a thin
-re-exporter and host for the macro-generated reports. The current `search` cargo
-feature is kept as the gate to compile `myko-search` and the macro-generated
-reports, mirroring today's `dep:tantivy` gate. The no-op stub
+The matcher implementations (exact, subsequence, typo) live alongside
+`index.rs` rather than in a `matchers/` subdirectory — the per-matcher files
+are short enough that a flat layout reads better than nesting.
+
+The current `search` cargo feature continues to gate the entire search subtree
+(both the legacy tantivy path and the new `typed/` module) plus the
+macro-generated reports, mirroring today's `dep:tantivy` gate. The no-op stub
 (`search/mod.rs:46-74`) is preserved for non-search builds.
 
 ## Public API
@@ -393,7 +396,7 @@ field:
 
 ```rust
 // Macro emits, per entity with any #[searchable] field:
-impl myko_search::Searchable for Target {
+impl myko::search::typed::Searchable for Target {
     fn extract_searchable(
         &self,
         out: &mut String,
@@ -674,7 +677,10 @@ glue is in `compute`:
 impl ReportHandler for SearchTargets {
     type Output = SearchResult<Target>;
 
-    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> impl #krate::hyphae::MaterializeDefinite<Arc<Self::Output>> {
         // depend on the typed store's change signal — same pattern as GetAllTargets
         ctx.search_index::<Target>()
             .reactive_search(&self.query, self.options())
@@ -685,6 +691,17 @@ impl ReportHandler for SearchTargets {
 `reactive_search` reads the current index snapshot under whatever lock pattern
 the typed store uses, returns a hyphae cell that tracks dependencies normally.
 No special hooks.
+
+**Re-export convention.** Macro-emitted code references hyphae through
+`#krate::hyphae::*` (i.e. `myko::hyphae::*`), never `::hyphae::*` directly.
+`myko-core` re-exports the hyphae crate at `myko::hyphae` (`core/src/lib.rs:112`)
+specifically so downstream consumers don't have to add `hyphae` to their own
+`Cargo.toml`. Any new macro emissions in this work — including the `compute`
+impl above and the cell type returned by `reactive_search` — must follow that
+convention. Existing precedent: `HasForeignKey`, `IdFor`, `IdType`,
+`Cell<...>`, `MapExt` are all referenced as `#krate::hyphae::...` in the
+`#[myko_item]` macro today (`macros/src/item.rs:529-659`,
+`macros/src/command.rs:116`).
 
 ### Tombstone compaction
 
@@ -764,12 +781,13 @@ extractor path skips serde entirely. Targets assume the index fits in L3. At
 
 ## Migration from tantivy
 
-The cutover lives behind the existing `search` cargo feature, but the gate
-flips from `dep:tantivy` to `dep:myko-search`. Consumers that currently compile
-without the `search` feature continue to get the no-op stub
+The cutover lives behind the existing `search` cargo feature. Both the legacy
+`search/index.rs` (tantivy) and the new `search/typed/` module compile under the
+same gate during phases 1-3; phase 4 deletes the tantivy half. Consumers that
+currently compile without the `search` feature continue to get the no-op stub
 (`search/mod.rs:46-74`).
 
-1. **Phase 1: parallel deployment.** Ship `myko-search` alongside the existing
+1. **Phase 1: parallel deployment.** Ship the typed index alongside the existing
    tantivy index. Mirror writes to both via a wrapper `SearchIndex` in
    `myko-core` that fans out. Queries still go to tantivy. Compare result sets
    in CI / staging.
@@ -780,7 +798,7 @@ without the `search` feature continue to get the no-op stub
    "does the new index return the hits a user would expect" — not a perf
    bake-off. Expect to spend more time here than on the implementation.
 
-1. **Phase 3: cutover.** Flip the read path to `myko-search`. Keep tantivy
+1. **Phase 3: cutover.** Flip the read path to the typed index. Keep tantivy
    writes as a rollback safety net for one release cycle.
 
 1. **Phase 4: removal.** Delete the tantivy dependency, the schema definition
@@ -856,8 +874,9 @@ path; the typed-extractor registrations from the macro replace it.
 
 **Phase A — core (1-2 days):**
 
-- Crate scaffolding at `libs/myko/search/`, dependencies, `myko-core` wires up
-  the new feature gate.
+- Module scaffolding at `libs/myko/core/src/search/typed/`, dependency adds in
+  `myko-core/Cargo.toml` (nucleo, roaring, strsim, rayon, thread_local,
+  smallvec) gated behind the existing `search` feature.
 - `IdInterner`, `EntityRecord`, basic `SearchIndex<T>` with insert/remove.
 - Macro changes in `myko-macros` to emit `TypedSearchableRegistration<T>`
   alongside the existing string registration (both coexist during migration).
@@ -898,33 +917,39 @@ Total: roughly one engineer-week to a deployable v1, plus migration tail.
 
 ## Dependencies
 
-```toml
-# libs/myko/search/Cargo.toml
-[dependencies]
-nucleo = "0.5"
-roaring = "0.10"
-strsim = "0.11"
-rayon = "1.10"
-thread_local = "1.1"
-smallvec = "1.13"
-inventory.workspace = true
-hyphae.workspace = true   # for the cell types returned by reactive_search
+Added to `libs/myko/core/Cargo.toml` as optional dependencies under the
+existing `search` feature:
 
-[dev-dependencies]
-proptest = "1"
-criterion = "0.5"
+```toml
+[dependencies]
+nucleo = { version = "0.5", optional = true }
+roaring = { version = "0.10", optional = true }
+strsim = { version = "0.11", optional = true }
+rayon = { version = "1.10", optional = true }
+thread_local = { version = "1.1", optional = true }
+smallvec = { version = "1.13", optional = true }
+# tantivy stays here through phase 3; removed in phase 4
+tantivy = { version = "0.22", optional = true }
+
+[features]
+search = [
+    "dep:tantivy",
+    "dep:nucleo", "dep:roaring", "dep:strsim",
+    "dep:rayon", "dep:thread_local", "dep:smallvec",
+]
 ```
 
-Optional, gated behind a `simd` feature flag:
+`inventory` and `hyphae` are already workspace deps in `myko-core` and need no
+changes.
+
+Optional, gated behind an additional `search-simd` feature flag:
 
 ```toml
 triple_accel = { version = "0.4", optional = true }
 ```
 
-`myko-core` adds `myko-search = { path = "../search", optional = true }` and
-moves the `search = ["dep:tantivy"]` feature to `search = ["dep:myko-search"]`
-in phase 4. During phases 1-3, both features are active so the fan-out wrapper
-can mirror writes.
+In phase 4, `tantivy` and the legacy `search/index.rs` path are removed; the
+remaining `search` feature gates only the typed implementation.
 
 ## Open questions
 

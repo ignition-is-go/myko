@@ -35,15 +35,23 @@ inventory = "0.3.24"
 flume.workspace = true
 hyphae.workspace = true
 dashmap.workspace = true
+ahash.workspace = true
+# Per-type search index (typed module). Light deps; safe on wasm.
+smallvec = "1.13"
+roaring = "0.10"
+nucleo-matcher = "0.3"
+strsim = "0.11"
+thread_local = "1.1"
 
 # Native-only deps (store, search, codegen)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Heavy deps gated behind features — see [features] below. Entity crates and
-# downstream builds that don't need TS codegen or full-text search can skip
-# the swc/dprint tree (codegen) and the tantivy tree (search) entirely.
+# downstream builds that don't need TS codegen can skip the swc/dprint tree.
 dprint-plugin-typescript = { version = "0.95.15", optional = true }
-tantivy = { version = "0.22", optional = true }
 crossbeam.workspace = true
+# Native-only: rayon parallel scan over the typed search index. WASM falls
+# back to serial scan (single-threaded execution model).
+rayon = "1.10"
 
 # WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -55,6 +63,15 @@ uuid = { version = "1", features = ["js"] }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 
 
+[dev-dependencies]
+ahash = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "dyn_vs_typed"
+harness = false
+required-features = ["bench"]
+
 [features]
 default = []
 bench = []
@@ -63,10 +80,12 @@ doc-gen = []
 # typegen/docgen binaries. Enabling this pulls ~8s of compile time onto the
 # critical path via the swc parser tree.
 codegen = ["dep:dprint-plugin-typescript", "ts-export"]
-# Full-text entity search (tantivy). Required by myko-server's SearchIndex.
-# When disabled, `SearchIndex` is a no-op stub and `ReportContext::search`
-# returns empty results, so downstream crates compile unchanged.
-search = ["dep:tantivy"]
+# Full-text entity search. Used to gate the tantivy backend; with tantivy
+# replaced by the typed in-memory index, the feature now activates the real
+# `SearchIndex` over the no-op stub. Kept as a feature so downstream crates
+# (myko-server) opt in explicitly and so non-search builds — entity-only
+# crates that just want types — continue to compile against the stub.
+search = []
 # When enabled, myko's proc-macros emit `#[derive(ts_rs::TS)]` and keep
 # `#[ts(...)]` field attributes. Off by default — entity crates compile
 # ~319 fewer `impl TS for _` blocks each, saving meaningful time in the

@@ -96,6 +96,9 @@ pub struct ServerOwnedFieldInfo {
 /// Information about a searchable field for full-text search indexing.
 #[derive(Debug)]
 pub struct SearchableFieldInfo {
+    /// Field name in Rust (snake_case) — used to reference `self.<field>`
+    /// in the generated `Searchable::extract_searchable` body.
+    pub field_name: String,
     /// Field name in JSON (camelCase) - used for indexing
     pub field_name_json: String,
 }
@@ -369,7 +372,10 @@ pub fn parse_searchable(field: &Field) -> Option<SearchableFieldInfo> {
 
     for attr in &field.attrs {
         if attr.path().is_ident("searchable") {
-            return Some(SearchableFieldInfo { field_name_json });
+            return Some(SearchableFieldInfo {
+                field_name,
+                field_name_json,
+            });
         }
     }
     None
@@ -641,9 +647,10 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         });
     }
 
-    // Generate Searchable registration if any fields are marked searchable
+    // Generate Searchable registration + typed `Searchable` impl if any
+    // fields are marked searchable.
     if !info.searchable_fields.is_empty() {
-        let fields: Vec<_> = info
+        let json_fields: Vec<_> = info
             .searchable_fields
             .iter()
             .map(|sf| {
@@ -657,7 +664,111 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             #krate::submit! {
                 #krate::search::SearchableRegistration {
                     entity_type: #local_type,
-                    fields: &[#(#fields),*],
+                    fields: &[#(#json_fields),*],
+                    // Carries the type identity into the typed registry so it
+                    // can monomorphize SearchIndex<T> for this entity at startup.
+                    register_typed: ::std::option::Option::Some(
+                        |reg: &mut #krate::search::typed::SearchRegistry|
+                            reg.register::<#local_type_ident>(#local_type),
+                    ),
+                }
+            }
+        });
+
+        // Per-type `Searchable` impl consumed by `SearchIndex<T>`. Pushes one
+        // field per `#[searchable]` attribute, in declaration order.
+        // `searchable_field_names` mirrors that order using camelCase names so
+        // it matches the wire-format keys.
+        let push_calls: Vec<_> = info
+            .searchable_fields
+            .iter()
+            .map(|sf| {
+                let ident = syn::Ident::new(&sf.field_name, proc_macro2::Span::call_site());
+                quote! { extractor.push_field(::std::convert::AsRef::<str>::as_ref(&self.#ident)); }
+            })
+            .collect();
+        let name_strs: Vec<_> = info
+            .searchable_fields
+            .iter()
+            .map(|sf| {
+                let n = &sf.field_name_json;
+                quote! { #n }
+            })
+            .collect();
+
+        registrations.push(quote! {
+            impl #krate::search::typed::Searchable for #local_type_ident {
+                fn extract_searchable(
+                    &self,
+                    extractor: &mut #krate::search::typed::SearchableExtractor<'_>,
+                ) {
+                    #(#push_calls)*
+                }
+
+                fn searchable_field_names() -> &'static [&'static str] {
+                    &[#(#name_strs),*]
+                }
+            }
+        });
+
+        // Per-type typed search report: `Search{T}` returning `Search{T}Result`.
+        // Mirrors the auto-generated `GetAllTargets`, `CountAllTargets`, etc.
+        // shape — sits alongside them in the entity's auto-generated suite.
+        let id_type_ident = syn::Ident::new(
+            &format!("{local_type}Id"),
+            proc_macro2::Span::call_site(),
+        );
+        let search_result_ident = syn::Ident::new(
+            &format!("Search{local_type}Result"),
+            proc_macro2::Span::call_site(),
+        );
+        let search_report_ident = syn::Ident::new(
+            &format!("Search{local_type}"),
+            proc_macro2::Span::call_site(),
+        );
+        // Per-entity local default fn for `serde(default = "...")` — `serde`
+        // attribute paths are string literals that don't expand `#krate::`,
+        // so we emit a local helper alongside the report struct.
+        let default_limit_fn = syn::Ident::new(
+            &format!("__myko_search_default_limit_{local_type}"),
+            proc_macro2::Span::call_site(),
+        );
+        let default_limit_fn_str = default_limit_fn.to_string();
+
+        registrations.push(quote! {
+            #[#krate::myko_report_output]
+            pub struct #search_result_ident {
+                pub ids: ::std::vec::Vec<#id_type_ident>,
+            }
+
+            #[doc(hidden)]
+            pub fn #default_limit_fn() -> usize {
+                #krate::search::default_search_limit()
+            }
+
+            /// Search this entity type by query string. Backed by the typed
+            /// per-entity `SearchIndex<T>` (exact + nucleo subsequence +
+            /// Levenshtein typo). Returns matching ids in tier order.
+            #[#krate::myko_report(#search_result_ident)]
+            pub struct #search_report_ident {
+                pub query: ::std::string::String,
+                #[serde(default = #default_limit_fn_str)]
+                pub limit: usize,
+            }
+
+            impl #krate::prelude::ReportHandler for #search_report_ident {
+                type Output = #search_result_ident;
+
+                fn compute(
+                    &self,
+                    ctx: #krate::prelude::ReportContext,
+                ) -> impl #krate::prelude::MaterializeDefinite<::std::sync::Arc<Self::Output>> {
+                    let arc_ids = ctx.search(#local_type, &self.query, self.limit);
+                    let ids: ::std::vec::Vec<#id_type_ident> = arc_ids
+                        .into_iter()
+                        .map(<#id_type_ident as ::std::convert::From<::std::sync::Arc<str>>>::from)
+                        .collect();
+                    #krate::hyphae::Cell::new(::std::sync::Arc::new(#search_result_ident { ids })).lock()
                 }
             }
         });
