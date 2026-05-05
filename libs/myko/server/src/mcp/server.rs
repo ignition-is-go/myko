@@ -19,6 +19,16 @@ use uuid::Uuid;
 
 use super::types::*;
 
+/// Filter callback used to gate which tools and schema resources are exposed.
+///
+/// Invoked with the full tool name — e.g. `"query:Scene"`, `"report:RuntimeStats"`,
+/// `"command:CreateBinding"`. Returning `false` hides the item from `tools/list` and
+/// `resources/list`, and causes `tools/call` / `resources/read` to behave as if the
+/// item does not exist.
+///
+/// Built-in tools (currently just `connection_status`) are not subject to the filter.
+pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// MCP Server for Myko.
 ///
 /// Automatically exposes all registered queries, reports, and commands
@@ -26,6 +36,7 @@ use super::types::*;
 pub struct McpServer {
     server_name: String,
     server_version: String,
+    filter: Option<ToolFilter>,
 }
 
 impl Default for McpServer {
@@ -40,6 +51,7 @@ impl McpServer {
         Self {
             server_name: "myko-mcp".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            filter: None,
         }
     }
 
@@ -48,7 +60,23 @@ impl McpServer {
         Self {
             server_name: name.into(),
             server_version: version.into(),
+            filter: None,
         }
+    }
+
+    /// Restrict which inventory-backed tools and schema resources are exposed.
+    ///
+    /// The provided closure is called with the full tool name (e.g. `"query:Scene"`,
+    /// `"command:CreateBinding"`). Returning `false` hides the item from listings and
+    /// makes call/read return a not-found error.
+    ///
+    /// Without a filter, all registered queries, reports, and commands are exposed.
+    pub fn with_filter<F>(mut self, filter: F) -> Self
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        self.filter = Some(Arc::new(filter));
+        self
     }
 
     /// Run the MCP server over stdio (blocking).
@@ -114,6 +142,7 @@ impl McpServer {
             server_name: self.server_name.clone(),
             server_version: self.server_version.clone(),
             tool_tx,
+            filter: self.filter.clone(),
         };
 
         // Spawn stdin reader
@@ -159,13 +188,23 @@ impl McpServer {
         Ok(())
     }
 
-    /// Get a summary of all registered items.
+    /// Get a summary of registered items, after applying the configured filter.
     pub fn summary(&self) -> McpSummary {
         let mut queries = Vec::new();
         let mut reports = Vec::new();
         let mut commands = Vec::new();
 
+        let allows = |name: &str| -> bool {
+            match &self.filter {
+                Some(f) => f(name),
+                None => true,
+            }
+        };
+
         for reg in inventory::iter::<QueryRegistration> {
+            if !allows(&format!("query:{}", reg.query_id)) {
+                continue;
+            }
             queries.push(QueryInfo {
                 query_id: reg.query_id.to_string(),
                 query_item_type: reg.query_item_type.to_string(),
@@ -173,6 +212,9 @@ impl McpServer {
         }
 
         for reg in inventory::iter::<ReportRegistration> {
+            if !allows(&format!("report:{}", reg.report_id)) {
+                continue;
+            }
             reports.push(ReportInfo {
                 report_id: reg.report_id.to_string(),
                 output_type: reg.output_type.to_string(),
@@ -180,6 +222,9 @@ impl McpServer {
         }
 
         for reg in inventory::iter::<CommandRegistration> {
+            if !allows(&format!("command:{}", reg.command_id)) {
+                continue;
+            }
             commands.push(CommandInfo {
                 command_id: reg.command_id.to_string(),
                 result_type: reg.result_type.to_string(),
@@ -209,6 +254,17 @@ struct RequestHandler {
     server_name: String,
     server_version: String,
     tool_tx: mpsc::Sender<ToolRequest>,
+    filter: Option<ToolFilter>,
+}
+
+impl RequestHandler {
+    /// Returns true if a tool name passes the configured filter (or always true if no filter).
+    fn allows(&self, tool_name: &str) -> bool {
+        match &self.filter {
+            Some(f) => f(tool_name),
+            None => true,
+        }
+    }
 }
 
 impl RequestHandler {
@@ -275,8 +331,12 @@ impl RequestHandler {
 
         // Queries as tools
         for reg in inventory::iter::<QueryRegistration> {
+            let name = format!("query:{}", reg.query_id);
+            if !self.allows(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("query:{}", reg.query_id),
+                name,
                 description: format!("Query returning {} entities", reg.query_item_type),
                 input_schema: json!({
                     "type": "object",
@@ -287,8 +347,12 @@ impl RequestHandler {
 
         // Reports as tools
         for reg in inventory::iter::<ReportRegistration> {
+            let name = format!("report:{}", reg.report_id);
+            if !self.allows(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("report:{}", reg.report_id),
+                name,
                 description: format!("Report returning {}", reg.output_type),
                 input_schema: json!({
                     "type": "object",
@@ -299,8 +363,12 @@ impl RequestHandler {
 
         // Commands as tools
         for reg in inventory::iter::<CommandRegistration> {
+            let name = format!("command:{}", reg.command_id);
+            if !self.allows(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("command:{}", reg.command_id),
+                name,
                 description: format!("Command returning {}", reg.result_type),
                 input_schema: json!({
                     "type": "object",
@@ -342,6 +410,19 @@ impl RequestHandler {
 
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
+        // Built-in tools bypass the filter; inventory-backed tools are gated.
+        if tool_name != "connection_status" && !self.allows(&tool_name) {
+            let _ = response_tx.blocking_send(McpResponse::error(
+                id,
+                McpError {
+                    code: McpError::METHOD_NOT_FOUND,
+                    message: format!("Unknown tool: {}", tool_name),
+                    data: None,
+                },
+            ));
+            return;
+        }
+
         let _ = self.tool_tx.blocking_send(ToolRequest {
             id,
             tool_name,
@@ -354,6 +435,10 @@ impl RequestHandler {
         let mut resources = Vec::new();
 
         for reg in inventory::iter::<QueryRegistration> {
+            let name = format!("query:{}", reg.query_id);
+            if !self.allows(&name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/query/{}", reg.query_id),
                 name: reg.query_id.to_string(),
@@ -363,6 +448,10 @@ impl RequestHandler {
         }
 
         for reg in inventory::iter::<ReportRegistration> {
+            let name = format!("report:{}", reg.report_id);
+            if !self.allows(&name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/report/{}", reg.report_id),
                 name: reg.report_id.to_string(),
@@ -372,6 +461,10 @@ impl RequestHandler {
         }
 
         for reg in inventory::iter::<CommandRegistration> {
+            let name = format!("command:{}", reg.command_id);
+            if !self.allows(&name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/command/{}", reg.command_id),
                 name: format!("{} (command)", reg.command_id),
@@ -402,6 +495,18 @@ impl RequestHandler {
             let parts: Vec<&str> = path.splitn(2, '/').collect();
             if parts.len() == 2 {
                 let (schema_type, schema_id) = (parts[0], parts[1]);
+
+                let tool_name = format!("{}:{}", schema_type, schema_id);
+                if !self.allows(&tool_name) {
+                    return McpResponse::error(
+                        id,
+                        McpError {
+                            code: McpError::INVALID_PARAMS,
+                            message: format!("Resource not found: {}", uri),
+                            data: None,
+                        },
+                    );
+                }
 
                 let content = match schema_type {
                     "query" => get_query_schema(schema_id),
@@ -771,4 +876,46 @@ pub struct ReportInfo {
 pub struct CommandInfo {
     pub command_id: String,
     pub result_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_rejects_all_yields_empty_summary() {
+        let summary = McpServer::new().with_filter(|_| false).summary();
+        assert!(summary.queries.is_empty());
+        assert!(summary.reports.is_empty());
+        assert!(summary.commands.is_empty());
+    }
+
+    #[test]
+    fn filter_passes_all_matches_default_summary() {
+        let default_summary = McpServer::new().summary();
+        let pass_through = McpServer::new().with_filter(|_| true).summary();
+        assert_eq!(default_summary.queries.len(), pass_through.queries.len());
+        assert_eq!(default_summary.reports.len(), pass_through.reports.len());
+        assert_eq!(default_summary.commands.len(), pass_through.commands.len());
+    }
+
+    #[test]
+    fn filter_receives_prefixed_tool_names() {
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let recorder = seen.clone();
+        let _ = McpServer::new()
+            .with_filter(move |name| {
+                recorder.lock().unwrap().push(name.to_string());
+                true
+            })
+            .summary();
+        let names = seen.lock().unwrap();
+        assert!(
+            names.iter().all(|n| n.starts_with("query:")
+                || n.starts_with("report:")
+                || n.starts_with("command:")),
+            "expected only prefixed names, got: {:?}",
+            names
+        );
+    }
 }

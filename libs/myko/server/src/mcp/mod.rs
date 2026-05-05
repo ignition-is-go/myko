@@ -27,6 +27,23 @@
 //! server.run_stdio()?;
 //! ```
 //!
+//! ## Filtering exposed tools
+//!
+//! By default every registered query, report, and command is exposed. Use
+//! [`McpServer::with_filter`] to restrict the surface — handy when an MCP client
+//! has a tool-count limit, or when only a subset of operations should be
+//! addressable from a given embedding context.
+//!
+//! The filter receives the full tool name (`query:<id>`, `report:<id>`,
+//! `command:<id>`) and is consulted for both `tools/list` and `tools/call`, plus
+//! the corresponding schema resources. Built-in tools are not filtered.
+//!
+//! ```rust,ignore
+//! let server = myko::mcp::McpServer::new()
+//!     .with_filter(|name| name.starts_with("query:") || name == "command:CreateScene");
+//! server.run_stdio()?;
+//! ```
+//!
 //! ## MCP Client Configuration
 //!
 //! Add to Claude Desktop or other MCP clients:
@@ -61,5 +78,5 @@
 mod server;
 mod types;
 
-pub use server::McpServer;
+pub use server::{McpServer, ToolFilter};
 pub use types::*;
