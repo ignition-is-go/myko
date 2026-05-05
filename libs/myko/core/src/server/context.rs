@@ -1501,7 +1501,7 @@ impl CellServerCtx {
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
             crate::server::report_cache_stats::record_hit(&report_id);
-            log::debug!(
+            log::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache HIT report_id={} key={}",
                 report_id,
@@ -1522,7 +1522,7 @@ impl CellServerCtx {
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
             crate::server::report_cache_stats::record_hit_after_gate(&report_id);
-            log::debug!(
+            log::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache HIT_AFTER_GATE report_id={} key={}",
                 report_id,
@@ -1533,10 +1533,10 @@ impl CellServerCtx {
 
         // Emit MISS_COMPUTE *before* compute() so the analyze pass can correlate
         // the miss with the work that follows even if compute panics or hangs.
-        // Payload is only serialized when the debug target is enabled.
-        if log::log_enabled!(target: "myko::server::context::report_cache", log::Level::Debug) {
+        // Payload is only serialized when the trace target is enabled.
+        if log::log_enabled!(target: "myko::server::context::report_cache", log::Level::Trace) {
             let payload = serde_json::to_string(&report).unwrap_or_else(|e| format!("<serialize error: {e}>"));
-            log::debug!(
+            log::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache MISS_COMPUTE report_id={} key={} payload={}",
                 report_id,
