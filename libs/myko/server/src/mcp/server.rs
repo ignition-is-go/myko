@@ -27,6 +27,9 @@ use super::types::*;
 /// item does not exist.
 ///
 /// Built-in tools (currently just `connection_status`) are not subject to the filter.
+///
+/// Available behind the `mcp-tool-filter` Cargo feature.
+#[cfg(feature = "mcp-tool-filter")]
 pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// MCP Server for Myko.
@@ -36,6 +39,7 @@ pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub struct McpServer {
     server_name: String,
     server_version: String,
+    #[cfg(feature = "mcp-tool-filter")]
     filter: Option<ToolFilter>,
 }
 
@@ -51,6 +55,7 @@ impl McpServer {
         Self {
             server_name: "myko-mcp".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            #[cfg(feature = "mcp-tool-filter")]
             filter: None,
         }
     }
@@ -60,6 +65,7 @@ impl McpServer {
         Self {
             server_name: name.into(),
             server_version: version.into(),
+            #[cfg(feature = "mcp-tool-filter")]
             filter: None,
         }
     }
@@ -71,6 +77,9 @@ impl McpServer {
     /// makes call/read return a not-found error.
     ///
     /// Without a filter, all registered queries, reports, and commands are exposed.
+    ///
+    /// Available behind the `mcp-tool-filter` Cargo feature.
+    #[cfg(feature = "mcp-tool-filter")]
     pub fn with_filter<F>(mut self, filter: F) -> Self
     where
         F: Fn(&str) -> bool + Send + Sync + 'static,
@@ -142,6 +151,7 @@ impl McpServer {
             server_name: self.server_name.clone(),
             server_version: self.server_version.clone(),
             tool_tx,
+            #[cfg(feature = "mcp-tool-filter")]
             filter: self.filter.clone(),
         };
 
@@ -194,11 +204,12 @@ impl McpServer {
         let mut reports = Vec::new();
         let mut commands = Vec::new();
 
-        let allows = |name: &str| -> bool {
-            match &self.filter {
-                Some(f) => f(name),
-                None => true,
+        let allows = |_name: &str| -> bool {
+            #[cfg(feature = "mcp-tool-filter")]
+            if let Some(f) = &self.filter {
+                return f(_name);
             }
+            true
         };
 
         for reg in inventory::iter::<QueryRegistration> {
@@ -254,16 +265,22 @@ struct RequestHandler {
     server_name: String,
     server_version: String,
     tool_tx: mpsc::Sender<ToolRequest>,
+    #[cfg(feature = "mcp-tool-filter")]
     filter: Option<ToolFilter>,
 }
 
 impl RequestHandler {
-    /// Returns true if a tool name passes the configured filter (or always true if no filter).
-    fn allows(&self, tool_name: &str) -> bool {
-        match &self.filter {
-            Some(f) => f(tool_name),
-            None => true,
+    /// Returns true if a tool name passes the configured filter.
+    ///
+    /// When the `mcp-tool-filter` feature is disabled, this is unconditionally `true`
+    /// and inlines to a no-op so the dispatch hot path is unaffected.
+    #[inline]
+    fn allows(&self, _tool_name: &str) -> bool {
+        #[cfg(feature = "mcp-tool-filter")]
+        if let Some(f) = &self.filter {
+            return f(_tool_name);
         }
+        true
     }
 }
 
@@ -878,7 +895,7 @@ pub struct CommandInfo {
     pub result_type: String,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "mcp-tool-filter"))]
 mod tests {
     use super::*;
 

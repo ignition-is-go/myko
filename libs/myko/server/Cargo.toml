@@ -44,3 +44,7 @@ flume.workspace = true
 default = []
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
+# Expose `McpServer::with_filter` for gating which queries/reports/commands are
+# advertised over MCP. Off by default — embedders that need to slim the tool
+# surface (e.g. to fit MCP client tool-count limits) opt in.
+mcp-tool-filter = []

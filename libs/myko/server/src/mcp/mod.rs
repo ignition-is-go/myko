@@ -27,18 +27,20 @@
 //! server.run_stdio()?;
 //! ```
 //!
-//! ## Filtering exposed tools
+//! ## Filtering exposed tools (`mcp-tool-filter` feature)
 //!
-//! By default every registered query, report, and command is exposed. Use
-//! [`McpServer::with_filter`] to restrict the surface — handy when an MCP client
-//! has a tool-count limit, or when only a subset of operations should be
-//! addressable from a given embedding context.
+//! By default every registered query, report, and command is exposed. Enable
+//! the `mcp-tool-filter` Cargo feature to opt in to [`McpServer::with_filter`],
+//! which restricts the surface — handy when an MCP client has a tool-count
+//! limit, or when only a subset of operations should be addressable from a
+//! given embedding context.
 //!
 //! The filter receives the full tool name (`query:<id>`, `report:<id>`,
 //! `command:<id>`) and is consulted for both `tools/list` and `tools/call`, plus
 //! the corresponding schema resources. Built-in tools are not filtered.
 //!
 //! ```rust,ignore
+//! // Cargo.toml: myko-server = { ..., features = ["mcp-tool-filter"] }
 //! let server = myko::mcp::McpServer::new()
 //!     .with_filter(|name| name.starts_with("query:") || name == "command:CreateScene");
 //! server.run_stdio()?;
@@ -78,5 +80,7 @@
 mod server;
 mod types;
 
-pub use server::{McpServer, ToolFilter};
+pub use server::McpServer;
+#[cfg(feature = "mcp-tool-filter")]
+pub use server::ToolFilter;
 pub use types::*;
