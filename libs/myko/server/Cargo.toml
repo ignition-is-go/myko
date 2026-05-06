@@ -41,10 +41,14 @@ dashmap.workspace = true
 flume.workspace = true
 
 [features]
-default = []
+default = ["mcp-queries", "mcp-reports", "mcp-commands"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
-# Expose `McpServer::with_filter` for gating which queries/reports/commands are
-# advertised over MCP. Off by default — embedders that need to slim the tool
-# surface (e.g. to fit MCP client tool-count limits) opt in.
-mcp-tool-filter = []
+# MCP tool categories. Each gates whether the corresponding inventory items
+# are advertised on `tools/list` (and `resources/list`) and dispatchable on
+# `tools/call`. All three are on by default; embedders with MCP clients that
+# enforce tool-count limits can opt out individually with
+# `default-features = false, features = ["mcp-queries"]` etc.
+mcp-queries = []
+mcp-reports = []
+mcp-commands = []

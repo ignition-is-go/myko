@@ -27,24 +27,26 @@
 //! server.run_stdio()?;
 //! ```
 //!
-//! ## Filtering exposed tools (`mcp-tool-filter` feature)
+//! ## Gating exposed tools
 //!
-//! By default every registered query, report, and command is exposed. Enable
-//! the `mcp-tool-filter` Cargo feature to opt in to [`McpServer::with_filter`],
-//! which restricts the surface — handy when an MCP client has a tool-count
-//! limit, or when only a subset of operations should be addressable from a
-//! given embedding context.
+//! Three Cargo features control which categories the server advertises:
 //!
-//! The filter receives the full tool name (`query:<id>`, `report:<id>`,
-//! `command:<id>`) and is consulted for both `tools/list` and `tools/call`, plus
-//! the corresponding schema resources. Built-in tools are not filtered.
+//! - `mcp-queries` — exposes every registered query
+//! - `mcp-reports` — exposes every registered report
+//! - `mcp-commands` — exposes every registered command
 //!
-//! ```rust,ignore
-//! // Cargo.toml: myko-server = { ..., features = ["mcp-tool-filter"] }
-//! let server = myko::mcp::McpServer::new()
-//!     .with_filter(|name| name.starts_with("query:") || name == "command:CreateScene");
-//! server.run_stdio()?;
+//! All three are enabled by default. Embedders whose MCP client enforces a
+//! tool-count limit (or who want to restrict the server to read-only
+//! operations) can disable categories individually:
+//!
+//! ```toml
+//! # Cargo.toml — expose only queries
+//! myko-server = { version = "...", default-features = false, features = ["mcp-queries"] }
 //! ```
+//!
+//! Disabled categories are dropped from `tools/list` and `resources/list`,
+//! and calls/reads against them return method-not-found at compile time —
+//! no runtime cost.
 //!
 //! ## MCP Client Configuration
 //!
@@ -81,6 +83,4 @@ mod server;
 mod types;
 
 pub use server::McpServer;
-#[cfg(feature = "mcp-tool-filter")]
-pub use server::ToolFilter;
 pub use types::*;

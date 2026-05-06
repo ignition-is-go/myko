@@ -6,41 +6,32 @@ use std::{
 };
 
 use hyphae::{Gettable, Watchable};
-use myko::{
-    client::{ConnectionStatus, MykoClient},
-    command::CommandRegistration,
-    query::QueryRegistration,
-    report::ReportRegistration,
-    wire::{WrappedCommand, WrappedQuery, WrappedReport},
-};
+#[cfg(feature = "mcp-commands")]
+use myko::{command::CommandRegistration, wire::WrappedCommand};
+#[cfg(feature = "mcp-queries")]
+use myko::{query::QueryRegistration, wire::WrappedQuery};
+#[cfg(feature = "mcp-reports")]
+use myko::{report::ReportRegistration, wire::WrappedReport};
+use myko::client::{ConnectionStatus, MykoClient};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot};
+#[cfg(any(feature = "mcp-queries", feature = "mcp-reports"))]
+use tokio::sync::oneshot;
+use tokio::sync::mpsc;
+#[cfg(any(feature = "mcp-queries", feature = "mcp-reports", feature = "mcp-commands"))]
 use uuid::Uuid;
 
 use super::types::*;
 
-/// Filter callback used to gate which tools and schema resources are exposed.
-///
-/// Invoked with the full tool name — e.g. `"query:Scene"`, `"report:RuntimeStats"`,
-/// `"command:CreateBinding"`. Returning `false` hides the item from `tools/list` and
-/// `resources/list`, and causes `tools/call` / `resources/read` to behave as if the
-/// item does not exist.
-///
-/// Built-in tools (currently just `connection_status`) are not subject to the filter.
-///
-/// Available behind the `mcp-tool-filter` Cargo feature.
-#[cfg(feature = "mcp-tool-filter")]
-pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-
 /// MCP Server for Myko.
 ///
 /// Automatically exposes all registered queries, reports, and commands
-/// through the MCP protocol.
+/// through the MCP protocol. Each category is gated behind a Cargo feature
+/// (`mcp-queries`, `mcp-reports`, `mcp-commands`); all three are enabled by
+/// default. Disable individual features to slim the exposed tool surface for
+/// MCP clients with tool-count limits.
 pub struct McpServer {
     server_name: String,
     server_version: String,
-    #[cfg(feature = "mcp-tool-filter")]
-    filter: Option<ToolFilter>,
 }
 
 impl Default for McpServer {
@@ -55,8 +46,6 @@ impl McpServer {
         Self {
             server_name: "myko-mcp".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
-            #[cfg(feature = "mcp-tool-filter")]
-            filter: None,
         }
     }
 
@@ -65,27 +54,7 @@ impl McpServer {
         Self {
             server_name: name.into(),
             server_version: version.into(),
-            #[cfg(feature = "mcp-tool-filter")]
-            filter: None,
         }
-    }
-
-    /// Restrict which inventory-backed tools and schema resources are exposed.
-    ///
-    /// The provided closure is called with the full tool name (e.g. `"query:Scene"`,
-    /// `"command:CreateBinding"`). Returning `false` hides the item from listings and
-    /// makes call/read return a not-found error.
-    ///
-    /// Without a filter, all registered queries, reports, and commands are exposed.
-    ///
-    /// Available behind the `mcp-tool-filter` Cargo feature.
-    #[cfg(feature = "mcp-tool-filter")]
-    pub fn with_filter<F>(mut self, filter: F) -> Self
-    where
-        F: Fn(&str) -> bool + Send + Sync + 'static,
-    {
-        self.filter = Some(Arc::new(filter));
-        self
     }
 
     /// Run the MCP server over stdio (blocking).
@@ -151,8 +120,6 @@ impl McpServer {
             server_name: self.server_name.clone(),
             server_version: self.server_version.clone(),
             tool_tx,
-            #[cfg(feature = "mcp-tool-filter")]
-            filter: self.filter.clone(),
         };
 
         // Spawn stdin reader
@@ -198,49 +165,58 @@ impl McpServer {
         Ok(())
     }
 
-    /// Get a summary of registered items, after applying the configured filter.
+    /// Get a summary of registered items in the categories enabled at compile time.
     pub fn summary(&self) -> McpSummary {
-        let mut queries = Vec::new();
-        let mut reports = Vec::new();
-        let mut commands = Vec::new();
-
-        let allows = |_name: &str| -> bool {
-            #[cfg(feature = "mcp-tool-filter")]
-            if let Some(f) = &self.filter {
-                return f(_name);
+        let queries = {
+            #[cfg(feature = "mcp-queries")]
+            {
+                inventory::iter::<QueryRegistration>
+                    .into_iter()
+                    .map(|reg| QueryInfo {
+                        query_id: reg.query_id.to_string(),
+                        query_item_type: reg.query_item_type.to_string(),
+                    })
+                    .collect()
             }
-            true
+            #[cfg(not(feature = "mcp-queries"))]
+            {
+                Vec::new()
+            }
         };
 
-        for reg in inventory::iter::<QueryRegistration> {
-            if !allows(&format!("query:{}", reg.query_id)) {
-                continue;
+        let reports = {
+            #[cfg(feature = "mcp-reports")]
+            {
+                inventory::iter::<ReportRegistration>
+                    .into_iter()
+                    .map(|reg| ReportInfo {
+                        report_id: reg.report_id.to_string(),
+                        output_type: reg.output_type.to_string(),
+                    })
+                    .collect()
             }
-            queries.push(QueryInfo {
-                query_id: reg.query_id.to_string(),
-                query_item_type: reg.query_item_type.to_string(),
-            });
-        }
+            #[cfg(not(feature = "mcp-reports"))]
+            {
+                Vec::new()
+            }
+        };
 
-        for reg in inventory::iter::<ReportRegistration> {
-            if !allows(&format!("report:{}", reg.report_id)) {
-                continue;
+        let commands = {
+            #[cfg(feature = "mcp-commands")]
+            {
+                inventory::iter::<CommandRegistration>
+                    .into_iter()
+                    .map(|reg| CommandInfo {
+                        command_id: reg.command_id.to_string(),
+                        result_type: reg.result_type.to_string(),
+                    })
+                    .collect()
             }
-            reports.push(ReportInfo {
-                report_id: reg.report_id.to_string(),
-                output_type: reg.output_type.to_string(),
-            });
-        }
-
-        for reg in inventory::iter::<CommandRegistration> {
-            if !allows(&format!("command:{}", reg.command_id)) {
-                continue;
+            #[cfg(not(feature = "mcp-commands"))]
+            {
+                Vec::new()
             }
-            commands.push(CommandInfo {
-                command_id: reg.command_id.to_string(),
-                result_type: reg.result_type.to_string(),
-            });
-        }
+        };
 
         McpSummary {
             queries,
@@ -265,23 +241,6 @@ struct RequestHandler {
     server_name: String,
     server_version: String,
     tool_tx: mpsc::Sender<ToolRequest>,
-    #[cfg(feature = "mcp-tool-filter")]
-    filter: Option<ToolFilter>,
-}
-
-impl RequestHandler {
-    /// Returns true if a tool name passes the configured filter.
-    ///
-    /// When the `mcp-tool-filter` feature is disabled, this is unconditionally `true`
-    /// and inlines to a no-op so the dispatch hot path is unaffected.
-    #[inline]
-    fn allows(&self, _tool_name: &str) -> bool {
-        #[cfg(feature = "mcp-tool-filter")]
-        if let Some(f) = &self.filter {
-            return f(_tool_name);
-        }
-        true
-    }
 }
 
 impl RequestHandler {
@@ -333,7 +292,8 @@ impl RequestHandler {
     }
 
     fn handle_tools_list(&self, id: Value) -> McpResponse {
-        let mut tools = Vec::new();
+        #[allow(unused_mut)]
+        let mut tools: Vec<McpTool> = Vec::new();
 
         // Built-in connection_status tool
         tools.push(McpTool {
@@ -346,14 +306,10 @@ impl RequestHandler {
             }),
         });
 
-        // Queries as tools
+        #[cfg(feature = "mcp-queries")]
         for reg in inventory::iter::<QueryRegistration> {
-            let name = format!("query:{}", reg.query_id);
-            if !self.allows(&name) {
-                continue;
-            }
             tools.push(McpTool {
-                name,
+                name: format!("query:{}", reg.query_id),
                 description: format!("Query returning {} entities", reg.query_item_type),
                 input_schema: json!({
                     "type": "object",
@@ -362,14 +318,10 @@ impl RequestHandler {
             });
         }
 
-        // Reports as tools
+        #[cfg(feature = "mcp-reports")]
         for reg in inventory::iter::<ReportRegistration> {
-            let name = format!("report:{}", reg.report_id);
-            if !self.allows(&name) {
-                continue;
-            }
             tools.push(McpTool {
-                name,
+                name: format!("report:{}", reg.report_id),
                 description: format!("Report returning {}", reg.output_type),
                 input_schema: json!({
                     "type": "object",
@@ -378,14 +330,10 @@ impl RequestHandler {
             });
         }
 
-        // Commands as tools
+        #[cfg(feature = "mcp-commands")]
         for reg in inventory::iter::<CommandRegistration> {
-            let name = format!("command:{}", reg.command_id);
-            if !self.allows(&name) {
-                continue;
-            }
             tools.push(McpTool {
-                name,
+                name: format!("command:{}", reg.command_id),
                 description: format!("Command returning {}", reg.result_type),
                 input_schema: json!({
                     "type": "object",
@@ -427,19 +375,6 @@ impl RequestHandler {
 
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-        // Built-in tools bypass the filter; inventory-backed tools are gated.
-        if tool_name != "connection_status" && !self.allows(&tool_name) {
-            let _ = response_tx.blocking_send(McpResponse::error(
-                id,
-                McpError {
-                    code: McpError::METHOD_NOT_FOUND,
-                    message: format!("Unknown tool: {}", tool_name),
-                    data: None,
-                },
-            ));
-            return;
-        }
-
         let _ = self.tool_tx.blocking_send(ToolRequest {
             id,
             tool_name,
@@ -449,13 +384,11 @@ impl RequestHandler {
     }
 
     fn handle_resources_list(&self, id: Value) -> McpResponse {
-        let mut resources = Vec::new();
+        #[allow(unused_mut)]
+        let mut resources: Vec<McpResource> = Vec::new();
 
+        #[cfg(feature = "mcp-queries")]
         for reg in inventory::iter::<QueryRegistration> {
-            let name = format!("query:{}", reg.query_id);
-            if !self.allows(&name) {
-                continue;
-            }
             resources.push(McpResource {
                 uri: format!("myko://schema/query/{}", reg.query_id),
                 name: reg.query_id.to_string(),
@@ -464,11 +397,8 @@ impl RequestHandler {
             });
         }
 
+        #[cfg(feature = "mcp-reports")]
         for reg in inventory::iter::<ReportRegistration> {
-            let name = format!("report:{}", reg.report_id);
-            if !self.allows(&name) {
-                continue;
-            }
             resources.push(McpResource {
                 uri: format!("myko://schema/report/{}", reg.report_id),
                 name: reg.report_id.to_string(),
@@ -477,11 +407,8 @@ impl RequestHandler {
             });
         }
 
+        #[cfg(feature = "mcp-commands")]
         for reg in inventory::iter::<CommandRegistration> {
-            let name = format!("command:{}", reg.command_id);
-            if !self.allows(&name) {
-                continue;
-            }
             resources.push(McpResource {
                 uri: format!("myko://schema/command/{}", reg.command_id),
                 name: format!("{} (command)", reg.command_id),
@@ -513,24 +440,16 @@ impl RequestHandler {
             if parts.len() == 2 {
                 let (schema_type, schema_id) = (parts[0], parts[1]);
 
-                let tool_name = format!("{}:{}", schema_type, schema_id);
-                if !self.allows(&tool_name) {
-                    return McpResponse::error(
-                        id,
-                        McpError {
-                            code: McpError::INVALID_PARAMS,
-                            message: format!("Resource not found: {}", uri),
-                            data: None,
-                        },
-                    );
-                }
-
-                let content = match schema_type {
+                let content: Option<String> = match schema_type {
+                    #[cfg(feature = "mcp-queries")]
                     "query" => get_query_schema(schema_id),
+                    #[cfg(feature = "mcp-reports")]
                     "report" => get_report_schema(schema_id),
+                    #[cfg(feature = "mcp-commands")]
                     "command" => get_command_schema(schema_id),
                     _ => None,
                 };
+                let _ = schema_id;
 
                 if let Some(content) = content {
                     return McpResponse::success(
@@ -611,21 +530,26 @@ async fn execute_tool(
         }));
     }
 
+    #[cfg(feature = "mcp-queries")]
     if let Some(query_id) = tool_name.strip_prefix("query:") {
         return execute_query(client, query_id, arguments).await;
     }
 
+    #[cfg(feature = "mcp-reports")]
     if let Some(report_id) = tool_name.strip_prefix("report:") {
         return execute_report(client, report_id, arguments).await;
     }
 
+    #[cfg(feature = "mcp-commands")]
     if let Some(command_id) = tool_name.strip_prefix("command:") {
         return execute_command(client, command_id, arguments).await;
     }
 
+    let _ = arguments;
     Err(format!("Unknown tool: {}", tool_name))
 }
 
+#[cfg(feature = "mcp-queries")]
 async fn execute_query(
     client: Arc<MykoClient>,
     query_id: &str,
@@ -690,6 +614,7 @@ async fn execute_query(
     Err(format!("Query not found: {}", query_id))
 }
 
+#[cfg(feature = "mcp-reports")]
 async fn execute_report(
     client: Arc<MykoClient>,
     report_id: &str,
@@ -740,6 +665,7 @@ async fn execute_report(
     Err(format!("Report not found: {}", report_id))
 }
 
+#[cfg(feature = "mcp-commands")]
 async fn execute_command(
     client: Arc<MykoClient>,
     command_id: &str,
@@ -814,6 +740,7 @@ async fn execute_command(
 // Schema Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "mcp-queries")]
 fn get_query_schema(query_id: &str) -> Option<String> {
     for reg in inventory::iter::<QueryRegistration> {
         if reg.query_id == query_id {
@@ -830,6 +757,7 @@ fn get_query_schema(query_id: &str) -> Option<String> {
     None
 }
 
+#[cfg(feature = "mcp-reports")]
 fn get_report_schema(report_id: &str) -> Option<String> {
     for reg in inventory::iter::<ReportRegistration> {
         if reg.report_id == report_id {
@@ -846,6 +774,7 @@ fn get_report_schema(report_id: &str) -> Option<String> {
     None
 }
 
+#[cfg(feature = "mcp-commands")]
 fn get_command_schema(command_id: &str) -> Option<String> {
     for reg in inventory::iter::<CommandRegistration> {
         if reg.command_id == command_id {
@@ -895,44 +824,20 @@ pub struct CommandInfo {
     pub result_type: String,
 }
 
-#[cfg(all(test, feature = "mcp-tool-filter"))]
+#[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]
-    fn filter_rejects_all_yields_empty_summary() {
-        let summary = McpServer::new().with_filter(|_| false).summary();
-        assert!(summary.queries.is_empty());
-        assert!(summary.reports.is_empty());
-        assert!(summary.commands.is_empty());
-    }
-
-    #[test]
-    fn filter_passes_all_matches_default_summary() {
-        let default_summary = McpServer::new().summary();
-        let pass_through = McpServer::new().with_filter(|_| true).summary();
-        assert_eq!(default_summary.queries.len(), pass_through.queries.len());
-        assert_eq!(default_summary.reports.len(), pass_through.reports.len());
-        assert_eq!(default_summary.commands.len(), pass_through.commands.len());
-    }
-
-    #[test]
-    fn filter_receives_prefixed_tool_names() {
-        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
-        let recorder = seen.clone();
-        let _ = McpServer::new()
-            .with_filter(move |name| {
-                recorder.lock().unwrap().push(name.to_string());
-                true
-            })
-            .summary();
-        let names = seen.lock().unwrap();
-        assert!(
-            names.iter().all(|n| n.starts_with("query:")
-                || n.starts_with("report:")
-                || n.starts_with("command:")),
-            "expected only prefixed names, got: {:?}",
-            names
-        );
+    fn summary_omits_disabled_categories() {
+        let summary = McpServer::new().summary();
+        #[cfg(not(feature = "mcp-queries"))]
+        assert!(summary.queries.is_empty(), "queries should be empty when feature is off");
+        #[cfg(not(feature = "mcp-reports"))]
+        assert!(summary.reports.is_empty(), "reports should be empty when feature is off");
+        #[cfg(not(feature = "mcp-commands"))]
+        assert!(summary.commands.is_empty(), "commands should be empty when feature is off");
+        let _ = summary;
     }
 }
