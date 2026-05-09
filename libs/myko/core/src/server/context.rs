@@ -1535,7 +1535,8 @@ impl CellServerCtx {
         // the miss with the work that follows even if compute panics or hangs.
         // Payload is only serialized when the trace target is enabled.
         if log::log_enabled!(target: "myko::server::context::report_cache", log::Level::Trace) {
-            let payload = serde_json::to_string(&report).unwrap_or_else(|e| format!("<serialize error: {e}>"));
+            let payload = serde_json::to_string(&report)
+                .unwrap_or_else(|e| format!("<serialize error: {e}>"));
             log::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache MISS_COMPUTE report_id={} key={} payload={}",

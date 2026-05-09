@@ -33,7 +33,11 @@ fn make_items(n: usize) -> Vec<(Arc<str>, BenchItem)> {
             let item = BenchItem {
                 id: id.clone().into(),
                 name: format!("name-{i}"),
-                category: if i % 4 == 0 { "hot".into() } else { "cold".into() },
+                category: if i % 4 == 0 {
+                    "hot".into()
+                } else {
+                    "cold".into()
+                },
                 value: (i as i64) % 100,
             };
             (id, item)
@@ -196,7 +200,12 @@ fn bench_insert_many(c: &mut Criterion) {
     g.bench_function("dyn", |b| {
         let entries = make_dyn_arcs(N_ITEMS);
         b.iter_batched(
-            || (CellMap::<Arc<str>, Arc<dyn AnyItem>>::new(), entries.clone()),
+            || {
+                (
+                    CellMap::<Arc<str>, Arc<dyn AnyItem>>::new(),
+                    entries.clone(),
+                )
+            },
             |(m, e)| {
                 m.insert_many(e);
                 black_box(m.snapshot().len())
@@ -534,7 +543,9 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
-                                let Some(pid) = current_pid.clone() else { break };
+                                let Some(pid) = current_pid.clone() else {
+                                    break;
+                                };
                                 let Some(parent) = inner_for_proj.get_value(&pid) else {
                                     break;
                                 };
@@ -573,7 +584,9 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
-                                let Some(pid) = current_pid.clone() else { break };
+                                let Some(pid) = current_pid.clone() else {
+                                    break;
+                                };
                                 let Some(parent_any) = inner_for_proj.get_value(&pid) else {
                                     break;
                                 };

@@ -506,7 +506,11 @@ mod tests {
     #[test]
     fn empty_index_returns_no_hits() {
         let index = SearchIndex::<TestItem>::new();
-        assert!(index.search("anything", SearchOptions::default()).is_empty());
+        assert!(
+            index
+                .search("anything", SearchOptions::default())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -744,7 +748,10 @@ mod tests {
         let pos1 = hits.iter().position(|h| h.id.as_ref() == "1");
         let pos2 = hits.iter().position(|h| h.id.as_ref() == "2");
         if let (Some(p1), Some(p2)) = (pos1, pos2) {
-            assert!(p1 < p2, "subsequence (entity 1) must rank above typo (entity 2)");
+            assert!(
+                p1 < p2,
+                "subsequence (entity 1) must rank above typo (entity 2)"
+            );
         }
     }
 }

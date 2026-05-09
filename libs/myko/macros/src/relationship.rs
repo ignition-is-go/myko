@@ -714,10 +714,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         // Per-type typed search report: `Search{T}` returning `Search{T}Result`.
         // Mirrors the auto-generated `GetAllTargets`, `CountAllTargets`, etc.
         // shape — sits alongside them in the entity's auto-generated suite.
-        let id_type_ident = syn::Ident::new(
-            &format!("{local_type}Id"),
-            proc_macro2::Span::call_site(),
-        );
+        let id_type_ident =
+            syn::Ident::new(&format!("{local_type}Id"), proc_macro2::Span::call_site());
         let search_result_ident = syn::Ident::new(
             &format!("Search{local_type}Result"),
             proc_macro2::Span::call_site(),

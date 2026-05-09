@@ -263,7 +263,12 @@ mod tests {
         // BenchItem and inserting an unregistered Server-shaped item would be
         // the failure mode. Covered by the lookup-by-entity_type filter.)
         registry.insert(&item("1", "x", "y"));
-        assert_eq!(registry.search("BenchItem", "x", SearchOptions::default()).len(), 1);
+        assert_eq!(
+            registry
+                .search("BenchItem", "x", SearchOptions::default())
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -275,7 +280,9 @@ mod tests {
         // Direct typed access — no dyn boundary on the search call.
         let hits = registry
             .with_typed::<BenchItem, _>("BenchItem", |lock| {
-                lock.read().unwrap().search("mixer", SearchOptions::default())
+                lock.read()
+                    .unwrap()
+                    .search("mixer", SearchOptions::default())
             })
             .unwrap();
         assert_eq!(hits.len(), 1);
