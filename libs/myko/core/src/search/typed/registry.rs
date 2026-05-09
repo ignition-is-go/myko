@@ -205,7 +205,7 @@ impl Default for SearchRegistry {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "bench"))]
 mod tests {
     use super::*;
     use crate::bench_entities::BenchItem;
