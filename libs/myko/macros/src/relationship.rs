@@ -696,7 +696,14 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             })
             .collect();
 
+        // wasm-gated: `crate::search::typed::Searchable` lives behind
+        // `#[cfg(not(target_arch = "wasm32"))] pub mod search;` in
+        // `myko::core::lib.rs`. Without this gate the impl block fails to
+        // resolve `crate::search::typed::Searchable` on wasm targets — an
+        // actual rship-Windows CI failure (trunk-build compiles the leptos
+        // UI against wasm32 and pulls myko in transitively).
         registrations.push(quote! {
+            #[cfg(not(target_arch = "wasm32"))]
             impl #krate::search::typed::Searchable for #local_type_ident {
                 fn extract_searchable(
                     &self,
@@ -733,12 +740,19 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         );
         let default_limit_fn_str = default_limit_fn.to_string();
 
+        // wasm-gated: the report handler calls `ctx.search(...)`, which is
+        // only defined on non-wasm builds (see `pub mod search;` cfg in
+        // `myko::core::lib.rs`). The companion result/report types are
+        // gated together so they don't outlive the handler. Identical
+        // rationale to the `impl Searchable` gate above.
         registrations.push(quote! {
+            #[cfg(not(target_arch = "wasm32"))]
             #[#krate::myko_report_output]
             pub struct #search_result_ident {
                 pub ids: ::std::vec::Vec<#id_type_ident>,
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
             #[doc(hidden)]
             pub fn #default_limit_fn() -> usize {
                 #krate::search::default_search_limit()
@@ -747,6 +761,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             /// Search this entity type by query string. Backed by the typed
             /// per-entity `SearchIndex<T>` (exact + nucleo subsequence +
             /// Levenshtein typo). Returns matching ids in tier order.
+            #[cfg(not(target_arch = "wasm32"))]
             #[#krate::myko_report(#search_result_ident)]
             pub struct #search_report_ident {
                 pub query: ::std::string::String,
@@ -754,6 +769,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 pub limit: usize,
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
             impl #krate::prelude::ReportHandler for #search_report_ident {
                 type Output = #search_result_ident;
 
