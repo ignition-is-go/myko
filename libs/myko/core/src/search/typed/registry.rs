@@ -23,6 +23,9 @@ pub trait DynSearchIndex: Send + Sync + 'static {
     fn remove_dyn(&self, id: &str);
     fn search_arc_str(&self, query: &str, opts: SearchOptions) -> Vec<Hit<Arc<str>>>;
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Holds one typed `SearchIndex<T>` along with its entity-type tag. Behind

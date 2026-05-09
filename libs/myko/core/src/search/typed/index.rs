@@ -183,12 +183,12 @@ impl<T: Searchable> SearchIndex<T> {
     }
 
     pub fn remove(&mut self, id: &T::Id) {
-        if let Some(internal_id) = self.interner.lookup(id) {
-            if self.live.remove(internal_id) {
-                self.dead_count += 1;
-                if self.should_compact() {
-                    self.compact();
-                }
+        if let Some(internal_id) = self.interner.lookup(id)
+            && self.live.remove(internal_id)
+        {
+            self.dead_count += 1;
+            if self.should_compact() {
+                self.compact();
             }
         }
     }
@@ -245,7 +245,7 @@ impl<T: Searchable> SearchIndex<T> {
 
         let mut sorted: Vec<(u32, Score, usize)> =
             hits.into_iter().map(|(id, (s, f))| (id, s, f)).collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
         sorted.truncate(opts.limit);
 
         sorted
