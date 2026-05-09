@@ -18,6 +18,8 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
 
@@ -26,3 +28,13 @@ jobs:
       - run: cargo flux run check
       - run: cargo flux run lint
       - run: cargo flux run test
+
+      # Regression guard for rship's Tauri Windows pipeline. trunk-build
+      # there compiles the leptos UI to wasm32-unknown-unknown and pulls
+      # myko in transitively. The `#[myko_item]` macro's emissions for
+      # `#[searchable]` fields reference `crate::search::*`, which is
+      # gated `#[cfg(not(target_arch = "wasm32"))]` in
+      # `myko::core::lib.rs`. If any of those emissions loses its wasm
+      # gate, downstream wasm builds fail with E0433 "cannot find
+      # `search` in `crate`" — caught here by exercising the same target.
+      - run: cargo check --target wasm32-unknown-unknown -p myko --target-dir target/claude
