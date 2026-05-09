@@ -11,4 +11,5 @@ pub use cell_map_cast::{
 };
 pub use traits::{
     AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration,
+    ItemSerializeJsonFn, lookup_item_registration,
 };

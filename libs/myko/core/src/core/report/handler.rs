@@ -183,8 +183,9 @@ impl ReportContext {
 
     /// Search for entities matching a query string.
     ///
-    /// Returns matching entity IDs (up to `limit` results).
-    /// Uses tantivy full-text search on fields marked with `#[searchable]`.
+    /// Returns matching entity IDs (up to `limit` results). Backed by the
+    /// per-type `typed::SearchIndex<T>` (see `search/SPEC.md`); operates on
+    /// fields marked with `#[searchable]`.
     pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
         #[cfg(not(target_arch = "wasm32"))]
         {

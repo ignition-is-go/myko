@@ -486,6 +486,17 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             entity_type: #name_str,
             crate_name: module_path!(),
             parse: <#name as #krate::item::Eventable>::parse,
+            parse_bytes: <#name as #krate::item::Eventable>::parse_bytes,
+            // Typed JSON serialize shim: downcast once, then call typed
+            // `to_raw_value` so the inner field-by-field serialize is
+            // monomorphized — no erased_serde on the JSON hot path.
+            serialize_json: |any| {
+                let typed = any
+                    .as_any()
+                    .downcast_ref::<#name>()
+                    .expect("ItemRegistration::serialize_json: entity_type/type mismatch");
+                #krate::serde_json::value::to_raw_value(typed)
+            },
         }
     };
 
