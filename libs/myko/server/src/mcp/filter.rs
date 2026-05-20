@@ -1,20 +1,22 @@
-//! Per-client MCP tool filters.
+//! Per-client MCP filters, aligned to the two error categories the MCP spec
+//! defines for tools ([Tools / Error Handling][mcp-tool-errors]):
 //!
-//! Two complementary, client-configured filters compose into [`ClientFilters`]:
-//!
-//! 1. **Name filter** — glob allow/deny over tool names. Denied tools
-//!    disappear from `tools/list` and a `tools/call` against them returns
-//!    method-not-found. Source:
+//! 1. **Tool visibility** — glob allow/deny over tool names. A hidden tool
+//!    disappears from `tools/list` and a `tools/call` against it returns the
+//!    MCP **Protocol Error** `{"code": -32602, "message": "Unknown tool: …"}`.
+//!    Source:
 //!    - HTTP/WS: `X-Myko-Tools-Allow` and `X-Myko-Tools-Deny` request headers.
 //!    - Stdio: `MYKO_MCP_TOOLS_ALLOW` / `MYKO_MCP_TOOLS_DENY` env vars.
 //!
-//! 2. **Call filter** — argument-aware constraints on `tools/call`. The
-//!    client expresses per-tool, per-argument allow/deny value lists. A
-//!    rejection surfaces as MCP `isError: true` content with a descriptive
-//!    message — the "invalid input data" shape per spec, distinct from the
-//!    protocol-level `-32601` used for unknown / name-denied tools. Source:
+//! 2. **Argument validation** — client-supplied constraints on the JSON
+//!    `arguments` of a `tools/call`. A constraint failure surfaces as an MCP
+//!    **Tool Execution Error** (`isError: true` content with a descriptive
+//!    message), the spec's "Invalid input data" category — distinct from a
+//!    Protocol Error. Source:
 //!    - HTTP/WS: `X-Myko-Tool-Constraints` request header (JSON).
 //!    - Stdio: `MYKO_MCP_TOOL_CONSTRAINTS` env var (JSON).
+//!
+//! [mcp-tool-errors]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 //!
 //! ### Constraint JSON shape
 //!
@@ -133,15 +135,18 @@ impl ArgConstraint {
 
 // ─── ClientFilters ─────────────────────────────────────────────────────────
 
-/// Per-client filter combining a name allow/deny and per-call argument
+/// Per-client filter combining tool-visibility rules with per-call argument
 /// constraints. Driven by request headers (HTTP/WS) or environment variables
 /// (stdio).
 #[derive(Debug, Clone, Default)]
 pub struct ClientFilters {
-    name_allow: Vec<Pattern>,
-    name_deny: Vec<Pattern>,
-    /// `tool_name -> { arg_name -> ArgConstraint }`. Empty = no call constraints.
-    call: HashMap<String, HashMap<String, ArgConstraint>>,
+    /// Glob patterns the tool name must match. Empty = visibility unrestricted.
+    visibility_allow: Vec<Pattern>,
+    /// Glob patterns that hide a tool. Deny wins.
+    visibility_deny: Vec<Pattern>,
+    /// `tool_name -> { arg_name -> ArgConstraint }`. Empty = no argument
+    /// validation.
+    argument_constraints: HashMap<String, HashMap<String, ArgConstraint>>,
 }
 
 impl ClientFilters {
@@ -155,41 +160,44 @@ impl ClientFilters {
     /// malformed filter config; that would be a footgun for ops). A parse
     /// error is logged.
     pub fn from_strings(
-        name_allow: Option<&str>,
-        name_deny: Option<&str>,
+        visibility_allow: Option<&str>,
+        visibility_deny: Option<&str>,
         constraints_json: Option<&str>,
     ) -> Self {
-        let name_allow = parse_patterns(name_allow);
-        let name_deny = parse_patterns(name_deny);
-        let call = parse_constraints(constraints_json);
         Self {
-            name_allow,
-            name_deny,
-            call,
+            visibility_allow: parse_patterns(visibility_allow),
+            visibility_deny: parse_patterns(visibility_deny),
+            argument_constraints: parse_constraints(constraints_json),
         }
     }
 
-    /// `true` iff the tool name is permitted by the name allow/deny rules.
+    /// `true` if the tool name is visible to this client.
     ///
-    /// Deny wins. Empty allow list means "allow anything not denied".
-    pub fn allows_name(&self, name: &str) -> bool {
-        if self.name_deny.iter().any(|p| p.matches(name)) {
+    /// A `false` return means a `tools/call` against this name produces an
+    /// MCP **Protocol Error** (`-32602`, "Unknown tool: …") and the tool is
+    /// omitted from `tools/list` / `resources/list`. Deny wins; an empty
+    /// allow list means "visible unless explicitly denied".
+    pub fn tool_visible(&self, name: &str) -> bool {
+        if self.visibility_deny.iter().any(|p| p.matches(name)) {
             return false;
         }
-        if self.name_allow.is_empty() {
+        if self.visibility_allow.is_empty() {
             return true;
         }
-        self.name_allow.iter().any(|p| p.matches(name))
+        self.visibility_allow.iter().any(|p| p.matches(name))
     }
 
-    /// Apply argument constraints for a `tools/call`. `Ok(())` if no
-    /// constraints apply or every constraint passes. `Err(message)` if any
-    /// constraint rejects, with a short human-readable reason.
+    /// Validate the JSON `arguments` of a `tools/call`.
     ///
-    /// Name-level allow/deny is *not* re-checked here; callers should run
-    /// [`allows_name`](Self::allows_name) first.
-    pub fn allows_call(&self, tool_name: &str, arguments: &Value) -> Result<(), String> {
-        let Some(tool_constraints) = self.call.get(tool_name) else {
+    /// `Ok(())` if no constraints apply or every constraint passes.
+    /// `Err(message)` surfaces as an MCP **Tool Execution Error**
+    /// (`isError: true` content with the message), the spec's
+    /// "Invalid input data" category.
+    ///
+    /// Visibility is *not* re-checked here; callers run
+    /// [`tool_visible`](Self::tool_visible) first.
+    pub fn validate_call(&self, tool_name: &str, arguments: &Value) -> Result<(), String> {
+        let Some(tool_constraints) = self.argument_constraints.get(tool_name) else {
             return Ok(());
         };
         let args_obj = arguments.as_object();
@@ -235,65 +243,65 @@ mod tests {
     #[test]
     fn empty_filter_allows_everything() {
         let f = ClientFilters::allow_all();
-        assert!(f.allows_name("anything"));
-        assert!(f.allows_name("command:DeleteEverything"));
+        assert!(f.tool_visible("anything"));
+        assert!(f.tool_visible("command:DeleteEverything"));
     }
 
     #[test]
     fn star_allows_everything() {
         let f = ClientFilters::from_strings(Some("*"), None, None);
-        assert!(f.allows_name("query:GetAllTargets"));
+        assert!(f.tool_visible("query:GetAllTargets"));
     }
 
     #[test]
     fn prefix_pattern() {
         let f = ClientFilters::from_strings(Some("query:*"), None, None);
-        assert!(f.allows_name("query:GetAllTargets"));
-        assert!(!f.allows_name("command:DoStuff"));
+        assert!(f.tool_visible("query:GetAllTargets"));
+        assert!(!f.tool_visible("command:DoStuff"));
     }
 
     #[test]
     fn suffix_pattern() {
         let f = ClientFilters::from_strings(Some("*Internal"), None, None);
-        assert!(f.allows_name("query:GetThingInternal"));
-        assert!(!f.allows_name("query:GetThing"));
+        assert!(f.tool_visible("query:GetThingInternal"));
+        assert!(!f.tool_visible("query:GetThing"));
     }
 
     #[test]
     fn deny_wins_on_name_conflict() {
         let f = ClientFilters::from_strings(Some("query:*"), Some("query:GetSecret"), None);
-        assert!(f.allows_name("query:GetAllTargets"));
-        assert!(!f.allows_name("query:GetSecret"));
+        assert!(f.tool_visible("query:GetAllTargets"));
+        assert!(!f.tool_visible("query:GetSecret"));
     }
 
     #[test]
     fn empty_allow_with_deny_means_allow_all_minus_denied() {
         let f = ClientFilters::from_strings(None, Some("command:Delete*"), None);
-        assert!(f.allows_name("query:GetAllTargets"));
-        assert!(!f.allows_name("command:DeleteThing"));
+        assert!(f.tool_visible("query:GetAllTargets"));
+        assert!(!f.tool_visible("command:DeleteThing"));
     }
 
     #[test]
     fn comma_separated_allow_list() {
         let f = ClientFilters::from_strings(Some("query:*,report:HealthCheck"), None, None);
-        assert!(f.allows_name("query:Anything"));
-        assert!(f.allows_name("report:HealthCheck"));
-        assert!(!f.allows_name("report:OtherReport"));
-        assert!(!f.allows_name("command:DoStuff"));
+        assert!(f.tool_visible("query:Anything"));
+        assert!(f.tool_visible("report:HealthCheck"));
+        assert!(!f.tool_visible("report:OtherReport"));
+        assert!(!f.tool_visible("command:DoStuff"));
     }
 
     #[test]
     fn whitespace_around_patterns_is_stripped() {
         let f = ClientFilters::from_strings(Some(" query:* , report:H "), None, None);
-        assert!(f.allows_name("query:GetAll"));
-        assert!(f.allows_name("report:H"));
+        assert!(f.tool_visible("query:GetAll"));
+        assert!(f.tool_visible("report:H"));
     }
 
     #[test]
     fn exact_match() {
         let f = ClientFilters::from_strings(Some("query:GetAllTargets"), None, None);
-        assert!(f.allows_name("query:GetAllTargets"));
-        assert!(!f.allows_name("query:GetAllTargetsExtra"));
+        assert!(f.tool_visible("query:GetAllTargets"));
+        assert!(!f.tool_visible("query:GetAllTargetsExtra"));
     }
 
     // ─── Call filter ───────────────────────────────────────────────────────
@@ -306,7 +314,7 @@ mod tests {
     fn no_constraints_for_tool_passes() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
         assert!(
-            f.allows_call("command:Other", &json!({"anything": "goes"}))
+            f.validate_call("command:Other", &json!({"anything": "goes"}))
                 .is_ok()
         );
     }
@@ -315,7 +323,7 @@ mod tests {
     fn allow_list_passes_matching_arg() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
         assert!(
-            f.allows_call("command:RunPlaybook", &json!({"playbook_id": "site"}))
+            f.validate_call("command:RunPlaybook", &json!({"playbook_id": "site"}))
                 .is_ok()
         );
     }
@@ -324,7 +332,7 @@ mod tests {
     fn allow_list_rejects_non_matching_arg() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
         let err = f
-            .allows_call("command:RunPlaybook", &json!({"playbook_id": "danger"}))
+            .validate_call("command:RunPlaybook", &json!({"playbook_id": "danger"}))
             .unwrap_err();
         assert!(err.contains("playbook_id"));
         assert!(err.contains("allowlist"));
@@ -334,7 +342,7 @@ mod tests {
     fn allow_list_rejects_missing_arg() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
         let err = f
-            .allows_call("command:RunPlaybook", &json!({}))
+            .validate_call("command:RunPlaybook", &json!({}))
             .unwrap_err();
         assert!(err.contains("required"));
     }
@@ -347,11 +355,11 @@ mod tests {
             Some(r#"{"command:Tag":{"namespace":{"deny":["prod"]}}}"#),
         );
         assert!(
-            f.allows_call("command:Tag", &json!({"namespace": "staging"}))
+            f.validate_call("command:Tag", &json!({"namespace": "staging"}))
                 .is_ok()
         );
         let err = f
-            .allows_call("command:Tag", &json!({"namespace": "prod"}))
+            .validate_call("command:Tag", &json!({"namespace": "prod"}))
             .unwrap_err();
         assert!(err.contains("namespace"));
     }
@@ -363,14 +371,14 @@ mod tests {
             None,
             Some(r#"{"command:X":{"a":{"allow":["1","2"],"deny":["2"]}}}"#),
         );
-        assert!(f.allows_call("command:X", &json!({"a": "1"})).is_ok());
-        assert!(f.allows_call("command:X", &json!({"a": "2"})).is_err());
+        assert!(f.validate_call("command:X", &json!({"a": "1"})).is_ok());
+        assert!(f.validate_call("command:X", &json!({"a": "2"})).is_err());
     }
 
     #[test]
     fn malformed_constraint_json_is_ignored() {
         // Better to be permissive than to brick a request on bad filter config.
         let f = ClientFilters::from_strings(None, None, Some("not json"));
-        assert!(f.allows_call("any:tool", &json!({})).is_ok());
+        assert!(f.validate_call("any:tool", &json!({})).is_ok());
     }
 }

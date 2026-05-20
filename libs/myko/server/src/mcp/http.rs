@@ -175,16 +175,16 @@ mod tests {
             (DENY_HEADER, "command:Delete*"),
         ]);
         let filter = filter_from_head(&head);
-        assert!(filter.allows_name("query:GetAllTargets"));
-        assert!(!filter.allows_name("command:DeleteThing"));
-        assert!(!filter.allows_name("report:Health"));
+        assert!(filter.tool_visible("query:GetAllTargets"));
+        assert!(!filter.tool_visible("command:DeleteThing"));
+        assert!(!filter.tool_visible("report:Health"));
     }
 
     #[test]
     fn filter_from_head_with_no_headers_allows_all() {
         let head = head_with(vec![]);
         let filter = filter_from_head(&head);
-        assert!(filter.allows_name("anything"));
+        assert!(filter.tool_visible("anything"));
     }
 
     #[test]
@@ -196,12 +196,12 @@ mod tests {
         let filter = filter_from_head(&head);
         assert!(
             filter
-                .allows_call("command:RunPlaybook", &serde_json::json!({"playbook_id":"site"}))
+                .validate_call("command:RunPlaybook", &serde_json::json!({"playbook_id":"site"}))
                 .is_ok()
         );
         assert!(
             filter
-                .allows_call(
+                .validate_call(
                     "command:RunPlaybook",
                     &serde_json::json!({"playbook_id":"danger"})
                 )

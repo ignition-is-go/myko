@@ -1,9 +1,21 @@
 //! Transport-agnostic MCP JSON-RPC dispatch.
 //!
 //! Handles `initialize`, `tools/list`, `tools/call`, `resources/list`,
-//! `resources/read`, and the relevant notifications. Tool filtering is
-//! applied to both the listing and call paths so a denied tool is invisible
-//! to the client and an attempt to call it returns an error.
+//! `resources/read`, and the relevant notifications.
+//!
+//! Error responses follow the [MCP 2025-06-18 error-handling shape][spec]:
+//!
+//! - **Protocol Error** — JSON-RPC error response with `code: -32602` and
+//!   message `"Unknown tool: …"`. Used when a tool is hidden by visibility
+//!   filtering (indistinguishable on the wire from a tool that does not
+//!   exist) or when required `tools/call` params are missing.
+//! - **Tool Execution Error** — successful JSON-RPC response with
+//!   `isError: true` content carrying a descriptive message. Used when
+//!   `tools/call` arguments fail client-supplied argument constraints
+//!   (the spec's "Invalid input data" category) or when tool execution
+//!   raises an error downstream.
+//!
+//! [spec]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 
 use myko::{
     command::CommandRegistration, query::QueryRegistration, report::ReportRegistration,
@@ -77,7 +89,7 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
 fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     let mut tools: Vec<McpTool> = Vec::new();
 
-    if filter.allows_name(CONNECTION_STATUS_TOOL) {
+    if filter.tool_visible(CONNECTION_STATUS_TOOL) {
         tools.push(McpTool {
             name: CONNECTION_STATUS_TOOL.to_string(),
             description: "Check the connection status to the Myko server".to_string(),
@@ -91,7 +103,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<QueryRegistration> {
         let name = format!("query:{}", reg.query_id);
-        if !filter.allows_name(&name) {
+        if !filter.tool_visible(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -103,7 +115,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ViewRegistration> {
         let name = format!("view:{}", reg.view_id);
-        if !filter.allows_name(&name) {
+        if !filter.tool_visible(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -115,7 +127,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let name = format!("report:{}", reg.report_id);
-        if !filter.allows_name(&name) {
+        if !filter.tool_visible(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -127,7 +139,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let name = format!("command:{}", reg.command_id);
-        if !filter.allows_name(&name) {
+        if !filter.tool_visible(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -153,12 +165,15 @@ async fn handle_tools_call(
         return McpResponse::error(id, McpError::invalid_params("Missing tool name"));
     };
 
-    if !filter.allows_name(&tool_name) {
+    // MCP Protocol Error: a hidden tool is indistinguishable on the wire from
+    // a tool that doesn't exist. Code -32602 + "Unknown tool: …" matches the
+    // example in the MCP 2025-06-18 spec (Tools / Error Handling).
+    if !filter.tool_visible(&tool_name) {
         return McpResponse::error(
             id,
             McpError {
-                code: McpError::METHOD_NOT_FOUND,
-                message: "Tool denied by filter".to_string(),
+                code: McpError::INVALID_PARAMS,
+                message: format!("Unknown tool: {}", tool_name),
                 data: None,
             },
         );
@@ -166,16 +181,17 @@ async fn handle_tools_call(
 
     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
 
-    // Argument-aware client filter. Rejection surfaces as MCP `isError: true`
-    // content per the spec's "invalid input data" shape — distinct from the
-    // protocol-level method-not-found used for unknown / name-denied tools.
-    if let Err(message) = filter.allows_call(&tool_name, &arguments) {
+    // MCP Tool Execution Error ("Invalid input data" category): result is a
+    // successful JSON-RPC response carrying `isError: true` content with the
+    // descriptive constraint message verbatim — distinct from the protocol
+    // error path above.
+    if let Err(message) = filter.validate_call(&tool_name, &arguments) {
         return McpResponse::success(
             id,
             json!({
                 "content": [{
                     "type": "text",
-                    "text": format!("Call denied by filter: {}", message)
+                    "text": message,
                 }],
                 "isError": true,
             }),
@@ -231,7 +247,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<QueryRegistration> {
         let tool_name = format!("query:{}", reg.query_id);
-        if !filter.allows_name(&tool_name) {
+        if !filter.tool_visible(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -244,7 +260,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ViewRegistration> {
         let tool_name = format!("view:{}", reg.view_id);
-        if !filter.allows_name(&tool_name) {
+        if !filter.tool_visible(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -257,7 +273,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let tool_name = format!("report:{}", reg.report_id);
-        if !filter.allows_name(&tool_name) {
+        if !filter.tool_visible(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -270,7 +286,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let tool_name = format!("command:{}", reg.command_id);
-        if !filter.allows_name(&tool_name) {
+        if !filter.tool_visible(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -297,7 +313,7 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
         if parts.len() == 2 {
             let (schema_type, schema_id) = (parts[0], parts[1]);
             let tool_name = format!("{}:{}", schema_type, schema_id);
-            if !filter.allows_name(&tool_name) {
+            if !filter.tool_visible(&tool_name) {
                 return McpResponse::error(
                     id,
                     McpError {
