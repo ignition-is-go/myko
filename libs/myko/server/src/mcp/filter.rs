@@ -5,16 +5,18 @@
 //!    disappears from `tools/list` and a `tools/call` against it returns the
 //!    MCP **Protocol Error** `{"code": -32602, "message": "Unknown tool: …"}`.
 //!    Source:
-//!    - HTTP/WS: `X-Myko-Tools-Allow` and `X-Myko-Tools-Deny` request headers.
-//!    - Stdio: `MYKO_MCP_TOOLS_ALLOW` / `MYKO_MCP_TOOLS_DENY` env vars.
+//!    - HTTP/WS: `X-Myko-Tool-Visibility-Allow` and
+//!      `X-Myko-Tool-Visibility-Deny` request headers.
+//!    - Stdio: `MYKO_MCP_TOOL_VISIBILITY_ALLOW` /
+//!      `MYKO_MCP_TOOL_VISIBILITY_DENY` env vars.
 //!
 //! 2. **Argument validation** — client-supplied constraints on the JSON
 //!    `arguments` of a `tools/call`. A constraint failure surfaces as an MCP
 //!    **Tool Execution Error** (`isError: true` content with a descriptive
 //!    message), the spec's "Invalid input data" category — distinct from a
 //!    Protocol Error. Source:
-//!    - HTTP/WS: `X-Myko-Tool-Constraints` request header (JSON).
-//!    - Stdio: `MYKO_MCP_TOOL_CONSTRAINTS` env var (JSON).
+//!    - HTTP/WS: `X-Myko-Tool-Arguments` request header (JSON).
+//!    - Stdio: `MYKO_MCP_TOOL_ARGUMENTS` env var (JSON).
 //!
 //! [mcp-tool-errors]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 //!
@@ -42,19 +44,19 @@ use serde_json::Value;
 
 // ─── Header / env names ────────────────────────────────────────────────────
 
-/// HTTP header carrying the name allowlist.
-pub const ALLOW_HEADER: &str = "X-Myko-Tools-Allow";
-/// HTTP header carrying the name denylist.
-pub const DENY_HEADER: &str = "X-Myko-Tools-Deny";
-/// HTTP header carrying the JSON tool-call constraint spec.
-pub const CONSTRAINTS_HEADER: &str = "X-Myko-Tool-Constraints";
+/// HTTP header carrying the tool-visibility allowlist (glob patterns).
+pub const VISIBILITY_ALLOW_HEADER: &str = "X-Myko-Tool-Visibility-Allow";
+/// HTTP header carrying the tool-visibility denylist (glob patterns).
+pub const VISIBILITY_DENY_HEADER: &str = "X-Myko-Tool-Visibility-Deny";
+/// HTTP header carrying the JSON argument-validation spec.
+pub const ARGUMENTS_HEADER: &str = "X-Myko-Tool-Arguments";
 
-/// Stdio env var carrying the name allowlist.
-pub const ALLOW_ENV: &str = "MYKO_MCP_TOOLS_ALLOW";
-/// Stdio env var carrying the name denylist.
-pub const DENY_ENV: &str = "MYKO_MCP_TOOLS_DENY";
-/// Stdio env var carrying the JSON tool-call constraint spec.
-pub const CONSTRAINTS_ENV: &str = "MYKO_MCP_TOOL_CONSTRAINTS";
+/// Stdio env var carrying the tool-visibility allowlist.
+pub const VISIBILITY_ALLOW_ENV: &str = "MYKO_MCP_TOOL_VISIBILITY_ALLOW";
+/// Stdio env var carrying the tool-visibility denylist.
+pub const VISIBILITY_DENY_ENV: &str = "MYKO_MCP_TOOL_VISIBILITY_DENY";
+/// Stdio env var carrying the JSON argument-validation spec.
+pub const ARGUMENTS_ENV: &str = "MYKO_MCP_TOOL_ARGUMENTS";
 
 // ─── Name patterns ─────────────────────────────────────────────────────────
 

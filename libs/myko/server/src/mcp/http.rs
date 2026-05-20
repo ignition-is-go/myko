@@ -13,7 +13,7 @@ use tokio::{
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::{ALLOW_HEADER, CONSTRAINTS_HEADER, ClientFilters, DENY_HEADER},
+    filter::{VISIBILITY_ALLOW_HEADER, ARGUMENTS_HEADER, ClientFilters, VISIBILITY_DENY_HEADER},
     types::{McpError, McpRequest, McpResponse},
 };
 use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
@@ -116,9 +116,9 @@ pub async fn handle_sse(
 /// Build a `ClientFilters` from the request headers.
 pub fn filter_from_head(head: &HttpRequestHead) -> ClientFilters {
     ClientFilters::from_strings(
-        head.header(ALLOW_HEADER),
-        head.header(DENY_HEADER),
-        head.header(CONSTRAINTS_HEADER),
+        head.header(VISIBILITY_ALLOW_HEADER),
+        head.header(VISIBILITY_DENY_HEADER),
+        head.header(ARGUMENTS_HEADER),
     )
 }
 
@@ -171,8 +171,8 @@ mod tests {
     #[test]
     fn filter_from_head_parses_allow_and_deny() {
         let head = head_with(vec![
-            (ALLOW_HEADER, "query:*"),
-            (DENY_HEADER, "command:Delete*"),
+            (VISIBILITY_ALLOW_HEADER, "query:*"),
+            (VISIBILITY_DENY_HEADER, "command:Delete*"),
         ]);
         let filter = filter_from_head(&head);
         assert!(filter.tool_visible("query:GetAllTargets"));
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn filter_from_head_parses_call_constraints() {
         let head = head_with(vec![(
-            CONSTRAINTS_HEADER,
+            ARGUMENTS_HEADER,
             r#"{"command:RunPlaybook":{"playbook_id":{"allow":["site"]}}}"#,
         )]);
         let filter = filter_from_head(&head);

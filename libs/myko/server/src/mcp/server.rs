@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::{ALLOW_ENV, CONSTRAINTS_ENV, ClientFilters, DENY_ENV},
+    filter::{VISIBILITY_ALLOW_ENV, ARGUMENTS_ENV, ClientFilters, VISIBILITY_DENY_ENV},
     types::{McpError, McpRequest, McpResponse},
 };
 
@@ -105,9 +105,9 @@ impl McpServer {
         // knobs as HTTP/WS come from env vars instead. Empty / unset =
         // permissive default.
         let filter = Arc::new(ClientFilters::from_strings(
-            std::env::var(ALLOW_ENV).ok().as_deref(),
-            std::env::var(DENY_ENV).ok().as_deref(),
-            std::env::var(CONSTRAINTS_ENV).ok().as_deref(),
+            std::env::var(VISIBILITY_ALLOW_ENV).ok().as_deref(),
+            std::env::var(VISIBILITY_DENY_ENV).ok().as_deref(),
+            std::env::var(ARGUMENTS_ENV).ok().as_deref(),
         ));
 
         let (response_tx, mut response_rx) = mpsc::channel::<McpResponse>(32);

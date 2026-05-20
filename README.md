@@ -288,8 +288,8 @@ Lock down what an MCP-client config can call without trusting the client itself.
 **1. Name filter** — glob allow/deny over tool names. Denied tools are invisible (method-not-found if called).
 
 ```
-X-Myko-Tools-Allow: query:*,report:*
-X-Myko-Tools-Deny:  command:Delete*
+X-Myko-Tool-Visibility-Allow: query:*,report:*
+X-Myko-Tool-Visibility-Deny:  command:Delete*
 ```
 
 Patterns: `*`, `prefix*`, `*suffix`, exact. Deny wins on conflict.
@@ -297,15 +297,15 @@ Patterns: `*`, `prefix*`, `*suffix`, exact. Deny wins on conflict.
 **2. Call filter** — argument-aware constraints on `tools/call`. Per-tool, per-arg allow/deny value lists. Rejection surfaces as MCP `isError: true` content (the spec's "invalid input data" shape) with a human-readable reason.
 
 ```
-X-Myko-Tool-Constraints: {"command:RunPlaybook":{"playbook_id":{"allow":["site","deploy"]}}}
+X-Myko-Tool-Arguments: {"command:RunPlaybook":{"playbook_id":{"allow":["site","deploy"]}}}
 ```
 
 Schema: `{ "<tool_name>": { "<arg_path>": { "allow": [...], "deny": [...] } } }`. Allow lists are positive (missing arg → denied); deny lists exclude (deny wins over allow on the same value).
 
 **Stdio transport** has no headers, so the same three knobs come from env vars:
-- `MYKO_MCP_TOOLS_ALLOW`
-- `MYKO_MCP_TOOLS_DENY`
-- `MYKO_MCP_TOOL_CONSTRAINTS` (JSON)
+- `MYKO_MCP_TOOL_VISIBILITY_ALLOW`
+- `MYKO_MCP_TOOL_VISIBILITY_DENY`
+- `MYKO_MCP_TOOL_ARGUMENTS` (JSON)
 
 The name filter applies to `tools/list`, `tools/call`, `resources/list`, `resources/read`. The call filter applies only to `tools/call`.
 
@@ -328,7 +328,7 @@ curl -sS -X POST http://localhost:5155/myko/mcp \
       "type": "http",
       "url": "http://localhost:5155/myko/mcp",
       "headers": {
-        "X-Myko-Tools-Allow": "query:*,report:*"
+        "X-Myko-Tool-Visibility-Allow": "query:*,report:*"
       }
     }
   }
@@ -344,8 +344,8 @@ curl -sS -X POST http://localhost:5155/myko/mcp \
       "type": "http",
       "url": "http://localhost:5155/myko/mcp",
       "headers": {
-        "X-Myko-Tools-Allow": "query:*,report:*,command:RunPlaybook",
-        "X-Myko-Tool-Constraints": "{\"command:RunPlaybook\":{\"playbook_id\":{\"allow\":[\"site\",\"deploy\"]}}}"
+        "X-Myko-Tool-Visibility-Allow": "query:*,report:*,command:RunPlaybook",
+        "X-Myko-Tool-Arguments": "{\"command:RunPlaybook\":{\"playbook_id\":{\"allow\":[\"site\",\"deploy\"]}}}"
       }
     }
   }
