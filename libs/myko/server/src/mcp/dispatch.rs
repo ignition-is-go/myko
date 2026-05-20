@@ -3,6 +3,24 @@
 //! Handles `initialize`, `tools/list`, `tools/call`, `resources/list`,
 //! `resources/read`, and the relevant notifications.
 //!
+//! ## Tool / resource split
+//!
+//! - **Tools** — every registered query / view / report / command is
+//!   exposed as a tool the LLM can invoke on demand. Tools take structured
+//!   `arguments` matching the registration's input shape.
+//! - **Resources** — every tool also surfaces a *schema* resource at
+//!   `myko://schema/<kind>/<id>` whose content is the JSON Schema for the
+//!   tool's input. The schema goes through the resource shape rather than
+//!   the data because:
+//!   - Resources are URI-keyed and can't carry structured arguments, but
+//!     every query / view / report registration takes args.
+//!   - Even argument-less reads are backed by reactive cells (the data is
+//!     live), so pre-loading a snapshot into context at startup would
+//!     just go stale. On-demand `tools/call` is the right shape for live
+//!     reads.
+//!
+//! Reactive query subscriptions via `resources/subscribe` are future work.
+//!
 //! Error responses follow the [MCP 2025-06-18 error-handling shape][spec]:
 //!
 //! - **Protocol Error** — JSON-RPC error response with `code: -32602` and
