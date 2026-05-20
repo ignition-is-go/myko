@@ -24,6 +24,13 @@ use super::types::*;
 /// `command:`, plus the built-in `connection_status`.
 pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// Argument-aware hook for `tools/call`. Runs after the name [`ToolFilter`]
+/// passes; sees the tool name and the JSON `arguments`. `Err(msg)` surfaces
+/// to the caller as `isError: true` content with `msg` as the text — the
+/// MCP-spec shape for "invalid input data" (distinct from the protocol
+/// error `-32602` used for unknown tools).
+pub type ToolCallFilter = Arc<dyn Fn(&str, &Value) -> Result<(), String> + Send + Sync>;
+
 #[inline]
 fn filter_allows(filter: Option<&ToolFilter>, name: &str) -> bool {
     filter.map(|f| f(name)).unwrap_or(true)
@@ -33,12 +40,16 @@ fn filter_allows(filter: Option<&ToolFilter>, name: &str) -> bool {
 ///
 /// Auto-exposes registered queries, reports, and commands over MCP.
 /// Install a [`ToolFilter`] via [`McpServer::with_tool_filter`] to
-/// restrict which tools are surfaced; filtered tools respond like
-/// unknown ones.
+/// restrict which tool names are exposed and callable. Install a
+/// [`ToolCallFilter`] via [`McpServer::with_tool_call_filter`] to gate
+/// `tools/call` on the JSON arguments (e.g. allowlist of
+/// `playbook_id` values), with the rejection message flowing through
+/// as `isError: true` content per the MCP spec.
 pub struct McpServer {
     server_name: String,
     server_version: String,
     tool_filter: Option<ToolFilter>,
+    tool_call_filter: Option<ToolCallFilter>,
 }
 
 impl Default for McpServer {
@@ -54,6 +65,7 @@ impl McpServer {
             server_name: "myko-mcp".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
             tool_filter: None,
+            tool_call_filter: None,
         }
     }
 
@@ -63,6 +75,7 @@ impl McpServer {
             server_name: name.into(),
             server_version: version.into(),
             tool_filter: None,
+            tool_call_filter: None,
         }
     }
 
@@ -73,6 +86,18 @@ impl McpServer {
         F: Fn(&str) -> bool + Send + Sync + 'static,
     {
         self.tool_filter = Some(Arc::new(filter));
+        self
+    }
+
+    /// Install an argument-aware hook on `tools/call` dispatch. Runs after
+    /// the name [`with_tool_filter`](Self::with_tool_filter) passes; sees
+    /// the tool name and the JSON `arguments`. `Err(msg)` surfaces as
+    /// `isError: true` content. Replaces any previous call filter.
+    pub fn with_tool_call_filter<F>(mut self, filter: F) -> Self
+    where
+        F: Fn(&str, &Value) -> Result<(), String> + Send + Sync + 'static,
+    {
+        self.tool_call_filter = Some(Arc::new(filter));
         self
     }
 
@@ -183,8 +208,15 @@ impl McpServer {
         // Start tool executor.
         let executor_client = client.clone();
         let executor_filter = self.tool_filter.clone();
+        let executor_call_filter = self.tool_call_filter.clone();
         tokio::spawn(async move {
-            tool_executor(executor_client, executor_filter, tool_rx).await;
+            tool_executor(
+                executor_client,
+                executor_filter,
+                executor_call_filter,
+                tool_rx,
+            )
+            .await;
         });
 
         // Create request handler
@@ -560,6 +592,7 @@ impl RequestHandler {
 async fn tool_executor(
     client: Arc<MykoClient>,
     filter: Option<ToolFilter>,
+    call_filter: Option<ToolCallFilter>,
     mut rx: mpsc::Receiver<ToolRequest>,
 ) {
     while let Some(request) = rx.recv().await {
@@ -569,6 +602,7 @@ async fn tool_executor(
             &request.tool_name,
             request.arguments,
             filter.as_ref(),
+            call_filter.as_ref(),
         )
         .await;
 
@@ -603,11 +637,20 @@ async fn execute_tool(
     tool_name: &str,
     arguments: Value,
     filter: Option<&ToolFilter>,
+    call_filter: Option<&ToolCallFilter>,
 ) -> Result<Value, String> {
     // Match the unknown-tool Err below so tool_executor wraps both
     // cases the same way.
     if !filter_allows(filter, tool_name) {
         return Err(format!("Unknown tool: {}", tool_name));
+    }
+
+    // Argument-aware gate. Per the MCP spec, invalid input data should
+    // be surfaced via `isError: true` content (distinct from the
+    // protocol-level "Unknown tool" error). Hook returns Err(msg);
+    // we propagate it as our Err, tool_executor wraps as isError.
+    if let Some(hook) = call_filter {
+        hook(tool_name, &arguments)?;
     }
 
     if tool_name == "connection_status" {
@@ -998,5 +1041,42 @@ mod tests {
         let only_status =
             McpServer::with_info("test", "0.0.0").with_allowed_tool_names(["connection_status"]);
         assert_eq!(only_status.exposed_tool_names(), vec!["connection_status"]);
+    }
+
+    // ToolCallFilter tests exercise the hook contract directly. Going
+    // through execute_tool would require a live MykoClient; the hook
+    // semantics are simple enough that direct invocation is sufficient.
+
+    #[test]
+    fn tool_call_filter_ok_allows() {
+        let hook: ToolCallFilter = Arc::new(|_, _| Ok(()));
+        assert!(hook("command:RunPlaybook", &json!({"playbook_id": "x"})).is_ok());
+    }
+
+    #[test]
+    fn tool_call_filter_err_carries_message() {
+        let hook: ToolCallFilter = Arc::new(|name, args| {
+            if name == "command:RunPlaybook" {
+                let id = args
+                    .get("playbook_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if id != "safe" {
+                    return Err(format!("Playbook '{}' not in agent allowlist", id));
+                }
+            }
+            Ok(())
+        });
+        assert_eq!(
+            hook("command:RunPlaybook", &json!({"playbook_id": "site"})).unwrap_err(),
+            "Playbook 'site' not in agent allowlist"
+        );
+        assert!(hook("command:RunPlaybook", &json!({"playbook_id": "safe"})).is_ok());
+    }
+
+    #[test]
+    fn with_tool_call_filter_installs_hook() {
+        let server = McpServer::with_info("test", "0.0.0").with_tool_call_filter(|_, _| Ok(()));
+        assert!(server.tool_call_filter.is_some());
     }
 }
