@@ -23,7 +23,18 @@
 //! my_entities::link();
 //!
 //! // Start the MCP server
-//! let server = myko::mcp::McpServer::new();
+//! let server = myko_server::mcp::McpServer::new();
+//! server.run_stdio()?;
+//! ```
+//!
+//! ## Restricting Exposed Tools
+//!
+//! Install a [`ToolFilter`] to expose only a subset of registered tools.
+//! Filtered tools respond like unknown ones.
+//!
+//! ```rust,ignore
+//! let server = myko_server::mcp::McpServer::new()
+//!     .with_allowed_tool_names(["connection_status", "query:GetAllFoos"]);
 //! server.run_stdio()?;
 //! ```
 //!
@@ -61,5 +72,5 @@
 mod server;
 mod types;
 
-pub use server::McpServer;
+pub use server::{McpServer, ToolFilter};
 pub use types::*;
