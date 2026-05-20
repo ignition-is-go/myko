@@ -1,6 +1,6 @@
 # MCP Endpoint at `/myko/mcp`
 
-**Status:** Draft
+**Status:** Shipped — `feat/mcp-http-endpoint`, PR #15
 **Date:** 2026-05-20
 
 ## Goal
@@ -66,8 +66,8 @@ trusting the client itself.
 |---|---|---|
 | `libs/myko/server/src/router.rs` | new | Read & parse HTTP request line + headers off a `TcpStream`. Decide WS upgrade vs MCP HTTP vs 404. |
 | `libs/myko/server/src/mcp/dispatch.rs` | new | Transport-agnostic JSON-RPC handler. `handle_request(req, filter, exec) -> McpResponse`. |
-| `libs/myko/server/src/mcp/exec.rs` | new | `Executor` enum: `Client(MykoClient)` (stdio) or `InProcess(CellServerCtx)` (HTTP). Implements `execute_query`, `execute_report`, `execute_command`. |
-| `libs/myko/server/src/mcp/filter.rs` | new | `ToolFilter` (allow/deny glob patterns), parsed from `X-Myko-Tools-Allow` / `X-Myko-Tools-Deny`. |
+| `libs/myko/server/src/mcp/exec.rs` | new | `Executor` enum: `Client(MykoClient)` (stdio) or `InProcess(CellServerCtx)` (HTTP). Implements `execute_query`, `execute_view`, `execute_report`, `execute_command`. |
+| `libs/myko/server/src/mcp/filter.rs` | new | `ClientFilters` — two layers (visibility globs, callability JSON), parsed from the four `X-Myko-Tool-{Visibility,Callable}-{Allow,Deny}` headers (or `MYKO_MCP_TOOL_*` env vars for stdio). |
 | `libs/myko/server/src/mcp/http.rs` | new | POST handler (JSON dispatch) + GET handler (SSE stream). |
 | `libs/myko/server/src/mcp/ws.rs` | new | WebSocket MCP loop: read text frames, dispatch, write text frames. Reuses tungstenite handshake helpers + `WebSocketStream::from_raw_socket`. |
 | `libs/myko/server/src/mcp/server.rs` | refactor | `run_stdio` now wraps `dispatch` with `Executor::Client`. Old `RequestHandler` / `tool_executor` / `execute_*` move into `dispatch.rs` + `exec.rs`. |
@@ -77,47 +77,59 @@ trusting the client itself.
 
 ### HTTP front-door (router.rs)
 
-`tokio::net::TcpStream::peek` is unreliable across packet boundaries, so we
-read with a `BufReader<TcpStream>`:
-
-1. Read lines until empty line (end of headers). Cap at 8 KB to bound risk.
+1. `read_request_head` reads chunks off the raw `TcpStream` into a growing
+   buffer until `\r\n\r\n` appears, capped at 8 KB. Anything past the
+   header terminator (e.g. a POST body that arrived in the same TCP
+   segment) is captured as `leftover_body` on the parsed head.
 2. Parse method + path + headers with `httparse`.
 3. Route:
-   - `GET` + path == `/myko` + `Upgrade: websocket` → hand stream + parsed
-     request to `ws_handler::handle_connection_after_request`, which writes the
-     101 response (computing `Sec-WebSocket-Accept` via
-     `tungstenite::handshake::derive_accept_key`) and wraps the stream with
-     `WebSocketStream::from_raw_socket(_, Role::Server, _)`.
-   - `POST` + path == `/myko/mcp` → read `Content-Length` bytes (cap 1 MB),
-     parse JSON-RPC, call `mcp::http::handle_post`.
-   - `GET` + path == `/myko/mcp` + `Upgrade: websocket` →
-     `mcp::ws::handle_upgrade` (writes 101 + announces `Sec-WebSocket-Protocol: mcp` if requested, wraps stream, runs loop).
+   - `GET` + path == `/myko` + WS upgrade → `mcp::ws::handle_myko_ws_upgrade`,
+     which writes the 101 response (computes `Sec-WebSocket-Accept` via
+     `tungstenite::handshake::derive_accept_key`), wraps the stream with
+     `WebSocketStream::from_raw_socket(_, Role::Server, _)`, and hands off
+     to `WsHandler::handle_upgraded`.
+   - `POST` + path == `/myko/mcp` → read up to `Content-Length` bytes
+     (continuing from `leftover_body`; cap 1 MB), parse JSON-RPC, call
+     `mcp::http::handle_post`.
+   - `GET` + path == `/myko/mcp` + WS upgrade →
+     `mcp::ws::handle_mcp_ws_upgrade` (echoes `Sec-WebSocket-Protocol: mcp`
+     if requested, wraps stream, runs the JSON-RPC text-frame loop).
    - `GET` + path == `/myko/mcp` + `Accept: text/event-stream` →
      `mcp::http::handle_sse`.
+   - `GET /myko/mcp` with no upgrade / SSE accept → a small status JSON
+     so the URL is friendly in a browser.
    - Else → write `404 Not Found` and close.
 
 Errors during HTTP parsing → write `400 Bad Request` and close.
+Every HTTP response path calls `shutdown_cleanly()` before drop.
 
 ### Dispatch core (dispatch.rs)
 
 ```rust
 pub async fn handle_request(
     req: McpRequest,
-    filter: &ToolFilter,
+    filter: &ClientFilters,
     executor: &Executor,
-    server_name: &str,
-    server_version: &str,
-) -> McpResponse
+    info: &ServerInfo,
+) -> Option<McpResponse>
 ```
 
 Methods handled: `initialize`, `notifications/initialized`,
 `notifications/cancelled`, `tools/list`, `tools/call`, `resources/list`,
-`resources/read`. Behavior matches the existing stdio implementation, with
-three changes:
+`resources/read`. Returns `None` for notifications (no response expected).
+Behavior:
 
-- `tools/list` runs the catalog through `filter.allows(&tool_name)`.
-- `tools/call` rejects with `McpError { code: -32601, message: "Tool denied by filter" }` if `!filter.allows(name)`.
-- Tool execution dispatches through `Executor` rather than calling `MykoClient` directly.
+- `tools/list` and `resources/list` run each candidate through
+  `filter.tool_visible(name)`; denied entries are omitted entirely.
+- `tools/call` first checks `tool_visible`; on denial returns an MCP
+  **Protocol Error** `{ code: -32602, message: "Unknown tool: <name>" }`,
+  matching the spec's example. Then runs `tool_callable(name, args)`;
+  on denial returns an MCP **Tool Execution Error** (`result.isError = true`
+  with the constraint message as the content text).
+- `resources/read` checks `tool_visible` and returns the JSON schema for
+  the underlying tool.
+- Tool execution dispatches through `Executor` instead of calling
+  `MykoClient` directly.
 
 ### Executor (exec.rs)
 
@@ -128,67 +140,112 @@ pub enum Executor {
 }
 
 impl Executor {
-    pub async fn execute_query(&self, id: &str, args: Value) -> Result<Value, String>;
-    pub async fn execute_report(&self, id: &str, args: Value) -> Result<Value, String>;
+    pub async fn execute_query(&self, id: &str, args: Value)   -> Result<Value, String>;
+    pub async fn execute_view(&self, id: &str, args: Value)    -> Result<Value, String>;
+    pub async fn execute_report(&self, id: &str, args: Value)  -> Result<Value, String>;
     pub async fn execute_command(&self, id: &str, args: Value) -> Result<Value, String>;
-    pub async fn connection_status(&self) -> Value;
+    pub fn connection_status(&self) -> Value;
 }
 ```
 
-`Executor::Client` is what `run_stdio` builds today — the existing
-`execute_query` / `execute_report` / `execute_command` code in `server.rs`
-moves here verbatim.
+`Executor::Client` is what `run_stdio` builds — it wraps the existing
+`MykoClient` raw watchers (`watch_query_raw`, `watch_view_raw`,
+`watch_report_raw`, `send_command_raw_result`). A new
+`MykoClient::watch_view_raw` was added so the stdio path can call views
+too (mirrors `watch_query_raw`; sends `MykoMessage::View` and cancels
+with `ViewCancel`).
 
-`Executor::InProcess` paths execute directly against the registry. We follow
-the same code paths the WS handler uses today (see `ws_handler.rs:837` for
-queries, `:1082` for reports, and command dispatch via `CommandContext`):
+`Executor::InProcess` paths execute directly against the registry,
+following the same code paths the WS handler uses:
 
-- Query: `handler_registry.get_query(query_id)`, build the wrapped query with a
-  fresh `tx` and `createdAt`, build a `RequestContext::internal`, run the
-  hyphae cell to first value, return items.
-- Report: `handler_registry.get_report(report_id)`, run, return value.
-- Command: build `CommandContext` with internal `RequestContext`, call
-  `command.execute_boxed(cmd_ctx)`, return the response or error.
+- Query / View: `handler_registry.get_query(id)` /
+  `handler_registry.get_view(id)`, build the wrapped payload with a fresh
+  `tx` and `createdAt`, build a `RequestContext::internal`, run the
+  `cell_factory` to produce a `FilteredCellMap`, return its `snapshot()`.
+- Report: `handler_registry.get_report(id)`, run, subscribe to capture the
+  first emission with a timeout, return value.
+- Command: find the `CommandHandlerRegistration`, build `CommandContext`
+  with internal `RequestContext`, call `execute_from_value`, return the
+  response or error.
 
 For v1 we use one-shot execution with a timeout (same 5 s / 10 s caps as
 stdio). Reactive subscriptions over SSE are deferred.
 
-### Tool filter (filter.rs)
+### Client filters (filter.rs)
+
+Per-client filtering has two complementary layers, both client-configured,
+mapped to the two error categories defined in the
+[MCP 2025-06-18 spec][mcp-tool-errors]:
 
 ```rust
-pub struct ToolFilter {
-    allow: Vec<Pattern>,  // empty = allow all
-    deny:  Vec<Pattern>,  // always applied
+pub struct ClientFilters {
+    visibility_allow: Vec<Pattern>,
+    visibility_deny:  Vec<Pattern>,
+    callable_allow:   HashMap<String, HashMap<String, Vec<Value>>>,
+    callable_deny:    HashMap<String, HashMap<String, Vec<Value>>>,
 }
 
-pub fn parse_from_headers(headers: &HeaderMap) -> ToolFilter;
-pub fn allows(&self, tool_name: &str) -> bool;
+pub fn from_strings(
+    visibility_allow: Option<&str>,
+    visibility_deny: Option<&str>,
+    callable_allow_json: Option<&str>,
+    callable_deny_json: Option<&str>,
+) -> Self;
+
+pub fn tool_visible(&self, name: &str) -> bool;
+pub fn tool_callable(&self, name: &str, args: &Value) -> Result<(), String>;
 ```
 
-Patterns are comma-separated values from headers. Each pattern is a glob:
+[mcp-tool-errors]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 
-- `*` matches any tool.
-- `<literal>*` is a prefix match (`command:Delete*` matches `command:DeleteFoo`).
-- `*<literal>` is a suffix match.
-- Otherwise, exact match.
+**1. Tool visibility** — glob allow/deny over tool names. Patterns are
+comma-separated globs: `*` (any), `prefix*`, `*suffix`, exact. Deny wins.
+A hidden tool is omitted from `tools/list` / `resources/list`; a
+`tools/call` against it returns an MCP **Protocol Error**
+`{ "code": -32602, "message": "Unknown tool: …" }` — indistinguishable on
+the wire from a tool that doesn't exist.
 
-`allows` returns `true` iff (allow is empty OR any allow pattern matches) AND no
-deny pattern matches. Deny wins on conflict.
+Sources:
+- HTTP/WS: `X-Myko-Tool-Visibility-Allow` and `X-Myko-Tool-Visibility-Deny`
+  request headers.
+- Stdio: `MYKO_MCP_TOOL_VISIBILITY_ALLOW` / `MYKO_MCP_TOOL_VISIBILITY_DENY`
+  env vars.
 
-`X-Myko-Tools-Allow: query:*,report:*` + `X-Myko-Tools-Deny: query:Get*Internal`
-means: every query and report is callable, except queries named like
-`GetSomethingInternal`.
+**2. Tool callability** — per-tool, per-argument JSON value lists.
+Failure surfaces as an MCP **Tool Execution Error** (`isError: true`
+content carrying a short descriptive message), the spec's "Invalid input
+data" category — distinct from a Protocol Error.
 
-Filter is parsed per-request (stateless POST). For SSE GET and WS connections,
-we capture the filter at handshake time and reuse it for every request /
-pushed message over that connection's lifetime.
+JSON shape per header: `{ "<tool>": { "<arg>": [values] } }`. Allow is
+positive (the arg must be present on the call and its value must appear
+in the list). Deny excludes (if the value appears, the call is rejected).
+Deny wins.
+
+Sources:
+- HTTP/WS: `X-Myko-Tool-Callable-Allow` and `X-Myko-Tool-Callable-Deny`
+  request headers (JSON).
+- Stdio: `MYKO_MCP_TOOL_CALLABLE_ALLOW` / `MYKO_MCP_TOOL_CALLABLE_DENY`
+  env vars (JSON).
+
+Examples:
+
+- `X-Myko-Tool-Visibility-Allow: query:*,report:*` +
+  `X-Myko-Tool-Visibility-Deny: query:Get*Internal` — every query and
+  report is callable, except queries named like `GetSomethingInternal`.
+- `X-Myko-Tool-Callable-Allow: {"command:RunPlaybook":{"playbook_id":["site","deploy"]}}` —
+  when calling `command:RunPlaybook`, `playbook_id` must be `"site"` or
+  `"deploy"`.
+
+Filters are parsed per-request (stateless POST). For SSE GET and WS
+connections, we capture them at handshake time and reuse for every
+request / pushed message over that connection's lifetime.
 
 ### POST handler (http.rs)
 
 ```
 POST /myko/mcp HTTP/1.1
 Content-Type: application/json
-X-Myko-Tools-Allow: query:*,report:*
+X-Myko-Tool-Visibility-Allow: query:*,report:*
 
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query:GetAllTargets","arguments":{}}}
 ```
@@ -196,7 +253,7 @@ X-Myko-Tools-Allow: query:*,report:*
 Flow:
 1. Read body up to `Content-Length` (cap 1 MB → `413` over limit).
 2. Parse `McpRequest`. Parse errors → JSON-RPC error response with `id: null`, code `-32700`.
-3. Parse `ToolFilter` from headers.
+3. Parse `ClientFilters` from headers.
 4. Call `dispatch::handle_request(req, &filter, &executor, ...)`.
 5. Write response:
    ```
@@ -219,7 +276,7 @@ Connection: Upgrade
 Sec-WebSocket-Key: ...
 Sec-WebSocket-Version: 13
 Sec-WebSocket-Protocol: mcp
-X-Myko-Tools-Allow: query:*,report:*
+X-Myko-Tool-Visibility-Allow: query:*,report:*
 ```
 
 Flow:
@@ -227,7 +284,7 @@ Flow:
    and `Sec-WebSocket-Key` is present.
 2. Compute `Sec-WebSocket-Accept` via
    `tungstenite::handshake::derive_accept_key`.
-3. Parse `ToolFilter` from headers; capture for the connection.
+3. Parse `ClientFilters` from headers; capture for the connection.
 4. Write 101 response. Echo `Sec-WebSocket-Protocol: mcp` if the client
    requested it.
 5. Wrap stream with
@@ -250,7 +307,7 @@ treatment as one over the main gateway.
 ```
 GET /myko/mcp HTTP/1.1
 Accept: text/event-stream
-X-Myko-Tools-Allow: query:*
+X-Myko-Tool-Visibility-Allow: query:*
 
 ```
 
@@ -283,45 +340,76 @@ the server with a proxy that rejects `/myko/mcp`.
 Operators who want to lock the endpoint down at the network edge can do so
 in Traefik (IP allowlist middleware on the dedicated `server-mcp` router —
 see the Deployment section). Operators who want to lock it down for a
-specific client send the `X-Myko-Tools-Allow` / `X-Myko-Tools-Deny`
+specific client send the `X-Myko-Tool-Visibility-Allow` / `X-Myko-Tool-Visibility-Deny`
 headers via that client's MCP config.
 
 ## Data flow examples
 
 **Tool call (HTTP):**
-1. Client `POST /myko/mcp` with `tools/call` body and `X-Myko-Tools-Allow: query:*`.
-2. Router parses, dispatches to `mcp::http::handle_post`.
-3. `handle_post` builds `ToolFilter` from headers, calls `dispatch::handle_request`.
-4. `dispatch` resolves the method, applies filter, builds the wrapped query.
-5. `Executor::InProcess` runs the query against the registry, awaits the hyphae cell.
-6. Result → `McpResponse` → JSON → HTTP body.
+1. Client `POST /myko/mcp` with `tools/call` body, headers
+   `X-Myko-Tool-Visibility-Allow: query:*,command:RunPlaybook` and
+   `X-Myko-Tool-Callable-Allow: {"command:RunPlaybook":{"playbook_id":["site"]}}`.
+2. Router parses HTTP head, dispatches to `mcp::http::handle_post`.
+3. `handle_post` reads the body, builds `ClientFilters` from headers,
+   calls `dispatch::handle_request`.
+4. `dispatch` checks `tool_visible("command:RunPlaybook")` (passes),
+   then `tool_callable("command:RunPlaybook", args)` (passes iff
+   `args.playbook_id == "site"`).
+5. `Executor::InProcess` runs the command against the registry.
+6. Result → `McpResponse` → JSON → HTTP body. `shutdown_cleanly()`
+   flushes and drains the socket before drop.
 
 **WS connection (unchanged from client's POV):**
 1. Client `GET /myko` with `Upgrade: websocket`.
-2. Router peeks the request line + headers, sees WS upgrade.
-3. Hands buffered request + stream to `ws_handler`, which writes the 101 response and wraps the stream as a tungstenite `WebSocketStream`.
+2. Router parses the request line + headers, sees WS upgrade.
+3. Calls `mcp::ws::handle_myko_ws_upgrade`, which performs the WS
+   handshake (writes the 101 + `Sec-WebSocket-Accept`), wraps the
+   stream as `WebSocketStream::from_raw_socket`, and hands off to
+   `WsHandler::handle_upgraded`.
 4. Existing WS handler logic runs.
 
 ## Error handling
 
-- HTTP parse error → `400 Bad Request`, body empty, close.
-- Body over 1 MB → `413 Payload Too Large`.
-- JSON-RPC parse error → `200 OK` with JSON-RPC error response (code `-32700`).
-- Method not found → JSON-RPC error `-32601`.
-- Tool denied by filter → JSON-RPC error `-32601`, message `"Tool denied by filter"`.
-- Tool execution timeout → JSON-RPC `result` with `isError: true` content (same shape as today).
-- Internal panic in executor → caught by Tokio task boundary, returns 500.
+Two MCP error categories ([2025-06-18 spec][mcp-tool-errors]):
+
+- **Protocol Error** — JSON-RPC error response. Used for:
+  - HTTP parse error → `400 Bad Request`, body empty, connection drained then closed.
+  - Body over 1 MB → `413 Payload Too Large`.
+  - JSON-RPC parse error → `200 OK` with JSON-RPC error response (code `-32700`).
+  - Unknown JSON-RPC method → JSON-RPC error `-32601` ("Method not found").
+  - Tool hidden by visibility filter → JSON-RPC error `-32602`, message
+    `"Unknown tool: <name>"` — indistinguishable on the wire from a tool
+    that doesn't exist (spec example wording).
+
+- **Tool Execution Error** — JSON-RPC success response carrying
+  `result.content` + `result.isError = true`. Used for:
+  - Tool denied by callability filter → message is the constraint
+    rejection text (e.g. `"argument \`playbook_id\` value not in allowlist"`).
+  - Tool execution failure / timeout downstream → message describes the
+    failure.
+
+- Connection-level: on every HTTP response path the server calls
+  `shutdown_cleanly()` (shutdown the write half, drain the read half for
+  up to 250 ms) so HTTP/1.1 keep-alive clients don't see ECONNRESET.
+- Internal panic in executor → caught by the Tokio task boundary, logged.
 
 ## Testing
 
-- Unit: `router` parses correct method/path/headers across line-boundary splits.
-- Unit: `ToolFilter` patterns (prefix, suffix, exact, allow/deny precedence).
-- Unit: `dispatch` filter application on `tools/list` and `tools/call`.
-- Integration: spin up `CellServer`, send `tools/list` over HTTP, assert filter trims output.
-- Integration: send `tools/call` for a denied tool, assert error.
-- Integration: send a valid query call, assert result matches what WS returns for the same query.
-- Integration: open MCP-WS, run `tools/list` + `tools/call`, assert filter is captured at handshake.
-- Smoke: existing Myko WS + MCP-WS + HTTP POST all coexist on the same port.
+Unit coverage in `myko-server` (33 tests on the branch):
+
+- `router` parses correct method/path/headers across line-boundary splits.
+- `ClientFilters` visibility patterns (prefix, suffix, exact, allow/deny precedence).
+- `ClientFilters` callability constraints (allow/deny per arg, missing arg
+  rejected, deny wins, malformed JSON ignored).
+- `dispatch` filter application on `tools/list`; `initialize` + unknown
+  method responses; notifications produce no response.
+- `mcp::http::filter_from_head` round-trips all four header parsers.
+
+End-to-end checks left for manual verification (test plan in the PR):
+- `tools/list` over HTTP returns the catalog; filter headers trim it.
+- `tools/call` against a query / view / report / command returns items.
+- Callability-deny rejects matching calls with `isError: true`.
+- Existing `ws://host:5155/myko` clients keep working (no regression).
 
 ## Migration
 
@@ -344,7 +432,7 @@ operational considerations:
   Envoy, Caddy). No special config needed beyond the usual `Upgrade` /
   `Connection` header forwarding.
 - **Tool filter headers**: confirm the proxy doesn't strip
-  `X-Myko-Tools-Allow` / `X-Myko-Tools-Deny`. Most proxies pass arbitrary
+  `X-Myko-Tool-Visibility-Allow` / `X-Myko-Tool-Visibility-Deny`. Most proxies pass arbitrary
   request headers through by default.
 
 For lockdown, attach proxy-level middlewares (IP allowlist, rate limit,
