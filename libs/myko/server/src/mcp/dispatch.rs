@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::{
     exec::Executor,
-    filter::ToolFilter,
+    filter::ClientFilters,
     types::{McpError, McpRequest, McpResource, McpResponse, McpTool},
 };
 
@@ -38,7 +38,7 @@ impl Default for ServerInfo {
 /// not produce a response.
 pub async fn handle_request(
     request: McpRequest,
-    filter: &ToolFilter,
+    filter: &ClientFilters,
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
@@ -73,10 +73,10 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
     )
 }
 
-fn handle_tools_list(id: Value, filter: &ToolFilter) -> McpResponse {
+fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     let mut tools: Vec<McpTool> = Vec::new();
 
-    if filter.allows(CONNECTION_STATUS_TOOL) {
+    if filter.allows_name(CONNECTION_STATUS_TOOL) {
         tools.push(McpTool {
             name: CONNECTION_STATUS_TOOL.to_string(),
             description: "Check the connection status to the Myko server".to_string(),
@@ -90,7 +90,7 @@ fn handle_tools_list(id: Value, filter: &ToolFilter) -> McpResponse {
 
     for reg in inventory::iter::<QueryRegistration> {
         let name = format!("query:{}", reg.query_id);
-        if !filter.allows(&name) {
+        if !filter.allows_name(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -102,7 +102,7 @@ fn handle_tools_list(id: Value, filter: &ToolFilter) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let name = format!("report:{}", reg.report_id);
-        if !filter.allows(&name) {
+        if !filter.allows_name(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -114,7 +114,7 @@ fn handle_tools_list(id: Value, filter: &ToolFilter) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let name = format!("command:{}", reg.command_id);
-        if !filter.allows(&name) {
+        if !filter.allows_name(&name) {
             continue;
         }
         tools.push(McpTool {
@@ -130,7 +130,7 @@ fn handle_tools_list(id: Value, filter: &ToolFilter) -> McpResponse {
 async fn handle_tools_call(
     id: Value,
     params: Option<Value>,
-    filter: &ToolFilter,
+    filter: &ClientFilters,
     executor: &Executor,
 ) -> McpResponse {
     let Some(params) = params else {
@@ -140,7 +140,7 @@ async fn handle_tools_call(
         return McpResponse::error(id, McpError::invalid_params("Missing tool name"));
     };
 
-    if !filter.allows(&tool_name) {
+    if !filter.allows_name(&tool_name) {
         return McpResponse::error(
             id,
             McpError {
@@ -152,6 +152,22 @@ async fn handle_tools_call(
     }
 
     let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+
+    // Argument-aware client filter. Rejection surfaces as MCP `isError: true`
+    // content per the spec's "invalid input data" shape — distinct from the
+    // protocol-level method-not-found used for unknown / name-denied tools.
+    if let Err(message) = filter.allows_call(&tool_name, &arguments) {
+        return McpResponse::success(
+            id,
+            json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("Call denied by filter: {}", message)
+                }],
+                "isError": true,
+            }),
+        );
+    }
 
     let result = execute_tool(executor, &tool_name, arguments).await;
 
@@ -194,12 +210,12 @@ async fn execute_tool(executor: &Executor, tool_name: &str, args: Value) -> Resu
     Err(format!("Unknown tool: {}", tool_name))
 }
 
-fn handle_resources_list(id: Value, filter: &ToolFilter) -> McpResponse {
+fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
 
     for reg in inventory::iter::<QueryRegistration> {
         let tool_name = format!("query:{}", reg.query_id);
-        if !filter.allows(&tool_name) {
+        if !filter.allows_name(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -212,7 +228,7 @@ fn handle_resources_list(id: Value, filter: &ToolFilter) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let tool_name = format!("report:{}", reg.report_id);
-        if !filter.allows(&tool_name) {
+        if !filter.allows_name(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -225,7 +241,7 @@ fn handle_resources_list(id: Value, filter: &ToolFilter) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let tool_name = format!("command:{}", reg.command_id);
-        if !filter.allows(&tool_name) {
+        if !filter.allows_name(&tool_name) {
             continue;
         }
         resources.push(McpResource {
@@ -239,7 +255,7 @@ fn handle_resources_list(id: Value, filter: &ToolFilter) -> McpResponse {
     McpResponse::success(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Value, params: Option<Value>, filter: &ToolFilter) -> McpResponse {
+fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
@@ -252,7 +268,7 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ToolFilter) 
         if parts.len() == 2 {
             let (schema_type, schema_id) = (parts[0], parts[1]);
             let tool_name = format!("{}:{}", schema_type, schema_id);
-            if !filter.allows(&tool_name) {
+            if !filter.allows_name(&tool_name) {
                 return McpResponse::error(
                     id,
                     McpError {
@@ -364,7 +380,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_returns_server_info() {
-        let filter = ToolFilter::allow_all();
+        let filter = ClientFilters::allow_all();
         let info = ServerInfo {
             name: "test".into(),
             version: "0.0.0".into(),
@@ -384,7 +400,7 @@ mod tests {
 
     #[tokio::test]
     async fn notifications_produce_no_response() {
-        let filter = ToolFilter::allow_all();
+        let filter = ClientFilters::allow_all();
         let info = ServerInfo::default();
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
@@ -402,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_method_returns_error() {
-        let filter = ToolFilter::allow_all();
+        let filter = ClientFilters::allow_all();
         let info = ServerInfo::default();
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);

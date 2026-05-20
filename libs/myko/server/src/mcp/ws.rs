@@ -17,7 +17,7 @@ use tokio_tungstenite::{
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::{ALLOW_HEADER, DENY_HEADER, ToolFilter},
+    filter::{ALLOW_HEADER, CONSTRAINTS_HEADER, ClientFilters, DENY_HEADER},
     types::{McpError, McpRequest, McpResponse},
 };
 use crate::router::{HttpRequestHead, write_status};
@@ -30,8 +30,11 @@ pub async fn handle_mcp_ws_upgrade(
     ctx: Arc<CellServerCtx>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let filter =
-        ToolFilter::from_headers(head.header(ALLOW_HEADER), head.header(DENY_HEADER));
+    let filter = ClientFilters::from_strings(
+        head.header(ALLOW_HEADER),
+        head.header(DENY_HEADER),
+        head.header(CONSTRAINTS_HEADER),
+    );
 
     let want_mcp_subprotocol = head
         .header("Sec-WebSocket-Protocol")
@@ -109,7 +112,7 @@ async fn perform_handshake(
 async fn run_mcp_loop(
     ws_stream: WebSocketStream<TcpStream>,
     ctx: Arc<CellServerCtx>,
-    filter: ToolFilter,
+    filter: ClientFilters,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut write, mut read) = ws_stream.split();
     let filter = Arc::new(filter);

@@ -278,16 +278,33 @@ Myko ships an MCP endpoint so AI agents can call your queries / reports / comman
 | `command:`          | `CommandRegistration` | `command:DeleteTarget`   |
 | `connection_status` | built-in              | health check          |
 
-### Per-client filtering (HTTP/WS)
+### Per-client filtering
 
-Lock down what an MCP-client config can call without trusting the client itself:
+Lock down what an MCP-client config can call without trusting the client itself. Two layers — both **client-configured**, composed AND:
+
+**1. Name filter** — glob allow/deny over tool names. Denied tools are invisible (method-not-found if called).
 
 ```
 X-Myko-Tools-Allow: query:*,report:*
 X-Myko-Tools-Deny:  command:Delete*
 ```
 
-Patterns: `*` (any), `prefix*`, `*suffix`, exact. Deny wins on conflict. Applied to `tools/list`, `tools/call`, `resources/list`, `resources/read`.
+Patterns: `*`, `prefix*`, `*suffix`, exact. Deny wins on conflict.
+
+**2. Call filter** — argument-aware constraints on `tools/call`. Per-tool, per-arg allow/deny value lists. Rejection surfaces as MCP `isError: true` content (the spec's "invalid input data" shape) with a human-readable reason.
+
+```
+X-Myko-Tool-Constraints: {"command:RunPlaybook":{"playbook_id":{"allow":["site","deploy"]}}}
+```
+
+Schema: `{ "<tool_name>": { "<arg_path>": { "allow": [...], "deny": [...] } } }`. Allow lists are positive (missing arg → denied); deny lists exclude (deny wins over allow on the same value).
+
+**Stdio transport** has no headers, so the same three knobs come from env vars:
+- `MYKO_MCP_TOOLS_ALLOW`
+- `MYKO_MCP_TOOLS_DENY`
+- `MYKO_MCP_TOOL_CONSTRAINTS` (JSON)
+
+The name filter applies to `tools/list`, `tools/call`, `resources/list`, `resources/read`. The call filter applies only to `tools/call`.
 
 ### Connecting a client
 
@@ -299,7 +316,7 @@ curl -sS -X POST http://localhost:5155/myko/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq
 ```
 
-**Claude Code (project `.mcp.json`):**
+**Claude Code (project `.mcp.json`)** — name filter only:
 
 ```json
 {
@@ -309,6 +326,23 @@ curl -sS -X POST http://localhost:5155/myko/mcp \
       "url": "http://localhost:5155/myko/mcp",
       "headers": {
         "X-Myko-Tools-Allow": "query:*,report:*"
+      }
+    }
+  }
+}
+```
+
+**With argument allowlist** (e.g. only let the agent run two specific playbooks):
+
+```json
+{
+  "mcpServers": {
+    "myko-restricted": {
+      "type": "http",
+      "url": "http://localhost:5155/myko/mcp",
+      "headers": {
+        "X-Myko-Tools-Allow": "query:*,report:*,command:RunPlaybook",
+        "X-Myko-Tool-Constraints": "{\"command:RunPlaybook\":{\"playbook_id\":{\"allow\":[\"site\",\"deploy\"]}}}"
       }
     }
   }

@@ -13,7 +13,7 @@ use tokio::{
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::{ALLOW_HEADER, DENY_HEADER, ToolFilter},
+    filter::{ALLOW_HEADER, CONSTRAINTS_HEADER, ClientFilters, DENY_HEADER},
     types::{McpError, McpRequest, McpResponse},
 };
 use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
@@ -113,9 +113,13 @@ pub async fn handle_sse(
     Ok(())
 }
 
-/// Build a `ToolFilter` from the request headers.
-pub fn filter_from_head(head: &HttpRequestHead) -> ToolFilter {
-    ToolFilter::from_headers(head.header(ALLOW_HEADER), head.header(DENY_HEADER))
+/// Build a `ClientFilters` from the request headers.
+pub fn filter_from_head(head: &HttpRequestHead) -> ClientFilters {
+    ClientFilters::from_strings(
+        head.header(ALLOW_HEADER),
+        head.header(DENY_HEADER),
+        head.header(CONSTRAINTS_HEADER),
+    )
 }
 
 async fn read_body(
@@ -171,15 +175,37 @@ mod tests {
             (DENY_HEADER, "command:Delete*"),
         ]);
         let filter = filter_from_head(&head);
-        assert!(filter.allows("query:GetAllTargets"));
-        assert!(!filter.allows("command:DeleteThing"));
-        assert!(!filter.allows("report:Health"));
+        assert!(filter.allows_name("query:GetAllTargets"));
+        assert!(!filter.allows_name("command:DeleteThing"));
+        assert!(!filter.allows_name("report:Health"));
     }
 
     #[test]
     fn filter_from_head_with_no_headers_allows_all() {
         let head = head_with(vec![]);
         let filter = filter_from_head(&head);
-        assert!(filter.allows("anything"));
+        assert!(filter.allows_name("anything"));
+    }
+
+    #[test]
+    fn filter_from_head_parses_call_constraints() {
+        let head = head_with(vec![(
+            CONSTRAINTS_HEADER,
+            r#"{"command:RunPlaybook":{"playbook_id":{"allow":["site"]}}}"#,
+        )]);
+        let filter = filter_from_head(&head);
+        assert!(
+            filter
+                .allows_call("command:RunPlaybook", &serde_json::json!({"playbook_id":"site"}))
+                .is_ok()
+        );
+        assert!(
+            filter
+                .allows_call(
+                    "command:RunPlaybook",
+                    &serde_json::json!({"playbook_id":"danger"})
+                )
+                .is_err()
+        );
     }
 }

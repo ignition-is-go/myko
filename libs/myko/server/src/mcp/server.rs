@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::ToolFilter,
+    filter::{ALLOW_ENV, CONSTRAINTS_ENV, ClientFilters, DENY_ENV},
     types::{McpError, McpRequest, McpResponse},
 };
 
@@ -100,7 +100,15 @@ impl McpServer {
 
         let executor = Arc::new(Executor::Client(client));
         let info = Arc::new(self.info.clone());
-        let filter = Arc::new(ToolFilter::allow_all());
+
+        // Stdio MCP can't carry per-request headers, so the same three
+        // knobs as HTTP/WS come from env vars instead. Empty / unset =
+        // permissive default.
+        let filter = Arc::new(ClientFilters::from_strings(
+            std::env::var(ALLOW_ENV).ok().as_deref(),
+            std::env::var(DENY_ENV).ok().as_deref(),
+            std::env::var(CONSTRAINTS_ENV).ok().as_deref(),
+        ));
 
         let (response_tx, mut response_rx) = mpsc::channel::<McpResponse>(32);
 
