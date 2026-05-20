@@ -153,6 +153,7 @@ pub async fn route_connection(
         Err(e) => {
             log::debug!("HTTP parse error from {}: {}", addr, e);
             let _ = write_status(&mut stream, 400, "Bad Request").await;
+            shutdown_cleanly(stream).await;
             return Ok(());
         }
     };
@@ -170,6 +171,7 @@ pub async fn route_connection(
         ("GET", p) if p == "/myko" || p.starts_with("/myko?") => {
             if !head.is_websocket_upgrade() {
                 let _ = write_status(&mut stream, 426, "Upgrade Required").await;
+                shutdown_cleanly(stream).await;
                 return Ok(());
             }
             // The existing WS handler does its own handshake via
@@ -189,18 +191,20 @@ pub async fn route_connection(
             // No SSE accept, no WS upgrade — caller probably wants a quick
             // status check or hit the URL in a browser.
             let body = b"{\"status\":\"ok\",\"endpoint\":\"/myko/mcp\",\"transports\":[\"POST\",\"WebSocket\",\"SSE\"]}";
-            write_full(
+            let result = write_full(
                 &mut stream,
                 200,
                 "OK",
                 &[("Content-Type", "application/json")],
                 body,
             )
-            .await
-            .map_err(Into::into)
+            .await;
+            shutdown_cleanly(stream).await;
+            result.map_err(Into::into)
         }
         _ => {
             let _ = write_status(&mut stream, 404, "Not Found").await;
+            shutdown_cleanly(stream).await;
             Ok(())
         }
     }
@@ -228,6 +232,7 @@ async fn handle_ws_upgrade(
         );
         let mut stream = stream;
         let _ = write_status(&mut stream, 400, "Bad Request").await;
+        shutdown_cleanly(stream).await;
         return Ok(());
     }
 
@@ -272,6 +277,34 @@ pub async fn write_full(
     }
     stream.flush().await?;
     Ok(())
+}
+
+/// Close an HTTP response stream cleanly.
+///
+/// `TcpStream::drop` calls `close(2)`, and Linux sends a RST instead of a
+/// FIN if the socket's receive buffer is non-empty (RFC-defined behavior).
+/// HTTP/1.1 clients commonly hold the socket open for keep-alive or
+/// pipeline a second request, so by the time we finish writing the
+/// response, the kernel often has bytes we never read.
+///
+/// This helper:
+/// 1. Shuts down the write half (sends FIN).
+/// 2. Drains the read half until EOF or a short timeout, so the kernel can
+///    close cleanly without RST.
+pub async fn shutdown_cleanly(mut stream: TcpStream) {
+    use tokio::io::AsyncReadExt;
+
+    let _ = stream.shutdown().await;
+    let mut buf = [0u8; 1024];
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => continue,
+            }
+        }
+    })
+    .await;
 }
 
 // Wire WsHandler in scope so the path is documented at the module top.

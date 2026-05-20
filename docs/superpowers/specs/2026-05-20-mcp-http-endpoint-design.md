@@ -274,15 +274,17 @@ reactive query result changes).
 
 ### Config
 
-`CellServerBuilder` grows one knob:
+No feature flag. The MCP endpoint is part of the server runtime and is
+hosted by every `CellServer`. The HTTP pre-parse on the WS hot path is one
+line read + an `Upgrade:` header check — negligible. There is no
+separate-port option, and no way to disable the endpoint short of fronting
+the server with a proxy that rejects `/myko/mcp`.
 
-```rust
-.with_mcp_http(true)  // default: true
-```
-
-When `false`, the router still pre-parses HTTP but returns 404 for `/myko/mcp`.
-The cost of the HTTP pre-parse on the WS hot path is one line read + one
-`Upgrade:` header check — negligible. There is no separate-port option in v1.
+Operators who want to lock the endpoint down at the network edge can do so
+in Traefik (IP allowlist middleware on the dedicated `server-mcp` router —
+see the Deployment section). Operators who want to lock it down for a
+specific client send the `X-Myko-Tools-Allow` / `X-Myko-Tools-Deny`
+headers via that client's MCP config.
 
 ## Data flow examples
 

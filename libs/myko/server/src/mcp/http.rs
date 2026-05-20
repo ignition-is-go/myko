@@ -16,7 +16,7 @@ use super::{
     filter::{ALLOW_HEADER, DENY_HEADER, ToolFilter},
     types::{McpError, McpRequest, McpResponse},
 };
-use crate::router::{HttpRequestHead, write_full, write_status};
+use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
 
 /// Cap on incoming MCP JSON-RPC body size.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -37,6 +37,7 @@ pub async fn handle_post(
 
     if content_length > MAX_BODY_BYTES {
         let _ = write_status(&mut stream, 413, "Payload Too Large").await;
+        shutdown_cleanly(stream).await;
         return Ok(());
     }
 
@@ -45,6 +46,7 @@ pub async fn handle_post(
         Err(e) => {
             log::debug!("MCP POST body read error: {}", e);
             let _ = write_status(&mut stream, 400, "Bad Request").await;
+            shutdown_cleanly(stream).await;
             return Ok(());
         }
     };
@@ -66,14 +68,16 @@ pub async fn handle_post(
     };
 
     let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
-    write_full(
+    let write_result = write_full(
         &mut stream,
         200,
         "OK",
         &[("Content-Type", "application/json")],
         &body,
     )
-    .await?;
+    .await;
+    shutdown_cleanly(stream).await;
+    write_result?;
     Ok(())
 }
 
