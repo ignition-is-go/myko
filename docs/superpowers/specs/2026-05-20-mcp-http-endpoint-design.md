@@ -327,90 +327,29 @@ headers via that client's MCP config.
 
 - No API breakage: existing WS clients connect to `ws://host:5155/myko` exactly
   as before.
-- The standalone stdio binary (`myko::mcp::McpServer::run_stdio`) is unchanged.
-- Downstream apps (e.g. rship) get MCP-over-HTTP for free; they can keep the
-  stdio binary for editor integrations and add HTTP for in-process callers.
+- The legacy stdio binary (`myko::mcp::McpServer::run_stdio`) keeps working as
+  a transitional path while consumers migrate to the in-server endpoint.
 
-## Deployment (rship-control-plane)
+## Deployment notes (generic)
 
-rship-server runs behind Traefik v3.6 in Docker Swarm. The current router for
-`rship_server1` already matches `/myko/mcp`:
+The endpoint shares the existing Myko TCP listener, so any reverse proxy that
+already forwards `/myko` to the server will also forward `/myko/mcp`. Common
+operational considerations:
 
-```yaml
-- traefik.http.routers.server.rule=(PathPrefix(`/myko`) || PathPrefix(`/server`))
-- traefik.http.services.server.loadbalancer.server.port=5155
-```
+- **TLS termination** at the proxy; the server speaks plain HTTP/WS.
+- **SSE-friendly forwarding**: most proxies stream chunked responses by
+  default, but verify there is no idle-connection timeout shorter than the
+  15 s SSE keepalive comment we emit.
+- **WebSocket upgrade** is transparent in mainstream proxies (Traefik, nginx,
+  Envoy, Caddy). No special config needed beyond the usual `Upgrade` /
+  `Connection` header forwarding.
+- **Tool filter headers**: confirm the proxy doesn't strip
+  `X-Myko-Tools-Allow` / `X-Myko-Tools-Deny`. Most proxies pass arbitrary
+  request headers through by default.
 
-Because `PathPrefix(/myko)` is a prefix match and `WebSocket` upgrade is
-transparent in Traefik, **the bare endpoint works as-is for POST and WS** —
-no control-plane changes are strictly required to ship.
-
-However, three changes in `rship-control-plane/stacks/rship.yml` are
-recommended so the surface is operable and SSE behaves well in production:
-
-### 1. Dedicated `server-mcp` router (higher priority)
-
-Splitting MCP onto its own router lets ops attach middlewares (rate limit, IP
-allowlist, forward-auth) without touching the main Myko WS gateway, and makes
-the route visible in the Traefik dashboard.
-
-```yaml
-# additions to the rship_server1 deploy.labels list
-- traefik.http.routers.server-mcp.rule=PathPrefix(`/myko/mcp`)
-- traefik.http.routers.server-mcp.priority=100        # win over /myko prefix
-- traefik.http.routers.server-mcp.service=server      # same backend service
-- traefik.http.routers.server-mcp.entrypoints=websecure
-- traefik.http.routers.server-mcp.tls=true
-- traefik.http.routers.server-mcp.tls.certresolver=letsencrypt
-- traefik.http.routers.server-mcp.middlewares=strip-protocol-headers
-```
-
-The original `server` router stays exactly as it is — it just no longer wins
-the `/myko/mcp` path because the more specific router has higher priority.
-
-### 2. SSE-friendly response forwarding
-
-For SSE GET to stream without buffering surprises, add a serversTransport
-config with a long response timeout and explicit flush interval:
-
-```yaml
-- traefik.http.serversTransports.mcp-sse.responseHeaderTimeout=0s
-- traefik.http.serversTransports.mcp-sse.forwardingTimeouts.responseHeaderTimeout=0s
-# attach to the server-mcp router's service
-- traefik.http.services.server-mcp.loadbalancer.serversTransport=mcp-sse
-```
-
-In practice Traefik flushes streaming responses (chunked / SSE) by default and
-our 15 s keepalive comments prevent idle timeouts at the entrypoint level
-(`respondingTimeouts.idleTimeout` defaults to 180 s). The explicit config is
-defense-in-depth so future Traefik upgrades don't silently break SSE.
-
-### 3. Header passthrough sanity
-
-The existing `strip-protocol-headers` middleware strips the `:protocol`
-HTTP/2 pseudo-header leak — that's fine for us, and it does not touch our
-`X-Myko-Tools-Allow` / `X-Myko-Tools-Deny` headers. No change needed; just
-called out so the next reader knows the filter headers reach the backend.
-
-### Required vs. optional
-
-| Change | Required to ship? | Why |
-|---|---|---|
-| Dedicated `server-mcp` router | No | `/myko` prefix already matches. Add it for operability. |
-| SSE serversTransport tuning | No (today) | Traefik 3.6 defaults are fine; add as defense-in-depth. |
-| Header passthrough | No | Already works; just documenting it. |
-
-### Process
-
-This spec is the proposal. Once approved, file a corresponding PR against
-`rship-control-plane` containing the `stacks/rship.yml` diff above. The
-control plane is deployed via Ansible (`plays/rship.yml` → `docker stack
-deploy`), so the rollout is one `r.sh` invocation after merge.
-
-No coordination is required between the myko server release and the
-control-plane change: the server can ship first (endpoint just sits behind
-the existing `/myko` route), and the dedicated router can land later without
-downtime.
+For lockdown, attach proxy-level middlewares (IP allowlist, rate limit,
+forward-auth) to a dedicated route for `/myko/mcp` so they don't affect the
+main Myko WS gateway.
 
 ## Open questions
 

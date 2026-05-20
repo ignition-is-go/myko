@@ -317,7 +317,7 @@ curl -sS -X POST http://localhost:5155/myko/mcp \
 
 **Claude Desktop / Inspector:** point them at the same URL with the same headers.
 
-Through Traefik in the rship deployment stack the public URL is `https://${MYKO_HOST_ADDRESS}/myko/mcp`.
+Behind a TLS-terminating reverse proxy the public URL is `https://<host>/myko/mcp`.
 
 ---
 
