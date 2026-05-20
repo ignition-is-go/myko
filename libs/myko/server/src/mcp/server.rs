@@ -1,6 +1,7 @@
 //! MCP server implementation.
 
 use std::{
+    collections::HashSet,
     io::{self, BufRead, Write},
     sync::Arc,
 };
@@ -19,13 +20,25 @@ use uuid::Uuid;
 
 use super::types::*;
 
+/// Predicate on tool names. Names use prefixes `query:`, `report:`,
+/// `command:`, plus the built-in `connection_status`.
+pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+#[inline]
+fn filter_allows(filter: Option<&ToolFilter>, name: &str) -> bool {
+    filter.map(|f| f(name)).unwrap_or(true)
+}
+
 /// MCP Server for Myko.
 ///
-/// Automatically exposes all registered queries, reports, and commands
-/// through the MCP protocol.
+/// Auto-exposes registered queries, reports, and commands over MCP.
+/// Install a [`ToolFilter`] via [`McpServer::with_tool_filter`] to
+/// restrict which tools are surfaced; filtered tools respond like
+/// unknown ones.
 pub struct McpServer {
     server_name: String,
     server_version: String,
+    tool_filter: Option<ToolFilter>,
 }
 
 impl Default for McpServer {
@@ -40,6 +53,7 @@ impl McpServer {
         Self {
             server_name: "myko-mcp".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            tool_filter: None,
         }
     }
 
@@ -48,7 +62,62 @@ impl McpServer {
         Self {
             server_name: name.into(),
             server_version: version.into(),
+            tool_filter: None,
         }
+    }
+
+    /// Install a filter that decides which tool names are exposed and
+    /// callable. Replaces any previous filter.
+    pub fn with_tool_filter<F>(mut self, filter: F) -> Self
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        self.tool_filter = Some(Arc::new(filter));
+        self
+    }
+
+    /// Install an explicit allowlist of tool names. Equivalent to
+    /// `with_tool_filter` over a `HashSet` lookup. An empty iterator
+    /// denies everything.
+    pub fn with_allowed_tool_names<I, S>(self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let set: HashSet<String> = names.into_iter().map(Into::into).collect();
+        self.with_tool_filter(move |name| set.contains(name))
+    }
+
+    /// True if `name` passes the filter (or no filter is set).
+    pub fn is_tool_allowed(&self, name: &str) -> bool {
+        filter_allows(self.tool_filter.as_ref(), name)
+    }
+
+    /// Names that would appear in `tools/list` after the filter runs.
+    pub fn exposed_tool_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.is_tool_allowed("connection_status") {
+            names.push("connection_status".to_string());
+        }
+        for reg in inventory::iter::<QueryRegistration> {
+            let n = format!("query:{}", reg.query_id);
+            if self.is_tool_allowed(&n) {
+                names.push(n);
+            }
+        }
+        for reg in inventory::iter::<ReportRegistration> {
+            let n = format!("report:{}", reg.report_id);
+            if self.is_tool_allowed(&n) {
+                names.push(n);
+            }
+        }
+        for reg in inventory::iter::<CommandRegistration> {
+            let n = format!("command:{}", reg.command_id);
+            if self.is_tool_allowed(&n) {
+                names.push(n);
+            }
+        }
+        names
     }
 
     /// Run the MCP server over stdio (blocking).
@@ -70,6 +139,14 @@ impl McpServer {
             std::env::var("MYKO_ADDRESS").unwrap_or_else(|_| "ws://localhost:5155".to_string());
 
         eprintln!("[myko-mcp] Connecting to Myko at {}", myko_address);
+
+        if self.tool_filter.is_some() {
+            let exposed = self.exposed_tool_names();
+            eprintln!(
+                "[myko-mcp] tool filter installed ({} exposed)",
+                exposed.len()
+            );
+        }
 
         // Create client and connect
         let client = Arc::new(MykoClient::new());
@@ -103,10 +180,11 @@ impl McpServer {
         let (tool_tx, tool_rx) = mpsc::channel::<ToolRequest>(32);
         let (response_tx, mut response_rx) = mpsc::channel::<McpResponse>(32);
 
-        // Start tool executor
+        // Start tool executor.
         let executor_client = client.clone();
+        let executor_filter = self.tool_filter.clone();
         tokio::spawn(async move {
-            tool_executor(executor_client, tool_rx).await;
+            tool_executor(executor_client, executor_filter, tool_rx).await;
         });
 
         // Create request handler
@@ -114,6 +192,7 @@ impl McpServer {
             server_name: self.server_name.clone(),
             server_version: self.server_version.clone(),
             tool_tx,
+            tool_filter: self.tool_filter.clone(),
         };
 
         // Spawn stdin reader
@@ -209,9 +288,14 @@ struct RequestHandler {
     server_name: String,
     server_version: String,
     tool_tx: mpsc::Sender<ToolRequest>,
+    tool_filter: Option<ToolFilter>,
 }
 
 impl RequestHandler {
+    fn tool_allowed(&self, name: &str) -> bool {
+        filter_allows(self.tool_filter.as_ref(), name)
+    }
+
     fn handle_request(&self, request: McpRequest, response_tx: mpsc::Sender<McpResponse>) {
         match request.method.as_str() {
             "initialize" => {
@@ -263,20 +347,26 @@ impl RequestHandler {
         let mut tools = Vec::new();
 
         // Built-in connection_status tool
-        tools.push(McpTool {
-            name: "connection_status".to_string(),
-            description: "Check the connection status to the Myko server".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        });
+        if self.tool_allowed("connection_status") {
+            tools.push(McpTool {
+                name: "connection_status".to_string(),
+                description: "Check the connection status to the Myko server".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            });
+        }
 
         // Queries as tools
         for reg in inventory::iter::<QueryRegistration> {
+            let name = format!("query:{}", reg.query_id);
+            if !self.tool_allowed(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("query:{}", reg.query_id),
+                name,
                 description: format!("Query returning {} entities", reg.query_item_type),
                 input_schema: json!({
                     "type": "object",
@@ -287,8 +377,12 @@ impl RequestHandler {
 
         // Reports as tools
         for reg in inventory::iter::<ReportRegistration> {
+            let name = format!("report:{}", reg.report_id);
+            if !self.tool_allowed(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("report:{}", reg.report_id),
+                name,
                 description: format!("Report returning {}", reg.output_type),
                 input_schema: json!({
                     "type": "object",
@@ -299,8 +393,12 @@ impl RequestHandler {
 
         // Commands as tools
         for reg in inventory::iter::<CommandRegistration> {
+            let name = format!("command:{}", reg.command_id);
+            if !self.tool_allowed(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("command:{}", reg.command_id),
+                name,
                 description: format!("Command returning {}", reg.result_type),
                 input_schema: json!({
                     "type": "object",
@@ -340,6 +438,8 @@ impl RequestHandler {
             }
         };
 
+        // Filter check lives in execute_tool so the response matches the
+        // unknown-tool path.
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let _ = self.tool_tx.blocking_send(ToolRequest {
@@ -354,6 +454,10 @@ impl RequestHandler {
         let mut resources = Vec::new();
 
         for reg in inventory::iter::<QueryRegistration> {
+            let tool_name = format!("query:{}", reg.query_id);
+            if !self.tool_allowed(&tool_name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/query/{}", reg.query_id),
                 name: reg.query_id.to_string(),
@@ -363,6 +467,10 @@ impl RequestHandler {
         }
 
         for reg in inventory::iter::<ReportRegistration> {
+            let tool_name = format!("report:{}", reg.report_id);
+            if !self.tool_allowed(&tool_name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/report/{}", reg.report_id),
                 name: reg.report_id.to_string(),
@@ -372,6 +480,10 @@ impl RequestHandler {
         }
 
         for reg in inventory::iter::<CommandRegistration> {
+            let tool_name = format!("command:{}", reg.command_id);
+            if !self.tool_allowed(&tool_name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/command/{}", reg.command_id),
                 name: format!("{} (command)", reg.command_id),
@@ -402,25 +514,30 @@ impl RequestHandler {
             let parts: Vec<&str> = path.splitn(2, '/').collect();
             if parts.len() == 2 {
                 let (schema_type, schema_id) = (parts[0], parts[1]);
+                let tool_name = format!("{}:{}", schema_type, schema_id);
 
-                let content = match schema_type {
-                    "query" => get_query_schema(schema_id),
-                    "report" => get_report_schema(schema_id),
-                    "command" => get_command_schema(schema_id),
-                    _ => None,
-                };
+                // Fall through to "Resource not found" if filtered, so
+                // filtered URIs look unknown.
+                if self.tool_allowed(&tool_name) {
+                    let content = match schema_type {
+                        "query" => get_query_schema(schema_id),
+                        "report" => get_report_schema(schema_id),
+                        "command" => get_command_schema(schema_id),
+                        _ => None,
+                    };
 
-                if let Some(content) = content {
-                    return McpResponse::success(
-                        id,
-                        json!({
-                            "contents": [{
-                                "uri": uri,
-                                "mimeType": "application/json",
-                                "text": content
-                            }]
-                        }),
-                    );
+                    if let Some(content) = content {
+                        return McpResponse::success(
+                            id,
+                            json!({
+                                "contents": [{
+                                    "uri": uri,
+                                    "mimeType": "application/json",
+                                    "text": content
+                                }]
+                            }),
+                        );
+                    }
                 }
             }
         }
@@ -440,10 +557,20 @@ impl RequestHandler {
 // Tool Execution
 // ─────────────────────────────────────────────────────────────────────────────
 
-async fn tool_executor(client: Arc<MykoClient>, mut rx: mpsc::Receiver<ToolRequest>) {
+async fn tool_executor(
+    client: Arc<MykoClient>,
+    filter: Option<ToolFilter>,
+    mut rx: mpsc::Receiver<ToolRequest>,
+) {
     while let Some(request) = rx.recv().await {
         let client = client.clone();
-        let result = execute_tool(client, &request.tool_name, request.arguments).await;
+        let result = execute_tool(
+            client,
+            &request.tool_name,
+            request.arguments,
+            filter.as_ref(),
+        )
+        .await;
 
         let response = match result {
             Ok(data) => McpResponse::success(
@@ -475,7 +602,14 @@ async fn execute_tool(
     client: Arc<MykoClient>,
     tool_name: &str,
     arguments: Value,
+    filter: Option<&ToolFilter>,
 ) -> Result<Value, String> {
+    // Match the unknown-tool Err below so tool_executor wraps both
+    // cases the same way.
+    if !filter_allows(filter, tool_name) {
+        return Err(format!("Unknown tool: {}", tool_name));
+    }
+
     if tool_name == "connection_status" {
         let status = client.connection_status().get();
         return Ok(json!({
@@ -771,4 +905,98 @@ pub struct ReportInfo {
 pub struct CommandInfo {
     pub command_id: String,
     pub result_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_filter_allows_everything() {
+        let server = McpServer::with_info("test", "0.0.0");
+        assert!(server.is_tool_allowed("command:RunPlaybook"));
+        assert!(server.is_tool_allowed("command:DeleteEverything"));
+        assert!(server.is_tool_allowed("query:GetAllFoos"));
+        assert!(server.is_tool_allowed("connection_status"));
+    }
+
+    #[test]
+    fn closure_filter_gates_by_predicate() {
+        let server = McpServer::with_info("test", "0.0.0")
+            .with_tool_filter(|name| !name.starts_with("command:Delete"));
+
+        assert!(server.is_tool_allowed("command:RunPlaybook"));
+        assert!(server.is_tool_allowed("query:GetAllFoos"));
+        assert!(!server.is_tool_allowed("command:DeleteFoo"));
+        assert!(!server.is_tool_allowed("command:DeleteFoos"));
+    }
+
+    #[test]
+    fn allowlist_via_hashset_closure() {
+        let allowed: HashSet<String> = ["query:GetAllRuns", "command:RunPlaybook"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let server = McpServer::with_info("test", "0.0.0")
+            .with_tool_filter(move |name| allowed.contains(name));
+
+        assert!(server.is_tool_allowed("query:GetAllRuns"));
+        assert!(server.is_tool_allowed("command:RunPlaybook"));
+        assert!(!server.is_tool_allowed("command:CancelRun"));
+        assert!(!server.is_tool_allowed("connection_status"));
+    }
+
+    #[test]
+    fn with_allowed_tool_names_builds_allowlist() {
+        let server = McpServer::with_info("test", "0.0.0")
+            .with_allowed_tool_names(["connection_status", "query:GetAllFoos"]);
+
+        assert!(server.is_tool_allowed("connection_status"));
+        assert!(server.is_tool_allowed("query:GetAllFoos"));
+        assert!(!server.is_tool_allowed("query:GetAllBars"));
+        assert!(!server.is_tool_allowed("command:DeleteFoo"));
+    }
+
+    #[test]
+    fn empty_allowlist_denies_everything() {
+        let names: [&str; 0] = [];
+        let server = McpServer::with_info("test", "0.0.0").with_allowed_tool_names(names);
+        assert!(!server.is_tool_allowed("connection_status"));
+        assert!(!server.is_tool_allowed("query:Anything"));
+        assert!(!server.is_tool_allowed(""));
+    }
+
+    #[test]
+    fn duplicate_names_dedupe_in_allowlist() {
+        let server =
+            McpServer::with_info("test", "0.0.0").with_allowed_tool_names(["foo", "foo", "bar"]);
+        assert!(server.is_tool_allowed("foo"));
+        assert!(server.is_tool_allowed("bar"));
+        assert!(!server.is_tool_allowed("baz"));
+    }
+
+    #[test]
+    fn with_tool_filter_replaces_previous() {
+        let server = McpServer::with_info("test", "0.0.0")
+            .with_tool_filter(|_| true)
+            .with_tool_filter(|_| false);
+        assert!(!server.is_tool_allowed("anything"));
+    }
+
+    #[test]
+    fn exposed_tool_names_respects_filter() {
+        let allowing = McpServer::with_info("test", "0.0.0");
+        assert!(
+            allowing
+                .exposed_tool_names()
+                .contains(&"connection_status".to_string())
+        );
+
+        let denying = McpServer::with_info("test", "0.0.0").with_tool_filter(|_| false);
+        assert!(denying.exposed_tool_names().is_empty());
+
+        let only_status =
+            McpServer::with_info("test", "0.0.0").with_allowed_tool_names(["connection_status"]);
+        assert_eq!(only_status.exposed_tool_names(), vec!["connection_status"]);
+    }
 }
