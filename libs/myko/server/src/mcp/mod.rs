@@ -1,76 +1,53 @@
-//! MCP (Model Context Protocol) server module for Myko.
+//! MCP (Model Context Protocol) for Myko.
 //!
-//! This module provides an MCP server that automatically exposes:
-//! - **Resources**: Queries and reports as readable resources
-//! - **Tools**: Commands as executable tools
+//! The server hosts MCP at `/myko/mcp` over three content-negotiated
+//! transports (HTTP POST, WebSocket, SSE) — see [`http`] and [`ws`].
+//! [`dispatch`] is the transport-agnostic JSON-RPC core, [`exec`] is the
+//! tool executor abstraction (in-process or remote client), and [`filter`]
+//! parses per-client filters from request headers (or env vars on stdio).
 //!
-//! All registrations are discovered automatically via the inventory system,
-//! so any type decorated with `#[myko_query]`, `#[myko_report]`, or `#[myko_command]`
-//! will be available through the MCP interface.
+//! Every type decorated with `#[myko_query]`, `#[myko_view]`,
+//! `#[myko_report]`, or `#[myko_command]` is auto-discovered via
+//! `inventory` and exposed as an MCP tool with prefix `query:`, `view:`,
+//! `report:`, or `command:`. The tool's input schema also surfaces as a
+//! resource at `myko://schema/<kind>/<id>`.
 //!
-//! ## Usage
+//! ## Client filters
 //!
-//! For Rship, use the `rship-mcp` binary which includes all entity registrations:
+//! Two layers (see [`filter::ClientFilters`]):
 //!
-//! ```bash
-//! cargo run -p rship-mcp
-//! ```
+//! - **Visibility** — name allow/deny via
+//!   `X-Myko-Tool-Visibility-Allow` / `X-Myko-Tool-Visibility-Deny`
+//!   headers (or `MYKO_MCP_TOOL_VISIBILITY_{ALLOW,DENY}` env vars on
+//!   stdio). Patterns are globs: `*`, `prefix*`, `*suffix`, exact.
+//!   Denial → MCP **Protocol Error** (`-32602`, "Unknown tool: …").
 //!
-//! Or use programmatically in your own crate:
+//! - **Callability** — per-tool / per-arg JSON value lists via
+//!   `X-Myko-Tool-Callable-Allow` / `X-Myko-Tool-Callable-Deny`
+//!   (or the matching `MYKO_MCP_TOOL_CALLABLE_*` env vars). Denial →
+//!   MCP **Tool Execution Error** (`isError: true` content carrying a
+//!   short reason).
 //!
-//! ```rust,ignore
-//! // Link your entities crate to register them
-//! my_entities::link();
-//!
-//! // Start the MCP server
-//! let server = myko_server::mcp::McpServer::new();
-//! server.run_stdio()?;
-//! ```
-//!
-//! ## Restricting Exposed Tools
-//!
-//! Install a [`ToolFilter`] to expose only a subset of registered tools.
-//! Filtered tools respond like unknown ones.
-//!
-//! ```rust,ignore
-//! let server = myko_server::mcp::McpServer::new()
-//!     .with_allowed_tool_names(["connection_status", "query:GetAllFoos"]);
-//! server.run_stdio()?;
-//! ```
-//!
-//! ## MCP Client Configuration
-//!
-//! Add to Claude Desktop or other MCP clients:
-//!
-//! ```json
-//! {
-//!   "mcpServers": {
-//!     "rship": {
-//!       "command": "cargo",
-//!       "args": ["run", "-p", "rship-mcp"],
-//!       "cwd": "/path/to/rship"
-//!     }
-//!   }
-//! }
-//! ```
+//! Both layers compose AND; deny wins inside each layer.
 //!
 //! ## Protocol
 //!
-//! The server implements the MCP protocol (2024-11-05) over stdio using JSON-RPC.
+//! Implements MCP 2024-11-05 JSON-RPC (compatible with the 2025-06-18
+//! error-handling conventions).
 //!
-//! ### Resources
+//! ## Legacy stdio
 //!
-//! - `myko://schema/query/{query_id}` - JSON schema for a query
-//! - `myko://schema/report/{report_id}` - JSON schema for a report
-//! - `myko://schema/command/{command_id}` - JSON schema for a command
-//!
-//! ### Tools
-//!
-//! Each registered command becomes an MCP tool with the command's JSON schema
-//! as the input schema.
+//! [`McpServer::run_stdio`] is a transitional stdio transport that wraps a
+//! `MykoClient` and connects out over WebSocket. It will be removed once
+//! all consumers have migrated to the in-server `/myko/mcp` endpoint.
 
+pub mod dispatch;
+pub mod exec;
+pub mod filter;
+pub mod http;
 mod server;
 mod types;
+pub mod ws;
 
-pub use server::{McpServer, ToolFilter};
+pub use server::McpServer;
 pub use types::*;

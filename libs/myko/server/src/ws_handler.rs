@@ -317,10 +317,28 @@ enum DeferredOutbound {
 pub struct WsHandler;
 
 impl WsHandler {
-    /// Handle a new WebSocket connection.
-    #[allow(clippy::too_many_arguments)]
+    /// Handle a new WebSocket connection (performs the handshake).
     pub async fn handle_connection(
         stream: TcpStream,
+        addr: SocketAddr,
+        ctx: Arc<CellServerCtx>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut ws_config = WebSocketConfig::default();
+        ws_config.max_message_size = Some(WS_MAX_MESSAGE_SIZE_BYTES);
+        ws_config.max_frame_size = Some(WS_MAX_FRAME_SIZE_BYTES);
+        let ws_stream = accept_async_with_config(stream, Some(ws_config)).await?;
+        Self::handle_upgraded(ws_stream, addr, ctx).await
+    }
+
+    /// Handle a WebSocket connection whose HTTP/1.1 handshake has already
+    /// completed and produced a [`tokio_tungstenite::WebSocketStream`].
+    ///
+    /// Used by the front-door router when it pre-parses the HTTP request
+    /// (to dispatch between `/myko` WS and `/myko/mcp` HTTP/WS) and then
+    /// completes the WS handshake itself.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handle_upgraded(
+        ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,
         addr: SocketAddr,
         ctx: Arc<CellServerCtx>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -328,10 +346,6 @@ impl WsHandler {
 
         let host_id = ctx.host_id;
 
-        let mut ws_config = WebSocketConfig::default();
-        ws_config.max_message_size = Some(WS_MAX_MESSAGE_SIZE_BYTES);
-        ws_config.max_frame_size = Some(WS_MAX_FRAME_SIZE_BYTES);
-        let ws_stream = accept_async_with_config(stream, Some(ws_config)).await?;
         let (mut write, mut read) = ws_stream.split();
 
         // Create a bounded channel for sending messages to the client
