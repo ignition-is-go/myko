@@ -32,7 +32,8 @@ use crate::{
     report::{ReportIdStatic, ReportParams, ReportRequest},
     view::{ViewParams, ViewRequest},
     wire::{
-        MEvent, MykoMessage, PingData, WrappedQuery, WrappedReport, wrap_command_request, wrap_view,
+        MEvent, MykoMessage, PingData, WrappedQuery, WrappedReport, WrappedView,
+        wrap_command_request, wrap_view,
     },
 };
 
@@ -133,6 +134,28 @@ fn query_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscription
                 Ok(_) => debug!("query_cancel_guard: sent QueryCancel tx={}", tx),
                 Err(e) => warn!(
                     "query_cancel_guard: failed to send QueryCancel tx={}: {}",
+                    tx, e
+                ),
+            }
+        }
+    })
+}
+
+/// Cancel guard for views. View responses share the `query_handlers`
+/// dispatch table on the client, but the server requires a `ViewCancel`
+/// to release the view subscription (not a `QueryCancel`).
+fn view_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> SubscriptionGuard {
+    let tx_for_log = tx.clone();
+    debug!("view_cancel_guard: created for tx={}", tx_for_log);
+    SubscriptionGuard::from_callback(move || {
+        info!("view_cancel_guard: cancelling tx={}", tx);
+        inner.query_handlers.remove(&tx);
+        let msg = MykoMessage::ViewCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
+        if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
+            match inner.socket.send(frame) {
+                Ok(_) => debug!("view_cancel_guard: sent ViewCancel tx={}", tx),
+                Err(e) => warn!(
+                    "view_cancel_guard: failed to send ViewCancel tx={}: {}",
                     tx, e
                 ),
             }
@@ -1455,6 +1478,91 @@ impl MykoClient {
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
+
+        cell.lock()
+    }
+
+    /// Dynamic/raw view watch for runtimes that only know wrapped view data.
+    ///
+    /// Mirrors [`watch_query_raw`](Self::watch_query_raw) but sends a
+    /// `View` message and cancels with a `ViewCancel` on drop. View
+    /// responses share the same `ws:m:view-response` event tag handling
+    /// path as queries on the wire, so the same `query_handlers` slot
+    /// stores the dispatch closure.
+    pub fn watch_view_raw(&self, view: WrappedView) -> Cell<Vec<Value>, CellImmutable> {
+        let tx: Arc<str> = view
+            .view
+            .get("tx")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into();
+
+        let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
+        let cell = Cell::new(Vec::<Value>::new()).with_name(view.view_id.as_ref());
+        let cell_weak = cell.downgrade();
+        let state_clone = state.clone();
+        let tx_clone = tx.clone();
+
+        self.inner.query_handlers.insert(
+            tx.clone(),
+            Box::new(move |response_value: Value| {
+                let Some(cell_writer) = cell_weak.upgrade() else {
+                    return;
+                };
+
+                let Ok(response) =
+                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
+                else {
+                    return;
+                };
+
+                if response.tx != tx_clone {
+                    return;
+                }
+
+                let mut state = state_clone.lock().unwrap();
+
+                if response.sequence == 0 {
+                    state.clear();
+                }
+
+                for wrapped_item in response.upserts {
+                    if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
+                        state.insert(id.into(), wrapped_item.item);
+                    }
+                }
+
+                for id in response.deletes {
+                    state.remove(&id);
+                }
+
+                let items: Vec<Value> = state.values().cloned().collect();
+                cell_writer.set(items);
+            }),
+        );
+
+        let msg = MykoMessage::View(view);
+        let frame = self
+            .encode_message(&msg)
+            .expect("Could not serialize message");
+
+        let socket = self.inner.socket.clone();
+        let status_cell = self.connection_status();
+        let frame_clone = frame.clone();
+        let status_guard = status_cell.subscribe(move |signal| {
+            if let hyphae::Signal::Value(status) = signal
+                && let ConnectionStatus::Connected(_) = &**status
+            {
+                let _ = socket.send(frame_clone.clone());
+            }
+        });
+
+        if let ConnectionStatus::Connected(_) = status_cell.get() {
+            let _ = self.inner.socket.send(frame);
+        }
+
+        cell.own(status_guard);
+        cell.own(view_cancel_guard(tx, self.inner.clone()));
 
         cell.lock()
     }

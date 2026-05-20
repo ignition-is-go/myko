@@ -20,7 +20,8 @@ use myko::{
     report::ReportRegistration,
     request::RequestContext,
     server::CellServerCtx,
-    wire::{WrappedCommand, WrappedQuery, WrappedReport},
+    view::ViewRegistration,
+    wire::{WrappedCommand, WrappedQuery, WrappedReport, WrappedView},
 };
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -55,6 +56,14 @@ impl Executor {
                 client_execute_report(client.clone(), report_id, args).await
             }
             Executor::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args).await,
+        }
+    }
+
+    /// Execute a view (list-typed report) and return its current items as JSON.
+    pub async fn execute_view(&self, view_id: &str, args: Value) -> Result<Value, String> {
+        match self {
+            Executor::Client(client) => client_execute_view(client.clone(), view_id, args).await,
+            Executor::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args),
         }
     }
 
@@ -147,6 +156,64 @@ async fn client_execute_query(
         }
     }
     Err(format!("Query not found: {}", query_id))
+}
+
+async fn client_execute_view(
+    client: Arc<MykoClient>,
+    view_id: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    for reg in inventory::iter::<ViewRegistration> {
+        if reg.view_id == view_id {
+            let tx = Uuid::new_v4().to_string();
+            let mut view_json = arguments_object(arguments);
+            if let Some(obj) = view_json.as_object_mut() {
+                obj.insert("tx".to_string(), json!(tx));
+                obj.insert(
+                    "createdAt".to_string(),
+                    json!(chrono::Utc::now().to_rfc3339()),
+                );
+            }
+
+            let wrapped = WrappedView {
+                view: view_json,
+                view_id: reg.view_id.into(),
+                view_item_type: reg.view_item_type.into(),
+                window: None,
+            };
+
+            let cell = client.watch_view_raw(wrapped);
+            let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
+            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+            let seen_initial = Arc::new(Mutex::new(false));
+            let result_tx_sub = result_tx.clone();
+            let seen_initial_sub = seen_initial.clone();
+            let _guard = cell.subscribe(move |signal| {
+                if let hyphae::Signal::Value(items) = signal {
+                    let mut seen = seen_initial_sub.lock().unwrap();
+                    if !*seen {
+                        *seen = true;
+                        return;
+                    }
+                    if let Some(tx) = result_tx_sub.lock().unwrap().take() {
+                        let _ = tx.send((**items).clone());
+                    }
+                }
+            });
+
+            return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
+                Ok(Ok(items)) => Ok(json!({
+                    "view_id": view_id,
+                    "item_type": reg.view_item_type,
+                    "count": items.len(),
+                    "items": items,
+                })),
+                Ok(Err(_)) => Err("View channel closed".to_string()),
+                Err(_) => Err("Timeout waiting for view response".to_string()),
+            };
+        }
+    }
+    Err(format!("View not found: {}", view_id))
 }
 
 async fn client_execute_report(
@@ -307,6 +374,58 @@ fn in_process_execute_query(
     Ok(json!({
         "query_id": query_id,
         "item_type": registration.query_item_type,
+        "count": items.len(),
+        "items": items,
+    }))
+}
+
+fn in_process_execute_view(
+    ctx: Arc<CellServerCtx>,
+    view_id: &str,
+    arguments: Value,
+) -> Result<Value, String> {
+    let registration = inventory::iter::<ViewRegistration>
+        .into_iter()
+        .find(|r| r.view_id == view_id)
+        .ok_or_else(|| format!("View not found: {}", view_id))?;
+
+    let view_data = ctx
+        .handler_registry
+        .get_view(view_id)
+        .ok_or_else(|| format!("View handler not registered: {}", view_id))?;
+
+    let mut view_json = arguments_object(arguments);
+    let tx: Arc<str> = Uuid::new_v4().to_string().into();
+    if let Some(obj) = view_json.as_object_mut() {
+        obj.insert("tx".to_string(), json!(tx.as_ref()));
+        obj.insert(
+            "createdAt".to_string(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
+    }
+
+    let parsed = (view_data.parse)(view_json)
+        .map_err(|e| format!("Failed to parse view {}: {}", view_id, e))?;
+
+    let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
+
+    let cellmap = (view_data.cell_factory)(
+        parsed,
+        ctx.registry.clone(),
+        request_context,
+        ctx.clone(),
+    )
+    .map_err(|e| format!("Failed to build view cell: {}", e))?;
+
+    let items: Vec<Value> = cellmap
+        .snapshot()
+        .into_iter()
+        .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
+        .collect();
+
+    Ok(json!({
+        "view_id": view_id,
+        "item_type": registration.view_item_type,
         "count": items.len(),
         "items": items,
     }))

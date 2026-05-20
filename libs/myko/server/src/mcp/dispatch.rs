@@ -7,6 +7,7 @@
 
 use myko::{
     command::CommandRegistration, query::QueryRegistration, report::ReportRegistration,
+    view::ViewRegistration,
 };
 use serde_json::{Value, json};
 
@@ -96,6 +97,18 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
         tools.push(McpTool {
             name,
             description: format!("Query returning {} entities", reg.query_item_type),
+            input_schema: open_object_schema(),
+        });
+    }
+
+    for reg in inventory::iter::<ViewRegistration> {
+        let name = format!("view:{}", reg.view_id);
+        if !filter.allows_name(&name) {
+            continue;
+        }
+        tools.push(McpTool {
+            name,
+            description: format!("View returning a list of {}", reg.view_item_type),
             input_schema: open_object_schema(),
         });
     }
@@ -201,6 +214,9 @@ async fn execute_tool(executor: &Executor, tool_name: &str, args: Value) -> Resu
     if let Some(id) = tool_name.strip_prefix("query:") {
         return executor.execute_query(id, args).await;
     }
+    if let Some(id) = tool_name.strip_prefix("view:") {
+        return executor.execute_view(id, args).await;
+    }
     if let Some(id) = tool_name.strip_prefix("report:") {
         return executor.execute_report(id, args).await;
     }
@@ -222,6 +238,19 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
             uri: format!("myko://schema/query/{}", reg.query_id),
             name: reg.query_id.to_string(),
             description: Some(format!("Query returning {} entities", reg.query_item_type)),
+            mime_type: Some("application/json".to_string()),
+        });
+    }
+
+    for reg in inventory::iter::<ViewRegistration> {
+        let tool_name = format!("view:{}", reg.view_id);
+        if !filter.allows_name(&tool_name) {
+            continue;
+        }
+        resources.push(McpResource {
+            uri: format!("myko://schema/view/{}", reg.view_id),
+            name: reg.view_id.to_string(),
+            description: Some(format!("View returning a list of {}", reg.view_item_type)),
             mime_type: Some("application/json".to_string()),
         });
     }
@@ -280,6 +309,7 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
             }
             let content = match schema_type {
                 "query" => get_query_schema(schema_id),
+                "view" => get_view_schema(schema_id),
                 "report" => get_report_schema(schema_id),
                 "command" => get_command_schema(schema_id),
                 _ => None,
@@ -323,6 +353,22 @@ fn get_query_schema(query_id: &str) -> Option<String> {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "title": reg.query_id,
                 "description": format!("Query returning {} entities", reg.query_item_type),
+                "type": "object",
+                "additionalProperties": true,
+            });
+            return Some(serde_json::to_string_pretty(&schema).unwrap_or_default());
+        }
+    }
+    None
+}
+
+fn get_view_schema(view_id: &str) -> Option<String> {
+    for reg in inventory::iter::<ViewRegistration> {
+        if reg.view_id == view_id {
+            let schema = json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "title": reg.view_id,
+                "description": format!("View returning a list of {}", reg.view_item_type),
                 "type": "object",
                 "additionalProperties": true,
             });

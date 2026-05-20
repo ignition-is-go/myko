@@ -271,12 +271,15 @@ Myko ships an MCP endpoint so AI agents can call your queries / reports / comman
 
 ### Tool naming
 
-| Prefix              | Source                | Example               |
-| ------------------- | --------------------- | --------------------- |
-| `query:`            | `QueryRegistration`   | `query:GetAllTargets` |
-| `report:`           | `ReportRegistration`  | `report:CountAllTargets` |
-| `command:`          | `CommandRegistration` | `command:DeleteTarget`   |
-| `connection_status` | built-in              | health check          |
+| Prefix              | Source                | Example                              |
+| ------------------- | --------------------- | ------------------------------------ |
+| `query:`            | `QueryRegistration`   | `query:GetAllTargets`                |
+| `view:`             | `ViewRegistration`    | `view:GetTargetTreeByParentFiltered` |
+| `report:`           | `ReportRegistration`  | `report:CountAllTargets`             |
+| `command:`          | `CommandRegistration` | `command:DeleteTarget`               |
+| `connection_status` | built-in              | health check                         |
+
+Each prefix also surfaces as a resource at `myko://schema/<prefix>/<id>` so MCP clients can fetch the input schema separately from calling the tool.
 
 ### Per-client filtering
 
