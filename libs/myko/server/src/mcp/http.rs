@@ -200,7 +200,10 @@ mod tests {
         let filter = filter_from_head(&head);
         assert!(
             filter
-                .tool_callable("command:RunPlaybook", &serde_json::json!({"playbook_id":"site"}))
+                .tool_callable(
+                    "command:RunPlaybook",
+                    &serde_json::json!({"playbook_id":"site"})
+                )
                 .is_ok()
         );
         assert!(

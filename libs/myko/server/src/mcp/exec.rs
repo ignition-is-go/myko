@@ -55,7 +55,9 @@ impl Executor {
             Executor::Client(client) => {
                 client_execute_report(client.clone(), report_id, args).await
             }
-            Executor::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args).await,
+            Executor::InProcess(ctx) => {
+                in_process_execute_report(ctx.clone(), report_id, args).await
+            }
         }
     }
 
@@ -409,13 +411,9 @@ fn in_process_execute_view(
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
-    let cellmap = (view_data.cell_factory)(
-        parsed,
-        ctx.registry.clone(),
-        request_context,
-        ctx.clone(),
-    )
-    .map_err(|e| format!("Failed to build view cell: {}", e))?;
+    let cellmap =
+        (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
+            .map_err(|e| format!("Failed to build view cell: {}", e))?;
 
     let items: Vec<Value> = cellmap
         .snapshot()

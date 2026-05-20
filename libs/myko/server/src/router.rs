@@ -104,9 +104,9 @@ pub async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option
 
     let mut headers_buf = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut req = httparse::Request::new(&mut headers_buf);
-    let status = req.parse(&buffer[..header_end]).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-    })?;
+    let status = req
+        .parse(&buffer[..header_end])
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     if !status.is_complete() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -158,12 +158,7 @@ pub async fn route_connection(
         }
     };
 
-    log::trace!(
-        "router accept {} {} from {}",
-        head.method,
-        head.path,
-        addr,
-    );
+    log::trace!("router accept {} {} from {}", head.method, head.path, addr,);
 
     let path = head.path.split('?').next().unwrap_or(&head.path);
 
@@ -243,11 +238,7 @@ async fn handle_ws_upgrade(
 }
 
 /// Write a bare `HTTP/1.1 <code> <reason>` response with no body and close.
-pub async fn write_status(
-    stream: &mut TcpStream,
-    code: u16,
-    reason: &str,
-) -> std::io::Result<()> {
+pub async fn write_status(stream: &mut TcpStream, code: u16, reason: &str) -> std::io::Result<()> {
     write_full(stream, code, reason, &[("Content-Length", "0")], b"").await
 }
 

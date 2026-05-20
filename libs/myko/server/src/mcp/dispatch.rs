@@ -179,7 +179,11 @@ async fn handle_tools_call(
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
-    let Some(tool_name) = params.get("name").and_then(|v| v.as_str()).map(str::to_string) else {
+    let Some(tool_name) = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
         return McpResponse::error(id, McpError::invalid_params("Missing tool name"));
     };
 
@@ -197,7 +201,10 @@ async fn handle_tools_call(
         );
     }
 
-    let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
 
     // MCP Tool Execution Error ("Invalid input data" category): result is a
     // successful JSON-RPC response carrying `isError: true` content with the
