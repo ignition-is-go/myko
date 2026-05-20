@@ -185,7 +185,7 @@ async fn handle_tools_call(
     // successful JSON-RPC response carrying `isError: true` content with the
     // descriptive constraint message verbatim — distinct from the protocol
     // error path above.
-    if let Err(message) = filter.validate_call(&tool_name, &arguments) {
+    if let Err(message) = filter.tool_callable(&tool_name, &arguments) {
         return McpResponse::success(
             id,
             json!({

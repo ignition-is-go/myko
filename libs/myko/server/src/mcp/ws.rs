@@ -17,7 +17,10 @@ use tokio_tungstenite::{
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::{VISIBILITY_ALLOW_HEADER, ARGUMENTS_HEADER, ClientFilters, VISIBILITY_DENY_HEADER},
+    filter::{
+        CALLABLE_ALLOW_HEADER, CALLABLE_DENY_HEADER, ClientFilters, VISIBILITY_ALLOW_HEADER,
+        VISIBILITY_DENY_HEADER,
+    },
     types::{McpError, McpRequest, McpResponse},
 };
 use crate::router::{HttpRequestHead, write_status};
@@ -33,7 +36,8 @@ pub async fn handle_mcp_ws_upgrade(
     let filter = ClientFilters::from_strings(
         head.header(VISIBILITY_ALLOW_HEADER),
         head.header(VISIBILITY_DENY_HEADER),
-        head.header(ARGUMENTS_HEADER),
+        head.header(CALLABLE_ALLOW_HEADER),
+        head.header(CALLABLE_DENY_HEADER),
     );
 
     let want_mcp_subprotocol = head

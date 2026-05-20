@@ -283,31 +283,33 @@ Each prefix also surfaces as a resource at `myko://schema/<prefix>/<id>` so MCP 
 
 ### Per-client filtering
 
-Lock down what an MCP-client config can call without trusting the client itself. Two layers — both **client-configured**, composed AND:
+Lock down what an MCP-client config can call without trusting the client itself. Two filter layers, both **client-configured**, composed AND. Both follow an Allow/Deny header pair with the same precedence (deny wins).
 
-**1. Name filter** — glob allow/deny over tool names. Denied tools are invisible (method-not-found if called).
+**1. Tool visibility** — glob allow/deny over tool names. A hidden tool is omitted from `tools/list` and a `tools/call` against it returns the MCP **Protocol Error** (`-32602`, `"Unknown tool: …"`) — indistinguishable from a tool that doesn't exist.
 
 ```
 X-Myko-Tool-Visibility-Allow: query:*,report:*
 X-Myko-Tool-Visibility-Deny:  command:Delete*
 ```
 
-Patterns: `*`, `prefix*`, `*suffix`, exact. Deny wins on conflict.
+Patterns: `*`, `prefix*`, `*suffix`, exact.
 
-**2. Call filter** — argument-aware constraints on `tools/call`. Per-tool, per-arg allow/deny value lists. Rejection surfaces as MCP `isError: true` content (the spec's "invalid input data" shape) with a human-readable reason.
+**2. Tool callability** — per-tool, per-arg JSON value lists. Failure surfaces as an MCP **Tool Execution Error** (`isError: true` content) — the spec's "Invalid input data" category, distinct from a Protocol Error.
 
 ```
-X-Myko-Tool-Arguments: {"command:RunPlaybook":{"playbook_id":{"allow":["site","deploy"]}}}
+X-Myko-Tool-Callable-Allow: {"command:RunPlaybook":{"playbook_id":["site","deploy"]}}
+X-Myko-Tool-Callable-Deny:  {"command:Tag":{"namespace":["prod"]}}
 ```
 
-Schema: `{ "<tool_name>": { "<arg_path>": { "allow": [...], "deny": [...] } } }`. Allow lists are positive (missing arg → denied); deny lists exclude (deny wins over allow on the same value).
+JSON shape per header: `{ "<tool_name>": { "<arg_path>": [values] } }`. Allow is positive (the arg must be present and its value must be in the list). Deny excludes (the arg's value must not be in the list).
 
-**Stdio transport** has no headers, so the same three knobs come from env vars:
+**Stdio transport** has no headers; the same four knobs come from env vars:
 - `MYKO_MCP_TOOL_VISIBILITY_ALLOW`
 - `MYKO_MCP_TOOL_VISIBILITY_DENY`
-- `MYKO_MCP_TOOL_ARGUMENTS` (JSON)
+- `MYKO_MCP_TOOL_CALLABLE_ALLOW` (JSON)
+- `MYKO_MCP_TOOL_CALLABLE_DENY` (JSON)
 
-The name filter applies to `tools/list`, `tools/call`, `resources/list`, `resources/read`. The call filter applies only to `tools/call`.
+Visibility applies to `tools/list`, `tools/call`, `resources/list`, `resources/read`. Callability applies only to `tools/call`.
 
 ### Connecting a client
 
@@ -345,7 +347,7 @@ curl -sS -X POST http://localhost:5155/myko/mcp \
       "url": "http://localhost:5155/myko/mcp",
       "headers": {
         "X-Myko-Tool-Visibility-Allow": "query:*,report:*,command:RunPlaybook",
-        "X-Myko-Tool-Arguments": "{\"command:RunPlaybook\":{\"playbook_id\":{\"allow\":[\"site\",\"deploy\"]}}}"
+        "X-Myko-Tool-Callable-Allow": "{\"command:RunPlaybook\":{\"playbook_id\":[\"site\",\"deploy\"]}}"
       }
     }
   }

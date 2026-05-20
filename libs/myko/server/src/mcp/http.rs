@@ -13,7 +13,10 @@ use tokio::{
 use super::{
     dispatch::{self, ServerInfo},
     exec::Executor,
-    filter::{VISIBILITY_ALLOW_HEADER, ARGUMENTS_HEADER, ClientFilters, VISIBILITY_DENY_HEADER},
+    filter::{
+        CALLABLE_ALLOW_HEADER, CALLABLE_DENY_HEADER, ClientFilters, VISIBILITY_ALLOW_HEADER,
+        VISIBILITY_DENY_HEADER,
+    },
     types::{McpError, McpRequest, McpResponse},
 };
 use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
@@ -118,7 +121,8 @@ pub fn filter_from_head(head: &HttpRequestHead) -> ClientFilters {
     ClientFilters::from_strings(
         head.header(VISIBILITY_ALLOW_HEADER),
         head.header(VISIBILITY_DENY_HEADER),
-        head.header(ARGUMENTS_HEADER),
+        head.header(CALLABLE_ALLOW_HEADER),
+        head.header(CALLABLE_DENY_HEADER),
     )
 }
 
@@ -188,23 +192,42 @@ mod tests {
     }
 
     #[test]
-    fn filter_from_head_parses_call_constraints() {
+    fn filter_from_head_parses_callable_allow() {
         let head = head_with(vec![(
-            ARGUMENTS_HEADER,
-            r#"{"command:RunPlaybook":{"playbook_id":{"allow":["site"]}}}"#,
+            CALLABLE_ALLOW_HEADER,
+            r#"{"command:RunPlaybook":{"playbook_id":["site"]}}"#,
         )]);
         let filter = filter_from_head(&head);
         assert!(
             filter
-                .validate_call("command:RunPlaybook", &serde_json::json!({"playbook_id":"site"}))
+                .tool_callable("command:RunPlaybook", &serde_json::json!({"playbook_id":"site"}))
                 .is_ok()
         );
         assert!(
             filter
-                .validate_call(
+                .tool_callable(
                     "command:RunPlaybook",
                     &serde_json::json!({"playbook_id":"danger"})
                 )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn filter_from_head_parses_callable_deny() {
+        let head = head_with(vec![(
+            CALLABLE_DENY_HEADER,
+            r#"{"command:Tag":{"namespace":["prod"]}}"#,
+        )]);
+        let filter = filter_from_head(&head);
+        assert!(
+            filter
+                .tool_callable("command:Tag", &serde_json::json!({"namespace": "staging"}))
+                .is_ok()
+        );
+        assert!(
+            filter
+                .tool_callable("command:Tag", &serde_json::json!({"namespace": "prod"}))
                 .is_err()
         );
     }

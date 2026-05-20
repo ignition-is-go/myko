@@ -10,36 +10,43 @@
 //!    - Stdio: `MYKO_MCP_TOOL_VISIBILITY_ALLOW` /
 //!      `MYKO_MCP_TOOL_VISIBILITY_DENY` env vars.
 //!
-//! 2. **Argument validation** — client-supplied constraints on the JSON
-//!    `arguments` of a `tools/call`. A constraint failure surfaces as an MCP
-//!    **Tool Execution Error** (`isError: true` content with a descriptive
-//!    message), the spec's "Invalid input data" category — distinct from a
-//!    Protocol Error. Source:
-//!    - HTTP/WS: `X-Myko-Tool-Arguments` request header (JSON).
-//!    - Stdio: `MYKO_MCP_TOOL_ARGUMENTS` env var (JSON).
+//! 2. **Tool callability** — per-tool, per-argument value allow/deny lists.
+//!    A failure surfaces as an MCP **Tool Execution Error** (`isError: true`
+//!    content with a descriptive message), the spec's "Invalid input data"
+//!    category — distinct from a Protocol Error. Source:
+//!    - HTTP/WS: `X-Myko-Tool-Callable-Allow` and
+//!      `X-Myko-Tool-Callable-Deny` request headers (JSON).
+//!    - Stdio: `MYKO_MCP_TOOL_CALLABLE_ALLOW` /
+//!      `MYKO_MCP_TOOL_CALLABLE_DENY` env vars (JSON).
 //!
 //! [mcp-tool-errors]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 //!
-//! ### Constraint JSON shape
+//! ### Callability JSON shape
+//!
+//! Each callable header carries one JSON object: `tool -> arg -> [values]`.
+//! Polarity comes from which header the JSON is in.
 //!
 //! ```json
+//! // X-Myko-Tool-Callable-Allow
 //! {
-//!   "command:RunPlaybook": {
-//!     "playbook_id": { "allow": ["site", "deploy"] }
-//!   },
-//!   "command:Tag": {
-//!     "namespace": { "deny": ["prod"] }
-//!   }
+//!   "command:RunPlaybook": { "playbook_id": ["site", "deploy"] }
+//! }
+//!
+//! // X-Myko-Tool-Callable-Deny
+//! {
+//!   "command:Tag":         { "namespace":   ["prod"] }
 //! }
 //! ```
 //!
-//! Argument paths are top-level JSON keys on the `arguments` object. Allow
-//! is positive (must match one of); deny excludes (must not match any).
-//! Deny wins. A missing argument when an `allow` list is set → denied.
+//! Semantics, per tool/arg:
+//! - **Allow** is positive: the arg must be present on the call and its
+//!   value must appear in the list.
+//! - **Deny** excludes: if the arg is present and its value appears in the
+//!   list, the call is rejected.
+//! - Deny wins. If the same tool/arg/value appears on both sides, deny.
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
 use serde_json::Value;
 
 // ─── Header / env names ────────────────────────────────────────────────────
@@ -48,15 +55,19 @@ use serde_json::Value;
 pub const VISIBILITY_ALLOW_HEADER: &str = "X-Myko-Tool-Visibility-Allow";
 /// HTTP header carrying the tool-visibility denylist (glob patterns).
 pub const VISIBILITY_DENY_HEADER: &str = "X-Myko-Tool-Visibility-Deny";
-/// HTTP header carrying the JSON argument-validation spec.
-pub const ARGUMENTS_HEADER: &str = "X-Myko-Tool-Arguments";
+/// HTTP header carrying the JSON tool-callable allowlist.
+pub const CALLABLE_ALLOW_HEADER: &str = "X-Myko-Tool-Callable-Allow";
+/// HTTP header carrying the JSON tool-callable denylist.
+pub const CALLABLE_DENY_HEADER: &str = "X-Myko-Tool-Callable-Deny";
 
 /// Stdio env var carrying the tool-visibility allowlist.
 pub const VISIBILITY_ALLOW_ENV: &str = "MYKO_MCP_TOOL_VISIBILITY_ALLOW";
 /// Stdio env var carrying the tool-visibility denylist.
 pub const VISIBILITY_DENY_ENV: &str = "MYKO_MCP_TOOL_VISIBILITY_DENY";
-/// Stdio env var carrying the JSON argument-validation spec.
-pub const ARGUMENTS_ENV: &str = "MYKO_MCP_TOOL_ARGUMENTS";
+/// Stdio env var carrying the JSON tool-callable allowlist.
+pub const CALLABLE_ALLOW_ENV: &str = "MYKO_MCP_TOOL_CALLABLE_ALLOW";
+/// Stdio env var carrying the JSON tool-callable denylist.
+pub const CALLABLE_DENY_ENV: &str = "MYKO_MCP_TOOL_CALLABLE_DENY";
 
 // ─── Name patterns ─────────────────────────────────────────────────────────
 
@@ -102,53 +113,28 @@ impl Pattern {
     }
 }
 
-// ─── Argument constraints ──────────────────────────────────────────────────
+// ─── Callability map ───────────────────────────────────────────────────────
 
-/// Allow/deny constraint on one argument of one tool.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub struct ArgConstraint {
-    #[serde(default)]
-    pub allow: Option<Vec<Value>>,
-    #[serde(default)]
-    pub deny: Option<Vec<Value>>,
-}
-
-impl ArgConstraint {
-    /// Returns `Ok(())` if `value` is permitted by this constraint, or
-    /// `Err(reason)` with a short human-readable message.
-    pub fn check(&self, arg_name: &str, value: Option<&Value>) -> Result<(), String> {
-        if let Some(deny) = &self.deny
-            && let Some(v) = value
-            && deny.contains(v)
-        {
-            return Err(format!("argument `{}` value not allowed", arg_name));
-        }
-        if let Some(allow) = &self.allow {
-            match value {
-                Some(v) if allow.contains(v) => return Ok(()),
-                Some(_) => return Err(format!("argument `{}` value not in allowlist", arg_name)),
-                None => return Err(format!("argument `{}` is required by filter", arg_name)),
-            }
-        }
-        Ok(())
-    }
-}
+/// `tool_name -> { arg_name -> [values] }`.
+type CallabilityMap = HashMap<String, HashMap<String, Vec<Value>>>;
 
 // ─── ClientFilters ─────────────────────────────────────────────────────────
 
-/// Per-client filter combining tool-visibility rules with per-call argument
-/// constraints. Driven by request headers (HTTP/WS) or environment variables
-/// (stdio).
+/// Per-client filter combining tool-visibility (name-level) and
+/// tool-callability (argument-level) rules. Driven by request headers
+/// (HTTP/WS) or environment variables (stdio).
 #[derive(Debug, Clone, Default)]
 pub struct ClientFilters {
     /// Glob patterns the tool name must match. Empty = visibility unrestricted.
     visibility_allow: Vec<Pattern>,
     /// Glob patterns that hide a tool. Deny wins.
     visibility_deny: Vec<Pattern>,
-    /// `tool_name -> { arg_name -> ArgConstraint }`. Empty = no argument
-    /// validation.
-    argument_constraints: HashMap<String, HashMap<String, ArgConstraint>>,
+    /// Tools/args whose values must appear in the listed values to be
+    /// callable. Empty = no positive callability constraint.
+    callable_allow: CallabilityMap,
+    /// Tools/args whose values must *not* appear in the listed values to be
+    /// callable. Deny wins.
+    callable_deny: CallabilityMap,
 }
 
 impl ClientFilters {
@@ -157,19 +143,20 @@ impl ClientFilters {
         Self::default()
     }
 
-    /// Build from raw strings. `constraints_json` is parsed lenient — invalid
-    /// JSON is treated as no constraints (the request is not rejected for
-    /// malformed filter config; that would be a footgun for ops). A parse
-    /// error is logged.
+    /// Build from raw strings. Callability inputs are JSON; malformed JSON
+    /// is treated as no constraints (logged at WARN) — bricking a request
+    /// on bad filter config would be a footgun for ops.
     pub fn from_strings(
         visibility_allow: Option<&str>,
         visibility_deny: Option<&str>,
-        constraints_json: Option<&str>,
+        callable_allow_json: Option<&str>,
+        callable_deny_json: Option<&str>,
     ) -> Self {
         Self {
             visibility_allow: parse_patterns(visibility_allow),
             visibility_deny: parse_patterns(visibility_deny),
-            argument_constraints: parse_constraints(constraints_json),
+            callable_allow: parse_callability(callable_allow_json, "callable-allow"),
+            callable_deny: parse_callability(callable_deny_json, "callable-deny"),
         }
     }
 
@@ -189,24 +176,49 @@ impl ClientFilters {
         self.visibility_allow.iter().any(|p| p.matches(name))
     }
 
-    /// Validate the JSON `arguments` of a `tools/call`.
+    /// Check whether a `tools/call` is callable for this client given its
+    /// JSON `arguments`.
     ///
-    /// `Ok(())` if no constraints apply or every constraint passes.
-    /// `Err(message)` surfaces as an MCP **Tool Execution Error**
+    /// `Ok(())` if no callability constraints apply or every constraint
+    /// passes. `Err(message)` surfaces as an MCP **Tool Execution Error**
     /// (`isError: true` content with the message), the spec's
     /// "Invalid input data" category.
     ///
     /// Visibility is *not* re-checked here; callers run
     /// [`tool_visible`](Self::tool_visible) first.
-    pub fn validate_call(&self, tool_name: &str, arguments: &Value) -> Result<(), String> {
-        let Some(tool_constraints) = self.argument_constraints.get(tool_name) else {
-            return Ok(());
-        };
+    pub fn tool_callable(&self, tool_name: &str, arguments: &Value) -> Result<(), String> {
         let args_obj = arguments.as_object();
-        for (arg_name, constraint) in tool_constraints {
-            let arg_value = args_obj.and_then(|o| o.get(arg_name));
-            constraint.check(arg_name, arg_value)?;
+
+        // Deny wins. Reject the call if any arg's value appears in the deny
+        // list for this tool.
+        if let Some(deny_args) = self.callable_deny.get(tool_name) {
+            for (arg_name, denied_values) in deny_args {
+                let Some(value) = args_obj.and_then(|o| o.get(arg_name)) else {
+                    continue;
+                };
+                if denied_values.contains(value) {
+                    return Err(format!("argument `{}` value not allowed", arg_name));
+                }
+            }
         }
+
+        // Positive allow: if a tool/arg appears in the allow map, the call
+        // must supply that arg and its value must appear in the list.
+        if let Some(allow_args) = self.callable_allow.get(tool_name) {
+            for (arg_name, allowed_values) in allow_args {
+                let value = args_obj.and_then(|o| o.get(arg_name));
+                match value {
+                    Some(v) if allowed_values.contains(v) => {}
+                    Some(_) => {
+                        return Err(format!("argument `{}` value not in allowlist", arg_name));
+                    }
+                    None => {
+                        return Err(format!("argument `{}` is required by filter", arg_name));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -218,19 +230,19 @@ fn parse_patterns(raw: Option<&str>) -> Vec<Pattern> {
     raw.split(',').filter_map(Pattern::parse).collect()
 }
 
-fn parse_constraints(raw: Option<&str>) -> HashMap<String, HashMap<String, ArgConstraint>> {
+fn parse_callability(raw: Option<&str>, label: &str) -> CallabilityMap {
     let Some(raw) = raw else {
-        return HashMap::new();
+        return CallabilityMap::new();
     };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return HashMap::new();
+        return CallabilityMap::new();
     }
     match serde_json::from_str(trimmed) {
         Ok(parsed) => parsed,
         Err(e) => {
-            log::warn!("[mcp] ignoring malformed tool-call constraint spec: {}", e);
-            HashMap::new()
+            log::warn!("[mcp] ignoring malformed tool-{} spec: {}", label, e);
+            CallabilityMap::new()
         }
     }
 }
@@ -240,7 +252,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // ─── Name filter ───────────────────────────────────────────────────────
+    // ─── Visibility ────────────────────────────────────────────────────────
 
     #[test]
     fn empty_filter_allows_everything() {
@@ -251,41 +263,41 @@ mod tests {
 
     #[test]
     fn star_allows_everything() {
-        let f = ClientFilters::from_strings(Some("*"), None, None);
+        let f = ClientFilters::from_strings(Some("*"), None, None, None);
         assert!(f.tool_visible("query:GetAllTargets"));
     }
 
     #[test]
     fn prefix_pattern() {
-        let f = ClientFilters::from_strings(Some("query:*"), None, None);
+        let f = ClientFilters::from_strings(Some("query:*"), None, None, None);
         assert!(f.tool_visible("query:GetAllTargets"));
         assert!(!f.tool_visible("command:DoStuff"));
     }
 
     #[test]
     fn suffix_pattern() {
-        let f = ClientFilters::from_strings(Some("*Internal"), None, None);
+        let f = ClientFilters::from_strings(Some("*Internal"), None, None, None);
         assert!(f.tool_visible("query:GetThingInternal"));
         assert!(!f.tool_visible("query:GetThing"));
     }
 
     #[test]
     fn deny_wins_on_name_conflict() {
-        let f = ClientFilters::from_strings(Some("query:*"), Some("query:GetSecret"), None);
+        let f = ClientFilters::from_strings(Some("query:*"), Some("query:GetSecret"), None, None);
         assert!(f.tool_visible("query:GetAllTargets"));
         assert!(!f.tool_visible("query:GetSecret"));
     }
 
     #[test]
     fn empty_allow_with_deny_means_allow_all_minus_denied() {
-        let f = ClientFilters::from_strings(None, Some("command:Delete*"), None);
+        let f = ClientFilters::from_strings(None, Some("command:Delete*"), None, None);
         assert!(f.tool_visible("query:GetAllTargets"));
         assert!(!f.tool_visible("command:DeleteThing"));
     }
 
     #[test]
     fn comma_separated_allow_list() {
-        let f = ClientFilters::from_strings(Some("query:*,report:HealthCheck"), None, None);
+        let f = ClientFilters::from_strings(Some("query:*,report:HealthCheck"), None, None, None);
         assert!(f.tool_visible("query:Anything"));
         assert!(f.tool_visible("report:HealthCheck"));
         assert!(!f.tool_visible("report:OtherReport"));
@@ -294,47 +306,44 @@ mod tests {
 
     #[test]
     fn whitespace_around_patterns_is_stripped() {
-        let f = ClientFilters::from_strings(Some(" query:* , report:H "), None, None);
+        let f = ClientFilters::from_strings(Some(" query:* , report:H "), None, None, None);
         assert!(f.tool_visible("query:GetAll"));
         assert!(f.tool_visible("report:H"));
     }
 
     #[test]
     fn exact_match() {
-        let f = ClientFilters::from_strings(Some("query:GetAllTargets"), None, None);
+        let f = ClientFilters::from_strings(Some("query:GetAllTargets"), None, None, None);
         assert!(f.tool_visible("query:GetAllTargets"));
         assert!(!f.tool_visible("query:GetAllTargetsExtra"));
     }
 
-    // ─── Call filter ───────────────────────────────────────────────────────
+    // ─── Callability ───────────────────────────────────────────────────────
 
-    fn run_playbook_constraint() -> &'static str {
-        r#"{"command:RunPlaybook":{"playbook_id":{"allow":["site","deploy"]}}}"#
+    fn run_playbook_allow() -> &'static str {
+        r#"{"command:RunPlaybook":{"playbook_id":["site","deploy"]}}"#
     }
 
     #[test]
-    fn no_constraints_for_tool_passes() {
-        let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
-        assert!(
-            f.validate_call("command:Other", &json!({"anything": "goes"}))
-                .is_ok()
-        );
+    fn no_callability_rules_passes() {
+        let f = ClientFilters::allow_all();
+        assert!(f.tool_callable("any:tool", &json!({"x": 1})).is_ok());
     }
 
     #[test]
     fn allow_list_passes_matching_arg() {
-        let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
+        let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
         assert!(
-            f.validate_call("command:RunPlaybook", &json!({"playbook_id": "site"}))
+            f.tool_callable("command:RunPlaybook", &json!({"playbook_id": "site"}))
                 .is_ok()
         );
     }
 
     #[test]
     fn allow_list_rejects_non_matching_arg() {
-        let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
+        let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
         let err = f
-            .validate_call("command:RunPlaybook", &json!({"playbook_id": "danger"}))
+            .tool_callable("command:RunPlaybook", &json!({"playbook_id": "danger"}))
             .unwrap_err();
         assert!(err.contains("playbook_id"));
         assert!(err.contains("allowlist"));
@@ -342,9 +351,9 @@ mod tests {
 
     #[test]
     fn allow_list_rejects_missing_arg() {
-        let f = ClientFilters::from_strings(None, None, Some(run_playbook_constraint()));
+        let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
         let err = f
-            .validate_call("command:RunPlaybook", &json!({}))
+            .tool_callable("command:RunPlaybook", &json!({}))
             .unwrap_err();
         assert!(err.contains("required"));
     }
@@ -354,14 +363,15 @@ mod tests {
         let f = ClientFilters::from_strings(
             None,
             None,
-            Some(r#"{"command:Tag":{"namespace":{"deny":["prod"]}}}"#),
+            None,
+            Some(r#"{"command:Tag":{"namespace":["prod"]}}"#),
         );
         assert!(
-            f.validate_call("command:Tag", &json!({"namespace": "staging"}))
+            f.tool_callable("command:Tag", &json!({"namespace": "staging"}))
                 .is_ok()
         );
         let err = f
-            .validate_call("command:Tag", &json!({"namespace": "prod"}))
+            .tool_callable("command:Tag", &json!({"namespace": "prod"}))
             .unwrap_err();
         assert!(err.contains("namespace"));
     }
@@ -371,16 +381,25 @@ mod tests {
         let f = ClientFilters::from_strings(
             None,
             None,
-            Some(r#"{"command:X":{"a":{"allow":["1","2"],"deny":["2"]}}}"#),
+            Some(r#"{"command:X":{"a":["1","2"]}}"#),
+            Some(r#"{"command:X":{"a":["2"]}}"#),
         );
-        assert!(f.validate_call("command:X", &json!({"a": "1"})).is_ok());
-        assert!(f.validate_call("command:X", &json!({"a": "2"})).is_err());
+        assert!(f.tool_callable("command:X", &json!({"a": "1"})).is_ok());
+        assert!(f.tool_callable("command:X", &json!({"a": "2"})).is_err());
     }
 
     #[test]
-    fn malformed_constraint_json_is_ignored() {
-        // Better to be permissive than to brick a request on bad filter config.
-        let f = ClientFilters::from_strings(None, None, Some("not json"));
-        assert!(f.validate_call("any:tool", &json!({})).is_ok());
+    fn unrelated_tools_pass_through() {
+        let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
+        assert!(
+            f.tool_callable("command:Other", &json!({"anything": "goes"}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn malformed_callability_json_is_ignored() {
+        let f = ClientFilters::from_strings(None, None, Some("not json"), Some("not json"));
+        assert!(f.tool_callable("any:tool", &json!({})).is_ok());
     }
 }
