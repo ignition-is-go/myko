@@ -1,76 +1,42 @@
-//! MCP (Model Context Protocol) server module for Myko.
+//! MCP (Model Context Protocol) for Myko.
 //!
-//! This module provides an MCP server that automatically exposes:
-//! - **Resources**: Queries and reports as readable resources
-//! - **Tools**: Commands as executable tools
+//! The server hosts MCP at `/myko/mcp` over three content-negotiated
+//! transports (HTTP POST, WebSocket, SSE) — see [`http`] and [`ws`].
+//! [`dispatch`] is the transport-agnostic JSON-RPC core, [`exec`] is the
+//! tool executor abstraction (in-process or remote client), and [`filter`]
+//! parses per-client tool filters from request headers.
 //!
-//! All registrations are discovered automatically via the inventory system,
-//! so any type decorated with `#[myko_query]`, `#[myko_report]`, or `#[myko_command]`
-//! will be available through the MCP interface.
+//! Every type decorated with `#[myko_query]`, `#[myko_report]`, or
+//! `#[myko_command]` is auto-discovered via `inventory` and exposed as an
+//! MCP tool / resource.
 //!
-//! ## Usage
+//! ## Tool filtering
 //!
-//! For Rship, use the `rship-mcp` binary which includes all entity registrations:
-//!
-//! ```bash
-//! cargo run -p rship-mcp
-//! ```
-//!
-//! Or use programmatically in your own crate:
-//!
-//! ```rust,ignore
-//! // Link your entities crate to register them
-//! my_entities::link();
-//!
-//! // Start the MCP server
-//! let server = myko_server::mcp::McpServer::new();
-//! server.run_stdio()?;
-//! ```
-//!
-//! ## Restricting Exposed Tools
-//!
-//! Install a [`ToolFilter`] to expose only a subset of registered tools.
-//! Filtered tools respond like unknown ones.
-//!
-//! ```rust,ignore
-//! let server = myko_server::mcp::McpServer::new()
-//!     .with_allowed_tool_names(["connection_status", "query:GetAllFoos"]);
-//! server.run_stdio()?;
-//! ```
-//!
-//! ## MCP Client Configuration
-//!
-//! Add to Claude Desktop or other MCP clients:
-//!
-//! ```json
-//! {
-//!   "mcpServers": {
-//!     "rship": {
-//!       "command": "cargo",
-//!       "args": ["run", "-p", "rship-mcp"],
-//!       "cwd": "/path/to/rship"
-//!     }
-//!   }
-//! }
-//! ```
+//! Send `X-Myko-Tools-Allow` / `X-Myko-Tools-Deny` headers on the request
+//! (or at WS handshake) to restrict which tools an MCP client can see and
+//! call. Patterns are globs: `*`, `prefix*`, `*suffix`, exact. Deny wins.
 //!
 //! ## Protocol
 //!
-//! The server implements the MCP protocol (2024-11-05) over stdio using JSON-RPC.
+//! Implements MCP 2024-11-05 JSON-RPC. Resources:
 //!
-//! ### Resources
+//! - `myko://schema/query/{query_id}`
+//! - `myko://schema/report/{report_id}`
+//! - `myko://schema/command/{command_id}`
 //!
-//! - `myko://schema/query/{query_id}` - JSON schema for a query
-//! - `myko://schema/report/{report_id}` - JSON schema for a report
-//! - `myko://schema/command/{command_id}` - JSON schema for a command
+//! ## Legacy stdio
 //!
-//! ### Tools
-//!
-//! Each registered command becomes an MCP tool with the command's JSON schema
-//! as the input schema.
+//! [`McpServer::run_stdio`] is a transitional stdio transport that wraps a
+//! `MykoClient` and connects out over WebSocket. It will be removed once
+//! all consumers have migrated to the in-server `/myko/mcp` endpoint.
 
+pub mod dispatch;
+pub mod exec;
+pub mod filter;
+pub mod http;
 mod server;
 mod types;
+pub mod ws;
 
-pub use server::{McpServer, ToolFilter};
+pub use server::McpServer;
 pub use types::*;

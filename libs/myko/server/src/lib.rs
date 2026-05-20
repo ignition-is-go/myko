@@ -13,6 +13,7 @@ pub mod mcp;
 pub mod peer_persister;
 pub mod peer_registry;
 pub mod postgres;
+pub mod router;
 pub mod server_ownership;
 pub mod ws_handler;
 pub mod ws_timing;
@@ -577,7 +578,7 @@ impl CellServer {
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         log::info!("CellServer listening on {}", self.config.bind_addr);
         log::info!(
-            "WebSocket server listening on ws://{}/myko",
+            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
         );
 
@@ -615,14 +616,14 @@ impl CellServer {
         self.run_ws_accept_loop(listener).await
     }
 
-    /// Run just the WebSocket accept loop.
+    /// Run just the accept loop (no Postgres / relations / saga startup).
     pub async fn run_ws_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         log::info!("CellServer listening on {}", self.config.bind_addr);
         log::info!(
-            "WebSocket server listening on ws://{}/myko",
+            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
         );
         self.run_ws_accept_loop(listener).await
@@ -653,12 +654,10 @@ impl CellServer {
 
             log::debug!("New connection from {}", addr);
 
-            let ctx = self.ctx();
+            let ctx = Arc::new(self.ctx());
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    ws_handler::WsHandler::handle_connection(stream, addr, Arc::new(ctx)).await
-                {
+                if let Err(e) = router::route_connection(stream, addr, ctx).await {
                     log::error!("Connection error from {}: {}", addr, e);
                 }
             });

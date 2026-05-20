@@ -40,6 +40,9 @@ inventory = "0.3.24"
 dashmap.workspace = true
 flume.workspace = true
 
+# HTTP request-line parsing for the MCP front-door router
+httparse = "1.9"
+
 [features]
 default = []
 inspector = ["hyphae/inspector"]
