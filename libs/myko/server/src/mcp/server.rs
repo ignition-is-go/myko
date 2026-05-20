@@ -19,13 +19,23 @@ use uuid::Uuid;
 
 use super::types::*;
 
+/// Predicate that decides whether a tool name is exposed and callable
+/// over MCP. Tool names include the prefix: `query:<id>`, `report:<id>`,
+/// `command:<id>`, and the built-in `connection_status`.
+pub type ToolFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// MCP Server for Myko.
 ///
 /// Automatically exposes all registered queries, reports, and commands
-/// through the MCP protocol.
+/// through the MCP protocol. An optional [`ToolFilter`] may be supplied
+/// via [`McpServer::with_tool_filter`] to restrict which tools are
+/// listed in `tools/list` and accepted in `tools/call`. Filtered tools
+/// are also omitted from `resources/list` and rejected by
+/// `resources/read`.
 pub struct McpServer {
     server_name: String,
     server_version: String,
+    tool_filter: Option<ToolFilter>,
 }
 
 impl Default for McpServer {
@@ -40,6 +50,7 @@ impl McpServer {
         Self {
             server_name: "myko-mcp".to_string(),
             server_version: env!("CARGO_PKG_VERSION").to_string(),
+            tool_filter: None,
         }
     }
 
@@ -48,7 +59,27 @@ impl McpServer {
         Self {
             server_name: name.into(),
             server_version: version.into(),
+            tool_filter: None,
         }
+    }
+
+    /// Install a predicate that gates which tools are exposed and callable.
+    /// Called for every tool name considered during `tools/list`,
+    /// `tools/call`, `resources/list`, and `resources/read`.
+    ///
+    /// When `None` (the default), every registered tool is exposed.
+    pub fn with_tool_filter<F>(mut self, filter: F) -> Self
+    where
+        F: Fn(&str) -> bool + Send + Sync + 'static,
+    {
+        self.tool_filter = Some(Arc::new(filter));
+        self
+    }
+
+    /// Check whether a given tool name passes this server's filter.
+    /// Returns `true` when no filter is configured.
+    pub fn is_tool_allowed(&self, name: &str) -> bool {
+        self.tool_filter.as_ref().map(|f| f(name)).unwrap_or(true)
     }
 
     /// Run the MCP server over stdio (blocking).
@@ -114,6 +145,7 @@ impl McpServer {
             server_name: self.server_name.clone(),
             server_version: self.server_version.clone(),
             tool_tx,
+            tool_filter: self.tool_filter.clone(),
         };
 
         // Spawn stdin reader
@@ -209,6 +241,13 @@ struct RequestHandler {
     server_name: String,
     server_version: String,
     tool_tx: mpsc::Sender<ToolRequest>,
+    tool_filter: Option<ToolFilter>,
+}
+
+impl RequestHandler {
+    fn tool_allowed(&self, name: &str) -> bool {
+        self.tool_filter.as_ref().map(|f| f(name)).unwrap_or(true)
+    }
 }
 
 impl RequestHandler {
@@ -263,20 +302,26 @@ impl RequestHandler {
         let mut tools = Vec::new();
 
         // Built-in connection_status tool
-        tools.push(McpTool {
-            name: "connection_status".to_string(),
-            description: "Check the connection status to the Myko server".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        });
+        if self.tool_allowed("connection_status") {
+            tools.push(McpTool {
+                name: "connection_status".to_string(),
+                description: "Check the connection status to the Myko server".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            });
+        }
 
         // Queries as tools
         for reg in inventory::iter::<QueryRegistration> {
+            let name = format!("query:{}", reg.query_id);
+            if !self.tool_allowed(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("query:{}", reg.query_id),
+                name,
                 description: format!("Query returning {} entities", reg.query_item_type),
                 input_schema: json!({
                     "type": "object",
@@ -287,8 +332,12 @@ impl RequestHandler {
 
         // Reports as tools
         for reg in inventory::iter::<ReportRegistration> {
+            let name = format!("report:{}", reg.report_id);
+            if !self.tool_allowed(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("report:{}", reg.report_id),
+                name,
                 description: format!("Report returning {}", reg.output_type),
                 input_schema: json!({
                     "type": "object",
@@ -299,8 +348,12 @@ impl RequestHandler {
 
         // Commands as tools
         for reg in inventory::iter::<CommandRegistration> {
+            let name = format!("command:{}", reg.command_id);
+            if !self.tool_allowed(&name) {
+                continue;
+            }
             tools.push(McpTool {
-                name: format!("command:{}", reg.command_id),
+                name,
                 description: format!("Command returning {}", reg.result_type),
                 input_schema: json!({
                     "type": "object",
@@ -340,6 +393,19 @@ impl RequestHandler {
             }
         };
 
+        // Gate at the call site so a tool that's hidden from tools/list
+        // is also unreachable if a caller invokes it directly.
+        if !self.tool_allowed(&tool_name) {
+            let _ = response_tx.blocking_send(McpResponse::error(
+                id,
+                McpError::invalid_params(format!(
+                    "Tool not allowed by this server's filter: {}",
+                    tool_name
+                )),
+            ));
+            return;
+        }
+
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let _ = self.tool_tx.blocking_send(ToolRequest {
@@ -354,6 +420,10 @@ impl RequestHandler {
         let mut resources = Vec::new();
 
         for reg in inventory::iter::<QueryRegistration> {
+            let tool_name = format!("query:{}", reg.query_id);
+            if !self.tool_allowed(&tool_name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/query/{}", reg.query_id),
                 name: reg.query_id.to_string(),
@@ -363,6 +433,10 @@ impl RequestHandler {
         }
 
         for reg in inventory::iter::<ReportRegistration> {
+            let tool_name = format!("report:{}", reg.report_id);
+            if !self.tool_allowed(&tool_name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/report/{}", reg.report_id),
                 name: reg.report_id.to_string(),
@@ -372,6 +446,10 @@ impl RequestHandler {
         }
 
         for reg in inventory::iter::<CommandRegistration> {
+            let tool_name = format!("command:{}", reg.command_id);
+            if !self.tool_allowed(&tool_name) {
+                continue;
+            }
             resources.push(McpResource {
                 uri: format!("myko://schema/command/{}", reg.command_id),
                 name: format!("{} (command)", reg.command_id),
@@ -402,6 +480,19 @@ impl RequestHandler {
             let parts: Vec<&str> = path.splitn(2, '/').collect();
             if parts.len() == 2 {
                 let (schema_type, schema_id) = (parts[0], parts[1]);
+
+                // Mirror the filter: a tool whose schema would otherwise
+                // be returned is unreachable if the filter rejects it.
+                let tool_name = format!("{}:{}", schema_type, schema_id);
+                if !self.tool_allowed(&tool_name) {
+                    return McpResponse::error(
+                        id,
+                        McpError::invalid_params(format!(
+                            "Resource not allowed by this server's filter: {}",
+                            uri
+                        )),
+                    );
+                }
 
                 let content = match schema_type {
                     "query" => get_query_schema(schema_id),
@@ -771,4 +862,45 @@ pub struct ReportInfo {
 pub struct CommandInfo {
     pub command_id: String,
     pub result_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn no_filter_allows_everything() {
+        let server = McpServer::with_info("test", "0.0.0");
+        assert!(server.is_tool_allowed("command:RunPlaybook"));
+        assert!(server.is_tool_allowed("command:DeleteEverything"));
+        assert!(server.is_tool_allowed("query:GetAllFoos"));
+        assert!(server.is_tool_allowed("connection_status"));
+    }
+
+    #[test]
+    fn closure_filter_gates_by_predicate() {
+        let server = McpServer::with_info("test", "0.0.0")
+            .with_tool_filter(|name| !name.starts_with("command:Delete"));
+
+        assert!(server.is_tool_allowed("command:RunPlaybook"));
+        assert!(server.is_tool_allowed("query:GetAllFoos"));
+        assert!(!server.is_tool_allowed("command:DeleteFoo"));
+        assert!(!server.is_tool_allowed("command:DeleteFoos"));
+    }
+
+    #[test]
+    fn allowlist_via_hashset_closure() {
+        let allowed: HashSet<String> = ["query:GetAllRuns", "command:RunPlaybook"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let server = McpServer::with_info("test", "0.0.0")
+            .with_tool_filter(move |name| allowed.contains(name));
+
+        assert!(server.is_tool_allowed("query:GetAllRuns"));
+        assert!(server.is_tool_allowed("command:RunPlaybook"));
+        assert!(!server.is_tool_allowed("command:CancelRun"));
+        assert!(!server.is_tool_allowed("connection_status"));
+    }
 }
