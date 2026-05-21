@@ -54,6 +54,10 @@ const CONNECTION_STATUS_TOOL: &str = "connection_status";
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
+    /// Optional `instructions` text returned in the `initialize` response.
+    /// MCP clients surface this to the model on connect; use it to teach
+    /// agents how to use this server.
+    pub instructions: Option<String>,
 }
 
 impl Default for ServerInfo {
@@ -61,6 +65,7 @@ impl Default for ServerInfo {
         Self {
             name: "myko-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            instructions: None,
         }
     }
 }
@@ -465,12 +470,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_info_default_omits_instructions() {
+        let info = ServerInfo::default();
+        assert_eq!(info.instructions, None);
+    }
+
+    #[test]
+    fn server_info_can_carry_instructions() {
+        let info = ServerInfo {
+            name: "test".into(),
+            version: "0.0.0".into(),
+            instructions: Some("test instructions text".into()),
+        };
+        assert_eq!(info.instructions.as_deref(), Some("test instructions text"));
+    }
+
     #[tokio::test]
     async fn initialize_returns_server_info() {
         let filter = ClientFilters::allow_all();
         let info = ServerInfo {
             name: "test".into(),
             version: "0.0.0".into(),
+            instructions: None,
         };
         // Executor is irrelevant for initialize but we need *some* executor;
         // use an in-process one wrapped around a minimal ctx is heavy here,

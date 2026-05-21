@@ -59,6 +59,7 @@ impl McpServer {
             info: ServerInfo {
                 name: name.into(),
                 version: version.into(),
+                instructions: None,
             },
         }
     }
