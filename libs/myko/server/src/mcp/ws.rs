@@ -31,6 +31,7 @@ const MCP_SUBPROTOCOL: &str = "mcp";
 pub async fn handle_mcp_ws_upgrade(
     stream: TcpStream,
     ctx: Arc<CellServerCtx>,
+    server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let filter = ClientFilters::from_strings(
@@ -56,7 +57,7 @@ pub async fn handle_mcp_ws_upgrade(
         }
     };
 
-    run_mcp_loop(ws_stream, ctx, filter).await
+    run_mcp_loop(ws_stream, ctx, server_info, filter).await
 }
 
 /// Upgrade `/myko` to a WebSocket and hand off to the existing Myko gateway.
@@ -116,11 +117,11 @@ async fn perform_handshake(
 async fn run_mcp_loop(
     ws_stream: WebSocketStream<TcpStream>,
     ctx: Arc<CellServerCtx>,
+    info: Arc<ServerInfo>,
     filter: ClientFilters,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut write, mut read) = ws_stream.split();
     let filter = Arc::new(filter);
-    let info = Arc::new(ServerInfo::default());
     let executor = Arc::new(Executor::InProcess(ctx));
 
     while let Some(frame) = read.next().await {

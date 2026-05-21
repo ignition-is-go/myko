@@ -54,6 +54,10 @@ const CONNECTION_STATUS_TOOL: &str = "connection_status";
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
+    /// Optional `instructions` text returned in the `initialize` response.
+    /// MCP clients surface this to the model on connect; use it to teach
+    /// agents how to use this server.
+    pub instructions: Option<String>,
 }
 
 impl Default for ServerInfo {
@@ -61,6 +65,7 @@ impl Default for ServerInfo {
         Self {
             name: "myko-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            instructions: None,
         }
     }
 }
@@ -88,20 +93,24 @@ pub async fn handle_request(
 }
 
 fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
-    McpResponse::success(
-        id,
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {},
-                "resources": {}
-            },
-            "serverInfo": {
-                "name": info.name,
-                "version": info.version,
-            }
-        }),
-    )
+    let mut payload = json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {
+            "tools": {},
+            "resources": {}
+        },
+        "serverInfo": {
+            "name": info.name,
+            "version": info.version,
+        }
+    });
+    if let Some(text) = &info.instructions {
+        payload
+            .as_object_mut()
+            .expect("payload is an object literal above")
+            .insert("instructions".to_string(), Value::String(text.clone()));
+    }
+    McpResponse::success(id, payload)
 }
 
 fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
@@ -465,12 +474,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_info_default_omits_instructions() {
+        let info = ServerInfo::default();
+        assert_eq!(info.instructions, None);
+    }
+
+    #[test]
+    fn server_info_can_carry_instructions() {
+        let info = ServerInfo {
+            name: "test".into(),
+            version: "0.0.0".into(),
+            instructions: Some("test instructions text".into()),
+        };
+        assert_eq!(info.instructions.as_deref(), Some("test instructions text"));
+    }
+
     #[tokio::test]
     async fn initialize_returns_server_info() {
         let filter = ClientFilters::allow_all();
         let info = ServerInfo {
             name: "test".into(),
             version: "0.0.0".into(),
+            instructions: None,
         };
         // Executor is irrelevant for initialize but we need *some* executor;
         // use an in-process one wrapped around a minimal ctx is heavy here,
@@ -483,6 +509,44 @@ mod tests {
         let result = response.result.expect("initialize must have a result");
         assert_eq!(result["serverInfo"]["name"], "test");
         assert_eq!(result["serverInfo"]["version"], "0.0.0");
+    }
+
+    #[tokio::test]
+    async fn initialize_includes_instructions_when_set() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo {
+            name: "pulse-mcp".into(),
+            version: "0.2.0".into(),
+            instructions: Some("teach me".into()),
+        };
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+
+        let resp = handle_request(make_request("initialize"), &filter, &executor, &info)
+            .await
+            .expect("initialize must return a response");
+        let result = resp.result.expect("initialize must succeed");
+
+        assert_eq!(result["serverInfo"]["name"], json!("pulse-mcp"));
+        assert_eq!(result["serverInfo"]["version"], json!("0.2.0"));
+        assert_eq!(result["instructions"], json!("teach me"));
+    }
+
+    #[tokio::test]
+    async fn initialize_omits_instructions_when_unset() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+
+        let resp = handle_request(make_request("initialize"), &filter, &executor, &info)
+            .await
+            .expect("response");
+        let result = resp.result.expect("ok");
+        assert!(
+            result.get("instructions").is_none(),
+            "instructions must be omitted when ServerInfo.instructions is None"
+        );
     }
 
     #[tokio::test]
