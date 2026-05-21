@@ -64,6 +64,13 @@ impl McpServer {
         }
     }
 
+    /// Set the optional `instructions` text returned in the MCP `initialize`
+    /// response. Surfaced to the model by the connecting client on connect.
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.info.instructions = Some(instructions.into());
+        self
+    }
+
     /// Run the MCP server over stdio (blocking).
     ///
     /// Reads JSON-RPC requests from stdin and writes responses to stdout.
@@ -238,4 +245,15 @@ pub struct ReportInfo {
 pub struct CommandInfo {
     pub command_id: String,
     pub result_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_mcp_server_with_instructions_sets_field() {
+        let server = McpServer::with_info("test", "0.0.0").with_instructions("teach me");
+        assert_eq!(server.info.instructions.as_deref(), Some("teach me"));
+    }
 }
