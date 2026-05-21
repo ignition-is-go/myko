@@ -16,7 +16,7 @@ use std::{net::SocketAddr, sync::Arc};
 use myko::server::CellServerCtx;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::{mcp, ws_handler::WsHandler};
+use crate::{mcp, mcp::dispatch::ServerInfo, ws_handler::WsHandler};
 
 /// Cap on the header section (request line + headers).
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -146,6 +146,7 @@ pub async fn route_connection(
     mut stream: TcpStream,
     addr: SocketAddr,
     ctx: Arc<CellServerCtx>,
+    server_info: Arc<ServerInfo>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -173,15 +174,15 @@ pub async fn route_connection(
             // tungstenite, which requires the unmodified raw bytes. We've
             // already consumed the request, so finish the handshake here
             // and pass the upgraded stream to the WS gateway.
-            handle_ws_upgrade(stream, addr, ctx, head, WsTarget::Myko).await
+            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Myko).await
         }
         ("GET", "/myko/mcp") if head.is_websocket_upgrade() => {
-            handle_ws_upgrade(stream, addr, ctx, head, WsTarget::Mcp).await
+            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp).await
         }
         ("GET", "/myko/mcp") if head.wants_event_stream() => {
             mcp::http::handle_sse(stream, ctx, head).await
         }
-        ("POST", "/myko/mcp") => mcp::http::handle_post(stream, ctx, head).await,
+        ("POST", "/myko/mcp") => mcp::http::handle_post(stream, ctx, server_info, head).await,
         ("GET", "/myko/mcp") => {
             // No SSE accept, no WS upgrade — caller probably wants a quick
             // status check or hit the URL in a browser.
@@ -214,6 +215,7 @@ async fn handle_ws_upgrade(
     stream: TcpStream,
     addr: SocketAddr,
     ctx: Arc<CellServerCtx>,
+    server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
     target: WsTarget,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -233,7 +235,7 @@ async fn handle_ws_upgrade(
 
     match target {
         WsTarget::Myko => mcp::ws::handle_myko_ws_upgrade(stream, addr, ctx, head).await,
-        WsTarget::Mcp => mcp::ws::handle_mcp_ws_upgrade(stream, ctx, head).await,
+        WsTarget::Mcp => mcp::ws::handle_mcp_ws_upgrade(stream, ctx, server_info, head).await,
     }
 }
 

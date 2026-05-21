@@ -31,6 +31,7 @@ const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 pub async fn handle_post(
     mut stream: TcpStream,
     ctx: Arc<CellServerCtx>,
+    server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content_length: usize = head
@@ -55,14 +56,13 @@ pub async fn handle_post(
     };
 
     let filter = filter_from_head(&head);
-    let info = ServerInfo::default();
     let executor = Executor::InProcess(ctx);
 
     let response: McpResponse = match serde_json::from_slice::<McpRequest>(&body) {
         Ok(req) => {
             // Notifications (no id, no response expected) get an empty 204
             // body anyway — MCP HTTP keeps the request/response shape.
-            match dispatch::handle_request(req, &filter, &executor, &info).await {
+            match dispatch::handle_request(req, &filter, &executor, &server_info).await {
                 Some(r) => r,
                 None => McpResponse::success(Value::Null, Value::Null),
             }

@@ -79,6 +79,10 @@ pub struct CellServerBuilder {
     /// Defaults to a fresh empty map if not provided.
     peer_clients: Option<Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>>,
     after_init: Option<AfterInitCallback>,
+    /// Optional MCP `ServerInfo`. Defaults to `ServerInfo::default()` if not
+    /// set; binaries override this to advertise their own name / version /
+    /// instructions on the `/myko/mcp` endpoint.
+    server_info: Option<mcp::dispatch::ServerInfo>,
 }
 
 type AfterInitCallback = Box<dyn FnOnce(&CellServer) + Send>;
@@ -151,11 +155,21 @@ impl CellServerBuilder {
         self
     }
 
+    /// Set the MCP `ServerInfo` advertised on the `/myko/mcp` `initialize`
+    /// response. Defaults to `ServerInfo::default()` (`myko-mcp` /
+    /// `CARGO_PKG_VERSION` / no instructions).
+    pub fn with_server_info(mut self, info: mcp::dispatch::ServerInfo) -> Self {
+        self.server_info = Some(info);
+        self
+    }
+
     /// Build the server.
     pub fn build(self) -> CellServer {
         let bind_addr = self
             .bind_addr
             .unwrap_or_else(|| "127.0.0.1:5155".parse().unwrap());
+
+        let server_info = Arc::new(self.server_info.unwrap_or_default());
 
         let mut server = CellServer::new(CellServerConfig {
             bind_addr,
@@ -167,6 +181,7 @@ impl CellServerBuilder {
             peer_clients: self.peer_clients,
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
+        server.server_info = server_info;
         server
     }
 }
@@ -203,6 +218,10 @@ pub struct CellServer {
     peer_clients: Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>,
     /// Callback to run after init (catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
+    /// MCP `ServerInfo` advertised on the `/myko/mcp` `initialize` response.
+    /// Set via [`CellServerBuilder::with_server_info`]; defaults to
+    /// `ServerInfo::default()`.
+    server_info: Arc<mcp::dispatch::ServerInfo>,
     /// Sender for local+replicated event fan-out to saga runtime.
     saga_event_tx: flume::Sender<MEvent>,
     /// Receiver consumed when saga runtime starts.
@@ -308,6 +327,7 @@ impl CellServer {
             peer_registry_instance: RwLock::new(None),
             peer_clients,
             after_init: std::sync::Mutex::new(None),
+            server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -341,6 +361,12 @@ impl CellServer {
     /// Get the handler registry.
     pub fn handler_registry(&self) -> Arc<HandlerRegistry> {
         self.handler_registry.clone()
+    }
+
+    /// Get the MCP `ServerInfo` advertised on the `/myko/mcp` `initialize`
+    /// response.
+    pub fn server_info(&self) -> Arc<mcp::dispatch::ServerInfo> {
+        self.server_info.clone()
     }
 
     /// Get a server context for module use.
@@ -655,9 +681,10 @@ impl CellServer {
             log::debug!("New connection from {}", addr);
 
             let ctx = Arc::new(self.ctx());
+            let server_info = self.server_info.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = router::route_connection(stream, addr, ctx).await {
+                if let Err(e) = router::route_connection(stream, addr, ctx, server_info).await {
                     log::error!("Connection error from {}: {}", addr, e);
                 }
             });
