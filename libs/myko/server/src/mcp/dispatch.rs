@@ -513,8 +513,6 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_includes_instructions_when_set() {
-        use serde_json::json;
-
         let filter = ClientFilters::allow_all();
         let info = ServerInfo {
             name: "pulse-mcp".into(),
