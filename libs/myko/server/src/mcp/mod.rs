@@ -32,8 +32,14 @@
 //!
 //! ## Protocol
 //!
-//! Implements MCP 2024-11-05 JSON-RPC (compatible with the 2025-06-18
-//! error-handling conventions).
+//! Implements MCP **2026-07-28** (SEP-2575 et al.). Handshake-free —
+//! protocol version, client info, and client capabilities travel in
+//! `_meta` on every request; the `server/discover` RPC advertises
+//! server identity, capabilities, and instructions on demand.
+//!
+//! For the transition window the dispatcher also accepts `initialize`
+//! as a backwards-compat shim returning the same payload, so
+//! 2024-11-05 clients keep working until they migrate.
 //!
 //! ## Legacy stdio
 //!
