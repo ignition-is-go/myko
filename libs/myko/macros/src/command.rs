@@ -26,7 +26,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         crate::gate_ts_attrs(&mut field.attrs);
     }
 
-    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)]);
 
     // Create args struct (identical to main struct for backward compatibility)
     // TODO(ts): Remove Args pattern once all call sites are updated to use CommandRequest

@@ -24,7 +24,7 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
 
     // TS derive wrapped in cfg_attr — only active when the consuming crate
     // has `ts-export` on.
-    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)]);
 
     // Apply derives (add Default for empty structs)
     let derives = if is_empty {

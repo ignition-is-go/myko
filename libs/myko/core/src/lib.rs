@@ -141,10 +141,15 @@ pub use wire::event; // For #[derive(myko::TS)]
 /// the registered fn would require `$ty: ts_rs::TS` but we don't emit
 /// that impl in that configuration. Types that should be exported during
 /// typegen must pick up `ts-export` via their crate's feature forwarding.
+// Gated on *myko's own* `ts-export` feature (this macro is defined while
+// compiling myko core), not the consuming crate's. When typegen isn't
+// compiled in, the macro is a no-op — so full-Rust consumers never need to
+// declare a `ts-export` feature, and `<$ty as ts_rs::TS>` (which only exists
+// when `myko::TS` is the real derive) is never referenced.
+#[cfg(feature = "ts-export")]
 #[macro_export]
 macro_rules! register_ts_export {
     ($ty:ty) => {
-        #[cfg(feature = "ts-export")]
         $crate::inventory::submit! {
             $crate::codegen_types::TsExportRegistration {
                 type_name: stringify!($ty),
@@ -157,6 +162,12 @@ macro_rules! register_ts_export {
             $crate::register_ts_export!($ty);
         )+
     };
+}
+
+#[cfg(not(feature = "ts-export"))]
+#[macro_export]
+macro_rules! register_ts_export {
+    ($($ty:ty),+ $(,)?) => {};
 }
 
 /// Define a Rust constant and register it for TypeScript export.

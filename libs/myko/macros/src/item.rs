@@ -114,39 +114,21 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // NOTE(ts): `partially` forwards all container attributes (including #[serde(crate = ...)])
     // from the main struct to the Partial struct automatically, so we must NOT also add
     // `attribute(serde(crate = ...))` — that would cause "duplicate serde attribute `crate`".
-    // TS derive (and the matching `ts(optional_fields)` attr on `partially`) are wrapped in
-    // `cfg_attr(feature = "ts-export", ...)` so they only fire when the consuming crate
-    // has `ts-export` on. We emit two cfg_attr forms of the `partially(...)` attribute —
-    // one with TS, one without — because `partially` can't be invoked twice on the same
-    // struct, and its derive list / attribute list need to stay in sync with whether TS
-    // is active.
+    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export` feature is on,
+    // so emit it unconditionally on both the item and the generated Partial — no
+    // consumer-side feature gate. A single `partially(...)` form always carries TS;
+    // `TsNoop` claims the `ts(optional_fields)` attr when typegen is off.
     let derives = if !rel_info.ensure_for_fields.is_empty() {
         quote! {
-            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug)]
-            #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
             #serde_rename_attr
-            #[cfg_attr(
-                feature = "ts-export",
-                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))
-            )]
-            #[cfg_attr(
-                not(feature = "ts-export"),
-                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches))
-            )]
+            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     } else {
         quote! {
-            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug)]
-            #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
             #serde_rename_attr
-            #[cfg_attr(
-                feature = "ts-export",
-                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))
-            )]
-            #[cfg_attr(
-                not(feature = "ts-export"),
-                partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches))
-            )]
+            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     };
 
@@ -166,7 +148,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
         quote! {
             #[derive(#serde_path::Deserialize)]
-            #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+            #[derive(#krate::TS)]
             #serde_rename_attr
             #helper_struct
 
@@ -406,7 +388,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let delete_command = quote! {
         /// Result type for Delete command
         #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug)]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[derive(#krate::TS)]
         #delete_serde_attr
         pub struct #delete_result_ident {
             pub deleted: bool,
@@ -452,7 +434,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let delete_many_command = quote! {
         /// Result type for bulk Delete command
         #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug)]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[derive(#krate::TS)]
         #delete_serde_attr
         pub struct #delete_many_result_ident {
             pub deleted_count: usize,
@@ -601,8 +583,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             #serde_path::Deserialize,
             Debug,
         )]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
-        #[cfg_attr(feature = "ts-export", ts(type = "string"))]
+        #[derive(#krate::TS)]
+        #[ts(type = "string")]
         pub struct #id_type_ident(pub std::sync::Arc<str>);
 
         impl std::ops::Deref for #id_type_ident {
