@@ -30,7 +30,7 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
     quote! {
         #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize)]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[derive(#krate::TS)]
         #serde_rename_attr
         #input_struct
 
@@ -92,7 +92,7 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
-    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)]);
 
     let derives = if is_empty {
         if non_hash_cache_key {

@@ -101,6 +101,9 @@ pub struct SearchableFieldInfo {
     pub field_name: String,
     /// Field name in JSON (camelCase) - used for indexing
     pub field_name_json: String,
+    /// Whether the field is `Option<_>`. Optional string-like fields index
+    /// their inner value when `Some` and contribute nothing when `None`.
+    pub is_optional: bool,
 }
 
 /// Convert snake_case to camelCase
@@ -375,6 +378,7 @@ pub fn parse_searchable(field: &Field) -> Option<SearchableFieldInfo> {
             return Some(SearchableFieldInfo {
                 field_name,
                 field_name_json,
+                is_optional: is_option_type(&field.ty),
             });
         }
     }
@@ -684,7 +688,22 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             .iter()
             .map(|sf| {
                 let ident = syn::Ident::new(&sf.field_name, proc_macro2::Span::call_site());
-                quote! { extractor.push_field(::std::convert::AsRef::<str>::as_ref(&self.#ident)); }
+                if sf.is_optional {
+                    // `Option<impl AsRef<str>>` — index the inner value when present,
+                    // contribute nothing (still consume the field slot) when `None`.
+                    quote! {
+                        match &self.#ident {
+                            ::std::option::Option::Some(__v) => {
+                                extractor.push_field(::std::convert::AsRef::<str>::as_ref(__v));
+                            }
+                            ::std::option::Option::None => {
+                                extractor.push_field("");
+                            }
+                        }
+                    }
+                } else {
+                    quote! { extractor.push_field(::std::convert::AsRef::<str>::as_ref(&self.#ident)); }
+                }
             })
             .collect();
         let name_strs: Vec<_> = info

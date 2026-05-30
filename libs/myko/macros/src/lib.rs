@@ -163,30 +163,14 @@ pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
     TokenStream::new()
 }
 
-/// Rewrite any `#[ts(...)]` attributes in the provided list so they're
-/// only applied when the consuming crate has the `ts-export` feature on.
+/// No-op retained for call-site compatibility.
 ///
-/// Emitting `#[ts(...)]` unconditionally would error when the ts-rs TS
-/// derive isn't also active (they're orphan helper attributes without
-/// their derive). We can't detect the feature at proc-macro runtime —
-/// `CARGO_FEATURE_*` env vars aren't exposed to proc macros — so we
-/// defer the gating to the consuming crate's compile by wrapping each
-/// attr with `#[cfg_attr(feature = "ts-export", ts(...))]`. At that
-/// point the feature flag resolves and the attr appears only where TS
-/// also appears.
-pub(crate) fn gate_ts_attrs(attrs: &mut [syn::Attribute]) {
-    use syn::parse_quote;
-    for attr in attrs.iter_mut() {
-        if !attr.path().is_ident("ts") {
-            continue;
-        }
-        // Preserve the inner meta list and rebuild as cfg_attr.
-        let inner_meta = attr.meta.clone();
-        let new_attr: syn::Attribute =
-            parse_quote!(#[cfg_attr(feature = "ts-export", #inner_meta)]);
-        *attr = new_attr;
-    }
-}
+/// `#[myko_item]`/`#[myko_subtype]` now always emit `#[derive(myko::TS)]`
+/// (which resolves to the no-op `TsNoop` derive unless myko's own
+/// `ts-export` feature is on). Because that derive always claims the `ts`
+/// helper-attribute namespace, user-written `#[ts(...)]` attrs are valid
+/// as-is and no longer need wrapping in a consumer-side `cfg_attr`.
+pub(crate) fn gate_ts_attrs(_attrs: &mut [syn::Attribute]) {}
 
 #[proc_macro_attribute]
 pub fn myko_manual_cache_key(_attr: TokenStream, input: TokenStream) -> TokenStream {
@@ -634,8 +618,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
-        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize)]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
         #serde_rename_attr
         #input
 
@@ -784,24 +767,17 @@ fn myko_subtype_expand(
         quote!()
     };
 
-    // Inline the `register_ts_export!` body so we skip an extra macro dispatch
-    // per subtype — one fewer round-trip at ~360 call sites adds up. The cfg
-    // check on the consuming crate's `ts-export` feature is preserved: when
-    // off, this expands to nothing.
+    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export`
+    // feature is on, so emit it (and the `ts(export)` attr it claims)
+    // unconditionally — no consumer-side feature gate. `register_ts_export!`
+    // is itself a no-op unless myko has ts-export on.
     quote! {
-        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize #extra_derive_tokens)]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
-        #[cfg_attr(feature = "ts-export", ts(export))]
+        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS #extra_derive_tokens)]
+        #[ts(export)]
         #serde_rename_attr
         #item
 
-        #[cfg(feature = "ts-export")]
-        #krate::inventory::submit! {
-            #krate::codegen_types::TsExportRegistration {
-                type_name: stringify!(#name),
-                export_fn: || <#name as #krate::ts_rs::TS>::export(),
-            }
-        }
+        #krate::register_ts_export!(#name);
     }
 }
 
