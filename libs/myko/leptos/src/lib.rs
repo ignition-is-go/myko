@@ -108,6 +108,7 @@ where
 /// // loaded.get() == true && projects.get().is_empty()  →  "No items"
 /// // loaded.get() == true && !projects.get().is_empty() →  render list
 /// ```
+#[allow(clippy::type_complexity)]
 pub fn live_query_loaded<Q>(
     query: impl Fn() -> Q + Send + Sync + 'static,
 ) -> (ReadSignal<Vec<Arc<Q::Item>>>, ReadSignal<bool>)
