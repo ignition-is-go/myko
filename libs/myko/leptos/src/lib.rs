@@ -76,9 +76,7 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 /// For static queries just wrap in a unit closure: `live_query(|| GetAllFoo {})`.
 ///
 /// `Q` is the query type (e.g. `GetAllServers`).
-pub fn live_query<Q>(
-    query: impl Fn() -> Q + Send + Sync + 'static,
-) -> ReadSignal<Vec<Arc<Q::Item>>>
+pub fn live_query<Q>(query: impl Fn() -> Q + Send + Sync + 'static) -> ReadSignal<Vec<Arc<Q::Item>>>
 where
     Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
     Q::Item: myko::core::item::Eventable
@@ -632,7 +630,13 @@ impl CommandSink {
         on_result: impl Fn(Result<R, String>) + Send + Sync + 'static,
     ) where
         C: serde::Serialize + Clone + myko::core::command::CommandId + 'static,
-        R: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
+        R: serde::de::DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + PartialEq
+            + Send
+            + Sync
+            + 'static,
     {
         #[cfg(target_arch = "wasm32")]
         {
@@ -658,10 +662,7 @@ impl CommandSink {
             });
             cell.own(guard);
 
-            self.inflight
-                .lock()
-                .unwrap()
-                .push((done, Box::new(cell)));
+            self.inflight.lock().unwrap().push((done, Box::new(cell)));
         }
 
         #[cfg(not(target_arch = "wasm32"))]

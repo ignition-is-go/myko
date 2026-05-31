@@ -1,6 +1,6 @@
 [package]
 name = "myko-server"
-version = "4.15.0"
+version = "4.16.0"
 edition = "2024"
 description = "Myko server runtime — WebSocket, peer federation"
 license = "AGPL-3.0-or-later"
