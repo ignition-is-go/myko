@@ -2,7 +2,9 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hyphae::{CellImmutable, MapQuery};
+use hyphae::CellImmutable;
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::MapQuery;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -55,9 +57,24 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Per-entity membership predicate.
     ///
     /// Return `true` when an item should be included in the query result.
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_entity(ctx: QueryTestCtx<Self>) -> bool
     where
         Self: Send + Sync + 'static;
+
+    /// Per-entity membership predicate (wasm no-op).
+    ///
+    /// Query evaluation only runs server-side; on wasm32 the hand-written
+    /// native body is gated out and this no-op default applies. It is never
+    /// invoked on wasm (clients watch query results over the wire), so it
+    /// simply returns `false`.
+    #[cfg(target_arch = "wasm32")]
+    fn test_entity(_ctx: QueryTestCtx<Self>) -> bool
+    where
+        Self: Send + Sync + 'static,
+    {
+        false
+    }
 
     /// Optional set-wise reactive builder for complex many-to-many joins.
     ///

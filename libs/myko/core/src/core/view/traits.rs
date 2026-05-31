@@ -43,9 +43,26 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// intermediate `CellMap`s. The framework materializes once at the
     /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
     /// still satisfy the bound via the blanket impl on `ReactiveMap`.
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_cell(ctx: ViewBuildCellCtx<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
     where
         Self: Send + Sync + 'static;
+
+    /// Build a reactive map plan for this view (wasm no-op).
+    ///
+    /// View materialization only runs server-side; on wasm32 the hand-written
+    /// native body is gated out and this no-op default applies. It is never
+    /// invoked on wasm (clients receive view results over the wire), so it
+    /// returns an empty `CellMap` — which satisfies the
+    /// `MapQuery<Arc<str>, Arc<Self::Item>>` bound via the blanket
+    /// `ReactiveMap` impl.
+    #[cfg(target_arch = "wasm32")]
+    fn build_cell(_ctx: ViewBuildCellCtx<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
+    where
+        Self: Send + Sync + 'static,
+    {
+        hyphae::CellMap::<Arc<str>, Arc<Self::Item>>::new()
+    }
 }
 
 pub trait AnyView: WithTransaction + ViewId + std::fmt::Debug + Send + Sync + 'static {
