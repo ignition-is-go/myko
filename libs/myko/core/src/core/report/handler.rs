@@ -360,5 +360,23 @@ pub trait ReportHandler: Sized {
     /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
     /// `deduped`, etc. already implement `MaterializeDefinite<U>`, so
     /// returning them directly is fine.
+    #[cfg(not(target_arch = "wasm32"))]
     fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>>;
+
+    /// Compute the report output (wasm no-op).
+    ///
+    /// Report computation only runs server-side; on wasm32 the hand-written
+    /// native body is gated out and this no-op default applies. It is never
+    /// invoked on wasm (clients receive report values over the wire), so it
+    /// only has to type-check. A `Cell<Arc<Self::Output>>` implements
+    /// `MaterializeDefinite<Arc<Self::Output>>`; the seed value is produced by
+    /// `unreachable!()`, which diverges and coerces to any `Output` (no
+    /// `Default` bound required).
+    #[cfg(target_arch = "wasm32")]
+    fn compute(&self, _ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
+        let _seed: Arc<Self::Output> =
+            unreachable!("ReportHandler::compute is not available on wasm32");
+        #[allow(unreachable_code)]
+        Cell::new(_seed)
+    }
 }

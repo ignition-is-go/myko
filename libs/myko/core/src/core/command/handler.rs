@@ -423,7 +423,23 @@ pub trait CommandHandler: crate::command::CommandParams {
     /// Execute the command synchronously.
     ///
     /// `self` is the deserialized command parameters (owned, consumed by execution).
+    #[cfg(not(target_arch = "wasm32"))]
     fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError>;
+
+    /// Execute the command synchronously (wasm no-op).
+    ///
+    /// Command handling only runs server-side; on wasm32 the hand-written
+    /// native body is gated out and this no-op default applies. Commands are
+    /// dispatched to the server over the wire, so this is never invoked on
+    /// wasm — it returns an "unsupported on wasm" error to type-check.
+    #[cfg(target_arch = "wasm32")]
+    fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError> {
+        Err(CommandError {
+            tx: ctx.tx().to_string(),
+            command_id: ctx.command_id.to_string(),
+            message: "CommandHandler::execute is not supported on wasm32".to_string(),
+        })
+    }
 }
 
 /// Type-erased command executor for dynamic dispatch.
