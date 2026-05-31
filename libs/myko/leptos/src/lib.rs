@@ -90,7 +90,40 @@ where
         + Sync
         + 'static,
 {
+    let (read, _loaded) = live_query_loaded(query);
+    read
+}
+
+/// Like [`live_query`] but also returns a `loaded` flag.
+///
+/// `loaded` starts as `false`.  Each time the reactive query closure re-runs
+/// (parameter change / re-subscribe) it resets to `false`.  It flips to `true`
+/// on the **first emission** from the server — even if the returned vec is empty.
+/// This lets callers distinguish "still waiting for a response" from "server
+/// replied with zero items".
+///
+/// ```ignore
+/// let (projects, loaded) = live_query_loaded(|| GetAllProjects {});
+/// // loaded.get() == false  →  spinner
+/// // loaded.get() == true && projects.get().is_empty()  →  "No items"
+/// // loaded.get() == true && !projects.get().is_empty() →  render list
+/// ```
+pub fn live_query_loaded<Q>(
+    query: impl Fn() -> Q + Send + Sync + 'static,
+) -> (ReadSignal<Vec<Arc<Q::Item>>>, ReadSignal<bool>)
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
     let (read, write) = signal(vec![]);
+    let (loaded, set_loaded) = signal(false);
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -101,18 +134,22 @@ where
 
         let client = expect_context::<MykoClient>();
 
-        // `prev` holds the previous Cell so it drops (and unsubscribes) on each
-        // re-run of the effect, before the new subscription is created.
+        // `prev_cell` holds the previous Cell so it drops (and unsubscribes) on
+        // each re-run of the effect, before the new subscription is created.
         let prev_cell: StoredValue<
             Option<myko::hyphae::Cell<Vec<Arc<Q::Item>>, myko::hyphae::CellImmutable>>,
         > = StoredValue::new(None);
 
         Effect::new(move || {
             let q = query(); // tracks signals read inside the closure
+            // A new subscription is starting — mark as not-yet-loaded.
+            set_loaded.set(false);
             let cell = client.watch_query(q);
             let guard = cell.subscribe(move |signal| {
                 if let Signal::Value(items) = signal {
                     write.set((**items).to_vec());
+                    // First emission (even an empty vec) means the query returned.
+                    set_loaded.set(true);
                 }
             });
             cell.own(guard);
@@ -123,11 +160,10 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = query();
-        let _ = write;
+        let _ = (query, write, set_loaded);
     }
 
-    read
+    (read, loaded)
 }
 
 /// Apply a hyphae MapDiff to per-entity Leptos signals.
