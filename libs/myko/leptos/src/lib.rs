@@ -62,10 +62,23 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 
 /// Returns a reactive signal of query results that updates when the server pushes data.
 ///
-/// Subscribes to the query via `MykoClient` and updates the signal on each change.
+/// `query` is a **reactive closure** — it is re-evaluated (and the underlying
+/// watch re-subscribed) whenever any Leptos signal read inside the closure changes.
+/// This lets callers pass filtered queries whose parameters come from signals:
+///
+/// ```ignore
+/// let items = live_query(move || GetItemsByQuery(PartialItem {
+///     owner_id: user_id.get(),
+///     ..Default::default()
+/// }));
+/// ```
+///
+/// For static queries just wrap in a unit closure: `live_query(|| GetAllFoo {})`.
 ///
 /// `Q` is the query type (e.g. `GetAllServers`).
-pub fn live_query<Q>(query: Q) -> ReadSignal<Vec<Arc<Q::Item>>>
+pub fn live_query<Q>(
+    query: impl Fn() -> Q + Send + Sync + 'static,
+) -> ReadSignal<Vec<Arc<Q::Item>>>
 where
     Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
     Q::Item: myko::core::item::Eventable
@@ -74,6 +87,7 @@ where
         + Clone
         + std::fmt::Debug
         + Send
+        + Sync
         + 'static,
 {
     let (read, write) = signal(vec![]);
@@ -86,17 +100,32 @@ where
         };
 
         let client = expect_context::<MykoClient>();
-        let cell = client.watch_query(query);
-        let guard = cell.subscribe(move |signal| {
-            if let Signal::Value(items) = signal {
-                write.set((**items).to_vec());
-            }
+
+        // `prev` holds the previous Cell so it drops (and unsubscribes) on each
+        // re-run of the effect, before the new subscription is created.
+        let prev_cell: StoredValue<
+            Option<myko::hyphae::Cell<Vec<Arc<Q::Item>>, myko::hyphae::CellImmutable>>,
+        > = StoredValue::new(None);
+
+        Effect::new(move || {
+            let q = query(); // tracks signals read inside the closure
+            let cell = client.watch_query(q);
+            let guard = cell.subscribe(move |signal| {
+                if let Signal::Value(items) = signal {
+                    write.set((**items).to_vec());
+                }
+            });
+            cell.own(guard);
+            // Drop the previous cell (unsubscribes) and hold the new one.
+            prev_cell.set_value(Some(cell));
         });
-        cell.own(guard);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    let _ = (query, write);
+    {
+        let _ = query();
+        let _ = write;
+    }
 
     read
 }
