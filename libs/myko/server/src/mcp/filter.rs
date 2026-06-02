@@ -29,14 +29,19 @@
 //! ```json
 //! // X-Myko-Tool-Callable-Allow
 //! {
-//!   "command:RunPlaybook": { "playbook_id": ["site", "deploy"] }
+//!   "command_RunPlaybook": { "playbook_id": ["site", "deploy"] }
 //! }
 //!
 //! // X-Myko-Tool-Callable-Deny
 //! {
-//!   "command:Tag":         { "namespace":   ["prod"] }
+//!   "command_Tag":         { "namespace":   ["prod"] }
 //! }
 //! ```
+//!
+//! Legacy `command:RunPlaybook` / `query:*` syntax in configs is accepted
+//! transparently — see [`normalize_tool_name`]. New configs should use the
+//! `_` form, which matches the OpenAI tool-name regex `[a-zA-Z0-9_-]+` and
+//! avoids tool-call-serializer bugs in some LLMs.
 //!
 //! Semantics, per tool/arg:
 //! - **Allow** is positive: the arg must be present on the call and its
@@ -86,8 +91,13 @@ pub enum Pattern {
 
 impl Pattern {
     /// Parse a single glob pattern. Empty string returns `None`.
+    ///
+    /// The pattern is normalized: a leading `kind:` separator becomes
+    /// `kind_` so legacy configs (e.g. `command:Run*`) keep matching after
+    /// myko's MCP wire switched to the underscore form. See
+    /// [`normalize_tool_name`].
     pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
+        let s = normalize_tool_name(s.trim());
         if s.is_empty() {
             return None;
         }
@@ -98,7 +108,7 @@ impl Pattern {
             (true, true) if s.len() == 2 => Some(Pattern::Any),
             (false, true) => Some(Pattern::Prefix(s[..s.len() - 1].to_string())),
             (true, false) => Some(Pattern::Suffix(s[1..].to_string())),
-            _ => Some(Pattern::Exact(s.to_string())),
+            _ => Some(Pattern::Exact(s)),
         }
     }
 
@@ -167,6 +177,10 @@ impl ClientFilters {
     /// omitted from `tools/list` / `resources/list`. Deny wins; an empty
     /// allow list means "visible unless explicitly denied".
     pub fn tool_visible(&self, name: &str) -> bool {
+        // Normalize at the boundary so legacy `kind:Id` and canonical
+        // `kind_Id` produce the same visibility decision.
+        let name = normalize_tool_name(name);
+        let name = name.as_str();
         if self.visibility_deny.iter().any(|p| p.matches(name)) {
             return false;
         }
@@ -187,6 +201,10 @@ impl ClientFilters {
     /// Visibility is *not* re-checked here; callers run
     /// [`tool_visible`](Self::tool_visible) first.
     pub fn tool_callable(&self, tool_name: &str, arguments: &Value) -> Result<(), String> {
+        // Normalize at the boundary so legacy `kind:Id` configs match the
+        // canonical `kind_Id` we use as the map key.
+        let tool_name = normalize_tool_name(tool_name);
+        let tool_name = tool_name.as_str();
         let args_obj = arguments.as_object();
 
         // Deny wins. Reject the call if any arg's value appears in the deny
@@ -238,12 +256,36 @@ fn parse_callability(raw: Option<&str>, label: &str) -> CallabilityMap {
     if trimmed.is_empty() {
         return CallabilityMap::new();
     }
-    match serde_json::from_str(trimmed) {
-        Ok(parsed) => parsed,
+    match serde_json::from_str::<CallabilityMap>(trimmed) {
+        Ok(parsed) => parsed
+            .into_iter()
+            .map(|(k, v)| (normalize_tool_name(&k), v))
+            .collect(),
         Err(e) => {
             log::warn!("[mcp] ignoring malformed tool-{} spec: {}", label, e);
             CallabilityMap::new()
         }
+    }
+}
+
+/// Convert a leading `kind:` separator to `kind_`. Entity ids never contain
+/// `:` (PascalCase from `#[myko_item]`), so the first colon is unambiguous.
+///
+/// Lets legacy callers continue using configs / patterns / tool-call names
+/// written as `command:RunPlaybook` while the MCP wire advertises the
+/// underscore form `command_RunPlaybook` (required because some LLM
+/// tool-call serializers — confirmed against gpt-oss-20b on 2026-06-02 —
+/// drop the `arguments` field when names contain `:`). The underscore form
+/// also matches the OpenAI tool-name regex `[a-zA-Z0-9_-]+`.
+fn normalize_tool_name(name: &str) -> String {
+    if let Some(pos) = name.find(':') {
+        let mut out = String::with_capacity(name.len());
+        out.push_str(&name[..pos]);
+        out.push('_');
+        out.push_str(&name[pos + 1..]);
+        out
+    } else {
+        name.to_string()
     }
 }
 
@@ -401,5 +443,48 @@ mod tests {
     fn malformed_callability_json_is_ignored() {
         let f = ClientFilters::from_strings(None, None, Some("not json"), Some("not json"));
         assert!(f.tool_callable("any:tool", &json!({})).is_ok());
+    }
+
+    // ─── Separator normalization (`:` legacy ↔ `_` canonical) ──────────────
+
+    #[test]
+    fn underscore_form_is_accepted_for_visibility() {
+        // Configs in either form should produce equivalent decisions.
+        let f = ClientFilters::from_strings(Some("query_*"), None, None, None);
+        assert!(f.tool_visible("query_GetAllTargets"));
+        assert!(f.tool_visible("query:GetAllTargets")); // legacy form still matches
+        assert!(!f.tool_visible("command_DoStuff"));
+    }
+
+    #[test]
+    fn colon_pattern_matches_underscore_name() {
+        // Operator wrote `query:*` in their config; wire now advertises
+        // `query_GetAllTargets`. Normalization makes this transparent.
+        let f = ClientFilters::from_strings(Some("query:*"), None, None, None);
+        assert!(f.tool_visible("query_GetAllTargets"));
+    }
+
+    #[test]
+    fn callability_map_normalizes_keys() {
+        // Config uses legacy `command:RunPlaybook`; runtime calls
+        // `command_RunPlaybook`. Both should resolve to the same row.
+        let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
+        assert!(
+            f.tool_callable("command_RunPlaybook", &json!({"playbook_id": "site"}))
+                .is_ok()
+        );
+        let err = f
+            .tool_callable("command_RunPlaybook", &json!({"playbook_id": "danger"}))
+            .unwrap_err();
+        assert!(err.contains("allowlist"));
+    }
+
+    #[test]
+    fn normalize_tool_name_idempotent_on_underscore_form() {
+        assert_eq!(normalize_tool_name("command_X"), "command_X");
+        assert_eq!(normalize_tool_name("command:X"), "command_X");
+        assert_eq!(normalize_tool_name("plain"), "plain");
+        // Only the first separator is replaced; ids never contain `:` anyway.
+        assert_eq!(normalize_tool_name("a:b:c"), "a_b:c");
     }
 }

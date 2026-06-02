@@ -203,8 +203,14 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
+    // NOTE(ts): tool names use the `_` separator (e.g. `query_GetAllTargets`)
+    // rather than the older `:` form. Some LLM tool-call serializers drop the
+    // `arguments` field when names contain `:` (gpt-oss-20b confirmed on
+    // 2026-06-02); `_` matches the OpenAI tool-name regex `[a-zA-Z0-9_-]+`
+    // and round-trips cleanly. Dispatch still accepts the `:` form for
+    // backward compat — see `execute_tool` below.
     for reg in inventory::iter::<QueryRegistration> {
-        let name = format!("query:{}", reg.query_id);
+        let name = format!("query_{}", reg.query_id);
         if !filter.tool_visible(&name) {
             continue;
         }
@@ -216,7 +222,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<ViewRegistration> {
-        let name = format!("view:{}", reg.view_id);
+        let name = format!("view_{}", reg.view_id);
         if !filter.tool_visible(&name) {
             continue;
         }
@@ -228,7 +234,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<ReportRegistration> {
-        let name = format!("report:{}", reg.report_id);
+        let name = format!("report_{}", reg.report_id);
         if !filter.tool_visible(&name) {
             continue;
         }
@@ -240,7 +246,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<CommandRegistration> {
-        let name = format!("command:{}", reg.command_id);
+        let name = format!("command_{}", reg.command_id);
         if !filter.tool_visible(&name) {
             continue;
         }
@@ -347,26 +353,42 @@ async fn execute_tool(executor: &Executor, tool_name: &str, args: Value) -> Resu
     if tool_name == CONNECTION_STATUS_TOOL {
         return Ok(executor.connection_status());
     }
-    if let Some(id) = tool_name.strip_prefix("query:") {
+    // Accept both the new `kind_Id` (advertised) and legacy `kind:Id` forms.
+    // See NOTE(ts) in handle_tools_list above.
+    if let Some(id) = strip_kind_prefix(tool_name, "query") {
         return executor.execute_query(id, args).await;
     }
-    if let Some(id) = tool_name.strip_prefix("view:") {
+    if let Some(id) = strip_kind_prefix(tool_name, "view") {
         return executor.execute_view(id, args).await;
     }
-    if let Some(id) = tool_name.strip_prefix("report:") {
+    if let Some(id) = strip_kind_prefix(tool_name, "report") {
         return executor.execute_report(id, args).await;
     }
-    if let Some(id) = tool_name.strip_prefix("command:") {
+    if let Some(id) = strip_kind_prefix(tool_name, "command") {
         return executor.execute_command(id, args).await;
     }
     Err(format!("Unknown tool: {}", tool_name))
+}
+
+/// Strip a `kind` prefix followed by either `_` (new, OpenAI-tool-name-safe)
+/// or `:` (legacy) from `name`, returning the remaining id. Entity ids never
+/// contain `:` (PascalCase from `#[myko_item]`), so the first separator is
+/// unambiguous.
+fn strip_kind_prefix<'a>(name: &'a str, kind: &str) -> Option<&'a str> {
+    let rest = name.strip_prefix(kind)?;
+    let sep = rest.as_bytes().first()?;
+    if *sep == b'_' || *sep == b':' {
+        Some(&rest[1..])
+    } else {
+        None
+    }
 }
 
 fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
 
     for reg in inventory::iter::<QueryRegistration> {
-        let tool_name = format!("query:{}", reg.query_id);
+        let tool_name = format!("query_{}", reg.query_id);
         if !filter.tool_visible(&tool_name) {
             continue;
         }
@@ -379,7 +401,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<ViewRegistration> {
-        let tool_name = format!("view:{}", reg.view_id);
+        let tool_name = format!("view_{}", reg.view_id);
         if !filter.tool_visible(&tool_name) {
             continue;
         }
@@ -392,7 +414,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<ReportRegistration> {
-        let tool_name = format!("report:{}", reg.report_id);
+        let tool_name = format!("report_{}", reg.report_id);
         if !filter.tool_visible(&tool_name) {
             continue;
         }
@@ -405,7 +427,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<CommandRegistration> {
-        let tool_name = format!("command:{}", reg.command_id);
+        let tool_name = format!("command_{}", reg.command_id);
         if !filter.tool_visible(&tool_name) {
             continue;
         }
