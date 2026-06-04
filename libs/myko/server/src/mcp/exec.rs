@@ -42,19 +42,58 @@ pub enum Executor {
     /// request that carried the header; commands receive it through
     /// `RequestContext::mcp_session_id` and can use it to identify
     /// the caller without a `client_id`.
+    /// `custom_registry` carries downstream-registered MCP tools and
+    /// resources (e.g. marshal-daemon's curated `roster`/`whoami`
+    /// surface), checked before the auto-derived
+    /// `query:` / `command:` tools.
     InProcess {
         ctx: Arc<CellServerCtx>,
         caller_session_id: Option<Arc<str>>,
+        custom_registry: super::custom::CustomMcpRegistry,
     },
 }
 
 impl Executor {
     /// Convenience constructor: in-process executor with no MCP caller
-    /// identity (sagas, internal calls, WS-backed MCP path).
+    /// identity and an empty custom registry (sagas, internal calls,
+    /// WS-backed MCP path).
     pub fn in_process(ctx: Arc<CellServerCtx>) -> Self {
         Executor::InProcess {
             ctx,
             caller_session_id: None,
+            custom_registry: super::custom::CustomMcpRegistry::new(),
+        }
+    }
+
+    /// Return the custom MCP registry attached to this executor, if any.
+    /// Client-mode executors have no registry.
+    pub fn custom_registry(&self) -> Option<&super::custom::CustomMcpRegistry> {
+        match self {
+            Executor::Client(_) => None,
+            Executor::InProcess {
+                custom_registry, ..
+            } => Some(custom_registry),
+        }
+    }
+
+    /// Return the in-process server context, if this executor is in-process.
+    /// Used by custom-resource handlers that need to read cells.
+    pub fn server_ctx(&self) -> Option<&Arc<CellServerCtx>> {
+        match self {
+            Executor::Client(_) => None,
+            Executor::InProcess { ctx, .. } => Some(ctx),
+        }
+    }
+
+    /// Return the MCP caller's session id, if known. In-process executors
+    /// built from `handle_post` carry the `Mcp-Session-Id` of the HTTP-MCP
+    /// caller here; other paths return `None`.
+    pub fn caller_session_id(&self) -> Option<&Arc<str>> {
+        match self {
+            Executor::Client(_) => None,
+            Executor::InProcess {
+                caller_session_id, ..
+            } => caller_session_id.as_ref(),
         }
     }
 
@@ -99,6 +138,7 @@ impl Executor {
             Executor::InProcess {
                 ctx,
                 caller_session_id,
+                ..
             } => in_process_execute_command(
                 ctx.clone(),
                 command_id,

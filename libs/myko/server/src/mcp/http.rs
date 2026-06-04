@@ -40,6 +40,7 @@ pub async fn handle_post(
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
     observer: Option<Arc<dyn McpSessionObserver>>,
+    custom_registry: super::custom::CustomMcpRegistry,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content_length: usize = head
         .header("Content-Length")
@@ -84,6 +85,7 @@ pub async fn handle_post(
     let executor = Executor::InProcess {
         ctx,
         caller_session_id: assigned_session_id.as_deref().map(Arc::from),
+        custom_registry,
     };
 
     let response: McpResponse = match parsed {

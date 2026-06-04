@@ -41,6 +41,7 @@
 //! `MykoClient` and connects out over WebSocket. It will be removed once
 //! all consumers have migrated to the in-server `/myko/mcp` endpoint.
 
+pub mod custom;
 pub mod dispatch;
 pub mod exec;
 pub mod filter;
@@ -50,6 +51,10 @@ pub mod session;
 mod types;
 pub mod ws;
 
+pub use custom::{
+    CustomMcpRegistry, CustomResource, CustomResourceContext, CustomResourceHandler, CustomTool,
+    CustomToolHandler,
+};
 pub use server::McpServer;
 pub use session::{
     ClientInfo, McpSessionChannel, McpSessionEvent, McpSessionObserver, SharedObserver,

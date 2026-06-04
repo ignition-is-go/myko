@@ -35,11 +35,17 @@
 //!
 //! [spec]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 
+use std::sync::Arc;
+
 use myko::{
-    command::CommandRegistration, query::QueryRegistration, report::ReportRegistration,
+    command::{CommandContext, CommandRegistration},
+    query::QueryRegistration,
+    report::ReportRegistration,
+    request::RequestContext,
     view::ViewRegistration,
 };
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use super::{
     exec::Executor,
@@ -81,10 +87,15 @@ pub async fn handle_request(
     match request.method.as_str() {
         "initialize" => Some(handle_initialize(request.id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
-        "tools/list" => Some(handle_tools_list(request.id, filter)),
+        "tools/list" => Some(handle_tools_list(request.id, filter, executor)),
         "tools/call" => Some(handle_tools_call(request.id, request.params, filter, executor).await),
-        "resources/list" => Some(handle_resources_list(request.id, filter)),
-        "resources/read" => Some(handle_resources_read(request.id, request.params, filter)),
+        "resources/list" => Some(handle_resources_list(request.id, filter, executor)),
+        "resources/read" => Some(handle_resources_read(
+            request.id,
+            request.params,
+            filter,
+            executor,
+        )),
         _ => Some(McpResponse::error(
             request.id,
             McpError::method_not_found(&request.method),
@@ -113,8 +124,23 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
     McpResponse::success(id, payload)
 }
 
-fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_tools_list(id: Value, filter: &ClientFilters, executor: &Executor) -> McpResponse {
     let mut tools: Vec<McpTool> = Vec::new();
+
+    // Curated tools come first so they outrank the auto-derived surface
+    // in MCP clients that show tools in registration order.
+    if let Some(registry) = executor.custom_registry() {
+        for tool in registry.tools() {
+            if !filter.tool_visible(&tool.name) {
+                continue;
+            }
+            tools.push(McpTool {
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.input_schema,
+            });
+        }
+    }
 
     if filter.tool_visible(CONNECTION_STATUS_TOOL) {
         tools.push(McpTool {
@@ -267,6 +293,24 @@ async fn execute_tool(executor: &Executor, tool_name: &str, args: Value) -> Resu
     if tool_name == CONNECTION_STATUS_TOOL {
         return Ok(executor.connection_status());
     }
+    // Curated tools win over the auto-derived surface — a downstream
+    // server can register `send_message` without colliding with the
+    // auto-derived `command_SendMessage`.
+    if let Some(registry) = executor.custom_registry() {
+        if let Some(tool) = registry.tool(tool_name) {
+            let ctx = executor.server_ctx().ok_or_else(|| {
+                "Custom tools require in-process executor (no server ctx)".to_string()
+            })?;
+            let tx: Arc<str> = Uuid::new_v4().to_string().into();
+            let mut req = RequestContext::internal(tx, ctx.host_id, "mcp");
+            if let Some(sid) = executor.caller_session_id() {
+                req = req.with_mcp_session_id(sid.clone());
+            }
+            let cmd_id: Arc<str> = Arc::from(tool.name.as_str());
+            let cmd_ctx = CommandContext::new(cmd_id, Arc::new(req), ctx.clone());
+            return (tool.handler)(args, cmd_ctx);
+        }
+    }
     // Accept both the new `kind_Id` (advertised) and legacy `kind:Id` forms.
     // See NOTE(ts) in handle_tools_list above.
     if let Some(id) = strip_kind_prefix(tool_name, "query") {
@@ -298,8 +342,23 @@ fn strip_kind_prefix<'a>(name: &'a str, kind: &str) -> Option<&'a str> {
     }
 }
 
-fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_list(id: Value, filter: &ClientFilters, executor: &Executor) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
+
+    // Curated resources come first — same ordering rationale as tools.
+    if let Some(registry) = executor.custom_registry() {
+        for r in registry.resources() {
+            if !filter.tool_visible(&r.name) {
+                continue;
+            }
+            resources.push(McpResource {
+                uri: r.uri,
+                name: r.name,
+                description: Some(r.description),
+                mime_type: Some(r.mime_type),
+            });
+        }
+    }
 
     for reg in inventory::iter::<QueryRegistration> {
         let tool_name = format!("query_{}", reg.query_id);
@@ -356,13 +415,68 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     McpResponse::success(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_read(
+    id: Value,
+    params: Option<Value>,
+    filter: &ClientFilters,
+    executor: &Executor,
+) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
     let Some(uri) = params.get("uri").and_then(|v| v.as_str()) else {
         return McpResponse::error(id, McpError::invalid_params("Missing uri"));
     };
+
+    // Curated resources (any non-`myko://schema/...` URI) dispatch
+    // through the registry. The handler receives the URI verbatim and
+    // is responsible for parsing query params.
+    if let Some(registry) = executor.custom_registry() {
+        if let Some(r) = registry.resource(uri) {
+            if !filter.tool_visible(&r.name) {
+                return McpResponse::error(
+                    id,
+                    McpError {
+                        code: McpError::INVALID_PARAMS,
+                        message: format!("Resource not accessible: {}", uri),
+                        data: None,
+                    },
+                );
+            }
+            let Some(ctx) = executor.server_ctx() else {
+                return McpResponse::error(
+                    id,
+                    McpError::invalid_params(
+                        "Custom resources require in-process executor (no server ctx)",
+                    ),
+                );
+            };
+            let res_ctx = super::custom::CustomResourceContext {
+                ctx: ctx.clone(),
+                caller_session_id: executor.caller_session_id().cloned(),
+            };
+            return match (r.handler)(uri, res_ctx) {
+                Ok(text) => McpResponse::success(
+                    id,
+                    json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": r.mime_type,
+                            "text": text,
+                        }]
+                    }),
+                ),
+                Err(message) => McpResponse::error(
+                    id,
+                    McpError {
+                        code: McpError::INVALID_PARAMS,
+                        message,
+                        data: None,
+                    },
+                ),
+            };
+        }
+    }
 
     if let Some(path) = uri.strip_prefix("myko://schema/") {
         let parts: Vec<&str> = path.splitn(2, '/').collect();

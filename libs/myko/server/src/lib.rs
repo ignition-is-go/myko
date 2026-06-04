@@ -226,6 +226,13 @@ pub struct CellServer {
     /// Set via [`CellServer::set_mcp_session_observer`] after `build()` so
     /// the observer can capture an `Arc<CellServerCtx>` for ctx access.
     mcp_session_observer: std::sync::Mutex<Option<mcp::SharedObserver>>,
+    /// Registry of curated MCP tools and resources downstream servers
+    /// add on top of the auto-derived `query_*` / `command_*` surface.
+    /// Cloned cheaply (internal `Arc<Mutex<…>>`); registrations made via
+    /// [`CellServer::register_custom_mcp_tool`] /
+    /// [`CellServer::register_custom_mcp_resource`] persist for the
+    /// server's lifetime.
+    custom_mcp_registry: mcp::CustomMcpRegistry,
     /// Sender for local+replicated event fan-out to saga runtime.
     saga_event_tx: flume::Sender<MEvent>,
     /// Receiver consumed when saga runtime starts.
@@ -333,6 +340,7 @@ impl CellServer {
             after_init: std::sync::Mutex::new(None),
             server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
             mcp_session_observer: std::sync::Mutex::new(None),
+            custom_mcp_registry: mcp::CustomMcpRegistry::new(),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -390,6 +398,30 @@ impl CellServer {
             .mcp_session_observer
             .lock()
             .expect("mcp_session_observer mutex poisoned") = Some(Arc::new(observer));
+    }
+
+    /// Borrow the custom MCP registry directly — useful when a downstream
+    /// crate wants to register many tools/resources at once. Equivalent to
+    /// calling `register_custom_mcp_tool` / `register_custom_mcp_resource`
+    /// in a loop.
+    pub fn custom_mcp_registry(&self) -> &mcp::CustomMcpRegistry {
+        &self.custom_mcp_registry
+    }
+
+    /// Register a curated MCP tool that surfaces alongside the
+    /// auto-derived `query_*`/`command_*`/`report_*` tools on
+    /// `tools/list` and `tools/call`. Downstream servers use this
+    /// to expose friendlier names + argument shapes than what the
+    /// `#[myko_query]`/`#[myko_command]` macros synthesise.
+    pub fn register_custom_mcp_tool(&self, tool: mcp::CustomTool) {
+        self.custom_mcp_registry.register_tool(tool);
+    }
+
+    /// Register a curated MCP resource (read-only state with a stable
+    /// URI). Surfaces on `resources/list` / `resources/read` ahead of
+    /// the auto-derived `myko://schema/...` resources.
+    pub fn register_custom_mcp_resource(&self, resource: mcp::CustomResource) {
+        self.custom_mcp_registry.register_resource(resource);
     }
 
     /// Get a server context for module use.
@@ -710,10 +742,18 @@ impl CellServer {
                 .lock()
                 .expect("mcp_session_observer mutex poisoned")
                 .clone();
+            let custom_registry = self.custom_mcp_registry.clone();
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    router::route_connection(stream, addr, ctx, server_info, observer).await
+                if let Err(e) = router::route_connection(
+                    stream,
+                    addr,
+                    ctx,
+                    server_info,
+                    observer,
+                    custom_registry,
+                )
+                .await
                 {
                     log::error!("Connection error from {}: {}", addr, e);
                 }

@@ -148,6 +148,7 @@ pub async fn route_connection(
     ctx: Arc<CellServerCtx>,
     server_info: Arc<ServerInfo>,
     mcp_session_observer: Option<mcp::SharedObserver>,
+    custom_mcp_registry: mcp::CustomMcpRegistry,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -184,7 +185,15 @@ pub async fn route_connection(
             mcp::http::handle_sse(stream, ctx, head, mcp_session_observer).await
         }
         ("POST", "/myko/mcp") => {
-            mcp::http::handle_post(stream, ctx, server_info, head, mcp_session_observer).await
+            mcp::http::handle_post(
+                stream,
+                ctx,
+                server_info,
+                head,
+                mcp_session_observer,
+                custom_mcp_registry,
+            )
+            .await
         }
         ("GET", "/myko/mcp") => {
             // No SSE accept, no WS upgrade — caller probably wants a quick
