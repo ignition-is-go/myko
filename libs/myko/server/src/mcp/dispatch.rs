@@ -1,7 +1,22 @@
 //! Transport-agnostic MCP JSON-RPC dispatch.
 //!
-//! Handles `initialize`, `tools/list`, `tools/call`, `resources/list`,
-//! `resources/read`, and the relevant notifications.
+//! Handles `server/discover`, `initialize` (transition shim — see below),
+//! `tools/list`, `tools/call`, `resources/list`, `resources/read`, and the
+//! relevant notifications.
+//!
+//! ## Protocol
+//!
+//! Implements MCP **2026-07-28** (SEP-2575 et al.). The
+//! `initialize`/`notifications/initialized` handshake and `Mcp-Session-Id`
+//! header are removed; protocol version, client info, and client
+//! capabilities now travel in `_meta` on every request. The new
+//! `server/discover` RPC advertises server identity, capabilities, and
+//! instructions on demand.
+//!
+//! **Transition shim.** Until clients catch up, `initialize` is still
+//! accepted and returns the same payload as `server/discover`. This is not
+//! required by the spec; it's a kindness during the 10-week 2026-07-28 RC
+//! window. The shim will be removed when all known consumers have migrated.
 //!
 //! ## Tool / resource split
 //!
@@ -19,21 +34,25 @@
 //!     just go stale. On-demand `tools/call` is the right shape for live
 //!     reads.
 //!
-//! Reactive query subscriptions via `resources/subscribe` are future work.
+//! List and resource-read results carry `ttlMs` + `cacheScope` per
+//! SEP-2549. Tool registrations are static (compile-time inventory) so
+//! `tools/list` is safely cacheable for a long window; resource schema
+//! reads are equally static.
 //!
-//! Error responses follow the [MCP 2025-06-18 error-handling shape][spec]:
+//! Reactive query subscriptions via the new `subscriptions/listen`
+//! endpoint (SEP-2575) are future work.
+//!
+//! ## Error responses
 //!
 //! - **Protocol Error** — JSON-RPC error response with `code: -32602` and
 //!   message `"Unknown tool: …"`. Used when a tool is hidden by visibility
 //!   filtering (indistinguishable on the wire from a tool that does not
-//!   exist) or when required `tools/call` params are missing.
+//!   exist) or when required `tools/call` params are missing. Missing
+//!   resources also map to `-32602` per SEP-2164.
 //! - **Tool Execution Error** — successful JSON-RPC response with
 //!   `isError: true` content carrying a descriptive message. Used when
-//!   `tools/call` arguments fail client-supplied argument constraints
-//!   (the spec's "Invalid input data" category) or when tool execution
-//!   raises an error downstream.
-//!
-//! [spec]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
+//!   `tools/call` arguments fail client-supplied argument constraints or
+//!   when tool execution raises an error downstream.
 
 use myko::{
     command::CommandRegistration, query::QueryRegistration, report::ReportRegistration,
@@ -44,10 +63,21 @@ use serde_json::{Value, json};
 use super::{
     exec::Executor,
     filter::ClientFilters,
-    types::{McpError, McpRequest, McpResource, McpResponse, McpTool},
+    types::{McpError, McpRequest, McpResource, McpResponse, McpTool, PROTOCOL_VERSION},
 };
 
 const CONNECTION_STATUS_TOOL: &str = "connection_status";
+
+/// `ttlMs` advertised on `tools/list` (SEP-2549). Tool registrations are
+/// compile-time-static (`inventory::iter`), so the list is stable across
+/// the server's lifetime — a long TTL is appropriate. Clients re-fetch
+/// when this expires or when (future) `toolsListChanged` notifications
+/// fire.
+const TOOLS_LIST_TTL_MS: u64 = 3_600_000;
+
+/// `ttlMs` for `resources/list` and `resources/read`. Resource schemas
+/// are derived from the same compile-time registrations, equally stable.
+const RESOURCES_TTL_MS: u64 = 3_600_000;
 
 /// Server identity for the `initialize` response.
 #[derive(Debug, Clone)]
@@ -78,8 +108,29 @@ pub async fn handle_request(
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
+    // SEP-2575: protocol version travels in `_meta` on every request.
+    // Reject mismatches with `UnsupportedProtocolVersionError`. Absence
+    // is tolerated during the transition window (a 2024-11-05 client
+    // negotiates via `initialize` and never sends the meta key).
+    let bad_version = request
+        .client_protocol_version()
+        .filter(|v| *v != PROTOCOL_VERSION)
+        .map(str::to_string);
+    if let Some(asserted) = bad_version {
+        return Some(McpResponse::error(
+            request.id,
+            McpError::unsupported_protocol_version(&asserted),
+        ));
+    }
+
     match request.method.as_str() {
-        "initialize" => Some(handle_initialize(request.id, info)),
+        // SEP-2575: the canonical discovery RPC.
+        "server/discover" => Some(handle_discover(request.id, info)),
+        // SEP-2575 transition shim: `initialize` no longer exists in the
+        // protocol but we honor it so 2024-11-05 clients keep working.
+        // Same payload as `server/discover`, plus the legacy
+        // `protocolVersion` field at the top level.
+        "initialize" => Some(handle_initialize_legacy(request.id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
         "tools/list" => Some(handle_tools_list(request.id, filter)),
         "tools/call" => Some(handle_tools_call(request.id, request.params, filter, executor).await),
@@ -92,16 +143,40 @@ pub async fn handle_request(
     }
 }
 
-fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
+/// SEP-2575 `server/discover`. Returns server identity, capabilities, and
+/// instructions. Replaces the `initialize` handshake.
+fn handle_discover(id: Value, info: &ServerInfo) -> McpResponse {
+    McpResponse::success(id, discover_payload(info))
+}
+
+/// Transition shim for 2024-11-05 clients. Same content as
+/// [`handle_discover`], plus the legacy `protocolVersion` field at the
+/// top level (which `server/discover` carries inside `serverInfo` instead).
+fn handle_initialize_legacy(id: Value, info: &ServerInfo) -> McpResponse {
+    let mut payload = discover_payload(info);
+    payload
+        .as_object_mut()
+        .expect("discover_payload returns an object")
+        .insert(
+            "protocolVersion".to_string(),
+            Value::String(PROTOCOL_VERSION.to_string()),
+        );
+    McpResponse::success(id, payload)
+}
+
+fn discover_payload(info: &ServerInfo) -> Value {
     let mut payload = json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": {
-            "tools": {},
-            "resources": {}
-        },
         "serverInfo": {
             "name": info.name,
             "version": info.version,
+            "protocolVersion": PROTOCOL_VERSION,
+        },
+        "capabilities": {
+            "tools": { "listChanged": false },
+            "resources": { "listChanged": false, "subscribe": false },
+            // SEP-2133: extensions framework. Empty map = no extensions
+            // advertised yet. Per-extension support lands in follow-ups.
+            "extensions": {},
         }
     });
     if let Some(text) = &info.instructions {
@@ -110,7 +185,7 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
             .expect("payload is an object literal above")
             .insert("instructions".to_string(), Value::String(text.clone()));
     }
-    McpResponse::success(id, payload)
+    payload
 }
 
 fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
@@ -182,7 +257,18 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
-    McpResponse::success(id, json!({ "tools": tools }))
+    McpResponse::success(
+        id,
+        json!({
+            "tools": tools,
+            // SEP-2549 CacheableResult: tool registrations are
+            // compile-time-static — clients can cache the list for
+            // TOOLS_LIST_TTL_MS. `private` because the visibility filter
+            // is per-client (header-driven).
+            "ttlMs": TOOLS_LIST_TTL_MS,
+            "cacheScope": "private",
+        }),
+    )
 }
 
 async fn handle_tools_call(
@@ -353,7 +439,15 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
-    McpResponse::success(id, json!({ "resources": resources }))
+    McpResponse::success(
+        id,
+        json!({
+            "resources": resources,
+            // SEP-2549 CacheableResult — same reasoning as tools/list.
+            "ttlMs": RESOURCES_TTL_MS,
+            "cacheScope": "private",
+        }),
+    )
 }
 
 fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
@@ -394,13 +488,20 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
                             "uri": uri,
                             "mimeType": "application/json",
                             "text": content,
-                        }]
+                        }],
+                        // SEP-2549 CacheableResult: schema contents derive
+                        // from compile-time registrations and are stable
+                        // across the server's lifetime.
+                        "ttlMs": RESOURCES_TTL_MS,
+                        "cacheScope": "private",
                     }),
                 );
             }
         }
     }
 
+    // SEP-2164: missing-resource errors use JSON-RPC standard
+    // `-32602 Invalid Params` (not the legacy MCP `-32002`).
     McpResponse::error(
         id,
         McpError {
@@ -418,11 +519,14 @@ fn open_object_schema() -> Value {
     })
 }
 
+/// SEP-2106: tool input/output schemas use JSON Schema Draft 2020-12.
+const JSON_SCHEMA_DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
+
 fn get_query_schema(query_id: &str) -> Option<String> {
     for reg in inventory::iter::<QueryRegistration> {
         if reg.query_id == query_id {
             let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$schema": JSON_SCHEMA_DRAFT,
                 "title": reg.query_id,
                 "description": format!("Query returning {} entities", reg.query_item_type),
                 "type": "object",
@@ -438,7 +542,7 @@ fn get_view_schema(view_id: &str) -> Option<String> {
     for reg in inventory::iter::<ViewRegistration> {
         if reg.view_id == view_id {
             let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$schema": JSON_SCHEMA_DRAFT,
                 "title": reg.view_id,
                 "description": format!("View returning a list of {}", reg.view_item_type),
                 "type": "object",
@@ -454,7 +558,7 @@ fn get_report_schema(report_id: &str) -> Option<String> {
     for reg in inventory::iter::<ReportRegistration> {
         if reg.report_id == report_id {
             let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$schema": JSON_SCHEMA_DRAFT,
                 "title": reg.report_id,
                 "description": format!("Report returning {}", reg.output_type),
                 "type": "object",
@@ -470,7 +574,7 @@ fn get_command_schema(command_id: &str) -> Option<String> {
     for reg in inventory::iter::<CommandRegistration> {
         if reg.command_id == command_id {
             let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
+                "$schema": JSON_SCHEMA_DRAFT,
                 "title": reg.command_id,
                 "description": format!("Command returning {}", reg.result_type),
                 "type": "object",
@@ -493,6 +597,21 @@ mod tests {
             id: Value::Number(1.into()),
             method: method.to_string(),
             params: None,
+        }
+    }
+
+    /// Build a request with `_meta.io.modelcontextprotocol/protocolVersion`
+    /// set, exercising the SEP-2575 per-request protocol-version carriage.
+    fn make_request_with_protocol_version(method: &str, version: &str) -> McpRequest {
+        McpRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Value::Number(1.into()),
+            method: method.to_string(),
+            params: Some(json!({
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": version,
+                }
+            })),
         }
     }
 
@@ -599,5 +718,148 @@ mod tests {
             .await
             .expect("must produce a response");
         assert!(response.error.is_some());
+    }
+
+    // ─── MCP 2026-07-28 ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn discover_returns_server_info_with_protocol_version() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo {
+            name: "pulse-ctx".into(),
+            version: "0.3.0".into(),
+            instructions: Some("teach me".into()),
+        };
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+        let resp = handle_request(make_request("server/discover"), &filter, &executor, &info)
+            .await
+            .expect("server/discover must return a response");
+        let result = resp.result.expect("server/discover must succeed");
+        assert_eq!(result["serverInfo"]["name"], json!("pulse-ctx"));
+        assert_eq!(result["serverInfo"]["version"], json!("0.3.0"));
+        assert_eq!(
+            result["serverInfo"]["protocolVersion"],
+            json!(PROTOCOL_VERSION),
+            "server/discover must advertise the 2026-07-28 protocol version"
+        );
+        assert_eq!(result["instructions"], json!("teach me"));
+        // SEP-2133: extensions map must be present even when empty.
+        assert!(
+            result["capabilities"]["extensions"].is_object(),
+            "capabilities must advertise an extensions map per SEP-2133"
+        );
+    }
+
+    #[tokio::test]
+    async fn initialize_legacy_shim_carries_protocol_version_top_level() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+        let resp = handle_request(make_request("initialize"), &filter, &executor, &info)
+            .await
+            .expect("initialize shim must return a response");
+        let result = resp.result.expect("initialize shim must succeed");
+        // 2024-11-05 clients expect `protocolVersion` at the top level;
+        // the shim must satisfy that.
+        assert_eq!(
+            result["protocolVersion"],
+            json!(PROTOCOL_VERSION),
+            "initialize legacy shim must keep protocolVersion at top level"
+        );
+        // And the new shape under serverInfo as well, so a tooling that
+        // already moved to server/discover sees a consistent payload.
+        assert_eq!(
+            result["serverInfo"]["protocolVersion"],
+            json!(PROTOCOL_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn version_mismatch_in_meta_returns_unsupported_protocol_version_error() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+        let req = make_request_with_protocol_version("tools/list", "1999-01-01");
+        let resp = handle_request(req, &filter, &executor, &info)
+            .await
+            .expect("must return a response");
+        let err = resp.error.expect("must be an error");
+        assert!(
+            err.message.contains("UnsupportedProtocolVersionError"),
+            "expected UnsupportedProtocolVersionError, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("1999-01-01"),
+            "error must echo the asserted version"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_version_in_meta_dispatches_normally() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+        let req = make_request_with_protocol_version("tools/list", PROTOCOL_VERSION);
+        let resp = handle_request(req, &filter, &executor, &info)
+            .await
+            .expect("must return a response");
+        assert!(
+            resp.error.is_none(),
+            "matching version must not produce an UnsupportedProtocolVersionError"
+        );
+        let result = resp.result.expect("tools/list must succeed");
+        assert!(result["tools"].is_array());
+    }
+
+    #[tokio::test]
+    async fn tools_list_carries_cache_metadata() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+        let resp = handle_request(make_request("tools/list"), &filter, &executor, &info)
+            .await
+            .expect("must return a response");
+        let result = resp.result.expect("tools/list must succeed");
+        // SEP-2549 CacheableResult fields.
+        assert!(
+            result["ttlMs"].as_u64().is_some(),
+            "tools/list must carry ttlMs per SEP-2549, got: {result}"
+        );
+        assert_eq!(
+            result["cacheScope"],
+            json!("private"),
+            "visibility filter is per-client, so cacheScope must be private"
+        );
+    }
+
+    #[tokio::test]
+    async fn resources_list_carries_cache_metadata() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let client = std::sync::Arc::new(myko::client::MykoClient::new());
+        let executor = Executor::Client(client);
+        let resp = handle_request(make_request("resources/list"), &filter, &executor, &info)
+            .await
+            .expect("must return a response");
+        let result = resp.result.expect("resources/list must succeed");
+        assert!(result["ttlMs"].as_u64().is_some());
+        assert_eq!(result["cacheScope"], json!("private"));
+    }
+
+    #[test]
+    fn schema_emits_2020_12_draft_uri() {
+        // Spot-check that the four schema getters use 2020-12. Per SEP-2106
+        // they must be 2020-12 in 2026-07-28. We don't have a registered
+        // entity here to look up, so just verify the constant.
+        assert_eq!(
+            JSON_SCHEMA_DRAFT, "https://json-schema.org/draft/2020-12/schema",
+            "tool schemas must declare Draft 2020-12 per SEP-2106"
+        );
     }
 }
