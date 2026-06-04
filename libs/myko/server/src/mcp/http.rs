@@ -111,6 +111,14 @@ pub async fn handle_post(
                 user_agent: head.header("User-Agent").map(|s| s.to_string()),
             });
         }
+    } else if let (Some(sid), Some(observer)) = (&assigned_session_id, &observer) {
+        // Activity ping for every non-initialize request — lets downstream
+        // reapers keep HTTP-MCP sessions alive when the client doesn't open
+        // SSE eagerly. Synchronous + cheap by design (observers should only
+        // bump an in-memory timestamp here).
+        observer.on_session_event(McpSessionEvent::Activity {
+            session_id: sid.clone(),
+        });
     }
 
     let body_out = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());

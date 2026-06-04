@@ -48,6 +48,14 @@ pub enum McpSessionEvent {
     /// that disappear without notice get cleaned up by an external
     /// reaper, not by this event.
     Ended { session_id: String },
+    /// A non-initialize JSON-RPC request arrived on this session.
+    /// Downstream reapers use this to keep HTTP-MCP sessions alive when
+    /// the client doesn't (or hasn't yet) opened an SSE channel —
+    /// Claude Code's HTTP-MCP transport only opens SSE on demand, so
+    /// SSE-open is not a reliable liveness signal on its own. Fired
+    /// before the request is dispatched; the observer should do only
+    /// fast in-memory work (e.g. bump a `last_seen_at` field).
+    Activity { session_id: String },
 }
 
 /// Push sink for the server side of an SSE channel. Owned by the
