@@ -46,6 +46,14 @@ pub struct RequestContext {
     /// `None` for internal operations (sagas, startup tasks).
     pub client_id: Option<ClientId>,
 
+    /// MCP Streamable-HTTP `Mcp-Session-Id` of the request, when the
+    /// caller arrived via `/myko/mcp` POST. `None` for WebSocket
+    /// callers (they use `client_id`) and for internal operations.
+    /// Commands that need to identify the caller without a live
+    /// `Client` entity (e.g. an HTTP-MCP agent calling `send_message`)
+    /// branch on this.
+    pub mcp_session_id: Option<Arc<str>>,
+
     /// Call chain tracking the path of execution.
     /// Starts with `["client"]` for WebSocket requests or `["saga", "SagaName"]` for sagas.
     /// Extended via `child()` for nested operations.
@@ -78,6 +86,7 @@ impl RequestContext {
             lineage,
             host_id,
             created_at,
+            mcp_session_id: None,
             windback: None,
         }
     }
@@ -93,6 +102,7 @@ impl RequestContext {
             lineage: vec![Arc::from("client")],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),
+            mcp_session_id: None,
             windback: None,
         }
     }
@@ -109,6 +119,7 @@ impl RequestContext {
         Self {
             tx,
             client_id: Some(client_id.into()),
+            mcp_session_id: None,
             lineage: vec![Arc::from("client")],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -126,6 +137,7 @@ impl RequestContext {
             lineage: vec![Arc::from(origin)],
             host_id,
             created_at: chrono::Utc::now().to_rfc3339(),
+            mcp_session_id: None,
             windback: None,
         }
     }
@@ -157,11 +169,22 @@ impl RequestContext {
         Self {
             tx: self.tx.clone(),
             client_id: self.client_id.clone(),
+            mcp_session_id: self.mcp_session_id.clone(),
             lineage,
             host_id: self.host_id,
             created_at: self.created_at.clone(),
             windback: self.windback.clone(),
         }
+    }
+
+    /// Builder-style: attach an `Mcp-Session-Id` (Streamable HTTP
+    /// transport correlator) to this context. Used by the HTTP MCP
+    /// executor when dispatching a command on behalf of an
+    /// HTTP-MCP-connected caller, so command handlers can identify
+    /// the caller without a `client_id`.
+    pub fn with_mcp_session_id(mut self, mcp_session_id: Arc<str>) -> Self {
+        self.mcp_session_id = Some(mcp_session_id);
+        self
     }
 
     /// Check if this context is in windback mode.

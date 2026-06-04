@@ -122,7 +122,7 @@ async fn run_mcp_loop(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut write, mut read) = ws_stream.split();
     let filter = Arc::new(filter);
-    let executor = Arc::new(Executor::InProcess(ctx));
+    let executor = Arc::new(Executor::in_process(ctx));
 
     while let Some(frame) = read.next().await {
         let frame = match frame {

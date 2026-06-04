@@ -37,15 +37,34 @@ pub enum Executor {
     /// Talk to a remote Myko server over WebSocket via a `MykoClient`.
     Client(Arc<MykoClient>),
     /// Talk to a server hosted in the same process via its `CellServerCtx`.
-    InProcess(Arc<CellServerCtx>),
+    /// `caller_session_id` is the `Mcp-Session-Id` of the HTTP-MCP
+    /// caller when this executor was built from `handle_post` for a
+    /// request that carried the header; commands receive it through
+    /// `RequestContext::mcp_session_id` and can use it to identify
+    /// the caller without a `client_id`.
+    InProcess {
+        ctx: Arc<CellServerCtx>,
+        caller_session_id: Option<Arc<str>>,
+    },
 }
 
 impl Executor {
+    /// Convenience constructor: in-process executor with no MCP caller
+    /// identity (sagas, internal calls, WS-backed MCP path).
+    pub fn in_process(ctx: Arc<CellServerCtx>) -> Self {
+        Executor::InProcess {
+            ctx,
+            caller_session_id: None,
+        }
+    }
+
     /// Execute a query and return its current items as JSON.
     pub async fn execute_query(&self, query_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Executor::Client(client) => client_execute_query(client.clone(), query_id, args).await,
-            Executor::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args),
+            Executor::InProcess { ctx, .. } => {
+                in_process_execute_query(ctx.clone(), query_id, args)
+            }
         }
     }
 
@@ -55,7 +74,7 @@ impl Executor {
             Executor::Client(client) => {
                 client_execute_report(client.clone(), report_id, args).await
             }
-            Executor::InProcess(ctx) => {
+            Executor::InProcess { ctx, .. } => {
                 in_process_execute_report(ctx.clone(), report_id, args).await
             }
         }
@@ -65,7 +84,9 @@ impl Executor {
     pub async fn execute_view(&self, view_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Executor::Client(client) => client_execute_view(client.clone(), view_id, args).await,
-            Executor::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args),
+            Executor::InProcess { ctx, .. } => {
+                in_process_execute_view(ctx.clone(), view_id, args)
+            }
         }
     }
 
@@ -75,7 +96,15 @@ impl Executor {
             Executor::Client(client) => {
                 client_execute_command(client.clone(), command_id, args).await
             }
-            Executor::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args),
+            Executor::InProcess {
+                ctx,
+                caller_session_id,
+            } => in_process_execute_command(
+                ctx.clone(),
+                command_id,
+                args,
+                caller_session_id.clone(),
+            ),
         }
     }
 
@@ -93,7 +122,9 @@ impl Executor {
                 };
                 json!({ "status": text })
             }
-            Executor::InProcess(_) => json!({ "status": "In-process (always connected)" }),
+            Executor::InProcess { .. } => {
+                json!({ "status": "In-process (always connected)" })
+            }
         }
     }
 }
@@ -485,6 +516,7 @@ fn in_process_execute_command(
     ctx: Arc<CellServerCtx>,
     command_id: &str,
     arguments: Value,
+    caller_session_id: Option<Arc<str>>,
 ) -> Result<Value, String> {
     let mut command_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -495,7 +527,11 @@ fn in_process_execute_command(
     for registration in inventory::iter::<CommandHandlerRegistration> {
         if registration.command_id == command_id {
             let executor = (registration.factory)();
-            let req = Arc::new(RequestContext::internal(tx.clone(), ctx.host_id, "mcp"));
+            let mut req = RequestContext::internal(tx.clone(), ctx.host_id, "mcp");
+            if let Some(sid) = &caller_session_id {
+                req = req.with_mcp_session_id(sid.clone());
+            }
+            let req = Arc::new(req);
             let cmd_id: Arc<str> = Arc::from(command_id);
             let cmd_ctx = CommandContext::new(cmd_id, req, ctx.clone());
 

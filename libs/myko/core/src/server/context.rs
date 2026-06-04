@@ -1583,6 +1583,7 @@ impl CellServerCtx {
         Arc::new(RequestContext {
             tx: Arc::<str>::from(Uuid::new_v4().to_string()),
             client_id: None,
+            mcp_session_id: None,
             lineage: vec![],
             host_id: self.host_id,
             created_at: chrono::Utc::now().to_string(),

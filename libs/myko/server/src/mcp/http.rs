@@ -63,7 +63,6 @@ pub async fn handle_post(
     };
 
     let filter = filter_from_head(&head);
-    let executor = Executor::InProcess(ctx);
 
     // Parse the request once so we can both dispatch it and observe the
     // initialize lifecycle event before sending the response.
@@ -77,6 +76,14 @@ pub async fn handle_post(
         Some(Uuid::new_v4().to_string())
     } else {
         head.header(MCP_SESSION_ID_HEADER).map(|s| s.to_string())
+    };
+
+    // Carry the Mcp-Session-Id into the executor so command handlers
+    // receive it via `RequestContext::mcp_session_id` and can identify
+    // the HTTP-MCP caller without a `client_id`.
+    let executor = Executor::InProcess {
+        ctx,
+        caller_session_id: assigned_session_id.as_deref().map(Arc::from),
     };
 
     let response: McpResponse = match parsed {
