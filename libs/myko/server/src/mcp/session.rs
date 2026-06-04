@@ -89,6 +89,14 @@ impl McpSessionChannel {
             Err(_) => return false,
         };
         let frame = format!("event: message\ndata: {body}\n\n");
+        self.send_raw_frame(frame)
+    }
+
+    /// Push a pre-formatted SSE frame (already including `event:`,
+    /// `data:`, and the trailing `\n\n`) onto the stream. Used by
+    /// drainers that buffer frames as strings rather than as
+    /// JSON-RPC values. Returns `false` if the receiver was dropped.
+    pub fn send_raw_frame(&self, frame: String) -> bool {
         self.tx.send(frame).is_ok()
     }
 }

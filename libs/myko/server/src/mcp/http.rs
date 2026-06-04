@@ -147,15 +147,27 @@ pub async fn handle_post(
     Ok(())
 }
 
-/// Stream the POST's JSON-RPC response as the first SSE event, then keep
-/// the connection open as a push channel for the session for as long as
-/// the client keeps reading. Per Streamable HTTP transport, the client
-/// MUST treat subsequent events as additional server-initiated messages
-/// for this session.
+/// Stream the POST's JSON-RPC response as the first SSE event, then
+/// drain any session-addressed frames the observer queued during this
+/// request, then end the stream. Per the Streamable HTTP transport
+/// spec, the SSE response MUST consist of a single response event
+/// followed by zero or more related notifications, and then end —
+/// this is *not* a persistent push channel (use `GET /myko/mcp` for
+/// that). The previous select!-loop keepalive design held the
+/// connection open server-side after the client had closed it,
+/// causing race-y push delivery into a dead mpsc.
 ///
-/// Registers an `McpSessionChannel` with the observer for the lifetime of
-/// this stream so push consumers (e.g. marshal-daemon's push loop) can
-/// route notifications via it, then unregisters via `Ended` on close.
+/// Flow:
+/// 1. Write SSE headers (incl. Mcp-Session-Id).
+/// 2. Fire `SseConnected` *before* writing the response — gives the
+///    observer a synchronous chance to drain its pending-push buffer
+///    for this session into the channel's mpsc.
+/// 3. Write the JSON-RPC response event.
+/// 4. Drain the channel's mpsc (try_recv until empty) so any frames
+///    queued by the observer in step 2 OR by a concurrent push loop
+///    tick are flushed to the wire before close.
+/// 5. Fire `Ended` so the observer can deregister the channel.
+/// 6. Close the connection.
 async fn respond_sse(
     mut stream: TcpStream,
     response: McpResponse,
@@ -167,8 +179,6 @@ async fn respond_sse(
         None => return Ok(()),
     };
 
-    // SSE response head — include Mcp-Session-Id so initialize-via-SSE
-    // works the same as initialize-via-JSON.
     let head_out = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: text/event-stream\r\n\
@@ -184,18 +194,9 @@ async fn respond_sse(
         return Ok(());
     }
 
-    // First event: the JSON-RPC response to the POST. Same shape an
-    // SSE-only client would see when reading from `GET /myko/mcp`.
-    let resp_body = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-    let resp_frame = format!("event: message\ndata: {resp_body}\n\n");
-    if stream.write_all(resp_frame.as_bytes()).await.is_err()
-        || stream.flush().await.is_err()
-    {
-        return Ok(());
-    }
-
-    // Register a push channel for this session so further notifications
-    // ride this same stream until the client closes it.
+    // Register the per-request channel before writing the response so
+    // any concurrent push (or an observer-driven buffer drain) can
+    // enqueue frames that will be flushed in step 4.
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     if let Some(obs) = observer.as_ref() {
         obs.on_session_event(McpSessionEvent::SseConnected {
@@ -203,32 +204,22 @@ async fn respond_sse(
             channel: Arc::new(McpSessionChannel::new(tx)),
         });
     }
-    // (else tx was moved into the channel above; nothing to drop here.)
 
-    let mut keepalive = tokio::time::interval(SSE_KEEPALIVE);
-    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // First event: the JSON-RPC response to the POST.
+    let resp_body = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+    let resp_frame = format!("event: message\ndata: {resp_body}\n\n");
+    let _ = stream.write_all(resp_frame.as_bytes()).await;
+    let _ = stream.flush().await;
 
-    loop {
-        tokio::select! {
-            _ = keepalive.tick() => {
-                if stream.write_all(b": keepalive\n\n").await.is_err()
-                    || stream.flush().await.is_err()
-                {
-                    break;
-                }
-            }
-            frame = rx.recv() => {
-                match frame {
-                    Some(f) => {
-                        if stream.write_all(f.as_bytes()).await.is_err()
-                            || stream.flush().await.is_err()
-                        {
-                            break;
-                        }
-                    }
-                    None => break,
-                }
-            }
+    // Drain everything currently queued. Uses try_recv in a tight loop
+    // — anything enqueued strictly after this point is racing with the
+    // upcoming Ended fire and will land in the pending buffer for the
+    // recipient's next POST. The window is tens of microseconds.
+    while let Ok(frame) = rx.try_recv() {
+        if stream.write_all(frame.as_bytes()).await.is_err()
+            || stream.flush().await.is_err()
+        {
+            break;
         }
     }
 
