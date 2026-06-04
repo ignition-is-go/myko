@@ -121,6 +121,21 @@ pub async fn handle_post(
         });
     }
 
+    // Streamable HTTP transport (MCP 2025-03-26): if the client signals
+    // it can consume `text/event-stream` responses to POSTs, upgrade the
+    // response into a long-lived SSE stream. The first SSE event carries
+    // the JSON-RPC response; the connection then stays open and the
+    // server pushes any further session-addressed notifications onto it.
+    // This is the right shape for clients (e.g. Claude Code 2.1.x) that
+    // don't open a separate `GET /myko/mcp` SSE channel — without it the
+    // server has no transport for `notifications/*` to the client AND no
+    // hard-liveness signal (POSTs close per-request).
+    let accept = head.header("Accept").unwrap_or("");
+    let wants_sse = accept.contains("text/event-stream");
+    if wants_sse && assigned_session_id.is_some() {
+        return respond_sse(stream, response, assigned_session_id, observer).await;
+    }
+
     let body_out = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
     let mut extra_headers: Vec<(&str, &str)> = vec![("Content-Type", "application/json")];
     if let Some(sid) = assigned_session_id.as_deref() {
@@ -129,6 +144,97 @@ pub async fn handle_post(
     let write_result = write_full(&mut stream, 200, "OK", &extra_headers, &body_out).await;
     shutdown_cleanly(stream).await;
     write_result?;
+    Ok(())
+}
+
+/// Stream the POST's JSON-RPC response as the first SSE event, then keep
+/// the connection open as a push channel for the session for as long as
+/// the client keeps reading. Per Streamable HTTP transport, the client
+/// MUST treat subsequent events as additional server-initiated messages
+/// for this session.
+///
+/// Registers an `McpSessionChannel` with the observer for the lifetime of
+/// this stream so push consumers (e.g. marshal-daemon's push loop) can
+/// route notifications via it, then unregisters via `Ended` on close.
+async fn respond_sse(
+    mut stream: TcpStream,
+    response: McpResponse,
+    assigned_session_id: Option<String>,
+    observer: Option<Arc<dyn McpSessionObserver>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let sid = match assigned_session_id {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+
+    // SSE response head — include Mcp-Session-Id so initialize-via-SSE
+    // works the same as initialize-via-JSON.
+    let head_out = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/event-stream\r\n\
+         Cache-Control: no-cache\r\n\
+         Connection: keep-alive\r\n\
+         X-Accel-Buffering: no\r\n\
+         Mcp-Session-Id: {sid}\r\n\
+         \r\n"
+    );
+    if stream.write_all(head_out.as_bytes()).await.is_err()
+        || stream.flush().await.is_err()
+    {
+        return Ok(());
+    }
+
+    // First event: the JSON-RPC response to the POST. Same shape an
+    // SSE-only client would see when reading from `GET /myko/mcp`.
+    let resp_body = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+    let resp_frame = format!("event: message\ndata: {resp_body}\n\n");
+    if stream.write_all(resp_frame.as_bytes()).await.is_err()
+        || stream.flush().await.is_err()
+    {
+        return Ok(());
+    }
+
+    // Register a push channel for this session so further notifications
+    // ride this same stream until the client closes it.
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    if let Some(obs) = observer.as_ref() {
+        obs.on_session_event(McpSessionEvent::SseConnected {
+            session_id: sid.clone(),
+            channel: Arc::new(McpSessionChannel::new(tx)),
+        });
+    }
+    // (else tx was moved into the channel above; nothing to drop here.)
+
+    let mut keepalive = tokio::time::interval(SSE_KEEPALIVE);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            _ = keepalive.tick() => {
+                if stream.write_all(b": keepalive\n\n").await.is_err()
+                    || stream.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+            frame = rx.recv() => {
+                match frame {
+                    Some(f) => {
+                        if stream.write_all(f.as_bytes()).await.is_err()
+                            || stream.flush().await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    if let Some(obs) = observer {
+        obs.on_session_event(McpSessionEvent::Ended { session_id: sid });
+    }
     Ok(())
 }
 
