@@ -46,8 +46,12 @@ pub mod exec;
 pub mod filter;
 pub mod http;
 mod server;
+pub mod session;
 mod types;
 pub mod ws;
 
 pub use server::McpServer;
+pub use session::{
+    ClientInfo, McpSessionChannel, McpSessionEvent, McpSessionObserver, SharedObserver,
+};
 pub use types::*;

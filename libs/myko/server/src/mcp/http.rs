@@ -7,8 +7,9 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    time::sleep,
+    sync::mpsc,
 };
+use uuid::Uuid;
 
 use super::{
     dispatch::{self, ServerInfo},
@@ -17,6 +18,7 @@ use super::{
         CALLABLE_ALLOW_HEADER, CALLABLE_DENY_HEADER, ClientFilters, VISIBILITY_ALLOW_HEADER,
         VISIBILITY_DENY_HEADER,
     },
+    session::{ClientInfo, McpSessionChannel, McpSessionEvent, McpSessionObserver},
     types::{McpError, McpRequest, McpResponse},
 };
 use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
@@ -27,12 +29,17 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 /// SSE keepalive comment interval.
 const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 
+/// Streamable HTTP transport session correlator header. Server assigns on
+/// `initialize` response; client echoes on every subsequent request.
+pub const MCP_SESSION_ID_HEADER: &str = "Mcp-Session-Id";
+
 /// Handle `POST /myko/mcp`.
 pub async fn handle_post(
     mut stream: TcpStream,
     ctx: Arc<CellServerCtx>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
+    observer: Option<Arc<dyn McpSessionObserver>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content_length: usize = head
         .header("Content-Length")
@@ -58,10 +65,22 @@ pub async fn handle_post(
     let filter = filter_from_head(&head);
     let executor = Executor::InProcess(ctx);
 
-    let response: McpResponse = match serde_json::from_slice::<McpRequest>(&body) {
+    // Parse the request once so we can both dispatch it and observe the
+    // initialize lifecycle event before sending the response.
+    let parsed = serde_json::from_slice::<McpRequest>(&body);
+
+    // Identity assignment: on initialize, mint a new Mcp-Session-Id and
+    // return it as a response header. On every other request the client
+    // echoes a previously-assigned id; pass it through unchanged.
+    let is_initialize = matches!(&parsed, Ok(req) if req.method == "initialize");
+    let assigned_session_id: Option<String> = if is_initialize {
+        Some(Uuid::new_v4().to_string())
+    } else {
+        head.header(MCP_SESSION_ID_HEADER).map(|s| s.to_string())
+    };
+
+    let response: McpResponse = match parsed {
         Ok(req) => {
-            // Notifications (no id, no response expected) get an empty 204
-            // body anyway — MCP HTTP keeps the request/response shape.
             match dispatch::handle_request(req, &filter, &executor, &server_info).await {
                 Some(r) => r,
                 None => McpResponse::success(Value::Null, Value::Null),
@@ -70,47 +89,117 @@ pub async fn handle_post(
         Err(e) => McpResponse::error(Value::Null, McpError::parse_error(e.to_string())),
     };
 
-    let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
-    let write_result = write_full(
-        &mut stream,
-        200,
-        "OK",
-        &[("Content-Type", "application/json")],
-        &body,
-    )
-    .await;
+    // Fire the observer after the response shape is decided but before the
+    // bytes are flushed — gives downstream code (e.g. marshal-daemon) a
+    // chance to materialise per-session state synchronously, so the very
+    // next request from this client sees it in the registry.
+    if is_initialize {
+        if let (Some(sid), Some(observer)) = (&assigned_session_id, &observer) {
+            let client_info = extract_client_info(&body);
+            observer.on_session_event(McpSessionEvent::Started {
+                session_id: sid.clone(),
+                client_info,
+                user_agent: head.header("User-Agent").map(|s| s.to_string()),
+            });
+        }
+    }
+
+    let body_out = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
+    let mut extra_headers: Vec<(&str, &str)> = vec![("Content-Type", "application/json")];
+    if let Some(sid) = assigned_session_id.as_deref() {
+        extra_headers.push((MCP_SESSION_ID_HEADER, sid));
+    }
+    let write_result = write_full(&mut stream, 200, "OK", &extra_headers, &body_out).await;
     shutdown_cleanly(stream).await;
     write_result?;
     Ok(())
 }
 
+/// Best-effort: pull `clientInfo` out of an initialize request body. Returns
+/// `None` if the body isn't a parseable initialize.
+fn extract_client_info(body: &[u8]) -> Option<ClientInfo> {
+    let v: Value = serde_json::from_slice(body).ok()?;
+    let ci = v.get("params")?.get("clientInfo")?;
+    Some(ClientInfo {
+        name: ci.get("name")?.as_str()?.to_string(),
+        version: ci.get("version").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        title: ci.get("title").and_then(|x| x.as_str()).map(|s| s.to_string()),
+    })
+}
+
 /// Handle `GET /myko/mcp` with `Accept: text/event-stream`.
 ///
-/// v1: writes the SSE response head and emits a keepalive comment every
-/// 15 s. No notifications are pushed yet — reactive query → MCP
-/// notification wiring is future work.
+/// Keeps the SSE channel open and forwards JSON-RPC notifications
+/// addressed to this session into the stream. The session is identified
+/// by the `Mcp-Session-Id` header the client echoes from its earlier
+/// `initialize` response; clients that GET the SSE without first POSTing
+/// `initialize` get an anonymous keepalive-only stream.
 pub async fn handle_sse(
     mut stream: TcpStream,
     _ctx: Arc<CellServerCtx>,
-    _head: HttpRequestHead,
+    head: HttpRequestHead,
+    observer: Option<Arc<dyn McpSessionObserver>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let head = "HTTP/1.1 200 OK\r\n\
-                Content-Type: text/event-stream\r\n\
-                Cache-Control: no-cache\r\n\
-                Connection: keep-alive\r\n\
-                X-Accel-Buffering: no\r\n\
-                \r\n";
-    stream.write_all(head.as_bytes()).await?;
+    let session_id = head.header(MCP_SESSION_ID_HEADER).map(|s| s.to_string());
+    let response_head = "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/event-stream\r\n\
+                         Cache-Control: no-cache\r\n\
+                         Connection: keep-alive\r\n\
+                         X-Accel-Buffering: no\r\n\
+                         \r\n";
+    stream.write_all(response_head.as_bytes()).await?;
     stream.flush().await?;
 
+    // Push sink: observers hold the channel and `send_notification` into
+    // it; this loop drains it onto the wire. Unbounded so observers
+    // running synchronous code (the trait is sync) never block — if a
+    // misbehaving client stops draining, the receiver buffer will grow
+    // and the keepalive write below will eventually fail, breaking the
+    // loop and dropping the channel.
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    if let (Some(sid), Some(obs)) = (session_id.as_ref(), observer.as_ref()) {
+        obs.on_session_event(McpSessionEvent::SseConnected {
+            session_id: sid.clone(),
+            channel: Arc::new(McpSessionChannel::new(tx)),
+        });
+    }
+    // Drop our local end so when the observer-held channel goes away the
+    // receiver closes cleanly. (No-op if no observer was registered —
+    // tx was just moved into the McpSessionChannel above.)
+
+    let mut keepalive = tokio::time::interval(SSE_KEEPALIVE);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
-        sleep(SSE_KEEPALIVE).await;
-        if stream.write_all(b": keepalive\n\n").await.is_err() {
-            break;
+        tokio::select! {
+            _ = keepalive.tick() => {
+                if stream.write_all(b": keepalive\n\n").await.is_err()
+                    || stream.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+            frame = rx.recv() => {
+                match frame {
+                    Some(f) => {
+                        if stream.write_all(f.as_bytes()).await.is_err()
+                            || stream.flush().await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    None => break, // sender side dropped
+                }
+            }
         }
-        if stream.flush().await.is_err() {
-            break;
-        }
+    }
+
+    // SSE channel closed — best-effort `Ended` event. Clients that go
+    // away without ever opening an SSE leave their session entity in
+    // place to be reaped by an external sweeper; this only fires for
+    // sessions that *did* open the stream.
+    if let (Some(sid), Some(obs)) = (session_id, observer) {
+        obs.on_session_event(McpSessionEvent::Ended { session_id: sid });
     }
 
     Ok(())

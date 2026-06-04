@@ -222,6 +222,10 @@ pub struct CellServer {
     /// Set via [`CellServerBuilder::with_server_info`]; defaults to
     /// `ServerInfo::default()`.
     server_info: Arc<mcp::dispatch::ServerInfo>,
+    /// Optional observer fired on every MCP HTTP session lifecycle event.
+    /// Set via [`CellServer::set_mcp_session_observer`] after `build()` so
+    /// the observer can capture an `Arc<CellServerCtx>` for ctx access.
+    mcp_session_observer: std::sync::Mutex<Option<mcp::SharedObserver>>,
     /// Sender for local+replicated event fan-out to saga runtime.
     saga_event_tx: flume::Sender<MEvent>,
     /// Receiver consumed when saga runtime starts.
@@ -328,6 +332,7 @@ impl CellServer {
             peer_clients,
             after_init: std::sync::Mutex::new(None),
             server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
+            mcp_session_observer: std::sync::Mutex::new(None),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -367,6 +372,24 @@ impl CellServer {
     /// response.
     pub fn server_info(&self) -> Arc<mcp::dispatch::ServerInfo> {
         self.server_info.clone()
+    }
+
+    /// Register an [`McpSessionObserver`](mcp::McpSessionObserver) to
+    /// observe HTTP MCP session lifecycle events. Fired synchronously on
+    /// each `initialize` (before the response is flushed) and on the SSE
+    /// channel close so downstream code can materialise / tear down
+    /// per-session state in the registry.
+    ///
+    /// Called on a built `CellServer` so the observer can capture an
+    /// `Arc<CellServerCtx>` (the builder doesn't have one yet).
+    pub fn set_mcp_session_observer(
+        &self,
+        observer: impl mcp::McpSessionObserver + 'static,
+    ) {
+        *self
+            .mcp_session_observer
+            .lock()
+            .expect("mcp_session_observer mutex poisoned") = Some(Arc::new(observer));
     }
 
     /// Get a server context for module use.
@@ -682,9 +705,16 @@ impl CellServer {
 
             let ctx = Arc::new(self.ctx());
             let server_info = self.server_info.clone();
+            let observer = self
+                .mcp_session_observer
+                .lock()
+                .expect("mcp_session_observer mutex poisoned")
+                .clone();
 
             tokio::spawn(async move {
-                if let Err(e) = router::route_connection(stream, addr, ctx, server_info).await {
+                if let Err(e) =
+                    router::route_connection(stream, addr, ctx, server_info, observer).await
+                {
                     log::error!("Connection error from {}: {}", addr, e);
                 }
             });

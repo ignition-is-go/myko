@@ -147,6 +147,7 @@ pub async fn route_connection(
     addr: SocketAddr,
     ctx: Arc<CellServerCtx>,
     server_info: Arc<ServerInfo>,
+    mcp_session_observer: Option<mcp::SharedObserver>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -180,9 +181,11 @@ pub async fn route_connection(
             handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp).await
         }
         ("GET", "/myko/mcp") if head.wants_event_stream() => {
-            mcp::http::handle_sse(stream, ctx, head).await
+            mcp::http::handle_sse(stream, ctx, head, mcp_session_observer).await
         }
-        ("POST", "/myko/mcp") => mcp::http::handle_post(stream, ctx, server_info, head).await,
+        ("POST", "/myko/mcp") => {
+            mcp::http::handle_post(stream, ctx, server_info, head, mcp_session_observer).await
+        }
         ("GET", "/myko/mcp") => {
             // No SSE accept, no WS upgrade — caller probably wants a quick
             // status check or hit the URL in a browser.
