@@ -149,6 +149,7 @@ pub async fn route_connection(
     server_info: Arc<ServerInfo>,
     mcp_session_observer: Option<mcp::SharedObserver>,
     custom_mcp_registry: mcp::CustomMcpRegistry,
+    custom_http_registry: crate::custom_http::CustomHttpRegistry,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -210,12 +211,82 @@ pub async fn route_connection(
             shutdown_cleanly(stream).await;
             result.map_err(Into::into)
         }
+        ("POST", p) if custom_http_registry.get(p).is_some() => {
+            let handler = custom_http_registry
+                .get(p)
+                .expect("guard above confirmed a handler is registered");
+            let query = head
+                .path
+                .split_once('?')
+                .map(|(_, q)| q.to_string())
+                .unwrap_or_default();
+            let body = match read_request_body(&mut stream, &head).await {
+                Ok(b) => b,
+                Err(e) => {
+                    log::debug!("custom-http body read error from {}: {}", addr, e);
+                    let _ = write_status(&mut stream, 400, "Bad Request").await;
+                    shutdown_cleanly(stream).await;
+                    return Ok(());
+                }
+            };
+            let req = crate::custom_http::CustomHttpRequest {
+                method: head.method.clone(),
+                path: p.to_string(),
+                query,
+                body,
+                ctx,
+            };
+            let resp = handler(req);
+            let result = write_full(
+                &mut stream,
+                resp.status,
+                "OK",
+                &[("Content-Type", resp.content_type.as_str())],
+                resp.body.as_bytes(),
+            )
+            .await;
+            shutdown_cleanly(stream).await;
+            result.map_err(Into::into)
+        }
         _ => {
             let _ = write_status(&mut stream, 404, "Not Found").await;
             shutdown_cleanly(stream).await;
             Ok(())
         }
     }
+}
+
+/// Read a request body using Content-Length + any bytes already buffered
+/// past the header terminator. Caps at a generous 1 MiB — hook payloads
+/// are small.
+async fn read_request_body(
+    stream: &mut TcpStream,
+    head: &HttpRequestHead,
+) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    const MAX: usize = 1024 * 1024;
+    let content_length: usize = head
+        .header("Content-Length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+        .min(MAX);
+    let mut body = head.leftover_body.clone();
+    if body.len() >= content_length {
+        body.truncate(content_length);
+        return Ok(body);
+    }
+    let mut needed = content_length - body.len();
+    let mut buf = [0u8; 4096];
+    while needed > 0 {
+        let take = needed.min(buf.len());
+        let n = stream.read(&mut buf[..take]).await?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&buf[..n]);
+        needed -= n;
+    }
+    Ok(body)
 }
 
 enum WsTarget {

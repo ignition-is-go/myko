@@ -9,6 +9,7 @@
 //!
 //! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko::server`.
 
+pub mod custom_http;
 pub mod mcp;
 pub mod peer_persister;
 pub mod peer_registry;
@@ -233,6 +234,11 @@ pub struct CellServer {
     /// [`CellServer::register_custom_mcp_resource`] persist for the
     /// server's lifetime.
     custom_mcp_registry: mcp::CustomMcpRegistry,
+    /// Registry of custom plain-HTTP routes (e.g. marshal's `/hook/*`
+    /// endpoints). Consulted by the router for POSTs that don't match a
+    /// built-in route. Registrations via
+    /// [`CellServer::register_custom_http_route`].
+    custom_http_registry: custom_http::CustomHttpRegistry,
     /// Sender for local+replicated event fan-out to saga runtime.
     saga_event_tx: flume::Sender<MEvent>,
     /// Receiver consumed when saga runtime starts.
@@ -341,6 +347,7 @@ impl CellServer {
             server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
             mcp_session_observer: std::sync::Mutex::new(None),
             custom_mcp_registry: mcp::CustomMcpRegistry::new(),
+            custom_http_registry: custom_http::CustomHttpRegistry::new(),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -406,6 +413,18 @@ impl CellServer {
     /// in a loop.
     pub fn custom_mcp_registry(&self) -> &mcp::CustomMcpRegistry {
         &self.custom_mcp_registry
+    }
+
+    /// Register a custom plain-HTTP route handler at an exact path (e.g.
+    /// `/hook/session-start`). The router invokes it for POSTs to that
+    /// path that don't match a built-in route, handing it the request
+    /// body + `CellServerCtx` and writing back its `text/plain` response.
+    pub fn register_custom_http_route(
+        &self,
+        path: impl Into<String>,
+        handler: custom_http::CustomHttpHandler,
+    ) {
+        self.custom_http_registry.register(path, handler);
     }
 
     /// Register a curated MCP tool that surfaces alongside the
@@ -743,6 +762,7 @@ impl CellServer {
                 .expect("mcp_session_observer mutex poisoned")
                 .clone();
             let custom_registry = self.custom_mcp_registry.clone();
+            let custom_http = self.custom_http_registry.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = router::route_connection(
@@ -752,6 +772,7 @@ impl CellServer {
                     server_info,
                     observer,
                     custom_registry,
+                    custom_http,
                 )
                 .await
                 {
