@@ -296,20 +296,20 @@ async fn execute_tool(executor: &Executor, tool_name: &str, args: Value) -> Resu
     // Curated tools win over the auto-derived surface — a downstream
     // server can register `send_message` without colliding with the
     // auto-derived `command_SendMessage`.
-    if let Some(registry) = executor.custom_registry() {
-        if let Some(tool) = registry.tool(tool_name) {
-            let ctx = executor.server_ctx().ok_or_else(|| {
-                "Custom tools require in-process executor (no server ctx)".to_string()
-            })?;
-            let tx: Arc<str> = Uuid::new_v4().to_string().into();
-            let mut req = RequestContext::internal(tx, ctx.host_id, "mcp");
-            if let Some(sid) = executor.caller_session_id() {
-                req = req.with_mcp_session_id(sid.clone());
-            }
-            let cmd_id: Arc<str> = Arc::from(tool.name.as_str());
-            let cmd_ctx = CommandContext::new(cmd_id, Arc::new(req), ctx.clone());
-            return (tool.handler)(args, cmd_ctx);
+    if let Some(registry) = executor.custom_registry()
+        && let Some(tool) = registry.tool(tool_name)
+    {
+        let ctx = executor.server_ctx().ok_or_else(|| {
+            "Custom tools require in-process executor (no server ctx)".to_string()
+        })?;
+        let tx: Arc<str> = Uuid::new_v4().to_string().into();
+        let mut req = RequestContext::internal(tx, ctx.host_id, "mcp");
+        if let Some(sid) = executor.caller_session_id() {
+            req = req.with_mcp_session_id(sid.clone());
         }
+        let cmd_id: Arc<str> = Arc::from(tool.name.as_str());
+        let cmd_ctx = CommandContext::new(cmd_id, Arc::new(req), ctx.clone());
+        return (tool.handler)(args, cmd_ctx);
     }
     // Accept both the new `kind_Id` (advertised) and legacy `kind:Id` forms.
     // See NOTE(ts) in handle_tools_list above.
@@ -431,51 +431,51 @@ fn handle_resources_read(
     // Curated resources (any non-`myko://schema/...` URI) dispatch
     // through the registry. The handler receives the URI verbatim and
     // is responsible for parsing query params.
-    if let Some(registry) = executor.custom_registry() {
-        if let Some(r) = registry.resource(uri) {
-            if !filter.tool_visible(&r.name) {
-                return McpResponse::error(
-                    id,
-                    McpError {
-                        code: McpError::INVALID_PARAMS,
-                        message: format!("Resource not accessible: {}", uri),
-                        data: None,
-                    },
-                );
-            }
-            let Some(ctx) = executor.server_ctx() else {
-                return McpResponse::error(
-                    id,
-                    McpError::invalid_params(
-                        "Custom resources require in-process executor (no server ctx)",
-                    ),
-                );
-            };
-            let res_ctx = super::custom::CustomResourceContext {
-                ctx: ctx.clone(),
-                caller_session_id: executor.caller_session_id().cloned(),
-            };
-            return match (r.handler)(uri, res_ctx) {
-                Ok(text) => McpResponse::success(
-                    id,
-                    json!({
-                        "contents": [{
-                            "uri": uri,
-                            "mimeType": r.mime_type,
-                            "text": text,
-                        }]
-                    }),
-                ),
-                Err(message) => McpResponse::error(
-                    id,
-                    McpError {
-                        code: McpError::INVALID_PARAMS,
-                        message,
-                        data: None,
-                    },
-                ),
-            };
+    if let Some(registry) = executor.custom_registry()
+        && let Some(r) = registry.resource(uri)
+    {
+        if !filter.tool_visible(&r.name) {
+            return McpResponse::error(
+                id,
+                McpError {
+                    code: McpError::INVALID_PARAMS,
+                    message: format!("Resource not accessible: {}", uri),
+                    data: None,
+                },
+            );
         }
+        let Some(ctx) = executor.server_ctx() else {
+            return McpResponse::error(
+                id,
+                McpError::invalid_params(
+                    "Custom resources require in-process executor (no server ctx)",
+                ),
+            );
+        };
+        let res_ctx = super::custom::CustomResourceContext {
+            ctx: ctx.clone(),
+            caller_session_id: executor.caller_session_id().cloned(),
+        };
+        return match (r.handler)(uri, res_ctx) {
+            Ok(text) => McpResponse::success(
+                id,
+                json!({
+                    "contents": [{
+                        "uri": uri,
+                        "mimeType": r.mime_type,
+                        "text": text,
+                    }]
+                }),
+            ),
+            Err(message) => McpResponse::error(
+                id,
+                McpError {
+                    code: McpError::INVALID_PARAMS,
+                    message,
+                    data: None,
+                },
+            ),
+        };
     }
 
     if let Some(path) = uri.strip_prefix("myko://schema/") {
