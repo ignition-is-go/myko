@@ -634,6 +634,10 @@ impl CellServer {
         // log spam that was dominating I/O during loads.
         myko::server::report_cache_stats::start_periodic_logger();
 
+        // Entity-SET summary thread. Replaces the per-`set` "[entity] SET ..."
+        // debug spam (Pulse SETs dominate under pulse-heavy workloads).
+        myko::server::entity_set_stats::start_periodic_logger();
+
         // Per-search summary thread. One log line per window listing each
         // search that completed (entity_type, result count, elapsed).
         myko::search::search_stats::start_periodic_logger();

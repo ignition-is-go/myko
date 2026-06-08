@@ -1368,7 +1368,11 @@ impl WsHandler {
                         .ok()
                         .and_then(|mut map| map.remove(&resp.tx));
                     if let Some((command_id, started)) = correlated {
-                        log::debug!(
+                        // Success-path per-command roundtrip detail: fires once
+                        // per correlated command response (ExecTargetAction etc.),
+                        // tens of thousands per second under load. Keep at trace;
+                        // the unmatched/error paths below stay at warn.
+                        log::trace!(
                             "Client command response matched outbound command client={} tx={} command_id={} roundtrip_ms={} active_subscriptions={}",
                             session.client_id,
                             resp.tx,
