@@ -48,6 +48,8 @@ httparse = "1.9"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
-default = []
+default = ["profiling"]
+# Forward CPU profiling into myko-core. Drop with --no-default-features for lean prod.
+profiling = ["myko/profiling"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']

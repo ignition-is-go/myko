@@ -15,6 +15,7 @@
 pub mod client_registry;
 mod client_session;
 mod context;
+pub mod entity_set_stats;
 mod handler_registry;
 pub mod history_replay;
 pub mod persister;
