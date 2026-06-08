@@ -297,3 +297,5 @@ mod tests {
         let _: StopProfileOutput = serde_json::from_value(rv).unwrap();
     }
 }
+
+crate::register_ts_export!(StopProfileOutput);
