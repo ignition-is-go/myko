@@ -118,7 +118,16 @@ impl WasmSocket {
 
         // onerror
         let on_error = Closure::wrap(Box::new(move |e: ErrorEvent| {
-            error!("WasmSocket: WebSocket error: {:?}", e.message());
+            // NOTE: `ErrorEvent::message()` calls the JS `.message` getter, which is
+            // `undefined` on a bare WebSocket error event. web_sys marshals the result
+            // straight into wasm, so `undefined` panics in `passStringToWasm0`
+            // ("Cannot read properties of undefined (reading 'length')") and loops on
+            // every reconnect attempt. Read it defensively instead.
+            let msg = js_sys::Reflect::get(e.as_ref(), &wasm_bindgen::JsValue::from_str("message"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            error!("WasmSocket: WebSocket error: {msg}");
         }) as Box<dyn FnMut(ErrorEvent)>);
 
         ws.set_onerror(Some(on_error.as_ref().unchecked_ref::<js_sys::Function>()));
