@@ -6,7 +6,6 @@
 //! the `profiling` feature and native targets; otherwise the commands return a
 //! "profiling not enabled" error.
 
-#[allow(unused_imports)]
 use crate::command::{CommandContext, CommandError, CommandHandler};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
@@ -29,7 +28,7 @@ mod imp {
 
     /// Build and store a profiler guard. Errs if one is already running.
     pub(super) fn start(frequency_hz: u32) -> Result<(), String> {
-        let mut guard_slot = slot().lock().unwrap();
+        let mut guard_slot = slot().lock().unwrap_or_else(|e| e.into_inner());
         if guard_slot.is_some() {
             return Err("a profile is already running; call StopProfile first".to_string());
         }
@@ -50,7 +49,7 @@ mod imp {
     pub(super) fn stop() -> Result<super::StopProfileOutput, String> {
         let active = slot()
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .take()
             .ok_or_else(|| "no active profile to stop".to_string())?;
         let report = active
@@ -171,6 +170,74 @@ pub fn stop_profile() -> Result<StopProfileOutput, String> {
     imp::stop()
 }
 
+/// Default sampling frequency when the caller does not specify one.
+pub const DEFAULT_FREQUENCY_HZ: u32 = 99;
+
+/// Resolve the effective sampling frequency from an optional override.
+pub fn effective_hz(frequency_hz: Option<u32>) -> u32 {
+    frequency_hz.unwrap_or(DEFAULT_FREQUENCY_HZ)
+}
+
+/// Start CPU sampling of this server process.
+#[myko_macros::myko_command(bool)]
+pub struct StartProfile {
+    /// Sampling frequency in Hz. Defaults to 99 when omitted.
+    #[serde(default)]
+    pub frequency_hz: Option<u32>,
+}
+
+/// Stop CPU sampling and return the collected profile.
+#[myko_macros::myko_command(StopProfileOutput)]
+pub struct StopProfile {}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+impl CommandHandler for StartProfile {
+    fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
+        start_profile(effective_hz(self.frequency_hz))
+            .map(|()| true)
+            .map_err(|message| CommandError {
+                tx: ctx.tx().to_string(),
+                command_id: ctx.command_id.to_string(),
+                message,
+            })
+    }
+}
+
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "profiling")))]
+impl CommandHandler for StartProfile {
+    fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
+        Err(CommandError {
+            tx: ctx.tx().to_string(),
+            command_id: ctx.command_id.to_string(),
+            message: "profiling not enabled (build with the `profiling` feature on a native target)"
+                .to_string(),
+        })
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+impl CommandHandler for StopProfile {
+    fn execute(self, ctx: CommandContext) -> Result<StopProfileOutput, CommandError> {
+        stop_profile().map_err(|message| CommandError {
+            tx: ctx.tx().to_string(),
+            command_id: ctx.command_id.to_string(),
+            message,
+        })
+    }
+}
+
+#[cfg(not(all(not(target_arch = "wasm32"), feature = "profiling")))]
+impl CommandHandler for StopProfile {
+    fn execute(self, ctx: CommandContext) -> Result<StopProfileOutput, CommandError> {
+        Err(CommandError {
+            tx: ctx.tx().to_string(),
+            command_id: ctx.command_id.to_string(),
+            message: "profiling not enabled (build with the `profiling` feature on a native target)"
+                .to_string(),
+        })
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "profiling"))]
 mod tests {
     use super::*;
@@ -207,5 +274,26 @@ mod tests {
     fn stop_without_start_errors() {
         let _ = stop_profile();
         assert!(stop_profile().is_err(), "stop with no active profile errors");
+    }
+
+    #[test]
+    fn commands_serialize_and_default_frequency() {
+        let start = StartProfile { frequency_hz: None };
+        let v = serde_json::to_value(&start).unwrap();
+        let back: StartProfile = serde_json::from_value(v).unwrap();
+        assert_eq!(back.frequency_hz, None);
+        assert_eq!(effective_hz(back.frequency_hz), 99, "None → 99 Hz default");
+        assert_eq!(effective_hz(Some(250)), 250);
+
+        // StopProfileOutput is the declared result type and round-trips.
+        let out = StopProfileOutput {
+            folded: "a;b 3".into(),
+            svg_path: None,
+            sample_count: 3,
+            duration_ms: 10,
+            frequency_hz: 99,
+        };
+        let rv = serde_json::to_value(&out).unwrap();
+        let _: StopProfileOutput = serde_json::from_value(rv).unwrap();
     }
 }
