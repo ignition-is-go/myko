@@ -407,7 +407,7 @@ impl CellServerCtx {
             .get_or_create(entity_type)
             .insert(id.clone(), item.clone());
 
-        crate::server::entity_set_stats::record_set(&entity_type);
+        crate::server::entity_set_stats::record_set(entity_type);
 
         // Search: index searchable fields
         self.search_index.index_item(&item);
@@ -505,7 +505,7 @@ impl CellServerCtx {
 
         for entity in entities {
             let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            crate::server::entity_set_stats::record_set(&entity_type);
+            crate::server::entity_set_stats::record_set(entity_type);
             self.search_index.index_item(&item);
             entries.push((entity.id(), item.clone()));
             items.push(item);
@@ -613,7 +613,7 @@ impl CellServerCtx {
         let entity_type = item.entity_type();
         let id = item.id();
 
-        crate::server::entity_set_stats::record_set(&entity_type);
+        crate::server::entity_set_stats::record_set(entity_type);
 
         // Reduce: update store
         self.registry
@@ -664,7 +664,7 @@ impl CellServerCtx {
                 Vec::with_capacity(typed_items.len());
 
             for item in &typed_items {
-                crate::server::entity_set_stats::record_set(&entity_type);
+                crate::server::entity_set_stats::record_set(entity_type);
                 self.search_index.index_item(item);
                 entries.push((item.id(), item.clone()));
             }

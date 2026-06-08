@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn double_start_is_rejected() {
-        let _g = start_profile(997).expect("first start ok");
+        start_profile(997).expect("first start ok");
         assert!(start_profile(997).is_err(), "second concurrent start rejected");
         let _ = stop_profile();
     }
