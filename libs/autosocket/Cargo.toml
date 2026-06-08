@@ -1,6 +1,6 @@
 [package]
 name = "autosocket"
-version = "4.17.0"
+version = "4.18.0"
 edition = "2024"
 description = "Transport adapters shared by rship and myko clients"
 license = "AGPL-3.0-or-later"

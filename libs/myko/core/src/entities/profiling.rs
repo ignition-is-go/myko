@@ -57,7 +57,11 @@ mod imp {
             .report()
             .build()
             .map_err(|e| format!("failed to build report: {e}"))?;
-        Ok(render(&report, active.started.elapsed(), active.frequency_hz))
+        Ok(render(
+            &report,
+            active.started.elapsed(),
+            active.frequency_hz,
+        ))
     }
 
     /// Format folded stacks + write an SVG; assemble the output struct.
@@ -209,8 +213,9 @@ impl CommandHandler for StartProfile {
         Err(CommandError {
             tx: ctx.tx().to_string(),
             command_id: ctx.command_id.to_string(),
-            message: "profiling not enabled (build with the `profiling` feature on a native target)"
-                .to_string(),
+            message:
+                "profiling not enabled (build with the `profiling` feature on a native target)"
+                    .to_string(),
         })
     }
 }
@@ -232,8 +237,9 @@ impl CommandHandler for StopProfile {
         Err(CommandError {
             tx: ctx.tx().to_string(),
             command_id: ctx.command_id.to_string(),
-            message: "profiling not enabled (build with the `profiling` feature on a native target)"
-                .to_string(),
+            message:
+                "profiling not enabled (build with the `profiling` feature on a native target)"
+                    .to_string(),
         })
     }
 }
@@ -279,7 +285,10 @@ mod tests {
     fn double_start_is_rejected() {
         let _serial = profiler_lock();
         start_profile(997).expect("first start ok");
-        assert!(start_profile(997).is_err(), "second concurrent start rejected");
+        assert!(
+            start_profile(997).is_err(),
+            "second concurrent start rejected"
+        );
         let _ = stop_profile();
     }
 
@@ -287,7 +296,10 @@ mod tests {
     fn stop_without_start_errors() {
         let _serial = profiler_lock();
         let _ = stop_profile();
-        assert!(stop_profile().is_err(), "stop with no active profile errors");
+        assert!(
+            stop_profile().is_err(),
+            "stop with no active profile errors"
+        );
     }
 
     #[test]

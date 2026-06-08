@@ -69,7 +69,11 @@ fn emit_window() {
         .iter()
         .filter_map(|e| {
             let n = e.value().swap(0, Ordering::Relaxed);
-            if n == 0 { None } else { Some((e.key().clone(), n)) }
+            if n == 0 {
+                None
+            } else {
+                Some((e.key().clone(), n))
+            }
         })
         .collect();
     if snap.is_empty() {
