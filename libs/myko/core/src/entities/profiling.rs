@@ -241,6 +241,17 @@ impl CommandHandler for StopProfile {
 #[cfg(all(test, not(target_arch = "wasm32"), feature = "profiling"))]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// pprof exposes a single process-wide profiler, so the tests that drive it
+    /// must run serially even though cargo runs tests in parallel by default.
+    fn profiler_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        // Recover from poisoning: a panicking test still leaves the profiler usable.
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// Burns CPU so the sampler is guaranteed to collect frames.
     fn burn(iters: u64) -> u64 {
@@ -253,6 +264,7 @@ mod tests {
 
     #[test]
     fn profile_helper_collects_folded_stacks() {
+        let _serial = profiler_lock();
         let (out, report) = profile(997, || burn(50_000_000));
         assert!(out != 0, "work ran");
         assert!(report.sample_count > 0, "collected at least one sample");
@@ -265,6 +277,7 @@ mod tests {
 
     #[test]
     fn double_start_is_rejected() {
+        let _serial = profiler_lock();
         start_profile(997).expect("first start ok");
         assert!(start_profile(997).is_err(), "second concurrent start rejected");
         let _ = stop_profile();
@@ -272,6 +285,7 @@ mod tests {
 
     #[test]
     fn stop_without_start_errors() {
+        let _serial = profiler_lock();
         let _ = stop_profile();
         assert!(stop_profile().is_err(), "stop with no active profile errors");
     }
