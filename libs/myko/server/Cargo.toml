@@ -48,8 +48,9 @@ httparse = "1.9"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
-default = ["profiling"]
-# Forward CPU profiling into myko-core. Drop with --no-default-features for lean prod.
+default = []
+# Forward CPU profiling into myko-core. Opt-in (not default) so Windows/wasm
+# consumers don't pull the unix-only pprof tree; enable explicitly for dev/profiling.
 profiling = ["myko/profiling"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
