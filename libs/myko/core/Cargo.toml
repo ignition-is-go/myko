@@ -52,8 +52,13 @@ crossbeam.workspace = true
 # Native-only: rayon parallel scan over the typed search index. WASM falls
 # back to serial scan (single-threaded execution model).
 rayon = "1.10"
+
+# Unix-only deps. pprof relies on signal/pthread/ucontext APIs (via nix + libc)
+# that don't exist on Windows, so it can only build on unix — not merely
+# "native" (Windows-native would still fail to compile pprof).
+[target.'cfg(unix)'.dependencies]
 # Signal-based userspace CPU sampler (no perf_event_open → no sudo). Gated
-# behind the `profiling` feature; only compiled for native targets.
+# behind the `profiling` feature; only compiled for unix targets.
 pprof = { version = "0.14", features = ["flamegraph"], optional = true }
 
 # WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
@@ -97,7 +102,9 @@ search = []
 # `ts-export` feature forwards (see rship-entities umbrella).
 ts-export = []
 # In-process CPU profiling (StartProfile/StopProfile commands + profile() helper).
-# Pulls the native-only pprof sampler. No-op on wasm32 (dep not applicable).
+# Pulls the unix-only pprof sampler. No-op on non-unix targets (wasm32, Windows),
+# where the dep doesn't apply — enabling the feature there compiles to a stub
+# that reports "profiling not enabled" rather than failing the build.
 profiling = ["dep:pprof"]
 
 # Typegen/docgen bins need the codegen feature — declared explicitly so

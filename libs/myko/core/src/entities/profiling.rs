@@ -8,7 +8,7 @@
 
 use crate::command::{CommandContext, CommandError, CommandHandler};
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 mod imp {
     use std::sync::{Mutex, OnceLock};
     use std::time::Instant;
@@ -137,7 +137,7 @@ pub struct StopProfileOutput {
 }
 
 /// Outcome of the in-process `profile()` helper.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 pub struct ProfileReport {
     pub folded: String,
     pub svg_path: Option<String>,
@@ -146,7 +146,7 @@ pub struct ProfileReport {
 
 /// Profile a closure in-process (for unit tests / benches). Returns the
 /// closure's value alongside the collected profile.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 pub fn profile<T>(frequency_hz: u32, f: impl FnOnce() -> T) -> (T, ProfileReport) {
     start_profile(frequency_hz).expect("profile(): another profile already active");
     let value = f();
@@ -162,14 +162,14 @@ pub fn profile<T>(frequency_hz: u32, f: impl FnOnce() -> T) -> (T, ProfileReport
 }
 
 /// Start the process-wide profiler. Shared by `StartProfile` and `profile()`.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 pub fn start_profile(frequency_hz: u32) -> Result<(), String> {
     imp::start(frequency_hz)
 }
 
 /// Stop the process-wide profiler and render artifacts. Shared by `StopProfile`
 /// and `profile()`.
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 pub fn stop_profile() -> Result<StopProfileOutput, String> {
     imp::stop()
 }
@@ -194,7 +194,7 @@ pub struct StartProfile {
 #[myko_macros::myko_command(StopProfileOutput)]
 pub struct StopProfile {}
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 impl CommandHandler for StartProfile {
     fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
         start_profile(effective_hz(self.frequency_hz))
@@ -207,7 +207,7 @@ impl CommandHandler for StartProfile {
     }
 }
 
-#[cfg(not(all(not(target_arch = "wasm32"), feature = "profiling")))]
+#[cfg(not(all(unix, feature = "profiling")))]
 impl CommandHandler for StartProfile {
     fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
         Err(CommandError {
@@ -220,7 +220,7 @@ impl CommandHandler for StartProfile {
     }
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(unix, feature = "profiling"))]
 impl CommandHandler for StopProfile {
     fn execute(self, ctx: CommandContext) -> Result<StopProfileOutput, CommandError> {
         stop_profile().map_err(|message| CommandError {
@@ -231,7 +231,7 @@ impl CommandHandler for StopProfile {
     }
 }
 
-#[cfg(not(all(not(target_arch = "wasm32"), feature = "profiling")))]
+#[cfg(not(all(unix, feature = "profiling")))]
 impl CommandHandler for StopProfile {
     fn execute(self, ctx: CommandContext) -> Result<StopProfileOutput, CommandError> {
         Err(CommandError {
@@ -244,7 +244,7 @@ impl CommandHandler for StopProfile {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32"), feature = "profiling"))]
+#[cfg(all(test, unix, feature = "profiling"))]
 mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard, OnceLock};
