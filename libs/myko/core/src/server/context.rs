@@ -449,7 +449,7 @@ impl CellServerCtx {
         let id = entity.id();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
 
-        log::debug!("[entity] DEL {} id={}", entity_type, id);
+        crate::server::entity_set_stats::record_del(entity_type);
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
@@ -567,7 +567,7 @@ impl CellServerCtx {
         for entity in entities {
             let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
             let id = item.id();
-            log::debug!("[entity] DEL {} id={}", entity_type, id);
+            crate::server::entity_set_stats::record_del(entity_type);
             self.search_index.remove_entity(entity_type, &id);
             ids.push(id);
             items.push(item);
@@ -709,7 +709,7 @@ impl CellServerCtx {
         let entity_type = item.entity_type();
         let id = item.id();
 
-        log::debug!("[entity] DEL {} id={}", entity_type, id);
+        crate::server::entity_set_stats::record_del(entity_type);
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
@@ -758,7 +758,7 @@ impl CellServerCtx {
 
             for item in &typed_items {
                 let id = item.id();
-                log::debug!("[entity] DEL {} id={}", entity_type, id);
+                crate::server::entity_set_stats::record_del(entity_type);
                 self.search_index.remove_entity(entity_type, &id);
                 ids.push(id);
             }
@@ -798,6 +798,8 @@ impl CellServerCtx {
             .registry
             .get(entity_type)
             .and_then(|store| store.get(&id_arc).get());
+
+        crate::server::entity_set_stats::record_del(entity_type);
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id_arc);
@@ -948,7 +950,7 @@ impl CellServerCtx {
             let entity_type_static = op.item.entity_type();
             let entity_type: Arc<str> = entity_type_static.into();
             let id = op.item.id();
-            log::debug!("[entity] DEL {} id={}", entity_type, id);
+            crate::server::entity_set_stats::record_del(&entity_type);
             removes_by_type
                 .entry(entity_type)
                 .or_default()

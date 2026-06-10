@@ -1,13 +1,13 @@
-//! Periodic-summary entity-`SET` instrumentation.
+//! Periodic-summary entity-`SET`/`DEL` instrumentation.
 //!
-//! Replaces the per-`set` `log::debug!("[entity] SET {} id={}", ...)` lines in
-//! [`ServerContext`], which fire tens of thousands of times per second under
-//! pulse-heavy workloads (e.g. comp-engine field/cap presence pulses) and
+//! Replaces the per-`set`/`del` `log::debug!("[entity] SET|DEL {} id={}", ...)`
+//! lines in [`ServerContext`], which fire tens of thousands of times per second
+//! under pulse-heavy workloads (e.g. comp-engine field/cap presence pulses) and
 //! dominate log I/O.
 //!
-//! The hot path increments a per-entity-type atomic counter via a DashMap entry
-//! lookup; a single dedicated thread emits one summary log line every
-//! `WINDOW_MS`. Quiet windows emit nothing.
+//! The hot path increments a per-entity-type atomic counter (SET and DEL kept
+//! separate) via a DashMap entry lookup; a single dedicated thread emits one
+//! summary log line every `WINDOW_MS`. Quiet windows emit nothing.
 //!
 //! Mirrors the [`super::report_cache_stats`] pattern. To silence even the
 //! summary, set `RUST_LOG=myko::server::entity_set_stats=off`.
@@ -25,8 +25,15 @@ use dashmap::DashMap;
 
 const WINDOW_MS: u64 = 1000;
 
-fn counts() -> &'static DashMap<String, AtomicU64> {
-    static C: OnceLock<DashMap<String, AtomicU64>> = OnceLock::new();
+/// Per-entity-type counters for one window, SET and DEL tracked separately.
+#[derive(Default)]
+struct Counts {
+    set: AtomicU64,
+    del: AtomicU64,
+}
+
+fn counts() -> &'static DashMap<String, Counts> {
+    static C: OnceLock<DashMap<String, Counts>> = OnceLock::new();
     C.get_or_init(DashMap::new)
 }
 
@@ -37,6 +44,18 @@ pub fn record_set(entity_type: &str) {
     counts()
         .entry(entity_type.to_string())
         .or_default()
+        .set
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a single entity `DEL` for `entity_type`. Counted separately from
+/// `SET` so the summary distinguishes churn from removal.
+#[inline]
+pub fn record_del(entity_type: &str) {
+    counts()
+        .entry(entity_type.to_string())
+        .or_default()
+        .del
         .fetch_add(1, Ordering::Relaxed);
 }
 
@@ -65,33 +84,37 @@ fn run_loop() {
 }
 
 fn emit_window() {
-    let mut snap: Vec<(String, u64)> = counts()
+    // (entity_type, sets, dels) for every type with activity this window.
+    let mut snap: Vec<(String, u64, u64)> = counts()
         .iter()
         .filter_map(|e| {
-            let n = e.value().swap(0, Ordering::Relaxed);
-            if n == 0 {
+            let sets = e.value().set.swap(0, Ordering::Relaxed);
+            let dels = e.value().del.swap(0, Ordering::Relaxed);
+            if sets == 0 && dels == 0 {
                 None
             } else {
-                Some((e.key().clone(), n))
+                Some((e.key().clone(), sets, dels))
             }
         })
         .collect();
     if snap.is_empty() {
         return;
     }
-    // Highest-volume entity types first.
-    snap.sort_by_key(|b| std::cmp::Reverse(b.1));
-    let total: u64 = snap.iter().map(|s| s.1).sum();
+    // Highest combined volume first.
+    snap.sort_by_key(|b| std::cmp::Reverse(b.1 + b.2));
+    let set_total: u64 = snap.iter().map(|s| s.1).sum();
+    let del_total: u64 = snap.iter().map(|s| s.2).sum();
     let detail = snap
         .iter()
-        .map(|(et, n)| format!("{}={}", et, n))
+        .map(|(et, s, d)| format!("{}=set:{} del:{}", et, s, d))
         .collect::<Vec<_>>()
         .join(", ");
     log::debug!(
         target: "myko::server::entity_set_stats",
-        "[entity] SET window={}ms total={} [{}]",
+        "[entity] window={}ms set_total={} del_total={} [{}]",
         WINDOW_MS,
-        total,
+        set_total,
+        del_total,
         detail,
     );
 }
