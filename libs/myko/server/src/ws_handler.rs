@@ -13,7 +13,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use hyphae::SelectExt;
 use myko::{
@@ -43,17 +42,11 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-struct WsIngestStats {
-    counts_by_type: DashMap<Arc<str>, Arc<AtomicU64>>,
-}
-
 struct WsBenchmarkStats {
     message_count: AtomicU64,
     total_bytes: AtomicU64,
 }
 
-static WS_INGEST_STATS: OnceLock<Arc<WsIngestStats>> = OnceLock::new();
-static WS_INGEST_LOGGER_STARTED: AtomicBool = AtomicBool::new(false);
 static WS_BENCHMARK_STATS: OnceLock<Arc<WsBenchmarkStats>> = OnceLock::new();
 static WS_BENCHMARK_LOGGER_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -99,75 +92,6 @@ fn ensure_ws_benchmark_logger() {
             }
         })
         .expect("failed to spawn websocket benchmark logger thread");
-}
-
-fn ws_ingest_stats() -> Arc<WsIngestStats> {
-    WS_INGEST_STATS
-        .get_or_init(|| {
-            Arc::new(WsIngestStats {
-                counts_by_type: DashMap::new(),
-            })
-        })
-        .clone()
-}
-
-fn ensure_ws_ingest_logger() {
-    if WS_INGEST_LOGGER_STARTED
-        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        return;
-    }
-
-    let stats = ws_ingest_stats();
-    thread::Builder::new()
-        .name("ws-ingest-logger".into())
-        .spawn(move || {
-            loop {
-                thread::sleep(Duration::from_secs(1));
-
-                let mut per_type = Vec::new();
-                let mut total = 0u64;
-                for entry in &stats.counts_by_type {
-                    let count = entry.value().swap(0, Ordering::Relaxed);
-                    if count == 0 {
-                        continue;
-                    }
-                    total += count;
-                    per_type.push((entry.key().clone(), count));
-                }
-
-                if total == 0 {
-                    continue;
-                }
-
-                per_type.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                let details = per_type
-                    .into_iter()
-                    .map(|(entity_type, count)| format!("{entity_type}={count}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-
-                log::info!("WebSocket ingest last_1s total={} {}", total, details);
-            }
-        })
-        .expect("failed to spawn websocket ingest logger thread");
-}
-
-fn record_ws_ingest(events: &[MEvent]) {
-    if events.is_empty() {
-        return;
-    }
-
-    let stats = ws_ingest_stats();
-    for event in events {
-        let counter = stats
-            .counts_by_type
-            .entry(Arc::<str>::from(event.item_type.as_str()))
-            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-            .clone();
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
 }
 
 fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
@@ -342,8 +266,6 @@ impl WsHandler {
         addr: SocketAddr,
         ctx: Arc<CellServerCtx>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        ensure_ws_ingest_logger();
-
         let host_id = ctx.host_id;
 
         let (mut write, mut read) = ws_stream.split();
@@ -1203,7 +1125,6 @@ impl WsHandler {
             }
 
             MykoMessage::Event(mut event) => {
-                record_ws_ingest(std::slice::from_ref(&event));
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, host_id);
                 if let Err(e) = ctx.apply_event(event) {
@@ -1215,7 +1136,6 @@ impl WsHandler {
             }
 
             MykoMessage::EventBatch(mut events) => {
-                record_ws_ingest(&events);
                 let incoming = events.len();
                 if incoming >= 64 {
                     log::trace!(
