@@ -7,17 +7,12 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::CellServerCtx;
 // Only the native emit paths build events / convert items to values.
+use crate::{
+    command::CommandError, entities::client::ClientId, event::EventOptions, item::Eventable,
+    query::QueryParams, request::RequestContext, wire::MEvent,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{common::to_value::ToValue, wire::MEventType};
-use crate::{
-    command::CommandError,
-    entities::client::ClientId,
-    event::EventOptions,
-    item::Eventable,
-    query::QueryParams,
-    request::RequestContext,
-    wire::MEvent,
-};
 
 /// Context provided to command handlers for accessing dependencies.
 ///
