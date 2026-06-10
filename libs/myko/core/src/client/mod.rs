@@ -3,9 +3,12 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
 };
+// AtomicBool is only used by the native command-cancellation path below.
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicBool;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;

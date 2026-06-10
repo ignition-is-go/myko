@@ -438,7 +438,7 @@ where
     {
         use std::collections::HashMap;
 
-        use myko::{client::MykoClient, hyphae::Watchable};
+        use myko::client::MykoClient;
 
         let client = expect_context::<MykoClient>();
         let cell_map = client.watch_query_map(query);
