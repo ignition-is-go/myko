@@ -52,6 +52,56 @@ type AnyItemArc = Arc<dyn AnyItem>;
 type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
 type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
 
+/// Where a mutation came from. This is the single policy point for the apply
+/// pipeline's loop-safety: it determines whether a mutation should run
+/// relationship cascades and whether it should be produced to persisters/sink.
+///
+/// It replaces the scattered per-call `prevent_relationship_updates` /
+/// `prevent_persist` flag checks. During the migration, `from_options` bridges
+/// the legacy `EventOptions` flags to an `Origin`; once the dead flags are
+/// removed, callers pass an `Origin` directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// A command handler / server module emitting a new mutation here (also a
+    /// client event ingested over the WebSocket). Cascades and produces.
+    Local,
+    /// A relationship cascade product — a consequence of another mutation here.
+    Cascade,
+}
+
+impl Origin {
+    /// Bridge the legacy `EventOptions` loop-guard flag to an `Origin`.
+    ///
+    /// `prevent_relationship_updates` was set only by cascade products, so it
+    /// maps to `Cascade`; everything else is `Local`. Behavior-preserving.
+    fn from_options(options: &EventOptions) -> Origin {
+        if options.prevent_relationship_updates {
+            Origin::Cascade
+        } else {
+            Origin::Local
+        }
+    }
+
+    /// Whether this origin's mutations should run relationship cascades.
+    ///
+    /// Behavior-preserving step: only `Local` cascades; cascade products do not
+    /// descend (matching the current blanket `prevent_relationship_updates`
+    /// gate). A later fix will make `Cascade` + DEL descend transitively, which
+    /// is why this already takes the change type.
+    fn should_cascade(self, _change: MEventType) -> bool {
+        self == Origin::Local
+    }
+
+    /// Whether this origin's mutations should be produced to persisters/sink.
+    ///
+    /// Always true today: `prevent_persist` is a dead flag (never set), and
+    /// per-type durability is handled by the persister router
+    /// (`BlackholePersister`), not a per-event flag.
+    fn should_produce(self) -> bool {
+        true
+    }
+}
+
 /// Weak-ref report cache entry. The cell stays alive as long as someone is
 /// subscribed to it. When all subscribers drop, the weak ref fails to upgrade
 /// and the next request recomputes.
@@ -409,18 +459,8 @@ impl CellServerCtx {
 
         crate::server::entity_set_stats::record_set(entity_type);
 
-        // Search: index searchable fields
-        self.search_index.index_item(&item);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item, self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_set(entity)?;
-        }
+        // Search + relationships + persist.
+        self.apply_effects(&item, MEventType::SET, Origin::from_options(&options))?;
 
         Ok(())
     }
@@ -454,18 +494,8 @@ impl CellServerCtx {
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
 
-        // Search: remove from index
-        self.search_index.remove_entity(entity_type, &id);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_del(entity)?;
-        }
+        // Search + relationships + persist.
+        self.apply_effects(&item, MEventType::DEL, Origin::from_options(&options))?;
 
         log::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
@@ -514,15 +544,17 @@ impl CellServerCtx {
         // Reduce: one diff emission for the whole batch.
         store.insert_many(entries);
 
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
+        let origin = Origin::from_options(&options);
+
+        // Relationships: run cascades unless this origin must not descend.
+        if origin.should_cascade(MEventType::SET) {
             for item in &items {
                 self.relationship_manager.forward_set(item.clone(), self)?;
             }
         }
 
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
+        // Persist: produce to persisters + sink unless this origin must not.
+        if origin.should_produce() {
             for item in &items {
                 self.produce_set_dyn(item)?;
             }
@@ -576,13 +608,15 @@ impl CellServerCtx {
         // Reduce: one diff emission for the whole batch.
         store.remove_many(ids);
 
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
+        let origin = Origin::from_options(&options);
+
+        // Relationships: run cascades unless this origin must not descend.
+        if origin.should_cascade(MEventType::DEL) {
             self.relationship_manager.forward_del_batch(&items, self)?;
         }
 
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
+        // Persist: produce to persisters + sink unless this origin must not.
+        if origin.should_produce() {
             for item in &items {
                 self.produce_del_dyn(item)?;
             }
@@ -620,18 +654,8 @@ impl CellServerCtx {
             .get_or_create(entity_type)
             .insert(id.clone(), item.clone());
 
-        // Search: index searchable fields
-        self.search_index.index_item(&item);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_set_dyn(&item)?;
-        }
+        // Search + relationships + persist.
+        self.apply_effects(&item, MEventType::SET, Origin::from_options(&options))?;
 
         log::trace!("Published SET {}:{}", entity_type, id);
         Ok(())
@@ -671,13 +695,14 @@ impl CellServerCtx {
 
             store.insert_many(entries);
 
-            if !options.prevent_relationship_updates {
+            let origin = Origin::from_options(&options);
+            if origin.should_cascade(MEventType::SET) {
                 for item in &typed_items {
                     self.relationship_manager.forward_set(item.clone(), self)?;
                 }
             }
 
-            if !options.prevent_persist {
+            if origin.should_produce() {
                 for item in &typed_items {
                     self.produce_set_dyn(item)?;
                 }
@@ -714,18 +739,8 @@ impl CellServerCtx {
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id);
 
-        // Search: remove from index
-        self.search_index.remove_entity(entity_type, &id);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_del_dyn(&item)?;
-        }
+        // Search + relationships + persist.
+        self.apply_effects(&item, MEventType::DEL, Origin::from_options(&options))?;
 
         log::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
@@ -765,12 +780,13 @@ impl CellServerCtx {
 
             store.remove_many(ids);
 
-            if !options.prevent_relationship_updates {
+            let origin = Origin::from_options(&options);
+            if origin.should_cascade(MEventType::DEL) {
                 self.relationship_manager
                     .forward_del_batch(&typed_items, self)?;
             }
 
-            if !options.prevent_persist {
+            if origin.should_produce() {
                 for item in &typed_items {
                     self.produce_del_dyn(item)?;
                 }
@@ -995,14 +1011,14 @@ impl CellServerCtx {
 
         // Relationships
         for op in &sets {
-            if !op.options.prevent_relationship_updates {
+            if Origin::from_options(&op.options).should_cascade(MEventType::SET) {
                 self.relationship_manager
                     .forward_set(op.item.clone(), self)?;
             }
         }
         let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
         for op in &dels {
-            if !op.options.prevent_relationship_updates {
+            if Origin::from_options(&op.options).should_cascade(MEventType::DEL) {
                 dels_with_relationships
                     .entry(op.item.entity_type().into())
                     .or_default()
@@ -1015,12 +1031,12 @@ impl CellServerCtx {
 
         // Persist
         for op in &sets {
-            if !op.options.prevent_persist {
+            if Origin::from_options(&op.options).should_produce() {
                 self.produce_set_dyn(&op.item)?;
             }
         }
         for op in &dels {
-            if !op.options.prevent_persist {
+            if Origin::from_options(&op.options).should_produce() {
                 self.produce_del_dyn(&op.item)?;
             }
         }
@@ -1126,32 +1142,53 @@ impl CellServerCtx {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // durable backend production (private)
+    // shared post-reduce tail
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_set<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            persister.persist(event)?;
+    /// Shared post-reduce tail for a single-item mutation: search index update,
+    /// relationship cascade (gated by `origin`), and produce (gated by `origin`).
+    ///
+    /// Every single-item entry point calls this after its specialized reduce
+    /// (the typed fast path keeps its direct `Arc` store insert). Produce always
+    /// goes through the type-erased path, which is equivalent to the typed one
+    /// (`MEvent::from_item` ≡ `MEvent::set_from_value(item.to_value())`, modulo
+    /// the always-fresh `created_at`/`tx`).
+    fn apply_effects(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        // Search: index searchable fields.
+        match change {
+            MEventType::SET => self.search_index.index_item(item),
+            MEventType::DEL => self
+                .search_index
+                .remove_entity(item.entity_type(), &item.id()),
         }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            let _ = sink.send(event);
+
+        // Relationships: run cascades unless this origin must not descend.
+        if origin.should_cascade(change) {
+            match change {
+                MEventType::SET => self.relationship_manager.forward_set(item.clone(), self)?,
+                MEventType::DEL => self.relationship_manager.forward_del(item.clone(), self)?,
+            }
         }
+
+        // Persist: produce to persisters + sink unless this origin must not.
+        if origin.should_produce() {
+            match change {
+                MEventType::SET => self.produce_set_dyn(item)?,
+                MEventType::DEL => self.produce_del_dyn(item)?,
+            }
+        }
+
         Ok(())
     }
 
-    fn produce_del<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            let _ = sink.send(event);
-        }
-        Ok(())
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // durable backend production (private)
+    // ─────────────────────────────────────────────────────────────────────────
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
