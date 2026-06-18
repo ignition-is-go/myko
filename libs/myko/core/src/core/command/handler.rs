@@ -85,6 +85,9 @@ impl CommandContext {
     }
 
     /// Emit a SET event for an item with custom options.
+    // Bridges to the deprecated `ctx.set_with_options` during the migration off
+    // public `EventOptions`; the call below is intentionally allowed.
+    #[allow(deprecated)]
     pub fn emit_set_with_options<T>(
         &self,
         item: impl std::ops::Deref<Target = T>,

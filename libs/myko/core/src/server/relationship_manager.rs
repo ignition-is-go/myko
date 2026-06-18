@@ -1304,11 +1304,9 @@ mod cascade_tests {
         let (ctx, registry) = make_ctx();
 
         // root <- branch <- leaf
-        ctx.set_with_options(&make_node("root", ""), None).unwrap();
-        ctx.set_with_options(&make_node("branch", "root"), None)
-            .unwrap();
-        ctx.set_with_options(&make_node("leaf", "branch"), None)
-            .unwrap();
+        ctx.set(&make_node("root", "")).unwrap();
+        ctx.set(&make_node("branch", "root")).unwrap();
+        ctx.set(&make_node("leaf", "branch")).unwrap();
 
         assert!(exists(&registry, "root"));
         assert!(exists(&registry, "branch"));
@@ -1330,8 +1328,8 @@ mod cascade_tests {
     fn del_cascade_terminates_on_cycle() {
         let (ctx, registry) = make_ctx();
 
-        ctx.set_with_options(&make_node("a", "b"), None).unwrap();
-        ctx.set_with_options(&make_node("b", "a"), None).unwrap();
+        ctx.set(&make_node("a", "b")).unwrap();
+        ctx.set(&make_node("b", "a")).unwrap();
 
         ctx.del_with_options(&make_node("a", "b"), None).unwrap();
 

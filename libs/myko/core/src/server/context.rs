@@ -452,13 +452,15 @@ impl CellServerCtx {
     where
         T: Eventable + 'static,
     {
-        self.set_with_options(entity, None)
+        self.set_with_origin(entity, Origin::Local)
     }
 
     /// Publish an entity (SET) with options.
     ///
-    /// Options control:
-    /// - `prevent_relationship_updates`: skip cascade processing
+    /// **Deprecated.** `EventOptions` are internal loop-guard plumbing (cascade
+    /// and peer-replication markers) and must not be set by callers — use
+    /// [`set`](Self::set) instead.
+    #[deprecated(note = "EventOptions is internal plumbing; use `set` instead")]
     pub fn set_with_options<T>(
         &self,
         entity: &T,
@@ -467,7 +469,19 @@ impl CellServerCtx {
     where
         T: Eventable + 'static,
     {
-        let options = options.unwrap_or_default();
+        self.set_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
+    /// shared `apply_effects` tail, gated by `origin`.
+    pub(crate) fn set_with_origin<T>(
+        &self,
+        entity: &T,
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + 'static,
+    {
         let id = entity.id();
         let entity_type = entity.entity_type();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
@@ -480,7 +494,7 @@ impl CellServerCtx {
         crate::server::entity_set_stats::record_set(entity_type);
 
         // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::SET, Origin::from_options(&options))?;
+        self.apply_effects(&item, MEventType::SET, origin)?;
 
         Ok(())
     }
