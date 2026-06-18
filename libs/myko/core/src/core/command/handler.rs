@@ -154,7 +154,6 @@ impl CommandContext {
                     created_at: self.req.created_at.to_string(),
                     tx: self.req.tx.to_string(),
                     source_id: source_id.clone(),
-                    options: None,
                 });
             }
             self.server_ctx
@@ -198,7 +197,6 @@ impl CommandContext {
                     created_at: self.req.created_at.to_string(),
                     tx: self.req.tx.to_string(),
                     source_id: source_id.clone(),
-                    options: None,
                 });
             }
             self.server_ctx
@@ -269,7 +267,6 @@ impl CommandContext {
                     created_at: self.req.created_at.to_string(),
                     tx: self.req.tx.to_string(),
                     source_id: source_id.clone(),
-                    options: None,
                 });
             }
             self.server_ctx

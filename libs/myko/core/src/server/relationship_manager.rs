@@ -1230,7 +1230,6 @@ mod cascade_tests {
         search::SearchIndex,
         server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
-        wire::{EventOptions, MEvent, MEventType},
     };
 
     // `#[myko_item]` re-imports hyphae traits at module scope, so the entity
@@ -1320,60 +1319,5 @@ mod cascade_tests {
             !exists(&registry, "b"),
             "b deleted via the cycle, then terminated"
         );
-    }
-
-    /// Peer-replicated events (`from_peer`) apply to the store + index but must
-    /// not cascade (the origin already replicated its cascade products) and must
-    /// not produce (which would echo back around the mesh). (Fix #3.)
-    #[test]
-    fn remote_events_apply_without_cascade_or_produce() {
-        // event_sink observes produces: any produced event lands on `rx`.
-        let (tx, rx) = flume::unbounded();
-        let registry = Arc::new(StoreRegistry::new());
-        let ctx = CellServerCtx::new(
-            Uuid::new_v4(),
-            registry.clone(),
-            Arc::new(HandlerRegistry::new()),
-            Arc::new(RelationshipManager::new()),
-            Arc::new(PersisterRouter::default()),
-            Arc::new(SearchIndex::new()),
-            Arc::new(dashmap::DashMap::new()),
-            Some(tx),
-            None,
-        );
-
-        let remote = |n: &CascadeNode, change: MEventType| -> MEvent {
-            let mut ev = match change {
-                MEventType::SET => MEvent::from_item(n, MEventType::SET, "peer-source"),
-                MEventType::DEL => MEvent::del(n, "peer-source"),
-            };
-            ev.options = Some(EventOptions {
-                from_peer: Some(true),
-                ..Default::default()
-            });
-            ev
-        };
-
-        // Seed parent + child as peer-replicated SETs.
-        ctx.apply_event(remote(&make_node("p", ""), MEventType::SET))
-            .unwrap();
-        ctx.apply_event(remote(&make_node("c", "p"), MEventType::SET))
-            .unwrap();
-
-        assert!(exists(&registry, "p"), "remote SET reduced into the store");
-        assert!(exists(&registry, "c"));
-        assert!(rx.try_recv().is_err(), "remote SET must not produce (no echo)");
-
-        // Deleting the parent as a peer event must NOT cascade to the child:
-        // the origin already replicated the child's deletion on its own.
-        ctx.apply_event(remote(&make_node("p", ""), MEventType::DEL))
-            .unwrap();
-
-        assert!(!exists(&registry, "p"), "parent reduced out of the store");
-        assert!(
-            exists(&registry, "c"),
-            "child NOT cascade-deleted — Origin::Remote does not cascade"
-        );
-        assert!(rx.try_recv().is_err(), "remote DEL must not produce (no echo)");
     }
 }

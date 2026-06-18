@@ -21,10 +21,6 @@ pub struct EventOptions {
     /// Used to prevent infinite loops during cascade processing.
     #[serde(default)]
     pub prevent_relationship_updates: bool,
-    /// When true, this event was replicated from a peer server.
-    /// Used to prevent re-broadcasting to peers and avoid cascade loops.
-    #[serde(default)]
-    pub from_peer: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -44,10 +40,6 @@ pub struct MEvent {
     pub tx: String,
 
     pub source_id: Option<String>,
-
-    /// Optional event options (e.g., prevent_relationship_updates)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub options: Option<EventOptions>,
 }
 
 fn generate_random_uuid() -> String {
@@ -84,7 +76,6 @@ impl MEvent {
             created_at: Utc::now().to_rfc3339(),
             tx: uuid::Uuid::new_v4().to_string(),
             source_id: Some(source_id.to_string()),
-            options: None,
         }
     }
 
@@ -97,7 +88,6 @@ impl MEvent {
             created_at: Utc::now().to_rfc3339(),
             tx: uuid::Uuid::new_v4().to_string(),
             source_id: Some(source_id.to_string()),
-            options: None,
         }
     }
 
@@ -110,7 +100,6 @@ impl MEvent {
             created_at: Utc::now().to_rfc3339(),
             tx: uuid::Uuid::new_v4().to_string(),
             source_id: Some(source_id.to_string()),
-            options: None,
         }
     }
 
@@ -123,24 +112,7 @@ impl MEvent {
             created_at: Utc::now().to_rfc3339(),
             tx: uuid::Uuid::new_v4().to_string(),
             source_id: Some(source_id.to_string()),
-            options: None,
         }
-    }
-
-    /// Check if relationship updates should be prevented for this event
-    pub fn prevent_relationship_updates(&self) -> bool {
-        self.options
-            .as_ref()
-            .map(|o| o.prevent_relationship_updates)
-            .unwrap_or(false)
-    }
-
-    /// Check if this event was replicated from a peer server
-    pub fn is_from_peer(&self) -> bool {
-        self.options
-            .as_ref()
-            .and_then(|o| o.from_peer)
-            .unwrap_or(false)
     }
 
     pub fn change_type(&self) -> MEventType {

@@ -319,7 +319,6 @@ impl crate::command::CommandHandler for ImportItems {
                 created_at: created_at.clone(),
                 tx: tx.clone(),
                 source_id: source_id.clone(),
-                options: None,
             });
         }
 
@@ -331,7 +330,6 @@ impl crate::command::CommandHandler for ImportItems {
                 created_at: created_at.clone(),
                 tx: tx.clone(),
                 source_id: source_id.clone(),
-                options: None,
             });
         }
 

@@ -54,11 +54,11 @@ type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
-/// relationship cascades and whether it should be produced to persisters/sink.
+/// relationship cascades. (Both origins produce.)
 ///
 /// It replaces the scattered per-call loop-guard flag checks; `from_options`
-/// bridges the `EventOptions` flags (`prevent_relationship_updates`,
-/// `from_peer`) to an `Origin`.
+/// bridges the legacy `EventOptions::prevent_relationship_updates` flag to an
+/// `Origin` for the deprecated `*_with_options` methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// A command handler / server module emitting a new mutation here (also a
@@ -70,20 +70,18 @@ pub(crate) enum Origin {
     /// cascaded at its origin. Applied to the store + search index only — it must
     /// not cascade (the origin already replicated its cascade products) and must
     /// not produce (which would echo it back around the peer mesh).
+    ///
+    /// Reserved: nothing constructs this right now (peer-origin tracking has been
+    /// moved off the wire). The wiring is kept for when that mechanism returns.
+    #[allow(dead_code)]
     Remote,
 }
 
 impl Origin {
-    /// Bridge the `EventOptions` loop-guard flags to an `Origin`.
-    ///
-    /// - `from_peer` is set by `PeerPersister` on events replicated to peers, so
-    ///   it maps to `Remote` (and takes precedence).
-    /// - `prevent_relationship_updates` is set only by cascade products → `Cascade`.
-    /// - everything else is `Local`.
+    /// Bridge the legacy `EventOptions::prevent_relationship_updates` flag to an
+    /// `Origin`: cascade products set it (→ `Cascade`); everything else `Local`.
     pub(crate) fn from_options(options: &EventOptions) -> Origin {
-        if options.from_peer == Some(true) {
-            Origin::Remote
-        } else if options.prevent_relationship_updates {
+        if options.prevent_relationship_updates {
             Origin::Cascade
         } else {
             Origin::Local
@@ -98,6 +96,7 @@ impl Origin {
     ///   all removed at runtime (not just one level, and not deferred to the
     ///   boot-time orphan sweep). The owns_many array-fixup **SET** product must
     ///   not descend structurally.
+    /// - `Remote` never cascades (the origin already replicated its products).
     ///
     /// Transitive DEL cascade terminates without a depth counter or visited set:
     /// reduce runs before cascade, so each node is removed from the store before
@@ -1033,33 +1032,30 @@ impl CellServerCtx {
         #[derive(Clone)]
         struct SetOp {
             item: Arc<dyn AnyItem>,
-            options: EventOptions,
         }
 
         #[derive(Clone)]
         struct DelOp {
             item: Arc<dyn AnyItem>,
-            options: EventOptions,
         }
 
         let mut sets: Vec<SetOp> = Vec::new();
         let mut dels: Vec<DelOp> = Vec::new();
 
         for event in events {
-            let options = event.options.clone().unwrap_or_default();
             let item_type = event.item_type;
             let item_value = event.item;
             match event.change_type {
                 MEventType::SET => {
                     if let Some(item) = self.parse_item(&item_type, item_value) {
-                        sets.push(SetOp { item, options });
+                        sets.push(SetOp { item });
                     } else {
                         log::warn!("Unknown entity type or parse error for SET: {item_type}");
                     }
                 }
                 MEventType::DEL => {
                     if let Some(item) = self.parse_item(&item_type, item_value) {
-                        dels.push(DelOp { item, options });
+                        dels.push(DelOp { item });
                     } else {
                         log::warn!("Unknown entity type or parse error for DEL: {item_type}");
                     }
@@ -1139,36 +1135,28 @@ impl CellServerCtx {
             store.remove_many(keys);
         }
 
-        // Relationships
+        // Relationships — ingested events are Local, so they always cascade.
         for op in &sets {
-            if Origin::from_options(&op.options).should_cascade(MEventType::SET) {
-                self.relationship_manager
-                    .forward_set(op.item.clone(), self)?;
-            }
+            self.relationship_manager
+                .forward_set(op.item.clone(), self)?;
         }
         let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
         for op in &dels {
-            if Origin::from_options(&op.options).should_cascade(MEventType::DEL) {
-                dels_with_relationships
-                    .entry(op.item.entity_type().into())
-                    .or_default()
-                    .push(op.item.clone());
-            }
+            dels_with_relationships
+                .entry(op.item.entity_type().into())
+                .or_default()
+                .push(op.item.clone());
         }
         for (_, items) in dels_with_relationships {
             self.relationship_manager.forward_del_batch(&items, self)?;
         }
 
-        // Persist
+        // Persist — ingested events are Local, so they always produce.
         for op in &sets {
-            if Origin::from_options(&op.options).should_produce() {
-                self.produce_set_dyn(&op.item)?;
-            }
+            self.produce_set_dyn(&op.item)?;
         }
         for op in &dels {
-            if Origin::from_options(&op.options).should_produce() {
-                self.produce_del_dyn(&op.item)?;
-            }
+            self.produce_del_dyn(&op.item)?;
         }
 
         Ok(sets.len() + dels.len())
@@ -1916,7 +1904,6 @@ mod tests {
                 created_at: "2026-03-12T00:00:00Z".to_string(),
                 tx: "tx-immediate".to_string(),
                 source_id: Some("test".to_string()),
-                options: None,
             }])
             .expect("apply_event_batch should succeed");
 
@@ -1939,7 +1926,6 @@ mod tests {
                 created_at: "2026-03-12T00:00:00Z".to_string(),
                 tx: "tx-buffered".to_string(),
                 source_id: Some("test".to_string()),
-                options: None,
             }])
             .expect("apply_event_batch should succeed");
 
