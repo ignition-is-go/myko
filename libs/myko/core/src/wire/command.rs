@@ -29,6 +29,16 @@ impl CommandResponse {
 pub struct WrappedCommand {
     pub command: Value,
     pub command_id: String,
+    /// Optional bearer token (e.g. an Auth0 access token) authenticating the
+    /// caller of THIS command. Lives on the wire envelope alongside
+    /// `command_id` — the server reads it straight off the (type-erased)
+    /// envelope at dispatch, so auth metadata never enters a command's typed
+    /// params. Verified server-side when the `auth` feature + OIDC config are
+    /// active; commands marked `#[myko_command(.., public)]` skip the check.
+    /// `None`/ignored otherwise, so older clients + unauthenticated deployments
+    /// are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -56,6 +66,9 @@ pub fn wrap_command_request<C: CommandId + Serialize + Clone>(
     Ok(WrappedCommand {
         command: json,
         command_id: request.command_id().to_string(),
+        // Default None; the client overrides this post-wrap from its configured
+        // token (MykoClient::set_user_token) in send_command.
+        user_token: None,
     })
 }
 

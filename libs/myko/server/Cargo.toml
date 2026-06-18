@@ -43,12 +43,20 @@ flume.workspace = true
 # HTTP request-line parsing for the MCP front-door router
 httparse = "1.9"
 
+# Optional OIDC/JWT auth (feature `auth`). reqwest here is the auth module's
+# JWKS client — distinct from the dev-dependency reqwest below (integration test).
+jsonwebtoken = { version = "9", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+
 [dev-dependencies]
 # Loopback integration test only — no TLS toolchain needed.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
 default = []
+# Optional OIDC/JWT auth on the WebSocket handshake (see src/auth.rs). Pulls in
+# jsonwebtoken + TLS for the JWKS fetch only when enabled; off = zero cost.
+auth = ["dep:jsonwebtoken", "dep:reqwest"]
 # Forward CPU profiling into myko-core. Opt-in (not default) so Windows/wasm
 # consumers don't pull the unix-only pprof tree; enable explicitly for dev/profiling.
 profiling = ["myko/profiling"]

@@ -9,6 +9,9 @@
 //!
 //! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko::server`.
 
+/// Optional OIDC/JWT auth on the WS handshake (feature `auth`).
+#[cfg(feature = "auth")]
+pub mod auth;
 pub mod mcp;
 pub mod peer_persister;
 pub mod peer_registry;
