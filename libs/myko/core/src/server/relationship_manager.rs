@@ -1217,3 +1217,116 @@ mod tests {
         assert!(product.is_empty());
     }
 }
+
+#[cfg(test)]
+mod cascade_tests {
+    //! Transitive relationship cascade (Event Bus Unification, Fix #1).
+    //!
+    //! Deleting a parent must remove its children, grandchildren, … at runtime
+    //! (previously grandchildren survived until the boot-time orphan sweep
+    //! because the cascade product's `prevent_relationship_updates` flag was
+    //! read as "do not cascade at all"). A cyclic schema must converge, not loop.
+
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use self::node::CascadeNode;
+    use crate::{
+        hyphae::Gettable,
+        search::SearchIndex,
+        server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        store::StoreRegistry,
+    };
+
+    // `#[myko_item]` re-imports hyphae traits at module scope, so the entity
+    // lives in its own module (mirrors `bench_entities::tree`).
+    mod node {
+        use crate::prelude::*;
+
+        /// Self-referential entity: a node `belongs_to` another node of the same
+        /// type, so one type expresses both a multi-level chain and a cycle.
+        #[myko_item]
+        pub struct CascadeNode {
+            #[belongs_to(CascadeNode)]
+            pub parent_id: CascadeNodeId,
+            pub name: String,
+        }
+    }
+
+    fn make_ctx() -> (CellServerCtx, Arc<StoreRegistry>) {
+        let registry = Arc::new(StoreRegistry::new());
+        let ctx = CellServerCtx::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(PersisterRouter::default()),
+            Arc::new(SearchIndex::new()),
+            Arc::new(dashmap::DashMap::new()),
+            None,
+            None,
+        );
+        (ctx, registry)
+    }
+
+    fn make_node(id: &str, parent_id: &str) -> CascadeNode {
+        CascadeNode {
+            id: id.into(),
+            parent_id: parent_id.into(),
+            name: format!("node-{id}"),
+        }
+    }
+
+    fn exists(registry: &StoreRegistry, id: &str) -> bool {
+        registry
+            .get("CascadeNode")
+            .and_then(|store| store.get(&Arc::<str>::from(id)).get())
+            .is_some()
+    }
+
+    /// A 3-level `belongs_to` chain: deleting the root removes the child *and*
+    /// the grandchild at runtime. The grandchild regressed before Fix #1.
+    #[test]
+    fn del_cascade_descends_to_grandchildren() {
+        let (ctx, registry) = make_ctx();
+
+        // root <- branch <- leaf
+        ctx.set_with_options(&make_node("root", ""), None).unwrap();
+        ctx.set_with_options(&make_node("branch", "root"), None)
+            .unwrap();
+        ctx.set_with_options(&make_node("leaf", "branch"), None)
+            .unwrap();
+
+        assert!(exists(&registry, "root"));
+        assert!(exists(&registry, "branch"));
+        assert!(exists(&registry, "leaf"));
+
+        ctx.del_with_options(&make_node("root", ""), None).unwrap();
+
+        assert!(!exists(&registry, "root"), "root deleted");
+        assert!(!exists(&registry, "branch"), "direct child deleted");
+        assert!(
+            !exists(&registry, "leaf"),
+            "grandchild deleted at runtime (Fix #1)"
+        );
+    }
+
+    /// A 2-cycle (a.parent = b, b.parent = a): the cascade must converge. The
+    /// store-as-visited-set guarantees it — the second visit finds nothing.
+    #[test]
+    fn del_cascade_terminates_on_cycle() {
+        let (ctx, registry) = make_ctx();
+
+        ctx.set_with_options(&make_node("a", "b"), None).unwrap();
+        ctx.set_with_options(&make_node("b", "a"), None).unwrap();
+
+        ctx.del_with_options(&make_node("a", "b"), None).unwrap();
+
+        assert!(!exists(&registry, "a"), "a deleted");
+        assert!(
+            !exists(&registry, "b"),
+            "b deleted via the cycle, then terminated"
+        );
+    }
+}

@@ -84,12 +84,23 @@ impl Origin {
 
     /// Whether this origin's mutations should run relationship cascades.
     ///
-    /// Behavior-preserving step: only `Local` cascades; cascade products do not
-    /// descend (matching the current blanket `prevent_relationship_updates`
-    /// gate). A later fix will make `Cascade` + DEL descend transitively, which
-    /// is why this already takes the change type.
-    fn should_cascade(self, _change: MEventType) -> bool {
-        self == Origin::Local
+    /// - `Local` mutations always cascade.
+    /// - `Cascade` products are gated on the change type: a **DEL** product
+    ///   keeps cascading, so a deleted parent's children, grandchildren, … are
+    ///   all removed at runtime (not just one level, and not deferred to the
+    ///   boot-time orphan sweep). The owns_many array-fixup **SET** product must
+    ///   not descend structurally.
+    ///
+    /// Transitive DEL cascade terminates without a depth counter or visited set:
+    /// reduce runs before cascade, so each node is removed from the store before
+    /// its own cascade runs. The store is therefore a monotonically shrinking
+    /// visited-set — a cyclic schema (A→B→A) finds nothing the second time, and
+    /// a cascade-deleted child cannot resurrect its already-removed parent.
+    fn should_cascade(self, change: MEventType) -> bool {
+        match self {
+            Origin::Local => true,
+            Origin::Cascade => change == MEventType::DEL,
+        }
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
