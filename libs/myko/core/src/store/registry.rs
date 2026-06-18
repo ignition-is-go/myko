@@ -84,23 +84,24 @@ impl StoreRegistry {
     }
 
     /// Batch SET under LWW. Applies the winning entries to the store with a
-    /// single diff and returns the winning items (those actually applied, in
-    /// input order). `entries` must all be the same `entity_type`.
+    /// single diff and returns the winning `(item, stamp)` pairs (those actually
+    /// applied, in input order) so the caller can cascade/produce exactly the
+    /// writes that won. `entries` must all be the same `entity_type`.
     pub fn lww_set_many(
         &self,
         entity_type: &str,
         entries: Vec<(Arc<dyn AnyItem>, LwwStamp)>,
-    ) -> Vec<Arc<dyn AnyItem>> {
+    ) -> Vec<(Arc<dyn AnyItem>, LwwStamp)> {
         let stamps = self.stamps_for(entity_type);
-        let mut winners: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entries.len());
+        let mut winners: Vec<(Arc<dyn AnyItem>, LwwStamp)> = Vec::with_capacity(entries.len());
         let mut store_entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(entries.len());
         for (item, stamp) in entries {
             let id = item.id();
             let win = stamps.get(&id).is_none_or(|cur| stamp.wins_over(cur.value()));
             if win {
-                stamps.insert(id.clone(), stamp);
+                stamps.insert(id.clone(), stamp.clone());
                 store_entries.push((id, item.clone()));
-                winners.push(item);
+                winners.push((item, stamp));
             }
         }
         if !store_entries.is_empty() {
@@ -109,23 +110,24 @@ impl StoreRegistry {
         winners
     }
 
-    /// Batch DEL under LWW, leaving tombstones. Returns the winning items
-    /// removed (so callers can cascade on exactly the applied deletes).
+    /// Batch DEL under LWW, leaving tombstones. Returns the winning
+    /// `(item, stamp)` pairs removed (so callers can cascade/produce on exactly
+    /// the applied deletes).
     pub fn lww_del_many(
         &self,
         entity_type: &str,
         entries: Vec<(Arc<dyn AnyItem>, LwwStamp)>,
-    ) -> Vec<Arc<dyn AnyItem>> {
+    ) -> Vec<(Arc<dyn AnyItem>, LwwStamp)> {
         let stamps = self.stamps_for(entity_type);
-        let mut winners: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entries.len());
+        let mut winners: Vec<(Arc<dyn AnyItem>, LwwStamp)> = Vec::with_capacity(entries.len());
         let mut ids: Vec<Arc<str>> = Vec::with_capacity(entries.len());
         for (item, stamp) in entries {
             let id = item.id();
             let win = stamps.get(&id).is_none_or(|cur| stamp.wins_over(cur.value()));
             if win {
-                stamps.insert(id.clone(), stamp);
+                stamps.insert(id.clone(), stamp.clone());
                 ids.push(id);
-                winners.push(item);
+                winners.push((item, stamp));
             }
         }
         if !ids.is_empty() {

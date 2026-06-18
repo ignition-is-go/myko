@@ -17,7 +17,7 @@ use log::{debug, error, info, trace, warn};
 use myko::{
     event::{MEvent, MEventType},
     server::{HandlerRegistry, PersistError, PersistHealth, Persister},
-    store::StoreRegistry,
+    store::{LwwStamp, StoreRegistry},
 };
 use postgres::fallible_iterator::FallibleIterator;
 use uuid::Uuid;
@@ -811,13 +811,20 @@ fn apply_remote_event(
         return;
     }
 
+    // Converge through the store-layer LWW gate (same path as live apply), so a
+    // replayed/tailed event only wins if its stamp beats what we already have.
+    let stamp = LwwStamp::new(
+        &event.created_at,
+        event.source_id.as_deref(),
+        event.change_type == MEventType::DEL,
+    );
+
     match event.change_type {
         MEventType::SET => {
             if let Some(parse) = handler_registry.get_item_parser(&event.item_type) {
                 match parse(event.item.clone()) {
                     Ok(item) => {
-                        let store = registry.get_or_create(item.entity_type());
-                        store.insert(item.id(), item);
+                        registry.lww_set(item.entity_type(), item.id(), item.clone(), stamp);
                     }
                     Err(e) => {
                         let msg = e.to_string();
@@ -834,8 +841,7 @@ fn apply_remote_event(
         }
         MEventType::DEL => {
             if let Some(id) = event.item.get("id").and_then(|v| v.as_str()) {
-                let store = registry.get_or_create(&event.item_type);
-                store.remove(&id.into());
+                registry.lww_del(&event.item_type, id.into(), stamp);
             } else {
                 error!("DEL event missing id field: {:?}", event.item);
             }

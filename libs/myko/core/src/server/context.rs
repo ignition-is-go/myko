@@ -43,12 +43,16 @@ use crate::{
     report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
     search::SearchIndex,
-    store::StoreRegistry,
+    store::{LwwStamp, StoreRegistry},
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
     wire::{EventOptions, MEvent, MEventType},
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
+/// An item plus its LWW stamp inputs (`created_at`, `source_id`) — batch input.
+type StampedItem = (AnyItemArc, Arc<str>, Option<Arc<str>>);
+/// An item paired with its resolved LWW stamp — batch winners.
+type StampedWinner = (AnyItemArc, LwwStamp);
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
@@ -480,8 +484,8 @@ impl CellServerCtx {
         T: Eventable + 'static,
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-        self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+        let (created_at, source) = self.local_stamp();
+        self.apply_one(item, MEventType::SET, origin, created_at, source)
     }
 
     /// Delete an entity (DEL) with default options.
@@ -518,8 +522,8 @@ impl CellServerCtx {
         T: Eventable + Clone + 'static,
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-        self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+        let (created_at, source) = self.local_stamp();
+        self.apply_one(item, MEventType::DEL, origin, created_at, source)
     }
 
     /// Publish a batch of entities (SET) with default options.
@@ -559,11 +563,18 @@ impl CellServerCtx {
         if entities.is_empty() {
             return Ok(());
         }
-        let items: Vec<Arc<dyn AnyItem>> = entities
+        let (created_at, source) = self.local_stamp();
+        let entries = entities
             .iter()
-            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .map(|e| {
+                (
+                    Arc::new(e.clone()) as Arc<dyn AnyItem>,
+                    created_at.clone(),
+                    source.clone(),
+                )
+            })
             .collect();
-        self.emit_grouped(&items, MEventType::SET, origin)
+        self.emit_grouped(entries, MEventType::SET, origin)
     }
 
     /// Delete a batch of entities (DEL) with default options.
@@ -603,11 +614,18 @@ impl CellServerCtx {
         if entities.is_empty() {
             return Ok(());
         }
-        let items: Vec<Arc<dyn AnyItem>> = entities
+        let (created_at, source) = self.local_stamp();
+        let entries = entities
             .iter()
-            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .map(|e| {
+                (
+                    Arc::new(e.clone()) as Arc<dyn AnyItem>,
+                    created_at.clone(),
+                    source.clone(),
+                )
+            })
             .collect();
-        self.emit_grouped(&items, MEventType::DEL, origin)
+        self.emit_grouped(entries, MEventType::DEL, origin)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -638,8 +656,8 @@ impl CellServerCtx {
         item: Arc<dyn AnyItem>,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+        let (created_at, source) = self.local_stamp();
+        self.apply_one(item, MEventType::SET, origin, created_at, source)
     }
 
     /// Publish a batch of dynamic items (SET).
@@ -664,7 +682,12 @@ impl CellServerCtx {
         items: &[Arc<dyn AnyItem>],
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.emit_grouped(items, MEventType::SET, origin)
+        let (created_at, source) = self.local_stamp();
+        let entries = items
+            .iter()
+            .map(|item| (item.clone(), created_at.clone(), source.clone()))
+            .collect();
+        self.emit_grouped(entries, MEventType::SET, origin)
     }
 
     /// Delete a dynamic item (DEL) with default options.
@@ -691,8 +714,8 @@ impl CellServerCtx {
         item: Arc<dyn AnyItem>,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+        let (created_at, source) = self.local_stamp();
+        self.apply_one(item, MEventType::DEL, origin, created_at, source)
     }
 
     /// Publish a batch of dynamic items (DEL).
@@ -717,7 +740,12 @@ impl CellServerCtx {
         items: &[Arc<dyn AnyItem>],
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.emit_grouped(items, MEventType::DEL, origin)
+        let (created_at, source) = self.local_stamp();
+        let entries = items
+            .iter()
+            .map(|item| (item.clone(), created_at.clone(), source.clone()))
+            .collect();
+        self.emit_grouped(entries, MEventType::DEL, origin)
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -754,6 +782,7 @@ impl CellServerCtx {
         origin: Origin,
     ) -> Result<(), PersistError> {
         let id_arc: Arc<str> = id.into();
+        let (created_at, source) = self.local_stamp();
 
         let existing = self
             .registry
@@ -762,16 +791,20 @@ impl CellServerCtx {
 
         crate::server::entity_set_stats::record_del(entity_type);
 
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id_arc);
+        // Reduce: LWW-gated remove (leaves a tombstone). No cascade here — this
+        // tombstoning path has no full item to descend from.
+        let stamp = LwwStamp::new(&created_at, source.as_deref(), true);
+        if !self.registry.lww_del(entity_type, id_arc, stamp) {
+            return Ok(());
+        }
 
-        // Search: remove from index
+        // Search: remove from index.
         self.search_index.remove_entity(entity_type, id);
 
-        // Persist: produce unless this origin must not (e.g. a peer tombstone).
+        // Persist: produce unless this origin must not.
         if origin.should_produce() {
             if let Some(item) = existing {
-                self.produce_del_dyn(&item)?;
+                self.produce_del_dyn(&item, &created_at, source.as_deref())?;
             } else {
                 log::warn!(
                     "del_by_id could not persist DEL without full entity: {}:{}",
@@ -840,24 +873,25 @@ impl CellServerCtx {
         }
         let input_len = events.len();
 
-        let mut set_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-        let mut del_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        let mut set_entries: Vec<StampedItem> = Vec::new();
+        let mut del_entries: Vec<StampedItem> = Vec::new();
 
         for event in events {
             let change = event.change_type;
+            let created_at: Arc<str> = event.created_at.into();
+            let source_id: Option<Arc<str>> = event.source_id.map(Arc::from);
             let item_type = event.item_type;
-            let item_value = event.item;
-            let Some(item) = self.parse_item(&item_type, item_value) else {
+            let Some(item) = self.parse_item(&item_type, event.item) else {
                 log::warn!("Unknown entity type or parse error for ingest: {item_type}");
                 continue;
             };
             match change {
-                MEventType::SET => set_items.push(item),
-                MEventType::DEL => del_items.push(item),
+                MEventType::SET => set_entries.push((item, created_at, source_id)),
+                MEventType::DEL => del_entries.push((item, created_at, source_id)),
             }
         }
 
-        let applied = set_items.len() + del_items.len();
+        let applied = set_entries.len() + del_entries.len();
         if applied == 0 {
             return Ok(0);
         }
@@ -866,14 +900,15 @@ impl CellServerCtx {
             target: "myko::server::context",
             "apply_event_batch parsed: input_events={} sets={} dels={}",
             input_len,
-            set_items.len(),
-            del_items.len()
+            set_entries.len(),
+            del_entries.len()
         );
 
-        // Ingested wire events are Local (cascade + produce); the shared batch
-        // path groups by type, reduces, then runs the cascade/produce tail.
-        self.emit_grouped(&set_items, MEventType::SET, Origin::Local)?;
-        self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
+        // Ingested wire events are Local; the shared batch path groups by type,
+        // LWW-gates each group, then runs the cascade/produce tail on the writes
+        // that won — carrying each event's original `created_at`/`source_id`.
+        self.emit_grouped(set_entries, MEventType::SET, Origin::Local)?;
+        self.emit_grouped(del_entries, MEventType::DEL, Origin::Local)?;
 
         Ok(applied)
     }
@@ -979,93 +1014,100 @@ impl CellServerCtx {
     // shared emission pipeline (batch is first-class; single is a thin wrapper)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Single-item store reduce — **no allocation**. Records the stat and applies
-    /// the store insert/remove for one item. Paired with
-    /// `apply_effects(slice::from_ref(&item), …)` by the single-item entry points
-    /// so a single mutation never allocates a Vec or groups by type.
-    fn reduce_one(&self, item: &Arc<dyn AnyItem>, change: MEventType) {
+    /// The LWW stamp for a locally-originated write: `created_at = now`,
+    /// `source_id = this host`.
+    fn local_stamp(&self) -> (Arc<str>, Option<Arc<str>>) {
+        let created_at: Arc<str> = chrono::Utc::now().to_rfc3339().into();
+        let source: Arc<str> = self.host_id.to_string().into();
+        (created_at, Some(source))
+    }
+
+    /// Single-item LWW apply — **no allocation**. Gates the write through the
+    /// store-layer LWW guard with `(created_at, source_id)`; only if it wins do
+    /// we run the shared `apply_effects` tail and produce the event carrying the
+    /// same stamp (so the broadcast stamp matches the applied one).
+    fn apply_one(
+        &self,
+        item: Arc<dyn AnyItem>,
+        change: MEventType,
+        origin: Origin,
+        created_at: Arc<str>,
+        source_id: Option<Arc<str>>,
+    ) -> Result<(), PersistError> {
         let entity_type = item.entity_type();
-        match change {
+        let id = item.id();
+        let stamp = LwwStamp::new(&created_at, source_id.as_deref(), change == MEventType::DEL);
+        let won = match change {
             MEventType::SET => {
                 crate::server::entity_set_stats::record_set(entity_type);
-                self.registry
-                    .get_or_create(entity_type)
-                    .insert(item.id(), item.clone());
+                self.registry.lww_set(entity_type, id, item.clone(), stamp)
             }
             MEventType::DEL => {
                 crate::server::entity_set_stats::record_del(entity_type);
-                self.registry.get_or_create(entity_type).remove(&item.id());
+                self.registry.lww_del(entity_type, id, stamp)
             }
-        }
-    }
-
-    /// The batch emission path (first-class). Groups `items` by entity type,
-    /// applies one grouped store reduce per type (a single store diff each) for
-    /// **all** groups before any cascade runs, then runs the shared
-    /// `apply_effects` tail per (same-type) group.
-    ///
-    /// Every batch entry point and the wire-ingest path funnel through here. The
-    /// single-item entry points deliberately do **not** — they call
-    /// `reduce_one` + `apply_effects` directly to avoid the grouping/Vec cost.
-    fn emit_grouped(
-        &self,
-        items: &[Arc<dyn AnyItem>],
-        change: MEventType,
-        origin: Origin,
-    ) -> Result<(), PersistError> {
-        if items.is_empty() {
+        };
+        if !won {
             return Ok(());
         }
-
-        let mut by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-        for item in items {
-            by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        // Reduce: one store diff per type, across all groups, before any cascade
-        // (so the store is fully settled — load-bearing for transitive cascade).
-        for (entity_type, group) in &by_type {
-            let store = self.registry.get_or_create(entity_type);
-            match change {
-                MEventType::SET => {
-                    let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
-                        Vec::with_capacity(group.len());
-                    for item in group {
-                        crate::server::entity_set_stats::record_set(entity_type);
-                        entries.push((item.id(), item.clone()));
-                    }
-                    store.insert_many(entries);
-                }
-                MEventType::DEL => {
-                    let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
-                    for item in group {
-                        crate::server::entity_set_stats::record_del(entity_type);
-                        ids.push(item.id());
-                    }
-                    store.remove_many(ids);
-                }
-            }
-        }
-
-        // Effects: search + cascade + produce, per same-type group.
-        for group in by_type.values() {
-            self.apply_effects(group, change, origin)?;
+        self.apply_effects(std::slice::from_ref(&item), change, origin)?;
+        if origin.should_produce() {
+            self.produce_dyn(&item, change, &created_at, source_id.as_deref())?;
         }
         Ok(())
     }
 
-    /// Shared post-reduce tail: search index, relationship cascade (gated by
-    /// `origin`), and produce (gated by `origin`).
-    ///
-    /// Operates on a slice of items **of the same entity type** whose store
-    /// reduce has already run. Single-item callers pass `slice::from_ref(&item)`
-    /// (zero alloc); `emit_grouped` passes each type-group. The type-erased
-    /// produce path is equivalent to the typed one (`MEvent::from_item` ≡
-    /// `MEvent::set_from_value(item.to_value())`, modulo the fresh `created_at`/`tx`).
+    /// Batch emission (first-class). Each entry carries its own LWW stamp
+    /// (`created_at` + `source_id`) — ingested wire events have heterogeneous
+    /// stamps. Groups by type, gates each group through the store-layer LWW guard
+    /// (one store diff per type), then runs `apply_effects` + produce on exactly
+    /// the writes that won (a stale/suppressed write neither cascades nor echoes).
+    fn emit_grouped(
+        &self,
+        entries: Vec<StampedItem>,
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut by_type: std::collections::BTreeMap<&'static str, Vec<StampedWinner>> =
+            std::collections::BTreeMap::new();
+        for (item, created_at, source_id) in entries {
+            let entity_type = item.entity_type();
+            match change {
+                MEventType::SET => crate::server::entity_set_stats::record_set(entity_type),
+                MEventType::DEL => crate::server::entity_set_stats::record_del(entity_type),
+            }
+            let stamp = LwwStamp::new(&created_at, source_id.as_deref(), change == MEventType::DEL);
+            by_type.entry(entity_type).or_default().push((item, stamp));
+        }
+
+        for (entity_type, group) in by_type {
+            let winners = match change {
+                MEventType::SET => self.registry.lww_set_many(entity_type, group),
+                MEventType::DEL => self.registry.lww_del_many(entity_type, group),
+            };
+            if winners.is_empty() {
+                continue;
+            }
+            let winner_items: Vec<Arc<dyn AnyItem>> =
+                winners.iter().map(|(item, _)| item.clone()).collect();
+            self.apply_effects(&winner_items, change, origin)?;
+            if origin.should_produce() {
+                for (item, stamp) in &winners {
+                    self.produce_dyn(item, change, &stamp.created_at, stamp.source_id.as_deref())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Shared post-reduce tail: search index + relationship cascade (gated by
+    /// `origin`). The store reduce already ran inside the LWW guard; produce is
+    /// done by the caller because it needs the per-item stamp. Items are all the
+    /// same entity type.
     fn apply_effects(
         &self,
         items: &[Arc<dyn AnyItem>],
@@ -1099,22 +1141,6 @@ impl CellServerCtx {
             }
         }
 
-        // Persist: produce to persisters + sink unless this origin must not.
-        if origin.should_produce() {
-            match change {
-                MEventType::SET => {
-                    for item in items {
-                        self.produce_set_dyn(item)?;
-                    }
-                }
-                MEventType::DEL => {
-                    for item in items {
-                        self.produce_del_dyn(item)?;
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -1122,34 +1148,56 @@ impl CellServerCtx {
     // durable backend production (private)
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+    /// Produce a SET/DEL event carrying the applied LWW stamp.
+    fn produce_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        change: MEventType,
+        created_at: &str,
+        source_id: Option<&str>,
+    ) -> Result<(), PersistError> {
+        match change {
+            MEventType::SET => self.produce_set_dyn(item, created_at, source_id),
+            MEventType::DEL => self.produce_del_dyn(item, created_at, source_id),
+        }
+    }
+
+    fn produce_del_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        created_at: &str,
+        source_id: Option<&str>,
+    ) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            persister.persist(event)?;
+            persister.persist(MEvent::del_with_stamp(item, created_at, source_id))?;
         }
         if let Some(sink) = &self.event_sink {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            let _ = sink.send(event);
+            let _ = sink.send(MEvent::del_with_stamp(item, created_at, source_id));
         }
         Ok(())
     }
 
-    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+    fn produce_set_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        created_at: &str,
+        source_id: Option<&str>,
+    ) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::set_from_value(
+            persister.persist(MEvent::set_with_stamp(
                 item.entity_type(),
                 item.to_value(),
-                &self.host_id.to_string(),
-            );
-            persister.persist(event)?;
+                created_at,
+                source_id,
+            ))?;
         }
         if let Some(sink) = &self.event_sink {
-            let event = MEvent::set_from_value(
+            let _ = sink.send(MEvent::set_with_stamp(
                 item.entity_type(),
                 item.to_value(),
-                &self.host_id.to_string(),
-            );
-            let _ = sink.send(event);
+                created_at,
+                source_id,
+            ));
         }
         Ok(())
     }
@@ -1750,5 +1798,95 @@ mod tests {
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
         assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
+    }
+
+    // ── Deterministic LWW convergence (Prereq 1) ────────────────────────────
+
+    fn set_event(id: &str, value: i32, created_at: &str, source: &str) -> MEvent {
+        MEvent {
+            item: json!({ "id": id, "value": value }),
+            change_type: MEventType::SET,
+            item_type: "ImmediateTestItem".to_string(),
+            created_at: created_at.to_string(),
+            tx: format!("tx-{created_at}-{source}"),
+            source_id: Some(source.to_string()),
+        }
+    }
+
+    fn del_event(id: &str, created_at: &str, source: &str) -> MEvent {
+        MEvent {
+            item: json!({ "id": id, "value": 0 }),
+            change_type: MEventType::DEL,
+            item_type: "ImmediateTestItem".to_string(),
+            created_at: created_at.to_string(),
+            tx: format!("tx-{created_at}-{source}"),
+            source_id: Some(source.to_string()),
+        }
+    }
+
+    fn value_of(ctx: &CellServerCtx, id: &str) -> Option<i32> {
+        ctx.registry
+            .get("ImmediateTestItem")
+            .and_then(|store| store.get(&Arc::<str>::from(id)).get())
+            .and_then(|item| {
+                item.as_any()
+                    .downcast_ref::<ImmediateTestItem>()
+                    .map(|t| t.value)
+            })
+    }
+
+    /// Two nodes that apply the same conflicting writes in opposite orders must
+    /// converge to the same value (the one with the higher `created_at`).
+    #[test]
+    fn lww_converges_regardless_of_apply_order() {
+        let lo = set_event("x", 1, "2026-06-18T00:00:00Z", "A");
+        let hi = set_event("x", 2, "2026-06-18T00:00:01Z", "B");
+
+        let a = make_ctx();
+        a.apply_event(lo.clone()).unwrap();
+        a.apply_event(hi.clone()).unwrap();
+
+        let b = make_ctx();
+        b.apply_event(hi).unwrap();
+        b.apply_event(lo).unwrap();
+
+        assert_eq!(value_of(&a, "x"), Some(2));
+        assert_eq!(
+            value_of(&b, "x"),
+            Some(2),
+            "both orders converge to the newer write"
+        );
+    }
+
+    /// A tombstone suppresses a stale SET (no resurrection) but a genuinely
+    /// newer SET still wins over it.
+    #[test]
+    fn lww_tombstone_suppresses_stale_set_but_allows_newer() {
+        let ctx = make_ctx();
+        ctx.apply_event(set_event("y", 1, "2026-06-18T00:00:00Z", "A"))
+            .unwrap();
+        ctx.apply_event(del_event("y", "2026-06-18T00:00:03Z", "A"))
+            .unwrap();
+        assert_eq!(value_of(&ctx, "y"), None, "deleted");
+
+        // Older than the tombstone → suppressed.
+        ctx.apply_event(set_event("y", 2, "2026-06-18T00:00:02Z", "A"))
+            .unwrap();
+        assert_eq!(value_of(&ctx, "y"), None, "stale SET must not resurrect");
+
+        // Newer than the tombstone → wins.
+        ctx.apply_event(set_event("y", 3, "2026-06-18T00:00:04Z", "A"))
+            .unwrap();
+        assert_eq!(value_of(&ctx, "y"), Some(3), "newer SET resurrects");
+    }
+
+    /// Re-delivering the identical event (gossip ∪ anti-entropy) is a no-op.
+    #[test]
+    fn lww_idempotent_redelivery() {
+        let ctx = make_ctx();
+        let ev = set_event("z", 5, "2026-06-18T00:00:00Z", "A");
+        ctx.apply_event(ev.clone()).unwrap();
+        ctx.apply_event(ev).unwrap();
+        assert_eq!(value_of(&ctx, "z"), Some(5));
     }
 }

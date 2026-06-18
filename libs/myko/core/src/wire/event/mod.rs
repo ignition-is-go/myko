@@ -115,6 +115,41 @@ impl MEvent {
         }
     }
 
+    /// Create a SET event carrying an explicit LWW stamp (`created_at` +
+    /// `source_id`). Used when re-emitting an applied write so the broadcast
+    /// stamp matches the one the origin actually applied (LWW convergence).
+    pub fn set_with_stamp(
+        entity_type: &str,
+        value: Value,
+        created_at: &str,
+        source_id: Option<&str>,
+    ) -> MEvent {
+        MEvent {
+            item: value,
+            change_type: MEventType::SET,
+            item_type: entity_type.to_string(),
+            created_at: created_at.to_string(),
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: source_id.map(|s| s.to_string()),
+        }
+    }
+
+    /// Create a DEL event carrying an explicit LWW stamp.
+    pub fn del_with_stamp(
+        item: &Arc<dyn AnyItem>,
+        created_at: &str,
+        source_id: Option<&str>,
+    ) -> MEvent {
+        MEvent {
+            item: item.to_value(),
+            change_type: MEventType::DEL,
+            item_type: item.entity_type().to_string(),
+            created_at: created_at.to_string(),
+            tx: uuid::Uuid::new_v4().to_string(),
+            source_id: source_id.map(|s| s.to_string()),
+        }
+    }
+
     pub fn change_type(&self) -> MEventType {
         self.change_type
     }
