@@ -21,10 +21,6 @@ pub struct EventOptions {
     /// Used to prevent infinite loops during cascade processing.
     #[serde(default)]
     pub prevent_relationship_updates: bool,
-    /// When true, the event is not persisted to durable backend.
-    /// Used for events from durable backend (to avoid re-publishing).
-    #[serde(default)]
-    pub prevent_persist: bool,
     /// When true, this event was replicated from a peer server.
     /// Used to prevent re-broadcasting to peers and avoid cascade loops.
     #[serde(default)]
@@ -89,24 +85,6 @@ impl MEvent {
             tx: uuid::Uuid::new_v4().to_string(),
             source_id: Some(source_id.to_string()),
             options: None,
-        }
-    }
-
-    /// Create an event with options
-    pub fn from_item_with_options(
-        item: &impl Eventable,
-        change_type: MEventType,
-        source_id: &str,
-        options: Option<EventOptions>,
-    ) -> MEvent {
-        MEvent {
-            item: serde_json::to_value(item).unwrap(),
-            change_type,
-            item_type: item.entity_type().to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            tx: uuid::Uuid::new_v4().to_string(),
-            source_id: Some(source_id.to_string()),
-            options,
         }
     }
 

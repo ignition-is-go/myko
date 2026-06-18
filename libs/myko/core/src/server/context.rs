@@ -56,10 +56,9 @@ type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
 /// pipeline's loop-safety: it determines whether a mutation should run
 /// relationship cascades and whether it should be produced to persisters/sink.
 ///
-/// It replaces the scattered per-call `prevent_relationship_updates` /
-/// `prevent_persist` flag checks. During the migration, `from_options` bridges
-/// the legacy `EventOptions` flags to an `Origin`; once the dead flags are
-/// removed, callers pass an `Origin` directly.
+/// It replaces the scattered per-call loop-guard flag checks; `from_options`
+/// bridges the `EventOptions` flags (`prevent_relationship_updates`,
+/// `from_peer`) to an `Origin`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// A command handler / server module emitting a new mutation here (also a
@@ -117,8 +116,8 @@ impl Origin {
     ///
     /// `Remote` events are already durable and already cascaded at their origin,
     /// so re-producing them would echo them back around the peer mesh. Everything
-    /// else produces (`prevent_persist` is a dead flag; per-type durability is
-    /// the persister router's job via `BlackholePersister`).
+    /// else produces; per-type durability is the persister router's job
+    /// (`BlackholePersister`), not a per-event flag.
     fn should_produce(self) -> bool {
         self != Origin::Remote
     }
@@ -460,7 +459,6 @@ impl CellServerCtx {
     ///
     /// Options control:
     /// - `prevent_relationship_updates`: skip cascade processing
-    /// - `prevent_persist`: skip durable backend
     pub fn set_with_options<T>(
         &self,
         entity: &T,
@@ -829,7 +827,7 @@ impl CellServerCtx {
         id: &str,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
+        let origin = Origin::from_options(&options.unwrap_or_default());
         let id_arc: Arc<str> = id.into();
 
         let existing = self
@@ -845,8 +843,8 @@ impl CellServerCtx {
         // Search: remove from index
         self.search_index.remove_entity(entity_type, id);
 
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
+        // Persist: produce unless this origin must not (e.g. a peer tombstone).
+        if origin.should_produce() {
             if let Some(item) = existing {
                 self.produce_del_dyn(&item)?;
             } else {
