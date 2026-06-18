@@ -25,7 +25,9 @@
 //! - [`StoreRegistry`]: Central registry managing all entity stores
 
 mod entity_store;
+pub mod mutation_index;
 mod registry;
 
 pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
+pub use mutation_index::{ChangeKind, MutationIndex};
 pub use registry::StoreRegistry;

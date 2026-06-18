@@ -267,17 +267,53 @@ impl ReportContext {
         self.registry.clone()
     }
 
-    /// Replay historical events into a temporary StoreRegistry.
-    ///
-    /// Returns an error if no HistoryReplayProvider is configured.
+    /// Return every event of a transaction (ascending by event id).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn replay_store(&self, until: &str) -> Result<Arc<StoreRegistry>, String> {
+    pub fn history_events_for_transaction(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Vec<crate::wire::MEvent>, String> {
         let provider = self
             .server_ctx
             .history_replay()
             .ok_or_else(|| "No history replay provider configured".to_string())?;
-        provider.replay_to_store(until, &self.server_ctx.handler_registry)
+        let hr = &self.server_ctx.handler_registry;
+        run_off_runtime(move || provider.events_for_transaction(transaction_id, hr))
     }
+
+    /// Compute the undo plan (per-entity prior state + conflict flags) for a transaction.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn transaction_undo_plan(
+        &self,
+        transaction_id: &str,
+    ) -> Result<Vec<crate::entities::undo::UndoTarget>, String> {
+        let provider = self
+            .server_ctx
+            .history_replay()
+            .ok_or_else(|| "No history replay provider configured".to_string())?;
+        let hr = &self.server_ctx.handler_registry;
+        run_off_runtime(move || provider.transaction_undo_plan(transaction_id, hr))
+    }
+}
+
+/// Run a blocking history/database call off the async runtime.
+///
+/// Report `compute` runs inline on a tokio worker, but the sync `postgres` crate spins
+/// its own runtime internally, which panics ("Cannot start a runtime from within a
+/// runtime") when invoked from a worker thread. A scratch `std::thread` has no runtime in
+/// thread-local storage, so the sync client works there. (Commands avoid this because they
+/// already execute via `spawn_blocking`.)
+#[cfg(not(target_arch = "wasm32"))]
+fn run_off_runtime<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send,
+    T: Send,
+{
+    std::thread::scope(|s| {
+        s.spawn(f)
+            .join()
+            .map_err(|_| "history worker thread panicked".to_string())?
+    })
 }
 
 /// Trait for report handlers - defines how a report computes its output.

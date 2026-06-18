@@ -27,7 +27,7 @@ pub use client_registry::{client_registry, init_client_registry, try_client_regi
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub use context::CellServerCtx;
 pub use handler_registry::HandlerRegistry;
-pub use history_replay::HistoryReplayProvider;
+pub use history_replay::{HistoryReplayProvider, RestoreChange};
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
 };

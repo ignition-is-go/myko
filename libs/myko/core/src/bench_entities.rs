@@ -49,6 +49,47 @@ mod tree {
     }
 }
 
+// Related tree entities for exercising relationship-aware features (restore points,
+// undo, tree export). A 3-level `belongs_to` chain: Project ← Scene ← Cue. Each
+// `#[myko_item]` lives in its own module because the macro re-imports hyphae traits at
+// module scope and two invocations in one module collide.
+pub use bench_project::{BenchProject, BenchProjectId};
+pub use bench_scene::{BenchScene, BenchSceneId};
+pub use bench_cue::{BenchCue, BenchCueId};
+
+mod bench_project {
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchProject {
+        pub name: String,
+    }
+}
+
+mod bench_scene {
+    use super::bench_project::BenchProject;
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchScene {
+        #[belongs_to(BenchProject)]
+        pub project_id: super::BenchProjectId,
+        pub name: String,
+    }
+}
+
+mod bench_cue {
+    use super::bench_scene::BenchScene;
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchCue {
+        #[belongs_to(BenchScene)]
+        pub scene_id: super::BenchSceneId,
+        pub name: String,
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {

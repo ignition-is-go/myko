@@ -1130,59 +1130,65 @@ impl CellServerCtx {
     // ─────────────────────────────────────────────────────────────────────────
 
     fn produce_set<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
+        let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
+        self.note_mutation(&event);
         if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            persister.persist(event)?;
+            persister.persist(event.clone())?;
         }
         if let Some(sink) = &self.event_sink {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
             let _ = sink.send(event);
         }
         Ok(())
     }
 
     fn produce_del<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
+        let event = MEvent::del(entity, &self.host_id.to_string());
+        self.note_mutation(&event);
         if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            persister.persist(event)?;
+            persister.persist(event.clone())?;
         }
         if let Some(sink) = &self.event_sink {
-            let event = MEvent::del(entity, &self.host_id.to_string());
             let _ = sink.send(event);
         }
         Ok(())
     }
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        let event = MEvent::del_from_any(item, &self.host_id.to_string());
+        self.note_mutation(&event);
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            persister.persist(event)?;
+            persister.persist(event.clone())?;
         }
         if let Some(sink) = &self.event_sink {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
             let _ = sink.send(event);
         }
         Ok(())
     }
 
     fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        let event = MEvent::set_from_value(
+            item.entity_type(),
+            item.to_value(),
+            &self.host_id.to_string(),
+        );
+        self.note_mutation(&event);
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            persister.persist(event)?;
+            persister.persist(event.clone())?;
         }
         if let Some(sink) = &self.event_sink {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
             let _ = sink.send(event);
         }
         Ok(())
+    }
+
+    /// Record a locally-produced event into the mutation index (markers + change tick).
+    /// Every `set`/`del`/`batch`/`dyn` emit and relationship cascade funnels through the
+    /// `produce_*` methods, so this is the single point that keeps the index in step with
+    /// this host's own edits (remote/bootstrap events are handled in `apply_remote_event`).
+    fn note_mutation(&self, event: &MEvent) {
+        let index = self.registry.mutation_index();
+        index.record_event(event);
+        index.bump();
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
+use super::mutation_index::MutationIndex;
 use super::EntityStore;
 
 /// Central registry holding all entity stores.
@@ -31,6 +32,9 @@ pub struct StoreRegistry {
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
     stores: DashMap<Arc<str>, Arc<EntityStore>, ahash::RandomState>,
+    /// Per-entity mutation markers + tombstones, updated at ingest. Powers in-memory
+    /// "what changed since X" without rereading the event log.
+    mutation_index: MutationIndex,
 }
 
 impl StoreRegistry {
@@ -38,7 +42,13 @@ impl StoreRegistry {
     pub fn new() -> Self {
         Self {
             stores: DashMap::with_hasher(ahash::RandomState::new()),
+            mutation_index: MutationIndex::new(),
         }
+    }
+
+    /// The mutation index (created/last-mutation markers + tombstones).
+    pub fn mutation_index(&self) -> &MutationIndex {
+        &self.mutation_index
     }
 
     /// Get or create an entity store for the given type.

@@ -271,12 +271,18 @@ pub struct EventsForTransaction {
     pub transaction_id: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ReportHandler for EventsForTransaction {
     type Output = Vec<crate::wire::MEvent>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
-        // TODO(ts): Query event store by transaction ID
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
+        let events = ctx
+            .history_events_for_transaction(&self.transaction_id)
+            .unwrap_or_else(|err| {
+                eprintln!("[EventsForTransaction] failed: {err}");
+                Vec::new()
+            });
+        Cell::new(Arc::new(events)).lock()
     }
 }
 

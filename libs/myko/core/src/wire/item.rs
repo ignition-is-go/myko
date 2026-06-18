@@ -66,7 +66,7 @@ impl Serialize for ErasedWrappedItem {
 }
 
 /// JSON-valued item wrapper for deserialization and TS export.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WrappedItem {
     pub item: serde_json::Value,

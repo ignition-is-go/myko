@@ -76,6 +76,35 @@ impl CommandContext {
         &self.req.created_at
     }
 
+    /// The entity store registry (type-erased entity lookups).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn registry(&self) -> std::sync::Arc<crate::store::StoreRegistry> {
+        self.server_ctx.registry.clone()
+    }
+
+    /// Entities changed since `until`, each with its value at `until` (see
+    /// [`crate::server::RestoreChange`]). Fallible — a command can `?`-propagate a history
+    /// read failure into a `CommandError` rather than silently proceeding with a partial
+    /// result. Runs the blocking provider directly (commands execute off the reactive path).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn restore_changes_since(
+        &self,
+        until: &str,
+    ) -> Result<Vec<crate::server::RestoreChange>, CommandError> {
+        let provider = self.server_ctx.history_replay().ok_or_else(|| CommandError {
+            tx: self.req.tx.to_string(),
+            command_id: self.command_id.to_string(),
+            message: "No history replay provider configured".to_string(),
+        })?;
+        provider
+            .restore_changes_since(until, &self.server_ctx.handler_registry)
+            .map_err(|message| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message,
+            })
+    }
+
     /// Emit a SET event for an item.
     pub fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
     where

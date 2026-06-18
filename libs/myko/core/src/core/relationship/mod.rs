@@ -265,6 +265,7 @@ pub fn iter_server_owned_registrations() -> impl Iterator<Item = &'static Server
     inventory::iter::<ServerOwnedRegistration>()
 }
 
+
 /// Registration for a field that should fall back to the entity's own `id` if null/missing.
 ///
 /// When a SET event is processed, if this field is null or absent in the JSON,

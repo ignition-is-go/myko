@@ -157,79 +157,171 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
-    fn replay_to_store(
+    fn events_for_transaction(
         &self,
-        until: &str,
-        handler_registry: &HandlerRegistry,
-    ) -> Result<Arc<StoreRegistry>, String> {
-        eprintln!(
-            "[HistoryReplay] loading snapshot as of {} from {}",
-            until, self.config.url
-        );
-
-        // NOTE(ts): Validate timestamp format to prevent SQL injection
-        if !until
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-.:+TZ ".contains(c))
-        {
-            return Err(format!("Invalid timestamp format: {}", until));
-        }
-
-        let mut client = connect_pg_client(&self.config, "history_replay")?;
+        transaction_id: &str,
+        _handler_registry: &HandlerRegistry,
+    ) -> Result<Vec<MEvent>, String> {
+        let mut client = connect_pg_client(&self.config, "events_for_transaction")?;
         let table = qi(&self.config.table);
-        let registry = StoreRegistry::new();
+        let sql = format!("SELECT event::text FROM {table} WHERE tx = $1 ORDER BY id ASC");
 
-        // NOTE(ts): Use DISTINCT ON to get the latest event per entity as of the
-        // timestamp, same approach as the bootstrap snapshot but time-bounded.
-        // Only include entities whose latest event is a SET (not deleted).
+        let rows = client
+            .query(&sql, &[&transaction_id])
+            .map_err(|e| format!("events_for_transaction query failed: {e}"))?;
+
+        let mut events = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let json: String = row.get(0);
+            match MEvent::from_str_trim(&json) {
+                Ok(ev) => events.push(ev),
+                Err(err) => eprintln!("[events_for_transaction] invalid event row: {err}"),
+            }
+        }
+        Ok(events)
+    }
+
+    fn transaction_undo_plan(
+        &self,
+        transaction_id: &str,
+        _handler_registry: &HandlerRegistry,
+    ) -> Result<Vec<myko::entities::undo::UndoTarget>, String> {
+        use myko::entities::undo::UndoTarget;
+
+        let mut client = connect_pg_client(&self.config, "transaction_undo_plan")?;
+        let table = qi(&self.config.table);
+
+        // For each entity the transaction touched: the value it last wrote (`in_tx_event`
+        // at the entity's max id within the tx), the entity's state immediately before
+        // the tx (`prior`, the latest event with id < the entity's min id in the tx), and
+        // whether a later transaction also touched it (`conflict`, any event after the
+        // entity's max id in the tx). Indexed by `(item_type, item_id, id DESC)`.
         let sql = format!(
             "
-            WITH latest AS (
-                SELECT DISTINCT ON (item_type, item_id)
-                    id, change_type
+            WITH tx_ents AS (
+                SELECT item_type, item_id, MIN(id) AS min_id, MAX(id) AS max_id
                 FROM {table}
-                WHERE created_at <= '{until}'::timestamptz
-                ORDER BY item_type, item_id, id DESC
+                WHERE tx = $1
+                GROUP BY item_type, item_id
             )
-            SELECT e.event::text
-            FROM latest
-            JOIN {table} e ON e.id = latest.id
-            WHERE latest.change_type = 'SET'
-            ORDER BY e.id ASC
+            SELECT
+                te.item_type,
+                te.item_id,
+                intx.event::text AS in_tx_event,
+                prior.change_type AS prior_change_type,
+                prior.event::text AS prior_event,
+                EXISTS (
+                    SELECT 1 FROM {table} l
+                    WHERE l.item_type = te.item_type
+                      AND l.item_id = te.item_id
+                      AND l.id > te.max_id
+                ) AS conflict
+            FROM tx_ents te
+            JOIN {table} intx ON intx.id = te.max_id
+            LEFT JOIN LATERAL (
+                SELECT p.change_type, p.event
+                FROM {table} p
+                WHERE p.item_type = te.item_type
+                  AND p.item_id = te.item_id
+                  AND p.id < te.min_id
+                ORDER BY p.id DESC
+                LIMIT 1
+            ) prior ON true
+            ORDER BY te.min_id ASC
             "
         );
 
         let rows = client
-            .query(&sql, &[])
-            .map_err(|e| format!("history snapshot query failed: {e}"))?;
+            .query(&sql, &[&transaction_id])
+            .map_err(|e| format!("transaction_undo_plan query failed: {e}"))?;
 
-        let mut count = 0usize;
+        let mut plan = Vec::with_capacity(rows.len());
         for row in &rows {
-            let event_json: String = row.get(0);
-            match MEvent::from_str_trim(&event_json) {
-                Ok(event) => {
-                    if let Some(parse) = handler_registry.get_item_parser(&event.item_type)
-                        && let Ok(item) = parse(event.item.clone())
-                    {
-                        let store = registry.get_or_create(&event.item_type);
-                        store.insert(item.id(), item);
-                        count += 1;
-                    }
-                }
-                Err(err) => {
-                    eprintln!("[HistoryReplay] invalid event row: {}", err);
-                }
-            }
+            let item_type: String = row.get(0);
+            let item_id: String = row.get(1);
+            let in_tx_event_json: String = row.get(2);
+            let prior_change_type: Option<String> = row.get(3);
+            let prior_event_json: Option<String> = row.get(4);
+            let conflict: bool = row.get(5);
+
+            let in_tx_value = MEvent::from_str_trim(&in_tx_event_json)
+                .map(|e| e.item)
+                .unwrap_or(serde_json::Value::Null);
+
+            // A SET prior means the entity existed before the tx -> revert/revive to it.
+            // A DEL prior, or no prior event at all, means the entity did not exist before
+            // the tx -> undo removes it (prior = None).
+            let prior = match (prior_change_type.as_deref(), prior_event_json) {
+                (Some("SET"), Some(json)) => MEvent::from_str_trim(&json).ok().map(|e| e.item),
+                _ => None,
+            };
+
+            plan.push(UndoTarget {
+                item_type: item_type.into(),
+                item_id: item_id.into(),
+                prior,
+                in_tx_value,
+                conflict,
+            });
+        }
+        Ok(plan)
+    }
+
+    fn restore_changes_since(
+        &self,
+        until: &str,
+        _handler_registry: &HandlerRegistry,
+    ) -> Result<Vec<(Arc<str>, Arc<str>, Option<serde_json::Value>)>, String> {
+        let mut client = connect_pg_client(&self.config, "restore_changes_since")?;
+        let table = qi(&self.config.table);
+
+        // Entities with any event after `until`, each paired with its value AT `until`.
+        // Type/id/change_type are columns; the entity value is `event -> 'item'`. The whole
+        // result is aggregated into one JSON document and deserialized with serde into typed
+        // rows — no per-column extraction, no event parsing in Rust. `value` is null when the
+        // latest event at/before `until` was a DEL or the entity was absent.
+        #[derive(serde::Deserialize)]
+        struct ChangedRow {
+            item_type: Arc<str>,
+            item_id: Arc<str>,
+            value: Option<serde_json::Value>,
         }
 
-        eprintln!(
-            "[HistoryReplay] loaded {} entities from {} rows as of {}",
-            count,
-            rows.len(),
-            until
+        let sql = format!(
+            "
+            WITH changed AS (
+                SELECT DISTINCT item_type, item_id FROM {table} WHERE created_at > $1::timestamptz
+            )
+            SELECT coalesce(json_agg(json_build_object(
+                'item_type', c.item_type,
+                'item_id', c.item_id,
+                'value', CASE WHEN prior.change_type = 'SET' THEN prior.item END
+            )), '[]'::json)
+            FROM changed c
+            LEFT JOIN LATERAL (
+                SELECT e.change_type, e.event -> 'item' AS item
+                FROM {table} e
+                WHERE e.item_type = c.item_type
+                  AND e.item_id = c.item_id
+                  AND e.created_at <= $1::timestamptz
+                ORDER BY e.id DESC
+                LIMIT 1
+            ) prior ON true
+            "
         );
 
-        Ok(Arc::new(registry))
+        let until_owned = until.to_string();
+        let json: serde_json::Value = client
+            .query_one(&sql, &[&until_owned])
+            .map_err(|e| format!("restore_changes_since query failed: {e}"))?
+            .get(0);
+        let rows: Vec<ChangedRow> = serde_json::from_value(json)
+            .map_err(|e| format!("restore_changes_since deserialize failed: {e}"))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.item_type, r.item_id, r.value))
+            .collect())
     }
 }
 
@@ -653,18 +745,32 @@ fn run_consumer_loop(
         .query_one(&high_water_sql, &[])
         .map_err(|e| format_pg_error("query(high_water)", Some(&config.url), &e))?;
     let high_water: i64 = high_water_row.get(0);
+    // Snapshot: per entity, its latest event (to load the live store) plus the RFC3339
+    // `createdAt` of its *first* SET (`first_set_at`). The mutation index needs both the
+    // first-set time and the latest-event time to classify changes against a restore-point
+    // anchor; the single latest event alone can't reconstruct `created_at` after a restart.
+    // `first_set_at` is read from `event->>'createdAt'` (the original RFC3339 string the
+    // index compares lexicographically), not the reformatted `created_at` timestamptz.
     let snapshot_sql = format!(
         "
         WITH latest AS (
             SELECT DISTINCT ON (item_type, item_id)
-                id, change_type
+                id, item_type, item_id
             FROM {table}
             WHERE id <= $1
             ORDER BY item_type, item_id, id DESC
+        ),
+        first_set AS (
+            SELECT DISTINCT ON (item_type, item_id)
+                item_type, item_id, event ->> 'createdAt' AS first_set_at
+            FROM {table}
+            WHERE id <= $1 AND change_type = 'SET'
+            ORDER BY item_type, item_id, id ASC
         )
-        SELECT e.id, e.event::text
-        FROM latest
-        JOIN {table} e ON e.id = latest.id
+        SELECT e.id, fs.first_set_at, e.event::text
+        FROM latest l
+        JOIN {table} e ON e.id = l.id
+        LEFT JOIN first_set fs ON fs.item_type = l.item_type AND fs.item_id = l.item_id
         ORDER BY e.id ASC
         "
     );
@@ -672,18 +778,44 @@ fn run_consumer_loop(
         .query(&snapshot_sql, &[&high_water])
         .map_err(|e| format_pg_error("query(snapshot latest events)", Some(&config.url), &e))?;
     let snapshot_count = snapshot_rows.len();
+    let mutation_index = registry.mutation_index();
     for row in snapshot_rows {
         let id: i64 = row.get(0);
-        let event_json: String = row.get(1);
+        let first_set_at: Option<String> = row.get(1);
+        let event_json: String = row.get(2);
         match MEvent::from_str_trim(&event_json) {
             Ok(event) => {
-                apply_remote_event(event, host_id, &handler_registry, &registry);
+                // Seed the mutation index from bootstrap aggregates (not the incremental
+                // `record_event` path, which can't see first-set time during a snapshot).
+                if let Some(entity_id) = event.item.get("id").and_then(|v| v.as_str()) {
+                    // `last_at` is the latest event's own RFC3339 `createdAt`. Fall back to it
+                    // for `created_at` only in the anomalous no-SET-in-history case.
+                    let created_at = first_set_at.as_deref().unwrap_or(&event.created_at);
+                    match event.change_type {
+                        MEventType::SET => mutation_index.seed_live(
+                            &event.item_type,
+                            entity_id,
+                            created_at,
+                            &event.created_at,
+                        ),
+                        MEventType::DEL => mutation_index.seed_tombstone(
+                            &event.item_type,
+                            entity_id,
+                            created_at,
+                            &event.created_at,
+                            event.item.clone(),
+                        ),
+                    }
+                }
+                // Load the live store without re-indexing (the index is seeded above).
+                apply_remote_event(event, host_id, &handler_registry, &registry, false);
             }
             Err(err) => {
                 error!("Invalid postgres snapshot row id={id}: {err}");
             }
         }
     }
+    mutation_index.bump();
     info!(
         "Postgres snapshot loaded latest state rows={} high_water={}",
         snapshot_count, high_water
@@ -715,7 +847,7 @@ fn run_consumer_loop(
 
                 match MEvent::from_str_trim(&event_json) {
                     Ok(event) => {
-                        apply_remote_event(event, host_id, &handler_registry, &registry);
+                        apply_remote_event(event, host_id, &handler_registry, &registry, true);
                     }
                     Err(err) => {
                         error!("Invalid postgres event row id={id}: {err}");
@@ -805,10 +937,20 @@ fn apply_remote_event(
     host_id: &str,
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
+    record_index: bool,
 ) {
     let is_my_event = event.source_id.as_ref().is_some_and(|id| id == host_id);
     if is_my_event {
         return;
+    }
+
+    // Index remote mutations (this host's own events were already indexed at emit time via
+    // `produce_*`/`note_mutation`). The startup snapshot passes `record_index = false`: it
+    // seeds the index from per-entity bootstrap aggregates instead, since the incremental
+    // path can't reconstruct first-set time from a single latest-event-per-entity snapshot.
+    if record_index {
+        registry.mutation_index().record_event(&event);
+        registry.mutation_index().bump();
     }
 
     match event.change_type {
