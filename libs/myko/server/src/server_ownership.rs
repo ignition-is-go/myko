@@ -5,7 +5,6 @@ use std::{
 
 use myko::{
     entities::server::{GetAllServers, ServerId},
-    event::EventOptions,
     relationship::iter_server_owned_registrations,
     server::{CellServerCtx, PersistError},
 };
@@ -79,13 +78,9 @@ impl ServerOwnershipManager {
                 };
 
                 if let Some(patched) = item.bake_server_owner(&new_owner.0) {
-                    ctx.set_dyn_with_options(
-                        patched,
-                        Some(EventOptions {
-                            prevent_relationship_updates: true,
-                            ..Default::default()
-                        }),
-                    )?;
+                    // Server-ownership rebakes are Local (per the event-bus design):
+                    // re-emit the item normally rather than suppressing relationships.
+                    ctx.set_dyn(patched)?;
                     *counts.entry(new_owner.0.clone()).or_default() += 1;
                     reassigned += 1;
                 }

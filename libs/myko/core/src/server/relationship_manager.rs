@@ -89,7 +89,6 @@ use log::{debug, info, trace};
 use super::{CellServerCtx, persister::PersistError};
 use crate::{
     core::item::AnyItem,
-    event::EventOptions,
     relationship::{
         ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
         iter_relations,
@@ -1112,11 +1111,7 @@ impl RelationshipManager {
             item
         };
 
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-        ctx.set_dyn_with_options(item, Some(options))
+        ctx.set_dyn_with_origin(item, super::Origin::Cascade)
     }
 
     fn publish_set_cascade_batch(
@@ -1124,11 +1119,7 @@ impl RelationshipManager {
         ctx: &CellServerCtx,
         items: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-        ctx.batch_set_dyn_with_options(items, Some(options))
+        ctx.batch_set_dyn_with_origin(items, super::Origin::Cascade)
     }
 
     /// Publish a DEL for cascade operations.
@@ -1140,11 +1131,6 @@ impl RelationshipManager {
         entity_type: &str,
         id: &str,
     ) -> Result<(), PersistError> {
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-
         // Get the entity from the store
         let id_arc: Arc<str> = id.into();
         if let Some(item) = ctx.registry.get_or_create(entity_type).get_value(&id_arc) {
@@ -1152,7 +1138,7 @@ impl RelationshipManager {
                 "RelationshipManager: publish_del_cascade {} {} - entity found, deleting",
                 entity_type, id
             );
-            ctx.del_dyn_with_options(item, Some(options))?;
+            ctx.del_dyn_with_origin(item, super::Origin::Cascade)?;
         } else {
             trace!(
                 "RelationshipManager: publish_del_cascade {} {} - entity NOT found in store",
@@ -1172,11 +1158,7 @@ impl RelationshipManager {
             return Ok(());
         }
 
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-        ctx.batch_del_dyn_with_options(items, Some(options))
+        ctx.batch_del_dyn_with_origin(items, super::Origin::Cascade)
     }
 }
 
@@ -1312,7 +1294,7 @@ mod cascade_tests {
         assert!(exists(&registry, "branch"));
         assert!(exists(&registry, "leaf"));
 
-        ctx.del_with_options(&make_node("root", ""), None).unwrap();
+        ctx.del(&make_node("root", "")).unwrap();
 
         assert!(!exists(&registry, "root"), "root deleted");
         assert!(!exists(&registry, "branch"), "direct child deleted");
@@ -1331,7 +1313,7 @@ mod cascade_tests {
         ctx.set(&make_node("a", "b")).unwrap();
         ctx.set(&make_node("b", "a")).unwrap();
 
-        ctx.del_with_options(&make_node("a", "b"), None).unwrap();
+        ctx.del(&make_node("a", "b")).unwrap();
 
         assert!(!exists(&registry, "a"), "a deleted");
         assert!(

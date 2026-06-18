@@ -80,7 +80,7 @@ impl Origin {
     ///   it maps to `Remote` (and takes precedence).
     /// - `prevent_relationship_updates` is set only by cascade products → `Cascade`.
     /// - everything else is `Local`.
-    fn from_options(options: &EventOptions) -> Origin {
+    pub(crate) fn from_options(options: &EventOptions) -> Origin {
         if options.from_peer == Some(true) {
             Origin::Remote
         } else if options.prevent_relationship_updates {
@@ -506,10 +506,13 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        self.del_with_options(entity, None)
+        self.del_with_origin(entity, Origin::Local)
     }
 
     /// Delete an entity (DEL) with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del`](Self::del).
+    #[deprecated(note = "EventOptions is internal plumbing; use `del` instead")]
     pub fn del_with_options<T>(
         &self,
         entity: &T,
@@ -518,7 +521,17 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        let options = options.unwrap_or_default();
+        self.del_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    pub(crate) fn del_with_origin<T>(
+        &self,
+        entity: &T,
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + Clone + 'static,
+    {
         let entity_type = entity.entity_type();
         let id = entity.id();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
@@ -529,7 +542,7 @@ impl CellServerCtx {
         self.registry.get_or_create(entity_type).remove(&id);
 
         // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::DEL, Origin::from_options(&options))?;
+        self.apply_effects(&item, MEventType::DEL, origin)?;
 
         log::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
@@ -542,12 +555,13 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_set_with_options(entities, None)
+        self.batch_set_with_origin(entities, Origin::Local)
     }
 
     /// Publish a batch of entities (SET) with shared options.
     ///
-    /// This avoids manual `MEvent` construction and performs a grouped store insert.
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set`](Self::batch_set).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set` instead")]
     pub fn batch_set_with_options<T>(
         &self,
         entities: &[T],
@@ -556,11 +570,22 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
+        self.batch_set_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    /// Publish a batch of entities (SET) with one grouped store insert.
+    pub(crate) fn batch_set_with_origin<T>(
+        &self,
+        entities: &[T],
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + Clone + 'static,
+    {
         if entities.is_empty() {
             return Ok(());
         }
 
-        let options = options.unwrap_or_default();
         let entity_type = T::entity_name_static();
         let store = self.registry.get_or_create(entity_type);
 
@@ -577,8 +602,6 @@ impl CellServerCtx {
 
         // Reduce: one diff emission for the whole batch.
         store.insert_many(entries);
-
-        let origin = Origin::from_options(&options);
 
         // Relationships: run cascades unless this origin must not descend.
         if origin.should_cascade(MEventType::SET) {
@@ -605,12 +628,13 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_del_with_options(entities, None)
+        self.batch_del_with_origin(entities, Origin::Local)
     }
 
     /// Delete a batch of entities (DEL) with shared options.
     ///
-    /// This avoids manual `MEvent` construction and performs a grouped store remove.
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del`](Self::batch_del).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del` instead")]
     pub fn batch_del_with_options<T>(
         &self,
         entities: &[T],
@@ -619,11 +643,22 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
+        self.batch_del_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    /// Delete a batch of entities (DEL) with one grouped store remove.
+    pub(crate) fn batch_del_with_origin<T>(
+        &self,
+        entities: &[T],
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + Clone + 'static,
+    {
         if entities.is_empty() {
             return Ok(());
         }
 
-        let options = options.unwrap_or_default();
         let entity_type = T::entity_name_static();
         let store = self.registry.get_or_create(entity_type);
 
@@ -641,8 +676,6 @@ impl CellServerCtx {
 
         // Reduce: one diff emission for the whole batch.
         store.remove_many(ids);
-
-        let origin = Origin::from_options(&options);
 
         // Relationships: run cascades unless this origin must not descend.
         if origin.should_cascade(MEventType::DEL) {
@@ -668,16 +701,26 @@ impl CellServerCtx {
     ///
     /// Default behavior: Reduce + Relationships + Persist
     pub fn set_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.set_dyn_with_options(item, None)
+        self.set_dyn_with_origin(item, Origin::Local)
     }
 
     /// Publish a dynamic item (SET) with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`set_dyn`](Self::set_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `set_dyn` instead")]
     pub fn set_dyn_with_options(
         &self,
         item: Arc<dyn AnyItem>,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
+        self.set_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    pub(crate) fn set_dyn_with_origin(
+        &self,
+        item: Arc<dyn AnyItem>,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
         let entity_type = item.entity_type();
         let id = item.id();
 
@@ -689,23 +732,38 @@ impl CellServerCtx {
             .insert(id.clone(), item.clone());
 
         // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::SET, Origin::from_options(&options))?;
+        self.apply_effects(&item, MEventType::SET, origin)?;
 
         log::trace!("Published SET {}:{}", entity_type, id);
         Ok(())
     }
 
+    /// Publish a batch of dynamic items (SET).
+    pub fn batch_set_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        self.batch_set_dyn_with_origin(items, Origin::Local)
+    }
+
     /// Publish a batch of dynamic items (SET) with shared options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set_dyn`](Self::batch_set_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set_dyn` instead")]
     pub fn batch_set_dyn_with_options(
         &self,
         items: &[Arc<dyn AnyItem>],
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
+        self.batch_set_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    pub(crate) fn batch_set_dyn_with_origin(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        origin: Origin,
+    ) -> Result<(), PersistError> {
         if items.is_empty() {
             return Ok(());
         }
 
-        let options = options.unwrap_or_default();
         let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
             std::collections::BTreeMap::new();
 
@@ -729,7 +787,6 @@ impl CellServerCtx {
 
             store.insert_many(entries);
 
-            let origin = Origin::from_options(&options);
             if origin.should_cascade(MEventType::SET) {
                 for item in &typed_items {
                     self.relationship_manager.forward_set(item.clone(), self)?;
@@ -755,16 +812,26 @@ impl CellServerCtx {
     ///
     /// Default behavior: Reduce + Relationships + Persist
     pub fn del_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.del_dyn_with_options(item, None)
+        self.del_dyn_with_origin(item, Origin::Local)
     }
 
     /// Delete a dynamic item (DEL) with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_dyn`](Self::del_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `del_dyn` instead")]
     pub fn del_dyn_with_options(
         &self,
         item: Arc<dyn AnyItem>,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
+        self.del_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    pub(crate) fn del_dyn_with_origin(
+        &self,
+        item: Arc<dyn AnyItem>,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
         let entity_type = item.entity_type();
         let id = item.id();
 
@@ -774,23 +841,38 @@ impl CellServerCtx {
         self.registry.get_or_create(entity_type).remove(&id);
 
         // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::DEL, Origin::from_options(&options))?;
+        self.apply_effects(&item, MEventType::DEL, origin)?;
 
         log::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
     }
 
+    /// Publish a batch of dynamic items (DEL).
+    pub fn batch_del_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        self.batch_del_dyn_with_origin(items, Origin::Local)
+    }
+
     /// Publish a batch of dynamic items (DEL) with shared options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del_dyn`](Self::batch_del_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del_dyn` instead")]
     pub fn batch_del_dyn_with_options(
         &self,
         items: &[Arc<dyn AnyItem>],
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
+        self.batch_del_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    pub(crate) fn batch_del_dyn_with_origin(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        origin: Origin,
+    ) -> Result<(), PersistError> {
         if items.is_empty() {
             return Ok(());
         }
 
-        let options = options.unwrap_or_default();
         let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
             std::collections::BTreeMap::new();
 
@@ -814,7 +896,6 @@ impl CellServerCtx {
 
             store.remove_many(ids);
 
-            let origin = Origin::from_options(&options);
             if origin.should_cascade(MEventType::DEL) {
                 self.relationship_manager
                     .forward_del_batch(&typed_items, self)?;
@@ -835,13 +916,33 @@ impl CellServerCtx {
     /// where we must ensure a DEL event is produced to durable backend.
     ///
     /// Note: relationship cascades require the full item and are therefore skipped here.
+    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
+        self.del_by_id_with_origin(entity_type, id, Origin::Local)
+    }
+
+    /// Delete an entity by type/id with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_by_id`](Self::del_by_id).
+    #[deprecated(note = "EventOptions is internal plumbing; use `del_by_id` instead")]
     pub fn del_by_id_with_options(
         &self,
         entity_type: &str,
         id: &str,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let origin = Origin::from_options(&options.unwrap_or_default());
+        self.del_by_id_with_origin(
+            entity_type,
+            id,
+            Origin::from_options(&options.unwrap_or_default()),
+        )
+    }
+
+    pub(crate) fn del_by_id_with_origin(
+        &self,
+        entity_type: &str,
+        id: &str,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
         let id_arc: Arc<str> = id.into();
 
         let existing = self
@@ -872,11 +973,6 @@ impl CellServerCtx {
 
         log::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
-    }
-
-    /// Delete an entity by type/id with default options.
-    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
-        self.del_by_id_with_options(entity_type, id, None)
     }
 
     /// Apply a single wire event (parse -> reduce -> relationships -> persist).

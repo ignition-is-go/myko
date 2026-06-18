@@ -5,7 +5,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::CellServerCtx;
+use crate::server::{CellServerCtx, Origin};
 // Only the native emit paths build events / convert items to values.
 use crate::{
     command::CommandError, entities::client::ClientId, event::EventOptions, item::Eventable,
@@ -81,13 +81,25 @@ impl CommandContext {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
-        self.emit_set_with_options(item, EventOptions::default())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx.set(&*item).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = item;
+            unreachable!();
+        }
     }
 
     /// Emit a SET event for an item with custom options.
-    // Bridges to the deprecated `ctx.set_with_options` during the migration off
-    // public `EventOptions`; the call below is intentionally allowed.
-    #[allow(deprecated)]
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_set`](Self::emit_set).
+    #[deprecated(note = "EventOptions is internal plumbing; use `emit_set` instead")]
     pub fn emit_set_with_options<T>(
         &self,
         item: impl std::ops::Deref<Target = T>,
@@ -99,7 +111,7 @@ impl CommandContext {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.server_ctx
-                .set_with_options(&*item, Some(options))
+                .set_with_origin(&*item, Origin::from_options(&options))
                 .map_err(|e| CommandError {
                     tx: self.req.tx.to_string(),
                     command_id: self.command_id.to_string(),
@@ -210,7 +222,19 @@ impl CommandContext {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
-        self.emit_del_with_options(item, EventOptions::default())
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.server_ctx.del(&*item).map_err(|e| CommandError {
+                tx: self.req.tx.to_string(),
+                command_id: self.command_id.to_string(),
+                message: e.to_string(),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = item;
+            unreachable!();
+        }
     }
 
     /// Emit a batch of DEL events for items.
@@ -265,6 +289,9 @@ impl CommandContext {
     }
 
     /// Emit a DEL event for an item with custom options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_del`](Self::emit_del).
+    #[deprecated(note = "EventOptions is internal plumbing; use `emit_del` instead")]
     pub fn emit_del_with_options<T>(
         &self,
         item: impl std::ops::Deref<Target = T>,
@@ -276,7 +303,7 @@ impl CommandContext {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.server_ctx
-                .del_with_options(&*item, Some(options))
+                .del_with_origin(&*item, Origin::from_options(&options))
                 .map_err(|e| CommandError {
                     tx: self.req.tx.to_string(),
                     command_id: self.command_id.to_string(),
