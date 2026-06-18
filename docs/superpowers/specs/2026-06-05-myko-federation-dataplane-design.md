@@ -54,7 +54,7 @@ This design rides on two foundational changes; neither is optional.
 
 ### 3.1 Prereq 0 — Event Bus Unification
 
-See `2026-06-17-event-bus-unification-design.md`. Collapses the nine mutation pipelines into **one `apply_effects` path keyed by an `Origin` enum** (`Local` / `Cascade` / `Remote`). This design depends on it for three reasons:
+**Status: landed (PR #25).** The mutation pipeline is unified behind one `Origin` enum (`Local` / `Cascade` / `Remote`): batch-first emission via `emit_grouped` over a shared `apply_effects` tail, with single-item as a no-alloc wrapper. This design depends on it for three reasons:
 
 1. **It is the single apply chokepoint** where the LWW guard (§6) and the dataplane's ingest classification live — instead of being smeared across nine pipelines.
 2. **It makes "sagas only fire on local events" structural.** `Origin::Remote` does not `produce`, and `produce_*` is what feeds the saga `event_sink`; so peer-replicated events never reach sagas. This is the loop/echo correctness the dataplane relies on.
