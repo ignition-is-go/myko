@@ -103,6 +103,40 @@ The server owns one **iroh `Endpoint`** (single UDP socket, multiplexing all pee
 
 > The existing `PeerRegistry` connection-management role is reframed onto the iroh endpoint; pairing (§9) supplies NodeIds instead of `wss://` URLs.
 
+### 5.1 Peer-vs-client distinction is connection-level (not per-event)
+
+The apply pipeline routes peer-replicated events to `Origin::Remote` (apply +
+index only — no cascade, no produce/echo). The question is *how the receiver
+knows an inbound event came from a peer rather than a client*.
+
+**Decision: that distinction is a property of the connection, established by the
+iroh peer ALPN — not a flag carried on each event.** Peer links use a dedicated
+peer protocol (its own ALPN on the shared endpoint), distinct from client
+connections. The peer protocol handler applies inbound events as
+`Origin::Remote`; the client path stays `Origin::Local`. Nothing needs to ride
+on the `MEvent` wire to convey it.
+
+This supersedes the interim WS approach. Background: the legacy WS mesh has **no
+connection-level discriminator** — peers and clients share the same `/myko`
+endpoint — so an earlier iteration tagged each event with an
+`EventOptions::from_peer` flag on the wire. That flag (and the entire
+`EventOptions`/`options` field on `MEvent`) has since been **removed**
+(event-bus unification, Prereq 0). Consequences *while the peer plane is still
+WS*:
+
+- Peer-replicated events ingested over WS are indistinguishable from client
+  events, so they apply as `Origin::Local` and therefore **re-cascade and
+  re-produce (echo)**. This is a knowingly-accepted temporary gap, not a design
+  position.
+- `Origin::Remote` and its `should_cascade`/`should_produce` wiring are **kept
+  in place** (currently unconstructed, `#[allow(dead_code)]`) precisely so the
+  iroh peer handler reconnects it with no changes to the apply pipeline.
+- The DB-tail path is unaffected — it already skips `source_id == host_id` and
+  never cascades or produces.
+
+Net: this gap closes *for free* when the peer plane becomes iroh; it is
+deliberately **not** patched back into WS.
+
 ## 6. Conflict model: LWW
 
 ### 6.1 Resolution rule
@@ -246,7 +280,7 @@ A node knows its **directly-paired** peers. Data converges transitively two ways
 - `libs/myko/server/src/peer_persister.rs` — **retired** as a manual fan-out; replaced by `DataplanePersister` broadcasting to a gossip topic.
 - `libs/myko/core/src/server/persister.rs` — `PersisterRouter`; dataplane registers here. `BlackholePersister` still handles per-type ephemerality.
 - `libs/myko/core/src/server/context.rs` — the unified `apply_effects` (Prereq 0) hosts the LWW guard (Prereq 1) and `Origin::Remote` ingest.
-- `libs/myko/core/src/wire/event/mod.rs` (`MEvent`) — **no change** (LWW uses existing `created_at`; identity uses NodeId as `source_id`). Confirm the dead `EventOptions`/`from_peer` cleanup from Prereq 0 has landed.
+- `libs/myko/core/src/wire/event/mod.rs` (`MEvent`) — LWW uses the existing `created_at`; identity uses NodeId as `source_id`. The `options`/`EventOptions` field has already been **removed** from `MEvent` (Prereq 0); peer-vs-client is connection-level (§5.1), not a wire flag.
 - `libs/myko/core/src/search/index.rs` — pattern to mirror for the Merkle anti-entropy index (keyed on existing `hash`).
 - `libs/myko/core/src/entities/server.rs` — `Server` metadata stays; add framework `Peer` entity alongside. (No `Conflict` entity — retired.)
 - `libs/myko/macros` — possible `#[federated]` marker for scoping participating types.
