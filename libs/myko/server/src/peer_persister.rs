@@ -58,9 +58,14 @@ impl PeerPersister {
 }
 
 impl Persister for PeerPersister {
-    fn persist(&self, event: MEvent) -> Result<(), PersistError> {
+    fn persist(&self, mut event: MEvent) -> Result<(), PersistError> {
         let entity_type = event.item_type.clone();
         self.health.record_enqueue();
+
+        // Mark the replicated copy so the receiving peer applies it as
+        // `Origin::Remote` (store + index only — no cascade, no re-produce) and
+        // does not echo it back around the mesh.
+        event.options.get_or_insert_with(Default::default).from_peer = Some(true);
 
         // No peers currently connected — nothing to broadcast. Local apply
         // already happened on the emit-side, so this is a valid no-op.

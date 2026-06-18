@@ -67,15 +67,24 @@ pub(crate) enum Origin {
     Local,
     /// A relationship cascade product — a consequence of another mutation here.
     Cascade,
+    /// An event replicated from a peer server: already durable and already
+    /// cascaded at its origin. Applied to the store + search index only — it must
+    /// not cascade (the origin already replicated its cascade products) and must
+    /// not produce (which would echo it back around the peer mesh).
+    Remote,
 }
 
 impl Origin {
-    /// Bridge the legacy `EventOptions` loop-guard flag to an `Origin`.
+    /// Bridge the `EventOptions` loop-guard flags to an `Origin`.
     ///
-    /// `prevent_relationship_updates` was set only by cascade products, so it
-    /// maps to `Cascade`; everything else is `Local`. Behavior-preserving.
+    /// - `from_peer` is set by `PeerPersister` on events replicated to peers, so
+    ///   it maps to `Remote` (and takes precedence).
+    /// - `prevent_relationship_updates` is set only by cascade products → `Cascade`.
+    /// - everything else is `Local`.
     fn from_options(options: &EventOptions) -> Origin {
-        if options.prevent_relationship_updates {
+        if options.from_peer == Some(true) {
+            Origin::Remote
+        } else if options.prevent_relationship_updates {
             Origin::Cascade
         } else {
             Origin::Local
@@ -100,16 +109,18 @@ impl Origin {
         match self {
             Origin::Local => true,
             Origin::Cascade => change == MEventType::DEL,
+            Origin::Remote => false,
         }
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
     ///
-    /// Always true today: `prevent_persist` is a dead flag (never set), and
-    /// per-type durability is handled by the persister router
-    /// (`BlackholePersister`), not a per-event flag.
+    /// `Remote` events are already durable and already cascaded at their origin,
+    /// so re-producing them would echo them back around the peer mesh. Everything
+    /// else produces (`prevent_persist` is a dead flag; per-type durability is
+    /// the persister router's job via `BlackholePersister`).
     fn should_produce(self) -> bool {
-        true
+        self != Origin::Remote
     }
 }
 
