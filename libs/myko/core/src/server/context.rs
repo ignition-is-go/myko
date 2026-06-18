@@ -49,8 +49,6 @@ use crate::{
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
-type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
-type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
@@ -481,21 +479,9 @@ impl CellServerCtx {
     where
         T: Eventable + 'static,
     {
-        let id = entity.id();
-        let entity_type = entity.entity_type();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-
-        // Reduce: update store
-        self.registry
-            .get_or_create(entity_type)
-            .insert(id.clone(), item.clone());
-
-        crate::server::entity_set_stats::record_set(entity_type);
-
-        // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::SET, origin)?;
-
-        Ok(())
+        self.reduce_one(&item, MEventType::SET);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
     }
 
     /// Delete an entity (DEL) with default options.
@@ -531,20 +517,9 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        let entity_type = entity.entity_type();
-        let id = entity.id();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-
-        crate::server::entity_set_stats::record_del(entity_type);
-
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id);
-
-        // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::DEL, origin)?;
-
-        log::trace!("Published DEL {}:{}", entity_type, id);
-        Ok(())
+        self.reduce_one(&item, MEventType::DEL);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
     }
 
     /// Publish a batch of entities (SET) with default options.
@@ -584,40 +559,11 @@ impl CellServerCtx {
         if entities.is_empty() {
             return Ok(());
         }
-
-        let entity_type = T::entity_name_static();
-        let store = self.registry.get_or_create(entity_type);
-
-        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(entities.len());
-        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
-
-        for entity in entities {
-            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            crate::server::entity_set_stats::record_set(entity_type);
-            self.search_index.index_item(&item);
-            entries.push((entity.id(), item.clone()));
-            items.push(item);
-        }
-
-        // Reduce: one diff emission for the whole batch.
-        store.insert_many(entries);
-
-        // Relationships: run cascades unless this origin must not descend.
-        if origin.should_cascade(MEventType::SET) {
-            for item in &items {
-                self.relationship_manager.forward_set(item.clone(), self)?;
-            }
-        }
-
-        // Persist: produce to persisters + sink unless this origin must not.
-        if origin.should_produce() {
-            for item in &items {
-                self.produce_set_dyn(item)?;
-            }
-        }
-
-        log::trace!("Published batch SET {} count={}", entity_type, items.len());
-        Ok(())
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .iter()
+            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .collect();
+        self.emit_grouped(&items, MEventType::SET, origin)
     }
 
     /// Delete a batch of entities (DEL) with default options.
@@ -657,39 +603,11 @@ impl CellServerCtx {
         if entities.is_empty() {
             return Ok(());
         }
-
-        let entity_type = T::entity_name_static();
-        let store = self.registry.get_or_create(entity_type);
-
-        let mut ids: Vec<Arc<str>> = Vec::with_capacity(entities.len());
-        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
-
-        for entity in entities {
-            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            let id = item.id();
-            crate::server::entity_set_stats::record_del(entity_type);
-            self.search_index.remove_entity(entity_type, &id);
-            ids.push(id);
-            items.push(item);
-        }
-
-        // Reduce: one diff emission for the whole batch.
-        store.remove_many(ids);
-
-        // Relationships: run cascades unless this origin must not descend.
-        if origin.should_cascade(MEventType::DEL) {
-            self.relationship_manager.forward_del_batch(&items, self)?;
-        }
-
-        // Persist: produce to persisters + sink unless this origin must not.
-        if origin.should_produce() {
-            for item in &items {
-                self.produce_del_dyn(item)?;
-            }
-        }
-
-        log::trace!("Published batch DEL {} count={}", entity_type, items.len());
-        Ok(())
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .iter()
+            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .collect();
+        self.emit_grouped(&items, MEventType::DEL, origin)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -720,21 +638,8 @@ impl CellServerCtx {
         item: Arc<dyn AnyItem>,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        let entity_type = item.entity_type();
-        let id = item.id();
-
-        crate::server::entity_set_stats::record_set(entity_type);
-
-        // Reduce: update store
-        self.registry
-            .get_or_create(entity_type)
-            .insert(id.clone(), item.clone());
-
-        // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::SET, origin)?;
-
-        log::trace!("Published SET {}:{}", entity_type, id);
-        Ok(())
+        self.reduce_one(&item, MEventType::SET);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
     }
 
     /// Publish a batch of dynamic items (SET).
@@ -759,52 +664,7 @@ impl CellServerCtx {
         items: &[Arc<dyn AnyItem>],
         origin: Origin,
     ) -> Result<(), PersistError> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
-        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-
-        for item in items {
-            items_by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        for (entity_type, typed_items) in items_by_type {
-            let store = self.registry.get_or_create(entity_type);
-            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
-                Vec::with_capacity(typed_items.len());
-
-            for item in &typed_items {
-                crate::server::entity_set_stats::record_set(entity_type);
-                self.search_index.index_item(item);
-                entries.push((item.id(), item.clone()));
-            }
-
-            store.insert_many(entries);
-
-            if origin.should_cascade(MEventType::SET) {
-                for item in &typed_items {
-                    self.relationship_manager.forward_set(item.clone(), self)?;
-                }
-            }
-
-            if origin.should_produce() {
-                for item in &typed_items {
-                    self.produce_set_dyn(item)?;
-                }
-            }
-
-            log::trace!(
-                "Published batch SET {} count={}",
-                entity_type,
-                typed_items.len()
-            );
-        }
-        Ok(())
+        self.emit_grouped(items, MEventType::SET, origin)
     }
 
     /// Delete a dynamic item (DEL) with default options.
@@ -831,19 +691,8 @@ impl CellServerCtx {
         item: Arc<dyn AnyItem>,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        let entity_type = item.entity_type();
-        let id = item.id();
-
-        crate::server::entity_set_stats::record_del(entity_type);
-
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id);
-
-        // Search + relationships + persist.
-        self.apply_effects(&item, MEventType::DEL, origin)?;
-
-        log::trace!("Published DEL {}:{}", entity_type, id);
-        Ok(())
+        self.reduce_one(&item, MEventType::DEL);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
     }
 
     /// Publish a batch of dynamic items (DEL).
@@ -868,45 +717,7 @@ impl CellServerCtx {
         items: &[Arc<dyn AnyItem>],
         origin: Origin,
     ) -> Result<(), PersistError> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
-        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-
-        for item in items {
-            items_by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        for (entity_type, typed_items) in items_by_type {
-            let store = self.registry.get_or_create(entity_type);
-            let mut ids: Vec<Arc<str>> = Vec::with_capacity(typed_items.len());
-
-            for item in &typed_items {
-                let id = item.id();
-                crate::server::entity_set_stats::record_del(entity_type);
-                self.search_index.remove_entity(entity_type, &id);
-                ids.push(id);
-            }
-
-            store.remove_many(ids);
-
-            if origin.should_cascade(MEventType::DEL) {
-                self.relationship_manager
-                    .forward_del_batch(&typed_items, self)?;
-            }
-
-            if origin.should_produce() {
-                for item in &typed_items {
-                    self.produce_del_dyn(item)?;
-                }
-            }
-        }
-        Ok(())
+        self.emit_grouped(items, MEventType::DEL, origin)
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -1029,41 +840,25 @@ impl CellServerCtx {
         }
         let input_len = events.len();
 
-        #[derive(Clone)]
-        struct SetOp {
-            item: Arc<dyn AnyItem>,
-        }
-
-        #[derive(Clone)]
-        struct DelOp {
-            item: Arc<dyn AnyItem>,
-        }
-
-        let mut sets: Vec<SetOp> = Vec::new();
-        let mut dels: Vec<DelOp> = Vec::new();
+        let mut set_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        let mut del_items: Vec<Arc<dyn AnyItem>> = Vec::new();
 
         for event in events {
+            let change = event.change_type;
             let item_type = event.item_type;
             let item_value = event.item;
-            match event.change_type {
-                MEventType::SET => {
-                    if let Some(item) = self.parse_item(&item_type, item_value) {
-                        sets.push(SetOp { item });
-                    } else {
-                        log::warn!("Unknown entity type or parse error for SET: {item_type}");
-                    }
-                }
-                MEventType::DEL => {
-                    if let Some(item) = self.parse_item(&item_type, item_value) {
-                        dels.push(DelOp { item });
-                    } else {
-                        log::warn!("Unknown entity type or parse error for DEL: {item_type}");
-                    }
-                }
+            let Some(item) = self.parse_item(&item_type, item_value) else {
+                log::warn!("Unknown entity type or parse error for ingest: {item_type}");
+                continue;
+            };
+            match change {
+                MEventType::SET => set_items.push(item),
+                MEventType::DEL => del_items.push(item),
             }
         }
 
-        if sets.is_empty() && dels.is_empty() {
+        let applied = set_items.len() + del_items.len();
+        if applied == 0 {
             return Ok(0);
         }
 
@@ -1071,95 +866,16 @@ impl CellServerCtx {
             target: "myko::server::context",
             "apply_event_batch parsed: input_events={} sets={} dels={}",
             input_len,
-            sets.len(),
-            dels.len()
+            set_items.len(),
+            del_items.len()
         );
 
-        let mut inserts_by_type: AnyItemEntriesByType = HashMap::new();
-        let mut removes_by_type: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        // Ingested wire events are Local (cascade + produce); the shared batch
+        // path groups by type, reduces, then runs the cascade/produce tail.
+        self.emit_grouped(&set_items, MEventType::SET, Origin::Local)?;
+        self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
 
-        for op in &sets {
-            let entity_type: Arc<str> = op.item.entity_type().into();
-            let id = op.item.id();
-            crate::server::entity_set_stats::record_set(&entity_type);
-            inserts_by_type
-                .entry(entity_type)
-                .or_default()
-                .push((id, op.item.clone()));
-            self.search_index.index_item(&op.item);
-        }
-        for op in &dels {
-            let entity_type_static = op.item.entity_type();
-            let entity_type: Arc<str> = entity_type_static.into();
-            let id = op.item.id();
-            crate::server::entity_set_stats::record_del(&entity_type);
-            removes_by_type
-                .entry(entity_type)
-                .or_default()
-                .push(id.clone());
-            self.search_index.remove_entity(entity_type_static, &id);
-        }
-
-        // Reduce: one diff emission per entity type per operation kind.
-        for (entity_type, entries) in inserts_by_type {
-            log::trace!(
-                target: "myko::server::context",
-                "apply_event_batch reduce inserts: entity_type={} count={}",
-                entity_type,
-                entries.len()
-            );
-            let store = self.registry.get_or_create(entity_type.as_ref());
-            let count = entries.len();
-            let before = store.snapshot().len();
-            store.insert_many(entries);
-            let after = store.snapshot().len();
-            if after != before || count > 100 {
-                log::info!(
-                    "insert_many {}: submitted={} store_before={} store_after={} net_new={}",
-                    entity_type,
-                    count,
-                    before,
-                    after,
-                    after as i64 - before as i64
-                );
-            }
-        }
-        for (entity_type, keys) in removes_by_type {
-            log::trace!(
-                target: "myko::server::context",
-                "apply_event_batch reduce removes: entity_type={} count={}",
-                entity_type,
-                keys.len()
-            );
-            let store = self.registry.get_or_create(entity_type.as_ref());
-            store.remove_many(keys);
-        }
-
-        // Relationships — ingested events are Local, so they always cascade.
-        for op in &sets {
-            self.relationship_manager
-                .forward_set(op.item.clone(), self)?;
-        }
-        let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
-        for op in &dels {
-            dels_with_relationships
-                .entry(op.item.entity_type().into())
-                .or_default()
-                .push(op.item.clone());
-        }
-        for (_, items) in dels_with_relationships {
-            self.relationship_manager.forward_del_batch(&items, self)?;
-        }
-
-        // Persist — ingested events are Local, so they always produce.
-        for op in &sets {
-            self.produce_set_dyn(&op.item)?;
-        }
-        for op in &dels {
-            self.produce_del_dyn(&op.item)?;
-        }
-
-        Ok(sets.len() + dels.len())
+        Ok(applied)
     }
 
     fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
@@ -1260,44 +976,142 @@ impl CellServerCtx {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // shared post-reduce tail
+    // shared emission pipeline (batch is first-class; single is a thin wrapper)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Shared post-reduce tail for a single-item mutation: search index update,
-    /// relationship cascade (gated by `origin`), and produce (gated by `origin`).
+    /// Single-item store reduce — **no allocation**. Records the stat and applies
+    /// the store insert/remove for one item. Paired with
+    /// `apply_effects(slice::from_ref(&item), …)` by the single-item entry points
+    /// so a single mutation never allocates a Vec or groups by type.
+    fn reduce_one(&self, item: &Arc<dyn AnyItem>, change: MEventType) {
+        let entity_type = item.entity_type();
+        match change {
+            MEventType::SET => {
+                crate::server::entity_set_stats::record_set(entity_type);
+                self.registry
+                    .get_or_create(entity_type)
+                    .insert(item.id(), item.clone());
+            }
+            MEventType::DEL => {
+                crate::server::entity_set_stats::record_del(entity_type);
+                self.registry.get_or_create(entity_type).remove(&item.id());
+            }
+        }
+    }
+
+    /// The batch emission path (first-class). Groups `items` by entity type,
+    /// applies one grouped store reduce per type (a single store diff each) for
+    /// **all** groups before any cascade runs, then runs the shared
+    /// `apply_effects` tail per (same-type) group.
     ///
-    /// Every single-item entry point calls this after its specialized reduce
-    /// (the typed fast path keeps its direct `Arc` store insert). Produce always
-    /// goes through the type-erased path, which is equivalent to the typed one
-    /// (`MEvent::from_item` ≡ `MEvent::set_from_value(item.to_value())`, modulo
-    /// the always-fresh `created_at`/`tx`).
+    /// Every batch entry point and the wire-ingest path funnel through here. The
+    /// single-item entry points deliberately do **not** — they call
+    /// `reduce_one` + `apply_effects` directly to avoid the grouping/Vec cost.
+    fn emit_grouped(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let mut by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
+            std::collections::BTreeMap::new();
+        for item in items {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .push(item.clone());
+        }
+
+        // Reduce: one store diff per type, across all groups, before any cascade
+        // (so the store is fully settled — load-bearing for transitive cascade).
+        for (entity_type, group) in &by_type {
+            let store = self.registry.get_or_create(entity_type);
+            match change {
+                MEventType::SET => {
+                    let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
+                        Vec::with_capacity(group.len());
+                    for item in group {
+                        crate::server::entity_set_stats::record_set(entity_type);
+                        entries.push((item.id(), item.clone()));
+                    }
+                    store.insert_many(entries);
+                }
+                MEventType::DEL => {
+                    let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
+                    for item in group {
+                        crate::server::entity_set_stats::record_del(entity_type);
+                        ids.push(item.id());
+                    }
+                    store.remove_many(ids);
+                }
+            }
+        }
+
+        // Effects: search + cascade + produce, per same-type group.
+        for group in by_type.values() {
+            self.apply_effects(group, change, origin)?;
+        }
+        Ok(())
+    }
+
+    /// Shared post-reduce tail: search index, relationship cascade (gated by
+    /// `origin`), and produce (gated by `origin`).
+    ///
+    /// Operates on a slice of items **of the same entity type** whose store
+    /// reduce has already run. Single-item callers pass `slice::from_ref(&item)`
+    /// (zero alloc); `emit_grouped` passes each type-group. The type-erased
+    /// produce path is equivalent to the typed one (`MEvent::from_item` ≡
+    /// `MEvent::set_from_value(item.to_value())`, modulo the fresh `created_at`/`tx`).
     fn apply_effects(
         &self,
-        item: &Arc<dyn AnyItem>,
+        items: &[Arc<dyn AnyItem>],
         change: MEventType,
         origin: Origin,
     ) -> Result<(), PersistError> {
         // Search: index searchable fields.
         match change {
-            MEventType::SET => self.search_index.index_item(item),
-            MEventType::DEL => self
-                .search_index
-                .remove_entity(item.entity_type(), &item.id()),
+            MEventType::SET => {
+                for item in items {
+                    self.search_index.index_item(item);
+                }
+            }
+            MEventType::DEL => {
+                for item in items {
+                    self.search_index
+                        .remove_entity(item.entity_type(), &item.id());
+                }
+            }
         }
 
         // Relationships: run cascades unless this origin must not descend.
         if origin.should_cascade(change) {
             match change {
-                MEventType::SET => self.relationship_manager.forward_set(item.clone(), self)?,
-                MEventType::DEL => self.relationship_manager.forward_del(item.clone(), self)?,
+                MEventType::SET => {
+                    for item in items {
+                        self.relationship_manager.forward_set(item.clone(), self)?;
+                    }
+                }
+                MEventType::DEL => self.relationship_manager.forward_del_batch(items, self)?,
             }
         }
 
         // Persist: produce to persisters + sink unless this origin must not.
         if origin.should_produce() {
             match change {
-                MEventType::SET => self.produce_set_dyn(item)?,
-                MEventType::DEL => self.produce_del_dyn(item)?,
+                MEventType::SET => {
+                    for item in items {
+                        self.produce_set_dyn(item)?;
+                    }
+                }
+                MEventType::DEL => {
+                    for item in items {
+                        self.produce_del_dyn(item)?;
+                    }
+                }
             }
         }
 
