@@ -25,7 +25,9 @@
 //! - [`StoreRegistry`]: Central registry managing all entity stores
 
 mod entity_store;
+mod lww;
 mod registry;
 
 pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
+pub use lww::LwwStamp;
 pub use registry::StoreRegistry;
