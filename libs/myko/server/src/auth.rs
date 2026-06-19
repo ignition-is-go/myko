@@ -100,6 +100,17 @@ pub struct Verifier {
     config: AuthConfig,
     http: reqwest::Client,
     keys: RwLock<KeyCache>,
+    /// Single-flight guard: collapses a burst of concurrent re-warms (e.g. every
+    /// in-flight command after a key rotation) into one JWKS fetch.
+    warming: std::sync::atomic::AtomicBool,
+}
+
+/// Resets the single-flight guard on every exit path of `warm` (incl. `?`).
+struct WarmGuard<'a>(&'a std::sync::atomic::AtomicBool);
+impl Drop for WarmGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 #[derive(Default)]
@@ -140,6 +151,7 @@ impl Verifier {
             config,
             http: reqwest::Client::new(),
             keys: RwLock::new(KeyCache::default()),
+            warming: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -148,11 +160,24 @@ impl Verifier {
     /// `kid` appears); afterwards verification is sync against the cached keys.
     /// Rate-limited so a flood of bad `kid`s can't hammer the IdP.
     pub async fn warm(&self) -> Result<(), AuthError> {
+        use std::sync::atomic::Ordering;
+
         if let Some(last) = self.keys.read().unwrap().last_fetch
             && last.elapsed() < JWKS_MIN_REFETCH
         {
             return Ok(());
         }
+
+        // Single-flight: if a warm is already running, let it do the fetch — a
+        // burst of concurrent UnknownKey re-warms collapses to one JWKS GET.
+        if self
+            .warming
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let _guard = WarmGuard(&self.warming);
 
         let jwks: Jwks = self
             .http
