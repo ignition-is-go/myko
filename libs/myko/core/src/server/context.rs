@@ -204,6 +204,23 @@ pub struct CellServerCtx {
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+    /// Optional per-command authorizer. `None` ⇒ no auth: command dispatch
+    /// skips the check entirely (the default; zero overhead). Set by the server
+    /// when auth is configured (e.g. an OIDC/JWT verifier).
+    command_authorizer: Option<Arc<dyn CommandAuthorizer>>,
+}
+
+/// Authorizes individual commands when the server has auth configured. Defined
+/// in core (transport-agnostic, no crypto deps); the server supplies the impl
+/// (e.g. an OIDC/JWT verifier in `myko-server`). Sync to match myko's trait
+/// convention — implementations pre-warm any key material so a check needs no
+/// I/O. When no authorizer is set, the command path never calls this.
+pub trait CommandAuthorizer: Send + Sync {
+    /// `Ok(())` allows the command; `Err(reason)` rejects it (the reason is
+    /// returned to the caller as a command error). `command_id` is the command
+    /// type name; `user_token` is the optional bearer token off the wire
+    /// envelope.
+    fn authorize(&self, command_id: &str, user_token: Option<&str>) -> Result<(), String>;
 }
 
 impl CellServerCtx {
@@ -236,7 +253,19 @@ impl CellServerCtx {
             compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
+            command_authorizer: None,
         }
+    }
+
+    /// Attach a per-command authorizer (server-side, when auth is configured).
+    pub fn with_command_authorizer(mut self, authorizer: Arc<dyn CommandAuthorizer>) -> Self {
+        self.command_authorizer = Some(authorizer);
+        self
+    }
+
+    /// The per-command authorizer, if auth is configured. `None` ⇒ skip auth.
+    pub fn command_authorizer(&self) -> Option<&Arc<dyn CommandAuthorizer>> {
+        self.command_authorizer.as_ref()
     }
 
     fn cache_key<T: CacheKey>(

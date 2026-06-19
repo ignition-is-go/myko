@@ -478,6 +478,7 @@ pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
         command::CommandOptions {
             result_type: None,
             custom_serialize: false,
+            public: false,
         }
     } else {
         parse_macro_input!(attr as CommandArgs).into()
@@ -489,6 +490,7 @@ pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
 struct CommandArgs {
     result_type: Option<syn::Path>,
     custom_serialize: bool,
+    public: bool,
 }
 
 impl From<CommandArgs> for command::CommandOptions {
@@ -496,6 +498,7 @@ impl From<CommandArgs> for command::CommandOptions {
         Self {
             result_type: value.result_type,
             custom_serialize: value.custom_serialize,
+            public: value.public,
         }
     }
 }
@@ -505,6 +508,7 @@ impl Parse for CommandArgs {
         let args = Punctuated::<syn::Path, Token![,]>::parse_terminated(input)?;
         let mut result_type = None;
         let mut custom_serialize = false;
+        let mut public = false;
 
         for path in args {
             if path.is_ident("custom_serialize") {
@@ -515,6 +519,16 @@ impl Parse for CommandArgs {
                     ));
                 }
                 custom_serialize = true;
+                continue;
+            }
+
+            // Opt out of per-command auth verification (callable without a user
+            // token even when the server has auth configured).
+            if path.is_ident("public") {
+                if public {
+                    return Err(syn::Error::new(path.span(), "duplicate public flag"));
+                }
+                public = true;
                 continue;
             }
 
@@ -531,6 +545,7 @@ impl Parse for CommandArgs {
         Ok(Self {
             result_type,
             custom_serialize,
+            public,
         })
     }
 }

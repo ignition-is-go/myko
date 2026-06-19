@@ -95,6 +95,7 @@ impl From<&dyn AnyCommand> for WrappedCommand {
         WrappedCommand {
             command: command.to_value(),
             command_id: command.command_id().to_string(),
+            user_token: None,
         }
     }
 }

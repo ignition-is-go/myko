@@ -1179,29 +1179,65 @@ impl WsHandler {
 
                 log::trace!("Command {} (tx: {})", command_id, tx_id,);
                 let received_at = Instant::now();
-                if let Ok(mut map) = command_started_by_tx.lock() {
-                    map.insert(tx_id.clone(), received_at);
-                }
-                if let Err(e) = command_tx.send(CommandJob {
-                    tx_id: tx_id.clone(),
-                    command_id: wrapped.command_id.clone(),
-                    command: wrapped.command.clone(),
-                    received_at,
-                }) {
-                    log::error!(
-                        "Failed to enqueue command {} for client {} tx={}: {}",
-                        command_id,
-                        session.client_id,
-                        tx_id,
-                        e
-                    );
-                    let error = MykoMessage::CommandError(CommandError {
-                        tx: tx_id.to_string(),
-                        command_id: command_id.to_string(),
-                        message: "Command queue unavailable".to_string(),
-                    });
-                    if let Err(err) = priority_tx.try_send(error) {
-                        drop_logger.on_drop("CommandError", &err);
+
+                // Per-command auth: when an authorizer is configured, verify the
+                // command's user_token before enqueueing (commands flagged
+                // `#[myko_command(.., public)]` pass). No authorizer ⇒ skip — the
+                // default, zero overhead. Reads/queries/views are never gated.
+                let authorized = match ctx.command_authorizer() {
+                    None => true,
+                    Some(authorizer) => {
+                        match authorizer
+                            .authorize(&wrapped.command_id, wrapped.user_token.as_deref())
+                        {
+                            Ok(()) => true,
+                            Err(reason) => {
+                                log::warn!(
+                                    "Command rejected (auth) client={} tx={} command_id={}: {}",
+                                    session.client_id,
+                                    tx_id,
+                                    command_id,
+                                    reason
+                                );
+                                let error = MykoMessage::CommandError(CommandError {
+                                    tx: tx_id.to_string(),
+                                    command_id: command_id.to_string(),
+                                    message: format!("unauthorized: {reason}"),
+                                });
+                                if let Err(err) = priority_tx.try_send(error) {
+                                    drop_logger.on_drop("CommandError", &err);
+                                }
+                                false
+                            }
+                        }
+                    }
+                };
+
+                if authorized {
+                    if let Ok(mut map) = command_started_by_tx.lock() {
+                        map.insert(tx_id.clone(), received_at);
+                    }
+                    if let Err(e) = command_tx.send(CommandJob {
+                        tx_id: tx_id.clone(),
+                        command_id: wrapped.command_id.clone(),
+                        command: wrapped.command.clone(),
+                        received_at,
+                    }) {
+                        log::error!(
+                            "Failed to enqueue command {} for client {} tx={}: {}",
+                            command_id,
+                            session.client_id,
+                            tx_id,
+                            e
+                        );
+                        let error = MykoMessage::CommandError(CommandError {
+                            tx: tx_id.to_string(),
+                            command_id: command_id.to_string(),
+                            message: "Command queue unavailable".to_string(),
+                        });
+                        if let Err(err) = priority_tx.try_send(error) {
+                            drop_logger.on_drop("CommandError", &err);
+                        }
                     }
                 }
             }

@@ -9,6 +9,9 @@
 //!
 //! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko::server`.
 
+/// Optional OIDC/JWT auth on the WS handshake (feature `auth`).
+#[cfg(feature = "auth")]
+pub mod auth;
 pub mod mcp;
 pub mod peer_persister;
 pub mod peer_registry;
@@ -83,6 +86,10 @@ pub struct CellServerBuilder {
     /// set; binaries override this to advertise their own name / version /
     /// instructions on the `/myko/mcp` endpoint.
     server_info: Option<mcp::dispatch::ServerInfo>,
+    /// Optional OIDC/JWT auth. `None` ⇒ no auth (command dispatch skips all
+    /// verification — the default). Only present with the `auth` feature.
+    #[cfg(feature = "auth")]
+    auth: Option<auth::AuthConfig>,
 }
 
 type AfterInitCallback = Box<dyn FnOnce(&CellServer) + Send>;
@@ -108,6 +115,15 @@ impl CellServerBuilder {
     /// Configure Postgres for event persistence/distribution.
     pub fn with_postgres(mut self, config: PostgresConfig) -> Self {
         self.postgres = Some(config);
+        self
+    }
+
+    /// Configure OIDC/JWT auth. When set, command dispatch verifies each
+    /// command's `user_token` (except commands marked `#[myko_command(.., public)]`).
+    /// Unset (the default) ⇒ all commands pass, zero overhead.
+    #[cfg(feature = "auth")]
+    pub fn with_auth(mut self, config: auth::AuthConfig) -> Self {
+        self.auth = Some(config);
         self
     }
 
@@ -182,6 +198,16 @@ impl CellServerBuilder {
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server.server_info = server_info;
+        #[cfg(feature = "auth")]
+        if let Some(auth_config) = self.auth {
+            let verifier = Arc::new(auth::CommandVerifier::new(
+                auth_config,
+                auth::public_command_ids(),
+            ));
+            server.command_authorizer =
+                Some(verifier.clone() as Arc<dyn myko::server::CommandAuthorizer>);
+            server.auth_verifier = Some(verifier);
+        }
         server
     }
 }
@@ -233,6 +259,12 @@ pub struct CellServer {
     /// Hyphae cell inspector server (kept alive for the lifetime of the server)
     #[cfg(feature = "inspector")]
     _inspector: hyphae::server::InspectorServer,
+    /// Per-command authorizer (set when auth is configured). `None` ⇒ dispatch
+    /// skips auth — the default, zero overhead.
+    command_authorizer: Option<Arc<dyn myko::server::CommandAuthorizer>>,
+    /// Concrete verifier, kept so `run()` can `warm()` the JWKS before serving.
+    #[cfg(feature = "auth")]
+    auth_verifier: Option<Arc<auth::CommandVerifier>>,
 }
 
 impl CellServer {
@@ -334,6 +366,9 @@ impl CellServer {
             _server_ownership_guard: std::sync::Mutex::new(None),
             #[cfg(feature = "inspector")]
             _inspector: inspector,
+            command_authorizer: None,
+            #[cfg(feature = "auth")]
+            auth_verifier: None,
         }
     }
 
@@ -376,7 +411,7 @@ impl CellServer {
                 Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
                     as Arc<dyn myko::server::HistoryReplayProvider>
             });
-        CellServerCtx::new(
+        let ctx = CellServerCtx::new(
             self.host_id,
             self.registry.clone(),
             self.handler_registry.clone(),
@@ -386,7 +421,11 @@ impl CellServer {
             self.peer_clients.clone(),
             Some(self.saga_event_tx.clone()),
             history_replay,
-        )
+        );
+        match &self.command_authorizer {
+            Some(authorizer) => ctx.with_command_authorizer(authorizer.clone()),
+            None => ctx,
+        }
     }
 
     fn start_saga_runtime(&self) {
@@ -556,6 +595,15 @@ impl CellServer {
     /// Run the server with full initialization.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
+
+        // Warm the OIDC signing keys before serving, so per-command auth checks
+        // are pure-sync against cached keys. No-op unless auth is configured.
+        #[cfg(feature = "auth")]
+        if let Some(verifier) = &self.auth_verifier
+            && let Err(e) = verifier.warm().await
+        {
+            log::warn!("auth: initial JWKS warm failed (will retry on demand): {e}");
+        }
 
         // Persisters can veto startup via startup healthchecks.
         let entity_types: Vec<&str> = self

@@ -249,6 +249,10 @@ struct MykoClientInner {
     peer_failover_enabled: bool,
     known_servers: Mutex<Vec<String>>,
     current_address: Mutex<Option<String>>,
+    /// Optional bearer token auto-injected onto every command's wire envelope
+    /// (`WrappedCommand.user_token`). Single source of truth — set via
+    /// [`MykoClient::set_user_token`]; `None` = send commands unauthenticated.
+    user_token: Mutex<Option<Arc<str>>>,
     _peer_failover_status_guard: Mutex<Option<SubscriptionGuard>>,
     _peer_discovery_guard: Mutex<Option<SubscriptionGuard>>,
 
@@ -494,6 +498,7 @@ impl MykoClient {
                 peer_failover_enabled: options.peer_failover,
                 known_servers: Mutex::new(Vec::new()),
                 current_address: Mutex::new(None),
+                user_token: Mutex::new(None),
                 _peer_failover_status_guard: Mutex::new(None),
                 _peer_discovery_guard: Mutex::new(None),
                 query_handlers,
@@ -908,7 +913,11 @@ impl MykoClient {
         Ok(())
     }
 
-    /// Send a raw wrapped command (for federation forwarding)
+    /// Send a raw wrapped command (for federation forwarding).
+    ///
+    /// NOTE: forwards `command.user_token` as-is — this path carries the
+    /// ORIGINAL caller's token, so it deliberately does NOT inject this client's
+    /// `set_user_token` (which would mis-attribute a forwarded command).
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
         let frame = self.encode_message(&myko_msg)?;
@@ -1312,6 +1321,19 @@ impl MykoClient {
     // Send Command — Cell-based
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Set (or clear, with `None`) the bearer token auto-injected onto every
+    /// subsequent command's wire envelope (`WrappedCommand.user_token`). Single
+    /// source of truth for command auth — e.g. set it to an Auth0 access token
+    /// after login; the server verifies it per-command when auth is enabled.
+    pub fn set_user_token(&self, token: Option<Arc<str>>) {
+        *self.inner.user_token.lock().unwrap() = token;
+    }
+
+    /// The currently configured user token, if any.
+    pub fn user_token(&self) -> Option<Arc<str>> {
+        self.inner.user_token.lock().unwrap().clone()
+    }
+
     /// Send a command and get the result as a Cell.
     ///
     /// Returns a Cell<Option<Result<R, String>>> that starts as None
@@ -1324,13 +1346,21 @@ impl MykoClient {
         let request = CommandRequest::new(command.clone());
         let tx = request.tx.to_string();
 
-        let wrapped = match wrap_command_request(&request) {
+        let mut wrapped = match wrap_command_request(&request) {
             Ok(w) => w,
             Err(e) => {
                 let cell = Cell::new(Some(Err(e.to_string())));
                 return cell.lock();
             }
         };
+        // Auto-inject the configured user token onto the wire envelope.
+        wrapped.user_token = self
+            .inner
+            .user_token
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.to_string());
 
         let msg = MykoMessage::Command(wrapped);
         let frame = match self.encode_message(&msg) {

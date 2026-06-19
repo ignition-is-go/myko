@@ -5,6 +5,7 @@ use syn::{ItemStruct, Path};
 pub struct CommandOptions {
     pub result_type: Option<Path>,
     pub custom_serialize: bool,
+    pub public: bool,
 }
 
 /// Generates command trait implementations and registers the command handler.
@@ -12,6 +13,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let CommandOptions {
         result_type,
         custom_serialize,
+        public,
     } = options;
     let struct_name = &input_struct.ident;
     let args_struct_name = format_ident!("{}Args", struct_name);
@@ -126,6 +128,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
                 result_type: #result_type_str,
                 result_type_crate: module_path!(),
                 crate_name: module_path!(),
+                public: #public,
             }
         }
 
