@@ -300,6 +300,9 @@ async fn client_execute_command(
     let wrapped = WrappedCommand {
         command: command_json,
         command_id: command_id.to_string(),
+        // MCP command path: auth for MCP is handled at the gateway today; the
+        // per-command token mechanism doesn't thread through here yet.
+        user_token: None,
     };
 
     let result_cell = client.send_command_raw_result(wrapped);

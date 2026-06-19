@@ -25,7 +25,7 @@ pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
-pub use context::CellServerCtx;
+pub use context::{CellServerCtx, CommandAuthorizer};
 pub use handler_registry::HandlerRegistry;
 pub use history_replay::HistoryReplayProvider;
 pub use persister::{

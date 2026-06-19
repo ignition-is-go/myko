@@ -17,12 +17,12 @@
 //! clients (which cannot set headers on a WebSocket) send `?access_token=<jwt>`
 //! in the query string. [`extract_bearer`] accepts either.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
-use tokio::sync::RwLock;
 
 /// OIDC verification config. Construct via [`AuthConfig::from_env`].
 #[derive(Clone, Debug)]
@@ -138,50 +138,12 @@ impl Verifier {
         }
     }
 
-    /// Verify a raw JWT and return the authenticated principal.
-    pub async fn verify(&self, token: &str) -> Result<Principal, AuthError> {
-        let header = decode_header(token).map_err(|_| AuthError::Malformed)?;
-        let kid = header.kid.ok_or(AuthError::Malformed)?;
-
-        let key = self.key_for_kid(&kid).await?;
-
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[self.config.issuer.as_str()]);
-        validation.set_audience(&[self.config.audience.as_str()]);
-
-        let data = decode::<Claims>(token, &key, &validation)
-            .map_err(|e| AuthError::Invalid(e.to_string()))?;
-
-        let is_machine = data
-            .claims
-            .gty
-            .as_deref()
-            .is_some_and(|g| g == "client-credentials");
-
-        Ok(Principal {
-            subject: data.claims.sub,
-            is_machine,
-            scope: data.claims.scope,
-        })
-    }
-
-    async fn key_for_kid(&self, kid: &str) -> Result<DecodingKey, AuthError> {
-        if let Some(key) = self.keys.read().await.by_kid.get(kid) {
-            return Ok(key.clone());
-        }
-        self.refresh_jwks().await?;
-        self.keys
-            .read()
-            .await
-            .by_kid
-            .get(kid)
-            .cloned()
-            .ok_or(AuthError::UnknownKey)
-    }
-
-    async fn refresh_jwks(&self) -> Result<(), AuthError> {
-        // Rate-limit refetches so a flood of bad `kid`s can't DoS the IdP.
-        if let Some(last) = self.keys.read().await.last_fetch
+    /// Fetch + cache the issuer's JWKS. The only async step in the flow — call
+    /// it once at server startup (and on a background refresh when an unknown
+    /// `kid` appears); afterwards verification is sync against the cached keys.
+    /// Rate-limited so a flood of bad `kid`s can't hammer the IdP.
+    pub async fn warm(&self) -> Result<(), AuthError> {
+        if let Some(last) = self.keys.read().unwrap().last_fetch
             && last.elapsed() < JWKS_MIN_REFETCH
         {
             return Ok(());
@@ -206,10 +168,101 @@ impl Verifier {
             }
         }
 
-        let mut cache = self.keys.write().await;
+        let mut cache = self.keys.write().unwrap();
         cache.by_kid = by_kid;
         cache.last_fetch = Some(Instant::now());
         Ok(())
+    }
+
+    /// Verify a raw JWT against the cached keys — fully synchronous, no I/O.
+    /// `UnknownKey` means the `kid` isn't cached (rotation): the caller should
+    /// schedule a `warm()` so the next attempt picks up the new key.
+    pub fn verify_sync(&self, token: &str) -> Result<Principal, AuthError> {
+        let header = decode_header(token).map_err(|_| AuthError::Malformed)?;
+        let kid = header.kid.ok_or(AuthError::Malformed)?;
+
+        let key = {
+            let cache = self.keys.read().unwrap();
+            cache
+                .by_kid
+                .get(&kid)
+                .cloned()
+                .ok_or(AuthError::UnknownKey)?
+        };
+
+        let mut validation = Validation::new(Algorithm::RS256);
+        validation.set_issuer(&[self.config.issuer.as_str()]);
+        validation.set_audience(&[self.config.audience.as_str()]);
+
+        let data = decode::<Claims>(token, &key, &validation)
+            .map_err(|e| AuthError::Invalid(e.to_string()))?;
+
+        let is_machine = data
+            .claims
+            .gty
+            .as_deref()
+            .is_some_and(|g| g == "client-credentials");
+
+        Ok(Principal {
+            subject: data.claims.sub,
+            is_machine,
+            scope: data.claims.scope,
+        })
+    }
+}
+
+/// Cache successful per-token verifications for this long, so a burst of
+/// commands on one session doesn't re-verify each time. A short window bounds
+/// how long a since-revoked token keeps working.
+const TOKEN_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Adapts a [`Verifier`] into a [`myko::server::CommandAuthorizer`]: `public`
+/// commands pass unauthenticated; all others require a token that verifies.
+pub struct CommandVerifier {
+    verifier: Verifier,
+    public: HashSet<String>,
+    cache: RwLock<HashMap<String, Instant>>,
+}
+
+impl CommandVerifier {
+    /// `public` = command ids flagged `#[myko_command(.., public)]`.
+    pub fn new(config: AuthConfig, public: HashSet<String>) -> Self {
+        Self {
+            verifier: Verifier::new(config),
+            public,
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Warm the JWKS before serving so `authorize` is pure-sync.
+    pub async fn warm(&self) -> Result<(), AuthError> {
+        self.verifier.warm().await
+    }
+}
+
+impl myko::server::CommandAuthorizer for CommandVerifier {
+    fn authorize(&self, command_id: &str, user_token: Option<&str>) -> Result<(), String> {
+        if self.public.contains(command_id) {
+            return Ok(());
+        }
+        let token = user_token.ok_or_else(|| "authentication required".to_string())?;
+
+        if let Some(exp) = self.cache.read().unwrap().get(token).copied()
+            && exp > Instant::now()
+        {
+            return Ok(());
+        }
+
+        match self.verifier.verify_sync(token) {
+            Ok(_) => {
+                self.cache
+                    .write()
+                    .unwrap()
+                    .insert(token.to_string(), Instant::now() + TOKEN_CACHE_TTL);
+                Ok(())
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
