@@ -266,6 +266,18 @@ impl myko::server::CommandAuthorizer for CommandVerifier {
     }
 }
 
+/// Command ids flagged `#[myko_command(.., public)]`, collected from the
+/// registration inventory. These skip per-command verification.
+pub fn public_command_ids() -> HashSet<String> {
+    let mut set = HashSet::new();
+    for reg in inventory::iter::<myko::command::CommandRegistration> {
+        if reg.public {
+            set.insert(reg.command_id.to_string());
+        }
+    }
+    set
+}
+
 /// Pull a bearer token from an `Authorization: Bearer …` header value, or from
 /// an `access_token=…` pair in a raw query string (the browser-WebSocket path,
 /// since the WebSocket API can't set request headers).
