@@ -913,7 +913,11 @@ impl MykoClient {
         Ok(())
     }
 
-    /// Send a raw wrapped command (for federation forwarding)
+    /// Send a raw wrapped command (for federation forwarding).
+    ///
+    /// NOTE: forwards `command.user_token` as-is — this path carries the
+    /// ORIGINAL caller's token, so it deliberately does NOT inject this client's
+    /// `set_user_token` (which would mis-attribute a forwarded command).
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
         let frame = self.encode_message(&myko_msg)?;

@@ -1,25 +1,28 @@
-//! Optional OIDC / JWT authentication for the WebSocket handshake.
+//! Optional OIDC / JWT authentication for **commands** (not the connection).
 //!
-//! When configured, a connecting client must present a bearer JWT (e.g. an
-//! Auth0 access token) that this module verifies — signature against the
-//! issuer's published JWKS, plus `iss` / `aud` / `exp` — *before* the WebSocket
-//! upgrade is accepted. The verified principal (`sub`) is then bound to the
-//! connection, so `#[myko_client_id]` carries a real, credential-backed
-//! identity instead of an anonymous per-connection UUID.
+//! Auth is enforced per-command at dispatch, not at the WebSocket handshake:
+//! reads (queries / views / reports) stay open and the connection's `client_id`
+//! stays the per-connection UUID. Each command carries a bearer token on its
+//! wire envelope (`WrappedCommand.user_token`, e.g. an Auth0 access token);
+//! [`CommandVerifier`] (a [`myko::server::CommandAuthorizer`]) verifies it at
+//! the `MykoMessage::Command` branch — signature against the issuer's published
+//! JWKS, plus `iss` / `aud` / `exp`. Commands marked `#[myko_command(.., public)]`
+//! skip the check.
 //!
 //! Auth is **off unless configured**: [`AuthConfig::from_env`] returns `None`
-//! when `MYKO_AUTH_ISSUER` / `MYKO_AUTH_AUDIENCE` are unset, and the server
-//! falls back to the existing unauthenticated behaviour. The whole module is
-//! also behind the `auth` cargo feature, so the `jsonwebtoken` dependency and
-//! TLS are zero-cost when unused.
+//! when `MYKO_AUTH_ISSUER` / `MYKO_AUTH_AUDIENCE` are unset, and the dispatch
+//! path skips verification entirely. The whole module is also behind the `auth`
+//! cargo feature, so the `jsonwebtoken` dependency and TLS are zero-cost when
+//! unused.
 //!
-//! Token transport: native clients send `Authorization: Bearer <jwt>`; browser
-//! clients (which cannot set headers on a WebSocket) send `?access_token=<jwt>`
-//! in the query string. [`extract_bearer`] accepts either.
+//! Verification is sync ([`Verifier::verify_sync`]) against keys cached by
+//! [`Verifier::warm`] (one async JWKS fetch at startup; a background re-warm is
+//! scheduled on an unknown `kid` so signing-key rotation recovers without a
+//! restart).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::Deserialize;
@@ -53,7 +56,9 @@ impl AuthConfig {
     }
 }
 
-/// The authenticated identity extracted from a valid token.
+/// The authenticated identity extracted from a valid token. Today `authorize`
+/// only needs validity + `expires_at` (for cache capping); `subject` / `scope`
+/// are carried for a future principal-binding / authorization pass.
 #[derive(Clone, Debug)]
 pub struct Principal {
     /// `sub` — the stable subject (user id, or `<client_id>@clients` for M2M).
@@ -62,11 +67,14 @@ pub struct Principal {
     pub is_machine: bool,
     /// Space-delimited `scope`, if present.
     pub scope: Option<String>,
+    /// `exp` — token expiry, seconds since the Unix epoch.
+    pub expires_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
 struct Claims {
     sub: String,
+    exp: u64,
     #[serde(default)]
     gty: Option<String>,
     #[serde(default)]
@@ -105,8 +113,6 @@ const JWKS_MIN_REFETCH: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub enum AuthError {
-    /// No token presented (header and query both absent).
-    Missing,
     /// Token is structurally invalid / missing a `kid`.
     Malformed,
     /// No signing key matches the token's `kid`, even after a JWKS refetch.
@@ -120,7 +126,6 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AuthError::Missing => write!(f, "no bearer token presented"),
             AuthError::Malformed => write!(f, "malformed token"),
             AuthError::UnknownKey => write!(f, "no signing key for token kid"),
             AuthError::Invalid(e) => write!(f, "token rejected: {e}"),
@@ -175,8 +180,9 @@ impl Verifier {
     }
 
     /// Verify a raw JWT against the cached keys — fully synchronous, no I/O.
-    /// `UnknownKey` means the `kid` isn't cached (rotation): the caller should
-    /// schedule a `warm()` so the next attempt picks up the new key.
+    /// `UnknownKey` means the `kid` isn't cached (rotation / cold start);
+    /// [`CommandVerifier::authorize`] schedules a background `warm()` on it so
+    /// the next attempt picks up the new key.
     pub fn verify_sync(&self, token: &str) -> Result<Principal, AuthError> {
         let header = decode_header(token).map_err(|_| AuthError::Malformed)?;
         let kid = header.kid.ok_or(AuthError::Malformed)?;
@@ -207,6 +213,7 @@ impl Verifier {
             subject: data.claims.sub,
             is_machine,
             scope: data.claims.scope,
+            expires_at: data.claims.exp,
         })
     }
 }
@@ -219,7 +226,7 @@ const TOKEN_CACHE_TTL: Duration = Duration::from_secs(60);
 /// Adapts a [`Verifier`] into a [`myko::server::CommandAuthorizer`]: `public`
 /// commands pass unauthenticated; all others require a token that verifies.
 pub struct CommandVerifier {
-    verifier: Verifier,
+    verifier: Arc<Verifier>,
     public: HashSet<String>,
     cache: RwLock<HashMap<String, Instant>>,
 }
@@ -228,7 +235,7 @@ impl CommandVerifier {
     /// `public` = command ids flagged `#[myko_command(.., public)]`.
     pub fn new(config: AuthConfig, public: HashSet<String>) -> Self {
         Self {
-            verifier: Verifier::new(config),
+            verifier: Arc::new(Verifier::new(config)),
             public,
             cache: RwLock::new(HashMap::new()),
         }
@@ -240,6 +247,13 @@ impl CommandVerifier {
     }
 }
 
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 impl myko::server::CommandAuthorizer for CommandVerifier {
     fn authorize(&self, command_id: &str, user_token: Option<&str>) -> Result<(), String> {
         if self.public.contains(command_id) {
@@ -247,19 +261,40 @@ impl myko::server::CommandAuthorizer for CommandVerifier {
         }
         let token = user_token.ok_or_else(|| "authentication required".to_string())?;
 
+        let now = Instant::now();
         if let Some(exp) = self.cache.read().unwrap().get(token).copied()
-            && exp > Instant::now()
+            && exp > now
         {
             return Ok(());
         }
 
         match self.verifier.verify_sync(token) {
-            Ok(_) => {
-                self.cache
-                    .write()
-                    .unwrap()
-                    .insert(token.to_string(), Instant::now() + TOKEN_CACHE_TTL);
+            Ok(principal) => {
+                // Cache the verification, but never beyond the token's own `exp`
+                // (so a near-expiry token isn't honored up to a full TTL past it).
+                let secs_to_exp = principal.expires_at.saturating_sub(now_unix());
+                let ttl = TOKEN_CACHE_TTL.min(Duration::from_secs(secs_to_exp));
+                let mut cache = self.cache.write().unwrap();
+                // Sweep expired entries on write so the cache can't grow without
+                // bound across token rotation over a long uptime.
+                cache.retain(|_, exp| *exp > now);
+                cache.insert(token.to_string(), now + ttl);
                 Ok(())
+            }
+            Err(AuthError::UnknownKey) => {
+                // Signing-key rotation, or a failed startup warm: the token's
+                // `kid` isn't in the cache. Schedule a rate-limited background
+                // re-warm (so the next attempt recovers without a restart) and
+                // deny this one. authorize() is sync, so we can't await inline.
+                let verifier = self.verifier.clone();
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        if let Err(e) = verifier.warm().await {
+                            log::warn!("auth: background JWKS re-warm failed: {e}");
+                        }
+                    });
+                }
+                Err(AuthError::UnknownKey.to_string())
             }
             Err(e) => Err(e.to_string()),
         }
@@ -278,62 +313,9 @@ pub fn public_command_ids() -> HashSet<String> {
     set
 }
 
-/// Pull a bearer token from an `Authorization: Bearer …` header value, or from
-/// an `access_token=…` pair in a raw query string (the browser-WebSocket path,
-/// since the WebSocket API can't set request headers).
-pub fn extract_bearer<'a>(auth_header: Option<&'a str>, raw_query: Option<&'a str>) -> Option<&'a str> {
-    if let Some(h) = auth_header {
-        let h = h.trim();
-        for prefix in ["Bearer ", "bearer "] {
-            if let Some(rest) = h.strip_prefix(prefix) {
-                let t = rest.trim();
-                if !t.is_empty() {
-                    return Some(t);
-                }
-            }
-        }
-    }
-    if let Some(q) = raw_query {
-        for pair in q.split('&') {
-            if let Some(t) = pair.strip_prefix("access_token=")
-                && !t.is_empty()
-            {
-                return Some(t);
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extract_bearer_from_header() {
-        assert_eq!(extract_bearer(Some("Bearer abc.def.ghi"), None), Some("abc.def.ghi"));
-        assert_eq!(extract_bearer(Some("bearer xyz"), None), Some("xyz"));
-        assert_eq!(extract_bearer(Some("Basic xyz"), None), None);
-        assert_eq!(extract_bearer(Some("Bearer "), None), None);
-    }
-
-    #[test]
-    fn extract_bearer_from_query() {
-        assert_eq!(
-            extract_bearer(None, Some("foo=1&access_token=tok123&bar=2")),
-            Some("tok123")
-        );
-        assert_eq!(extract_bearer(None, Some("access_token=")), None);
-        assert_eq!(extract_bearer(None, Some("other=1")), None);
-    }
-
-    #[test]
-    fn header_wins_over_query() {
-        assert_eq!(
-            extract_bearer(Some("Bearer fromheader"), Some("access_token=fromquery")),
-            Some("fromheader")
-        );
-    }
 
     #[test]
     fn config_normalizes_issuer_trailing_slash() {
