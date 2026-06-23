@@ -471,11 +471,7 @@ impl CellServerCtx {
 
     /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
     /// shared `apply_effects` tail, gated by `origin`.
-    pub(crate) fn set_with_origin<T>(
-        &self,
-        entity: &T,
-        origin: Origin,
-    ) -> Result<(), PersistError>
+    pub(crate) fn set_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
@@ -509,11 +505,7 @@ impl CellServerCtx {
         self.del_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
     }
 
-    pub(crate) fn del_with_origin<T>(
-        &self,
-        entity: &T,
-        origin: Origin,
-    ) -> Result<(), PersistError>
+    pub(crate) fn del_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
