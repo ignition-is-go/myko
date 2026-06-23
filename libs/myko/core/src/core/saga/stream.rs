@@ -287,7 +287,6 @@ mod tests {
             change_type,
             created_at: chrono::Utc::now().to_rfc3339(),
             source_id: None,
-            options: None,
         }
     }
 

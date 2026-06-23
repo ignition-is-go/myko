@@ -33,7 +33,6 @@ fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
         change_type,
         created_at: chrono::Utc::now().to_rfc3339(),
         source_id: None,
-        options: None,
     }
 }
 

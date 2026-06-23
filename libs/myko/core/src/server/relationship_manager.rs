@@ -89,7 +89,6 @@ use log::{debug, info, trace};
 use super::{CellServerCtx, persister::PersistError};
 use crate::{
     core::item::AnyItem,
-    event::EventOptions,
     relationship::{
         ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
         iter_relations,
@@ -769,6 +768,17 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Cleanup orphaned children for BelongsTo relationships
+    /// Boot-time **backstop** sweep for `belongs_to` orphans (children whose FK
+    /// points at a parent that no longer exists).
+    ///
+    /// Runtime orphaning is handled by the transitive DEL cascade
+    /// (`Origin::Cascade` + DEL descends — see `CellServerCtx::apply_effects`),
+    /// so deleting a parent removes its whole subtree without a restart. This
+    /// sweep remains only for the "child written with an FK to a never-existent
+    /// parent" case. We deliberately do **not** delete such orphans eagerly on
+    /// the child's SET: under out-of-order / eventually-consistent ingestion a
+    /// child can legitimately arrive before its parent, so eager deletion would
+    /// be data loss. The sweep runs at boot, once ordering has settled.
     fn cleanup_belongs_to_orphans(&self, ctx: &CellServerCtx) -> Result<(), PersistError> {
         trace!(
             "RelationshipManager: cleanup_belongs_to_orphans - checking {} child types",
@@ -1101,11 +1111,7 @@ impl RelationshipManager {
             item
         };
 
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-        ctx.set_dyn_with_options(item, Some(options))
+        ctx.set_dyn_with_origin(item, super::Origin::Cascade)
     }
 
     fn publish_set_cascade_batch(
@@ -1113,11 +1119,7 @@ impl RelationshipManager {
         ctx: &CellServerCtx,
         items: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-        ctx.batch_set_dyn_with_options(items, Some(options))
+        ctx.batch_set_dyn_with_origin(items, super::Origin::Cascade)
     }
 
     /// Publish a DEL for cascade operations.
@@ -1129,11 +1131,6 @@ impl RelationshipManager {
         entity_type: &str,
         id: &str,
     ) -> Result<(), PersistError> {
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-
         // Get the entity from the store
         let id_arc: Arc<str> = id.into();
         if let Some(item) = ctx.registry.get_or_create(entity_type).get_value(&id_arc) {
@@ -1141,7 +1138,7 @@ impl RelationshipManager {
                 "RelationshipManager: publish_del_cascade {} {} - entity found, deleting",
                 entity_type, id
             );
-            ctx.del_dyn_with_options(item, Some(options))?;
+            ctx.del_dyn_with_origin(item, super::Origin::Cascade)?;
         } else {
             trace!(
                 "RelationshipManager: publish_del_cascade {} {} - entity NOT found in store",
@@ -1161,11 +1158,7 @@ impl RelationshipManager {
             return Ok(());
         }
 
-        let options = EventOptions {
-            prevent_relationship_updates: true,
-            ..Default::default()
-        };
-        ctx.batch_del_dyn_with_options(items, Some(options))
+        ctx.batch_del_dyn_with_origin(items, super::Origin::Cascade)
     }
 }
 
@@ -1215,5 +1208,116 @@ mod tests {
         let sets: Vec<Vec<Arc<str>>> = vec![];
         let product = manager.cartesian_product(&sets);
         assert!(product.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cascade_tests {
+    //! Transitive relationship cascade (Event Bus Unification, Fix #1).
+    //!
+    //! Deleting a parent must remove its children, grandchildren, … at runtime
+    //! (previously grandchildren survived until the boot-time orphan sweep
+    //! because the cascade product's `prevent_relationship_updates` flag was
+    //! read as "do not cascade at all"). A cyclic schema must converge, not loop.
+
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use self::node::CascadeNode;
+    use crate::{
+        hyphae::Gettable,
+        search::SearchIndex,
+        server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        store::StoreRegistry,
+    };
+
+    // `#[myko_item]` re-imports hyphae traits at module scope, so the entity
+    // lives in its own module (mirrors `bench_entities::tree`).
+    mod node {
+        use crate::prelude::*;
+
+        /// Self-referential entity: a node `belongs_to` another node of the same
+        /// type, so one type expresses both a multi-level chain and a cycle.
+        #[myko_item]
+        pub struct CascadeNode {
+            #[belongs_to(CascadeNode)]
+            pub parent_id: CascadeNodeId,
+            pub name: String,
+        }
+    }
+
+    fn make_ctx() -> (CellServerCtx, Arc<StoreRegistry>) {
+        let registry = Arc::new(StoreRegistry::new());
+        let ctx = CellServerCtx::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(PersisterRouter::default()),
+            Arc::new(SearchIndex::new()),
+            Arc::new(dashmap::DashMap::new()),
+            None,
+            None,
+        );
+        (ctx, registry)
+    }
+
+    fn make_node(id: &str, parent_id: &str) -> CascadeNode {
+        CascadeNode {
+            id: id.into(),
+            parent_id: parent_id.into(),
+            name: format!("node-{id}"),
+        }
+    }
+
+    fn exists(registry: &StoreRegistry, id: &str) -> bool {
+        registry
+            .get("CascadeNode")
+            .and_then(|store| store.get(&Arc::<str>::from(id)).get())
+            .is_some()
+    }
+
+    /// A 3-level `belongs_to` chain: deleting the root removes the child *and*
+    /// the grandchild at runtime. The grandchild regressed before Fix #1.
+    #[test]
+    fn del_cascade_descends_to_grandchildren() {
+        let (ctx, registry) = make_ctx();
+
+        // root <- branch <- leaf
+        ctx.set(&make_node("root", "")).unwrap();
+        ctx.set(&make_node("branch", "root")).unwrap();
+        ctx.set(&make_node("leaf", "branch")).unwrap();
+
+        assert!(exists(&registry, "root"));
+        assert!(exists(&registry, "branch"));
+        assert!(exists(&registry, "leaf"));
+
+        ctx.del(&make_node("root", "")).unwrap();
+
+        assert!(!exists(&registry, "root"), "root deleted");
+        assert!(!exists(&registry, "branch"), "direct child deleted");
+        assert!(
+            !exists(&registry, "leaf"),
+            "grandchild deleted at runtime (Fix #1)"
+        );
+    }
+
+    /// A 2-cycle (a.parent = b, b.parent = a): the cascade must converge. The
+    /// store-as-visited-set guarantees it — the second visit finds nothing.
+    #[test]
+    fn del_cascade_terminates_on_cycle() {
+        let (ctx, registry) = make_ctx();
+
+        ctx.set(&make_node("a", "b")).unwrap();
+        ctx.set(&make_node("b", "a")).unwrap();
+
+        ctx.del(&make_node("a", "b")).unwrap();
+
+        assert!(!exists(&registry, "a"), "a deleted");
+        assert!(
+            !exists(&registry, "b"),
+            "b deleted via the cycle, then terminated"
+        );
     }
 }

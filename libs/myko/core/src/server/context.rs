@@ -49,8 +49,76 @@ use crate::{
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
-type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
-type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
+
+/// Where a mutation came from. This is the single policy point for the apply
+/// pipeline's loop-safety: it determines whether a mutation should run
+/// relationship cascades. (Both origins produce.)
+///
+/// It replaces the scattered per-call loop-guard flag checks; `from_options`
+/// bridges the legacy `EventOptions::prevent_relationship_updates` flag to an
+/// `Origin` for the deprecated `*_with_options` methods.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// A command handler / server module emitting a new mutation here (also a
+    /// client event ingested over the WebSocket). Cascades and produces.
+    Local,
+    /// A relationship cascade product — a consequence of another mutation here.
+    Cascade,
+    /// An event replicated from a peer server: already durable and already
+    /// cascaded at its origin. Applied to the store + search index only — it must
+    /// not cascade (the origin already replicated its cascade products) and must
+    /// not produce (which would echo it back around the peer mesh).
+    ///
+    /// Reserved: nothing constructs this right now (peer-origin tracking has been
+    /// moved off the wire). The wiring is kept for when that mechanism returns.
+    #[allow(dead_code)]
+    Remote,
+}
+
+impl Origin {
+    /// Bridge the legacy `EventOptions::prevent_relationship_updates` flag to an
+    /// `Origin`: cascade products set it (→ `Cascade`); everything else `Local`.
+    pub(crate) fn from_options(options: &EventOptions) -> Origin {
+        if options.prevent_relationship_updates {
+            Origin::Cascade
+        } else {
+            Origin::Local
+        }
+    }
+
+    /// Whether this origin's mutations should run relationship cascades.
+    ///
+    /// - `Local` mutations always cascade.
+    /// - `Cascade` products are gated on the change type: a **DEL** product
+    ///   keeps cascading, so a deleted parent's children, grandchildren, … are
+    ///   all removed at runtime (not just one level, and not deferred to the
+    ///   boot-time orphan sweep). The owns_many array-fixup **SET** product must
+    ///   not descend structurally.
+    /// - `Remote` never cascades (the origin already replicated its products).
+    ///
+    /// Transitive DEL cascade terminates without a depth counter or visited set:
+    /// reduce runs before cascade, so each node is removed from the store before
+    /// its own cascade runs. The store is therefore a monotonically shrinking
+    /// visited-set — a cyclic schema (A→B→A) finds nothing the second time, and
+    /// a cascade-deleted child cannot resurrect its already-removed parent.
+    fn should_cascade(self, change: MEventType) -> bool {
+        match self {
+            Origin::Local => true,
+            Origin::Cascade => change == MEventType::DEL,
+            Origin::Remote => false,
+        }
+    }
+
+    /// Whether this origin's mutations should be produced to persisters/sink.
+    ///
+    /// `Remote` events are already durable and already cascaded at their origin,
+    /// so re-producing them would echo them back around the peer mesh. Everything
+    /// else produces; per-type durability is the persister router's job
+    /// (`BlackholePersister`), not a per-event flag.
+    fn should_produce(self) -> bool {
+        self != Origin::Remote
+    }
+}
 
 /// Weak-ref report cache entry. The cell stays alive as long as someone is
 /// subscribed to it. When all subscribers drop, the weak ref fails to upgrade
@@ -381,14 +449,15 @@ impl CellServerCtx {
     where
         T: Eventable + 'static,
     {
-        self.set_with_options(entity, None)
+        self.set_with_origin(entity, Origin::Local)
     }
 
     /// Publish an entity (SET) with options.
     ///
-    /// Options control:
-    /// - `prevent_relationship_updates`: skip cascade processing
-    /// - `prevent_persist`: skip durable backend
+    /// **Deprecated.** `EventOptions` are internal loop-guard plumbing (cascade
+    /// and peer-replication markers) and must not be set by callers — use
+    /// [`set`](Self::set) instead.
+    #[deprecated(note = "EventOptions is internal plumbing; use `set` instead")]
     pub fn set_with_options<T>(
         &self,
         entity: &T,
@@ -397,32 +466,22 @@ impl CellServerCtx {
     where
         T: Eventable + 'static,
     {
-        let options = options.unwrap_or_default();
-        let id = entity.id();
-        let entity_type = entity.entity_type();
+        self.set_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
+    /// shared `apply_effects` tail, gated by `origin`.
+    pub(crate) fn set_with_origin<T>(
+        &self,
+        entity: &T,
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + 'static,
+    {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-
-        // Reduce: update store
-        self.registry
-            .get_or_create(entity_type)
-            .insert(id.clone(), item.clone());
-
-        crate::server::entity_set_stats::record_set(entity_type);
-
-        // Search: index searchable fields
-        self.search_index.index_item(&item);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item, self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_set(entity)?;
-        }
-
-        Ok(())
+        self.reduce_one(&item, MEventType::SET);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
     }
 
     /// Delete an entity (DEL) with default options.
@@ -432,10 +491,13 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        self.del_with_options(entity, None)
+        self.del_with_origin(entity, Origin::Local)
     }
 
     /// Delete an entity (DEL) with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del`](Self::del).
+    #[deprecated(note = "EventOptions is internal plumbing; use `del` instead")]
     pub fn del_with_options<T>(
         &self,
         entity: &T,
@@ -444,31 +506,20 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        let options = options.unwrap_or_default();
-        let entity_type = entity.entity_type();
-        let id = entity.id();
+        self.del_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    pub(crate) fn del_with_origin<T>(
+        &self,
+        entity: &T,
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + Clone + 'static,
+    {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-
-        crate::server::entity_set_stats::record_del(entity_type);
-
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id);
-
-        // Search: remove from index
-        self.search_index.remove_entity(entity_type, &id);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_del(entity)?;
-        }
-
-        log::trace!("Published DEL {}:{}", entity_type, id);
-        Ok(())
+        self.reduce_one(&item, MEventType::DEL);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
     }
 
     /// Publish a batch of entities (SET) with default options.
@@ -478,12 +529,13 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_set_with_options(entities, None)
+        self.batch_set_with_origin(entities, Origin::Local)
     }
 
     /// Publish a batch of entities (SET) with shared options.
     ///
-    /// This avoids manual `MEvent` construction and performs a grouped store insert.
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set`](Self::batch_set).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set` instead")]
     pub fn batch_set_with_options<T>(
         &self,
         entities: &[T],
@@ -492,44 +544,26 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
+        self.batch_set_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    /// Publish a batch of entities (SET) with one grouped store insert.
+    pub(crate) fn batch_set_with_origin<T>(
+        &self,
+        entities: &[T],
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + Clone + 'static,
+    {
         if entities.is_empty() {
             return Ok(());
         }
-
-        let options = options.unwrap_or_default();
-        let entity_type = T::entity_name_static();
-        let store = self.registry.get_or_create(entity_type);
-
-        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(entities.len());
-        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
-
-        for entity in entities {
-            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            crate::server::entity_set_stats::record_set(entity_type);
-            self.search_index.index_item(&item);
-            entries.push((entity.id(), item.clone()));
-            items.push(item);
-        }
-
-        // Reduce: one diff emission for the whole batch.
-        store.insert_many(entries);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            for item in &items {
-                self.relationship_manager.forward_set(item.clone(), self)?;
-            }
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            for item in &items {
-                self.produce_set_dyn(item)?;
-            }
-        }
-
-        log::trace!("Published batch SET {} count={}", entity_type, items.len());
-        Ok(())
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .iter()
+            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .collect();
+        self.emit_grouped(&items, MEventType::SET, origin)
     }
 
     /// Delete a batch of entities (DEL) with default options.
@@ -539,12 +573,13 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_del_with_options(entities, None)
+        self.batch_del_with_origin(entities, Origin::Local)
     }
 
     /// Delete a batch of entities (DEL) with shared options.
     ///
-    /// This avoids manual `MEvent` construction and performs a grouped store remove.
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del`](Self::batch_del).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del` instead")]
     pub fn batch_del_with_options<T>(
         &self,
         entities: &[T],
@@ -553,43 +588,26 @@ impl CellServerCtx {
     where
         T: Eventable + Clone + 'static,
     {
+        self.batch_del_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
+    }
+
+    /// Delete a batch of entities (DEL) with one grouped store remove.
+    pub(crate) fn batch_del_with_origin<T>(
+        &self,
+        entities: &[T],
+        origin: Origin,
+    ) -> Result<(), PersistError>
+    where
+        T: Eventable + Clone + 'static,
+    {
         if entities.is_empty() {
             return Ok(());
         }
-
-        let options = options.unwrap_or_default();
-        let entity_type = T::entity_name_static();
-        let store = self.registry.get_or_create(entity_type);
-
-        let mut ids: Vec<Arc<str>> = Vec::with_capacity(entities.len());
-        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
-
-        for entity in entities {
-            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            let id = item.id();
-            crate::server::entity_set_stats::record_del(entity_type);
-            self.search_index.remove_entity(entity_type, &id);
-            ids.push(id);
-            items.push(item);
-        }
-
-        // Reduce: one diff emission for the whole batch.
-        store.remove_many(ids);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del_batch(&items, self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            for item in &items {
-                self.produce_del_dyn(item)?;
-            }
-        }
-
-        log::trace!("Published batch DEL {} count={}", entity_type, items.len());
-        Ok(())
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .iter()
+            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .collect();
+        self.emit_grouped(&items, MEventType::DEL, origin)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -600,183 +618,106 @@ impl CellServerCtx {
     ///
     /// Default behavior: Reduce + Relationships + Persist
     pub fn set_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.set_dyn_with_options(item, None)
+        self.set_dyn_with_origin(item, Origin::Local)
     }
 
     /// Publish a dynamic item (SET) with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`set_dyn`](Self::set_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `set_dyn` instead")]
     pub fn set_dyn_with_options(
         &self,
         item: Arc<dyn AnyItem>,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
-        let entity_type = item.entity_type();
-        let id = item.id();
+        self.set_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
+    }
 
-        crate::server::entity_set_stats::record_set(entity_type);
+    pub(crate) fn set_dyn_with_origin(
+        &self,
+        item: Arc<dyn AnyItem>,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.reduce_one(&item, MEventType::SET);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+    }
 
-        // Reduce: update store
-        self.registry
-            .get_or_create(entity_type)
-            .insert(id.clone(), item.clone());
-
-        // Search: index searchable fields
-        self.search_index.index_item(&item);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_set_dyn(&item)?;
-        }
-
-        log::trace!("Published SET {}:{}", entity_type, id);
-        Ok(())
+    /// Publish a batch of dynamic items (SET).
+    pub fn batch_set_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        self.batch_set_dyn_with_origin(items, Origin::Local)
     }
 
     /// Publish a batch of dynamic items (SET) with shared options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set_dyn`](Self::batch_set_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set_dyn` instead")]
     pub fn batch_set_dyn_with_options(
         &self,
         items: &[Arc<dyn AnyItem>],
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        if items.is_empty() {
-            return Ok(());
-        }
+        self.batch_set_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
+    }
 
-        let options = options.unwrap_or_default();
-        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-
-        for item in items {
-            items_by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        for (entity_type, typed_items) in items_by_type {
-            let store = self.registry.get_or_create(entity_type);
-            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
-                Vec::with_capacity(typed_items.len());
-
-            for item in &typed_items {
-                crate::server::entity_set_stats::record_set(entity_type);
-                self.search_index.index_item(item);
-                entries.push((item.id(), item.clone()));
-            }
-
-            store.insert_many(entries);
-
-            if !options.prevent_relationship_updates {
-                for item in &typed_items {
-                    self.relationship_manager.forward_set(item.clone(), self)?;
-                }
-            }
-
-            if !options.prevent_persist {
-                for item in &typed_items {
-                    self.produce_set_dyn(item)?;
-                }
-            }
-
-            log::trace!(
-                "Published batch SET {} count={}",
-                entity_type,
-                typed_items.len()
-            );
-        }
-        Ok(())
+    pub(crate) fn batch_set_dyn_with_origin(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.emit_grouped(items, MEventType::SET, origin)
     }
 
     /// Delete a dynamic item (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
     pub fn del_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.del_dyn_with_options(item, None)
+        self.del_dyn_with_origin(item, Origin::Local)
     }
 
     /// Delete a dynamic item (DEL) with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_dyn`](Self::del_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `del_dyn` instead")]
     pub fn del_dyn_with_options(
         &self,
         item: Arc<dyn AnyItem>,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
-        let entity_type = item.entity_type();
-        let id = item.id();
+        self.del_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
+    }
 
-        crate::server::entity_set_stats::record_del(entity_type);
+    pub(crate) fn del_dyn_with_origin(
+        &self,
+        item: Arc<dyn AnyItem>,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.reduce_one(&item, MEventType::DEL);
+        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+    }
 
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id);
-
-        // Search: remove from index
-        self.search_index.remove_entity(entity_type, &id);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_del_dyn(&item)?;
-        }
-
-        log::trace!("Published DEL {}:{}", entity_type, id);
-        Ok(())
+    /// Publish a batch of dynamic items (DEL).
+    pub fn batch_del_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        self.batch_del_dyn_with_origin(items, Origin::Local)
     }
 
     /// Publish a batch of dynamic items (DEL) with shared options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del_dyn`](Self::batch_del_dyn).
+    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del_dyn` instead")]
     pub fn batch_del_dyn_with_options(
         &self,
         items: &[Arc<dyn AnyItem>],
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        if items.is_empty() {
-            return Ok(());
-        }
+        self.batch_del_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
+    }
 
-        let options = options.unwrap_or_default();
-        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-
-        for item in items {
-            items_by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        for (entity_type, typed_items) in items_by_type {
-            let store = self.registry.get_or_create(entity_type);
-            let mut ids: Vec<Arc<str>> = Vec::with_capacity(typed_items.len());
-
-            for item in &typed_items {
-                let id = item.id();
-                crate::server::entity_set_stats::record_del(entity_type);
-                self.search_index.remove_entity(entity_type, &id);
-                ids.push(id);
-            }
-
-            store.remove_many(ids);
-
-            if !options.prevent_relationship_updates {
-                self.relationship_manager
-                    .forward_del_batch(&typed_items, self)?;
-            }
-
-            if !options.prevent_persist {
-                for item in &typed_items {
-                    self.produce_del_dyn(item)?;
-                }
-            }
-        }
-        Ok(())
+    pub(crate) fn batch_del_dyn_with_origin(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.emit_grouped(items, MEventType::DEL, origin)
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -785,13 +726,33 @@ impl CellServerCtx {
     /// where we must ensure a DEL event is produced to durable backend.
     ///
     /// Note: relationship cascades require the full item and are therefore skipped here.
+    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
+        self.del_by_id_with_origin(entity_type, id, Origin::Local)
+    }
+
+    /// Delete an entity by type/id with options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_by_id`](Self::del_by_id).
+    #[deprecated(note = "EventOptions is internal plumbing; use `del_by_id` instead")]
     pub fn del_by_id_with_options(
         &self,
         entity_type: &str,
         id: &str,
         options: Option<EventOptions>,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
+        self.del_by_id_with_origin(
+            entity_type,
+            id,
+            Origin::from_options(&options.unwrap_or_default()),
+        )
+    }
+
+    pub(crate) fn del_by_id_with_origin(
+        &self,
+        entity_type: &str,
+        id: &str,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
         let id_arc: Arc<str> = id.into();
 
         let existing = self
@@ -807,8 +768,8 @@ impl CellServerCtx {
         // Search: remove from index
         self.search_index.remove_entity(entity_type, id);
 
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
+        // Persist: produce unless this origin must not (e.g. a peer tombstone).
+        if origin.should_produce() {
             if let Some(item) = existing {
                 self.produce_del_dyn(&item)?;
             } else {
@@ -822,11 +783,6 @@ impl CellServerCtx {
 
         log::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
-    }
-
-    /// Delete an entity by type/id with default options.
-    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
-        self.del_by_id_with_options(entity_type, id, None)
     }
 
     /// Apply a single wire event (parse -> reduce -> relationships -> persist).
@@ -884,44 +840,25 @@ impl CellServerCtx {
         }
         let input_len = events.len();
 
-        #[derive(Clone)]
-        struct SetOp {
-            item: Arc<dyn AnyItem>,
-            options: EventOptions,
-        }
-
-        #[derive(Clone)]
-        struct DelOp {
-            item: Arc<dyn AnyItem>,
-            options: EventOptions,
-        }
-
-        let mut sets: Vec<SetOp> = Vec::new();
-        let mut dels: Vec<DelOp> = Vec::new();
+        let mut set_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        let mut del_items: Vec<Arc<dyn AnyItem>> = Vec::new();
 
         for event in events {
-            let options = event.options.clone().unwrap_or_default();
+            let change = event.change_type;
             let item_type = event.item_type;
             let item_value = event.item;
-            match event.change_type {
-                MEventType::SET => {
-                    if let Some(item) = self.parse_item(&item_type, item_value) {
-                        sets.push(SetOp { item, options });
-                    } else {
-                        log::warn!("Unknown entity type or parse error for SET: {item_type}");
-                    }
-                }
-                MEventType::DEL => {
-                    if let Some(item) = self.parse_item(&item_type, item_value) {
-                        dels.push(DelOp { item, options });
-                    } else {
-                        log::warn!("Unknown entity type or parse error for DEL: {item_type}");
-                    }
-                }
+            let Some(item) = self.parse_item(&item_type, item_value) else {
+                log::warn!("Unknown entity type or parse error for ingest: {item_type}");
+                continue;
+            };
+            match change {
+                MEventType::SET => set_items.push(item),
+                MEventType::DEL => del_items.push(item),
             }
         }
 
-        if sets.is_empty() && dels.is_empty() {
+        let applied = set_items.len() + del_items.len();
+        if applied == 0 {
             return Ok(0);
         }
 
@@ -929,103 +866,16 @@ impl CellServerCtx {
             target: "myko::server::context",
             "apply_event_batch parsed: input_events={} sets={} dels={}",
             input_len,
-            sets.len(),
-            dels.len()
+            set_items.len(),
+            del_items.len()
         );
 
-        let mut inserts_by_type: AnyItemEntriesByType = HashMap::new();
-        let mut removes_by_type: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        // Ingested wire events are Local (cascade + produce); the shared batch
+        // path groups by type, reduces, then runs the cascade/produce tail.
+        self.emit_grouped(&set_items, MEventType::SET, Origin::Local)?;
+        self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
 
-        for op in &sets {
-            let entity_type: Arc<str> = op.item.entity_type().into();
-            let id = op.item.id();
-            crate::server::entity_set_stats::record_set(&entity_type);
-            inserts_by_type
-                .entry(entity_type)
-                .or_default()
-                .push((id, op.item.clone()));
-            self.search_index.index_item(&op.item);
-        }
-        for op in &dels {
-            let entity_type_static = op.item.entity_type();
-            let entity_type: Arc<str> = entity_type_static.into();
-            let id = op.item.id();
-            crate::server::entity_set_stats::record_del(&entity_type);
-            removes_by_type
-                .entry(entity_type)
-                .or_default()
-                .push(id.clone());
-            self.search_index.remove_entity(entity_type_static, &id);
-        }
-
-        // Reduce: one diff emission per entity type per operation kind.
-        for (entity_type, entries) in inserts_by_type {
-            log::trace!(
-                target: "myko::server::context",
-                "apply_event_batch reduce inserts: entity_type={} count={}",
-                entity_type,
-                entries.len()
-            );
-            let store = self.registry.get_or_create(entity_type.as_ref());
-            let count = entries.len();
-            let before = store.snapshot().len();
-            store.insert_many(entries);
-            let after = store.snapshot().len();
-            if after != before || count > 100 {
-                log::info!(
-                    "insert_many {}: submitted={} store_before={} store_after={} net_new={}",
-                    entity_type,
-                    count,
-                    before,
-                    after,
-                    after as i64 - before as i64
-                );
-            }
-        }
-        for (entity_type, keys) in removes_by_type {
-            log::trace!(
-                target: "myko::server::context",
-                "apply_event_batch reduce removes: entity_type={} count={}",
-                entity_type,
-                keys.len()
-            );
-            let store = self.registry.get_or_create(entity_type.as_ref());
-            store.remove_many(keys);
-        }
-
-        // Relationships
-        for op in &sets {
-            if !op.options.prevent_relationship_updates {
-                self.relationship_manager
-                    .forward_set(op.item.clone(), self)?;
-            }
-        }
-        let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
-        for op in &dels {
-            if !op.options.prevent_relationship_updates {
-                dels_with_relationships
-                    .entry(op.item.entity_type().into())
-                    .or_default()
-                    .push(op.item.clone());
-            }
-        }
-        for (_, items) in dels_with_relationships {
-            self.relationship_manager.forward_del_batch(&items, self)?;
-        }
-
-        // Persist
-        for op in &sets {
-            if !op.options.prevent_persist {
-                self.produce_set_dyn(&op.item)?;
-            }
-        }
-        for op in &dels {
-            if !op.options.prevent_persist {
-                self.produce_del_dyn(&op.item)?;
-            }
-        }
-
-        Ok(sets.len() + dels.len())
+        Ok(applied)
     }
 
     fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
@@ -1126,32 +976,151 @@ impl CellServerCtx {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // durable backend production (private)
+    // shared emission pipeline (batch is first-class; single is a thin wrapper)
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_set<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            persister.persist(event)?;
+    /// Single-item store reduce — **no allocation**. Records the stat and applies
+    /// the store insert/remove for one item. Paired with
+    /// `apply_effects(slice::from_ref(&item), …)` by the single-item entry points
+    /// so a single mutation never allocates a Vec or groups by type.
+    fn reduce_one(&self, item: &Arc<dyn AnyItem>, change: MEventType) {
+        let entity_type = item.entity_type();
+        match change {
+            MEventType::SET => {
+                crate::server::entity_set_stats::record_set(entity_type);
+                self.registry
+                    .get_or_create(entity_type)
+                    .insert(item.id(), item.clone());
+            }
+            MEventType::DEL => {
+                crate::server::entity_set_stats::record_del(entity_type);
+                self.registry.get_or_create(entity_type).remove(&item.id());
+            }
         }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            let _ = sink.send(event);
+    }
+
+    /// The batch emission path (first-class). Groups `items` by entity type,
+    /// applies one grouped store reduce per type (a single store diff each) for
+    /// **all** groups before any cascade runs, then runs the shared
+    /// `apply_effects` tail per (same-type) group.
+    ///
+    /// Every batch entry point and the wire-ingest path funnel through here. The
+    /// single-item entry points deliberately do **not** — they call
+    /// `reduce_one` + `apply_effects` directly to avoid the grouping/Vec cost.
+    fn emit_grouped(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
+        let mut by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
+            std::collections::BTreeMap::new();
+        for item in items {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .push(item.clone());
+        }
+
+        // Reduce: one store diff per type, across all groups, before any cascade
+        // (so the store is fully settled — load-bearing for transitive cascade).
+        for (entity_type, group) in &by_type {
+            let store = self.registry.get_or_create(entity_type);
+            match change {
+                MEventType::SET => {
+                    let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
+                        Vec::with_capacity(group.len());
+                    for item in group {
+                        crate::server::entity_set_stats::record_set(entity_type);
+                        entries.push((item.id(), item.clone()));
+                    }
+                    store.insert_many(entries);
+                }
+                MEventType::DEL => {
+                    let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
+                    for item in group {
+                        crate::server::entity_set_stats::record_del(entity_type);
+                        ids.push(item.id());
+                    }
+                    store.remove_many(ids);
+                }
+            }
+        }
+
+        // Effects: search + cascade + produce, per same-type group.
+        for group in by_type.values() {
+            self.apply_effects(group, change, origin)?;
         }
         Ok(())
     }
 
-    fn produce_del<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            persister.persist(event)?;
+    /// Shared post-reduce tail: search index, relationship cascade (gated by
+    /// `origin`), and produce (gated by `origin`).
+    ///
+    /// Operates on a slice of items **of the same entity type** whose store
+    /// reduce has already run. Single-item callers pass `slice::from_ref(&item)`
+    /// (zero alloc); `emit_grouped` passes each type-group. The type-erased
+    /// produce path is equivalent to the typed one (`MEvent::from_item` ≡
+    /// `MEvent::set_from_value(item.to_value())`, modulo the fresh `created_at`/`tx`).
+    fn apply_effects(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        // Search: index searchable fields.
+        match change {
+            MEventType::SET => {
+                for item in items {
+                    self.search_index.index_item(item);
+                }
+            }
+            MEventType::DEL => {
+                for item in items {
+                    self.search_index
+                        .remove_entity(item.entity_type(), &item.id());
+                }
+            }
         }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            let _ = sink.send(event);
+
+        // Relationships: run cascades unless this origin must not descend.
+        if origin.should_cascade(change) {
+            match change {
+                MEventType::SET => {
+                    for item in items {
+                        self.relationship_manager.forward_set(item.clone(), self)?;
+                    }
+                }
+                MEventType::DEL => self.relationship_manager.forward_del_batch(items, self)?,
+            }
         }
+
+        // Persist: produce to persisters + sink unless this origin must not.
+        if origin.should_produce() {
+            match change {
+                MEventType::SET => {
+                    for item in items {
+                        self.produce_set_dyn(item)?;
+                    }
+                }
+                MEventType::DEL => {
+                    for item in items {
+                        self.produce_del_dyn(item)?;
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // durable backend production (private)
+    // ─────────────────────────────────────────────────────────────────────────
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
@@ -1749,7 +1718,6 @@ mod tests {
                 created_at: "2026-03-12T00:00:00Z".to_string(),
                 tx: "tx-immediate".to_string(),
                 source_id: Some("test".to_string()),
-                options: None,
             }])
             .expect("apply_event_batch should succeed");
 
@@ -1772,7 +1740,6 @@ mod tests {
                 created_at: "2026-03-12T00:00:00Z".to_string(),
                 tx: "tx-buffered".to_string(),
                 source_id: Some("test".to_string()),
-                options: None,
             }])
             .expect("apply_event_batch should succeed");
 
