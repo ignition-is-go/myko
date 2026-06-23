@@ -671,3 +671,101 @@ impl CommandSink {
         }
     }
 }
+
+// ── Server-mirrored local value ────────────────────────────────────────────
+
+/// A locally-writable mirror of a live server value, with an explicit
+/// commit/cancel lifecycle — the recurring "edit a server-backed value locally,
+/// persist on drop/blur/save" shape (drag a node, type in a field, drag a split
+/// handle, …).
+///
+/// [`value`](Self::value) is a writable signal you bind to inputs or hand to a
+/// widget that mutates it. It re-seeds from `server` whenever the server value
+/// changes — UNLESS an edit is in progress ([`editing`](Self::editing)) — so a
+/// remote update can't clobber an in-flight local change. Persistence is
+/// explicit and consumer-defined: [`commit`](Self::commit) runs the closure you
+/// supplied; nothing is written to the server automatically.
+///
+/// Lifecycle:
+/// - [`begin`](Self::begin)  — focus / drag-start: pause server re-seed.
+/// - [`commit`](Self::commit) — blur / drag-end / save: persist the local value
+///   and resume re-seed. Optimistic — the local value stays until the server
+///   echoes it back (then re-seeds to the same value: a no-op).
+/// - [`cancel`](Self::cancel) — Escape: discard the local edit, snap back to the
+///   current server value, resume.
+pub struct ServerMirror<T: Send + Sync + 'static> {
+    /// Writable local value. Bind to inputs; hand to widgets that mutate it.
+    pub value: RwSignal<T>,
+    /// True while an edit/drag is in progress; pauses the server re-seed.
+    pub editing: RwSignal<bool>,
+    server: Signal<T>,
+    persist: StoredValue<Arc<dyn Fn(T) + Send + Sync>>,
+}
+
+// Hand-typed Clone/Copy: all fields are `Copy` arena handles regardless of `T`,
+// so the mirror is `Copy` even when `T` is not (a derive would wrongly add
+// `T: Copy`).
+impl<T: Send + Sync + 'static> Clone for ServerMirror<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: Send + Sync + 'static> Copy for ServerMirror<T> {}
+
+/// Create a [`ServerMirror`] over a reactive `server` value with a custom
+/// `persist` closure (define your own command — e.g. `SetBindingNodeValue`).
+///
+/// Must be called inside a reactive owner scope (like the other hooks here).
+pub fn use_server_mirror<T>(
+    server: impl Into<Signal<T>>,
+    persist: impl Fn(T) + Send + Sync + 'static,
+) -> ServerMirror<T>
+where
+    T: Clone + PartialEq + Send + Sync + 'static,
+{
+    let server = server.into();
+    let value = RwSignal::new(server.get_untracked());
+    let editing = RwSignal::new(false);
+
+    // Re-seed the local cache from the server. Depends ONLY on `server`
+    // (untracked reads of `value`/`editing`): a remote change updates the cache,
+    // but neither a paused edit nor the widget's own per-frame writes to `value`
+    // (e.g. a drag) re-trigger it. The equality guard makes a server echo of a
+    // just-committed value a no-op.
+    Effect::new(move |_| {
+        let next = server.get();
+        if !editing.get_untracked() && value.get_untracked() != next {
+            value.set(next);
+        }
+    });
+
+    ServerMirror {
+        value,
+        editing,
+        server,
+        persist: StoredValue::new(Arc::new(persist)),
+    }
+}
+
+impl<T: Clone + PartialEq + Send + Sync + 'static> ServerMirror<T> {
+    /// Pause server re-seed for an in-progress edit (focus / drag-start).
+    pub fn begin(&self) {
+        self.editing.set(true);
+    }
+
+    /// Persist the current local value (runs the supplied closure) and resume
+    /// server re-seed. Optimistic: the local value is kept until the server
+    /// echoes it back.
+    pub fn commit(&self) {
+        let v = self.value.get_untracked();
+        self.persist.with_value(|f| f(v));
+        self.editing.set(false);
+    }
+
+    /// Discard the local edit, snap `value` back to the current server value,
+    /// and resume re-seed.
+    pub fn cancel(&self) {
+        self.value.set(self.server.get_untracked());
+        self.editing.set(false);
+    }
+}
