@@ -1336,6 +1336,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "gloo-utils"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1543,15 +1555,16 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "1.0.6"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa7dd96ba128d9b95dbb04925b54772e9e80914d11342a1f0613f2caee15f013"
+checksum = "eb6fd090ff0517d285bd53f989dc472578a7ead86f65b0f01fc8568b388cdcd2"
 dependencies = [
  "anyhow",
  "arc-swap",
  "crossbeam",
  "dashmap",
  "getrandom 0.3.4",
+ "gloo-timers",
  "log",
  "parking_lot",
  "rayon",
@@ -1561,6 +1574,18 @@ dependencies = [
  "spin_sleep",
  "tokio",
  "uuid",
+ "wasm-bindgen-futures",
+ "web-time",
+]
+
+[[package]]
+name = "hyphae-leptos"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c943fcc7d9f254ce6a39250c1d9c280c621daef96d3a5784b3a0658eae6adb8"
+dependencies = [
+ "hyphae",
+ "leptos",
 ]
 
 [[package]]
@@ -2123,6 +2148,7 @@ dependencies = [
 name = "myko-leptos"
 version = "4.19.1"
 dependencies = [
+ "hyphae-leptos",
  "leptos",
  "myko",
  "serde",
@@ -4386,6 +4412,16 @@ name = "web-sys"
 version = "0.3.100"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e0871acf327f283dc6da28a1696cdc64fb355ba9f935d052021fa77f35cce69"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

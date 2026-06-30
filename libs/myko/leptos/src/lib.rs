@@ -3,61 +3,44 @@ use std::sync::Arc;
 use leptos::prelude::*;
 use myko::{common::with_id::WithTypedId, hyphae::IdFor};
 
+// Re-export the hyphae→Leptos bridge primitives so consumers get them from a
+// single place (`myko_leptos`) without depending on `hyphae-leptos` directly.
+pub use hyphae_leptos::{
+    CellMapStore, CellMapStoreExt, MapGroup, NestedMapStore, NestedMapStoreExt, ToLeptosSignal,
+};
+
 /// Initialize the myko-leptos bridge.
 ///
-/// Creates a `MykoClient` with WASM WebSocket transport and stores it in Leptos context.
-/// Call this once in your root `App` component.
+/// Creates a `MykoClient` with the platform-default WebSocket transport and
+/// stores it in Leptos context. Call this once in your root `App` component.
 ///
 /// `address` should be the myko server WebSocket address (e.g. `"localhost:5155"`).
 pub fn provide_myko(address: &str) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::client::MykoClient;
-        let client = MykoClient::new();
-        client.set_protocol(myko::client::MykoProtocol::JSON);
-        client.set_address(Some(address.to_string()));
-        provide_context(client);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = address;
+    use myko::client::MykoClient;
+    let client = MykoClient::new();
+    client.set_protocol(myko::client::MykoProtocol::JSON);
+    client.set_address(Some(address.to_string()));
+    provide_context(client);
 }
 
 /// Disconnect the Myko client (clears the address).
 pub fn disconnect_myko() {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::client::MykoClient;
-        let client = expect_context::<MykoClient>();
-        client.set_address(None);
-    }
+    let client = expect_context::<myko::client::MykoClient>();
+    client.set_address(None);
 }
 
 /// Returns a reactive signal tracking the Myko connection status.
+///
+/// The status cell is bridged to a Leptos signal via `hyphae-leptos`
+/// ([`ToLeptosSignal`]) and projected to a `bool` (connected or not).
 pub fn use_connection_status() -> ReadSignal<bool> {
-    let (read, write) = signal(false);
+    use myko::client::{ConnectionStatus, MykoClient};
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::{
-            client::{ConnectionStatus, MykoClient},
-            hyphae::{Signal, Watchable},
-        };
-
-        let client = expect_context::<MykoClient>();
-        let cell = client.connection_status();
-        let guard = cell.subscribe(move |signal| {
-            if let Signal::Value(status) = signal {
-                write.set(matches!(&**status, ConnectionStatus::Connected(_)));
-            }
-        });
-        cell.own(guard);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = write;
-
-    read
+    let client = expect_context::<MykoClient>();
+    let status = client.connection_status().to_leptos_signal();
+    let (connected, set_connected) = signal(false);
+    Effect::new(move || set_connected.set(matches!(status.get(), ConnectionStatus::Connected(_))));
+    connected
 }
 
 /// Returns a reactive signal of query results that updates when the server pushes data.
@@ -121,46 +104,38 @@ where
         + Sync
         + 'static,
 {
+    use myko::{
+        client::MykoClient,
+        hyphae::{Signal, Watchable},
+    };
+
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::{
-            client::MykoClient,
-            hyphae::{Signal, Watchable},
-        };
+    let client = expect_context::<MykoClient>();
 
-        let client = expect_context::<MykoClient>();
+    // `prev_cell` holds the previous Cell so it drops (and unsubscribes) on
+    // each re-run of the effect, before the new subscription is created.
+    let prev_cell: StoredValue<
+        Option<myko::hyphae::Cell<Vec<Arc<Q::Item>>, myko::hyphae::CellImmutable>>,
+    > = StoredValue::new(None);
 
-        // `prev_cell` holds the previous Cell so it drops (and unsubscribes) on
-        // each re-run of the effect, before the new subscription is created.
-        let prev_cell: StoredValue<
-            Option<myko::hyphae::Cell<Vec<Arc<Q::Item>>, myko::hyphae::CellImmutable>>,
-        > = StoredValue::new(None);
-
-        Effect::new(move || {
-            let q = query(); // tracks signals read inside the closure
-            // A new subscription is starting — mark as not-yet-loaded.
-            set_loaded.set(false);
-            let cell = client.watch_query(q);
-            let guard = cell.subscribe(move |signal| {
-                if let Signal::Value(items) = signal {
-                    write.set((**items).to_vec());
-                    // First emission (even an empty vec) means the query returned.
-                    set_loaded.set(true);
-                }
-            });
-            cell.own(guard);
-            // Drop the previous cell (unsubscribes) and hold the new one.
-            prev_cell.set_value(Some(cell));
+    Effect::new(move || {
+        let q = query(); // tracks signals read inside the closure
+        // A new subscription is starting — mark as not-yet-loaded.
+        set_loaded.set(false);
+        let cell = client.watch_query(q);
+        let guard = cell.subscribe(move |signal| {
+            if let Signal::Value(items) = signal {
+                write.set((**items).to_vec());
+                // First emission (even an empty vec) means the query returned.
+                set_loaded.set(true);
+            }
         });
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (query, write, set_loaded);
-    }
+        cell.own(guard);
+        // Drop the previous cell (unsubscribes) and hold the new one.
+        prev_cell.set_value(Some(cell));
+    });
 
     (read, loaded)
 }
@@ -205,42 +180,34 @@ where
         + Sync
         + 'static,
 {
+    use myko::{
+        client::MykoClient,
+        hyphae::{Signal, Watchable},
+    };
+
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::{
-            client::MykoClient,
-            hyphae::{Signal, Watchable},
-        };
+    let client = expect_context::<MykoClient>();
 
-        let client = expect_context::<MykoClient>();
+    // Holds the previous Cell so it drops (and unsubscribes) on each re-run.
+    let prev_cell: StoredValue<
+        Option<myko::hyphae::Cell<Vec<V::Item>, myko::hyphae::CellImmutable>>,
+    > = StoredValue::new(None);
 
-        // Holds the previous Cell so it drops (and unsubscribes) on each re-run.
-        let prev_cell: StoredValue<
-            Option<myko::hyphae::Cell<Vec<V::Item>, myko::hyphae::CellImmutable>>,
-        > = StoredValue::new(None);
-
-        Effect::new(move || {
-            let v = view(); // tracks signals read inside the closure
-            set_loaded.set(false);
-            let cell = client.watch_view(v);
-            let guard = cell.subscribe(move |signal| {
-                if let Signal::Value(items) = signal {
-                    write.set((**items).to_vec());
-                    set_loaded.set(true);
-                }
-            });
-            cell.own(guard);
-            prev_cell.set_value(Some(cell));
+    Effect::new(move || {
+        let v = view(); // tracks signals read inside the closure
+        set_loaded.set(false);
+        let cell = client.watch_view(v);
+        let guard = cell.subscribe(move |signal| {
+            if let Signal::Value(items) = signal {
+                write.set((**items).to_vec());
+                set_loaded.set(true);
+            }
         });
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (view, write, set_loaded);
-    }
+        cell.own(guard);
+        prev_cell.set_value(Some(cell));
+    });
 
     (read, loaded)
 }
@@ -262,165 +229,86 @@ where
     R: myko::report::ReportParams + myko::report::ReportIdStatic + Clone + Send + Sync + 'static,
     O: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
 {
+    use myko::{
+        client::MykoClient,
+        hyphae::{Signal, Watchable},
+    };
+
     let (read, write) = signal::<Option<O>>(None);
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::{
-            client::MykoClient,
-            hyphae::{Signal, Watchable},
-        };
+    let client = expect_context::<MykoClient>();
 
-        let client = expect_context::<MykoClient>();
+    // Holds the previous Cell so it drops (and unsubscribes) on each re-run.
+    let prev_cell: StoredValue<Option<myko::hyphae::Cell<Option<O>, myko::hyphae::CellImmutable>>> =
+        StoredValue::new(None);
 
-        // Holds the previous Cell so it drops (and unsubscribes) on each re-run.
-        let prev_cell: StoredValue<
-            Option<myko::hyphae::Cell<Option<O>, myko::hyphae::CellImmutable>>,
-        > = StoredValue::new(None);
-
-        Effect::new(move || {
-            let r = report(); // tracks signals read inside the closure
-            let cell = client.watch_report::<R, O>(r);
-            let guard = cell.subscribe(move |signal| {
-                if let Signal::Value(value) = signal {
-                    write.set((**value).clone());
-                }
-            });
-            cell.own(guard);
-            prev_cell.set_value(Some(cell));
+    Effect::new(move || {
+        let r = report(); // tracks signals read inside the closure
+        let cell = client.watch_report::<R, O>(r);
+        let guard = cell.subscribe(move |signal| {
+            if let Signal::Value(value) = signal {
+                write.set((**value).clone());
+            }
         });
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = (report, write);
-    }
+        cell.own(guard);
+        prev_cell.set_value(Some(cell));
+    });
 
     read
 }
 
-/// Apply a hyphae MapDiff to per-entity Leptos signals.
-///
-/// Each entity has its own RwSignal — only subscribers to that specific entity
-/// are notified on update. The `ids` signal tracks the full ID list for `<For>`
-/// iteration and is updated once per diff (not per-entity).
-#[allow(dead_code, clippy::type_complexity)]
-fn apply_diff<T: Clone + Send + Sync + 'static>(
-    signals: &StoredValue<std::collections::HashMap<Arc<str>, RwSignal<Option<Arc<T>>>>>,
-    ids_write: &WriteSignal<Vec<Arc<str>>>,
-    diff: &myko::hyphae::MapDiff<Arc<str>, Arc<T>>,
-) {
-    use myko::hyphae::MapDiff;
-    match diff {
-        MapDiff::Initial { entries } => {
-            signals.update_value(|map| {
-                for (key, value) in entries {
-                    match map.entry(key.clone()) {
-                        std::collections::hash_map::Entry::Occupied(e) => {
-                            e.get().set(Some(value.clone()));
-                        }
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(RwSignal::new(Some(value.clone())));
-                        }
-                    }
-                }
-            });
-            ids_write.update(|ids| {
-                *ids = entries.iter().map(|(k, _)| k.clone()).collect();
-            });
-        }
-        MapDiff::Insert { key, value } => {
-            signals.update_value(|map| match map.entry(key.clone()) {
-                std::collections::hash_map::Entry::Occupied(e) => {
-                    e.get().set(Some(value.clone()));
-                }
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(RwSignal::new(Some(value.clone())));
-                }
-            });
-            ids_write.update(|ids| {
-                if !ids.contains(key) {
-                    ids.push(key.clone());
-                }
-            });
-        }
-        MapDiff::Update { key, new_value, .. } => {
-            signals.update_value(|map| {
-                if let Some(sig) = map.get(key) {
-                    sig.set(Some(new_value.clone()));
-                }
-            });
-            // No ids change on update — entity still exists
-        }
-        MapDiff::Remove { key, .. } => {
-            // Update ids FIRST so <For> unmounts the component before
-            // the signal goes None (avoids flash of empty state)
-            ids_write.update(|ids| ids.retain(|i| i != key));
-            signals.update_value(|map| {
-                // Don't set to None — the component is being unmounted via ids.
-                // Just clean up the signal from the map.
-                map.remove(key);
-            });
-        }
-        MapDiff::Batch { changes } => {
-            // Collect ID mutations and apply once to avoid N notifications
-            let mut ids_to_add: Vec<Arc<str>> = Vec::new();
-            let mut ids_to_remove: Vec<Arc<str>> = Vec::new();
-
-            for change in changes {
-                match change {
-                    MapDiff::Insert { key, value } => {
-                        signals.update_value(|map| match map.entry(key.clone()) {
-                            std::collections::hash_map::Entry::Occupied(e) => {
-                                e.get().set(Some(value.clone()));
-                            }
-                            std::collections::hash_map::Entry::Vacant(e) => {
-                                e.insert(RwSignal::new(Some(value.clone())));
-                            }
-                        });
-                        ids_to_add.push(key.clone());
-                    }
-                    MapDiff::Update { key, new_value, .. } => {
-                        signals.update_value(|map| {
-                            if let Some(sig) = map.get(key) {
-                                sig.set(Some(new_value.clone()));
-                            }
-                        });
-                    }
-                    MapDiff::Remove { key, .. } => {
-                        signals.update_value(|map| {
-                            map.remove(key);
-                        });
-                        ids_to_remove.push(key.clone());
-                    }
-                    // Nested batch or initial within a batch — recurse
-                    other => apply_diff(signals, ids_write, other),
-                }
-            }
-
-            // Single ids update for the whole batch
-            if !ids_to_add.is_empty() || !ids_to_remove.is_empty() {
-                ids_write.update(|ids| {
-                    ids.retain(|i| !ids_to_remove.contains(i));
-                    for id in ids_to_add {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    }
-                });
-            }
-        }
-    }
-}
-
 /// Fine-grained reactive query — per-entity Leptos signals.
 ///
-/// Unlike `live_query` which returns `ReadSignal<Vec<Item>>` (all subscribers
+/// Unlike [`live_query`] which returns `ReadSignal<Vec<Item>>` (all subscribers
 /// re-render on any entity change), this uses `watch_query_map` to maintain
-/// per-entity signals. Only components subscribed to a specific entity
-/// re-render when that entity changes.
+/// per-entity signals: only components reading a specific entity re-render when
+/// that entity changes.
 ///
-/// Returns a `LiveQueryMap` handle for looking up individual entities.
+/// Returns a [`CellMapStore`] (from `hyphae-leptos`) — the generic bridge from a
+/// hyphae `CellMap` to fine-grained Leptos state. Drive a `<For>` from
+/// [`keys()`](CellMapStore::keys) and read each entity via
+/// [`value(&id)`](MapGroup::value), which returns a `ReadSignal<Option<Arc<Item>>>`
+/// that is `None` until the entity arrives (subscribe-before-data):
+///
+/// ```ignore
+/// let store = live_query_store(GetAllServers {});
+/// view! {
+///     <For each=move || store.keys().get() key=|id| id.clone() let:id>
+///         {move || store.value(&id).get().map(|s| view! { <Row server=s/> })}
+///     </For>
+/// }
+/// ```
+pub fn live_query_store<Q>(query: Q) -> CellMapStore<Arc<str>, Arc<Q::Item>>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + WithTypedId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static,
+    <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
+{
+    use myko::client::MykoClient;
+
+    let client = expect_context::<MykoClient>();
+    // hyphae owns the diff-driven per-key cells; `to_leptos_store` bridges them
+    // to per-entity Leptos signals tied to the current owner.
+    client.watch_query_map(query).to_leptos_store()
+}
+
+/// Fine-grained reactive query, returning a [`LiveQueryMap`] handle.
+///
+/// **Deprecated** in favor of [`live_query_store`], which returns the
+/// hyphae-leptos [`CellMapStore`] directly. Migration: `.get(id)` → `.value(&id)`,
+/// `.ids` → `.keys()`.
+#[deprecated(
+    note = "use `live_query_store`, which returns a `CellMapStore`: `.get(id)` → `.value(&id)`, `.ids` → `.keys()`"
+)]
+#[allow(deprecated)]
 pub fn live_query_map<Q>(query: Q) -> LiveQueryMap<Q::Item>
 where
     Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
@@ -431,77 +319,65 @@ where
         + std::fmt::Debug
         + PartialEq
         + Send
+        + Sync
         + 'static,
     <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        use std::collections::HashMap;
+    let store = live_query_store(query);
 
-        use myko::client::MykoClient;
+    // Mirror the store's reactive key list into a `ReadSignal` for the
+    // backwards-compatible `ids` field.
+    let (ids, set_ids) = signal(Vec::<Arc<str>>::new());
+    Effect::new(move || set_ids.set(store.keys().get()));
 
-        let client = expect_context::<MykoClient>();
-        let cell_map = client.watch_query_map(query);
-
-        // Per-entity Leptos signals, keyed by entity ID
-        let signals: StoredValue<HashMap<Arc<str>, RwSignal<Option<Arc<Q::Item>>>>> =
-            StoredValue::new(HashMap::new());
-
-        // Track entity IDs for list rendering
-        let (ids_read, ids_write) = signal(Vec::<Arc<str>>::new());
-
-        // Subscribe to CellMap diffs and update per-entity Leptos signals
-        let guard = cell_map.subscribe_diffs(move |diff| {
-            apply_diff(&signals, &ids_write, diff);
-        });
-
-        // Keep both alive independently — no circular ownership.
-        // Arena-managed: drops when the reactive owner (component) disposes.
-        let _keepalive_map = StoredValue::new(cell_map);
-        let _keepalive_guard = StoredValue::new(guard);
-
-        LiveQueryMap {
-            signals,
-            ids: ids_read,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = query;
-        LiveQueryMap {
-            signals: StoredValue::new(std::collections::HashMap::new()),
-            ids: signal(vec![]).0,
-        }
-    }
+    LiveQueryMap { store, ids }
 }
 
-/// Handle for a fine-grained reactive query.
+/// Handle for a fine-grained reactive query — a thin facade over
+/// hyphae-leptos's [`CellMapStore`].
 ///
-/// Provides per-entity signal access and a reactive list of entity IDs.
-/// The inner CellMap is kept alive via StoredValue to maintain the diff subscription.
-#[derive(Clone, Copy)]
-pub struct LiveQueryMap<T: Clone + Send + Sync + 'static> {
-    #[allow(clippy::type_complexity)]
-    signals: StoredValue<std::collections::HashMap<Arc<str>, RwSignal<Option<Arc<T>>>>>,
-    /// Reactive list of entity IDs (for `<For>` iteration)
+/// **Deprecated** in favor of [`CellMapStore`] (via [`live_query_store`]). Use the
+/// store directly: `.get(id)` → [`value(&id)`](CellMapStore::value), `.ids` →
+/// [`keys()`](CellMapStore::keys).
+#[deprecated(
+    note = "use `CellMapStore` from `live_query_store`: `.get(id)` → `.value(&id)`, `.ids` → `.keys()`"
+)]
+pub struct LiveQueryMap<T>
+where
+    T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
+{
+    store: CellMapStore<Arc<str>, Arc<T>>,
+    /// Reactive list of entity IDs (for `<For>` iteration).
     pub ids: ReadSignal<Vec<Arc<str>>>,
 }
 
-impl<T: Clone + Send + Sync + 'static> LiveQueryMap<T> {
+// Hand-typed Clone/Copy: both fields are `Copy` arena handles regardless of `T`,
+// so the handle is `Copy` even when `T` is not (a derive would wrongly add
+// `T: Copy`).
+#[allow(deprecated)]
+impl<T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> Clone for LiveQueryMap<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+#[allow(deprecated)]
+impl<T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> Copy for LiveQueryMap<T> {}
+
+#[allow(deprecated)]
+impl<T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> LiveQueryMap<T> {
     /// Get a reactive signal for a specific entity by ID.
     ///
-    /// Returns `ReadSignal<Option<Arc<T>>>` — None if entity doesn't exist yet.
-    /// Safe to call before data arrives — the signal will update when the entity
-    /// is inserted via a diff.
+    /// Returns `ReadSignal<Option<Arc<T>>>` — `None` until the entity arrives
+    /// (subscribe-before-data, provided by the underlying `CellMapStore`).
     pub fn get(&self, id: &str) -> ReadSignal<Option<Arc<T>>> {
-        let id: Arc<str> = id.into();
-        // Ensure signal exists (subscribe-before-data pattern)
-        self.signals.update_value(|map| {
-            map.entry(id.clone()).or_insert_with(|| RwSignal::new(None));
-        });
-        let sig = self.signals.with_value(|map| map.get(&id).copied());
-        sig.map(|s| s.read_only()).unwrap_or_else(|| signal(None).0)
+        let key: Arc<str> = id.into();
+        self.store.value(&key)
+    }
+
+    /// The underlying hyphae-leptos [`CellMapStore`] for its richer API
+    /// (`keys()`, `value()`, `len()`, `contains_key()`, …).
+    pub fn as_store(&self) -> CellMapStore<Arc<str>, Arc<T>> {
+        self.store
     }
 }
 
@@ -514,29 +390,14 @@ where
     C: serde::Serialize + Clone + myko::core::command::CommandId + 'static,
     R: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
 {
-    let (read, write) = signal(None);
+    use myko::client::MykoClient;
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        use myko::{
-            client::MykoClient,
-            hyphae::{Signal, Watchable},
-        };
-
-        let client = expect_context::<MykoClient>();
-        let cell = client.send_command::<C, R>(&cmd);
-        let guard = cell.subscribe(move |signal| {
-            if let Signal::Value(result) = signal {
-                write.set((**result).clone());
-            }
-        });
-        cell.own(guard);
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = (cmd, write);
-
-    read
+    let client = expect_context::<MykoClient>();
+    // The result cell is kept alive by the client's command-response handler
+    // until the response lands; `to_leptos_signal` seeds it (`None`) and ties
+    // the subscription to the reactive owner (released on unmount). It returns a
+    // read-only signal — the response flows one way, server → UI.
+    client.send_command::<C, R>(&cmd).to_leptos_signal()
 }
 
 /// An owner-independent command sender that still observes command responses.
@@ -566,12 +427,10 @@ where
 /// ```
 #[derive(Clone)]
 pub struct CommandSink {
-    #[cfg(target_arch = "wasm32")]
     client: myko::client::MykoClient,
     // In-flight result cells kept alive until their response lands. Each entry's
     // flag flips to `true` once observed; resolved entries are pruned on the next
     // send (outside any subscription callback, so guards drop safely).
-    #[cfg(target_arch = "wasm32")]
     #[allow(clippy::type_complexity)]
     inflight: std::sync::Arc<
         std::sync::Mutex<
@@ -588,17 +447,9 @@ pub struct CommandSink {
 /// Must be called where `provide_myko` is in scope (a component body / reactive
 /// owner). The returned sink can then be used from deferred callbacks.
 pub fn use_command_sink() -> CommandSink {
-    #[cfg(target_arch = "wasm32")]
-    {
-        CommandSink {
-            client: expect_context::<myko::client::MykoClient>(),
-            inflight: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        CommandSink {}
+    CommandSink {
+        client: expect_context::<myko::client::MykoClient>(),
+        inflight: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -638,37 +489,29 @@ impl CommandSink {
             + Sync
             + 'static,
     {
-        #[cfg(target_arch = "wasm32")]
+        use myko::hyphae::{Signal, Watchable};
+
+        // Drop already-resolved keepalives first (safe: not inside a callback).
         {
-            use myko::hyphae::{Signal, Watchable};
+            let mut inflight = self.inflight.lock().unwrap();
+            inflight.retain(|(done, _)| !done.load(std::sync::atomic::Ordering::Acquire));
+        }
 
-            // Drop already-resolved keepalives first (safe: not inside a callback).
-            {
-                let mut inflight = self.inflight.lock().unwrap();
-                inflight.retain(|(done, _)| !done.load(std::sync::atomic::Ordering::Acquire));
-            }
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_cb = done.clone();
 
-            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let done_cb = done.clone();
-
-            let cell = self.client.send_command::<C, R>(&cmd);
-            let guard = cell.subscribe(move |signal| {
-                if let Signal::Value(value) = signal {
-                    if let Some(result) = &**value {
-                        on_result(result.clone());
-                        done_cb.store(true, std::sync::atomic::Ordering::Release);
-                    }
+        let cell = self.client.send_command::<C, R>(&cmd);
+        let guard = cell.subscribe(move |signal| {
+            if let Signal::Value(value) = signal {
+                if let Some(result) = &**value {
+                    on_result(result.clone());
+                    done_cb.store(true, std::sync::atomic::Ordering::Release);
                 }
-            });
-            cell.own(guard);
+            }
+        });
+        cell.own(guard);
 
-            self.inflight.lock().unwrap().push((done, Box::new(cell)));
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = (cmd, on_result);
-        }
+        self.inflight.lock().unwrap().push((done, Box::new(cell)));
     }
 }
 
@@ -767,5 +610,84 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> ServerMirror<T> {
     pub fn cancel(&self) {
         self.value.set(self.server.get_untracked());
         self.editing.set(false);
+    }
+}
+
+// ── Optimistic committer ────────────────────────────────────────────────────
+
+/// A server-backed value with optimistic local commits and rollback — the
+/// recurring "click a button / pick an option that writes a value: show it
+/// immediately, but snap back if the server rejects it" shape (the same
+/// optimistic feel as a dragged node position, but for discrete writes).
+///
+/// [`value`](Self::value) shows the optimistic override while a commit is
+/// pending, otherwise the live `server` value. [`commit`](Self::commit)
+/// optimistically sets the value and dispatches a command:
+/// - on **success** it is a no-op — the override is kept until the server echoes
+///   the same value, then dropped seamlessly (no flicker);
+/// - on **failure** the override is dropped, snapping `value` back to the server.
+pub struct Optimistic<T: Send + Sync + 'static> {
+    /// Reactive display value: the optimistic override while pending, else `server`.
+    pub value: Signal<T>,
+    pending: RwSignal<Option<T>>,
+    sink: StoredValue<CommandSink>,
+}
+
+// Hand-typed Clone/Copy: all fields are `Copy` arena handles regardless of `T`
+// (a derive would wrongly require `T: Copy`).
+impl<T: Send + Sync + 'static> Clone for Optimistic<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T: Send + Sync + 'static> Copy for Optimistic<T> {}
+
+/// Create an [`Optimistic`] over a reactive `server` value.
+///
+/// Must be called inside a reactive owner scope (like the other hooks here).
+pub fn use_optimistic<T>(server: impl Into<Signal<T>>) -> Optimistic<T>
+where
+    T: Clone + PartialEq + Send + Sync + 'static,
+{
+    let server = server.into();
+    let pending: RwSignal<Option<T>> = RwSignal::new(None);
+
+    // Display: the optimistic override while pending, otherwise the server value.
+    let value = Signal::derive(move || pending.get().unwrap_or_else(|| server.get()));
+
+    // Drop the override once the server catches up to it, so a successful commit is
+    // a seamless no-op (the value never flinches). Depends only on `server`; reads
+    // `pending` untracked so clearing it can't re-trigger this effect.
+    Effect::new(move |_| {
+        let s = server.get();
+        if pending.with_untracked(|p| p.as_ref() == Some(&s)) {
+            pending.set(None);
+        }
+    });
+
+    Optimistic {
+        value,
+        pending,
+        sink: StoredValue::new(use_command_sink()),
+    }
+}
+
+impl<T: Clone + PartialEq + Send + Sync + 'static> Optimistic<T> {
+    /// Optimistically show `next`, then dispatch `cmd`. Revert to the server value
+    /// if the command fails; keep it on success (the server echo of `next` clears
+    /// the override). The command's response is ignored — only success/failure.
+    pub fn commit<C>(&self, next: T, cmd: C)
+    where
+        C: serde::Serialize + Clone + myko::core::command::CommandId + 'static,
+    {
+        self.pending.set(Some(next));
+        let pending = self.pending;
+        self.sink.with_value(|sink| {
+            sink.dispatch::<C, myko::serde_json::Value>(cmd, move |res| {
+                if res.is_err() {
+                    pending.set(None);
+                }
+            });
+        });
     }
 }
