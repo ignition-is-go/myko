@@ -673,16 +673,31 @@ impl MykoClient {
             "ws:m:command-response" => {
                 if let Ok(response) = serde_json::from_value::<crate::wire::CommandResponse>(data())
                 {
-                    let mut handlers = inner.command_response_handlers.lock().unwrap();
-                    if let Some(handler) = handlers.remove(&response.tx) {
+                    // Release the lock BEFORE invoking the one-shot handler. The
+                    // handler runs app callbacks synchronously (cell.set → hyphae
+                    // subscribers), which may re-enter `send_command` and re-lock
+                    // this same mutex → recursive-lock panic (WASM abort). `tx` is a
+                    // unique per-request id, so remove-then-call loses no atomicity.
+                    let handler = inner
+                        .command_response_handlers
+                        .lock()
+                        .unwrap()
+                        .remove(&response.tx);
+                    if let Some(handler) = handler {
                         handler(Ok(response.response));
                     }
                 }
             }
             "ws:m:command-error" => {
                 if let Ok(err) = serde_json::from_value::<crate::wire::CommandError>(data()) {
-                    let mut handlers = inner.command_response_handlers.lock().unwrap();
-                    if let Some(handler) = handlers.remove(&err.tx) {
+                    // Same as command-response: drop the lock before the callback so
+                    // a command issued from it doesn't recursively re-lock.
+                    let handler = inner
+                        .command_response_handlers
+                        .lock()
+                        .unwrap()
+                        .remove(&err.tx);
+                    if let Some(handler) = handler {
                         handler(Err(err.message));
                     }
                 }
