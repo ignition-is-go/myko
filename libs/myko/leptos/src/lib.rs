@@ -502,11 +502,11 @@ impl CommandSink {
 
         let cell = self.client.send_command::<C, R>(&cmd);
         let guard = cell.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
-                if let Some(result) = &**value {
-                    on_result(result.clone());
-                    done_cb.store(true, std::sync::atomic::Ordering::Release);
-                }
+            if let Signal::Value(value) = signal
+                && let Some(result) = &**value
+            {
+                on_result(result.clone());
+                done_cb.store(true, std::sync::atomic::Ordering::Release);
             }
         });
         cell.own(guard);
