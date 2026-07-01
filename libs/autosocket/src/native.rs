@@ -294,8 +294,11 @@ impl AutoReconnectSocket {
                 });
 
                 // Use non-blocking read loop so cancellation can take effect quickly.
+                // Also disable Nagle so small, frequent messages (pulses, cap
+                // writes) ship promptly instead of being coalesced into bursts.
                 if let MaybeTlsStream::Plain(stream) = ws.get_mut() {
                     let _ = stream.set_nonblocking(true);
+                    let _ = stream.set_nodelay(true);
                 }
 
                 attempt = 0;

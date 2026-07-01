@@ -49,6 +49,12 @@ use crate::postgres::{
 pub struct CellServerConfig {
     /// Address to bind the WebSocket server
     pub bind_addr: SocketAddr,
+    /// Disable Nagle's algorithm (set `TCP_NODELAY`) on accepted connections.
+    /// Myko's traffic is small, frequent, latency-sensitive messages (e.g.
+    /// ~60Hz pulses); with Nagle on, TCP coalesces successive small writes
+    /// into fewer segments that arrive together, so an even send cadence is
+    /// delivered as bursts. Defaults to `true`.
+    pub tcp_nodelay: bool,
     /// Optional Postgres configuration for event persistence/distribution
     pub postgres: Option<PostgresConfig>,
     /// Server host ID (auto-generated if not provided)
@@ -69,6 +75,7 @@ pub struct CellServerConfig {
 #[derive(Default)]
 pub struct CellServerBuilder {
     bind_addr: Option<SocketAddr>,
+    tcp_nodelay: Option<bool>,
     host_id: Option<Uuid>,
     postgres: Option<PostgresConfig>,
     peer_registry: Option<peer_registry::PeerRegistryConfig>,
@@ -96,6 +103,15 @@ impl CellServerBuilder {
     /// Set the WebSocket bind address.
     pub fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
         self.bind_addr = Some(addr);
+        self
+    }
+
+    /// Set whether to disable Nagle's algorithm (`TCP_NODELAY`) on accepted
+    /// connections. Defaults to `true` (Nagle off) — recommended for myko's
+    /// small, frequent, latency-sensitive messages so an even send cadence
+    /// isn't delivered as coalesced bursts.
+    pub fn with_tcp_nodelay(mut self, enabled: bool) -> Self {
+        self.tcp_nodelay = Some(enabled);
         self
     }
 
@@ -173,6 +189,7 @@ impl CellServerBuilder {
 
         let mut server = CellServer::new(CellServerConfig {
             bind_addr,
+            tcp_nodelay: self.tcp_nodelay.unwrap_or(true),
             postgres: self.postgres,
             host_id: self.host_id,
             peer_registry: self.peer_registry,
@@ -668,6 +685,20 @@ impl CellServer {
         loop {
             let (stream, addr) = listener.accept().await?;
 
+            // Disable Nagle (unless configured off): our writes are small,
+            // frequent, latency-sensitive messages (e.g. ~60Hz pulses). With
+            // Nagle on (tokio's default), TCP coalesces successive small writes
+            // into fewer segments that land together, so an even 60Hz send
+            // arrives at the client as ~15-20Hz bursts of 3-4 — which downstream
+            // latest-wins consumers (e.g. the pulse-unreal transform apply) then
+            // collapse to one update per burst, producing visibly choppy motion.
+            // Ship each write promptly instead.
+            if self.config.tcp_nodelay
+                && let Err(e) = stream.set_nodelay(true)
+            {
+                log::warn!("failed to set TCP_NODELAY on connection from {addr}: {e}");
+            }
+
             // Check if server is ready (durable backend caught up)
             if !ready.load(Ordering::SeqCst) {
                 if self.is_ready() {
@@ -704,6 +735,7 @@ mod tests {
     fn test_server_creation() {
         let config = CellServerConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tcp_nodelay: true,
             postgres: None,
             host_id: None,
             peer_registry: None,
@@ -720,6 +752,7 @@ mod tests {
         let host_id = Uuid::new_v4();
         let config = CellServerConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tcp_nodelay: true,
             postgres: None,
             host_id: Some(host_id),
             peer_registry: None,
