@@ -79,6 +79,11 @@ pub struct ReportRegistration {
     pub parse: ReportParseFn,
     /// Factory for creating reactive cell from report
     pub cell_factory: ReportCellFactory,
+    /// Report struct's own fields, captured at macro-expansion time. Backs
+    /// the MCP `search()` tool's operation index — see `crate::reflection`.
+    pub args: &'static [crate::reflection::OperationArgField],
+    /// Report struct's doc comment, if any.
+    pub description: Option<&'static str>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

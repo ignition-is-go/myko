@@ -447,6 +447,11 @@ pub struct QueryRegistration {
     pub parse: QueryParseFn,
     /// Factory for creating reactive cell from query
     pub cell_factory: QueryCellFactory,
+    /// Query struct's own fields, captured at macro-expansion time. Backs
+    /// the MCP `search()` tool's operation index — see `crate::reflection`.
+    pub args: &'static [crate::reflection::OperationArgField],
+    /// Query struct's doc comment, if any.
+    pub description: Option<&'static str>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -190,6 +190,27 @@ impl ClientFilters {
         self.visibility_allow.iter().any(|p| p.matches(name))
     }
 
+    /// `true` if the top-level `search`/`execute`/`connection_status` tools
+    /// are visible to this client — unlike [`tool_visible`](Self::tool_visible),
+    /// only `deny` applies; a non-empty `allow` list does *not* hide these.
+    ///
+    /// These three are entry points, not operations: an operator's allow
+    /// list is written in terms of operation names (`report:Foo`,
+    /// `command:Bar`) to scope *which operations* a client can reach — that
+    /// scoping is enforced separately, per call, inside `search`'s index
+    /// filtering and `execute`'s sandbox (both still call `tool_visible` on
+    /// the operation's own `{kind}_{id}` name). If `search`/`execute`
+    /// themselves were gated by the same allow list, an operation-scoped
+    /// allow list with no explicit `search`/`execute` entry would hide both
+    /// tools entirely — making the server unreachable despite the
+    /// operator's intent being to scope operations, not remove entry
+    /// points. Explicit `deny` still works normally for operators who want
+    /// to lock a client out of a tool entirely.
+    pub fn meta_tool_visible(&self, name: &str) -> bool {
+        let name = normalize_tool_name(name);
+        !self.visibility_deny.iter().any(|p| p.matches(&name))
+    }
+
     /// Check whether a `tools/call` is callable for this client given its
     /// JSON `arguments`.
     ///
@@ -486,5 +507,45 @@ mod tests {
         assert_eq!(normalize_tool_name("plain"), "plain");
         // Only the first separator is replaced; ids never contain `:` anyway.
         assert_eq!(normalize_tool_name("a:b:c"), "a_b:c");
+    }
+
+    // ─── meta_tool_visible ─────────────────────────────────────────────────
+
+    #[test]
+    fn meta_tool_visible_ignores_op_level_allow_list() {
+        // Reproduces the pulse-ctx upgrade scenario: an operation-scoped
+        // allow list (written for the old one-tool-per-operation wire
+        // shape) must not hide search/execute/connection_status, which
+        // carry no capability of their own — capability is enforced
+        // per-operation inside search/execute instead.
+        let f = ClientFilters::from_strings(
+            Some("report:GetContextRecordsByAttribute,command:WriteContextRecord"),
+            None,
+            None,
+            None,
+        );
+        assert!(f.meta_tool_visible("search"));
+        assert!(f.meta_tool_visible("execute"));
+        assert!(f.meta_tool_visible("connection_status"));
+        // The op-level allow list still fully applies to `tool_visible`,
+        // which is what search/execute use internally per operation.
+        assert!(f.tool_visible("report_GetContextRecordsByAttribute"));
+        assert!(!f.tool_visible("command_DeleteEverything"));
+    }
+
+    #[test]
+    fn meta_tool_visible_still_respects_explicit_deny() {
+        let f = ClientFilters::from_strings(None, Some("execute"), None, None);
+        assert!(!f.meta_tool_visible("execute"));
+        assert!(f.meta_tool_visible("search"));
+        assert!(f.meta_tool_visible("connection_status"));
+    }
+
+    #[test]
+    fn meta_tool_visible_allows_everything_by_default() {
+        let f = ClientFilters::allow_all();
+        assert!(f.meta_tool_visible("search"));
+        assert!(f.meta_tool_visible("execute"));
+        assert!(f.meta_tool_visible("connection_status"));
     }
 }

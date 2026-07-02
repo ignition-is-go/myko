@@ -172,6 +172,84 @@ pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
 /// as-is and no longer need wrapping in a consumer-side `cfg_attr`.
 pub(crate) fn gate_ts_attrs(_attrs: &mut [syn::Attribute]) {}
 
+/// Extract a struct's doc comment (`/// ...` lines, which desugar to
+/// `#[doc = "..."]` attrs) as one joined string, or `None` if there isn't
+/// one. Call after `take_manual_cache_key_attr`/`take_non_hash_cache_key_attr`
+/// have already stripped their internal marker doc attrs, so only genuine
+/// user-written doc comments remain.
+pub(crate) fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
+    let lines: Vec<String> = attrs
+        .iter()
+        .filter_map(|attr| {
+            if !attr.path().is_ident("doc") {
+                return None;
+            }
+            let syn::Meta::NameValue(nv) = &attr.meta else {
+                return None;
+            };
+            let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &nv.value
+            else {
+                return None;
+            };
+            let line = s.value();
+            let line = line.trim();
+            (!line.is_empty()).then(|| line.to_string())
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join(" "))
+}
+
+/// Build a `&[#krate::reflection::OperationArgField]` token stream
+/// describing `fields`'s named members — captured directly from the struct
+/// definition at macro-expansion time (field name, its Rust type as
+/// written, and whether it's `Option<...>`) rather than re-derived from
+/// generated ts-rs output. See `myko::reflection` for why.
+pub(crate) fn field_metadata_tokens(
+    fields: &syn::Fields,
+    krate: &syn::Path,
+) -> proc_macro2::TokenStream {
+    let entries: Vec<_> = match fields {
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|f| {
+                let name = f
+                    .ident
+                    .as_ref()
+                    .expect("named field has an identifier")
+                    .to_string();
+                let ty = &f.ty;
+                let rust_type = quote!(#ty).to_string();
+                let optional = is_option_type(ty);
+                quote! {
+                    #krate::reflection::OperationArgField {
+                        name: #name,
+                        rust_type: #rust_type,
+                        optional: #optional,
+                    }
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    quote! { &[ #(#entries),* ] }
+}
+
+fn is_option_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(type_path) = ty else {
+        return false;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|seg| seg.ident == "Option")
+        .unwrap_or(false)
+}
+
 #[proc_macro_attribute]
 pub fn myko_manual_cache_key(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as syn::ItemStruct);

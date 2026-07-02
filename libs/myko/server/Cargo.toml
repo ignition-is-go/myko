@@ -43,6 +43,9 @@ flume.workspace = true
 # HTTP request-line parsing for the MCP front-door router
 httparse = "1.9"
 
+# Sandboxed JS execution for MCP "Code Mode" (execute() tool)
+rquickjs = { version = "0.12", features = ["full-async", "parallel", "macro"] }
+
 [dev-dependencies]
 # Loopback integration test only — no TLS toolchain needed.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

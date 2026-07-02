@@ -42,6 +42,11 @@ pub struct ViewRegistration {
     pub parse: ViewParseFn,
     /// Factory for creating reactive cell from view params
     pub cell_factory: ViewCellFactory,
+    /// View struct's own fields, captured at macro-expansion time. Backs
+    /// the MCP `search()` tool's operation index — see `crate::reflection`.
+    pub args: &'static [crate::reflection::OperationArgField],
+    /// View struct's doc comment, if any.
+    pub description: Option<&'static str>,
 }
 
 inventory::collect!(ViewRegistration);

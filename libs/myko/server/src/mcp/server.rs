@@ -60,6 +60,7 @@ impl McpServer {
                 name: name.into(),
                 version: version.into(),
                 instructions: None,
+                operation_index: Arc::new(Vec::new()),
             },
         }
     }

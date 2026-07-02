@@ -45,6 +45,7 @@ pub mod dispatch;
 pub mod exec;
 pub mod filter;
 pub mod http;
+pub mod sandbox;
 mod server;
 mod types;
 pub mod ws;
