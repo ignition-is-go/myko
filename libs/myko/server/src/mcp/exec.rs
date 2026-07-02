@@ -80,8 +80,10 @@ impl Executor {
         }
     }
 
-    /// Status string for the built-in `connection_status` tool.
-    pub fn connection_status(&self) -> Value {
+    /// Status string for the built-in `connection_status` tool. Includes
+    /// server name/version (and, in-process, the host id) so a caller can
+    /// confirm which instance they hit without a separate report call.
+    pub fn connection_status(&self, info: &super::dispatch::ServerInfo) -> Value {
         match self {
             Executor::Client(client) => {
                 let status = client.connection_status().get();
@@ -92,9 +94,14 @@ impl Executor {
                     ConnectionStatus::Idle => "Idle".to_string(),
                     ConnectionStatus::Disconnected => "Disconnected".to_string(),
                 };
-                json!({ "status": text })
+                json!({ "status": text, "name": info.name, "version": info.version })
             }
-            Executor::InProcess(_) => json!({ "status": "In-process (always connected)" }),
+            Executor::InProcess(ctx) => json!({
+                "status": "In-process (always connected)",
+                "name": info.name,
+                "version": info.version,
+                "hostId": ctx.host_id,
+            }),
         }
     }
 }

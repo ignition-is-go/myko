@@ -157,7 +157,7 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
 fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     let mut tools: Vec<McpTool> = Vec::new();
 
-    if filter.tool_visible(CONNECTION_STATUS_TOOL) {
+    if filter.meta_tool_visible(CONNECTION_STATUS_TOOL) {
         tools.push(McpTool {
             name: CONNECTION_STATUS_TOOL.to_string(),
             description: "Check the connection status to the Myko server".to_string(),
@@ -169,7 +169,7 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
-    if filter.tool_visible(SEARCH_TOOL) {
+    if filter.meta_tool_visible(SEARCH_TOOL) {
         tools.push(McpTool {
             name: SEARCH_TOOL.to_string(),
             description: "Search the index of available Myko queries/views/reports/commands. \
@@ -194,14 +194,19 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
-    if filter.tool_visible(EXECUTE_TOOL) {
+    if filter.meta_tool_visible(EXECUTE_TOOL) {
         tools.push(McpTool {
             name: EXECUTE_TOOL.to_string(),
             description: "Run JavaScript against the Myko API. The code runs as an async \
                 function body — use `await myko.query(id, args)`, `myko.view(id, args)`, \
                 `myko.report(id, args)`, or `myko.command(id, args)` (ids/args from `search`), \
                 and optionally `return` a JSON-serializable value. Chain multiple calls in one \
-                script instead of one `execute` call per operation."
+                script instead of one `execute` call per operation. Each call resolves to a \
+                wrapper object, not the raw payload directly: query/view resolve to \
+                {query_id|view_id, item_type, count, items} (items is the payload); \
+                report resolves to {report_id, output_type, result} (result is the payload); \
+                command resolves to {command_id, success, result} (result is the payload). \
+                E.g. `(await myko.report('ServerStats', {})).result`, not `.serverStats`."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -239,8 +244,11 @@ async fn handle_tools_call(
 
     // MCP Protocol Error: a hidden tool is indistinguishable on the wire from
     // a tool that doesn't exist. Code -32602 + "Unknown tool: …" matches the
-    // example in the MCP 2025-06-18 spec (Tools / Error Handling).
-    if !filter.tool_visible(&tool_name) {
+    // example in the MCP 2025-06-18 spec (Tools / Error Handling). Uses
+    // `meta_tool_visible` (deny-only) since "search"/"execute"/
+    // "connection_status" are the only top-level tools now — see its doc
+    // comment for why a positive allow list shouldn't gate them.
+    if !filter.meta_tool_visible(&tool_name) {
         return McpResponse::error(
             id,
             McpError {
@@ -306,10 +314,17 @@ async fn execute_tool(
     args: Value,
 ) -> Result<Value, String> {
     match tool_name {
-        CONNECTION_STATUS_TOOL => Ok(executor.connection_status()),
+        CONNECTION_STATUS_TOOL => Ok(executor.connection_status(info)),
         SEARCH_TOOL => Ok(handle_search(&args, filter, &info.operation_index)),
         EXECUTE_TOOL => handle_execute(&args, executor, filter).await,
-        _ => Err(format!("Unknown tool: {}", tool_name)),
+        // Most commonly hit by a client with a cached pre-Code-Mode tool
+        // name (e.g. `report_ServerStats`) from before this server
+        // collapsed to search/execute — point it at the fix directly
+        // rather than leaving it to guess from a bare "unknown tool".
+        _ => Err(format!(
+            "Unknown tool: {tool_name}. This server uses search + execute — \
+             call `search` to discover operations, then `execute` to run them."
+        )),
     }
 }
 
@@ -784,6 +799,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connection_status_identifies_the_server_instance() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo {
+            name: "pulse-ctx".into(),
+            version: "1.2.3".into(),
+            ..Default::default()
+        };
+        let executor = dummy_executor();
+
+        let resp = handle_request(
+            make_tool_call("connection_status", json!({})),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let text = resp.result.expect("ok")["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["name"], "pulse-ctx");
+        assert_eq!(parsed["version"], "1.2.3");
+    }
+
+    #[tokio::test]
     async fn execute_without_code_argument_is_a_tool_execution_error() {
         let filter = ClientFilters::allow_all();
         let info = ServerInfo::default();
@@ -818,6 +860,82 @@ mod tests {
         assert!(
             resp.error.is_some(),
             "denied tool must be a protocol error, not a tool result"
+        );
+    }
+
+    #[tokio::test]
+    async fn op_level_allow_list_scopes_operations_without_hiding_search_and_execute() {
+        // The exact pulse-ctx upgrade scenario: an allow list written for
+        // the old one-tool-per-operation wire shape (op-level patterns,
+        // no explicit "search"/"execute" entry) must still expose
+        // search/execute — and search/execute must still only surface and
+        // allow the operations the list actually names.
+        // Allows only the query, not the command — so the assertion below
+        // actually exercises scoping (not just "search still works").
+        let filter = ClientFilters::from_strings(Some("query_GetAllServers"), None, None, None);
+        let info = info_with_index();
+        let executor = dummy_executor();
+
+        let list_resp = handle_request(make_request("tools/list"), &filter, &executor, &info)
+            .await
+            .expect("response");
+        let tools: Vec<String> = list_resp.result.expect("ok")["tools"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(
+            tools.contains(&SEARCH_TOOL.to_string()) && tools.contains(&EXECUTE_TOOL.to_string()),
+            "op-level allow list must not hide search/execute, got {tools:?}"
+        );
+
+        let search_resp = handle_request(
+            make_tool_call("search", json!({})),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let text = search_resp.result.expect("ok")["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        let ids: Vec<&str> = parsed["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["GetAllServers"],
+            "search must only surface the allow-listed query, not the un-listed DeleteServer command"
+        );
+
+        // execute itself is reachable (op-level allow list doesn't hide
+        // it)...
+        let execute_resp = handle_request(
+            make_tool_call(
+                "execute",
+                json!({ "code": "try { await myko.command('DeleteServer', {id: 'x'}); return 'no-throw'; } catch (e) { return e.message; }" }),
+            ),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let execute_result = execute_resp.result.expect("ok");
+        assert_ne!(execute_result["isError"], json!(true));
+        let message = execute_result["content"][0]["text"].as_str().unwrap();
+        // ...but the un-listed command it tries to call is still rejected
+        // per-call inside the sandbox.
+        assert_eq!(
+            message.trim(),
+            "\"Unknown operation: command_DeleteServer\""
         );
     }
 }
