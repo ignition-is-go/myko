@@ -85,6 +85,8 @@ pub mod codegen_types;
 pub mod core;
 pub mod entities;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod operation_index;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod search;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
@@ -104,7 +106,7 @@ pub const WS_MAX_FRAME_SIZE_BYTES: usize = 64 * 1024 * 1024;
 // Re-export core modules at top level for backwards compatibility
 #[cfg(not(target_arch = "wasm32"))]
 pub use core::saga;
-pub use core::{command, common, item, query, relationship, report, request, view};
+pub use core::{command, common, item, query, reflection, relationship, report, request, view};
 
 pub use erased_serde; // For AnyItem::erased_serialize in generated code
 // Re-export crates for use in macros

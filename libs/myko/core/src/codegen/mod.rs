@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use dprint_plugin_typescript::{
@@ -13,11 +13,20 @@ use crate::{
     codegen_types::{TsConstRegistration, TsConstValue, TsExportRegistration},
     command::CommandRegistration,
     core::item::ItemRegistration,
+    operation_index::{
+        collect_ts_binding_files, extract_exported_object_type_body, parse_object_type_fields,
+    },
     query::QueryRegistration,
     report::ReportRegistration,
     view::ViewRegistration,
     wire::MessageEventRegistration,
 };
+
+// The MCP "Code Mode" operation index (`OperationSchema`/`build_operation_index`)
+// lives in `crate::operation_index` rather than here: it's pure text parsing with
+// no `dprint-plugin-typescript` dependency, so it stays available to `myko-server`
+// at runtime without pulling the heavy `codegen`-feature dependency tree.
+pub use crate::operation_index::{OperationArg, OperationSchema, build_operation_index};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -402,7 +411,16 @@ pub fn generate_docs_json_from_bindings(
         let Some(body) = extract_exported_object_type_body(&content, entity_type) else {
             continue;
         };
-        for (prop_name, prop_type, doc_string) in parse_object_type_fields(&body) {
+        for (prop_name, prop_type, doc_string, _optional) in parse_object_type_fields(&body) {
+            // `id`/`hash` are auto-added by `#[myko_item]` on every entity;
+            // they're not meaningful documentation targets, so docgen omits
+            // them here. Operation-argument structs (which legitimately use
+            // `id` as their one real field, e.g. `DeleteServerArgs`) go
+            // through `operation_index::build_operation_index` instead,
+            // which does not apply this filter.
+            if prop_name == "id" || prop_name == "hash" {
+                continue;
+            }
             entries.push(DocEntry {
                 entity_type: entity_type.to_string(),
                 kind: "prop".to_string(),
@@ -428,239 +446,6 @@ pub fn generate_docs_json_from_bindings(
     println!("Successfully wrote docs JSON: {}", output_file.display());
 
     Ok(())
-}
-
-fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBuf>, anyhow::Error> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(bindings_dir)? {
-        let path = entry?.path();
-        if !path.is_file() {
-            continue;
-        }
-        let is_ts = path.extension().map(|x| x == "ts").unwrap_or(false);
-        let is_dts = path
-            .file_name()
-            .and_then(|x| x.to_str())
-            .map(|x| x.ends_with(".d.ts"))
-            .unwrap_or(false);
-        if is_ts && !is_dts {
-            files.push(path);
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn extract_exported_object_type_body(content: &str, type_name: &str) -> Option<String> {
-    let marker = format!("export type {type_name} =");
-    let start = content.find(&marker)?;
-    let rest = &content[start + marker.len()..];
-    let brace_start_rel = rest.find('{')?;
-    let brace_start = start + marker.len() + brace_start_rel;
-
-    let mut depth = 0usize;
-    let mut end_idx = None;
-    for (i, ch) in content[brace_start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                if depth == 0 {
-                    return None;
-                }
-                depth -= 1;
-                if depth == 0 {
-                    end_idx = Some(brace_start + i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let end_idx = end_idx?;
-    Some(content[brace_start + 1..end_idx].to_string())
-}
-
-fn parse_object_type_fields(body: &str) -> Vec<(String, String, Option<String>)> {
-    let mut fields = Vec::new();
-    let mut pending_doc: Option<String> = None;
-
-    for segment in split_top_level_commas(body) {
-        let mut segment = segment.trim().to_string();
-        if segment.is_empty() {
-            continue;
-        }
-
-        while let Some(start) = segment.find("/**") {
-            let tail = &segment[start + 3..];
-            let Some(end_rel) = tail.find("*/") else {
-                break;
-            };
-            let end = start + 3 + end_rel + 2;
-            let comment_block = &segment[start..end];
-            let doc = normalize_jsdoc(comment_block);
-            if !doc.is_empty() {
-                pending_doc = Some(doc);
-            }
-            segment.replace_range(start..end, "");
-        }
-
-        let segment = segment.trim();
-        if segment.is_empty() {
-            continue;
-        }
-
-        let Some(colon_idx) = find_top_level_colon(segment) else {
-            continue;
-        };
-        let raw_name = segment[..colon_idx].trim();
-        let raw_type = segment[colon_idx + 1..].trim();
-
-        let prop_name = raw_name
-            .trim_start_matches("readonly ")
-            .trim_end_matches('?')
-            .trim()
-            .trim_matches('\'')
-            .trim_matches('"')
-            .to_string();
-        if prop_name.is_empty() || prop_name == "id" || prop_name == "hash" {
-            pending_doc = None;
-            continue;
-        }
-
-        let prop_type = raw_type.trim().to_string();
-        if prop_type.is_empty() {
-            pending_doc = None;
-            continue;
-        }
-
-        fields.push((prop_name, prop_type, pending_doc.take()));
-    }
-
-    fields
-}
-
-fn split_top_level_commas(input: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut brace = 0usize;
-    let mut bracket = 0usize;
-    let mut paren = 0usize;
-    let mut angle = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut in_block_comment = false;
-    let mut in_line_comment = false;
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0usize;
-    while i < chars.len() {
-        let ch = chars[i];
-        let next = if i + 1 < chars.len() {
-            Some(chars[i + 1])
-        } else {
-            None
-        };
-        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
-        if in_block_comment {
-            if ch == '*' && next == Some('/') {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-        if ch == '/' && next == Some('*') {
-            in_block_comment = true;
-            i += 2;
-            continue;
-        }
-        if ch == '/' && next == Some('/') {
-            in_line_comment = true;
-            i += 2;
-            continue;
-        }
-        if ch == '\'' && !in_double && prev != Some('\\') {
-            in_single = !in_single;
-        } else if ch == '"' && !in_single && prev != Some('\\') {
-            in_double = !in_double;
-        } else if !in_single && !in_double {
-            match ch {
-                '{' => brace += 1,
-                '}' => brace = brace.saturating_sub(1),
-                '[' => bracket += 1,
-                ']' => bracket = bracket.saturating_sub(1),
-                '(' => paren += 1,
-                ')' => paren = paren.saturating_sub(1),
-                '<' => angle += 1,
-                '>' => angle = angle.saturating_sub(1),
-                ',' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => {
-                    out.push(chars[start..i].iter().collect::<String>());
-                    start = i + 1;
-                }
-                _ => {}
-            }
-        }
-        i += 1;
-    }
-    if start < chars.len() {
-        out.push(chars[start..].iter().collect::<String>());
-    }
-    out
-}
-
-fn find_top_level_colon(input: &str) -> Option<usize> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut brace = 0usize;
-    let mut bracket = 0usize;
-    let mut paren = 0usize;
-    let mut angle = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    for (i, ch) in chars.iter().enumerate() {
-        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
-        if *ch == '\'' && !in_double && prev != Some('\\') {
-            in_single = !in_single;
-            continue;
-        }
-        if *ch == '"' && !in_single && prev != Some('\\') {
-            in_double = !in_double;
-            continue;
-        }
-        if in_single || in_double {
-            continue;
-        }
-        match ch {
-            '{' => brace += 1,
-            '}' => brace = brace.saturating_sub(1),
-            '[' => bracket += 1,
-            ']' => bracket = bracket.saturating_sub(1),
-            '(' => paren += 1,
-            ')' => paren = paren.saturating_sub(1),
-            '<' => angle += 1,
-            '>' => angle = angle.saturating_sub(1),
-            ':' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-fn normalize_jsdoc(block: &str) -> String {
-    block
-        .replace("/**", "")
-        .replace("*/", "")
-        .lines()
-        .map(|line| line.trim().trim_start_matches('*').trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn generate_query_class(query_id: &str, query_item_type: &str) -> String {
@@ -698,7 +483,7 @@ fn generate_view_class(view_id: &str, view_item_type: &str) -> String {
 }
 
 fn generate_report_class(report_id: &str, output_type: &str) -> String {
-    let ts_output_type = rust_type_to_ts(output_type);
+    let ts_output_type = crate::operation_index::rust_type_to_ts(output_type);
     format!(
         r#"export class {report_id} {{
   static readonly reportId = "{report_id}" as const;
@@ -717,7 +502,7 @@ fn generate_command_class(command_id: &str, result_type: &str) -> String {
     let ts_result_type = if result_type == "()" {
         "void".to_string()
     } else {
-        rust_type_to_ts(result_type)
+        crate::operation_index::rust_type_to_ts(result_type)
     };
     format!(
         r#"export class {command_id} {{
@@ -733,41 +518,6 @@ fn generate_command_class(command_id: &str, result_type: &str) -> String {
     )
 }
 
-fn rust_type_to_ts(rust_type: &str) -> String {
-    let trimmed = rust_type.trim();
-    let canonical = trimmed.replace(' ', "");
-    let canonical = canonical.as_str();
-    if let Some((outer, inner)) = split_outer_generic(canonical) {
-        match outer_leaf(outer) {
-            // Handle Option<T> -> T | null
-            "Option" => {
-                let inner_ts = rust_type_to_ts(inner);
-                return format!("{inner_ts} | null");
-            }
-            // Handle Vec<T> -> T[]
-            "Vec" => {
-                let inner_ts = rust_type_to_ts(inner);
-                return format!("{inner_ts}[]");
-            }
-            // Handle Arc<T> -> unwrap to inner type
-            "Arc" => return rust_type_to_ts(inner),
-            _ => {}
-        }
-    }
-
-    // Map Rust primitive types to TypeScript
-    match outer_leaf(canonical) {
-        "str" | "String" => "string".to_string(),
-        "bool" => "boolean".to_string(),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "usize" | "f32" | "f64" => "number".to_string(),
-        "()" => "void".to_string(),
-        // serde_json::Value maps to JsonValue in ts-rs
-        "Value" | "serde_json::Value" => "JsonValue".to_string(),
-        _ => canonical.to_string(),
-    }
-}
-
 fn generate_item_constructor(item_name: &str) -> String {
     format!(
         "  {}: (args: {}) => ({{ item: args, itemType: \"{}\" }})",
@@ -776,6 +526,8 @@ fn generate_item_constructor(item_name: &str) -> String {
 }
 
 fn extract_importable_types(rust_type: &str) -> Vec<String> {
+    use crate::operation_index::{outer_leaf, split_generic_args, split_outer_generic};
+
     let trimmed = rust_type.trim();
     let canonical = trimmed.replace(' ', "");
     let canonical = canonical.as_str();
@@ -810,49 +562,6 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
 
     let clean_type = outer_leaf(canonical).to_string();
     vec![clean_type]
-}
-
-fn outer_leaf(path_or_ident: &str) -> &str {
-    path_or_ident.rsplit("::").next().unwrap_or(path_or_ident)
-}
-
-fn split_outer_generic(s: &str) -> Option<(&str, &str)> {
-    let start = s.find('<')?;
-    let end = s.rfind('>')?;
-    if end <= start {
-        return None;
-    }
-    let outer = s[..start].trim();
-    let inner = s[start + 1..end].trim();
-    if outer.is_empty() || inner.is_empty() {
-        return None;
-    }
-    Some((outer, inner))
-}
-
-fn split_generic_args(s: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (idx, ch) in s.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                let arg = s[start..idx].trim();
-                if !arg.is_empty() {
-                    args.push(arg.to_string());
-                }
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-    let tail = s[start..].trim();
-    if !tail.is_empty() {
-        args.push(tail.to_string());
-    }
-    args
 }
 
 #[cfg(test)]

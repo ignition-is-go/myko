@@ -11,6 +11,17 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
+    // Reflection metadata for the MCP `search()` operation index — captured
+    // here from the struct's own fields/doc comment before any further
+    // mutation, since it's always the ground truth regardless of whether
+    // ts-rs codegen has run. See `myko::reflection`.
+    let description = crate::extract_doc_comment(&input_struct.attrs);
+    let description_tokens = match &description {
+        Some(d) => quote!(Some(#d)),
+        None => quote!(None),
+    };
+    let args_tokens = crate::field_metadata_tokens(&input_struct.fields, krate);
+
     // Also gate any user-written `#[ts(...)]` attrs on the fields; see the
     // comment on `gate_ts_attrs` in the crate root.
     crate::gate_ts_attrs(&mut input_struct.attrs);
@@ -63,6 +74,8 @@ pub fn myko_query_impl(query_item_type: Path, mut input_struct: ItemStruct) -> T
             crate_name: module_path!(),
             parse: <#struct_name as #krate::query::QueryFactory>::parse,
             cell_factory: <#struct_name as #krate::query::QueryFactory>::cell_factory,
+            args: #args_tokens,
+            description: #description_tokens,
         }
     };
 
