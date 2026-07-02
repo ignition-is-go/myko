@@ -411,13 +411,19 @@ impl CellServerCtx {
             .count()
     }
 
-    /// Remove dead weak-ref entries from all caches.
+    /// Remove dead weak-ref entries from all caches, including belongs-to
+    /// source index buckets (process-global, not per-`CellServerCtx`, but
+    /// swept from here for hosting apps that already call this
+    /// periodically). Bucket entries are also reaped lazily on next access
+    /// regardless — this is a backstop for foreign ids that go dead and are
+    /// never looked up again.
     pub fn sweep_dead_cache_entries(&self) {
         self.query_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.view_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.report_cache.retain(|_, entry| entry.is_alive());
+        crate::query::sweep_all_belongs_to_source_indexes();
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -1279,7 +1285,17 @@ impl CellServerCtx {
             Some(Arc::new(self.clone())),
         )
         .expect("query cell factory should not fail for typed query");
-        self.query_cache.insert(key, MapCacheEntry::new(&built));
+        self.query_cache
+            .insert(key.clone(), MapCacheEntry::new(&built));
+        // The gate's only job was deduping concurrent first-computation; once
+        // the cache entry above is visible, any racing caller's re-check
+        // (line ~1268 above) will hit it directly, gate or no gate. Removing
+        // it here — rather than never, which is a compute_gates memory leak
+        // that grows with every distinct query/param combination ever
+        // computed — is safe regardless of ordering relative to `_lock`'s
+        // drop, since a fresh gate + a cache hit on re-check behaves
+        // identically to blocking on the old gate.
+        self.compute_gates.remove(&key);
         built
     }
 
@@ -1328,7 +1344,12 @@ impl CellServerCtx {
             Arc::new(self.clone()),
         )
         .expect("view cell factory should not fail for typed view");
-        self.view_cache.insert(key, MapCacheEntry::new(&built));
+        self.view_cache
+            .insert(key.clone(), MapCacheEntry::new(&built));
+        // See the matching comment in `query_map_untyped` — the gate is only
+        // needed to dedupe concurrent first-computation, not after the cache
+        // entry above is visible.
+        self.compute_gates.remove(&key);
         built
     }
 
@@ -1516,6 +1537,10 @@ impl CellServerCtx {
         let built = report.compute(nested_ctx).materialize();
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
+        // See the matching comment in `query_map_untyped` — the gate is only
+        // needed to dedupe concurrent first-computation, not after the cache
+        // entry above is visible.
+        self.compute_gates.remove(&key);
 
         crate::server::report_cache_stats::record_miss(&report_id);
 
@@ -1742,5 +1767,68 @@ mod tests {
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
         assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
+    }
+
+    #[test]
+    fn compute_gates_does_not_leak_after_cache_populates() {
+        // compute_gates only exists to dedupe concurrent first-computation
+        // (see the comment on the removal call in query_map_untyped); once
+        // the corresponding cache entry lands, the gate must not linger —
+        // otherwise every distinct (kind, id, param-hash) ever computed
+        // leaves a permanent entry, unbounded over the process lifetime.
+        use crate::{entities::server::GetPeerServers, request::RequestContext};
+
+        let ctx = make_ctx();
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+
+        // First call: cache miss — populates compute_gates transiently, then
+        // must remove it once query_cache is populated.
+        let _ = ctx.query_map_untyped(GetPeerServers {}, request.clone());
+        assert!(
+            ctx.compute_gates.is_empty(),
+            "compute_gates must be empty once the query cache is populated, got {:?}",
+            ctx.compute_gates
+        );
+
+        // Second call: cache hit on the fast path — must not touch
+        // compute_gates at all.
+        let _ = ctx.query_map_untyped(GetPeerServers {}, request);
+        assert!(ctx.compute_gates.is_empty());
+    }
+
+    #[test]
+    fn compute_gates_does_not_leak_after_report_cache_populates() {
+        // Same invariant as compute_gates_does_not_leak_after_cache_populates,
+        // exercised through the report() call site's independent gate-removal
+        // (a separate line, since it inserts into report_cache instead of
+        // query_cache — verified both were fixed, not just the query one).
+        use crate::{
+            entities::client::{ClientId, ClientStatus},
+            request::RequestContext,
+        };
+
+        let ctx = make_ctx();
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+
+        let report = ClientStatus {
+            client_id: ClientId::from(Arc::<str>::from("test-client")),
+        };
+        let _ = ctx.report(report.clone(), request.clone());
+        assert!(
+            ctx.compute_gates.is_empty(),
+            "compute_gates must be empty once the report cache is populated, got {:?}",
+            ctx.compute_gates
+        );
+
+        let _ = ctx.report(report, request);
+        assert!(ctx.compute_gates.is_empty());
     }
 }
