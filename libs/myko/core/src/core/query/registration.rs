@@ -48,6 +48,7 @@ pub type QueryCellFactory = fn(
 
 type AnyItemArc = Arc<dyn crate::core::item::AnyItem>;
 type AnyItemMap = hyphae::CellMap<Arc<str>, AnyItemArc>;
+type WeakAnyItemMap = hyphae::WeakCellMap<Arc<str>, AnyItemArc>;
 type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
@@ -154,8 +155,18 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
     rows
 }
 
+/// Per-foreign-id bucket index backing `#[belongs_to]` reactive queries.
+///
+/// `buckets` holds only *weak* handles: a bucket's `AnyItemMap` stays alive
+/// exactly as long as some subscriber (via [`build_belongs_to_source_map`])
+/// holds a strong reference to it. Once the last subscriber drops it, the
+/// weak entry naturally fails to upgrade and gets lazily reaped — the
+/// alternative (a strong `Arc<AnyItemMap>` retained forever) is a real
+/// memory leak: one permanent bucket per distinct foreign id ever seen,
+/// which never shrinks even after every relation is unassigned.
 struct BelongsToSourceIndex {
-    buckets: DashMap<Arc<str>, Arc<AnyItemMap>>,
+    store: Arc<crate::store::EntityStore>,
+    buckets: DashMap<Arc<str>, WeakAnyItemMap>,
     _driver: Arc<AnyItemMap>,
 }
 
@@ -163,6 +174,7 @@ impl BelongsToSourceIndex {
     fn new(store: Arc<crate::store::EntityStore>, extract_fk: FkExtractor) -> Arc<Self> {
         let driver = Arc::new(AnyItemMap::new());
         let index = Arc::new(Self {
+            store: store.clone(),
             buckets: DashMap::new(),
             _driver: driver.clone(),
         });
@@ -175,11 +187,62 @@ impl BelongsToSourceIndex {
         index
     }
 
-    fn bucket_for(&self, foreign_id: Arc<str>) -> Arc<AnyItemMap> {
-        self.buckets
-            .entry(foreign_id)
-            .or_insert_with(|| Arc::new(AnyItemMap::new()))
-            .clone()
+    /// Look up a bucket for *internal diff routing only* — never creates
+    /// one. If nobody's subscribed to `foreign_id` there's no bucket state
+    /// worth maintaining; a dead weak entry found here is reaped
+    /// immediately, so `self.buckets` never accumulates more than what's
+    /// currently live. See [`sweep_dead_buckets`](Self::sweep_dead_buckets)
+    /// for the backstop covering ids that go dead but are never looked up
+    /// again.
+    fn route_to_live_bucket(&self, foreign_id: &Arc<str>) -> Option<AnyItemMap> {
+        let entry = self.buckets.get(foreign_id)?;
+        if let Some(map) = entry.upgrade() {
+            return Some(map);
+        }
+        drop(entry);
+        self.buckets.remove(foreign_id);
+        None
+    }
+
+    /// Subscriber entry point (via [`build_belongs_to_source_map`]): returns
+    /// the live bucket if one exists, or creates a fresh one backfilled from
+    /// the current store state.
+    ///
+    /// The backfill matters: `apply_diff` (via `route_to_live_bucket`) never
+    /// creates or updates a bucket nobody's watching, so a newly-live bucket
+    /// may have missed every diff since this relation's one-time index-wide
+    /// bootstrap in [`new`](Self::new). Without backfilling here, a client
+    /// subscribing (or re-subscribing after a prior subscriber dropped off)
+    /// would silently see an empty result instead of the parent's actual
+    /// current children.
+    fn bucket_for(&self, foreign_id: Arc<str>, extract_fk: FkExtractor) -> AnyItemMap {
+        if let Some(map) = self.route_to_live_bucket(&foreign_id) {
+            return map;
+        }
+
+        let map = AnyItemMap::new();
+        let backfill: BucketEntries = self
+            .store
+            .snapshot()
+            .into_iter()
+            .filter(|(_, item)| extract_fk(item.as_any()).as_ref() == Some(&foreign_id))
+            .collect();
+        if !backfill.is_empty() {
+            map.apply_batch(vec![MapDiff::Initial { entries: backfill }]);
+        }
+        self.buckets.insert(foreign_id, map.downgrade());
+        map
+    }
+
+    /// Drop bucket entries nobody's subscribed to anymore. `route_to_live_bucket`
+    /// already reaps dead entries lazily on next access, but a foreign id
+    /// that goes dead and is never looked up again would otherwise sit in
+    /// `self.buckets` forever (just a `Weak` + an `Arc<str>` key, far
+    /// smaller than the leak this replaces, but still unbounded over time).
+    /// Called from `CellServerCtx::sweep_dead_cache_entries` via
+    /// [`sweep_all_belongs_to_source_indexes`].
+    fn sweep_dead_buckets(&self) {
+        self.buckets.retain(|_, weak| weak.upgrade().is_some());
     }
 
     fn apply_diff(&self, diff: &BucketDiff, extract_fk: FkExtractor) {
@@ -195,50 +258,63 @@ impl BelongsToSourceIndex {
                     }
                 }
 
-                // Every currently-existing bucket needs to receive the new
+                // Every currently-*live* bucket needs to receive the new
                 // state — if its FK is absent from `grouped`, that bucket is
                 // now empty and must emit `Initial { empty }` so downstream
-                // subscribers observe the drop. Previously this path just
-                // cleared `self.buckets` and relied on ownership drop to
-                // clean up, which silently dropped removal events on the
-                // floor — a full-clear source diff (e.g. the last matching
-                // row being deleted via `remove_many`) never reached
-                // bucket subscribers.
-                let existing_fks: Vec<Arc<str>> = self
+                // subscribers observe the drop. (Dead/unsubscribed buckets
+                // don't need this — nobody's watching them, and
+                // `route_to_live_bucket` reaps them lazily regardless.)
+                // This explicit empty-notify (rather than just letting a
+                // dead bucket's Drop silently orphan subscribers) is why
+                // this path exists at all: an earlier version just cleared
+                // `self.buckets` and relied on ownership drop to clean up,
+                // which silently dropped removal events on the floor — a
+                // full-clear source diff (e.g. the last matching row being
+                // deleted via `remove_many`) never reached bucket
+                // subscribers.
+                let live_fks: Vec<Arc<str>> = self
                     .buckets
                     .iter()
+                    .filter(|entry| entry.value().upgrade().is_some())
                     .map(|entry| entry.key().clone())
                     .collect();
-                for fk in &existing_fks {
+                for fk in &live_fks {
                     if !grouped.contains_key(fk)
-                        && let Some(entry) = self.buckets.get(fk)
+                        && let Some(bucket) = self.route_to_live_bucket(fk)
                     {
-                        entry.value().apply_batch(vec![MapDiff::Initial {
+                        bucket.apply_batch(vec![MapDiff::Initial {
                             entries: Vec::new(),
                         }]);
                     }
                 }
 
-                // Update buckets to reflect the new groupings. Existing
-                // buckets receive a fresh `Initial`; new FKs lazily create
-                // their bucket via `bucket_for`.
+                // Route new state only to buckets someone's actually
+                // watching — an FK with no live subscriber gets built
+                // lazily (with backfill) next time `bucket_for` is called
+                // for it via `build_belongs_to_source_map`.
                 for (fk, bucket_entries) in grouped {
-                    self.bucket_for(fk).apply_batch(vec![MapDiff::Initial {
-                        entries: bucket_entries,
-                    }]);
+                    if let Some(bucket) = self.route_to_live_bucket(&fk) {
+                        bucket.apply_batch(vec![MapDiff::Initial {
+                            entries: bucket_entries,
+                        }]);
+                    }
                 }
             }
             MapDiff::Insert { key, value } => {
-                if let Some(fk) = extract_fk(value.as_any()) {
-                    self.bucket_for(fk).apply_batch(vec![MapDiff::Insert {
+                if let Some(fk) = extract_fk(value.as_any())
+                    && let Some(bucket) = self.route_to_live_bucket(&fk)
+                {
+                    bucket.apply_batch(vec![MapDiff::Insert {
                         key: key.clone(),
                         value: value.clone(),
                     }]);
                 }
             }
             MapDiff::Remove { key, old_value } => {
-                if let Some(fk) = extract_fk(old_value.as_any()) {
-                    self.bucket_for(fk).apply_batch(vec![MapDiff::Remove {
+                if let Some(fk) = extract_fk(old_value.as_any())
+                    && let Some(bucket) = self.route_to_live_bucket(&fk)
+                {
+                    bucket.apply_batch(vec![MapDiff::Remove {
                         key: key.clone(),
                         old_value: old_value.clone(),
                     }]);
@@ -253,33 +329,43 @@ impl BelongsToSourceIndex {
                 let new_fk = extract_fk(new_value.as_any());
                 match (old_fk, new_fk) {
                     (Some(old_fk), Some(new_fk)) if old_fk == new_fk => {
-                        self.bucket_for(new_fk).apply_batch(vec![MapDiff::Update {
-                            key: key.clone(),
-                            old_value: old_value.clone(),
-                            new_value: new_value.clone(),
-                        }]);
+                        if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
+                            bucket.apply_batch(vec![MapDiff::Update {
+                                key: key.clone(),
+                                old_value: old_value.clone(),
+                                new_value: new_value.clone(),
+                            }]);
+                        }
                     }
                     (Some(old_fk), Some(new_fk)) => {
-                        self.bucket_for(old_fk).apply_batch(vec![MapDiff::Remove {
-                            key: key.clone(),
-                            old_value: old_value.clone(),
-                        }]);
-                        self.bucket_for(new_fk).apply_batch(vec![MapDiff::Insert {
-                            key: key.clone(),
-                            value: new_value.clone(),
-                        }]);
+                        if let Some(bucket) = self.route_to_live_bucket(&old_fk) {
+                            bucket.apply_batch(vec![MapDiff::Remove {
+                                key: key.clone(),
+                                old_value: old_value.clone(),
+                            }]);
+                        }
+                        if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
+                            bucket.apply_batch(vec![MapDiff::Insert {
+                                key: key.clone(),
+                                value: new_value.clone(),
+                            }]);
+                        }
                     }
                     (Some(old_fk), None) => {
-                        self.bucket_for(old_fk).apply_batch(vec![MapDiff::Remove {
-                            key: key.clone(),
-                            old_value: old_value.clone(),
-                        }]);
+                        if let Some(bucket) = self.route_to_live_bucket(&old_fk) {
+                            bucket.apply_batch(vec![MapDiff::Remove {
+                                key: key.clone(),
+                                old_value: old_value.clone(),
+                            }]);
+                        }
                     }
                     (None, Some(new_fk)) => {
-                        self.bucket_for(new_fk).apply_batch(vec![MapDiff::Insert {
-                            key: key.clone(),
-                            value: new_value.clone(),
-                        }]);
+                        if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
+                            bucket.apply_batch(vec![MapDiff::Insert {
+                                key: key.clone(),
+                                value: new_value.clone(),
+                            }]);
+                        }
                     }
                     (None, None) => {}
                 }
@@ -352,7 +438,9 @@ impl BelongsToSourceIndex {
                 }
 
                 for (fk, bucket_changes) in by_fk {
-                    self.bucket_for(fk).apply_batch(bucket_changes);
+                    if let Some(bucket) = self.route_to_live_bucket(&fk) {
+                        bucket.apply_batch(bucket_changes);
+                    }
                 }
             }
         }
@@ -375,7 +463,18 @@ pub fn build_belongs_to_source_map(
             BelongsToSourceIndex::new(store, extract_fk)
         })
         .clone();
-    index.bucket_for(foreign_id).as_ref().clone().lock()
+    index.bucket_for(foreign_id, extract_fk).lock()
+}
+
+/// Sweep dead (no-longer-subscribed) buckets across every belongs-to
+/// relation's source index. `route_to_live_bucket` reaps dead entries lazily
+/// on next access, but a foreign id that goes dead and is never looked up
+/// again would otherwise linger; called from
+/// `CellServerCtx::sweep_dead_cache_entries`.
+pub fn sweep_all_belongs_to_source_indexes() {
+    for entry in belongs_to_source_indexes().iter() {
+        entry.value().sweep_dead_buckets();
+    }
 }
 
 /// Build a `FilteredCellMap` containing only the entries at the given ids,
@@ -526,5 +625,145 @@ where
                 })
             },
         )))
+    }
+}
+
+#[cfg(test)]
+mod belongs_to_source_index_tests {
+    use std::any::Any;
+
+    use serde::Serialize;
+
+    use super::*;
+    use crate::common::with_id::WithId;
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    struct TestChild {
+        id: Arc<str>,
+        parent_id: Arc<str>,
+    }
+
+    impl WithId for TestChild {
+        fn id(&self) -> Arc<str> {
+            self.id.clone()
+        }
+    }
+
+    impl crate::core::item::AnyItem for TestChild {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "TestChild"
+        }
+
+        fn equals(&self, other: &dyn crate::core::item::AnyItem) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|t| t == self)
+                .unwrap_or(false)
+        }
+    }
+
+    fn extract_parent_fk(item: &dyn Any) -> Option<Arc<str>> {
+        item.downcast_ref::<TestChild>()
+            .map(|c| c.parent_id.clone())
+    }
+
+    fn child(id: &str, parent: &str) -> (Arc<str>, AnyItemArc) {
+        (
+            Arc::from(id),
+            Arc::new(TestChild {
+                id: Arc::from(id),
+                parent_id: Arc::from(parent),
+            }) as AnyItemArc,
+        )
+    }
+
+    fn new_store() -> Arc<crate::store::EntityStore> {
+        Arc::new(hyphae::CellMap::new())
+    }
+
+    #[test]
+    fn dropped_subscriptions_do_not_leak_across_many_distinct_parents() {
+        // Reproduces the leak: every distinct foreign id ever subscribed to
+        // used to leave a permanent bucket behind. With weak-ref buckets,
+        // dropping every subscriber and sweeping must bring the count to 0
+        // regardless of how many distinct parents were ever seen.
+        let store = new_store();
+        let index = BelongsToSourceIndex::new(store, extract_parent_fk);
+
+        for i in 0..50 {
+            let parent: Arc<str> = Arc::from(format!("parent-{i}"));
+            let bucket = index.bucket_for(parent, extract_parent_fk);
+            drop(bucket); // simulates every subscriber unsubscribing
+        }
+
+        index.sweep_dead_buckets();
+        assert_eq!(
+            index.buckets.len(),
+            0,
+            "sweep must reap all buckets once every subscriber has dropped"
+        );
+    }
+
+    #[test]
+    fn live_subscription_survives_going_empty_then_repopulating() {
+        // The naive fix (remove a bucket the moment it goes empty) breaks
+        // this: a still-live subscriber would get orphaned from a bucket
+        // that later gets silently replaced. Weak-ref buckets avoid this —
+        // as long as the subscriber holds their strong handle, `bucket_for`
+        // keeps returning the *same* object.
+        let store = new_store();
+        let (id, item) = child("c1", "parent-x");
+        store.insert(id.clone(), item);
+
+        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+        let bucket = index.bucket_for(Arc::from("parent-x"), extract_parent_fk);
+        assert_eq!(bucket.snapshot().len(), 1);
+
+        // Remove the only child — bucket goes empty, but `bucket` is still
+        // held here, simulating a live subscriber.
+        store.remove(&id);
+        assert_eq!(bucket.snapshot().len(), 0);
+
+        // A new child arrives under the same parent — the still-held handle
+        // must see it, not a disconnected/orphaned bucket.
+        let (id2, item2) = child("c2", "parent-x");
+        store.insert(id2, item2);
+        assert_eq!(
+            bucket.snapshot().len(),
+            1,
+            "a live subscriber must see re-population after its bucket went empty"
+        );
+    }
+
+    #[test]
+    fn resubscribing_after_reap_backfills_current_children() {
+        // The bug a naive weak-ref swap alone would introduce: once a
+        // bucket is reaped, apply_diff never creates buckets nobody's
+        // watching, so a fresh subscription must explicitly backfill from
+        // the current store state rather than starting empty.
+        let store = new_store();
+        let (id, item) = child("c1", "parent-y");
+        store.insert(id, item);
+
+        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+
+        {
+            let bucket = index.bucket_for(Arc::from("parent-y"), extract_parent_fk);
+            assert_eq!(bucket.snapshot().len(), 1);
+        }
+        index.sweep_dead_buckets();
+        assert!(index.buckets.is_empty());
+
+        let bucket = index.bucket_for(Arc::from("parent-y"), extract_parent_fk);
+        assert_eq!(
+            bucket.snapshot().len(),
+            1,
+            "resubscribing after the bucket was reaped must backfill current children, not start empty"
+        );
     }
 }

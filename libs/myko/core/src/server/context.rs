@@ -411,13 +411,19 @@ impl CellServerCtx {
             .count()
     }
 
-    /// Remove dead weak-ref entries from all caches.
+    /// Remove dead weak-ref entries from all caches, including belongs-to
+    /// source index buckets (process-global, not per-`CellServerCtx`, but
+    /// swept from here for hosting apps that already call this
+    /// periodically). Bucket entries are also reaped lazily on next access
+    /// regardless — this is a backstop for foreign ids that go dead and are
+    /// never looked up again.
     pub fn sweep_dead_cache_entries(&self) {
         self.query_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.view_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.report_cache.retain(|_, entry| entry.is_alive());
+        crate::query::sweep_all_belongs_to_source_indexes();
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
