@@ -33,6 +33,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How MCP dispatch reaches the underlying Myko queries / reports / commands.
+#[derive(Clone)]
 pub enum Executor {
     /// Talk to a remote Myko server over WebSocket via a `MykoClient`.
     Client(Arc<MykoClient>),

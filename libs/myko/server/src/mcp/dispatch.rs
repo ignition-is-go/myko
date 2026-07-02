@@ -3,21 +3,48 @@
 //! Handles `initialize`, `tools/list`, `tools/call`, `resources/list`,
 //! `resources/read`, and the relevant notifications.
 //!
-//! ## Tool / resource split
+//! ## Code Mode: `search` + `execute`
 //!
-//! - **Tools** — every registered query / view / report / command is
-//!   exposed as a tool the LLM can invoke on demand. Tools take structured
-//!   `arguments` matching the registration's input shape.
-//! - **Resources** — every tool also surfaces a *schema* resource at
-//!   `myko://schema/<kind>/<id>` whose content is the JSON Schema for the
-//!   tool's input. The schema goes through the resource shape rather than
-//!   the data because:
-//!   - Resources are URI-keyed and can't carry structured arguments, but
-//!     every query / view / report registration takes args.
-//!   - Even argument-less reads are backed by reactive cells (the data is
-//!     live), so pre-loading a snapshot into context at startup would
-//!     just go stale. On-demand `tools/call` is the right shape for live
-//!     reads.
+//! Rather than one MCP tool per registered query/view/report/command (which
+//! scales as `N_entities × ~8 auto-ops`, blowing up the tools/list token
+//! footprint the same way a large hand-rolled REST-per-endpoint MCP server
+//! does — see Cloudflare's ["Code Mode"][code-mode] writeup), `tools/list`
+//! advertises exactly two operational tools:
+//!
+//! - **`search`** — looks up operations in [`ServerInfo::operation_index`]
+//!   by substring/kind, returning compact `{id, kind, args, outputType}`
+//!   entries instead of a full per-operation tool + JSON Schema.
+//! - **`execute`** — runs a JS function body (see [`sandbox`]) against a
+//!   generated `myko.*` API bound to the *same* [`Executor`] methods the
+//!   old per-operation tools called, so a script can chain several
+//!   query/command calls in one round trip instead of one MCP call each.
+//!
+//! [`ClientFilters`] visibility/callability checks move accordingly: they
+//! used to gate `tools/list`/`tools/call` per operation name; now `search`
+//! filters its index by the same names, and `execute`'s sandbox re-checks
+//! them per `myko.*` call the script makes (see [`sandbox::call_operation`]
+//! — not public, but that's where the check lives).
+//!
+//! This is a breaking change from the prior one-tool-per-operation wire
+//! shape — existing `ClientFilters` glob configs (`query_*`, etc.) still
+//! work exactly as before since they match against the same `{kind}_{id}`
+//! strings, just from a different call site.
+//!
+//! [code-mode]: https://blog.cloudflare.com/code-mode-mcp/
+//!
+//! ## Resources
+//!
+//! Every tool also surfaces a *schema* resource at `myko://schema/<kind>/<id>`
+//! whose content is the JSON Schema for the tool's input. This predates (and
+//! is orthogonal to) `search`/`execute` — it's not part of the tool-count
+//! problem `search`/`execute` fixes, since resources aren't tool
+//! definitions loaded into the model's context by default. Left unchanged:
+//! - Resources are URI-keyed and can't carry structured arguments, but
+//!   every query / view / report registration takes args.
+//! - Even argument-less reads are backed by reactive cells (the data is
+//!   live), so pre-loading a snapshot into context at startup would
+//!   just go stale. On-demand `tools/call` is the right shape for live
+//!   reads.
 //!
 //! Reactive query subscriptions via `resources/subscribe` are future work.
 //!
@@ -35,19 +62,24 @@
 //!
 //! [spec]: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#error-handling
 
+use std::sync::Arc;
+
 use myko::{
-    command::CommandRegistration, query::QueryRegistration, report::ReportRegistration,
-    view::ViewRegistration,
+    command::CommandRegistration, operation_index::OperationSchema, query::QueryRegistration,
+    report::ReportRegistration, view::ViewRegistration,
 };
 use serde_json::{Value, json};
 
 use super::{
     exec::Executor,
     filter::ClientFilters,
+    sandbox,
     types::{McpError, McpRequest, McpResource, McpResponse, McpTool},
 };
 
 const CONNECTION_STATUS_TOOL: &str = "connection_status";
+const SEARCH_TOOL: &str = "search";
+const EXECUTE_TOOL: &str = "execute";
 
 /// Server identity for the `initialize` response.
 #[derive(Debug, Clone)]
@@ -58,6 +90,12 @@ pub struct ServerInfo {
     /// MCP clients surface this to the model on connect; use it to teach
     /// agents how to use this server.
     pub instructions: Option<String>,
+    /// Backs the `search` tool and the `execute` sandbox's `myko.*` API
+    /// surface. Built automatically from `inventory`-registered operations
+    /// (see [`myko::operation_index::build_operation_index`]) — no I/O, no
+    /// configuration, works for every crate's operations regardless of
+    /// which crate hosts the MCP server.
+    pub operation_index: Arc<Vec<OperationSchema>>,
 }
 
 impl Default for ServerInfo {
@@ -66,6 +104,7 @@ impl Default for ServerInfo {
             name: "myko-mcp".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             instructions: None,
+            operation_index: Arc::new(myko::operation_index::build_operation_index()),
         }
     }
 }
@@ -82,7 +121,9 @@ pub async fn handle_request(
         "initialize" => Some(handle_initialize(request.id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
         "tools/list" => Some(handle_tools_list(request.id, filter)),
-        "tools/call" => Some(handle_tools_call(request.id, request.params, filter, executor).await),
+        "tools/call" => {
+            Some(handle_tools_call(request.id, request.params, filter, executor, info).await)
+        }
         "resources/list" => Some(handle_resources_list(request.id, filter)),
         "resources/read" => Some(handle_resources_read(request.id, request.params, filter)),
         _ => Some(McpResponse::error(
@@ -128,57 +169,50 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
-    // NOTE(ts): tool names use the `_` separator (e.g. `query_GetAllTargets`)
-    // rather than the older `:` form. Some LLM tool-call serializers drop the
-    // `arguments` field when names contain `:` (gpt-oss-20b confirmed on
-    // 2026-06-02); `_` matches the OpenAI tool-name regex `[a-zA-Z0-9_-]+`
-    // and round-trips cleanly. Dispatch still accepts the `:` form for
-    // backward compat — see `execute_tool` below.
-    for reg in inventory::iter::<QueryRegistration> {
-        let name = format!("query_{}", reg.query_id);
-        if !filter.tool_visible(&name) {
-            continue;
-        }
+    if filter.tool_visible(SEARCH_TOOL) {
         tools.push(McpTool {
-            name,
-            description: format!("Query returning {} entities", reg.query_item_type),
-            input_schema: open_object_schema(),
+            name: SEARCH_TOOL.to_string(),
+            description: "Search the index of available Myko queries/views/reports/commands. \
+                Returns compact {id, kind, args, outputType} entries — call this before \
+                `execute` to find operation ids and argument shapes."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Case-insensitive substring match against operation id/description."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["query", "view", "report", "command"],
+                        "description": "Restrict results to one operation kind."
+                    }
+                },
+                "required": []
+            }),
         });
     }
 
-    for reg in inventory::iter::<ViewRegistration> {
-        let name = format!("view_{}", reg.view_id);
-        if !filter.tool_visible(&name) {
-            continue;
-        }
+    if filter.tool_visible(EXECUTE_TOOL) {
         tools.push(McpTool {
-            name,
-            description: format!("View returning a list of {}", reg.view_item_type),
-            input_schema: open_object_schema(),
-        });
-    }
-
-    for reg in inventory::iter::<ReportRegistration> {
-        let name = format!("report_{}", reg.report_id);
-        if !filter.tool_visible(&name) {
-            continue;
-        }
-        tools.push(McpTool {
-            name,
-            description: format!("Report returning {}", reg.output_type),
-            input_schema: open_object_schema(),
-        });
-    }
-
-    for reg in inventory::iter::<CommandRegistration> {
-        let name = format!("command_{}", reg.command_id);
-        if !filter.tool_visible(&name) {
-            continue;
-        }
-        tools.push(McpTool {
-            name,
-            description: format!("Command returning {}", reg.result_type),
-            input_schema: open_object_schema(),
+            name: EXECUTE_TOOL.to_string(),
+            description: "Run JavaScript against the Myko API. The code runs as an async \
+                function body — use `await myko.query(id, args)`, `myko.view(id, args)`, \
+                `myko.report(id, args)`, or `myko.command(id, args)` (ids/args from `search`), \
+                and optionally `return` a JSON-serializable value. Chain multiple calls in one \
+                script instead of one `execute` call per operation."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "JavaScript function body to run."
+                    }
+                },
+                "required": ["code"]
+            }),
         });
     }
 
@@ -190,6 +224,7 @@ async fn handle_tools_call(
     params: Option<Value>,
     filter: &ClientFilters,
     executor: &Executor,
+    info: &ServerInfo,
 ) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
@@ -238,7 +273,7 @@ async fn handle_tools_call(
         );
     }
 
-    let result = execute_tool(executor, &tool_name, arguments).await;
+    let result = execute_tool(executor, info, filter, &tool_name, arguments).await;
 
     match result {
         Ok(data) => McpResponse::success(
@@ -263,39 +298,55 @@ async fn handle_tools_call(
     }
 }
 
-async fn execute_tool(executor: &Executor, tool_name: &str, args: Value) -> Result<Value, String> {
-    if tool_name == CONNECTION_STATUS_TOOL {
-        return Ok(executor.connection_status());
+async fn execute_tool(
+    executor: &Executor,
+    info: &ServerInfo,
+    filter: &ClientFilters,
+    tool_name: &str,
+    args: Value,
+) -> Result<Value, String> {
+    match tool_name {
+        CONNECTION_STATUS_TOOL => Ok(executor.connection_status()),
+        SEARCH_TOOL => Ok(handle_search(&args, filter, &info.operation_index)),
+        EXECUTE_TOOL => handle_execute(&args, executor, filter).await,
+        _ => Err(format!("Unknown tool: {}", tool_name)),
     }
-    // Accept both the new `kind_Id` (advertised) and legacy `kind:Id` forms.
-    // See NOTE(ts) in handle_tools_list above.
-    if let Some(id) = strip_kind_prefix(tool_name, "query") {
-        return executor.execute_query(id, args).await;
-    }
-    if let Some(id) = strip_kind_prefix(tool_name, "view") {
-        return executor.execute_view(id, args).await;
-    }
-    if let Some(id) = strip_kind_prefix(tool_name, "report") {
-        return executor.execute_report(id, args).await;
-    }
-    if let Some(id) = strip_kind_prefix(tool_name, "command") {
-        return executor.execute_command(id, args).await;
-    }
-    Err(format!("Unknown tool: {}", tool_name))
 }
 
-/// Strip a `kind` prefix followed by either `_` (new, OpenAI-tool-name-safe)
-/// or `:` (legacy) from `name`, returning the remaining id. Entity ids never
-/// contain `:` (PascalCase from `#[myko_item]`), so the first separator is
-/// unambiguous.
-fn strip_kind_prefix<'a>(name: &'a str, kind: &str) -> Option<&'a str> {
-    let rest = name.strip_prefix(kind)?;
-    let sep = rest.as_bytes().first()?;
-    if *sep == b'_' || *sep == b':' {
-        Some(&rest[1..])
-    } else {
-        None
-    }
+fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]) -> Value {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .map(str::to_lowercase);
+    let kind = args.get("kind").and_then(|v| v.as_str());
+
+    let operations: Vec<&OperationSchema> = index
+        .iter()
+        .filter(|op| filter.tool_visible(&format!("{}_{}", op.kind, op.id)))
+        .filter(|op| kind.is_none_or(|k| op.kind == k))
+        .filter(|op| {
+            query.as_deref().is_none_or(|q| {
+                op.id.to_lowercase().contains(q)
+                    || op
+                        .description
+                        .as_deref()
+                        .is_some_and(|d| d.to_lowercase().contains(q))
+            })
+        })
+        .collect();
+
+    json!({ "operations": operations })
+}
+
+async fn handle_execute(
+    args: &Value,
+    executor: &Executor,
+    filter: &ClientFilters,
+) -> Result<Value, String> {
+    let Some(code) = args.get("code").and_then(|v| v.as_str()) else {
+        return Err("Missing required `code` argument".to_string());
+    };
+    sandbox::execute(code, Arc::new(executor.clone()), filter.clone()).await
 }
 
 fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
@@ -411,13 +462,6 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
     )
 }
 
-fn open_object_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": true
-    })
-}
-
 fn get_query_schema(query_id: &str) -> Option<String> {
     for reg in inventory::iter::<QueryRegistration> {
         if reg.query_id == query_id {
@@ -508,6 +552,7 @@ mod tests {
             name: "test".into(),
             version: "0.0.0".into(),
             instructions: Some("test instructions text".into()),
+            ..Default::default()
         };
         assert_eq!(info.instructions.as_deref(), Some("test instructions text"));
     }
@@ -519,6 +564,7 @@ mod tests {
             name: "test".into(),
             version: "0.0.0".into(),
             instructions: None,
+            ..Default::default()
         };
         // Executor is irrelevant for initialize but we need *some* executor;
         // use an in-process one wrapped around a minimal ctx is heavy here,
@@ -540,6 +586,7 @@ mod tests {
             name: "pulse-mcp".into(),
             version: "0.2.0".into(),
             instructions: Some("teach me".into()),
+            ..Default::default()
         };
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
@@ -599,5 +646,178 @@ mod tests {
             .await
             .expect("must produce a response");
         assert!(response.error.is_some());
+    }
+
+    // ─── Code Mode: search / execute ──────────────────────────────────────
+
+    fn make_tool_call(name: &str, arguments: Value) -> McpRequest {
+        McpRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Value::Number(1.into()),
+            method: "tools/call".to_string(),
+            params: Some(json!({ "name": name, "arguments": arguments })),
+        }
+    }
+
+    fn dummy_executor() -> Executor {
+        Executor::Client(std::sync::Arc::new(myko::client::MykoClient::new()))
+    }
+
+    fn info_with_index() -> ServerInfo {
+        ServerInfo {
+            operation_index: Arc::new(vec![
+                OperationSchema {
+                    id: "GetAllServers".to_string(),
+                    kind: "query".to_string(),
+                    description: Some("All servers".to_string()),
+                    args: vec![],
+                    output_type: "Server[]".to_string(),
+                },
+                OperationSchema {
+                    id: "DeleteServer".to_string(),
+                    kind: "command".to_string(),
+                    description: Some("Delete a server".to_string()),
+                    args: vec![],
+                    output_type: "DeleteServerResult".to_string(),
+                },
+            ]),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_list_only_exposes_search_execute_and_connection_status() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let executor = dummy_executor();
+        let resp = handle_request(make_request("tools/list"), &filter, &executor, &info)
+            .await
+            .expect("response");
+        let tools = resp.result.expect("ok")["tools"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            tools,
+            std::collections::HashSet::from([
+                CONNECTION_STATUS_TOOL.to_string(),
+                SEARCH_TOOL.to_string(),
+                EXECUTE_TOOL.to_string(),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn search_filters_by_kind_and_query_text() {
+        let filter = ClientFilters::allow_all();
+        let info = info_with_index();
+        let executor = dummy_executor();
+
+        let resp = handle_request(
+            make_tool_call("search", json!({ "kind": "command" })),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let text = resp.result.expect("ok")["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let parsed: Value = serde_json::from_str(&text).expect("valid JSON content");
+        let ops = parsed["operations"].as_array().expect("array");
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0]["id"], "DeleteServer");
+    }
+
+    #[tokio::test]
+    async fn search_respects_visibility_filter() {
+        // Same glob patterns used to hide per-operation tools before Code
+        // Mode still apply — just checked inside `search` now.
+        let filter = ClientFilters::from_strings(None, Some("command_*"), None, None);
+        let info = info_with_index();
+        let executor = dummy_executor();
+
+        let resp = handle_request(
+            make_tool_call("search", json!({})),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let text = resp.result.expect("ok")["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        let ids: Vec<&str> = parsed["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["GetAllServers"]);
+    }
+
+    #[tokio::test]
+    async fn execute_runs_a_script_and_returns_its_value() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let executor = dummy_executor();
+
+        let resp = handle_request(
+            make_tool_call("execute", json!({ "code": "return 21 * 2;" })),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let result = resp.result.expect("ok");
+        assert_ne!(result["isError"], json!(true));
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text.trim(), "42");
+    }
+
+    #[tokio::test]
+    async fn execute_without_code_argument_is_a_tool_execution_error() {
+        let filter = ClientFilters::allow_all();
+        let info = ServerInfo::default();
+        let executor = dummy_executor();
+
+        let resp = handle_request(
+            make_tool_call("execute", json!({})),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        let result = resp.result.expect("ok");
+        assert_eq!(result["isError"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn hidden_execute_tool_is_a_protocol_error() {
+        let filter = ClientFilters::from_strings(None, Some("execute"), None, None);
+        let info = ServerInfo::default();
+        let executor = dummy_executor();
+
+        let resp = handle_request(
+            make_tool_call("execute", json!({ "code": "return 1;" })),
+            &filter,
+            &executor,
+            &info,
+        )
+        .await
+        .expect("response");
+        assert!(
+            resp.error.is_some(),
+            "denied tool must be a protocol error, not a tool result"
+        );
     }
 }

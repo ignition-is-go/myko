@@ -44,6 +44,7 @@ async fn http_initialize_uses_threaded_server_info() {
         name: "pulse-mcp".into(),
         version: "0.2.0".into(),
         instructions: Some("teach me".into()),
+        ..Default::default()
     };
 
     let server = Arc::new(
