@@ -29,6 +29,10 @@ url.workspace = true
 chrono.workspace = true
 log.workspace = true
 anyhow.workspace = true
+# Typed reduce-root spans under the `profiling` feature — see the `profiling`
+# feature comment below. Cross-platform (unlike pprof), so this lives in the
+# unconditional deps block even though it's only pulled in when profiling.
+tracing = { version = "0.1", optional = true }
 autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.24"
@@ -101,11 +105,15 @@ search = []
 # needs the TS impls) and propagated through entity crates via their own
 # `ts-export` feature forwards (see rship-entities umbrella).
 ts-export = []
-# In-process CPU profiling (StartProfile/StopProfile commands + profile() helper).
-# Pulls the unix-only pprof sampler. No-op on non-unix targets (wasm32, Windows),
-# where the dep doesn't apply — enabling the feature there compiles to a stub
-# that reports "profiling not enabled" rather than failing the build.
-profiling = ["dep:pprof"]
+# In-process CPU profiling (StartProfile/StopProfile commands + profile() helper),
+# plus a `tracing` span at the SET/DEL reduce root (see `reduce_one` in
+# server/context.rs), typed by entity_type so span-based profilers (Tracy via
+# rship's TracyLayer) get one legible zone per fanout cascade instead of an
+# untyped `hyphae.fanout`. Pulls the unix-only pprof sampler — no-op on
+# non-unix targets (wasm32, Windows), where the dep doesn't apply — enabling
+# the feature there compiles to a stub that reports "profiling not enabled"
+# rather than failing the build. `tracing` itself is cross-platform.
+profiling = ["dep:pprof", "dep:tracing"]
 
 # Typegen/docgen bins need the codegen feature — declared explicitly so
 # `cargo build -p myko` doesn't try to compile them without the feature.

@@ -54,6 +54,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 default = []
 # Forward CPU profiling into myko-core. Opt-in (not default) so Windows/wasm
 # consumers don't pull the unix-only pprof tree; enable explicitly for dev/profiling.
+#
+# NOTE(ts): does NOT yet forward hyphae's own `profiling` feature (which
+# would emit a `hyphae.fanout` tracing span per cell fanout, tagged with
+# `cell.name` — see the `with_name` calls this feature also gates in
+# myko-core's server/context.rs). hyphae's `profiling` feature is real but
+# still unreleased (uncommitted in the hyphae working tree as of 2026-07,
+# not in the published 1.1.1/1.1.2). Add `"hyphae/profiling"` to this list
+# once a hyphae release includes it — until then, myko's own `myko.reduce`/
+# `myko.apply_effects`/report-cell-name spans still work (they don't depend
+# on hyphae's feature), but hyphae's own fanout spans won't exist yet.
 profiling = ["myko/profiling"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']

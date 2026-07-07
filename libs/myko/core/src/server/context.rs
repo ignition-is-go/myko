@@ -983,6 +983,15 @@ impl CellServerCtx {
     /// so a single mutation never allocates a Vec or groups by type.
     fn reduce_one(&self, item: &Arc<dyn AnyItem>, change: MEventType) {
         let entity_type = item.entity_type();
+        // Every SET/DEL entry point (typed set/del, batch_*, apply_event,
+        // set_dyn/del_dyn) funnels through here — the true root of a fanout
+        // cascade. One span here, discriminated by entity_type (bounded
+        // cardinality — never per-instance id), lets a span-based profiler
+        // (Tracy via rship's TracyLayer) show the whole downstream
+        // `hyphae.fanout` subtree nested under one legible typed zone
+        // instead of an anonymous root.
+        #[cfg(feature = "profiling")]
+        let _span = tracing::trace_span!("myko.reduce", ty = entity_type, op = ?change).entered();
         match change {
             MEventType::SET => {
                 crate::server::entity_set_stats::record_set(entity_type);
@@ -1070,6 +1079,18 @@ impl CellServerCtx {
         change: MEventType,
         origin: Origin,
     ) -> Result<(), PersistError> {
+        // Separate from `myko.reduce` so the relationship-cascade/persist
+        // tail is distinguishable from the direct state-cell write in a
+        // profiler trace. `items` is always a single entity-type group by
+        // the time it reaches here (see the doc comment above).
+        #[cfg(feature = "profiling")]
+        let _span = tracing::trace_span!(
+            "myko.apply_effects",
+            ty = items.first().map(|i| i.entity_type()).unwrap_or("empty"),
+            op = ?change,
+        )
+        .entered();
+
         // Search: index searchable fields.
         match change {
             MEventType::SET => {
@@ -1535,6 +1556,14 @@ impl CellServerCtx {
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
         let built = report.compute(nested_ctx).materialize();
+        // Named by report id (bounded cardinality — one name per report
+        // *type*, not per invocation) so hyphae's `hyphae.fanout` span
+        // (under the `profiling` feature) surfaces `cell.name` instead of
+        // being anonymous. `Cell<T, CellImmutable>::with_name` is available
+        // post-materialize (unlike `CellMap`, which only exposes it pre-lock
+        // — query/view result maps can't be named at this seam the same way).
+        #[cfg(feature = "profiling")]
+        let built = built.with_name(report_id.as_ref());
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
         // See the matching comment in `query_map_untyped` — the gate is only
