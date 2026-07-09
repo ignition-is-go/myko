@@ -102,7 +102,7 @@
     | { kind: 'entity'; node: EntityDiff; depth: number; isRoot: boolean }
     | { kind: 'field'; fieldName: string; existing: string; pending: string; result: string; status: 'added' | 'removed' | 'changed'; depth: number; parentKey: string };
 
-  const STORAGE_KEY = `rship:diff-expanded:${rootType}:${rootId}`;
+  const STORAGE_KEY = `myko:diff-expanded:${rootType}:${rootId}`;
 
   let expandedSet = $state(loadExpanded());
 

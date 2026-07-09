@@ -1303,6 +1303,55 @@ mod cascade_tests {
         );
     }
 
+    /// Regression test: a cascade-triggered recursive `emit_grouped` call
+    /// (deleting root cascades to branch, which cascades to leaf) must not
+    /// share its reducing `hyphae::batch` window with the batch that
+    /// triggered it. `CellMap`'s `diffs_cell` coalesces last-write-wins like
+    /// any other cell, so if the recursive call's `store.remove_many` landed
+    /// in the *same* still-open window as the top-level reduce, the later
+    /// level's diff would silently drop the earlier one on the same
+    /// `CascadeNode` store (see the batch-scoping comment on `emit_grouped`).
+    #[test]
+    fn del_cascade_recursion_does_not_drop_earlier_diffs_in_same_store() {
+        let (ctx, registry) = make_ctx();
+
+        ctx.set(&make_node("root", "")).unwrap();
+        ctx.set(&make_node("branch", "root")).unwrap();
+        ctx.set(&make_node("leaf", "branch")).unwrap();
+        ctx.set(&make_node("island", "")).unwrap();
+
+        let store = registry.get_or_create("CascadeNode");
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_closure = seen.clone();
+        let _guard = store.subscribe_diffs(move |diff| {
+            seen_for_closure.lock().unwrap().push(format!("{diff:?}"));
+        });
+        // subscribe_diffs replays the current snapshot synchronously on
+        // subscribe -- drop that so only diffs from the batch below count.
+        seen.lock().unwrap().clear();
+
+        // One wire batch: an unrelated standalone delete (island) alongside
+        // root's delete, which cascades to branch then leaf -- three
+        // distinct mutations to the *same* CascadeNode store triggered by
+        // one top-level call.
+        let root_item: Arc<dyn crate::core::item::AnyItem> = Arc::new(make_node("root", ""));
+        let island_item: Arc<dyn crate::core::item::AnyItem> = Arc::new(make_node("island", ""));
+        ctx.batch_del_dyn(&[root_item, island_item]).unwrap();
+
+        assert!(!exists(&registry, "root"));
+        assert!(!exists(&registry, "branch"), "direct child deleted");
+        assert!(!exists(&registry, "leaf"), "grandchild deleted");
+        assert!(!exists(&registry, "island"));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            3,
+            "expected 3 separate diffs (root+island reduce, branch cascade, leaf cascade), not coalesced: {:?}",
+            *seen
+        );
+    }
+
     /// A 2-cycle (a.parent = b, b.parent = a): the cascade must converge. The
     /// store-as-visited-set guarantees it — the second visit finds nothing.
     #[test]

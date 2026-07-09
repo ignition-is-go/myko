@@ -22,7 +22,7 @@ export interface UseQueryReturn<Q extends Query<unknown>> {
  * ```vue
  * <script setup>
  *   import { useQuery } from '@myko/ui-vue'
- *   import { queries } from '@rship/entities'
+ *   import { queries } from '@your-app/entities'
  *
  *   const { items, itemsArray, resolved } = useQuery(queries.GetAllTargets({}))
  * </script>

@@ -300,11 +300,11 @@ fn bench_serialize(c: &mut Criterion) {
 
     g.finish();
 
-    // CBOR is the production format for rship — measure the erased_serde tax
-    // on the path that actually matters. Today there's no typed shim for CBOR
-    // (ciborium has no RawValue / raw-embed mechanism), so all paths still
-    // go through erased_serde; the typed_baseline shows the floor we'd be
-    // chasing if we add a CBOR fix.
+    // CBOR is the production wire format for downstream consumers — measure
+    // the erased_serde tax on the path that actually matters. Today there's
+    // no typed shim for CBOR (ciborium has no RawValue / raw-embed
+    // mechanism), so all paths still go through erased_serde; the
+    // typed_baseline shows the floor we'd be chasing if we add a CBOR fix.
     let mut g = c.benchmark_group("cbor_serialize");
     g.throughput(criterion::Throughput::Elements(1000));
 
@@ -379,7 +379,7 @@ fn bench_arc_clone(c: &mut Criterion) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Lineage walk: rship's FilteredTargetTree pattern. Inside a typed view's
+// Lineage walk: a filtered-tree view's pattern. Inside a typed view's
 // project closure, walk N parent_id hops by `target_store.get(&pid)` +
 // `as_any().downcast_ref::<Target>()`. This is the dyn-boundary cost that
 // the earlier benches missed — every parent hop is a fresh downcast.
@@ -491,7 +491,7 @@ fn bench_lineage_walk(c: &mut Criterion) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// View chain fanout: rship's FilteredTargetTree shape. The outer pipeline
+// View chain fanout: a filtered-tree view's shape. The outer pipeline
 // is typed (operating on Arc<BenchTreeItem>); the variable is whether the
 // inner cross-store lookup is typed or dyn. This isolates the question
 // "if `registry.typed::<T>()` were available inside project transforms,
@@ -561,7 +561,7 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
         )
     });
 
-    // Current world: outer typed + dyn inner store. The rship FilteredTargetTree
+    // Current world: outer typed + dyn inner store. The filtered-tree view
     // shape — `target_store.get(&pid)` returns `Arc<dyn AnyItem>` and project
     // downcasts on every hop.
     g.bench_function("typed_outer_dyn_inner", |b| {

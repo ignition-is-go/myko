@@ -719,8 +719,9 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
         // `#[cfg(not(target_arch = "wasm32"))] pub mod search;` in
         // `myko::core::lib.rs`. Without this gate the impl block fails to
         // resolve `crate::search::typed::Searchable` on wasm targets — an
-        // actual rship-Windows CI failure (trunk-build compiles the leptos
-        // UI against wasm32 and pulls myko in transitively).
+        // actual downstream Windows CI failure (a Tauri/trunk-build pipeline
+        // that compiles the leptos UI against wasm32 and pulls myko in
+        // transitively).
         registrations.push(quote! {
             #[cfg(not(target_arch = "wasm32"))]
             impl #krate::search::typed::Searchable for #local_type_ident {

@@ -38,7 +38,7 @@ mod tree {
     use crate::prelude::*;
 
     /// Tree-shaped entity for benchmarking cross-store-get + downcast patterns
-    /// like `FilteredTargetTree`'s lineage walk in rship. The hot-path question is:
+    /// like a filtered-tree view's lineage walk. The hot-path question is:
     /// inside a project closure that does N parent-pointer hops per item, how much
     /// of the cost is the dyn-boundary downcast?
     #[myko_item]

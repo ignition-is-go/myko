@@ -15,7 +15,7 @@ pnpm add @myko/ui-vue
 ```vue
 <script setup>
 import { useQuery, useReport, useConnection } from '@myko/ui-vue'
-import { queries, reports } from '@rship/entities'
+import { queries, reports } from '@your-app/entities'
 
 // Connection management
 const { status, isConnected, connect, disconnect } = useConnection()
@@ -46,7 +46,7 @@ connect('ws://localhost:5155')
 <script setup>
 import { onUnmounted } from 'vue'
 import { getMykoClient } from '@myko/ui-vue'
-import { queries, commands } from '@rship/entities'
+import { queries, commands } from '@your-app/entities'
 
 const client = getMykoClient()
 

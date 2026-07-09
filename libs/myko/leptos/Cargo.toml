@@ -7,13 +7,20 @@ edition.workspace = true
 authors.workspace = true
 
 [package.metadata.flux]
-tasks = ["check", "build", "test", "lint", "publish"]
+tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
 leptos = { version = "0.8" }
 serde = { workspace = true }
 myko = { workspace = true }
 hyphae-leptos = { workspace = true }
+
+[features]
+default = []
+# Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
+# Nothing to gate here yet — declared so the flag resolves uniformly across
+# every crate flux runs it against.
+ci = []
 
 [lints]
 workspace = true

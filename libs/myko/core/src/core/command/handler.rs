@@ -387,6 +387,12 @@ impl CommandContext {
     /// The nested command shares the same transaction context.
     /// The command is consumed by execution, but the context is borrowed.
     pub fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
+        // Typed by command id (bounded cardinality — number of command
+        // types, never per-invocation) so a span-based profiler shows which
+        // commands are firing hot, e.g. an engine dispatching a command per
+        // event during playback churn.
+        #[cfg(feature = "profiling")]
+        let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
         cmd.execute(self.clone())
     }
 
@@ -518,7 +524,12 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
             message: format!("Failed to deserialize command: {}", e),
         })?;
 
-        // Execute the handler
+        // Execute the handler. Same "myko.command" span as
+        // CommandContext::execute_command, for the inbound (ws/wire)
+        // dispatch path — this is the DynCommandExecutor adapter used when
+        // a command arrives already-serialized rather than called directly.
+        #[cfg(feature = "profiling")]
+        let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
         let result = cmd.execute(ctx)?;
 
         // Serialize the result

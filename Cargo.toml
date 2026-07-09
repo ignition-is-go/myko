@@ -72,7 +72,18 @@ dashmap = "6.1.0"
 ahash = "0.8"
 partially = { version = "0.2", features = ["derive"] }
 
-hyphae = { version = "^1.1.0" }
+# `scheduler` is effectively required: myko's store-diff apply opens a hyphae
+# `batch()` boundary, and downstream event-semantic subgraphs rely on the
+# `no_coalesce` opt-out it provides. `profiling` backs the pass()/
+# take_report() A/B measurement instrumentation on that same seam (without it,
+# PassReport.per_cell is always empty — record_fire is gated behind it in
+# hyphae's Cell::fanout). Enabled here so both reach every downstream crate
+# via feature unification.
+#
+# 1.2.0 is the first published release with `scheduler`/`profiling` (feat/
+# scheduler merged to main, released via hyphae's own CI). Back to a version
+# dependency now that it's out.
+hyphae = { version = "^1.2.0", features = ["scheduler", "profiling"] }
 hyphae-leptos = { version = "^1.1.0" }
 
 # Internal crates

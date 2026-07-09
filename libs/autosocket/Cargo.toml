@@ -2,12 +2,12 @@
 name = "autosocket"
 version = "4.22.1"
 edition = "2024"
-description = "Transport adapters shared by rship and myko clients"
+description = "Auto-reconnecting WebSocket transport adapters shared by myko clients"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/ignition-is-go/rship"
+repository = "https://github.com/ignition-is-go/myko"
 
 [package.metadata.flux]
-tasks = ["check", "build", "test", "lint", "publish"]
+tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
 log.workspace = true
@@ -29,3 +29,10 @@ web-sys = { version = "0.3", features = [
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 send_wrapper = "0.6"
+
+[features]
+default = []
+# Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
+# Nothing to gate here yet — declared so the flag resolves uniformly across
+# every crate flux runs it against.
+ci = []
