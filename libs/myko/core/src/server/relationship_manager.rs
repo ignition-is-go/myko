@@ -416,7 +416,7 @@ impl RelationshipManager {
                 "RelationshipManager: Cascade delete batch {} count={} (parent {} deleted)",
                 lookup.local_type,
                 children.len(),
-                &parent_id
+                parent_id
             );
             self.publish_del_cascade_batch(ctx, &children)?;
         }
