@@ -18,3 +18,10 @@ proc-macro = true
 proc-macro2.workspace = true
 syn.workspace = true
 quote.workspace = true
+
+[features]
+default = []
+# Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
+# Nothing to gate here yet — declared so the flag resolves uniformly across
+# every crate flux runs it against.
+ci = []

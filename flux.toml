@@ -16,12 +16,24 @@ bun = ["bun", "run", "build"]
 
 [tasks.test]
 workspace_batchable = true
-cargo = ["cargo", "test"]
+# `ci` is a per-crate umbrella feature (see each crate's Cargo.toml) covering
+# everything worth exercising in CI except `bench` — bench_entities/criterion
+# are for local profiling, not routine CI.
+cargo = ["cargo", "test", "--features", "ci"]
 bun = ["bun", "test"]
 
 [tasks.lint]
-cargo = ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+cargo = ["cargo", "clippy", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
 bun = ["bun", "run", "lint"]
+
+[tasks.check-wasm]
+# wasm32 coverage for the crates that actually ship to a browser/wasm target
+# (myko, autosocket, myko-leptos — see each crate's `[package.metadata.flux]`
+# tasks list; myko-server/myko-macros don't opt in since they're host-only).
+# `check` alone doesn't exercise `#[cfg(target_arch = "wasm32")]` code paths,
+# so a break there passes native CI silently without this.
+workspace_batchable = true
+cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown", "--target-dir", "target/claude"]
 
 [tasks.gen]
 default = ["cargo", "run", "-p", "myko", "--features", "codegen", "--bin", "typegen", "--", "src/generated"]

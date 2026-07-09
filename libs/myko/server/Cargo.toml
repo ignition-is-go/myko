@@ -55,15 +55,19 @@ default = []
 # Forward CPU profiling into myko-core. Opt-in (not default) so Windows/wasm
 # consumers don't pull the unix-only pprof tree; enable explicitly for dev/profiling.
 #
-# NOTE(ts): does NOT yet forward hyphae's own `profiling` feature (which
-# would emit a `hyphae.fanout` tracing span per cell fanout, tagged with
-# `cell.name` — see the `with_name` calls this feature also gates in
-# myko-core's server/context.rs). hyphae's `profiling` feature is real but
-# still unreleased (uncommitted in the hyphae working tree as of 2026-07,
-# not in the published 1.1.1/1.1.2). Add `"hyphae/profiling"` to this list
-# once a hyphae release includes it — until then, myko's own `myko.reduce`/
-# `myko.apply_effects`/report-cell-name spans still work (they don't depend
-# on hyphae's feature), but hyphae's own fanout spans won't exist yet.
+# NOTE(ts): does NOT forward hyphae's own `profiling` feature — that's
+# already enabled unconditionally at the workspace `hyphae` dependency
+# (Cargo.toml, features = ["scheduler", "profiling"]) via feature
+# unification, since it backs the `hyphae::batch()`/`profiling::pass()` seam
+# in myko-core's ingest path regardless of which downstream crate is built.
 profiling = ["myko/profiling"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
+
+# Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
+# Excludes `inspector` deliberately: it spawns hyphae's inspector web server
+# via `tokio::spawn` at startup, which needs an active Tokio runtime that
+# plain `#[test]`s (e.g. `test_server_creation`) don't have — panics with
+# "there is no reactor running" outside one. Not a CI-safe feature to
+# blanket-enable; exercise it manually/in an async-runtime test instead.
+ci = ["profiling", "trace"]

@@ -10,7 +10,7 @@ repository = "https://github.com/ignition-is-go/myko"
 
 
 [package.metadata.flux]
-tasks = ["check", "build", "test", "lint", "publish"]
+tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
 # Core deps (available on all targets)
@@ -103,17 +103,22 @@ search = []
 # ~319 fewer `impl TS for _` blocks each, saving meaningful time in the
 # entity-crate fan-out phase. Activated transitively by `codegen` (typegen
 # needs the TS impls) and propagated through entity crates via their own
-# `ts-export` feature forwards (see rship-entities umbrella).
+# `ts-export` feature forwards (see downstream entity-crate umbrellas).
 ts-export = []
 # In-process CPU profiling (StartProfile/StopProfile commands + profile() helper),
 # plus a `tracing` span at the SET/DEL reduce root (see `reduce_one` in
-# server/context.rs), typed by entity_type so span-based profilers (Tracy via
-# rship's TracyLayer) get one legible zone per fanout cascade instead of an
+# server/context.rs), typed by entity_type so span-based profilers (e.g. a
+# tracing-Tracy layer) get one legible zone per fanout cascade instead of an
 # untyped `hyphae.fanout`. Pulls the unix-only pprof sampler — no-op on
 # non-unix targets (wasm32, Windows), where the dep doesn't apply — enabling
 # the feature there compiles to a stub that reports "profiling not enabled"
 # rather than failing the build. `tracing` itself is cross-platform.
 profiling = ["dep:pprof", "dep:tracing"]
+
+# Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
+# behavior worth exercising, *except* `bench` — bench_entities/criterion are
+# for local profiling, not routine CI (see flux.toml's `test` task).
+ci = ["codegen", "search", "ts-export", "profiling", "doc-gen"]
 
 # Typegen/docgen bins need the codegen feature — declared explicitly so
 # `cargo build -p myko` doesn't try to compile them without the feature.
