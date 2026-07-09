@@ -28,7 +28,7 @@ We have pivoted to:
 
 Make a myko-server able to **federate its data with other myko-servers** over unreliable links: nodes pair voluntarily, replicate in realtime when connected, keep operating independently during an internet drop, and **converge automatically on reconnect** via LWW — without manual event forwarding and without requiring public IPs.
 
-The result is a **distributed, realtime, eventually-consistent data layer** built into myko-server. Consuming apps (rship first) get it by enabling it and pairing — they keep defining data the normal way with `#[myko_item]`.
+The result is a **distributed, realtime, eventually-consistent data layer** built into myko-server. Consuming apps get it by enabling it and pairing — they keep defining data the normal way with `#[myko_item]`.
 
 ### Driving properties
 
@@ -196,7 +196,7 @@ All inbound events — gossip fast path, anti-entropy repair, or DB tail — ent
 
 ### 8.1 The durable tier — multiple replicas, no consensus
 
-Durability is a per-node capability, not a privileged role — but a mesh needs **more than one** durable node. A single durable node is a single point of failure on four axes: **durability** (its disk is the only copy of history), **partition** (only its side can commit or bootstrap), **bootstrap** (it is the sole snapshot source, §8.5), and **operations** (no rolling restart without a durability gap). Under the strict-CP rule below this is even sharper: one durable node down freezes writes *mesh-wide*. So **run ≥2 durable nodes as a hard floor, placed one per operational domain** — for rship, a durable node at each edge site **plus** the always-on cloud node.
+Durability is a per-node capability, not a privileged role — but a mesh needs **more than one** durable node. A single durable node is a single point of failure on four axes: **durability** (its disk is the only copy of history), **partition** (only its side can commit or bootstrap), **bootstrap** (it is the sole snapshot source, §8.5), and **operations** (no rolling restart without a durability gap). Under the strict-CP rule below this is even sharper: one durable node down freezes writes *mesh-wide*. So **run ≥2 durable nodes as a hard floor, placed one per operational domain** — e.g. a durable node at each edge site **plus** an always-on cloud node.
 
 Multiple durable nodes are cheap because the model is **leaderless replication, not consensus**: each durable node independently persists everything it sees and converges with the others via the same gossip + anti-entropy + LWW path as any peer. There is **no leader election, no quorum-for-safety, and no split-brain hazard** — two durable nodes accepting writes across a partition reconcile deterministically via LWW on heal. So **"how many durable nodes" is purely a durability-SLA / replication-factor choice**, never a correctness constraint. Quorum enters only as an acknowledgment *preference* (§8.3), not a safety requirement.
 

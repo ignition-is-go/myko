@@ -2,8 +2,8 @@
 //!
 //! Validates that the myko query cache and hyphae switch_map correctly
 //! clean up cell factories and subscriptions. These tests were written
-//! while investigating a 47 GB memory leak in rship_server triggered by
-//! CuePlayback state changes. The tests prove the cache layer is clean —
+//! while investigating a 47 GB memory leak in a downstream server triggered
+//! by CuePlayback state changes. The tests prove the cache layer is clean —
 //! the actual leak is in the O(n^2) reactive fan-out of the CueEngine
 //! blanket watcher, not in cache accumulation.
 
