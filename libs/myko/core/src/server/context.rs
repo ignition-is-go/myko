@@ -870,8 +870,29 @@ impl CellServerCtx {
 
         // Ingested wire events are Local (cascade + produce); the shared batch
         // path groups by type, reduces, then runs the cascade/produce tail.
-        self.emit_grouped(&set_items, MEventType::SET, Origin::Local)?;
-        self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
+        // `emit_grouped` itself opens the `hyphae::batch` window (scoped to
+        // just its reduce loop — see the comment there for why).
+        let emit = || -> Result<(), PersistError> {
+            self.emit_grouped(&set_items, MEventType::SET, Origin::Local)?;
+            self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
+            Ok(())
+        };
+        #[cfg(feature = "profiling")]
+        {
+            hyphae::profiling::pass(emit)?;
+            if let Some(report) = hyphae::profiling::take_report() {
+                log::trace!(
+                    target: "myko::server::context",
+                    "apply_event_batch fanout: cells_fired={} total_fires={} total_refires={} coalesceable_fraction={:.3}",
+                    report.cells_fired(),
+                    report.total_fires(),
+                    report.total_refires(),
+                    report.coalesceable_fraction()
+                );
+            }
+        }
+        #[cfg(not(feature = "profiling"))]
+        emit()?;
 
         Ok(applied)
     }
@@ -987,7 +1008,7 @@ impl CellServerCtx {
         // set_dyn/del_dyn) funnels through here — the true root of a fanout
         // cascade. One span here, discriminated by entity_type (bounded
         // cardinality — never per-instance id), lets a span-based profiler
-        // (Tracy via rship's TracyLayer) show the whole downstream
+        // (e.g. a tracing-Tracy layer) show the whole downstream
         // `hyphae.fanout` subtree nested under one legible typed zone
         // instead of an anonymous root.
         #[cfg(feature = "profiling")]
@@ -1035,28 +1056,61 @@ impl CellServerCtx {
 
         // Reduce: one store diff per type, across all groups, before any cascade
         // (so the store is fully settled — load-bearing for transitive cascade).
-        for (entity_type, group) in &by_type {
-            let store = self.registry.get_or_create(entity_type);
-            match change {
-                MEventType::SET => {
-                    let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
-                        Vec::with_capacity(group.len());
-                    for item in group {
-                        crate::server::entity_set_stats::record_set(entity_type);
-                        entries.push((item.id(), item.clone()));
+        //
+        // Wrapped in `hyphae::batch` so N distinct types' stores settle in one
+        // glitch-free drain instead of firing eagerly per type — but scoped to
+        // *only* this loop, not the `apply_effects` tail below. `by_type`
+        // guarantees each type's `diffs_cell` is set at most once in this loop,
+        // which is the invariant `batch`'s last-write-wins coalescing needs
+        // (`diffs_cell` carries diff *events*, not latest-value state, and
+        // isn't `no_coalesce`-stamped — two sets to the same one in one window
+        // silently drops the first). `apply_effects` runs after this batch has
+        // already drained, specifically because cascades recurse back into
+        // `emit_grouped` (e.g. `handle_belongs_to_cascade_batch` ->
+        // `publish_del_cascade_batch` -> `batch_del_dyn_with_origin` ->
+        // `emit_grouped`) and could touch a type already reduced in this same
+        // window — running effects outside the batch means that recursive call
+        // opens its own fresh window instead of joining (and colliding with)
+        // this one.
+        // Wrapped in `hyphae::batch` so N distinct types' stores settle in one
+        // glitch-free drain instead of firing eagerly per type — but scoped to
+        // *only* this loop, not the `apply_effects` tail below. `by_type`
+        // guarantees each type's `diffs_cell` is set at most once in this loop,
+        // which is the invariant `batch`'s last-write-wins coalescing needs
+        // (`diffs_cell` carries diff *events*, not latest-value state, and
+        // isn't `no_coalesce`-stamped — two sets to the same one in one window
+        // silently drops the first). `apply_effects` runs after this batch has
+        // already drained, specifically because cascades recurse back into
+        // `emit_grouped` (e.g. `handle_belongs_to_cascade_batch` ->
+        // `publish_del_cascade_batch` -> `batch_del_dyn_with_origin` ->
+        // `emit_grouped`) and could touch a type already reduced in this same
+        // window — running effects outside the batch means that recursive call
+        // opens its own fresh window instead of joining (and colliding with)
+        // this one.
+        hyphae::batch(|| {
+            for (entity_type, group) in &by_type {
+                let store = self.registry.get_or_create(entity_type);
+                match change {
+                    MEventType::SET => {
+                        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
+                            Vec::with_capacity(group.len());
+                        for item in group {
+                            crate::server::entity_set_stats::record_set(entity_type);
+                            entries.push((item.id(), item.clone()));
+                        }
+                        store.insert_many(entries);
                     }
-                    store.insert_many(entries);
-                }
-                MEventType::DEL => {
-                    let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
-                    for item in group {
-                        crate::server::entity_set_stats::record_del(entity_type);
-                        ids.push(item.id());
+                    MEventType::DEL => {
+                        let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
+                        for item in group {
+                            crate::server::entity_set_stats::record_del(entity_type);
+                            ids.push(item.id());
+                        }
+                        store.remove_many(ids);
                     }
-                    store.remove_many(ids);
                 }
             }
-        }
+        });
 
         // Effects: search + cascade + produce, per same-type group.
         for group in by_type.values() {
@@ -1796,6 +1850,75 @@ mod tests {
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
         assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
+    }
+
+    #[test]
+    fn apply_event_batch_delivers_both_diffs_for_mixed_set_and_del_same_type() {
+        // Regression test for the hazard documented on `emit` in
+        // `apply_event_batch_immediate`: CellMap's `diffs_cell` coalesces
+        // last-write-wins like any other cell under `hyphae::batch`, so a
+        // single shared batch window across the SET and DEL groups would
+        // silently drop whichever of the two diffs isn't last. Each
+        // `emit_grouped` call now opens its own batch window instead, so a
+        // wire batch mixing a SET and a DEL of the *same* entity type must
+        // still deliver both diffs to subscribers.
+        let ctx = make_ctx();
+
+        ctx.apply_event_batch(vec![MEvent {
+            item: json!({ "id": "old-1", "value": 1 }),
+            change_type: MEventType::SET,
+            item_type: "ImmediateTestItem".to_string(),
+            created_at: "2026-03-12T00:00:00Z".to_string(),
+            tx: "tx-seed".to_string(),
+            source_id: Some("test".to_string()),
+        }])
+        .expect("seed apply_event_batch should succeed");
+
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        let diffs_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let diffs_seen_for_closure = diffs_seen.clone();
+        let _guard = store.subscribe_diffs(move |diff| {
+            diffs_seen_for_closure
+                .lock()
+                .unwrap()
+                .push(format!("{diff:?}"));
+        });
+        // subscribe_diffs replays the current snapshot synchronously on
+        // subscribe -- drop that so only diffs from the batch below count.
+        diffs_seen.lock().unwrap().clear();
+
+        let applied = ctx
+            .apply_event_batch(vec![
+                MEvent {
+                    item: json!({ "id": "new-1", "value": 2 }),
+                    change_type: MEventType::SET,
+                    item_type: "ImmediateTestItem".to_string(),
+                    created_at: "2026-03-12T00:00:01Z".to_string(),
+                    tx: "tx-mixed".to_string(),
+                    source_id: Some("test".to_string()),
+                },
+                MEvent {
+                    item: json!({ "id": "old-1", "value": 1 }),
+                    change_type: MEventType::DEL,
+                    item_type: "ImmediateTestItem".to_string(),
+                    created_at: "2026-03-12T00:00:01Z".to_string(),
+                    tx: "tx-mixed".to_string(),
+                    source_id: Some("test".to_string()),
+                },
+            ])
+            .expect("mixed apply_event_batch should succeed");
+
+        assert_eq!(applied, 2);
+        assert!(store.get(&Arc::<str>::from("new-1")).get().is_some());
+        assert!(store.get(&Arc::<str>::from("old-1")).get().is_none());
+
+        let seen = diffs_seen.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            2,
+            "both the SET and DEL diffs must reach subscribers, not just the last one: {:?}",
+            *seen
+        );
     }
 
     #[test]
