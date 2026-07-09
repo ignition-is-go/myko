@@ -616,21 +616,18 @@ impl CellServer {
             .lock()
             .expect("server_ownership_guard mutex poisoned") = Some(ownership_guard);
 
-        // Bind WebSocket listener first so peer publication only happens once
-        // the gateway is actually available.
-        let listener = TcpListener::bind(&self.config.bind_addr).await?;
-        log::info!("CellServer listening on {}", self.config.bind_addr);
-        log::info!(
-            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
-            self.config.bind_addr
-        );
-
-        // Start peer registry if configured
-        if self.config.peer_registry.is_some() {
-            self.start_peer_registry(None);
-        }
-
-        // Run after_init hook (e.g., scene engine startup)
+        // Run after_init hook (e.g., scene engine startup) BEFORE binding the
+        // listener. This hook runs synchronously and can be slow (e.g.
+        // rship's scene-editor-view warmup, which materializes a view per
+        // scene) — binding first and accepting later left a window where the
+        // OS would complete TCP handshakes and queue them in the accept
+        // backlog while nothing in the process was reading them yet. A
+        // client connecting in that window would see an established TCP
+        // connection that never got a WebSocket-upgrade response: not
+        // rejected (so no clean retry trigger), not served (so no response
+        // ever arrives) — stuck rather than cleanly failing. Binding late
+        // means a connection attempt during startup gets a prompt
+        // ECONNREFUSED instead, which every client/proxy already retries.
         if let Some(hook) = self
             .after_init
             .lock()
@@ -658,6 +655,22 @@ impl CellServer {
         // Per-search summary thread. One log line per window listing each
         // search that completed (entity_type, result count, elapsed).
         myko::search::search_stats::start_periodic_logger();
+
+        // Bind WebSocket listener last, once all synchronous startup work
+        // (including after_init) is done, so peer publication only happens
+        // once the gateway is actually available to serve requests, not just
+        // listening.
+        let listener = TcpListener::bind(&self.config.bind_addr).await?;
+        log::info!("CellServer listening on {}", self.config.bind_addr);
+        log::info!(
+            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
+            self.config.bind_addr
+        );
+
+        // Start peer registry if configured
+        if self.config.peer_registry.is_some() {
+            self.start_peer_registry(None);
+        }
 
         log::info!("Server started");
         self.run_ws_accept_loop(listener).await
