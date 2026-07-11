@@ -494,9 +494,19 @@ pub fn build_ids_source_map(
     let result: hyphae::CellMap<Arc<str>, AnyItemArc> = hyphae::CellMap::new();
     for id in ids {
         let key_cell = store.get(id);
-        let result_for_cb = result.clone();
+        // Weak, not a strong clone: `key_cell` belongs to the store, which
+        // lives for the whole process — a strong capture here would make the
+        // store's per-key subscriber list hold `result` (and everything
+        // built on top of it downstream) alive forever, regardless of
+        // whether any external caller still references it. This is exactly
+        // the reference cycle `query_cache`'s weak-ref design assumes never
+        // happens (see `MapCacheEntry` in server/context.rs).
+        let result_weak = result.downgrade();
         let key_for_cb = id.clone();
         let guard = key_cell.subscribe(move |signal| {
+            let Some(result_for_cb) = result_weak.upgrade() else {
+                return;
+            };
             if let Signal::Value(arc_opt) = signal {
                 match arc_opt.as_ref() {
                     Some(item) => {
