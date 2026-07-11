@@ -134,7 +134,7 @@ use myko_server::{CellServer, postgres::PostgresConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    env_logger::init();
+    let _telemetry = myko_server::telemetry::init_from_env();
 
     let server = CellServer::builder()
         .with_bind_addr("0.0.0.0:5155".parse()?)
@@ -169,10 +169,10 @@ All endpoints share a single TCP listener; the front-door router peeks at the HT
 | `MYKO_ADDRESS`                   | `ws://localhost:5155` | Used by the stdio MCP binary and clients   |
 | `MYKO_POSTGRES_URL`              | —                     | Postgres connection string                 |
 | `MYKO_PORT`                      | `5155`                | Server bind port (when wired through env)  |
-| `MYKO_TRACING_ENDPOINT`          | —                     | OTLP/HTTP collector for tracing            |
+| `MYKO_TRACING_ENDPOINT`          | —                     | OTLP/HTTP endpoint for traces+metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
 | `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
 | `MYKO_CCMD_TIMEOUT_MS`           | —                     | Slow-command threshold for warn logs       |
-| `MYKO_MEM_PROFILE_INTERVAL_SECS` | —                     | Periodic per-store memory profile interval |
+| `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); only applies when `MYKO_TRACING_ENDPOINT` is set |
 
 ---
 

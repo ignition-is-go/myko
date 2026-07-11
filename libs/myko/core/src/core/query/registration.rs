@@ -592,6 +592,11 @@ where
     ) -> Result<FilteredCellMap, String> {
         QUERY_CELL_FACTORIES_CREATED.fetch_add(1, Ordering::Relaxed);
         let query_id = Q::query_id_static();
+        // Bounded cardinality (one span per query *registration*, not per
+        // `test_entity` item test — that runs reactively per store mutation
+        // and would be far too hot to span), matching `myko.command`.
+        let _span = tracing::trace_span!("myko.query", query = query_id.as_ref()).entered();
+        crate::server::dispatch_metrics::record_query(query_id.as_ref(), request_ctx.origin());
         increment_counter(query_factories_by_id(), query_id);
         let any_ref: &dyn Any = any_query.as_ref();
         let request: QueryRequest<Q> = any_ref

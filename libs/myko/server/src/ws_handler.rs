@@ -83,7 +83,7 @@ fn ensure_ws_benchmark_logger() {
                     continue;
                 }
 
-                log::info!(
+                tracing::info!(
                     "WebSocket benchmark last_1s messages={} bytes={} avg_bytes={}",
                     count,
                     bytes,
@@ -188,7 +188,7 @@ impl DropLogger {
         }
 
         let n = self.dropped.swap(0, Ordering::Relaxed);
-        log::warn!(
+        tracing::warn!(
             "WebSocket send buffer full; dropped {} message(s) for client {} (latest: {}): {}",
             n,
             self.client_id,
@@ -209,6 +209,7 @@ struct CommandJob {
 enum SubscriptionReady {
     Query {
         tx_id: Arc<str>,
+        query_id: Arc<str>,
         cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>,
         window: Option<myko::wire::QueryWindow>,
     },
@@ -327,10 +328,10 @@ impl WsHandler {
             windback: None,
         };
         if let Err(e) = ctx.set(&client_entity) {
-            log::error!("Failed to persist client entity: {e}");
+            tracing::error!("Failed to persist client entity: {e}");
         }
 
-        log::info!("Client connected: {} from {}", client_id, addr);
+        tracing::info!("Client connected: {} from {}", client_id, addr);
 
         let write_ctx = ctx.clone();
         let write_client_id = client_id.clone();
@@ -390,15 +391,22 @@ impl WsHandler {
                     }
                 };
                 // Per-message timing tap (outbound). Counts by kind into the
-                // global ws_timing instrumentation. Counterpart to the inbound
-                // tap in `handle_message`.
+                // global ws_timing instrumentation, and by kind+client+tag
+                // into an OTLP counter. Counterpart to the inbound tap in
+                // `handle_message`.
                 match &msg {
-                    OutboundMessage::SerializedCommand { .. } => {
-                        crate::ws_timing::record_outbound("Command")
+                    OutboundMessage::SerializedCommand { command_id, .. } => {
+                        crate::ws_timing::record_outbound_for_client(
+                            "Command",
+                            &write_client_id,
+                            Some(command_id.as_str()),
+                        )
                     }
-                    OutboundMessage::Message(m) => {
-                        crate::ws_timing::record_outbound(crate::ws_timing::message_kind(m))
-                    }
+                    OutboundMessage::Message(m) => crate::ws_timing::record_outbound_for_client(
+                        crate::ws_timing::message_kind(m),
+                        &write_client_id,
+                        crate::ws_timing::message_tag(m),
+                    ),
                 };
                 let (kind, tx_id, seq, _upserts, _deletes, _total_count) = match &msg {
                     OutboundMessage::SerializedCommand { tx, .. } => {
@@ -480,7 +488,7 @@ impl WsHandler {
                         match ciborium::ser::into_writer(msg, &mut bytes) {
                             Ok(()) => Message::Binary(bytes.into()),
                             Err(e) => {
-                                log::error!("Failed to serialize message to CBOR: {}", e);
+                                tracing::error!("Failed to serialize message to CBOR: {}", e);
                                 continue;
                             }
                         }
@@ -488,7 +496,7 @@ impl WsHandler {
                     OutboundMessage::Message(msg) => match serde_json::to_string(msg) {
                         Ok(json) => Message::Text(json.into()),
                         Err(e) => {
-                            log::error!("Failed to serialize message to JSON: {}", e);
+                            tracing::error!("Failed to serialize message to JSON: {}", e);
                             continue;
                         }
                     },
@@ -500,7 +508,7 @@ impl WsHandler {
                 };
 
                 if let Err(err) = write.send(ws_msg).await {
-                    log::error!(
+                    tracing::error!(
                         "WebSocket write failed for client {} from {} kind={} tx={:?} seq={:?} payload_bytes={} binary={}: {}",
                         write_client_id,
                         write_addr,
@@ -518,13 +526,13 @@ impl WsHandler {
             // executor stops serializing commands into a dead channel.
             if let Some(registry) = try_client_registry() {
                 registry.unregister(&write_client_id);
-                log::info!(
+                tracing::info!(
                     "WebSocket writer unregistered client {} from {} (write task exiting)",
                     write_client_id,
                     write_addr,
                 );
             }
-            log::warn!(
+            tracing::warn!(
                 "WebSocket writer task exiting for client {} from {} normal_open={} priority_open={} deferred_open={}",
                 write_client_id,
                 write_addr,
@@ -558,7 +566,7 @@ impl WsHandler {
                 {
                     Ok(()) => {}
                     Err(e) => {
-                        log::error!("Command worker panicked: {}", e);
+                        tracing::error!("Command worker panicked: {}", e);
                     }
                 }
                 // NOTE(ts): Clean up timing entry after command completes (success or panic).
@@ -585,8 +593,8 @@ impl WsHandler {
                         map.remove(&tx_id);
                     }
                     match ready {
-                        SubscriptionReady::Query { tx_id, cellmap, window } => {
-                            session.subscribe_query(tx_id, cellmap, window);
+                        SubscriptionReady::Query { tx_id, query_id, cellmap, window } => {
+                            session.subscribe_query(tx_id, query_id, cellmap, window);
                         }
                         SubscriptionReady::View { tx_id, view_id, cellmap, window } => {
                             session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
@@ -602,7 +610,7 @@ impl WsHandler {
                         map.retain(|_, (_, started)| started.elapsed() < Duration::from_secs(10));
                         let removed = before - map.len();
                         if removed > 0 {
-                            log::debug!(
+                            tracing::debug!(
                                 "Outbound command TTL sweep client={}: removed {} stale entries, {} remaining",
                                 session.client_id,
                                 removed,
@@ -618,7 +626,7 @@ impl WsHandler {
                     let msg = match msg {
                         Ok(m) => m,
                         Err(e) => {
-                            log::error!("WebSocket read error from {}: {}", client_id, e);
+                            tracing::error!("WebSocket read error from {}: {}", client_id, e);
                             break;
                         }
                     };
@@ -626,7 +634,7 @@ impl WsHandler {
                     match msg {
                         Message::Binary(data) => {
                             if outgoing_format.load(Ordering::SeqCst) != MykoProtocol::CBOR as u8 {
-                                log::debug!(
+                                tracing::debug!(
                                     "Client {} promoted outgoing format to CBOR via demonstration",
                                     client_id
                                 );
@@ -649,12 +657,12 @@ impl WsHandler {
                                         &subscribe_tx,
                                         myko_msg,
                                     ) {
-                                        log::error!("Error handling message: {}", e);
+                                        tracing::error!("Error handling message: {}", e);
                                     }
                                     tokio::task::yield_now().await;
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to parse message from {}: {}", client_id, e);
+                                    tracing::warn!("Failed to parse message from {}: {}", client_id, e);
                                 }
                             }
                         }
@@ -675,12 +683,12 @@ impl WsHandler {
                                         &subscribe_tx,
                                         myko_msg,
                                     ) {
-                                        log::error!("Error handling message: {}", e);
+                                        tracing::error!("Error handling message: {}", e);
                                     }
                                     tokio::task::yield_now().await;
                                 }
                                 Err(e) => {
-                                    log::warn!(
+                                    tracing::warn!(
                                         "Failed to parse JSON message from {}: {} | raw: {}",
                                         client_id,
                                         e,
@@ -694,14 +702,14 @@ impl WsHandler {
                             }
                         }
                         Message::Ping(data) => {
-                            log::trace!("Ping from {}", client_id);
+                            tracing::trace!("Ping from {}", client_id);
                             let _ = data;
                         }
                         Message::Pong(_) => {
-                            log::trace!("Pong from {}", client_id);
+                            tracing::trace!("Pong from {}", client_id);
                         }
                         Message::Close(frame) => {
-                            log::warn!("Client {} sent close frame: {:?}", client_id, frame);
+                            tracing::warn!("Client {} sent close frame: {:?}", client_id, frame);
                             break;
                         }
                         Message::Frame(_) => {}
@@ -734,7 +742,7 @@ impl WsHandler {
         let drop_client_id = client_id.clone();
         tokio::task::spawn_blocking(move || {
             drop(session); // Drops all subscription guards
-            log::trace!(
+            tracing::trace!(
                 "Client session subscriptions torn down for {}",
                 drop_client_id
             );
@@ -742,10 +750,10 @@ impl WsHandler {
 
         // Delete Client entity
         if let Err(e) = ctx.del(&client_entity) {
-            log::error!("Failed to delete client entity: {e}");
+            tracing::error!("Failed to delete client entity: {e}");
         }
 
-        log::info!("Client disconnected: {} from {}", client_id, addr);
+        tracing::info!("Client disconnected: {} from {}", client_id, addr);
 
         Ok(())
     }
@@ -767,8 +775,14 @@ impl WsHandler {
         msg: MykoMessage,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Per-message timing tap. Counts inbound messages by kind into the
-        // global instrumentation. Periodic summarizer logs the deltas.
-        crate::ws_timing::record_inbound(crate::ws_timing::message_kind(&msg));
+        // global instrumentation (periodic summarizer logs the deltas) and
+        // by kind+client+tag (command/query/report/view id) into an OTLP
+        // counter.
+        crate::ws_timing::record_inbound_for_client(
+            crate::ws_timing::message_kind(&msg),
+            &session.client_id,
+            crate::ws_timing::message_tag(&msg),
+        );
 
         let handler_registry = ctx.handler_registry.clone();
 
@@ -791,7 +805,7 @@ impl WsHandler {
                 // Defensive dedupe: some clients can replay the same subscribe request.
                 // A duplicate for the same tx would reset server-side sequence/window state.
                 if session.has_subscription(&tx_id) {
-                    log::debug!(
+                    tracing::debug!(
                         "Ignoring duplicate query subscribe client={} tx={} query_id={} item_type={}",
                         session.client_id,
                         tx_id,
@@ -807,8 +821,8 @@ impl WsHandler {
                     map.entry(tx_id.clone()).or_insert_with(Instant::now);
                 }
 
-                log::trace!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
-                log::trace!(
+                tracing::trace!("Query {} for {} (tx: {})", query_id, entity_type, tx_id);
+                tracing::trace!(
                     "Query subscribe request client={} tx={} query_id={} item_type={} window={} active_subscriptions_before={}",
                     session.client_id,
                     tx_id,
@@ -843,12 +857,13 @@ impl WsHandler {
                                     Ok(filtered_cellmap) => {
                                         let _ = sub_tx.send(SubscriptionReady::Query {
                                             tx_id,
+                                            query_id,
                                             cellmap: filtered_cellmap,
                                             window,
                                         });
                                     }
                                     Err(e) => {
-                                        log::error!(
+                                        tracing::error!(
                                             "Failed to create query cell for {}: {}",
                                             query_id,
                                             e
@@ -858,7 +873,7 @@ impl WsHandler {
                             });
                         }
                         Err(e) => {
-                            log::error!(
+                            tracing::error!(
                                 "Failed to parse query {}: {} | payload: {}",
                                 query_id,
                                 e,
@@ -868,14 +883,19 @@ impl WsHandler {
                     }
                 } else {
                     // Fall back to select all for unknown queries
-                    log::warn!(
+                    tracing::warn!(
                         "No registered query handler for {}, falling back to select all",
                         query_id
                     );
                     let store: myko::store::EntityStore =
                         (*registry.get_or_create(entity_type)).clone();
                     let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
-                    session.subscribe_query(tx_id, cellmap, wrapped.window.clone());
+                    session.subscribe_query(
+                        tx_id,
+                        query_id.clone(),
+                        cellmap,
+                        wrapped.window.clone(),
+                    );
                 }
             }
 
@@ -891,7 +911,7 @@ impl WsHandler {
 
                 // Defensive dedupe: ignore repeated subscribe for an already-active tx.
                 if session.has_subscription(&tx_id) {
-                    log::debug!(
+                    tracing::debug!(
                         "Ignoring duplicate view subscribe client={} tx={} view_id={} item_type={}",
                         session.client_id,
                         tx_id,
@@ -907,8 +927,8 @@ impl WsHandler {
                     map.entry(tx_id.clone()).or_insert_with(Instant::now);
                 }
 
-                log::trace!("View {} for {} (tx: {})", view_id, item_type, tx_id);
-                log::trace!(
+                tracing::trace!("View {} for {} (tx: {})", view_id, item_type, tx_id);
+                tracing::trace!(
                     "View subscribe request client={} tx={} view_id={} item_type={} window={:?}",
                     session.client_id,
                     tx_id,
@@ -927,7 +947,7 @@ impl WsHandler {
                     let parsed = (view_data.parse)(wrapped.view.clone());
                     match parsed {
                         Ok(any_view) => {
-                            log::trace!(
+                            tracing::trace!(
                                 "View parsed successfully client={} tx={} view_id={}",
                                 session.client_id,
                                 tx_id,
@@ -946,7 +966,7 @@ impl WsHandler {
                             tokio::task::spawn_blocking(move || {
                                 match cell_factory(any_view, registry, request_context, ctx) {
                                     Ok(filtered_cellmap) => {
-                                        log::trace!(
+                                        tracing::trace!(
                                             "View cell factory succeeded tx={} view_id={}",
                                             tx_id,
                                             view_id_clone
@@ -959,7 +979,7 @@ impl WsHandler {
                                         });
                                     }
                                     Err(e) => {
-                                        log::error!(
+                                        tracing::error!(
                                             "Failed to create view cell for {}: {}",
                                             view_id_clone,
                                             e
@@ -979,7 +999,7 @@ impl WsHandler {
                         }
                         Err(e) => {
                             let message = format!("Failed to parse view {}: {}", view_id, e);
-                            log::error!(
+                            tracing::error!(
                                 "{} | payload: {}",
                                 message,
                                 serde_json::to_string(&wrapped.view).unwrap_or_default()
@@ -997,7 +1017,7 @@ impl WsHandler {
                     }
                 } else {
                     let message = format!("No registered handler for view: {}", view_id);
-                    log::warn!("{}", message);
+                    tracing::warn!("{}", message);
                     if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(ViewError {
                         tx: tx_id.to_string(),
                         view_id: view_id.to_string(),
@@ -1009,7 +1029,7 @@ impl WsHandler {
             }
 
             MykoMessage::QueryCancel(CancelSubscription { tx: tx_id }) => {
-                log::trace!(
+                tracing::trace!(
                     "QueryCancel received: client={} tx={}",
                     session.client_id,
                     tx_id
@@ -1026,7 +1046,7 @@ impl WsHandler {
 
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
                 let tx_id: Arc<str> = tx.into();
-                log::trace!(
+                tracing::trace!(
                     "Query window request client={} tx={} has_window={} active_subscriptions={}",
                     session.client_id,
                     tx_id,
@@ -1036,7 +1056,7 @@ impl WsHandler {
                 session.update_query_window(&tx_id, window);
             }
             MykoMessage::ViewCancel(CancelSubscription { tx: tx_id }) => {
-                log::trace!("View cancel: {}", tx_id);
+                tracing::trace!("View cancel: {}", tx_id);
                 let tx_id: Arc<str> = tx_id.into();
                 if let Ok(mut map) = view_ids_by_tx.lock() {
                     map.remove(&tx_id);
@@ -1048,7 +1068,7 @@ impl WsHandler {
             }
             MykoMessage::ViewWindow(ViewWindowUpdate { tx, window }) => {
                 let tx_id: Arc<str> = tx.into();
-                log::trace!("View window update: {}", tx_id);
+                tracing::trace!("View window update: {}", tx_id);
                 session.update_view_window(&tx_id, window);
             }
 
@@ -1062,7 +1082,7 @@ impl WsHandler {
                     .into();
                 let report_id = &wrapped.report_id;
 
-                log::trace!(
+                tracing::trace!(
                     "Report subscribe request client={} tx={} report_id={} active_subscriptions_before={}",
                     session.client_id,
                     tx_id,
@@ -1092,7 +1112,7 @@ impl WsHandler {
                                     );
                                 }
                                 Err(e) => {
-                                    log::error!(
+                                    tracing::error!(
                                         "Failed to create report cell for {}: {}",
                                         report_id,
                                         e
@@ -1101,7 +1121,7 @@ impl WsHandler {
                             }
                         }
                         Err(e) => {
-                            log::error!(
+                            tracing::error!(
                                 "Failed to parse report {}: {} | payload: {}",
                                 report_id,
                                 e,
@@ -1110,12 +1130,12 @@ impl WsHandler {
                         }
                     }
                 } else {
-                    log::warn!("No registered handler for report: {}", report_id);
+                    tracing::warn!("No registered handler for report: {}", report_id);
                 }
             }
 
             MykoMessage::ReportCancel(CancelSubscription { tx: tx_id }) => {
-                log::trace!(
+                tracing::trace!(
                     "ReportCancel received: client={} tx={} active_subscriptions_before={}",
                     session.client_id,
                     tx_id,
@@ -1128,7 +1148,7 @@ impl WsHandler {
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, host_id);
                 if let Err(e) = ctx.apply_event(event) {
-                    log::error!(
+                    tracing::error!(
                         "Failed to apply event from client {}: {e}",
                         session.client_id
                     );
@@ -1138,7 +1158,7 @@ impl WsHandler {
             MykoMessage::EventBatch(mut events) => {
                 let incoming = events.len();
                 if incoming >= 64 {
-                    log::trace!(
+                    tracing::trace!(
                         "Received event batch from client {} size={}",
                         session.client_id,
                         incoming
@@ -1150,14 +1170,14 @@ impl WsHandler {
                 }
                 match ctx.apply_event_batch(events) {
                     Ok(applied) => {
-                        log::trace!(
+                        tracing::trace!(
                             "Applied event batch from client {} size={}",
                             session.client_id,
                             applied
                         );
                     }
                     Err(e) => {
-                        log::error!(
+                        tracing::error!(
                             "Failed to apply event batch from client {}: {}",
                             session.client_id,
                             e
@@ -1177,7 +1197,7 @@ impl WsHandler {
 
                 let command_id = &wrapped.command_id;
 
-                log::trace!("Command {} (tx: {})", command_id, tx_id,);
+                tracing::trace!("Command {} (tx: {})", command_id, tx_id,);
                 let received_at = Instant::now();
                 if let Ok(mut map) = command_started_by_tx.lock() {
                     map.insert(tx_id.clone(), received_at);
@@ -1188,7 +1208,7 @@ impl WsHandler {
                     command: wrapped.command.clone(),
                     received_at,
                 }) {
-                    log::error!(
+                    tracing::error!(
                         "Failed to enqueue command {} for client {} tx={}: {}",
                         command_id,
                         session.client_id,
@@ -1216,7 +1236,7 @@ impl WsHandler {
 
             // Response messages - these shouldn't come from clients.
             MykoMessage::QueryResponse(resp) => {
-                log::warn!(
+                tracing::warn!(
                     "Unexpected client message kind=query_response client={} tx={} seq={} upserts={} deletes={} active_subscriptions={}",
                     session.client_id,
                     resp.tx,
@@ -1227,7 +1247,7 @@ impl WsHandler {
                 );
             }
             MykoMessage::QueryError(err) => {
-                log::warn!(
+                tracing::warn!(
                     "Unexpected client message kind=query_error client={} tx={} query_id={} message={} active_subscriptions={}",
                     session.client_id,
                     err.tx,
@@ -1237,7 +1257,7 @@ impl WsHandler {
                 );
             }
             MykoMessage::ViewResponse(resp) => {
-                log::warn!(
+                tracing::warn!(
                     "Unexpected client message kind=view_response client={} tx={} seq={} upserts={} deletes={} active_subscriptions={}",
                     session.client_id,
                     resp.tx,
@@ -1248,7 +1268,7 @@ impl WsHandler {
                 );
             }
             MykoMessage::ViewError(err) => {
-                log::warn!(
+                tracing::warn!(
                     "Unexpected client message kind=view_error client={} tx={} view_id={} message={} active_subscriptions={}",
                     session.client_id,
                     err.tx,
@@ -1258,7 +1278,7 @@ impl WsHandler {
                 );
             }
             MykoMessage::ReportResponse(resp) => {
-                log::warn!(
+                tracing::warn!(
                     "Unexpected client message kind=report_response client={} tx={} active_subscriptions={}",
                     session.client_id,
                     resp.tx,
@@ -1266,7 +1286,7 @@ impl WsHandler {
                 );
             }
             MykoMessage::ReportError(err) => {
-                log::warn!(
+                tracing::warn!(
                     "Unexpected client message kind=report_error client={} tx={} report_id={} message={} active_subscriptions={}",
                     session.client_id,
                     err.tx,
@@ -1277,7 +1297,7 @@ impl WsHandler {
             }
             MykoMessage::CommandResponse(resp) => {
                 if resp.tx.trim().is_empty() {
-                    log::warn!(
+                    tracing::warn!(
                         "Malformed client message kind=command_response client={} tx=<empty> active_subscriptions={}",
                         session.client_id,
                         session.subscription_count()
@@ -1292,7 +1312,7 @@ impl WsHandler {
                         // per correlated command response (ExecTargetAction etc.),
                         // tens of thousands per second under load. Keep at trace;
                         // the unmatched/error paths below stay at warn.
-                        log::trace!(
+                        tracing::trace!(
                             "Client command response matched outbound command client={} tx={} command_id={} roundtrip_ms={} active_subscriptions={}",
                             session.client_id,
                             resp.tx,
@@ -1301,7 +1321,7 @@ impl WsHandler {
                             session.subscription_count()
                         );
                     } else {
-                        log::warn!(
+                        tracing::warn!(
                             "Client command response without outbound match client={} tx={} active_subscriptions={}",
                             session.client_id,
                             resp.tx,
@@ -1312,7 +1332,7 @@ impl WsHandler {
             }
             MykoMessage::CommandError(err) => {
                 if err.tx.trim().is_empty() {
-                    log::warn!(
+                    tracing::warn!(
                         "Malformed client message kind=command_error client={} tx=<empty> command_id={} message={} active_subscriptions={}",
                         session.client_id,
                         err.command_id,
@@ -1325,7 +1345,7 @@ impl WsHandler {
                         .ok()
                         .and_then(|mut map| map.remove(&err.tx));
                     if let Some((command_id, started)) = correlated {
-                        log::warn!(
+                        tracing::warn!(
                             "Client command error matched outbound command client={} tx={} command_id={} transport_command_id={} message={} roundtrip_ms={} active_subscriptions={}",
                             session.client_id,
                             err.tx,
@@ -1336,7 +1356,7 @@ impl WsHandler {
                             session.subscription_count()
                         );
                     } else {
-                        log::warn!(
+                        tracing::warn!(
                             "Client command error without outbound match client={} tx={} command_id={} message={} active_subscriptions={}",
                             session.client_id,
                             err.tx,
@@ -1410,7 +1430,7 @@ impl WsHandler {
                 }
                 let execute_ms = execute_started.elapsed().as_millis();
                 let total_ms = job.received_at.elapsed().as_millis();
-                log::trace!(
+                tracing::trace!(
                     target: "myko_server::ws_perf",
                     "command_exec client={} tx={} command_id={} queue_wait_ms={} execute_ms={} total_ms={}",
                     client_id,
@@ -1425,7 +1445,7 @@ impl WsHandler {
         }
 
         if !handler_found {
-            log::warn!("No registered handler for command: {}", command_id);
+            tracing::warn!("No registered handler for command: {}", command_id);
             let error = MykoMessage::CommandError(CommandError {
                 tx: job.tx_id.to_string(),
                 command_id: command_id.clone(),
@@ -1437,7 +1457,7 @@ impl WsHandler {
         }
 
         if !handler_found {
-            log::debug!(
+            tracing::debug!(
                 target: "myko_server::ws_perf",
                 "command_exec client={} tx={} command_id={} queue_wait_ms={} execute_ms=0 total_ms={} handler_found=false",
                 client_id,

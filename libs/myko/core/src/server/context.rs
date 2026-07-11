@@ -771,7 +771,7 @@ impl CellServerCtx {
             if let Some(item) = existing {
                 self.produce_del_dyn(&item)?;
             } else {
-                log::warn!(
+                tracing::warn!(
                     "del_by_id could not persist DEL without full entity: {}:{}",
                     entity_type,
                     id
@@ -779,7 +779,7 @@ impl CellServerCtx {
             }
         }
 
-        log::trace!("Published DEL {}:{}", entity_type, id);
+        tracing::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
     }
 
@@ -846,7 +846,7 @@ impl CellServerCtx {
             let item_type = event.item_type;
             let item_value = event.item;
             let Some(item) = self.parse_item(&item_type, item_value) else {
-                log::warn!("Unknown entity type or parse error for ingest: {item_type}");
+                tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
                 continue;
             };
             match change {
@@ -860,7 +860,7 @@ impl CellServerCtx {
             return Ok(0);
         }
 
-        log::trace!(
+        tracing::trace!(
             target: "myko::server::context",
             "apply_event_batch parsed: input_events={} sets={} dels={}",
             input_len,
@@ -881,7 +881,7 @@ impl CellServerCtx {
         {
             hyphae::profiling::pass(emit)?;
             if let Some(report) = hyphae::profiling::take_report() {
-                log::trace!(
+                tracing::trace!(
                     target: "myko::server::context",
                     "apply_event_batch fanout: cells_fired={} total_fires={} total_refires={} coalesceable_fraction={:.3}",
                     report.cells_fired(),
@@ -908,12 +908,12 @@ impl CellServerCtx {
         let buffer = self.ingest_buffer_for(entity_type.clone());
         let should_schedule = {
             let Ok(mut state) = buffer.state.lock() else {
-                log::error!(
+                tracing::error!(
                     "Could not acquire ingest buffer lock for entity_type={}",
                     entity_type
                 );
                 if let Err(e) = self.apply_event_batch_immediate(events) {
-                    log::error!("Failed to apply buffered events for {}: {}", entity_type, e);
+                    tracing::error!("Failed to apply buffered events for {}: {}", entity_type, e);
                 }
                 return;
             };
@@ -949,7 +949,7 @@ impl CellServerCtx {
 
         let events = {
             let Ok(mut state) = buffer.state.lock() else {
-                log::error!(
+                tracing::error!(
                     "Could not acquire ingest buffer lock for flush entity_type={}",
                     entity_type
                 );
@@ -964,7 +964,7 @@ impl CellServerCtx {
             std::mem::take(&mut state.events)
         };
 
-        log::trace!(
+        tracing::trace!(
             target: "myko::server::context",
             "flush_buffered_events entity_type={} count={}",
             entity_type,
@@ -974,7 +974,7 @@ impl CellServerCtx {
         match self.apply_event_batch_immediate(events) {
             Ok(count) => count,
             Err(e) => {
-                log::error!("Failed to flush buffered events for {}: {}", entity_type, e);
+                tracing::error!("Failed to flush buffered events for {}: {}", entity_type, e);
                 0
             }
         }
@@ -1011,7 +1011,6 @@ impl CellServerCtx {
         // (e.g. a tracing-Tracy layer) show the whole downstream
         // `hyphae.fanout` subtree nested under one legible typed zone
         // instead of an anonymous root.
-        #[cfg(feature = "profiling")]
         let _span = tracing::trace_span!("myko.reduce", ty = entity_type, op = ?change).entered();
         match change {
             MEventType::SET => {
@@ -1137,7 +1136,6 @@ impl CellServerCtx {
         // tail is distinguishable from the direct state-cell write in a
         // profiler trace. `items` is always a single entity-type group by
         // the time it reaches here (see the doc comment above).
-        #[cfg(feature = "profiling")]
         let _span = tracing::trace_span!(
             "myko.apply_effects",
             ty = items.first().map(|i| i.entity_type()).unwrap_or("empty"),
@@ -1560,7 +1558,7 @@ impl CellServerCtx {
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
             crate::server::report_cache_stats::record_hit(&report_id);
-            log::trace!(
+            tracing::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache HIT report_id={} key={}",
                 report_id,
@@ -1581,7 +1579,7 @@ impl CellServerCtx {
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
             crate::server::report_cache_stats::record_hit_after_gate(&report_id);
-            log::trace!(
+            tracing::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache HIT_AFTER_GATE report_id={} key={}",
                 report_id,
@@ -1593,10 +1591,10 @@ impl CellServerCtx {
         // Emit MISS_COMPUTE *before* compute() so the analyze pass can correlate
         // the miss with the work that follows even if compute panics or hangs.
         // Payload is only serialized when the trace target is enabled.
-        if log::log_enabled!(target: "myko::server::context::report_cache", log::Level::Trace) {
+        if tracing::enabled!(target: "myko::server::context::report_cache", tracing::Level::TRACE) {
             let payload = serde_json::to_string(&report)
                 .unwrap_or_else(|e| format!("<serialize error: {e}>"));
-            log::trace!(
+            tracing::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache MISS_COMPUTE report_id={} key={} payload={}",
                 report_id,
@@ -1605,6 +1603,11 @@ impl CellServerCtx {
             );
         }
 
+        // Bounded cardinality (one name per report *type*, not per invocation),
+        // matching the `myko.reduce`/`myko.command` spans — this is the one-time
+        // cache-miss materialization, not a per-subscriber-update hot path.
+        let _span = tracing::trace_span!("myko.report", report = report_id.as_ref()).entered();
+        crate::server::dispatch_metrics::record_report(report_id.as_ref(), request.origin());
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
         // The trait returns `impl Pipeline<...>`; materialize once here so the
         // cache and downstream consumers get a concrete `Cell`. This is the only

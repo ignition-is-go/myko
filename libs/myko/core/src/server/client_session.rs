@@ -170,12 +170,13 @@ impl<W: WsWriter> ClientSession<W> {
     pub fn subscribe_query(
         &mut self,
         tx: Arc<str>,
+        query_id: Arc<str>,
         cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
         if had_existing {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} replacing existing query subscription tx={} (active_before={})",
                 self.client_id,
                 tx,
@@ -186,6 +187,7 @@ impl<W: WsWriter> ClientSession<W> {
         let writer = self.writer.clone();
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
+        let query_id_for_diffs = query_id.clone();
         let state = Arc::new(Mutex::new(QuerySubscriptionState {
             window,
             ..Default::default()
@@ -197,11 +199,12 @@ impl<W: WsWriter> ClientSession<W> {
             let response = match state_for_diffs.lock() {
                 Ok(mut state) => state.apply_source_diff(diff, tx_clone.clone()),
                 Err(_) => {
-                    log::error!("Query subscription state poisoned for tx={}", tx_clone);
+                    tracing::error!("Query subscription state poisoned for tx={}", tx_clone);
                     return;
                 }
             };
             if let Some(response) = response {
+                crate::server::dispatch_metrics::record_query_response(&query_id_for_diffs);
                 writer.send_query_response(response, false);
             }
         });
@@ -216,14 +219,14 @@ impl<W: WsWriter> ClientSession<W> {
         );
 
         let active = self.subscriptions.len();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} subscribed query tx={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
             active
         );
         if active >= 100 && active.is_multiple_of(100) {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} high subscription count: {} (most recent tx={})",
                 self.client_id,
                 active,
@@ -255,6 +258,7 @@ impl<W: WsWriter> ClientSession<W> {
         let tx_for_log = tx_clone.clone();
         let client_id_for_log = self.client_id.clone();
         let view_id_for_log = view_id.clone();
+        let view_id_for_metrics = view_id.clone();
         let subscribed_at = Instant::now();
         let state = Arc::new(Mutex::new(QuerySubscriptionState {
             window,
@@ -266,14 +270,14 @@ impl<W: WsWriter> ClientSession<W> {
             let response = match state_for_diffs.lock() {
                 Ok(mut state) => state.apply_source_diff(diff, tx_clone.clone()),
                 Err(_) => {
-                    log::error!("View subscription state poisoned for tx={}", tx_clone);
+                    tracing::error!("View subscription state poisoned for tx={}", tx_clone);
                     return;
                 }
             };
             let Some(response) = response else {
                 return;
             };
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} view tx={} seq={} upserts={} deletes={} changes={} window={:?} total_count={:?}",
                 client_id_for_log,
                 tx_clone,
@@ -288,7 +292,7 @@ impl<W: WsWriter> ClientSession<W> {
             );
             if response.sequence == 0 {
                 let first_emit_ms = subscribed_at.elapsed().as_millis();
-                log::trace!(
+                tracing::trace!(
                     target: "myko::server::view_perf",
                     "view_perf client={} view_id={} tx={} first_emit_ms={} initial_rows={} total_count={:?} window={:?}",
                     client_id_for_log,
@@ -300,6 +304,7 @@ impl<W: WsWriter> ClientSession<W> {
                     response.window
                 );
             }
+            crate::server::dispatch_metrics::record_view_response(&view_id_for_metrics);
             writer.send_query_response(response, true);
         });
 
@@ -312,7 +317,7 @@ impl<W: WsWriter> ClientSession<W> {
             }),
         );
 
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} subscribed view view_id={} tx={} active_subscriptions={}",
             self.client_id,
             view_id,
@@ -330,7 +335,7 @@ impl<W: WsWriter> ClientSession<W> {
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
         if had_existing {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} replacing existing report subscription tx={} report_id={} (active_before={})",
                 self.client_id,
                 tx,
@@ -343,9 +348,11 @@ impl<W: WsWriter> ClientSession<W> {
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
         let report_id_for_log = report_id.clone();
+        let report_id_for_metrics = report_id.clone();
 
         let guard = cell.subscribe(move |signal| match &signal {
             Signal::Value(output) => {
+                crate::server::dispatch_metrics::record_report_response(&report_id_for_metrics);
                 writer.send_report_response(tx_clone.clone(), Arc::clone(output.as_ref()));
             }
             Signal::Complete => {}
@@ -362,7 +369,7 @@ impl<W: WsWriter> ClientSession<W> {
             .insert(tx, SubscriptionEntry::Guard { _guard: guard });
 
         let active = self.subscriptions.len();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} subscribed report tx={} report_id={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
@@ -370,7 +377,7 @@ impl<W: WsWriter> ClientSession<W> {
             active
         );
         if active >= 100 && active.is_multiple_of(100) {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} high subscription count: {} (most recent report tx={}, id={})",
                 self.client_id,
                 active,
@@ -383,7 +390,7 @@ impl<W: WsWriter> ClientSession<W> {
     /// Update window for an active query subscription.
     pub fn update_query_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
         let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} window update for unknown tx={} (active_subscriptions={})",
                 self.client_id,
                 tx,
@@ -395,7 +402,7 @@ impl<W: WsWriter> ClientSession<W> {
         let response = match sub.state.lock() {
             Ok(mut state) => state.apply_window_update(window, tx.clone()),
             Err(_) => {
-                log::error!(
+                tracing::error!(
                     "Query subscription state poisoned on window update for tx={}",
                     tx
                 );
@@ -404,7 +411,7 @@ impl<W: WsWriter> ClientSession<W> {
         };
 
         let Some(response) = response else {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} ignored no-op window update tx={} (active_subscriptions={})",
                 self.client_id,
                 tx,
@@ -417,7 +424,7 @@ impl<W: WsWriter> ClientSession<W> {
             QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
             QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
         }
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} updated query window tx={} (active_subscriptions={})",
             self.client_id,
             tx,
@@ -427,7 +434,7 @@ impl<W: WsWriter> ClientSession<W> {
 
     /// Update window for an active view subscription.
     pub fn update_view_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} requested view window update tx={} window={:?}",
             self.client_id,
             tx,
@@ -439,7 +446,7 @@ impl<W: WsWriter> ClientSession<W> {
     /// Cancel a subscription by transaction ID.
     pub fn cancel(&mut self, tx: &Arc<str>) {
         let removed = self.subscriptions.remove(tx).is_some();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} cancel tx={} removed={} active_subscriptions={}",
             self.client_id,
             tx,
@@ -452,7 +459,7 @@ impl<W: WsWriter> ClientSession<W> {
     pub fn cancel_all(&mut self) {
         let before = self.subscriptions.len();
         self.subscriptions.clear();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} cancel_all removed_subscriptions={}",
             self.client_id,
             before
@@ -534,7 +541,7 @@ impl QuerySubscriptionState {
                     }
                 }
                 if batch_size >= 64 {
-                    log::trace!(
+                    tracing::trace!(
                         "ClientSession tx={} apply_source_diff batch_size={} all_items={}",
                         tx,
                         batch_size,
@@ -630,7 +637,7 @@ impl QuerySubscriptionState {
         let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
         let should_emit = self.sequence == 0 || visible_changed || total_count_changed;
 
-        log::trace!(
+        tracing::trace!(
             "ClientSession tx={} window_decision force_emit=false seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed=false total_count_changed={} should_emit={} total_count={} window=None",
             tx,
             self.sequence,
@@ -742,7 +749,7 @@ impl QuerySubscriptionState {
             let should_emit =
                 force_emit || self.sequence == 0 || visible_changed || total_count_changed;
 
-            log::trace!(
+            tracing::trace!(
                 "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
                 tx,
                 force_emit,
@@ -830,7 +837,7 @@ impl QuerySubscriptionState {
             || window_order_changed
             || total_count_changed;
 
-        log::trace!(
+        tracing::trace!(
             "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
             tx,
             force_emit,
@@ -870,7 +877,7 @@ impl QuerySubscriptionState {
 impl<W: WsWriter> Drop for ClientSession<W> {
     fn drop(&mut self) {
         // All guards drop automatically
-        log::trace!(
+        tracing::trace!(
             "ClientSession dropped for client {}, cleaning up {} subscriptions",
             self.client_id,
             self.subscriptions.len()
@@ -1002,7 +1009,7 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
 
         // Should have received initial data
         assert!(mock.message_count() >= 1);
@@ -1021,7 +1028,7 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
         assert_eq!(session.subscription_count(), 1);
 
         session.cancel(&"tx-1".into());
@@ -1041,8 +1048,8 @@ mod tests {
 
             let cellmap1 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
             let cellmap2 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-            session.subscribe_query("tx-1".into(), cellmap1, None);
-            session.subscribe_query("tx-2".into(), cellmap2, None);
+            session.subscribe_query("tx-1".into(), "query-1".into(), cellmap1, None);
+            session.subscribe_query("tx-2".into(), "query-2".into(), cellmap2, None);
 
             // 2 subscriptions active
             assert_eq!(session.subscription_count(), 2);
@@ -1063,7 +1070,7 @@ mod tests {
         let id: Arc<str> = "a".into();
         let cellmap =
             hyphae::MapQuery::materialize((*store).clone().select(move |item| *item.id() == *id));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
 
         // Should have received initial data
         assert!(mock.message_count() >= 1);
@@ -1085,7 +1092,7 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
 
         let initial_count = mock.message_count();
 
