@@ -26,12 +26,12 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use log::warn;
 use myko::{
     client::MykoClient,
     event::MEvent,
     server::{PersistError, PersistHealth, Persister},
 };
+use tracing::warn;
 
 /// Persister that replicates events to all connected peer servers.
 pub struct PeerPersister {

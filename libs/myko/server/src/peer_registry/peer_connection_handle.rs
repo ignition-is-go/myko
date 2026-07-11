@@ -4,11 +4,11 @@ use hyphae::{
     Cell, CellImmutable, DedupedExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty,
     PairwiseExt, TapExt,
 };
-use log::info;
 use myko::{
     client::{ConnectionStatus, MykoClient},
     entities::server::{GetConnectedServer, Server},
 };
+use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum IdentityCycle {
@@ -55,7 +55,7 @@ impl PeerConnectionHandle {
             .connection_status()
             .pairwise()
             .tap(move |s| {
-                log::info!(
+                tracing::info!(
                     "Connection status updated: {}:{} [{:?} -> {:?}]",
                     status_log_address,
                     status_log_port,
@@ -101,7 +101,7 @@ impl PeerConnectionHandle {
         let signal_state = connection_status
             .join(&identity)
             .map(move |(status, identity)| {
-                log::debug!(
+                tracing::debug!(
                     "server: {}:{}:{}, status: {:?}, {:?}",
                     signal_server_id,
                     signal_server_address,

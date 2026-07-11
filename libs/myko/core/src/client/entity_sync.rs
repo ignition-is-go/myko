@@ -1,8 +1,8 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use hyphae::{JoinExt, MapExt, MaterializeDefinite, Signal, SubscriptionGuard, Watchable};
-use log::{debug, error};
 use serde::de::DeserializeOwned;
+use tracing::{debug, error};
 
 use crate::{
     client::MykoClient,

@@ -184,6 +184,17 @@ impl RequestContext {
         self.client_id.as_deref()
     }
 
+    /// Dispatch origin — the first lineage element (`"client"` for native-WS
+    /// requests and MCP-stdio-over-WS, `"mcp"` for MCP HTTP/WS in-process,
+    /// `"saga"` for saga-initiated operations). Used to tag dispatch metrics
+    /// by transport/origin.
+    pub fn origin(&self) -> &str {
+        self.lineage
+            .first()
+            .map(|s| s.as_ref())
+            .unwrap_or("unknown")
+    }
+
     /// Get the lineage as a string for logging.
     pub fn lineage_string(&self) -> String {
         self.lineage

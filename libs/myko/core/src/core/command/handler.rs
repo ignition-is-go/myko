@@ -391,8 +391,11 @@ impl CommandContext {
         // types, never per-invocation) so a span-based profiler shows which
         // commands are firing hot, e.g. an engine dispatching a command per
         // event during playback churn.
-        #[cfg(feature = "profiling")]
         let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
+        // "internal": composed in-process by another handler/saga, not a
+        // fresh wire arrival — see `dispatch_metrics::record_command`.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::server::dispatch_metrics::record_command(C::command_id_static(), "internal");
         cmd.execute(self.clone())
     }
 
@@ -528,8 +531,12 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         // CommandContext::execute_command, for the inbound (ws/wire)
         // dispatch path — this is the DynCommandExecutor adapter used when
         // a command arrives already-serialized rather than called directly.
-        #[cfg(feature = "profiling")]
         let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
+        // "external": arrived pre-serialized — the funnel for both native-WS
+        // command dispatch and MCP HTTP/WS in-process tool calls — see
+        // `dispatch_metrics::record_command`.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::server::dispatch_metrics::record_command(C::command_id_static(), "external");
         let result = cmd.execute(ctx)?;
 
         // Serialize the result

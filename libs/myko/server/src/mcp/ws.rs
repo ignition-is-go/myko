@@ -52,7 +52,7 @@ pub async fn handle_mcp_ws_upgrade(
     let ws_stream = match perform_handshake(stream, &head, want_mcp_subprotocol).await {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("MCP WS handshake failed: {}", e);
+            tracing::warn!("MCP WS handshake failed: {}", e);
             return Ok(());
         }
     };
@@ -70,7 +70,7 @@ pub async fn handle_myko_ws_upgrade(
     let ws_stream = match perform_handshake(stream, &head, false).await {
         Ok(s) => s,
         Err(e) => {
-            log::warn!("Myko WS handshake failed from {}: {}", addr, e);
+            tracing::warn!("Myko WS handshake failed from {}: {}", addr, e);
             return Ok(());
         }
     };
@@ -128,7 +128,7 @@ async fn run_mcp_loop(
         let frame = match frame {
             Ok(f) => f,
             Err(e) => {
-                log::debug!("MCP WS read error: {}", e);
+                tracing::debug!("MCP WS read error: {}", e);
                 break;
             }
         };

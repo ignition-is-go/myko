@@ -131,6 +131,7 @@ pub use myko_macros::*;
 pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
+pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas
 pub use ts_rs;
 #[cfg(feature = "ts-export")]
 pub use ts_rs::TS;
@@ -246,4 +247,24 @@ macro_rules! submit_message_event {
             event_value: $event,
         });
     };
+}
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    //! Shared by unit tests that exercise hyphae's reactive scheduler
+    //! (subscribe/cascade/diff-count assertions at a specific instant).
+    //!
+    //! hyphae's scheduler tick queue is process-wide by design (a per-thread
+    //! queue can't coordinate two threads' batches converging on a shared
+    //! cell), and `cargo test` runs a crate's unit tests concurrently within
+    //! one process by default — so two such tests can perturb each other's
+    //! cache/diff/message counts mid-flight. No entries are ever stranded;
+    //! the assertion just samples too early. Serialize with this guard as
+    //! the first line of any test asserting on reactive state at an instant
+    //! (same fix as `tests/query_cache_leak_test.rs`, which is a separate
+    //! process and doesn't need to share this lock).
+    pub(crate) fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }

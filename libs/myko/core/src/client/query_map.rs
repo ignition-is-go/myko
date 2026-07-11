@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use hyphae::{CellImmutable, CellMap, Gettable, Watchable};
-use log::{debug, error, trace};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use tracing::{debug, error, trace};
 
 use super::{ConnectionStatus, MykoClient, QueryRequest};
 use crate::{

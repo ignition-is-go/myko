@@ -21,9 +21,9 @@ use hyphae::{
     Cell, CellImmutable, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable,
     SubscriptionGuard, Watchable,
 };
-use log::{debug, error, info, trace, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use tracing::{debug, error, info, trace, warn};
 use url::Url;
 
 use crate::{

@@ -494,9 +494,19 @@ pub fn build_ids_source_map(
     let result: hyphae::CellMap<Arc<str>, AnyItemArc> = hyphae::CellMap::new();
     for id in ids {
         let key_cell = store.get(id);
-        let result_for_cb = result.clone();
+        // Weak, not a strong clone: `key_cell` belongs to the store, which
+        // lives for the whole process — a strong capture here would make the
+        // store's per-key subscriber list hold `result` (and everything
+        // built on top of it downstream) alive forever, regardless of
+        // whether any external caller still references it. This is exactly
+        // the reference cycle `query_cache`'s weak-ref design assumes never
+        // happens (see `MapCacheEntry` in server/context.rs).
+        let result_weak = result.downgrade();
         let key_for_cb = id.clone();
         let guard = key_cell.subscribe(move |signal| {
+            let Some(result_for_cb) = result_weak.upgrade() else {
+                return;
+            };
             if let Signal::Value(arc_opt) = signal {
                 match arc_opt.as_ref() {
                     Some(item) => {
@@ -592,6 +602,11 @@ where
     ) -> Result<FilteredCellMap, String> {
         QUERY_CELL_FACTORIES_CREATED.fetch_add(1, Ordering::Relaxed);
         let query_id = Q::query_id_static();
+        // Bounded cardinality (one span per query *registration*, not per
+        // `test_entity` item test — that runs reactively per store mutation
+        // and would be far too hot to span), matching `myko.command`.
+        let _span = tracing::trace_span!("myko.query", query = query_id.as_ref()).entered();
+        crate::server::dispatch_metrics::record_query(query_id.as_ref(), request_ctx.origin());
         increment_counter(query_factories_by_id(), query_id);
         let any_ref: &dyn Any = any_query.as_ref();
         let request: QueryRequest<Q> = any_ref

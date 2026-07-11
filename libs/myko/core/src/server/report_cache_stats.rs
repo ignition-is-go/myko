@@ -1,6 +1,6 @@
 //! Periodic-summary report-cache hit/miss instrumentation.
 //!
-//! Replaces per-call `log::debug!` lines in `CellServerCtx::report` (which
+//! Replaces per-call `tracing::debug!` lines in `CellServerCtx::report` (which
 //! were firing thousands of times per scene load and dominated I/O).
 //!
 //! The hot path increments per-report-id atomic counters via DashMap entry
@@ -69,7 +69,7 @@ pub fn start_periodic_logger() {
         .name("myko-report-cache-stats".to_string())
         .spawn(run_loop)
         .map_err(|e| {
-            log::warn!(
+            tracing::warn!(
                 target: "myko::server::report_cache_stats",
                 "Failed to spawn report_cache_stats thread: {}", e
             )
@@ -114,7 +114,7 @@ fn emit_window() {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    log::info!(
+    tracing::info!(
         target: "myko::server::report_cache_stats",
         "[report_cache window={}ms] hits={} misses={} miss_rate={:.0}% [{}]",
         WINDOW_MS,

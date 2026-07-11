@@ -27,12 +27,13 @@ erased-serde.workspace = true
 pin-project-lite.workspace = true
 url.workspace = true
 chrono.workspace = true
-log.workspace = true
 anyhow.workspace = true
-# Typed reduce-root spans under the `profiling` feature — see the `profiling`
-# feature comment below. Cross-platform (unlike pprof), so this lives in the
-# unconditional deps block even though it's only pulled in when profiling.
-tracing = { version = "0.1", optional = true }
+# Always-on span/event emission (myko.reduce, myko.command, etc. — see
+# server/context.rs and core/command/handler.rs). Cross-platform (unlike
+# pprof), and cheap enough with no subscriber attached that it doesn't need
+# a compile-time feature gate — filtering is a runtime concern (RUST_LOG /
+# an OTLP exporter), not a build-time one.
+tracing.workspace = true
 autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
 inventory = "0.3.24"
@@ -46,6 +47,9 @@ roaring = "0.10"
 nucleo-matcher = "0.3"
 strsim = "0.11"
 thread_local = "1.1"
+opentelemetry = { version = "0.32.0", default-features = false, features = [
+  "metrics",
+] }
 
 # Native-only deps (store, search, codegen)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -105,15 +109,13 @@ search = []
 # needs the TS impls) and propagated through entity crates via their own
 # `ts-export` feature forwards (see downstream entity-crate umbrellas).
 ts-export = []
-# In-process CPU profiling (StartProfile/StopProfile commands + profile() helper),
-# plus a `tracing` span at the SET/DEL reduce root (see `reduce_one` in
-# server/context.rs), typed by entity_type so span-based profilers (e.g. a
-# tracing-Tracy layer) get one legible zone per fanout cascade instead of an
-# untyped `hyphae.fanout`. Pulls the unix-only pprof sampler — no-op on
-# non-unix targets (wasm32, Windows), where the dep doesn't apply — enabling
-# the feature there compiles to a stub that reports "profiling not enabled"
-# rather than failing the build. `tracing` itself is cross-platform.
-profiling = ["dep:pprof", "dep:tracing"]
+# In-process CPU profiling (StartProfile/StopProfile commands + profile() helper).
+# Pulls the unix-only pprof sampler — no-op on non-unix targets (wasm32,
+# Windows), where the dep doesn't apply — enabling the feature there compiles
+# to a stub that reports "profiling not enabled" rather than failing the
+# build. `tracing` spans (myko.reduce, myko.command, etc.) are always-on now
+# and not gated by this feature — see the `tracing` dependency comment above.
+profiling = ["dep:pprof"]
 
 # Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
 # behavior worth exercising, *except* `bench` — bench_entities/criterion are

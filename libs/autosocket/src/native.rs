@@ -9,7 +9,7 @@ use std::{
 };
 
 use hyphae::{Cell, CellImmutable, CellMutable, Gettable, Mutable};
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use tungstenite::{Message, WebSocket, connect, stream::MaybeTlsStream};
 use url::Url;
 

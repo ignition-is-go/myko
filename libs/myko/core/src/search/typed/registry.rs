@@ -66,7 +66,7 @@ where
 
     fn insert_dyn(&self, item: &dyn AnyItem) {
         let Some(t) = item.as_any().downcast_ref::<T>() else {
-            log::warn!(
+            tracing::warn!(
                 "SearchRegistry: type mismatch routing {} into {}",
                 item.entity_type(),
                 self.entity_type

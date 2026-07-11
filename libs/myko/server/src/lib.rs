@@ -15,6 +15,7 @@ pub mod peer_registry;
 pub mod postgres;
 pub mod router;
 pub mod server_ownership;
+pub mod telemetry;
 pub mod ws_handler;
 pub mod ws_timing;
 
@@ -282,14 +283,14 @@ impl CellServer {
                         ) {
                             Ok(c) => Some(c),
                             Err(e) => {
-                                log::error!("Failed to start Postgres consumer: {}", e);
+                                tracing::error!("Failed to start Postgres consumer: {}", e);
                                 None
                             }
                         };
                         (Some(producer), Some(handle), consumer)
                     }
                     Err(e) => {
-                        log::error!("Failed to create Postgres producer: {}", e);
+                        tracing::error!("Failed to create Postgres producer: {}", e);
                         (None, None, None)
                     }
                 }
@@ -322,7 +323,7 @@ impl CellServer {
         #[cfg(feature = "inspector")]
         let inspector = hyphae::server::start_server("myko");
         #[cfg(feature = "inspector")]
-        log::info!("Hyphae inspector on port {}", inspector.port());
+        tracing::info!("Hyphae inspector on port {}", inspector.port());
 
         let peer_clients = config
             .peer_clients
@@ -359,7 +360,7 @@ impl CellServer {
         let peer_config = config.or_else(|| self.config.peer_registry.clone());
 
         if let Some(peer_config) = peer_config {
-            log::info!("Starting peer registry");
+            tracing::info!("Starting peer registry");
             let pr = peer_registry::PeerRegistry::new(self.ctx(), peer_config);
             *self.peer_registry_instance.write().unwrap() = Some(pr);
         }
@@ -420,7 +421,7 @@ impl CellServer {
             return;
         };
 
-        log::info!("Starting saga runtime with {} saga(s)", registrations.len());
+        tracing::info!("Starting saga runtime with {} saga(s)", registrations.len());
 
         // NOTE(ts): One unbounded flume channel per saga, with dispatch-side filtering
         // so sagas only receive events matching their entity type and change type.
@@ -470,7 +471,7 @@ impl CellServer {
             let handle = tokio::spawn(async move {
                 while let Some(command) = command_stream.next().await {
                     let command_name = command.command_name();
-                    log::debug!("Saga {} executing command {}", saga_name, command_name);
+                    tracing::debug!("Saga {} executing command {}", saga_name, command_name);
                     let req = Arc::new(RequestContext::internal(
                         Arc::from(Uuid::new_v4().to_string()),
                         host_id,
@@ -494,7 +495,7 @@ impl CellServer {
                     );
 
                     if let Err(err) = command.execute_boxed(cmd_ctx) {
-                        log::error!(
+                        tracing::error!(
                             "Saga {} command {} failed: {}",
                             saga_name,
                             command_name,
@@ -554,7 +555,7 @@ impl CellServer {
     /// Establish relationship invariants.
     pub fn establish_relations(&self) {
         if let Err(e) = self.relationship_manager.establish_relations(&self.ctx()) {
-            log::error!("Failed to establish relations: {e}");
+            tracing::error!("Failed to establish relations: {e}");
         }
     }
 
@@ -590,25 +591,25 @@ impl CellServer {
 
         // Wait for Postgres catch-up if configured
         if self.postgres_consumer.is_some() {
-            log::info!("Waiting for Postgres event consumer to catch up...");
+            tracing::info!("Waiting for Postgres event consumer to catch up...");
             let timeout = std::time::Duration::from_secs(300);
             self.init_postgres_and_wait(timeout)
                 .map_err(|reason| format!("Postgres startup catch-up failed: {reason}"))?;
-            log::info!("Postgres caught up, ready to accept connections");
+            tracing::info!("Postgres caught up, ready to accept connections");
         }
 
         // Build search index from store data (after catch-up)
-        log::info!("Building search index...");
+        tracing::info!("Building search index...");
         self.search_index.build_from_registry(&self.registry);
 
         // Establish relations (cleanup orphans, ensure required entities)
-        log::info!("Establishing relations...");
+        tracing::info!("Establishing relations...");
         self.establish_relations();
 
         // Claim orphaned server-owned items and start death watch
-        log::info!("Checking server-owned item ownership...");
+        tracing::info!("Checking server-owned item ownership...");
         if let Err(e) = ServerOwnershipManager::claim_orphaned(&self.ctx()) {
-            log::error!("Failed to claim orphaned server-owned items: {}", e);
+            tracing::error!("Failed to claim orphaned server-owned items: {}", e);
         }
         let ownership_guard = ServerOwnershipManager::watch_peer_deaths(&self.ctx());
         *self
@@ -656,13 +657,18 @@ impl CellServer {
         // search that completed (entity_type, result count, elapsed).
         myko::search::search_stats::start_periodic_logger();
 
+        // Live per-entity-type item-count gauge, sampled by the OTLP metrics
+        // exporter's own periodic reader (see telemetry::init_from_env) —
+        // no-op when telemetry isn't configured.
+        crate::telemetry::register_item_count_gauge(self.registry.clone());
+
         // Bind WebSocket listener last, once all synchronous startup work
         // (including after_init) is done, so peer publication only happens
         // once the gateway is actually available to serve requests, not just
         // listening.
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
-        log::info!("CellServer listening on {}", self.config.bind_addr);
-        log::info!(
+        tracing::info!("CellServer listening on {}", self.config.bind_addr);
+        tracing::info!(
             "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
         );
@@ -672,7 +678,7 @@ impl CellServer {
             self.start_peer_registry(None);
         }
 
-        log::info!("Server started");
+        tracing::info!("Server started");
         self.run_ws_accept_loop(listener).await
     }
 
@@ -681,8 +687,8 @@ impl CellServer {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
-        log::info!("CellServer listening on {}", self.config.bind_addr);
-        log::info!(
+        tracing::info!("CellServer listening on {}", self.config.bind_addr);
+        tracing::info!(
             "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
         );
@@ -709,15 +715,15 @@ impl CellServer {
             if self.config.tcp_nodelay
                 && let Err(e) = stream.set_nodelay(true)
             {
-                log::warn!("failed to set TCP_NODELAY on connection from {addr}: {e}");
+                tracing::warn!("failed to set TCP_NODELAY on connection from {addr}: {e}");
             }
 
             // Check if server is ready (durable backend caught up)
             if !ready.load(Ordering::SeqCst) {
                 if self.is_ready() {
-                    log::info!("Server is now ready to accept connections");
+                    tracing::info!("Server is now ready to accept connections");
                 } else {
-                    log::warn!(
+                    tracing::warn!(
                         "Rejecting connection from {} - server not ready (durable backend catching up)",
                         addr
                     );
@@ -726,14 +732,14 @@ impl CellServer {
                 }
             }
 
-            log::debug!("New connection from {}", addr);
+            tracing::debug!("New connection from {}", addr);
 
             let ctx = Arc::new(self.ctx());
             let server_info = self.server_info.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = router::route_connection(stream, addr, ctx, server_info).await {
-                    log::error!("Connection error from {}: {}", addr, e);
+                    tracing::error!("Connection error from {}: {}", addr, e);
                 }
             });
         }

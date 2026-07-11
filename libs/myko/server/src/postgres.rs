@@ -13,13 +13,13 @@ use std::{
 };
 
 use ::postgres::{Client, Config as PgClientConfig, NoTls};
-use log::{debug, error, info, trace, warn};
 use myko::{
     event::{MEvent, MEventType},
     server::{HandlerRegistry, PersistError, PersistHealth, Persister},
     store::StoreRegistry,
 };
 use postgres::fallible_iterator::FallibleIterator;
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -358,7 +358,7 @@ fn run_producer_loop(
                 pending
             );
         }
-        if log::log_enabled!(log::Level::Debug) {
+        if tracing::enabled!(tracing::Level::DEBUG) {
             let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
                 std::collections::BTreeMap::new();
             for ev in &batch {
