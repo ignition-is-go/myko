@@ -892,7 +892,7 @@ mod tests {
     use hyphae::SelectExt;
 
     use super::*;
-    use crate::{common::with_id::WithId, store::StoreRegistry};
+    use crate::{common::with_id::WithId, store::StoreRegistry, test_util::scheduler_test_serial};
 
     // Mock writer that collects messages
     struct MockWriter {
@@ -999,6 +999,7 @@ mod tests {
 
     #[test]
     fn test_subscribe_query_cellmap() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1021,6 +1022,7 @@ mod tests {
 
     #[test]
     fn test_cancel_subscription() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         let mock = Arc::new(MockWriter::new());
@@ -1037,6 +1039,7 @@ mod tests {
 
     #[test]
     fn test_session_drop_cleanup() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1059,6 +1062,7 @@ mod tests {
 
     #[test]
     fn test_subscribe_by_id() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1082,6 +1086,7 @@ mod tests {
 
     #[test]
     fn test_delete_sends_deletes_not_upserts() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1121,6 +1126,7 @@ mod tests {
 
     #[test]
     fn test_subscribe_view_respects_initial_window() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1162,6 +1168,7 @@ mod tests {
 
     #[test]
     fn test_view_window_ignores_out_of_window_updates() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));

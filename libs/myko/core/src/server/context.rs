@@ -1689,6 +1689,7 @@ mod tests {
         search::SearchIndex,
         server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
+        test_util::scheduler_test_serial,
         wire::{MEvent, MEventType},
     };
 
@@ -1809,6 +1810,7 @@ mod tests {
 
     #[test]
     fn apply_event_batch_keeps_default_entities_immediate() {
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
         let applied = ctx
             .apply_event_batch(vec![MEvent {
@@ -1831,6 +1833,7 @@ mod tests {
 
     #[test]
     fn apply_event_batch_buffers_opted_in_entities() {
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
         let applied = ctx
             .apply_event_batch(vec![MEvent {
@@ -1865,6 +1868,7 @@ mod tests {
         // `emit_grouped` call now opens its own batch window instead, so a
         // wire batch mixing a SET and a DEL of the *same* entity type must
         // still deliver both diffs to subscribers.
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
 
         ctx.apply_event_batch(vec![MEvent {
@@ -1933,6 +1937,7 @@ mod tests {
         // leaves a permanent entry, unbounded over the process lifetime.
         use crate::{entities::server::GetPeerServers, request::RequestContext};
 
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
         let request = Arc::new(RequestContext::internal(
             Arc::<str>::from(Uuid::new_v4().to_string()),
@@ -1966,6 +1971,7 @@ mod tests {
             request::RequestContext,
         };
 
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
         let request = Arc::new(RequestContext::internal(
             Arc::<str>::from(Uuid::new_v4().to_string()),

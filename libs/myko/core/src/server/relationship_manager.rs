@@ -1230,6 +1230,7 @@ mod cascade_tests {
         search::SearchIndex,
         server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
+        test_util::scheduler_test_serial,
     };
 
     // `#[myko_item]` re-imports hyphae traits at module scope, so the entity
@@ -1282,6 +1283,7 @@ mod cascade_tests {
     /// the grandchild at runtime. The grandchild regressed before Fix #1.
     #[test]
     fn del_cascade_descends_to_grandchildren() {
+        let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
         // root <- branch <- leaf
@@ -1313,6 +1315,7 @@ mod cascade_tests {
     /// `CascadeNode` store (see the batch-scoping comment on `emit_grouped`).
     #[test]
     fn del_cascade_recursion_does_not_drop_earlier_diffs_in_same_store() {
+        let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
         ctx.set(&make_node("root", "")).unwrap();
@@ -1356,6 +1359,7 @@ mod cascade_tests {
     /// store-as-visited-set guarantees it — the second visit finds nothing.
     #[test]
     fn del_cascade_terminates_on_cycle() {
+        let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
         ctx.set(&make_node("a", "b")).unwrap();
