@@ -83,7 +83,12 @@ partially = { version = "0.2", features = ["derive"] }
 # 1.2.0 is the first published release with `scheduler`/`profiling` (feat/
 # scheduler merged to main, released via hyphae's own CI). Back to a version
 # dependency now that it's out.
-hyphae = { version = "^1.2.0", features = ["scheduler", "profiling"] }
+#
+# 1.3.0 moves the scheduler's tick queue from per-thread to process-wide with
+# rayon-backed wave-parallel draining for wide same-height fan-out (feat/
+# scheduler-wave-parallel, hyphae PR #12) — see the query_cache_leak_test.rs
+# serialization fix landed alongside this bump for why that mattered here.
+hyphae = { version = "^1.3.0", features = ["scheduler", "profiling"] }
 hyphae-leptos = { version = "^1.1.0" }
 
 # Internal crates

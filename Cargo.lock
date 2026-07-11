@@ -1583,9 +1583,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "1.2.0"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a289e9e0d979abb0a17cb3fc770e741876e51fecc457daa4b569f0fa6a70b3d"
+checksum = "873e9330b40db91c1b104669dbbe46da005a72f73a4f40744b4676df2d82d4b4"
 dependencies = [
  "anyhow",
  "arc-swap",
