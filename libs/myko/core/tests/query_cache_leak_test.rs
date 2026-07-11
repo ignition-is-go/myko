@@ -21,6 +21,19 @@ use myko::{
 };
 use uuid::Uuid;
 
+/// hyphae's scheduler tick queue is process-wide (deliberately, per hyphae's
+/// scheduler module docs — a per-thread queue can't coordinate two threads'
+/// batches converging on a shared cell). These tests each do
+/// batch()+query+drop+sweep and assert on cache counts at a specific instant,
+/// so running them concurrently lets one test's batch/drain perturb another's
+/// count mid-flight (no entries are ever stranded — they still reclaim once
+/// the shared queue drains — the assertion just samples too early). Serialize
+/// them against each other; take the guard as the first line of every #[test].
+fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn make_ctx() -> CellServerCtx {
     CellServerCtx::new(
         Uuid::new_v4(),
@@ -57,6 +70,7 @@ fn insert_bench_item(ctx: &CellServerCtx, id: &str, category: &str, value: i64) 
 /// ```
 #[test]
 fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     // Seed items in different categories
@@ -130,6 +144,7 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
 /// reuse the cache entry (cache hit) rather than creating new factories.
 #[test]
 fn query_map_same_params_inside_switch_map_reuses_cache() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     for i in 0..5 {
@@ -185,6 +200,7 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
 /// the inner chain.
 #[test]
 fn query_map_inside_switch_map_with_active_store_mutations() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     // Seed initial items
@@ -254,6 +270,7 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
 /// Verify the query_cache_live_count accurately reflects reachable entries.
 #[test]
 fn query_cache_live_count_tracks_reachable_entries() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     for i in 0..3 {
@@ -307,6 +324,7 @@ fn query_cache_live_count_tracks_reachable_entries() {
 /// must be reclaimable.
 #[test]
 fn report_with_switch_map_query_map_cleans_up_cache() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     // Seed items
@@ -372,6 +390,7 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
 /// Verifies cache doesn't grow unboundedly during active use.
 #[test]
 fn report_switch_map_cache_bounded_during_active_mutations() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     for i in 0..5 {
