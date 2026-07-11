@@ -45,8 +45,8 @@ pin-project-lite = "0.2"
 # Error handling
 anyhow = "1.0"
 
-# Logging
-log = "0.4"
+# Logging/tracing
+tracing = "0.1"
 
 # Time/UUID
 chrono = { version = "0.4", features = ["serde"] }

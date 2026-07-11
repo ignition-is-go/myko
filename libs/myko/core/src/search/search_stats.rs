@@ -51,7 +51,7 @@ pub fn start_periodic_logger() {
         .name("myko-search-stats".to_string())
         .spawn(run_loop)
         .map_err(|e| {
-            log::warn!(
+            tracing::warn!(
                 target: "myko::search::search_stats",
                 "Failed to spawn search_stats thread: {}", e
             )
@@ -87,7 +87,7 @@ fn emit_window() {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    log::info!(
+    tracing::info!(
         target: "myko::search::search_stats",
         "[search window={}ms] searches={} total_hits={} [{}]",
         WINDOW_MS,

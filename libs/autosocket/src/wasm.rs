@@ -1,8 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use hyphae::{Cell, CellImmutable, CellMutable, Mutable};
-use log::{error, info, warn};
 use send_wrapper::SendWrapper;
+use tracing::{error, info, warn};
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 

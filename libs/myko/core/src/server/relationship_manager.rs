@@ -84,7 +84,7 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::Gettable;
-use log::{debug, info, trace};
+use tracing::{debug, info, trace};
 
 use super::{CellServerCtx, persister::PersistError};
 use crate::{

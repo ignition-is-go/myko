@@ -48,7 +48,7 @@ pub async fn handle_post(
     let body = match read_body(&mut stream, &head, content_length).await {
         Ok(b) => b,
         Err(e) => {
-            log::debug!("MCP POST body read error: {}", e);
+            tracing::debug!("MCP POST body read error: {}", e);
             let _ = write_status(&mut stream, 400, "Bad Request").await;
             shutdown_cleanly(stream).await;
             return Ok(());

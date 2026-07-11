@@ -15,11 +15,11 @@ use dashmap::DashMap;
 use hyphae::{
     Cell, CellImmutable, MaterializeDefinite, Signal, SubscriptionGuard, TapExt, Watchable,
 };
-use log::info;
 use myko::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
     server::CellServerCtx,
 };
+use tracing::info;
 
 mod peer_connection_handle;
 use peer_connection_handle::{PeerConnectionHandle, PeerState};
@@ -72,12 +72,12 @@ impl PeerRegistry {
             if let Signal::Value(servers) = signal {
                 let has_self = servers.iter().any(|s| s.id == self_host_id);
                 if !has_self {
-                    log::info!(
+                    tracing::info!(
                         "Local server {} missing from GetAllServers; re-advertising",
                         self_host_id
                     );
                     if let Err(e) = ctx.set(&local_server) {
-                        log::error!("Failed to re-advertise local server: {e}");
+                        tracing::error!("Failed to re-advertise local server: {e}");
                     }
                 }
             }
@@ -95,7 +95,7 @@ impl PeerRegistry {
     ) where
         T: AsRef<[Arc<Server>]>,
     {
-        log::info!(
+        tracing::info!(
             "Current Peers: {}",
             peers
                 .as_ref()
@@ -110,7 +110,7 @@ impl PeerRegistry {
             // it is a stale incarnation and should be tombstoned.
             if server.id != *host_id && server.address == local_address && server.port == local_port
             {
-                log::warn!(
+                tracing::warn!(
                     "Deleting stale entries: {}:{}:{}",
                     server.id,
                     server.address,
@@ -118,7 +118,7 @@ impl PeerRegistry {
                 );
                 ctx.unregister_peer_client(server.id.as_ref());
                 if let Err(e) = ctx.del(server.as_ref()) {
-                    log::error!("Failed to delete stale server entry: {e}");
+                    tracing::error!("Failed to delete stale server entry: {e}");
                 }
                 continue;
             }
@@ -140,7 +140,7 @@ impl PeerRegistry {
                 if let Signal::Value(v) = state
                     && v.as_ref() == &PeerState::Delete
                 {
-                    log::warn!(
+                    tracing::warn!(
                         "Deleting: {}:{}:{}",
                         remove_server.id,
                         remove_server.address,
@@ -150,7 +150,7 @@ impl PeerRegistry {
                     remove_state_guards.remove(&remove_server.id);
                     remove_ctx.unregister_peer_client(remove_server.id.as_ref());
                     if let Err(e) = remove_ctx.del(remove_server.as_ref()) {
-                        log::error!("Failed to delete peer server: {e}");
+                        tracing::error!("Failed to delete peer server: {e}");
                     }
                 }
             });
@@ -209,14 +209,14 @@ impl PeerRegistry {
             remove_guards.clone(),
         );
 
-        log::info!(
+        tracing::info!(
             "Publishing local server bootstrap advert: {}:{}:{}",
             server.id,
             server.address,
             server.port
         );
         if let Err(e) = ctx.set(&server) {
-            log::error!("Failed to publish local server bootstrap advert: {e}");
+            tracing::error!("Failed to publish local server bootstrap advert: {e}");
         }
 
         Self {
@@ -234,7 +234,7 @@ impl PeerRegistry {
 
 impl Drop for PeerRegistry {
     fn drop(&mut self) {
-        log::warn!("Dropping Peer Registry");
+        tracing::warn!("Dropping Peer Registry");
         self.shutdown();
     }
 }

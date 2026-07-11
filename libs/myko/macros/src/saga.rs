@@ -44,7 +44,7 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
                         .filter_map(move |event| {
                             let ctx = ctx.clone();
                             async move {
-                                log::debug!(
+                                #krate::tracing::debug!(
                                     "{} matched event item_type={} change_type={:?} tx={}",
                                     #struct_name_str,
                                     event.item_type,
@@ -54,7 +54,7 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
                                 let item = match #krate::serde_json::from_value::<<#struct_name as #krate::saga::SagaHandler>::EventItem>(event.item.clone()) {
                                     Ok(item) => item,
                                     Err(err) => {
-                                        log::warn!(
+                                        #krate::tracing::warn!(
                                             "{}: failed to deserialize {} event item: {}",
                                             #struct_name_str,
                                             <<#struct_name as #krate::saga::SagaHandler>::EventItem as #krate::item::Eventable>::ENTITY_NAME_STATIC,
@@ -66,9 +66,9 @@ pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStrea
 
                                 let out = <#struct_name as #krate::saga::SagaHandler>::handle(item, event, ctx);
                                 if out.is_some() {
-                                    log::debug!("{} emitted command", #struct_name_str);
+                                    #krate::tracing::debug!("{} emitted command", #struct_name_str);
                                 } else {
-                                    log::debug!("{} emitted no command", #struct_name_str);
+                                    #krate::tracing::debug!("{} emitted no command", #struct_name_str);
                                 }
                                 out
                             }

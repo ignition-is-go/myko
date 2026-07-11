@@ -69,12 +69,12 @@ impl HandlerRegistry {
 
         // Collect item registrations
         for registration in inventory::iter::<ItemRegistration> {
-            log::trace!("Registered item parser: {}", registration.entity_type);
+            tracing::trace!("Registered item parser: {}", registration.entity_type);
             item_parsers.insert(registration.entity_type.into(), registration.parse);
         }
 
         for registration in inventory::iter::<IngestBufferRegistration> {
-            log::trace!(
+            tracing::trace!(
                 "Registered ingest buffer policy: {} -> {:?}",
                 registration.entity_type,
                 registration.policy
@@ -84,7 +84,7 @@ impl HandlerRegistry {
 
         // Collect query registrations
         for registration in inventory::iter::<QueryRegistration> {
-            log::trace!("Registered query: {}", registration.query_id);
+            tracing::trace!("Registered query: {}", registration.query_id);
             let data = StoredQueryData {
                 query_id: registration.query_id.into(),
                 query_item_type: registration.query_item_type.into(),
@@ -96,7 +96,7 @@ impl HandlerRegistry {
 
         // Collect view registrations
         for registration in inventory::iter::<ViewRegistration> {
-            log::trace!("Registered view: {}", registration.view_id);
+            tracing::trace!("Registered view: {}", registration.view_id);
             let data = StoredViewData {
                 view_id: registration.view_id.into(),
                 view_item_type: registration.view_item_type.into(),
@@ -108,7 +108,7 @@ impl HandlerRegistry {
 
         // Collect report registrations
         for registration in inventory::iter::<ReportRegistration> {
-            log::trace!("Registered report: {}", registration.report_id);
+            tracing::trace!("Registered report: {}", registration.report_id);
             let data = StoredReportData {
                 report_id: registration.report_id.into(),
                 parse: registration.parse,
@@ -141,7 +141,7 @@ impl HandlerRegistry {
             }
         }
 
-        log::trace!(
+        tracing::trace!(
             "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Views ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
             format_list(item_parsers.keys()),

@@ -10,7 +10,7 @@ repository = "https://github.com/ignition-is-go/myko"
 tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
-log.workspace = true
+tracing.workspace = true
 url.workspace = true
 serde.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }

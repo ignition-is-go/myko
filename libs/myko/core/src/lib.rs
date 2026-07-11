@@ -131,6 +131,7 @@ pub use myko_macros::*;
 pub use partially; // For #[derive(partially::Partial)] in #[myko_item]
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
+pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas
 pub use ts_rs;
 #[cfg(feature = "ts-export")]
 pub use ts_rs::TS;

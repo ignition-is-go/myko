@@ -24,7 +24,7 @@ pub struct SearchIndex {
 impl SearchIndex {
     pub fn new() -> Self {
         let registry = build_typed_registry();
-        log::info!(
+        tracing::info!(
             "SearchIndex: initialized with {} typed entity indexes",
             registry.len()
         );
@@ -100,7 +100,7 @@ impl SearchIndex {
                 count += 1;
             }
         }
-        log::info!("SearchIndex: built initial index with {} entities", count);
+        tracing::info!("SearchIndex: built initial index with {} entities", count);
     }
 }
 

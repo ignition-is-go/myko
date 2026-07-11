@@ -152,14 +152,14 @@ pub async fn route_connection(
         Ok(Some(h)) => h,
         Ok(None) => return Ok(()),
         Err(e) => {
-            log::debug!("HTTP parse error from {}: {}", addr, e);
+            tracing::debug!("HTTP parse error from {}: {}", addr, e);
             let _ = write_status(&mut stream, 400, "Bad Request").await;
             shutdown_cleanly(stream).await;
             return Ok(());
         }
     };
 
-    log::trace!("router accept {} {} from {}", head.method, head.path, addr,);
+    tracing::trace!("router accept {} {} from {}", head.method, head.path, addr,);
 
     let path = head.path.split('?').next().unwrap_or(&head.path);
 
@@ -222,7 +222,7 @@ async fn handle_ws_upgrade(
     // Reject if the client sent body bytes alongside the handshake — a
     // compliant client waits for our 101 before sending WS frames.
     if !head.leftover_body.is_empty() {
-        log::warn!(
+        tracing::warn!(
             "Rejecting WS upgrade from {} with {} leftover body bytes",
             addr,
             head.leftover_body.len()

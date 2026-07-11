@@ -1,6 +1,6 @@
 //! Periodic-summary entity-`SET`/`DEL` instrumentation.
 //!
-//! Replaces the per-`set`/`del` `log::debug!("[entity] SET|DEL {} id={}", ...)`
+//! Replaces the per-`set`/`del` `tracing::debug!("[entity] SET|DEL {} id={}", ...)`
 //! lines in [`ServerContext`], which fire tens of thousands of times per second
 //! under pulse-heavy workloads (e.g. comp-engine field/cap presence pulses) and
 //! dominate log I/O.
@@ -69,7 +69,7 @@ pub fn start_periodic_logger() {
         .name("myko-entity-set-stats".to_string())
         .spawn(run_loop)
         .map_err(|e| {
-            log::warn!(
+            tracing::warn!(
                 target: "myko::server::entity_set_stats",
                 "Failed to spawn entity_set_stats thread: {}", e
             )
@@ -109,7 +109,7 @@ fn emit_window() {
         .map(|(et, s, d)| format!("{}=set:{} del:{}", et, s, d))
         .collect::<Vec<_>>()
         .join(", ");
-    log::debug!(
+    tracing::debug!(
         target: "myko::server::entity_set_stats",
         "[entity] window={}ms set_total={} del_total={} [{}]",
         WINDOW_MS,

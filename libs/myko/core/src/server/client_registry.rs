@@ -65,7 +65,7 @@ impl ClientRegistry {
                 true
             }
             Err(err) => {
-                log::error!(
+                tracing::error!(
                     "Failed to serialize command {} for client {}: {}",
                     request.command_id(),
                     client_id,

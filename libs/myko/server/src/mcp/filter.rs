@@ -283,7 +283,7 @@ fn parse_callability(raw: Option<&str>, label: &str) -> CallabilityMap {
             .map(|(k, v)| (normalize_tool_name(&k), v))
             .collect(),
         Err(e) => {
-            log::warn!("[mcp] ignoring malformed tool-{} spec: {}", label, e);
+            tracing::warn!("[mcp] ignoring malformed tool-{} spec: {}", label, e);
             CallabilityMap::new()
         }
     }

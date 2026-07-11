@@ -52,7 +52,7 @@ impl ServerOwnershipManager {
     pub fn claim_orphaned(ctx: &CellServerCtx) -> Result<(), PersistError> {
         let live_ids = Self::live_server_ids(ctx);
         if live_ids.is_empty() {
-            log::warn!("[ServerOwnership] No live servers found, skipping orphan claim");
+            tracing::warn!("[ServerOwnership] No live servers found, skipping orphan claim");
             return Ok(());
         }
 
@@ -88,7 +88,7 @@ impl ServerOwnershipManager {
         }
 
         if reassigned > 0 {
-            log::info!(
+            tracing::info!(
                 "[ServerOwnership] Reassigned {} orphaned item(s)",
                 reassigned
             );
@@ -125,14 +125,14 @@ impl ServerOwnershipManager {
             }
 
             for id in &removed {
-                log::warn!(
+                tracing::warn!(
                     "[ServerOwnership] Server {} left cluster, redistributing",
                     id
                 );
             }
 
             if let Err(e) = ServerOwnershipManager::claim_orphaned(&ctx) {
-                log::error!("[ServerOwnership] Failed to redistribute: {}", e);
+                tracing::error!("[ServerOwnership] Failed to redistribute: {}", e);
             }
         })
     }
