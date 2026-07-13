@@ -229,35 +229,92 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let get_by_partial_ident = format_ident!("Get{}sByQuery", name_str);
     let partial_ident = format_ident!("Partial{}", name_str);
 
-    let belongs_to_fast_paths: Vec<TokenStream> = rel_info
+    // Route by the intersection of every belongs_to field the query's
+    // Partial actually pins, not just the first one declared on the struct.
+    // For an entity with N required belongs_to fields there are 2^N - 1
+    // non-empty subsets of "which fields happen to be Some at runtime" —
+    // generate an if-let block per subset, tried from most fields-pinned
+    // (most selective) down to a single field, so a query pinning e.g. both
+    // node_id and session_id always routes on that exact pair rather than
+    // silently collapsing onto whichever field was declared first. Each
+    // subset gets its own BelongsToSourceIndex (keyed by the field-NAME SET,
+    // see build_belongs_to_source_map), so different subsets never share a
+    // bucket even when they overlap on one field.
+    let required_belongs_to: Vec<&relationship::BelongsToInfo> = rel_info
         .belongs_to
         .iter()
         .filter(|bt| !bt.is_optional)
-        .map(|bt| {
-            let field_ident = format_ident!("{}", bt.field_name);
-            let field_name = bt.field_name.clone();
-            quote! {
-                if let Some(fk) = ctx.query.0.#field_ident.clone() {
-                    let source = #krate::query::build_belongs_to_source_map(
-                        ctx.query_context.registry(),
-                        ctx.query_context.request_ctx.host_id,
-                        #name_str,
-                        #field_name,
-                        |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
-                            item.downcast_ref::<#name>()
-                                .map(|e| std::sync::Arc::<str>::from(e.#field_ident.as_ref()))
-                        },
-                        std::sync::Arc::<str>::from(fk.as_ref()),
-                    );
-                    return Some(#krate::query::filter_query_over_source::<#get_by_partial_ident>(
-                        source,
-                        ctx.query.clone(),
-                        ctx.query_context.query_context.clone(),
-                    ));
-                }
-            }
-        })
         .collect();
+
+    let belongs_to_fast_paths: Vec<TokenStream> = {
+        let n = required_belongs_to.len();
+        let mut masks: Vec<u32> = (1u32..(1u32 << n)).collect();
+        masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
+
+        masks
+            .into_iter()
+            .map(|mask| {
+                let selected: Vec<&relationship::BelongsToInfo> = (0..n)
+                    .filter(|i| mask & (1 << i) != 0)
+                    .map(|i| required_belongs_to[i])
+                    .collect();
+
+                let field_idents: Vec<_> = selected
+                    .iter()
+                    .map(|bt| format_ident!("{}", bt.field_name))
+                    .collect();
+                let field_names: Vec<String> =
+                    selected.iter().map(|bt| bt.field_name.clone()).collect();
+                let fk_idents: Vec<_> = (0..selected.len())
+                    .map(|i| format_ident!("fk{}", i))
+                    .collect();
+                let field_clone_exprs: Vec<TokenStream> = field_idents
+                    .iter()
+                    .map(|field_ident| quote! { ctx.query.0.#field_ident.clone() })
+                    .collect();
+
+                let if_let_expr = if selected.len() == 1 {
+                    let fk0 = &fk_idents[0];
+                    let clone_expr = &field_clone_exprs[0];
+                    quote! { if let Some(#fk0) = #clone_expr }
+                } else {
+                    quote! { if let (#(Some(#fk_idents)),*) = (#(#field_clone_exprs),*) }
+                };
+
+                let extractor_field_exprs: Vec<TokenStream> = field_idents
+                    .iter()
+                    .map(|field_ident| {
+                        quote! { std::sync::Arc::<str>::from(e.#field_ident.as_ref()) }
+                    })
+                    .collect();
+                let foreign_id_exprs: Vec<TokenStream> = fk_idents
+                    .iter()
+                    .map(|fk| quote! { std::sync::Arc::<str>::from(#fk.as_ref()) })
+                    .collect();
+
+                quote! {
+                    #if_let_expr {
+                        let source = #krate::query::build_belongs_to_source_map(
+                            ctx.query_context.registry(),
+                            ctx.query_context.request_ctx.host_id,
+                            #name_str,
+                            &[#(#field_names),*],
+                            |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
+                                item.downcast_ref::<#name>()
+                                    .map(|e| vec![#(#extractor_field_exprs),*])
+                            },
+                            vec![#(#foreign_id_exprs),*],
+                        );
+                        return Some(#krate::query::filter_query_over_source::<#get_by_partial_ident>(
+                            source,
+                            ctx.query.clone(),
+                            ctx.query_context.query_context.clone(),
+                        ));
+                    }
+                }
+            })
+            .collect()
+    };
 
     let get_by_partial_query = quote! {
         #[#krate::myko_non_hash_cache_key]

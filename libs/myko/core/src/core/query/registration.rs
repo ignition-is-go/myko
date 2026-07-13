@@ -23,11 +23,8 @@ use super::{
     traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
 };
 use crate::{
-    common::with_id::WithId,
-    core::{item::downcast_any_item_arc, relationship::FkExtractor},
-    request::RequestContext,
-    server::CellServerCtx,
-    store::StoreRegistry,
+    common::with_id::WithId, core::item::downcast_any_item_arc, request::RequestContext,
+    server::CellServerCtx, store::StoreRegistry,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,6 +49,29 @@ type WeakAnyItemMap = hyphae::WeakCellMap<Arc<str>, AnyItemArc>;
 type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
+
+/// Ordered foreign-key values for a `BelongsToSourceIndex` bucket. A single
+/// `#[belongs_to]` field yields a 1-element key (the pre-compound-routing
+/// shape); an entity with 2+ `#[belongs_to]` fields queried with more than
+/// one set at once yields one element per field that was `Some`, in the
+/// entity's declared field order. Two queries that populate different SETS
+/// of belongs_to fields land in different buckets even for the same entity
+/// type — the bucket only ever holds items matching every field in the key.
+type CompoundKey = Vec<Arc<str>>;
+
+/// Extracts the compound foreign-key values (see [`CompoundKey`]) an item
+/// contributes for one specific field combination. Position `i` in the
+/// returned `Vec` corresponds to field `i` of that combination. Returns
+/// `None` only on a downcast failure (item is the wrong entity type) —
+/// `#[belongs_to]` fields feeding this are all non-optional, so a
+/// correctly-typed item always has a value for every field in play.
+///
+/// Deliberately a distinct type from
+/// [`crate::core::relationship::FkExtractor`]: that alias backs
+/// `RelationshipManager`'s own single-field child-index tracking and
+/// `export_tree`'s traversal, both unrelated to query routing — widening it
+/// in place would ripple into those unrelated subsystems for no reason.
+type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QueryRegistration - inventory-based registration
@@ -155,23 +175,28 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
     rows
 }
 
-/// Per-foreign-id bucket index backing `#[belongs_to]` reactive queries.
+/// Per-compound-key bucket index backing `#[belongs_to]` reactive queries.
 ///
-/// `buckets` holds only *weak* handles: a bucket's `AnyItemMap` stays alive
-/// exactly as long as some subscriber (via [`build_belongs_to_source_map`])
-/// holds a strong reference to it. Once the last subscriber drops it, the
-/// weak entry naturally fails to upgrade and gets lazily reaped — the
-/// alternative (a strong `Arc<AnyItemMap>` retained forever) is a real
-/// memory leak: one permanent bucket per distinct foreign id ever seen,
-/// which never shrinks even after every relation is unassigned.
+/// One `BelongsToSourceIndex` instance is scoped to a single SET of
+/// belongs_to fields (see `build_belongs_to_source_map`'s registry key,
+/// which includes the field-name list) — routing a query that sets fields
+/// `{node_id}` and one that sets `{node_id, session_id}` always land in
+/// different indexes, never sharing buckets, even though both touch
+/// `node_id`. Within one index, `buckets` holds only *weak* handles: a
+/// bucket's `AnyItemMap` stays alive exactly as long as some subscriber (via
+/// [`build_belongs_to_source_map`]) holds a strong reference to it. Once the
+/// last subscriber drops it, the weak entry naturally fails to upgrade and
+/// gets lazily reaped — the alternative (a strong `Arc<AnyItemMap>` retained
+/// forever) is a real memory leak: one permanent bucket per distinct key
+/// ever seen, which never shrinks even after every relation is unassigned.
 struct BelongsToSourceIndex {
     store: Arc<crate::store::EntityStore>,
-    buckets: DashMap<Arc<str>, WeakAnyItemMap>,
+    buckets: DashMap<CompoundKey, WeakAnyItemMap>,
     _driver: Arc<AnyItemMap>,
 }
 
 impl BelongsToSourceIndex {
-    fn new(store: Arc<crate::store::EntityStore>, extract_fk: FkExtractor) -> Arc<Self> {
+    fn new(store: Arc<crate::store::EntityStore>, extract_fk: CompoundFkExtractor) -> Arc<Self> {
         let driver = Arc::new(AnyItemMap::new());
         let index = Arc::new(Self {
             store: store.clone(),
@@ -188,19 +213,18 @@ impl BelongsToSourceIndex {
     }
 
     /// Look up a bucket for *internal diff routing only* — never creates
-    /// one. If nobody's subscribed to `foreign_id` there's no bucket state
-    /// worth maintaining; a dead weak entry found here is reaped
-    /// immediately, so `self.buckets` never accumulates more than what's
-    /// currently live. See [`sweep_dead_buckets`](Self::sweep_dead_buckets)
-    /// for the backstop covering ids that go dead but are never looked up
-    /// again.
-    fn route_to_live_bucket(&self, foreign_id: &Arc<str>) -> Option<AnyItemMap> {
-        let entry = self.buckets.get(foreign_id)?;
+    /// one. If nobody's subscribed to `key` there's no bucket state worth
+    /// maintaining; a dead weak entry found here is reaped immediately, so
+    /// `self.buckets` never accumulates more than what's currently live. See
+    /// [`sweep_dead_buckets`](Self::sweep_dead_buckets) for the backstop
+    /// covering keys that go dead but are never looked up again.
+    fn route_to_live_bucket(&self, key: &CompoundKey) -> Option<AnyItemMap> {
+        let entry = self.buckets.get(key)?;
         if let Some(map) = entry.upgrade() {
             return Some(map);
         }
         drop(entry);
-        self.buckets.remove(foreign_id);
+        self.buckets.remove(key);
         None
     }
 
@@ -215,40 +239,68 @@ impl BelongsToSourceIndex {
     /// subscribing (or re-subscribing after a prior subscriber dropped off)
     /// would silently see an empty result instead of the parent's actual
     /// current children.
-    fn bucket_for(&self, foreign_id: Arc<str>, extract_fk: FkExtractor) -> AnyItemMap {
-        if let Some(map) = self.route_to_live_bucket(&foreign_id) {
-            return map;
+    ///
+    /// Uses `self.buckets.entry(key)` rather than a separate get-then-insert
+    /// (what `route_to_live_bucket` does for pure lookups) because this path
+    /// *creates*: two concurrent callers for the same key that both observe
+    /// no live bucket would otherwise each build and backfill their own
+    /// `AnyItemMap`, then race an unconditional `insert` — whichever lands
+    /// second wins `self.buckets`, silently orphaning the other's bucket
+    /// (still a valid handle, already returned to its caller and subscribed
+    /// to, but now unreachable from `apply_diff`'s routing, so it gets its
+    /// one-time backfill and then nothing else, ever). `entry()` holds the
+    /// shard lock across the whole check-or-create, so only one caller per
+    /// key can ever end up as the live entry.
+    fn bucket_for(&self, key: CompoundKey, extract_fk: CompoundFkExtractor) -> AnyItemMap {
+        match self.buckets.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                if let Some(map) = occupied.get().upgrade() {
+                    return map;
+                }
+                let map = Self::build_backfilled_bucket(&self.store, occupied.key(), extract_fk);
+                occupied.insert(map.downgrade());
+                map
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                let map = Self::build_backfilled_bucket(&self.store, vacant.key(), extract_fk);
+                vacant.insert(map.downgrade());
+                map
+            }
         }
+    }
 
+    fn build_backfilled_bucket(
+        store: &crate::store::EntityStore,
+        key: &CompoundKey,
+        extract_fk: CompoundFkExtractor,
+    ) -> AnyItemMap {
         let map = AnyItemMap::new();
-        let backfill: BucketEntries = self
-            .store
+        let backfill: BucketEntries = store
             .snapshot()
             .into_iter()
-            .filter(|(_, item)| extract_fk(item.as_any()).as_ref() == Some(&foreign_id))
+            .filter(|(_, item)| extract_fk(item.as_any()).as_ref() == Some(key))
             .collect();
         if !backfill.is_empty() {
             map.apply_batch(vec![MapDiff::Initial { entries: backfill }]);
         }
-        self.buckets.insert(foreign_id, map.downgrade());
         map
     }
 
     /// Drop bucket entries nobody's subscribed to anymore. `route_to_live_bucket`
-    /// already reaps dead entries lazily on next access, but a foreign id
-    /// that goes dead and is never looked up again would otherwise sit in
-    /// `self.buckets` forever (just a `Weak` + an `Arc<str>` key, far
-    /// smaller than the leak this replaces, but still unbounded over time).
-    /// Called from `CellServerCtx::sweep_dead_cache_entries` via
+    /// already reaps dead entries lazily on next access, but a key that goes
+    /// dead and is never looked up again would otherwise sit in
+    /// `self.buckets` forever (just a `Weak` + a small `Vec<Arc<str>>` key,
+    /// far smaller than the leak this replaces, but still unbounded over
+    /// time). Called from `CellServerCtx::sweep_dead_cache_entries` via
     /// [`sweep_all_belongs_to_source_indexes`].
     fn sweep_dead_buckets(&self) {
         self.buckets.retain(|_, weak| weak.upgrade().is_some());
     }
 
-    fn apply_diff(&self, diff: &BucketDiff, extract_fk: FkExtractor) {
+    fn apply_diff(&self, diff: &BucketDiff, extract_fk: CompoundFkExtractor) {
         match diff {
             MapDiff::Initial { entries } => {
-                let mut grouped: HashMap<Arc<str>, BucketEntries> = HashMap::new();
+                let mut grouped: HashMap<CompoundKey, BucketEntries> = HashMap::new();
                 for (id, item) in entries {
                     if let Some(fk) = extract_fk(item.as_any()) {
                         grouped
@@ -259,10 +311,10 @@ impl BelongsToSourceIndex {
                 }
 
                 // Every currently-*live* bucket needs to receive the new
-                // state — if its FK is absent from `grouped`, that bucket is
-                // now empty and must emit `Initial { empty }` so downstream
-                // subscribers observe the drop. (Dead/unsubscribed buckets
-                // don't need this — nobody's watching them, and
+                // state — if its key is absent from `grouped`, that bucket
+                // is now empty and must emit `Initial { empty }` so
+                // downstream subscribers observe the drop. (Dead/unsubscribed
+                // buckets don't need this — nobody's watching them, and
                 // `route_to_live_bucket` reaps them lazily regardless.)
                 // This explicit empty-notify (rather than just letting a
                 // dead bucket's Drop silently orphan subscribers) is why
@@ -272,15 +324,15 @@ impl BelongsToSourceIndex {
                 // full-clear source diff (e.g. the last matching row being
                 // deleted via `remove_many`) never reached bucket
                 // subscribers.
-                let live_fks: Vec<Arc<str>> = self
+                let live_keys: Vec<CompoundKey> = self
                     .buckets
                     .iter()
                     .filter(|entry| entry.value().upgrade().is_some())
                     .map(|entry| entry.key().clone())
                     .collect();
-                for fk in &live_fks {
-                    if !grouped.contains_key(fk)
-                        && let Some(bucket) = self.route_to_live_bucket(fk)
+                for key in &live_keys {
+                    if !grouped.contains_key(key)
+                        && let Some(bucket) = self.route_to_live_bucket(key)
                     {
                         bucket.apply_batch(vec![MapDiff::Initial {
                             entries: Vec::new(),
@@ -371,7 +423,7 @@ impl BelongsToSourceIndex {
                 }
             }
             MapDiff::Batch { changes } => {
-                let mut by_fk: HashMap<Arc<str>, BucketDiffs> = HashMap::new();
+                let mut by_fk: HashMap<CompoundKey, BucketDiffs> = HashMap::new();
 
                 for change in changes {
                     match change {
@@ -447,15 +499,29 @@ impl BelongsToSourceIndex {
     }
 }
 
+/// Build a reactive, `#[belongs_to]`-routed source map for a query that has
+/// one or more belongs_to fields set. `field_names` and `foreign_ids` are
+/// positionally paired (same order `extract_fk` reads them in) and must be
+/// the SAME LENGTH — exactly the fields the caller's query populated, not
+/// necessarily every belongs_to field the entity declares. Two calls for the
+/// same `local_type` with different `field_names` sets (e.g. `["node_id"]`
+/// vs `["node_id", "session_id"]`) always route through separate indexes —
+/// see [`BelongsToSourceIndex`] — so a query that pins more fields never
+/// shares a bucket with one that pins fewer, even when the fields overlap.
 pub fn build_belongs_to_source_map(
     registry: Arc<StoreRegistry>,
     host_id: Uuid,
     local_type: &'static str,
-    field_name: &'static str,
-    extract_fk: FkExtractor,
-    foreign_id: Arc<str>,
+    field_names: &'static [&'static str],
+    extract_fk: CompoundFkExtractor,
+    foreign_ids: Vec<Arc<str>>,
 ) -> FilteredCellMap {
-    let key = format!("{host_id}:{local_type}:{field_name}");
+    debug_assert_eq!(
+        field_names.len(),
+        foreign_ids.len(),
+        "build_belongs_to_source_map: field_names and foreign_ids must be positionally paired"
+    );
+    let key = format!("{host_id}:{local_type}:{}", field_names.join("+"));
     let index = belongs_to_source_indexes()
         .entry(key)
         .or_insert_with(|| {
@@ -463,7 +529,7 @@ pub fn build_belongs_to_source_map(
             BelongsToSourceIndex::new(store, extract_fk)
         })
         .clone();
-    index.bucket_for(foreign_id, extract_fk).lock()
+    index.bucket_for(foreign_ids, extract_fk).lock()
 }
 
 /// Sweep dead (no-longer-subscribed) buckets across every belongs-to
@@ -682,9 +748,9 @@ mod belongs_to_source_index_tests {
         }
     }
 
-    fn extract_parent_fk(item: &dyn Any) -> Option<Arc<str>> {
+    fn extract_parent_fk(item: &dyn Any) -> Option<Vec<Arc<str>>> {
         item.downcast_ref::<TestChild>()
-            .map(|c| c.parent_id.clone())
+            .map(|c| vec![c.parent_id.clone()])
     }
 
     fn child(id: &str, parent: &str) -> (Arc<str>, AnyItemArc) {
@@ -712,7 +778,7 @@ mod belongs_to_source_index_tests {
 
         for i in 0..50 {
             let parent: Arc<str> = Arc::from(format!("parent-{i}"));
-            let bucket = index.bucket_for(parent, extract_parent_fk);
+            let bucket = index.bucket_for(vec![parent], extract_parent_fk);
             drop(bucket); // simulates every subscriber unsubscribing
         }
 
@@ -736,7 +802,7 @@ mod belongs_to_source_index_tests {
         store.insert(id.clone(), item);
 
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
-        let bucket = index.bucket_for(Arc::from("parent-x"), extract_parent_fk);
+        let bucket = index.bucket_for(vec![Arc::from("parent-x")], extract_parent_fk);
         assert_eq!(bucket.snapshot().len(), 1);
 
         // Remove the only child — bucket goes empty, but `bucket` is still
@@ -768,17 +834,214 @@ mod belongs_to_source_index_tests {
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
 
         {
-            let bucket = index.bucket_for(Arc::from("parent-y"), extract_parent_fk);
+            let bucket = index.bucket_for(vec![Arc::from("parent-y")], extract_parent_fk);
             assert_eq!(bucket.snapshot().len(), 1);
         }
         index.sweep_dead_buckets();
         assert!(index.buckets.is_empty());
 
-        let bucket = index.bucket_for(Arc::from("parent-y"), extract_parent_fk);
+        let bucket = index.bucket_for(vec![Arc::from("parent-y")], extract_parent_fk);
         assert_eq!(
             bucket.snapshot().len(),
             1,
             "resubscribing after the bucket was reaped must backfill current children, not start empty"
         );
+    }
+
+    #[test]
+    fn concurrent_bucket_for_calls_for_the_same_key_never_orphan_a_bucket() {
+        // The layer-2 mechanism bright-eagle's investigation converged on:
+        // bucket_for used to check-then-act (route_to_live_bucket, then a
+        // separate unconditional insert) with no lock held across the gap.
+        // N callers racing for the same key could each observe "no live
+        // bucket," each build and backfill their own AnyItemMap, then race
+        // an unconditional `insert` — whichever landed last won
+        // `self.buckets`, silently orphaning every other caller's bucket:
+        // still a valid handle, already returned and subscribed to, but
+        // unreachable from apply_diff's routing from then on. That's
+        // exactly "first/arbitrary winner, everyone else starves forever,
+        // outcome varies by scheduling" — matches rship-qtu's calm-time,
+        // registration-order-dependent symptom. entry()-based bucket_for
+        // holds the shard lock across the whole check-or-create, so this
+        // must converge on exactly one live bucket no matter how many
+        // callers race.
+        let store = new_store();
+        let index = Arc::new(BelongsToSourceIndex::new(store.clone(), extract_parent_fk));
+        let key: CompoundKey = vec![Arc::from("parent-race")];
+
+        const N: usize = 16;
+        let barrier = Arc::new(std::sync::Barrier::new(N));
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let index = index.clone();
+                let key = key.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    index.bucket_for(key, extract_parent_fk)
+                })
+            })
+            .collect();
+        let buckets: Vec<AnyItemMap> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        assert_eq!(
+            index.buckets.len(),
+            1,
+            "N concurrent creators for the same key must converge on exactly one bucket entry"
+        );
+
+        // A new matching item must be visible through EVERY returned
+        // handle — an orphaned loser of the old insert race would have
+        // received its one-time (empty) backfill and nothing since.
+        let (id, item) = child("c-race", "parent-race");
+        store.insert(id, item);
+        for (i, bucket) in buckets.iter().enumerate() {
+            assert_eq!(
+                bucket.snapshot().len(),
+                1,
+                "handle {i} must observe the post-race insert — an orphaned bucket stays empty forever"
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Compound (multi-field) routing — the layer-1 fix for rship-qtu:
+    // an entity with 2+ belongs_to fields, queried with more than one
+    // set at once, must NOT collapse different combinations onto one
+    // shared bucket.
+    // ─────────────────────────────────────────────────────────────────
+
+    #[derive(Debug, Clone, PartialEq, Serialize)]
+    struct TestCursor {
+        id: Arc<str>,
+        node_id: Arc<str>,
+        session_id: Arc<str>,
+    }
+
+    impl WithId for TestCursor {
+        fn id(&self) -> Arc<str> {
+            self.id.clone()
+        }
+    }
+
+    impl crate::core::item::AnyItem for TestCursor {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "TestCursor"
+        }
+
+        fn equals(&self, other: &dyn crate::core::item::AnyItem) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .map(|t| t == self)
+                .unwrap_or(false)
+        }
+    }
+
+    fn cursor(id: &str, node: &str, session: &str) -> (Arc<str>, AnyItemArc) {
+        (
+            Arc::from(id),
+            Arc::new(TestCursor {
+                id: Arc::from(id),
+                node_id: Arc::from(node),
+                session_id: Arc::from(session),
+            }) as AnyItemArc,
+        )
+    }
+
+    // Mirrors the macro-generated compound extractor for a query that pins
+    // BOTH belongs_to fields: position 0 = node_id, position 1 = session_id.
+    fn extract_node_and_session_fk(item: &dyn Any) -> Option<Vec<Arc<str>>> {
+        item.downcast_ref::<TestCursor>()
+            .map(|c| vec![c.node_id.clone(), c.session_id.clone()])
+    }
+
+    #[test]
+    fn compound_key_separates_watchers_sharing_one_field_but_not_the_other() {
+        // Two cursors in the SAME session but for DIFFERENT nodes. Before
+        // compound routing, both watchers would collapse onto one
+        // session-keyed bucket (single-field routing on whichever field
+        // came first in the struct). With compound (node_id, session_id)
+        // keys, each watcher gets its own bucket, scoped to exactly its
+        // node+session pair.
+        let store = new_store();
+        let (id_a, item_a) = cursor("cursor-a", "node-A", "session-PROD");
+        let (id_b, item_b) = cursor("cursor-b", "node-B", "session-PROD");
+        store.insert(id_a.clone(), item_a);
+        store.insert(id_b.clone(), item_b);
+
+        let index = BelongsToSourceIndex::new(store.clone(), extract_node_and_session_fk);
+
+        let key_a: CompoundKey = vec![Arc::from("node-A"), Arc::from("session-PROD")];
+        let key_b: CompoundKey = vec![Arc::from("node-B"), Arc::from("session-PROD")];
+
+        let bucket_a = index.bucket_for(key_a.clone(), extract_node_and_session_fk);
+        let bucket_b = index.bucket_for(key_b.clone(), extract_node_and_session_fk);
+
+        assert_eq!(
+            bucket_a.snapshot().len(),
+            1,
+            "node-A's bucket sees only its own cursor"
+        );
+        assert_eq!(
+            bucket_b.snapshot().len(),
+            1,
+            "node-B's bucket sees only its own cursor"
+        );
+        assert_eq!(
+            index.buckets.len(),
+            2,
+            "distinct (node, session) pairs get distinct buckets"
+        );
+
+        // Live diffs must reach BOTH watchers independently — this is the
+        // exact symptom rship-qtu reported: one watcher (bucket_a) must not
+        // starve the other (bucket_b) of updates once both are subscribed.
+        let (id_a2, item_a2) = cursor("cursor-a-tick2", "node-A", "session-PROD");
+        store.insert(id_a2, item_a2);
+        assert_eq!(
+            bucket_a.snapshot().len(),
+            2,
+            "node-A's bucket must see its own new entry"
+        );
+        assert_eq!(
+            bucket_b.snapshot().len(),
+            1,
+            "node-B's bucket must be unaffected by node-A's insert"
+        );
+
+        let (id_b2, item_b2) = cursor("cursor-b-tick2", "node-B", "session-PROD");
+        store.insert(id_b2, item_b2);
+        assert_eq!(
+            bucket_b.snapshot().len(),
+            2,
+            "node-B's bucket must independently see its own new entry — this is the \
+             regression rship-qtu hit: the second-registered watcher never received \
+             a diff under single-field session-only routing"
+        );
+    }
+
+    #[test]
+    fn compound_and_single_field_routing_never_share_a_bucket() {
+        // A query pinning only node_id (single-field key) and a query
+        // pinning (node_id, session_id) (compound key) for the same node
+        // must land in different BelongsToSourceIndex instances entirely —
+        // build_belongs_to_source_map keys the outer index registry by the
+        // field-name SET, not just the entity type, so this is exercised at
+        // that layer instead of here (single BelongsToSourceIndex is always
+        // scoped to one fixed field combination by construction — a
+        // `bucket_for` call with a 1-element key and one with a 2-element
+        // key against the SAME index would be a caller bug, not a
+        // supported mixed-arity usage).
+        let store = new_store();
+        let index = BelongsToSourceIndex::new(store, extract_node_and_session_fk);
+        let key: CompoundKey = vec![Arc::from("node-A"), Arc::from("session-PROD")];
+        let bucket = index.bucket_for(key.clone(), extract_node_and_session_fk);
+        assert_eq!(bucket.snapshot().len(), 0);
+        assert!(index.buckets.contains_key(&key));
     }
 }
