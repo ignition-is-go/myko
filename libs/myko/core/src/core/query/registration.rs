@@ -239,22 +239,50 @@ impl BelongsToSourceIndex {
     /// subscribing (or re-subscribing after a prior subscriber dropped off)
     /// would silently see an empty result instead of the parent's actual
     /// current children.
+    ///
+    /// Uses `self.buckets.entry(key)` rather than a separate get-then-insert
+    /// (what `route_to_live_bucket` does for pure lookups) because this path
+    /// *creates*: two concurrent callers for the same key that both observe
+    /// no live bucket would otherwise each build and backfill their own
+    /// `AnyItemMap`, then race an unconditional `insert` — whichever lands
+    /// second wins `self.buckets`, silently orphaning the other's bucket
+    /// (still a valid handle, already returned to its caller and subscribed
+    /// to, but now unreachable from `apply_diff`'s routing, so it gets its
+    /// one-time backfill and then nothing else, ever). `entry()` holds the
+    /// shard lock across the whole check-or-create, so only one caller per
+    /// key can ever end up as the live entry.
     fn bucket_for(&self, key: CompoundKey, extract_fk: CompoundFkExtractor) -> AnyItemMap {
-        if let Some(map) = self.route_to_live_bucket(&key) {
-            return map;
+        match self.buckets.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                if let Some(map) = occupied.get().upgrade() {
+                    return map;
+                }
+                let map = Self::build_backfilled_bucket(&self.store, occupied.key(), extract_fk);
+                occupied.insert(map.downgrade());
+                map
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                let map = Self::build_backfilled_bucket(&self.store, vacant.key(), extract_fk);
+                vacant.insert(map.downgrade());
+                map
+            }
         }
+    }
 
+    fn build_backfilled_bucket(
+        store: &crate::store::EntityStore,
+        key: &CompoundKey,
+        extract_fk: CompoundFkExtractor,
+    ) -> AnyItemMap {
         let map = AnyItemMap::new();
-        let backfill: BucketEntries = self
-            .store
+        let backfill: BucketEntries = store
             .snapshot()
             .into_iter()
-            .filter(|(_, item)| extract_fk(item.as_any()).as_ref() == Some(&key))
+            .filter(|(_, item)| extract_fk(item.as_any()).as_ref() == Some(key))
             .collect();
         if !backfill.is_empty() {
             map.apply_batch(vec![MapDiff::Initial { entries: backfill }]);
         }
-        self.buckets.insert(key, map.downgrade());
         map
     }
 
@@ -818,6 +846,62 @@ mod belongs_to_source_index_tests {
             1,
             "resubscribing after the bucket was reaped must backfill current children, not start empty"
         );
+    }
+
+    #[test]
+    fn concurrent_bucket_for_calls_for_the_same_key_never_orphan_a_bucket() {
+        // The layer-2 mechanism bright-eagle's investigation converged on:
+        // bucket_for used to check-then-act (route_to_live_bucket, then a
+        // separate unconditional insert) with no lock held across the gap.
+        // N callers racing for the same key could each observe "no live
+        // bucket," each build and backfill their own AnyItemMap, then race
+        // an unconditional `insert` — whichever landed last won
+        // `self.buckets`, silently orphaning every other caller's bucket:
+        // still a valid handle, already returned and subscribed to, but
+        // unreachable from apply_diff's routing from then on. That's
+        // exactly "first/arbitrary winner, everyone else starves forever,
+        // outcome varies by scheduling" — matches rship-qtu's calm-time,
+        // registration-order-dependent symptom. entry()-based bucket_for
+        // holds the shard lock across the whole check-or-create, so this
+        // must converge on exactly one live bucket no matter how many
+        // callers race.
+        let store = new_store();
+        let index = Arc::new(BelongsToSourceIndex::new(store.clone(), extract_parent_fk));
+        let key: CompoundKey = vec![Arc::from("parent-race")];
+
+        const N: usize = 16;
+        let barrier = Arc::new(std::sync::Barrier::new(N));
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let index = index.clone();
+                let key = key.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    index.bucket_for(key, extract_parent_fk)
+                })
+            })
+            .collect();
+        let buckets: Vec<AnyItemMap> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        assert_eq!(
+            index.buckets.len(),
+            1,
+            "N concurrent creators for the same key must converge on exactly one bucket entry"
+        );
+
+        // A new matching item must be visible through EVERY returned
+        // handle — an orphaned loser of the old insert race would have
+        // received its one-time (empty) backfill and nothing since.
+        let (id, item) = child("c-race", "parent-race");
+        store.insert(id, item);
+        for (i, bucket) in buckets.iter().enumerate() {
+            assert_eq!(
+                bucket.snapshot().len(),
+                1,
+                "handle {i} must observe the post-race insert — an orphaned bucket stays empty forever"
+            );
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
