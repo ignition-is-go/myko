@@ -203,6 +203,102 @@ mod subtypes {
     }
 }
 
+// manual(serde, ts) fixture — mirrors rship's BindingValue: hand-written
+// Serialize/Deserialize (a custom plain-string wire format deriving would
+// change) and a hand-written TS impl (maps to `unknown`, since ts-rs can't
+// express this structurally). manual(serde, ts) lets it join the subtype
+// system — Debug/Clone/PartialEq, the extra `Default` derive, and the
+// Filterable auto-impl (Unfilterable, since it derives neither Eq nor
+// Ord) — without myko_subtype forking its serde/TS story.
+pub use manual_wire::BenchManualWireValue;
+mod manual_wire {
+    use crate::prelude::*;
+
+    #[myko_subtype(derive(Default), manual(serde, ts))]
+    pub struct BenchManualWireValue {
+        pub raw: String,
+    }
+
+    impl serde::Serialize for BenchManualWireValue {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_str(&self.raw)
+        }
+    }
+
+    impl<'de> serde::Deserialize<'de> for BenchManualWireValue {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            Ok(BenchManualWireValue {
+                raw: String::deserialize(deserializer)?,
+            })
+        }
+    }
+
+    #[cfg(feature = "ts-export")]
+    impl ts_rs::TS for BenchManualWireValue {
+        type WithoutGenerics = Self;
+        type OptionInnerType = Self;
+
+        fn decl() -> String {
+            panic!("BenchManualWireValue maps to `unknown`, it has no declaration")
+        }
+
+        fn decl_concrete() -> String {
+            panic!("BenchManualWireValue maps to `unknown`, it has no declaration")
+        }
+
+        fn name() -> String {
+            "unknown".to_string()
+        }
+
+        fn inline() -> String {
+            "unknown".to_string()
+        }
+
+        fn inline_flattened() -> String {
+            panic!("BenchManualWireValue cannot be flattened")
+        }
+    }
+
+    #[myko_item]
+    pub struct BenchManualWireHolder {
+        pub value: BenchManualWireValue,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::query::{Filterable, Unfilterable};
+
+        #[test]
+        fn manual_wire_value_serializes_as_a_plain_string() {
+            let value = BenchManualWireValue {
+                raw: "hello".to_string(),
+            };
+            let json = serde_json::to_value(&value).unwrap();
+            assert_eq!(json, serde_json::Value::String("hello".to_string()));
+
+            let round_tripped: BenchManualWireValue = serde_json::from_value(json).unwrap();
+            assert_eq!(round_tripped.raw, "hello");
+        }
+
+        #[test]
+        fn manual_wire_value_still_gets_the_filterable_auto_impl() {
+            fn assert_unfilterable<T>()
+            where
+                T: Filterable<Filter = Unfilterable>,
+            {
+            }
+            assert_unfilterable::<BenchManualWireValue>();
+        }
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {
