@@ -368,6 +368,28 @@ impl<T> From<Vec<T>> for EqFilter<T> {
     }
 }
 
+/// Marks `$ty` filterable via [`EqFilter`] (`Eq`/`In`, no partial/range
+/// operations) — the fallback for enums and other exact-only opaque types
+/// per spec §1. For a downstream crate's own entity-field enums (state
+/// machines, tagged values, etc.) that want the same treatment
+/// `#[myko_item]`'s generated id/numeric/string fields already get
+/// automatically via a built-in `Filterable` impl.
+///
+/// `$ty` must already satisfy `Debug + Clone + PartialEq + Eq + Ord +
+/// Serialize + Deserialize + TS` (ts_rs's `TS`, or `myko::TS`'s no-op form
+/// when the `ts-export` feature is off) — this macro only wires up the
+/// `Filterable` impl, it doesn't derive anything on `$ty` itself.
+#[macro_export]
+macro_rules! impl_filterable_eq {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl $crate::query::Filterable for $ty {
+                type Filter = $crate::query::EqFilter<$ty>;
+            }
+        )+
+    };
+}
+
 /// Above this length, `matches` builds a `HashSet` for O(1) membership
 /// instead of a linear scan per call. Chosen to be well above the common
 /// case (a handful of ids/values) where a `Vec` scan is faster than hashing.
@@ -557,6 +579,28 @@ mod tests {
         assert!(filter.matches(&State::Armed));
         assert!(filter.matches(&State::Building));
         assert!(!filter.matches(&State::Idle));
+    }
+
+    #[test]
+    fn impl_filterable_eq_macro_wires_up_filterable() {
+        // Mirrors a downstream crate's own entity-field enum (e.g.
+        // rship's BindingValue) that isn't an id/numeric/string field and
+        // has no built-in Filterable impl — impl_filterable_eq! is how it
+        // opts into EqFilter without hand-writing the impl.
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+        enum ConnectionState {
+            Connected,
+            Disconnected,
+        }
+        crate::impl_filterable_eq!(ConnectionState);
+
+        fn assert_filterable<T: Filterable>() {}
+        assert_filterable::<ConnectionState>();
+
+        let filter: <ConnectionState as Filterable>::Filter =
+            EqFilter::Eq(ConnectionState::Connected);
+        assert!(filter.matches(&ConnectionState::Connected));
+        assert!(!filter.matches(&ConnectionState::Disconnected));
     }
 
     #[test]
