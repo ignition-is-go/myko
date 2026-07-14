@@ -88,6 +88,11 @@ name = "dyn_vs_typed"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "advanced_query_filters"
+harness = false
+required-features = ["bench"]
+
 [features]
 default = []
 bench = []
