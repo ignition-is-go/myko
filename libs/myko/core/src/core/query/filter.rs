@@ -36,6 +36,17 @@ fn canonical_in_values<T: Ord + Clone>(mut values: Vec<T>) -> Vec<T> {
     values
 }
 
+/// Same as [`canonical_in_values`], but for `PartialOrd`-only types
+/// (floats) that don't implement `Ord` because of `NaN`. Sorts via
+/// `partial_cmp` with `Equal` as the NaN fallback — deterministic for the
+/// non-NaN elements, which is what canonicalization actually needs; `NaN`
+/// in a filter value set is already a degenerate case no ordering can fix.
+fn canonical_in_values_partial<T: PartialOrd + PartialEq + Clone>(mut values: Vec<T>) -> Vec<T> {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.dedup_by(|a, b| a == b);
+    values
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // IdFilter — ids are ALWAYS exact match (single or set), never partial or
 // ranged. This is what makes every filter on a #[belongs_to] field
@@ -121,13 +132,13 @@ pub enum NumericFilter<T> {
     },
 }
 
-impl<T: PartialOrd + Clone + Ord> NumericFilter<T> {
+impl<T: PartialOrd + PartialEq + Clone> NumericFilter<T> {
     /// Canonicalize: sort + dedup `In`, collapse 1-element `In` to `Eq`,
     /// collapse `Range{min: Some(a), max: Some(a)}` to `Eq(a)`.
     pub fn canonicalize(self) -> Self {
         match self {
             NumericFilter::In(values) => {
-                let values = canonical_in_values(values);
+                let values = canonical_in_values_partial(values);
                 match <[T; 1]>::try_from(values) {
                     Ok([only]) => NumericFilter::Eq(only),
                     Err(values) => NumericFilter::In(values),
@@ -166,6 +177,20 @@ impl<T> From<Vec<T>> for NumericFilter<T> {
         NumericFilter::In(values)
     }
 }
+
+macro_rules! impl_numeric_filterable {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl Filterable for $ty {
+                type Filter = NumericFilter<$ty>;
+            }
+        )+
+    };
+}
+
+impl_numeric_filterable!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
+);
 
 // ─────────────────────────────────────────────────────────────────────────
 // StringFilter — Eq / In / Contains / StartsWith. Never Range (meaningless
@@ -232,6 +257,14 @@ impl From<Vec<Arc<str>>> for StringFilter {
     fn from(values: Vec<Arc<str>>) -> Self {
         StringFilter::In(values)
     }
+}
+
+impl Filterable for Arc<str> {
+    type Filter = StringFilter;
+}
+
+impl Filterable for String {
+    type Filter = StringFilter;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -712,6 +712,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         impl #krate::hyphae::IdType for #id_type_ident {
             type Parent = #name;
         }
+        impl #krate::query::Filterable for #id_type_ident {
+            type Filter = #krate::query::IdFilter<#id_type_ident>;
+        }
 
         #derives
         #input_struct
