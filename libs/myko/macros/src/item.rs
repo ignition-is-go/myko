@@ -558,6 +558,28 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                 None
             }
         }
+
+        // Bridges this XFilter to #name for ctx.query_live(filter_cell) —
+        // phase 2 (docs/superpowers/specs/2026-07-13-advanced-query-design.md
+        // §5): "the entity/query type is inferred from Cell<XFilter>", so
+        // query_live needs no separate GetXsByFilter-style wrapper, just
+        // this trait delegating to methods already generated above.
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #krate::query::LiveFilterQuery for #filter_ident {
+            type Item = #name;
+
+            fn entity_type() -> &'static str {
+                #name_str
+            }
+
+            fn matches(&self, item: &Self::Item) -> bool {
+                #filter_ident::matches(self, item)
+            }
+
+            fn belongs_to_route(&self) -> Option<#krate::query::BelongsToRoute> {
+                #filter_ident::belongs_to_route(self)
+            }
+        }
     };
 
     let get_by_filter_query = quote! {

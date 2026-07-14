@@ -2,15 +2,15 @@
 
 use std::{
     any::Any,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
 use dashmap::DashMap;
-use hyphae::{MapDiff, SelectExt};
+use hyphae::{MapDiff, SelectExt, Signal, SubscriptionGuard, Watchable};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;
@@ -684,6 +684,307 @@ pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<Vec<Arc<str>>> {
             })
             .collect()
     })
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// query_live — phase 2 of the advanced-query-design spec (§5): a reactive
+// filter *parameter* instead of a plain value, so a filter derived from
+// other cells no longer needs a switch_map wrapper. Server-side only.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Bridges a generated `XFilter` type to its entity, so [`query_live`] can
+/// be generic over just `impl Watchable<F>` — no `GetXsByFilter` wrapper
+/// needed; "the entity/query type is inferred from `Cell<XFilter>`" (spec
+/// §5). Implemented by `#[myko_item]`'s codegen for every generated
+/// `XFilter`, delegating to that type's own already-generated `matches`/
+/// `belongs_to_route` methods.
+pub trait LiveFilterQuery: Clone + PartialEq + Send + Sync + 'static {
+    type Item: Eventable
+        + WithId
+        + DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static;
+
+    fn entity_type() -> &'static str;
+    fn matches(&self, item: &Self::Item) -> bool;
+    fn belongs_to_route(&self) -> Option<BelongsToRoute>;
+}
+
+fn live_filter_matches<F: LiveFilterQuery>(filter: &F, item: &AnyItemArc) -> bool {
+    let typed = downcast_any_item_arc::<F::Item>(item, "query_live");
+    filter.matches(&typed)
+}
+
+/// Diff `candidates` (an authoritative point-in-time item set — a bucket's
+/// or the whole store's `snapshot()`) against `result`'s CURRENT membership
+/// under `filter`: insert newly-matching items, remove no-longer-matching
+/// ones, remove anything in `result` that isn't in `candidates` at all
+/// (covers deletes for a full-store rescan). Used for every "re-test a
+/// scope against a filter" case: a freshly-added bucket's initial
+/// population, an unchanged bucket rescanned because a non-indexed field
+/// changed, and scan mode's initial/rescan population.
+fn reconcile_result_membership<F: LiveFilterQuery>(
+    result: &AnyItemMap,
+    filter: &F,
+    candidates: Vec<(Arc<str>, AnyItemArc)>,
+) {
+    let current_ids: HashSet<Arc<str>> = result.snapshot().into_iter().map(|(id, _)| id).collect();
+    let mut seen: HashSet<Arc<str>> = HashSet::with_capacity(candidates.len());
+    for (id, item) in candidates {
+        seen.insert(id.clone());
+        let should_have = live_filter_matches(filter, &item);
+        let currently_has = current_ids.contains(&id);
+        match (should_have, currently_has) {
+            (true, false) => {
+                result.insert(id, item);
+            }
+            (false, true) => {
+                result.remove(&id);
+            }
+            _ => {}
+        }
+    }
+    for id in current_ids.difference(&seen) {
+        result.remove(id);
+    }
+}
+
+/// Apply one incoming diff from a live-tracked source (a bucket, or the
+/// whole store in scan mode) to `result`, re-testing every affected item
+/// against `filter` — always read fresh at the moment the diff arrives
+/// (never a value captured at subscribe time), since a bucket/store
+/// subscription outlives many filter ticks.
+fn apply_live_diff<F: LiveFilterQuery>(result: &AnyItemMap, diff: &BucketDiff, filter: &F) {
+    match diff {
+        MapDiff::Initial { entries } => {
+            reconcile_result_membership(result, filter, entries.clone());
+        }
+        MapDiff::Insert { key, value } => {
+            if live_filter_matches(filter, value) {
+                result.insert(key.clone(), value.clone());
+            }
+        }
+        MapDiff::Remove { key, .. } => {
+            result.remove(key);
+        }
+        MapDiff::Update { key, new_value, .. } => {
+            if live_filter_matches(filter, new_value) {
+                result.insert(key.clone(), new_value.clone());
+            } else {
+                result.remove(key);
+            }
+        }
+        MapDiff::Batch { changes } => {
+            for change in changes {
+                apply_live_diff(result, change, filter);
+            }
+        }
+    }
+}
+
+/// Per-`query_live`-call state: which compound-key buckets are currently
+/// subscribed (with a handle to each bucket for `snapshot()`-based
+/// retraction/rescan), the scan-mode store subscription if active, and the
+/// filter value from the previous tick (to detect route-shape changes).
+struct LiveQueryState<F> {
+    bucket_guards: HashMap<CompoundKey, (FilteredCellMap, SubscriptionGuard)>,
+    // Shared with each bucket's subscribe_diffs callback so it always
+    // reads the LATEST filter (never one captured at subscribe time) —
+    // a bucket subscription outlives many filter ticks.
+    bucket_filter_refs: HashMap<CompoundKey, Arc<Mutex<F>>>,
+    scan_guard: Option<SubscriptionGuard>,
+    scan_filter_ref: Option<Arc<Mutex<F>>>,
+    prev_route_field_names: Option<&'static [&'static str]>,
+}
+
+impl<F> Default for LiveQueryState<F> {
+    fn default() -> Self {
+        Self {
+            bucket_guards: HashMap::new(),
+            bucket_filter_refs: HashMap::new(),
+            scan_guard: None,
+            scan_filter_ref: None,
+            prev_route_field_names: None,
+        }
+    }
+}
+
+/// Reactive filter parameters: `filter_cell` replaces the value-based
+/// `GetXsByFilter` query with a live `Cell`, so a filter whose value is
+/// itself derived reactively no longer needs a `switch_map` wrapper (spec
+/// §5). The returned map is a single persistent reactive graph node —
+/// filter changes are handled by incrementally adding/removing bucket
+/// subscriptions (for `In`/`Eq` changes on indexed `#[belongs_to]` fields)
+/// or, for non-indexed (`Range`/`Contains`) changes, rescanning the
+/// currently-scoped item set — never by tearing down and rebuilding
+/// `result` itself. Downstream cells built on the returned map keep their
+/// subscription across every filter change.
+///
+/// Server-side only (a `Cell` can't cross the wire); no cache — a cell is
+/// object identity, so callers get an independent graph node per call site
+/// (see spec §5's "no value-identity cache sharing").
+pub fn query_live<F>(
+    registry: Arc<StoreRegistry>,
+    host_id: Uuid,
+    filter_cell: impl Watchable<F>,
+) -> FilteredCellMap
+where
+    F: LiveFilterQuery,
+{
+    let result: AnyItemMap = AnyItemMap::new();
+    let state: Arc<Mutex<LiveQueryState<F>>> = Arc::new(Mutex::new(LiveQueryState::default()));
+
+    let result_weak = result.downgrade();
+    let guard = filter_cell.subscribe(move |signal| {
+        let Signal::Value(new_filter) = signal else {
+            return;
+        };
+        let Some(result) = result_weak.upgrade() else {
+            return;
+        };
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reconcile_live_query(&registry, host_id, &result, &mut state, new_filter.as_ref());
+    });
+    result.own(guard);
+    result.lock()
+}
+
+fn reconcile_live_query<F: LiveFilterQuery>(
+    registry: &Arc<StoreRegistry>,
+    host_id: Uuid,
+    result: &AnyItemMap,
+    state: &mut LiveQueryState<F>,
+    new_filter: &F,
+) {
+    let new_route = new_filter.belongs_to_route();
+
+    match new_route {
+        Some(route) => {
+            // Entering/staying in indexed mode — a scan-mode subscription
+            // (if any) no longer applies.
+            state.scan_guard = None;
+
+            let route_shape_changed = state.prev_route_field_names != Some(route.field_names);
+            if route_shape_changed {
+                // The SET of belongs_to fields being routed on changed
+                // shape (different field combination, or previously scan
+                // mode) — migrating individual bucket subscriptions across
+                // different index instances isn't meaningful, so tear
+                // down everything tracked so far and rebuild fresh.
+                for (_, (bucket, _guard)) in state.bucket_guards.drain() {
+                    for (id, _) in bucket.snapshot() {
+                        result.remove(&id);
+                    }
+                }
+                state.bucket_filter_refs.clear();
+            }
+
+            let new_keys: HashSet<CompoundKey> = route.keys.iter().cloned().collect();
+            let old_keys: HashSet<CompoundKey> = state.bucket_guards.keys().cloned().collect();
+
+            // Removed keys: retract every item that bucket contributed,
+            // then drop its subscription and filter reference.
+            for key in old_keys.difference(&new_keys) {
+                if let Some((bucket, _guard)) = state.bucket_guards.remove(key) {
+                    for (id, _) in bucket.snapshot() {
+                        result.remove(&id);
+                    }
+                }
+                state.bucket_filter_refs.remove(key);
+            }
+
+            // Added keys: subscribe fresh, populate from the bucket's
+            // current contents filtered through `new_filter`.
+            let added: Vec<CompoundKey> = new_keys.difference(&old_keys).cloned().collect();
+            if !added.is_empty() {
+                let index = belongs_to_source_index_for(
+                    registry,
+                    host_id,
+                    F::entity_type(),
+                    route.field_names,
+                    route.extract_fk,
+                );
+                for key in added {
+                    let bucket = index.bucket_for(key.clone(), route.extract_fk).lock();
+                    reconcile_result_membership(result, new_filter, bucket.snapshot());
+
+                    let filter_state = Arc::new(Mutex::new(new_filter.clone()));
+                    let filter_state_for_cb = filter_state.clone();
+                    let result_weak = result.downgrade();
+                    let guard = bucket.subscribe_diffs(move |diff| {
+                        let Some(result) = result_weak.upgrade() else {
+                            return;
+                        };
+                        let filter = filter_state_for_cb
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        apply_live_diff(&result, diff, &filter);
+                    });
+                    state.bucket_guards.insert(key.clone(), (bucket, guard));
+                    state.bucket_filter_refs.insert(key, filter_state);
+                }
+            }
+
+            // Unchanged keys: the filter may still differ from last tick
+            // (a non-indexed field changed) — rescan those buckets'
+            // current contents, and update the shared filter reference
+            // their subscribe_diffs callbacks read from.
+            for key in new_keys.intersection(&old_keys) {
+                if let Some(filter_state) = state.bucket_filter_refs.get(key) {
+                    *filter_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_filter.clone();
+                }
+                if let Some((bucket, _)) = state.bucket_guards.get(key) {
+                    reconcile_result_membership(result, new_filter, bucket.snapshot());
+                }
+            }
+
+            state.prev_route_field_names = Some(route.field_names);
+        }
+        None => {
+            // Scan mode: no belongs_to routing applies. Tear down any
+            // indexed-mode bucket subscriptions.
+            if state.prev_route_field_names.is_some() {
+                for (_, (bucket, _guard)) in state.bucket_guards.drain() {
+                    for (id, _) in bucket.snapshot() {
+                        result.remove(&id);
+                    }
+                }
+                state.prev_route_field_names = None;
+            }
+
+            let store = registry.get_or_create(F::entity_type());
+            reconcile_result_membership(result, new_filter, store.snapshot());
+
+            if state.scan_guard.is_none() {
+                let filter_state = Arc::new(Mutex::new(new_filter.clone()));
+                state.scan_filter_ref = Some(filter_state.clone());
+                let result_weak = result.downgrade();
+                let guard = store.subscribe_diffs(move |diff| {
+                    let Some(result) = result_weak.upgrade() else {
+                        return;
+                    };
+                    let filter = filter_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    apply_live_diff(&result, diff, &filter);
+                });
+                state.scan_guard = Some(guard);
+            } else if let Some(filter_state) = &state.scan_filter_ref {
+                *filter_state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_filter.clone();
+            }
+        }
+    }
 }
 
 /// Sweep dead (no-longer-subscribed) buckets across every belongs-to
