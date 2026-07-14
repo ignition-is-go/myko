@@ -146,6 +146,63 @@ mod keyframe {
     }
 }
 
+// #[myko_subtype] fixtures — proves the macro's auto-generated Filterable
+// impl (added because writing impl_filterable_eq!/impl_filterable_opaque!
+// by hand for every domain subtype was exactly the class of adoption
+// friction rship kept hitting) picks EqFilter when the consumer derived
+// Eq + Ord, and falls back to Unfilterable otherwise, without either case
+// needing a manual Filterable impl of its own.
+pub use subtypes::{BenchSubtypeFields, BenchSubtypeOrdered, BenchSubtypeUnordered};
+mod subtypes {
+    use crate::prelude::*;
+
+    #[myko_subtype(derive(Eq, Ord, PartialOrd))]
+    pub struct BenchSubtypeOrdered {
+        pub label: String,
+    }
+
+    #[myko_subtype]
+    pub struct BenchSubtypeUnordered {
+        pub note: String,
+    }
+
+    #[myko_item]
+    pub struct BenchSubtypeFields {
+        pub ordered: BenchSubtypeOrdered,
+        pub unordered: BenchSubtypeUnordered,
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::query::{EqFilter, Filter, Filterable, Unfilterable};
+
+        #[test]
+        fn eq_and_ord_subtype_gets_eq_filter() {
+            let filter: <BenchSubtypeOrdered as Filterable>::Filter =
+                EqFilter::Eq(BenchSubtypeOrdered {
+                    label: "a".to_string(),
+                });
+            assert!(filter.matches(&BenchSubtypeOrdered {
+                label: "a".to_string(),
+            }));
+            assert!(!filter.matches(&BenchSubtypeOrdered {
+                label: "b".to_string(),
+            }));
+        }
+
+        #[test]
+        fn default_subtype_falls_back_to_unfilterable() {
+            fn assert_unfilterable<T>()
+            where
+                T: Filterable<Filter = Unfilterable>,
+            {
+            }
+            assert_unfilterable::<BenchSubtypeUnordered>();
+        }
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {

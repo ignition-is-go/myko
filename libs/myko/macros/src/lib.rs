@@ -721,6 +721,14 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 /// Extra derives (e.g. `Default`, `Eq`, `Hash`, `Copy`) can be requested
 /// via `derive(...)` — they're appended to the default list.
 ///
+/// Also auto-implements `query::Filterable`, so the type can be used as an
+/// `#[myko_item]` entity field without a hand-written
+/// `impl_filterable_eq!`/`impl_filterable_opaque!` call: deriving both `Eq`
+/// and `Ord` gets you `EqFilter` (exact-match/`In` filtering); anything
+/// less falls back to `Unfilterable` (the field still compiles, it's just
+/// not filterable). If you separately hand-write a `Filterable` impl for a
+/// `#[myko_subtype]` type, this will conflict — delete one or the other.
+///
 /// # Usage
 ///
 /// ```ignore
@@ -845,6 +853,32 @@ fn myko_subtype_expand(
         quote!()
     };
 
+    // Every #[myko_subtype] auto-implements Filterable, so a type declared
+    // this way is always usable as an entity field without a hand-written
+    // impl_filterable_eq!/impl_filterable_opaque! call (the two escape
+    // hatches those macros exist for downstream crates that DON'T go
+    // through myko_subtype — e.g. a plain third-party or hand-written enum).
+    // EqFilter<T>'s CanonicalFilter impl needs T: Ord + Clone (for the
+    // In-set sort/dedup step query-cache identity depends on, spec §1), so
+    // only pick EqFilter when the consumer actually derived Eq + Ord;
+    // otherwise fall back to Unfilterable — same degenerate-but-compiling
+    // treatment serde_json::Value and the container blanket impls get.
+    let derives_total_order = extra_derives.iter().any(|p| p.is_ident("Ord"))
+        && extra_derives.iter().any(|p| p.is_ident("Eq"));
+    let filterable_impl = if derives_total_order {
+        quote! {
+            impl #krate::query::Filterable for #name {
+                type Filter = #krate::query::EqFilter<#name>;
+            }
+        }
+    } else {
+        quote! {
+            impl #krate::query::Filterable for #name {
+                type Filter = #krate::query::Unfilterable;
+            }
+        }
+    };
+
     // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export`
     // feature is on, so emit it (and the `ts(export)` attr it claims)
     // unconditionally — no consumer-side feature gate. `register_ts_export!`
@@ -856,6 +890,8 @@ fn myko_subtype_expand(
         #item
 
         #krate::register_ts_export!(#name);
+
+        #filterable_impl
     }
 }
 
