@@ -49,6 +49,50 @@ mod tree {
     }
 }
 
+// Compound-key belongs_to test fixture — needed because no PRODUCTION
+// entity has 2+ #[belongs_to] fields (confirmed during the rship-qtu
+// investigation this feature partly grew out of). Exercises the K-bucket
+// union routing's cartesian-product path (advanced-query-design spec §4
+// acceptance criterion 2's "2-belongs_to compound-key case"), which a
+// single-belongs_to entity like Client can't reach.
+pub use compound_a::{BenchParentA, BenchParentAId};
+mod compound_a {
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchParentA {
+        pub name: String,
+    }
+}
+
+pub use compound_b::{BenchParentB, BenchParentBId};
+mod compound_b {
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchParentB {
+        pub name: String,
+    }
+}
+
+pub use compound_child::{
+    BenchCompoundChild, BenchCompoundChildFilter, GetBenchCompoundChildsByFilter,
+};
+mod compound_child {
+    use crate::prelude::*;
+
+    use super::{BenchParentA, BenchParentAId, BenchParentB, BenchParentBId};
+
+    #[myko_item]
+    pub struct BenchCompoundChild {
+        #[belongs_to(BenchParentA)]
+        pub parent_a_id: BenchParentAId,
+        #[belongs_to(BenchParentB)]
+        pub parent_b_id: BenchParentBId,
+        pub value: i64,
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {
