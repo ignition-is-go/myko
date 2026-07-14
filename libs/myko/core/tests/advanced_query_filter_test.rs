@@ -63,6 +63,20 @@ fn default_filter_matches_everything() {
 }
 
 #[test]
+fn query_map_filtered_is_a_working_alias_for_query_map() {
+    let ctx = make_ctx();
+    insert_bench_item(&ctx, "a", "cat", 1);
+    insert_bench_item(&ctx, "b", "cat", 2);
+
+    let filter = BenchItemFilter {
+        value: Some(NumericFilter::Eq(1)),
+        ..Default::default()
+    };
+    let cell = ctx.query_map_filtered(GetBenchItemsByFilter(filter), request(&ctx, "tx-1"));
+    assert_eq!(cell.snapshot().len(), 1);
+}
+
+#[test]
 fn numeric_in_filter_matches_only_listed_values() {
     let ctx = make_ctx();
     insert_bench_item(&ctx, "a", "cat", 1);

@@ -1272,6 +1272,32 @@ impl CellServerCtx {
             .expect("typed projection from freshly inserted entry")
     }
 
+    /// [`Self::query_map`]'s twin for advanced (`GetXsByFilter`) queries —
+    /// see docs/superpowers/specs/2026-07-13-advanced-query-design.md §3. A
+    /// thin wrapper: `GetXsByFilter` flows through the same generic
+    /// `QueryParams` path as any other query type (already verified end to
+    /// end against `query_map` directly), so this exists purely as a named,
+    /// discoverable seam rather than adding new dispatch logic.
+    pub fn query_map_filtered<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.query_map(query, request)
+    }
+
     /// Run a reactive query and return a typed map keyed by canonical string ids.
     ///
     /// Prefer `query_map()` unless you specifically need string ids.
