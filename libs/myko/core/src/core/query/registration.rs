@@ -19,6 +19,7 @@ use super::{
     super::item::Eventable,
     cell::FilteredCellMap,
     context::{QueryCellContext, QueryContext},
+    filter::{CompoundFkExtractor, CompoundKey, LiveFilterQuery},
     request::QueryRequest,
     traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
 };
@@ -49,44 +50,6 @@ type WeakAnyItemMap = hyphae::WeakCellMap<Arc<str>, AnyItemArc>;
 type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
-
-/// Ordered foreign-key values for a `BelongsToSourceIndex` bucket. A single
-/// `#[belongs_to]` field yields a 1-element key (the pre-compound-routing
-/// shape); an entity with 2+ `#[belongs_to]` fields queried with more than
-/// one set at once yields one element per field that was `Some`, in the
-/// entity's declared field order. Two queries that populate different SETS
-/// of belongs_to fields land in different buckets even for the same entity
-/// type — the bucket only ever holds items matching every field in the key.
-pub type CompoundKey = Vec<Arc<str>>;
-
-/// Extracts the compound foreign-key values (see [`CompoundKey`]) an item
-/// contributes for one specific field combination. Position `i` in the
-/// returned `Vec` corresponds to field `i` of that combination. Returns
-/// `None` only on a downcast failure (item is the wrong entity type) —
-/// `#[belongs_to]` fields feeding this are all non-optional, so a
-/// correctly-typed item always has a value for every field in play.
-///
-/// Deliberately a distinct type from
-/// [`crate::core::relationship::FkExtractor`]: that alias backs
-/// `RelationshipManager`'s own single-field child-index tracking and
-/// `export_tree`'s traversal, both unrelated to query routing — widening it
-/// in place would ripple into those unrelated subsystems for no reason.
-pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
-
-/// A belongs_to routing decision for one `XFilter` instance — which fields
-/// are pinned, the compound keys to union-route through
-/// [`BelongsToSourceIndex`], and the extractor needed to build/maintain
-/// that index. Returned by a generated `XFilter`'s `belongs_to_route()`
-/// method (see `#[myko_item]`'s codegen); shared between the value-based
-/// query's `build_view` (routes once per query construction) and
-/// `query_live`'s incremental per-tick diffing (routes on every filter
-/// change, diffing keys against the previous tick's route) — one routing
-/// rule, two consumers, so they can never disagree on what's index-servable.
-pub struct BelongsToRoute {
-    pub field_names: &'static [&'static str],
-    pub keys: Vec<CompoundKey>,
-    pub extract_fk: CompoundFkExtractor,
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QueryRegistration - inventory-based registration
@@ -691,27 +654,6 @@ pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<Vec<Arc<str>>> {
 // filter *parameter* instead of a plain value, so a filter derived from
 // other cells no longer needs a switch_map wrapper. Server-side only.
 // ─────────────────────────────────────────────────────────────────────────
-
-/// Bridges a generated `XFilter` type to its entity, so [`query_live`] can
-/// be generic over just `impl Watchable<F>` — no `GetXsByFilter` wrapper
-/// needed; "the entity/query type is inferred from `Cell<XFilter>`" (spec
-/// §5). Implemented by `#[myko_item]`'s codegen for every generated
-/// `XFilter`, delegating to that type's own already-generated `matches`/
-/// `belongs_to_route` methods.
-pub trait LiveFilterQuery: Clone + PartialEq + Send + Sync + 'static {
-    type Item: Eventable
-        + WithId
-        + DeserializeOwned
-        + Clone
-        + std::fmt::Debug
-        + Send
-        + Sync
-        + 'static;
-
-    fn entity_type() -> &'static str;
-    fn matches(&self, item: &Self::Item) -> bool;
-    fn belongs_to_route(&self) -> Option<BelongsToRoute>;
-}
 
 fn live_filter_matches<F: LiveFilterQuery>(filter: &F, item: &AnyItemArc) -> bool {
     let typed = downcast_any_item_arc::<F::Item>(item, "query_live");

@@ -541,10 +541,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             .collect()
     };
 
-    // BelongsToRoute (and everything in core::query::registration) is
-    // server-only — gate this impl the same way build_view already is,
-    // rather than the individual method, so wasm32 builds never see a type
-    // that doesn't exist there.
+    // BelongsToRoute is a plain data type visible on every target (needed so
+    // ReportContext::query_live's wasm32 stub can name LiveFilterQuery in its
+    // bound), but this impl's body calls cartesian_product, which lives in
+    // the server-only core::query::registration engine — gate the impl the
+    // same way build_view already is, rather than the individual method.
     let filter_belongs_to_route_impl = quote! {
         #[cfg(not(target_arch = "wasm32"))]
         impl #filter_ident {

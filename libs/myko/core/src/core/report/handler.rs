@@ -181,6 +181,38 @@ impl ReportContext {
         self.server_ctx.query_map_untyped(query, self.req.clone())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Reactive filter parameters (advanced-query-design spec §5):
+    /// `filter_cell` replaces a value-based `GetXsByFilter` with a live
+    /// `Cell`, so a filter derived from other cells no longer needs a
+    /// `switch_map` wrapper. This is the entire phase-2 adoption surface
+    /// for report handlers — see `CellServerCtx::query_live` for the
+    /// mechanics (incremental bucket-diffing on indexed field changes,
+    /// scoped rescan on non-indexed changes, never a graph teardown).
+    pub fn query_live<F>(
+        &self,
+        filter_cell: impl hyphae::Watchable<F>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: crate::query::LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        self.server_ctx.query_live(filter_cell)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn query_live<F>(
+        &self,
+        filter_cell: impl hyphae::Watchable<F>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: crate::query::LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        let _ = filter_cell;
+        unreachable!("ReportContext::query_live is not available on wasm32");
+    }
+
     /// Search for entities matching a query string.
     ///
     /// Returns matching entity IDs (up to `limit` results). Backed by the
