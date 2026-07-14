@@ -1,0 +1,462 @@
+//! Per-type field filters for advanced (array-valued / `IN`) query matching.
+//!
+//! See `docs/superpowers/specs/2026-07-13-advanced-query-design.md` for the
+//! full design. Each data type exposes exactly the filter operations that
+//! are meaningful for it — ids are always exact (`Eq`/`In`), numbers add
+//! `Range`, strings add substring/prefix matching, bools are bare equality.
+//! Selection is driven by the [`Filterable`] trait's associated type, so
+//! `#[myko_item]` never has to sniff field types syntactically.
+
+use std::{collections::HashSet, hash::Hash, sync::Arc};
+
+use serde::{Deserialize, Serialize};
+
+use crate::TS;
+
+/// A filter that can test whether a value of type `T` matches.
+pub trait Filter<T> {
+    fn matches(&self, value: &T) -> bool;
+}
+
+/// Associates a type with the filter type that can express queries over it.
+/// Implemented for every field type `#[myko_item]` can generate a filter
+/// for — numeric primitives, `String`/`Arc<str>`, `bool`, entity id
+/// newtypes, and (via a per-type impl or macro-emitted default) opaque/enum
+/// types through [`EqFilter`].
+pub trait Filterable: Sized {
+    type Filter: Filter<Self>;
+}
+
+/// Sort + dedup an `In` value set. Order doesn't affect matching, only
+/// query-cache identity, so two callers passing the same set in different
+/// orders (or with duplicates) must produce the same canonical filter.
+fn canonical_in_values<T: Ord + Clone>(mut values: Vec<T>) -> Vec<T> {
+    values.sort();
+    values.dedup();
+    values
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// IdFilter — ids are ALWAYS exact match (single or set), never partial or
+// ranged. This is what makes every filter on a #[belongs_to] field
+// index-servable by construction (see registration.rs's union-of-buckets
+// routing): there is no IdFilter variant that requires a table scan.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum IdFilter<T> {
+    Eq(T),
+    In(Vec<T>),
+}
+
+impl<T: Ord + Clone> IdFilter<T> {
+    /// Canonicalize: sort + dedup `In`, collapse a 1-element `In` to `Eq`.
+    pub fn canonicalize(self) -> Self {
+        match self {
+            IdFilter::In(values) => {
+                let values = canonical_in_values(values);
+                match <[T; 1]>::try_from(values) {
+                    Ok([only]) => IdFilter::Eq(only),
+                    Err(values) => IdFilter::In(values),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// The set of ids this filter matches, if finite and enumerable without
+    /// touching the store — always true for `IdFilter`, since it never
+    /// contains a scan-only variant. Used to route `In` through
+    /// `BelongsToSourceIndex` as a bucket union instead of a table scan.
+    pub fn key_values(&self) -> Vec<T> {
+        match self {
+            IdFilter::Eq(value) => vec![value.clone()],
+            IdFilter::In(values) => values.clone(),
+        }
+    }
+}
+
+impl<T: Eq + Hash> Filter<T> for IdFilter<T> {
+    fn matches(&self, value: &T) -> bool {
+        match self {
+            IdFilter::Eq(expected) => value == expected,
+            // In([]) matches nothing — this is correct behavior for
+            // "scope to this (possibly empty) derived set" call sites, not
+            // a bug. Document loudly (see spec §1) rather than special-case.
+            IdFilter::In(values) => in_matches(values, value),
+        }
+    }
+}
+
+impl<T> From<T> for IdFilter<T> {
+    fn from(value: T) -> Self {
+        IdFilter::Eq(value)
+    }
+}
+
+impl<T> From<Vec<T>> for IdFilter<T> {
+    fn from(values: Vec<T>) -> Self {
+        IdFilter::In(values)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// NumericFilter — Eq / In / Range (inclusive bounds).
+// ─────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum NumericFilter<T> {
+    Eq(T),
+    In(Vec<T>),
+    /// Inclusive bounds; both `None` is invalid (rejected at construction
+    /// time is future work — for now it degenerates to "match everything,"
+    /// same as an unset filter, since myko trusts callers not to write it).
+    Range {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min: Option<T>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<T>,
+    },
+}
+
+impl<T: PartialOrd + Clone + Ord> NumericFilter<T> {
+    /// Canonicalize: sort + dedup `In`, collapse 1-element `In` to `Eq`,
+    /// collapse `Range{min: Some(a), max: Some(a)}` to `Eq(a)`.
+    pub fn canonicalize(self) -> Self {
+        match self {
+            NumericFilter::In(values) => {
+                let values = canonical_in_values(values);
+                match <[T; 1]>::try_from(values) {
+                    Ok([only]) => NumericFilter::Eq(only),
+                    Err(values) => NumericFilter::In(values),
+                }
+            }
+            NumericFilter::Range {
+                min: Some(a),
+                max: Some(b),
+            } if a == b => NumericFilter::Eq(a),
+            other => other,
+        }
+    }
+}
+
+impl<T: PartialEq + PartialOrd> Filter<T> for NumericFilter<T> {
+    fn matches(&self, value: &T) -> bool {
+        match self {
+            NumericFilter::Eq(expected) => value == expected,
+            NumericFilter::In(values) => values.iter().any(|v| v == value),
+            NumericFilter::Range { min, max } => {
+                min.as_ref().is_none_or(|min| value >= min)
+                    && max.as_ref().is_none_or(|max| value <= max)
+            }
+        }
+    }
+}
+
+impl<T> From<T> for NumericFilter<T> {
+    fn from(value: T) -> Self {
+        NumericFilter::Eq(value)
+    }
+}
+
+impl<T> From<Vec<T>> for NumericFilter<T> {
+    fn from(values: Vec<T>) -> Self {
+        NumericFilter::In(values)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// StringFilter — Eq / In / Contains / StartsWith. Never Range (meaningless
+// for strings without a locale-aware ordering myko doesn't want to own).
+// ─────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum StringFilter {
+    Eq(Arc<str>),
+    In(Vec<Arc<str>>),
+    /// Substring, case-sensitive.
+    Contains(Arc<str>),
+    StartsWith(Arc<str>),
+}
+
+impl StringFilter {
+    /// Canonicalize: sort + dedup `In`, collapse a 1-element `In` to `Eq`.
+    pub fn canonicalize(self) -> Self {
+        match self {
+            StringFilter::In(values) => {
+                let values = canonical_in_values(values);
+                match <[Arc<str>; 1]>::try_from(values) {
+                    Ok([only]) => StringFilter::Eq(only),
+                    Err(values) => StringFilter::In(values),
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+impl Filter<Arc<str>> for StringFilter {
+    fn matches(&self, value: &Arc<str>) -> bool {
+        match self {
+            StringFilter::Eq(expected) => value == expected,
+            StringFilter::In(values) => in_matches(values, value),
+            StringFilter::Contains(needle) => value.contains(needle.as_ref()),
+            StringFilter::StartsWith(prefix) => value.starts_with(prefix.as_ref()),
+        }
+    }
+}
+
+// Support String-typed entity fields (not just Arc<str>) matching against
+// the same Arc<str>-based filter — avoids a parallel StringFilter<String>.
+impl Filter<String> for StringFilter {
+    fn matches(&self, value: &String) -> bool {
+        match self {
+            StringFilter::Eq(expected) => value.as_str() == expected.as_ref(),
+            StringFilter::In(values) => values.iter().any(|v| v.as_ref() == value.as_str()),
+            StringFilter::Contains(needle) => value.contains(needle.as_ref()),
+            StringFilter::StartsWith(prefix) => value.starts_with(prefix.as_ref()),
+        }
+    }
+}
+
+impl From<Arc<str>> for StringFilter {
+    fn from(value: Arc<str>) -> Self {
+        StringFilter::Eq(value)
+    }
+}
+
+impl From<Vec<Arc<str>>> for StringFilter {
+    fn from(values: Vec<Arc<str>>) -> Self {
+        StringFilter::In(values)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// bool — bare equality. In(Vec<bool>) would always reduce to Eq or
+// match-everything, so it doesn't exist as a variant; `bool` itself is its
+// own filter type.
+// ─────────────────────────────────────────────────────────────────────────
+
+impl Filter<bool> for bool {
+    fn matches(&self, value: &bool) -> bool {
+        self == value
+    }
+}
+
+impl Filterable for bool {
+    type Filter = bool;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// EqFilter — fallback for enums and other exact-only opaque types: Eq plus
+// set membership, no substring/range operations.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum EqFilter<T> {
+    Eq(T),
+    In(Vec<T>),
+}
+
+impl<T: Ord + Clone> EqFilter<T> {
+    /// Canonicalize: sort + dedup `In`, collapse a 1-element `In` to `Eq`.
+    pub fn canonicalize(self) -> Self {
+        match self {
+            EqFilter::In(values) => {
+                let values = canonical_in_values(values);
+                match <[T; 1]>::try_from(values) {
+                    Ok([only]) => EqFilter::Eq(only),
+                    Err(values) => EqFilter::In(values),
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+impl<T: PartialEq> Filter<T> for EqFilter<T> {
+    fn matches(&self, value: &T) -> bool {
+        match self {
+            EqFilter::Eq(expected) => value == expected,
+            EqFilter::In(values) => values.iter().any(|v| v == value),
+        }
+    }
+}
+
+impl<T> From<T> for EqFilter<T> {
+    fn from(value: T) -> Self {
+        EqFilter::Eq(value)
+    }
+}
+
+impl<T> From<Vec<T>> for EqFilter<T> {
+    fn from(values: Vec<T>) -> Self {
+        EqFilter::In(values)
+    }
+}
+
+/// Above this length, `matches` builds a `HashSet` for O(1) membership
+/// instead of a linear scan per call. Chosen to be well above the common
+/// case (a handful of ids/values) where a `Vec` scan is faster than hashing.
+pub const IN_HASH_THRESHOLD: usize = 16;
+
+/// Membership test that switches to a `HashSet` above [`IN_HASH_THRESHOLD`]
+/// elements — used by generated `matches` impls for non-indexed `In`
+/// filters over larger value sets (per spec §4: "For large `In` arrays
+/// build a `HashSet` above a small length threshold inside `matches`").
+pub fn in_matches<T: Eq + Hash>(values: &[T], value: &T) -> bool {
+    if values.len() > IN_HASH_THRESHOLD {
+        values.iter().collect::<HashSet<_>>().contains(value)
+    } else {
+        values.iter().any(|v| v == value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn id_filter_eq_and_in() {
+        let eq: IdFilter<i64> = IdFilter::Eq(5);
+        assert!(eq.matches(&5));
+        assert!(!eq.matches(&6));
+
+        let in_: IdFilter<i64> = IdFilter::In(vec![1, 2, 3]);
+        assert!(in_.matches(&2));
+        assert!(!in_.matches(&4));
+    }
+
+    #[test]
+    fn id_filter_empty_in_matches_nothing() {
+        let empty: IdFilter<i64> = IdFilter::In(vec![]);
+        assert!(!empty.matches(&0));
+        assert!(!empty.matches(&1));
+    }
+
+    #[test]
+    fn id_filter_canonicalization() {
+        // Permuted + duplicated In arrays canonicalize identically.
+        let a = IdFilter::In(vec![3, 1, 2]).canonicalize();
+        let b = IdFilter::In(vec![1, 2, 3, 2, 1]).canonicalize();
+        assert_eq!(a, b);
+        assert_eq!(a, IdFilter::In(vec![1, 2, 3]));
+
+        // In([x]) collapses to Eq(x).
+        let single = IdFilter::In(vec![7]).canonicalize();
+        assert_eq!(single, IdFilter::Eq(7));
+    }
+
+    #[test]
+    fn numeric_filter_range_inclusive_bounds() {
+        let range = NumericFilter::Range {
+            min: Some(1i64),
+            max: Some(10),
+        };
+        assert!(range.matches(&1));
+        assert!(range.matches(&10));
+        assert!(range.matches(&5));
+        assert!(!range.matches(&0));
+        assert!(!range.matches(&11));
+    }
+
+    #[test]
+    fn numeric_filter_range_open_ended() {
+        let min_only = NumericFilter::Range {
+            min: Some(5i64),
+            max: None,
+        };
+        assert!(min_only.matches(&5));
+        assert!(min_only.matches(&1000));
+        assert!(!min_only.matches(&4));
+
+        let max_only = NumericFilter::Range {
+            min: None,
+            max: Some(5i64),
+        };
+        assert!(max_only.matches(&5));
+        assert!(max_only.matches(&-1000));
+        assert!(!max_only.matches(&6));
+    }
+
+    #[test]
+    fn numeric_filter_degenerate_range_canonicalizes_to_eq() {
+        let degenerate = NumericFilter::Range {
+            min: Some(3i64),
+            max: Some(3),
+        };
+        assert_eq!(degenerate.canonicalize(), NumericFilter::Eq(3));
+    }
+
+    #[test]
+    fn numeric_filter_in_canonicalization() {
+        let a = NumericFilter::In(vec![3i64, 1, 2]).canonicalize();
+        assert_eq!(a, NumericFilter::In(vec![1, 2, 3]));
+        let single = NumericFilter::In(vec![9i64]).canonicalize();
+        assert_eq!(single, NumericFilter::Eq(9));
+    }
+
+    #[test]
+    fn string_filter_contains_and_starts_with() {
+        let contains = StringFilter::Contains(Arc::from("mid"));
+        assert!(contains.matches(&Arc::from("something-midway")));
+        assert!(!contains.matches(&Arc::from("nope")));
+
+        let starts = StringFilter::StartsWith(Arc::from("pre"));
+        assert!(starts.matches(&Arc::from("prefix")));
+        assert!(!starts.matches(&Arc::from("suffix")));
+    }
+
+    #[test]
+    fn string_filter_in_canonicalization_dedupes_and_sorts() {
+        let a =
+            StringFilter::In(vec![Arc::from("b"), Arc::from("a"), Arc::from("b")]).canonicalize();
+        assert_eq!(a, StringFilter::In(vec![Arc::from("a"), Arc::from("b")]));
+    }
+
+    #[test]
+    fn bool_filter_is_bare_equality() {
+        assert!(true.matches(&true));
+        assert!(!true.matches(&false));
+        assert!(false.matches(&false));
+    }
+
+    #[test]
+    fn eq_filter_eq_and_in() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum State {
+            Armed,
+            Building,
+            Idle,
+        }
+
+        let filter: EqFilter<State> = EqFilter::In(vec![State::Armed, State::Building]);
+        assert!(filter.matches(&State::Armed));
+        assert!(filter.matches(&State::Building));
+        assert!(!filter.matches(&State::Idle));
+    }
+
+    #[test]
+    fn in_matches_large_set_uses_hashset_path_correctly() {
+        let values: Vec<i64> = (0..(IN_HASH_THRESHOLD as i64 + 10)).collect();
+        assert!(in_matches(&values, &0));
+        assert!(in_matches(&values, &(IN_HASH_THRESHOLD as i64 + 9)));
+        assert!(!in_matches(&values, &-1));
+        assert!(!in_matches(&values, &(IN_HASH_THRESHOLD as i64 + 10)));
+    }
+
+    #[test]
+    fn filter_serde_uses_explicit_tag() {
+        let filter = IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]);
+        let json = serde_json::to_value(&filter).unwrap();
+        assert_eq!(json["kind"], "in");
+        assert_eq!(json["value"], serde_json::json!(["a", "b"]));
+
+        let round_tripped: IdFilter<Arc<str>> = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, filter);
+    }
+}

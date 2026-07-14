@@ -3,6 +3,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cell;
 mod context;
+mod filter;
 #[cfg(not(target_arch = "wasm32"))]
 mod registration;
 mod request;
@@ -14,6 +15,10 @@ pub use cell::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
 pub use context::QueryCellContext;
 pub use context::QueryContext;
+pub use filter::{
+    EqFilter, Filter, Filterable, IN_HASH_THRESHOLD, IdFilter, NumericFilter, StringFilter,
+    in_matches,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::{
     QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration, QueryRuntimeMetrics,

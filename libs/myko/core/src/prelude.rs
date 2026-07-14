@@ -41,8 +41,9 @@ pub use crate::{
         },
     },
     query::{
-        AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
-        QueryTestCtx,
+        AnyQuery, EqFilter, Filter, Filterable, IN_HASH_THRESHOLD, IdFilter, NumericFilter, Query,
+        QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
+        StringFilter, in_matches,
     },
     report::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
