@@ -16,7 +16,7 @@ use std::{
 use dashmap::DashMap;
 use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MaterializeDefinite, Mutable,
-    WeakCellMap,
+    Watchable, WeakCellMap,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -37,8 +37,8 @@ use crate::{
         typed_map_from_any_item_with_typed_id,
     },
     query::{
-        FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
-        QueryTestCtx,
+        FilteredCellMap, LiveFilterQuery, QueryContext, QueryFactory, QueryHandler, QueryParams,
+        QueryRequest, QueryTestCtx,
     },
     report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
@@ -1296,6 +1296,29 @@ impl CellServerCtx {
             + 'static,
     {
         self.query_map(query, request)
+    }
+
+    /// Reactive filter parameters (phase 2 of the advanced-query-design
+    /// spec, §5): `filter_cell` replaces a value-based `GetXsByFilter` with
+    /// a live `Cell`, so a filter derived from other cells no longer needs
+    /// a `switch_map` wrapper — see `query::query_live` for the mechanics
+    /// (incremental bucket-diffing on `In`/`Eq` field changes, scoped
+    /// rescan on `Range`/`Contains` changes, never a graph teardown).
+    ///
+    /// Deliberately uncached, unlike `query_map`'s typed-projection cache:
+    /// a `Cell` is object identity, not a value, so there's no meaningful
+    /// key to share a projection under — each call site gets its own
+    /// independent graph node (spec §5: "no value-identity cache sharing").
+    pub fn query_live<F>(
+        &self,
+        filter_cell: impl Watchable<F>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
+        typed_map_from_any_item_with_typed_id(untyped, "CellServerCtx::query_live")
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
