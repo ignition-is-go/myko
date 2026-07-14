@@ -718,15 +718,41 @@ fn live_filter_matches<F: LiveFilterQuery>(filter: &F, item: &AnyItemArc) -> boo
     filter.matches(&typed)
 }
 
-/// Diff `candidates` (an authoritative point-in-time item set — a bucket's
-/// or the whole store's `snapshot()`) against `result`'s CURRENT membership
+/// Re-test `candidates` — ONE bucket's `snapshot()`, nothing more — against
+/// `filter`, inserting newly-matching items and retracting no-longer-
+/// matching ones. Deliberately does NOT touch any id outside `candidates`:
+/// `result` is a union of potentially several buckets (the partition-merge
+/// invariant means an id can only ever come from one bucket for a given
+/// field combination), so removing "anything not in this bucket" would
+/// wrongly retract items OTHER buckets contributed. Safe for both a
+/// freshly-added bucket's initial population (nothing to retract, every
+/// candidate either inserts or no-ops) and an unchanged bucket rescanned
+/// because a non-indexed field changed (retracts exactly this bucket's own
+/// now-stale contributions).
+fn apply_bucket_candidates<F: LiveFilterQuery>(
+    result: &AnyItemMap,
+    filter: &F,
+    candidates: Vec<(Arc<str>, AnyItemArc)>,
+) {
+    for (id, item) in candidates {
+        if live_filter_matches(filter, &item) {
+            result.insert(id, item);
+        } else {
+            result.remove(&id);
+        }
+    }
+}
+
+/// Diff `candidates` — the WHOLE authoritative scope of `result` (the
+/// entire store, in scan mode) — against `result`'s current membership
 /// under `filter`: insert newly-matching items, remove no-longer-matching
-/// ones, remove anything in `result` that isn't in `candidates` at all
-/// (covers deletes for a full-store rescan). Used for every "re-test a
-/// scope against a filter" case: a freshly-added bucket's initial
-/// population, an unchanged bucket rescanned because a non-indexed field
-/// changed, and scan mode's initial/rescan population.
-fn reconcile_result_membership<F: LiveFilterQuery>(
+/// ones, AND remove anything in `result` that isn't in `candidates` at all
+/// (covers deletes — an item removed from the store entirely is simply
+/// absent from a fresh `snapshot()`, not present-but-non-matching). Unlike
+/// [`apply_bucket_candidates`], this only makes sense when `candidates` is
+/// the FULL scope `result` is meant to reflect, never a single bucket's
+/// contents alongside other buckets' contributions.
+fn reconcile_full_scope_membership<F: LiveFilterQuery>(
     result: &AnyItemMap,
     filter: &F,
     candidates: Vec<(Arc<str>, AnyItemArc)>,
@@ -752,16 +778,35 @@ fn reconcile_result_membership<F: LiveFilterQuery>(
     }
 }
 
+/// Whether an [`apply_live_diff`] callback is watching one compound-key
+/// bucket (only ever affects the ids that bucket itself owns) or the whole
+/// store in scan mode (its `Initial` represents `result`'s entire scope, so
+/// deletes must retract ids absent from it too — see
+/// [`reconcile_full_scope_membership`] vs [`apply_bucket_candidates`]).
+#[derive(Clone, Copy)]
+enum LiveDiffScope {
+    Bucket,
+    FullStore,
+}
+
 /// Apply one incoming diff from a live-tracked source (a bucket, or the
 /// whole store in scan mode) to `result`, re-testing every affected item
 /// against `filter` — always read fresh at the moment the diff arrives
 /// (never a value captured at subscribe time), since a bucket/store
 /// subscription outlives many filter ticks.
-fn apply_live_diff<F: LiveFilterQuery>(result: &AnyItemMap, diff: &BucketDiff, filter: &F) {
+fn apply_live_diff<F: LiveFilterQuery>(
+    result: &AnyItemMap,
+    diff: &BucketDiff,
+    filter: &F,
+    scope: LiveDiffScope,
+) {
     match diff {
-        MapDiff::Initial { entries } => {
-            reconcile_result_membership(result, filter, entries.clone());
-        }
+        MapDiff::Initial { entries } => match scope {
+            LiveDiffScope::Bucket => apply_bucket_candidates(result, filter, entries.clone()),
+            LiveDiffScope::FullStore => {
+                reconcile_full_scope_membership(result, filter, entries.clone())
+            }
+        },
         MapDiff::Insert { key, value } => {
             if live_filter_matches(filter, value) {
                 result.insert(key.clone(), value.clone());
@@ -779,7 +824,7 @@ fn apply_live_diff<F: LiveFilterQuery>(result: &AnyItemMap, diff: &BucketDiff, f
         }
         MapDiff::Batch { changes } => {
             for change in changes {
-                apply_live_diff(result, change, filter);
+                apply_live_diff(result, change, filter, scope);
             }
         }
     }
@@ -874,14 +919,20 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 // The SET of belongs_to fields being routed on changed
                 // shape (different field combination, or previously scan
                 // mode) — migrating individual bucket subscriptions across
-                // different index instances isn't meaningful, so tear
-                // down everything tracked so far and rebuild fresh.
-                for (_, (bucket, _guard)) in state.bucket_guards.drain() {
-                    for (id, _) in bucket.snapshot() {
-                        result.remove(&id);
-                    }
-                }
+                // different index instances isn't meaningful, so tear down
+                // everything tracked so far. Clear `result`'s ENTIRE
+                // current contents (not just what's tracked in
+                // bucket_guards) — the previous tick may have been in scan
+                // mode, whose contributions aren't tracked per-bucket at
+                // all, so a narrower "remove only bucket_guards' ids" clear
+                // would leave scan mode's stale items behind.
+                state.bucket_guards.clear();
                 state.bucket_filter_refs.clear();
+                let stale_ids: Vec<Arc<str>> =
+                    result.snapshot().into_iter().map(|(id, _)| id).collect();
+                for id in stale_ids {
+                    result.remove(&id);
+                }
             }
 
             let new_keys: HashSet<CompoundKey> = route.keys.iter().cloned().collect();
@@ -911,7 +962,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 );
                 for key in added {
                     let bucket = index.bucket_for(key.clone(), route.extract_fk).lock();
-                    reconcile_result_membership(result, new_filter, bucket.snapshot());
+                    apply_bucket_candidates(result, new_filter, bucket.snapshot());
 
                     let filter_state = Arc::new(Mutex::new(new_filter.clone()));
                     let filter_state_for_cb = filter_state.clone();
@@ -924,7 +975,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .clone();
-                        apply_live_diff(&result, diff, &filter);
+                        apply_live_diff(&result, diff, &filter, LiveDiffScope::Bucket);
                     });
                     state.bucket_guards.insert(key.clone(), (bucket, guard));
                     state.bucket_filter_refs.insert(key, filter_state);
@@ -942,7 +993,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_filter.clone();
                 }
                 if let Some((bucket, _)) = state.bucket_guards.get(key) {
-                    reconcile_result_membership(result, new_filter, bucket.snapshot());
+                    apply_bucket_candidates(result, new_filter, bucket.snapshot());
                 }
             }
 
@@ -950,18 +1001,24 @@ fn reconcile_live_query<F: LiveFilterQuery>(
         }
         None => {
             // Scan mode: no belongs_to routing applies. Tear down any
-            // indexed-mode bucket subscriptions.
+            // indexed-mode bucket subscriptions and clear `result`'s entire
+            // current contents (not just what's tracked in bucket_guards —
+            // same defense-in-depth reasoning as the route-shape-changed
+            // branch above: whatever was there belongs to a scope this
+            // tick is discarding wholesale, not incrementally adjusting).
             if state.prev_route_field_names.is_some() {
-                for (_, (bucket, _guard)) in state.bucket_guards.drain() {
-                    for (id, _) in bucket.snapshot() {
-                        result.remove(&id);
-                    }
+                state.bucket_guards.clear();
+                state.bucket_filter_refs.clear();
+                let stale_ids: Vec<Arc<str>> =
+                    result.snapshot().into_iter().map(|(id, _)| id).collect();
+                for id in stale_ids {
+                    result.remove(&id);
                 }
                 state.prev_route_field_names = None;
             }
 
             let store = registry.get_or_create(F::entity_type());
-            reconcile_result_membership(result, new_filter, store.snapshot());
+            reconcile_full_scope_membership(result, new_filter, store.snapshot());
 
             if state.scan_guard.is_none() {
                 let filter_state = Arc::new(Mutex::new(new_filter.clone()));
@@ -975,7 +1032,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .clone();
-                    apply_live_diff(&result, diff, &filter);
+                    apply_live_diff(&result, diff, &filter, LiveDiffScope::FullStore);
                 });
                 state.scan_guard = Some(guard);
             } else if let Some(filter_state) = &state.scan_filter_ref {
