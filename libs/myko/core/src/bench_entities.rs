@@ -108,6 +108,26 @@ mod snapshot {
     }
 }
 
+// Container-field fixture — mirrors rship's Class A Filterable gap (Vec/
+// HashMap/tuple entity fields), which hit the same "no orphan-rule
+// workaround exists downstream" problem as serde_json::Value did before
+// the blanket container impls existed. #[myko_item] must generate a
+// compiling, derivable XFilter with `Unfilterable`-backed fields for all
+// three container shapes.
+pub use containers::BenchContainerFields;
+mod containers {
+    use std::collections::HashMap;
+
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchContainerFields {
+        pub tags: Vec<String>,
+        pub metadata: HashMap<String, i64>,
+        pub coordinates: (i64, i64),
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {

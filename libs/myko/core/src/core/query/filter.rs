@@ -7,7 +7,11 @@
 //! Selection is driven by the [`Filterable`] trait's associated type, so
 //! `#[myko_item]` never has to sniff field types syntactically.
 
-use std::{collections::HashSet, hash::Hash, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    sync::Arc,
+};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -460,6 +464,25 @@ macro_rules! impl_filterable_eq {
     };
 }
 
+/// Marks `$ty` filterable via [`Unfilterable`] — the escape hatch for a
+/// downstream crate's own opaque payload structs (arbitrary nested data with
+/// no query-meaningful equality, the same shape `serde_json::Value` needed
+/// [`Unfilterable`] for above). Unlike [`impl_filterable_eq!`], `$ty` need
+/// not implement `Eq`/`Ord`/`Hash` — `Unfilterable`'s `Filter`/`CanonicalFilter`
+/// impls are unconditional over any `T`, so this macro only needs `$ty` to
+/// exist as a type; the generated `XFilter` field is structurally always
+/// `None`, same as any other `Unfilterable` field.
+#[macro_export]
+macro_rules! impl_filterable_opaque {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl $crate::query::Filterable for $ty {
+                type Filter = $crate::query::Unfilterable;
+            }
+        )+
+    };
+}
+
 /// Above this length, `matches` builds a `HashSet` for O(1) membership
 /// instead of a linear scan per call. Chosen to be well above the common
 /// case (a handful of ids/values) where a `Vec` scan is faster than hashing.
@@ -507,6 +530,34 @@ impl CanonicalFilter for Unfilterable {
 }
 
 impl Filterable for serde_json::Value {
+    type Filter = Unfilterable;
+}
+
+// Container blanket impls — `Vec<T>`, `HashMap<K, V>`, and small tuples are
+// foreign types (from `std`), so a downstream crate can never implement our
+// local `Filterable` trait for them itself (orphan rule); these have to
+// live here or fields of these shapes can never appear on an entity at all.
+// Unfilterable is the only sound choice for the same reason `serde_json::Value`
+// gets it above: "list/map of T" and "tuple of heterogeneous fields" have no
+// query-meaningful equality/ordering as a single field-level predicate,
+// independent of what `T`/`K`/`V` themselves support.
+impl<T> Filterable for Vec<T> {
+    type Filter = Unfilterable;
+}
+
+impl<K, V> Filterable for HashMap<K, V> {
+    type Filter = Unfilterable;
+}
+
+impl<A, B> Filterable for (A, B) {
+    type Filter = Unfilterable;
+}
+
+impl<A, B, C> Filterable for (A, B, C) {
+    type Filter = Unfilterable;
+}
+
+impl<A, B, C, D> Filterable for (A, B, C, D) {
     type Filter = Unfilterable;
 }
 
@@ -720,5 +771,45 @@ mod tests {
     fn serde_json_value_is_filterable_via_unfilterable() {
         fn assert_filterable<T: Filterable>() {}
         assert_filterable::<serde_json::Value>();
+    }
+
+    #[test]
+    fn container_types_are_filterable_via_unfilterable() {
+        // Vec<T>/HashMap<K, V>/tuples are foreign (std) types — a
+        // downstream crate can never impl our local Filterable trait for
+        // them itself (orphan rule), so these blanket impls have to live
+        // here or a field of any of these shapes blocks #[myko_item]'s
+        // XFilter derive entirely.
+        fn assert_filterable<T: Filterable>() {}
+        assert_filterable::<Vec<String>>();
+        assert_filterable::<HashMap<String, i64>>();
+        assert_filterable::<(String, i64)>();
+        assert_filterable::<(String, i64, bool)>();
+        assert_filterable::<(String, i64, bool, Arc<str>)>();
+
+        let none: Option<<Vec<String> as Filterable>::Filter> = None;
+        let json = serde_json::to_value(&none).unwrap();
+        assert_eq!(json, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn impl_filterable_opaque_macro_wires_up_filterable() {
+        // Mirrors a downstream crate's own opaque payload struct (e.g.
+        // rship's Snapshot-adjacent types) that isn't Eq/Ord/Hash and has
+        // no query-meaningful equality — impl_filterable_opaque! is how it
+        // opts into Unfilterable without hand-writing the impl.
+        #[derive(Debug, Clone, PartialEq)]
+        struct OpaquePayload {
+            #[allow(dead_code)]
+            blob: Vec<u8>,
+        }
+        crate::impl_filterable_opaque!(OpaquePayload);
+
+        fn assert_filterable<T: Filterable>() {}
+        assert_filterable::<OpaquePayload>();
+
+        let none: Option<<OpaquePayload as Filterable>::Filter> = None;
+        let json = serde_json::to_value(&none).unwrap();
+        assert_eq!(json, serde_json::Value::Null);
     }
 }
