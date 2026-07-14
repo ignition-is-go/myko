@@ -47,6 +47,30 @@ impl Parse for ItemArgs {
     }
 }
 
+/// If `ty` is `Option<Inner>`, returns `Inner`. Used by the advanced-query
+/// filter codegen: an optional entity field's filter still targets the
+/// inner type (`Filterable` is implemented on `Option<T>` as a passthrough
+/// to `T::Filter` — see `core::query::filter` — so the *type* resolves
+/// either way), but `matches` needs the inner type specifically to compare
+/// against, since a `None` field must never satisfy any filter regardless
+/// of what the filter says (spec §1: "a `None` field matches no filter").
+fn option_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    })
+}
+
 pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStream {
     // Collect relationship information BEFORE stripping attributes
     let rel_info = relationship::collect_relationships(&input_struct);
@@ -79,6 +103,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // orphaned and break compilation when the feature is off.
     crate::gate_ts_attrs(&mut input_struct.attrs);
 
+    let mut filter_fields: Vec<(syn::Ident, syn::Type)> = Vec::new();
     if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
         // Strip relationship and setter attributes from each field
         for field in named.iter_mut() {
@@ -95,6 +120,14 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         };
 
         named.push(id_field);
+
+        // Snapshot (name, type) for every field — including the id field
+        // just pushed — for XFilter codegen (see below). Mirrors exactly
+        // the field set `partially::Partial` uses to build PartialX.
+        filter_fields = named
+            .iter()
+            .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
+            .collect();
     };
 
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
@@ -338,6 +371,127 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
              }
          }
 
+    };
+
+    // ─────────────────────────────────────────────────────────────────
+    // Advanced query filters (docs/superpowers/specs/2026-07-13-advanced-
+    // query-design.md). XFilter mirrors PartialX field-for-field, but each
+    // field is Option<<FieldType as Filterable>::Filter> instead of
+    // Option<FieldType> — the per-type filter (IdFilter/NumericFilter/
+    // StringFilter/EqFilter/bool) the compiler resolves via Filterable.
+    // Purely additive: PartialX/GetXsByQuery above are untouched.
+    // ─────────────────────────────────────────────────────────────────
+
+    let filter_ident = format_ident!("{}Filter", name_str);
+    let get_by_filter_ident = format_ident!("Get{}sByFilter", name_str);
+
+    let filter_struct_fields: Vec<TokenStream> = filter_fields
+        .iter()
+        .map(|(field_ident, field_ty)| {
+            quote! {
+                pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
+            }
+        })
+        .collect();
+
+    let filter_match_terms: Vec<TokenStream> = filter_fields
+        .iter()
+        .map(|(field_ident, field_ty)| {
+            if option_inner_type(field_ty).is_some() {
+                // Optional entity field: a filter only matches items whose
+                // field is Some AND whose inner value satisfies it — None
+                // never matches, regardless of what the filter says.
+                quote! {
+                    self.#field_ident.as_ref().is_none_or(|f| {
+                        item.#field_ident.as_ref().is_some_and(|v| #krate::query::Filter::matches(f, v))
+                    })
+                }
+            } else {
+                quote! {
+                    self.#field_ident.as_ref().is_none_or(|f| #krate::query::Filter::matches(f, &item.#field_ident))
+                }
+            }
+        })
+        .collect();
+    let filter_matches_body = filter_match_terms
+        .into_iter()
+        .reduce(|acc, term| quote! { (#acc) && (#term) })
+        .unwrap_or_else(|| quote! { true });
+
+    let filter_canonicalize_terms: Vec<TokenStream> = filter_fields
+        .iter()
+        .map(|(field_ident, _field_ty)| {
+            quote! {
+                #field_ident: self.#field_ident.map(#krate::query::CanonicalFilter::canonicalize)
+            }
+        })
+        .collect();
+
+    let filter_struct = quote! {
+        #[derive(Clone, Default, PartialEq, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+        #[derive(#krate::TS)]
+        #serde_rename_attr
+        pub struct #filter_ident {
+            #(#filter_struct_fields),*
+        }
+
+        impl #filter_ident {
+            pub fn matches(&self, item: &#name) -> bool {
+                #filter_matches_body
+            }
+
+            /// Normalize every field to canonical form (sorted+deduped `In`,
+            /// `In([x])` -> `Eq(x)`, `Range{a,a}` -> `Eq(a)`) so equivalent
+            /// filters hash/compare equal for query-cache identity — see
+            /// `Get{name}sByFilter`'s manually-written `CacheKey` impl below.
+            pub fn canonicalize(self) -> Self {
+                Self {
+                    #(#filter_canonicalize_terms),*
+                }
+            }
+        }
+
+        #krate::register_ts_export!(#filter_ident);
+    };
+
+    let get_by_filter_query = quote! {
+        // non_hash_cache_key: skips deriving Hash on the generated struct —
+        // XFilter can contain floats/Vec, neither Hash-able, so the default
+        // #[derive(Hash)] path myko_query would otherwise take can't apply.
+        // manual_cache_key: skips the auto-generated CacheKey impl entirely,
+        // since the key must be computed from the CANONICALIZED filter, not
+        // the as-constructed one — so e.g. In([b,a]) and In([a,b]) share one
+        // query cell (spec §1 canonicalization requirement / acceptance
+        // criterion 4) regardless of which order a caller built the filter in.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_manual_cache_key]
+        #[#krate::myko_query(#name)]
+        pub struct #get_by_filter_ident(pub #filter_ident);
+
+        impl #krate::prelude::CacheKey for #get_by_filter_ident {
+            fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                #krate::cache::write_serde_cache_key(&self.0.clone().canonicalize(), state);
+            }
+        }
+
+        impl #krate::prelude::QueryHandler for #get_by_filter_ident {
+            fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
+                ctx.query.0.matches(&ctx.item)
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            fn build_view(
+                ctx: #krate::prelude::QueryBuildCellCtx<Self>,
+            ) -> Option<#krate::prelude::FilteredCellMap>
+            where
+                Self: std::marker::Send + std::marker::Sync + 'static,
+            {
+                // K-bucket union routing for In/Eq on #[belongs_to] fields
+                // lands in a follow-up commit (BelongsToSourceIndex union
+                // support) — scan fallback here is correct but unindexed.
+                None
+            }
+        }
     };
 
     // Generate per-entity count result type (e.g., TargetCount, InstanceCount)
@@ -775,6 +929,10 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #get_by_ids_query
 
         #get_by_partial_query
+
+        #filter_struct
+
+        #get_by_filter_query
 
         #count_result_type
 

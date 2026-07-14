@@ -18,13 +18,30 @@ pub trait Filter<T> {
     fn matches(&self, value: &T) -> bool;
 }
 
+/// Normalizes a filter to its canonical form — required for query-cache
+/// identity (see spec §1): sorted+deduped `In`, `In([x])` -> `Eq(x)`,
+/// `Range{a,a}` -> `Eq(a)`. Implemented uniformly across every filter type,
+/// including `bool` (a no-op — bare equality has nothing to canonicalize),
+/// so `#[myko_item]`'s generated `XFilter::canonicalize` can canonicalize
+/// every field the same way regardless of which filter type it holds.
+pub trait CanonicalFilter: Sized {
+    fn canonicalize(self) -> Self;
+}
+
 /// Associates a type with the filter type that can express queries over it.
 /// Implemented for every field type `#[myko_item]` can generate a filter
 /// for — numeric primitives, `String`/`Arc<str>`, `bool`, entity id
 /// newtypes, and (via a per-type impl or macro-emitted default) opaque/enum
 /// types through [`EqFilter`].
+///
+/// Deliberately no `Filter<Self>` bound on the associated type: the
+/// `Option<T>` impl below sets `type Filter = T::Filter`, which implements
+/// `Filter<T>`, not `Filter<Option<T>>` — the macro-generated `matches`
+/// code unwraps the `Option` itself (a `None` field never matches, see
+/// that impl's doc comment) rather than dispatching through `Filter`
+/// uniformly, so this trait only needs to name the right filter *type*.
 pub trait Filterable: Sized {
-    type Filter: Filter<Self>;
+    type Filter;
 }
 
 /// Sort + dedup an `In` value set. Order doesn't affect matching, only
@@ -61,9 +78,22 @@ pub enum IdFilter<T> {
     In(Vec<T>),
 }
 
-impl<T: Ord + Clone> IdFilter<T> {
-    /// Canonicalize: sort + dedup `In`, collapse a 1-element `In` to `Eq`.
-    pub fn canonicalize(self) -> Self {
+impl<T: Clone> IdFilter<T> {
+    /// The set of ids this filter matches, if finite and enumerable without
+    /// touching the store — always true for `IdFilter`, since it never
+    /// contains a scan-only variant. Used to route `In` through
+    /// `BelongsToSourceIndex` as a bucket union instead of a table scan.
+    pub fn key_values(&self) -> Vec<T> {
+        match self {
+            IdFilter::Eq(value) => vec![value.clone()],
+            IdFilter::In(values) => values.clone(),
+        }
+    }
+}
+
+impl<T: Ord + Clone> CanonicalFilter for IdFilter<T> {
+    /// Sort + dedup `In`, collapse a 1-element `In` to `Eq`.
+    fn canonicalize(self) -> Self {
         match self {
             IdFilter::In(values) => {
                 let values = canonical_in_values(values);
@@ -73,17 +103,6 @@ impl<T: Ord + Clone> IdFilter<T> {
                 }
             }
             other => other,
-        }
-    }
-
-    /// The set of ids this filter matches, if finite and enumerable without
-    /// touching the store — always true for `IdFilter`, since it never
-    /// contains a scan-only variant. Used to route `In` through
-    /// `BelongsToSourceIndex` as a bucket union instead of a table scan.
-    pub fn key_values(&self) -> Vec<T> {
-        match self {
-            IdFilter::Eq(value) => vec![value.clone()],
-            IdFilter::In(values) => values.clone(),
         }
     }
 }
@@ -132,10 +151,10 @@ pub enum NumericFilter<T> {
     },
 }
 
-impl<T: PartialOrd + PartialEq + Clone> NumericFilter<T> {
-    /// Canonicalize: sort + dedup `In`, collapse 1-element `In` to `Eq`,
-    /// collapse `Range{min: Some(a), max: Some(a)}` to `Eq(a)`.
-    pub fn canonicalize(self) -> Self {
+impl<T: PartialOrd + PartialEq + Clone> CanonicalFilter for NumericFilter<T> {
+    /// Sort + dedup `In`, collapse 1-element `In` to `Eq`, collapse
+    /// `Range{min: Some(a), max: Some(a)}` to `Eq(a)`.
+    fn canonicalize(self) -> Self {
         match self {
             NumericFilter::In(values) => {
                 let values = canonical_in_values_partial(values);
@@ -207,9 +226,9 @@ pub enum StringFilter {
     StartsWith(Arc<str>),
 }
 
-impl StringFilter {
-    /// Canonicalize: sort + dedup `In`, collapse a 1-element `In` to `Eq`.
-    pub fn canonicalize(self) -> Self {
+impl CanonicalFilter for StringFilter {
+    /// Sort + dedup `In`, collapse a 1-element `In` to `Eq`.
+    fn canonicalize(self) -> Self {
         match self {
             StringFilter::In(values) => {
                 let values = canonical_in_values(values);
@@ -267,6 +286,16 @@ impl Filterable for String {
     type Filter = StringFilter;
 }
 
+/// An optional entity field (`Option<T>`) is filtered by `T`'s own filter
+/// type — the macro-generated `matches` impl special-cases `None` (never
+/// matches, regardless of the filter) rather than needing an `Option`-aware
+/// filter type. This impl exists purely so `<Option<T> as Filterable>::Filter`
+/// resolves to the same type as `<T as Filterable>::Filter` for the
+/// generated `XFilter` struct's field declarations.
+impl<T: Filterable> Filterable for Option<T> {
+    type Filter = T::Filter;
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // bool — bare equality. In(Vec<bool>) would always reduce to Eq or
 // match-everything, so it doesn't exist as a variant; `bool` itself is its
@@ -283,6 +312,13 @@ impl Filterable for bool {
     type Filter = bool;
 }
 
+impl CanonicalFilter for bool {
+    /// No-op — bare equality has nothing to canonicalize.
+    fn canonicalize(self) -> Self {
+        self
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // EqFilter — fallback for enums and other exact-only opaque types: Eq plus
 // set membership, no substring/range operations.
@@ -295,9 +331,9 @@ pub enum EqFilter<T> {
     In(Vec<T>),
 }
 
-impl<T: Ord + Clone> EqFilter<T> {
-    /// Canonicalize: sort + dedup `In`, collapse a 1-element `In` to `Eq`.
-    pub fn canonicalize(self) -> Self {
+impl<T: Ord + Clone> CanonicalFilter for EqFilter<T> {
+    /// Sort + dedup `In`, collapse a 1-element `In` to `Eq`.
+    fn canonicalize(self) -> Self {
         match self {
             EqFilter::In(values) => {
                 let values = canonical_in_values(values);
