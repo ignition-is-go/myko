@@ -385,6 +385,39 @@ pub fn in_matches<T: Eq + Hash>(values: &[T], value: &T) -> bool {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Unfilterable — the escape hatch for genuinely opaque payload fields
+// (e.g. serde_json::Value), where the spec's own principle ("each type's
+// filter exposes exactly the operations meaningful for it, and nothing
+// more") means the right operation set is NONE. A degenerate EqFilter<T>
+// doesn't work here either: an opaque JSON blob has no meaningful equality
+// as a query predicate, and it doesn't implement Ord, which In's
+// canonicalization sort needs. Uninhabited (zero variants), so
+// `Option<Unfilterable>` — the field type #[myko_item] generates for a
+// Filterable::Filter = Unfilterable field — can only ever be `None`: the
+// field is structurally unfilterable while the containing XFilter still
+// compiles, derives, and (de)serializes normally.
+// ─────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum Unfilterable {}
+
+impl<T> Filter<T> for Unfilterable {
+    fn matches(&self, _value: &T) -> bool {
+        match *self {}
+    }
+}
+
+impl CanonicalFilter for Unfilterable {
+    fn canonicalize(self) -> Self {
+        match self {}
+    }
+}
+
+impl Filterable for serde_json::Value {
+    type Filter = Unfilterable;
+}
+
 // Register the four filter types for TS export, once per generic type here
 // (not per-entity — unlike XFilter, which is a concrete struct generated
 // fresh per entity by #[myko_item], these are ts-rs *generic* TS types:
@@ -544,5 +577,34 @@ mod tests {
 
         let round_tripped: IdFilter<Arc<str>> = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped, filter);
+    }
+
+    #[test]
+    fn unfilterable_field_is_always_none() {
+        // Nothing constructs an Unfilterable value — the only inhabitant
+        // of Option<Unfilterable> is None, and it stays that way through a
+        // full serde round-trip.
+        let none: Option<Unfilterable> = None;
+        let json = serde_json::to_value(&none).unwrap();
+        assert_eq!(json, serde_json::Value::Null);
+        let round_tripped: Option<Unfilterable> = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, None);
+    }
+
+    #[test]
+    fn unfilterable_field_rejects_a_populated_value() {
+        // Deserializing anything OTHER than null/absent into
+        // Option<Unfilterable> must fail — there is no valid Unfilterable
+        // payload to construct, so a filter that tries to pin this field
+        // is rejected rather than silently accepted and ignored.
+        let attempted = serde_json::json!({"kind": "eq", "value": "anything"});
+        let result: Result<Option<Unfilterable>, _> = serde_json::from_value(attempted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn serde_json_value_is_filterable_via_unfilterable() {
+        fn assert_filterable<T: Filterable>() {}
+        assert_filterable::<serde_json::Value>();
     }
 }

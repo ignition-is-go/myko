@@ -17,7 +17,7 @@ pub use context::QueryCellContext;
 pub use context::QueryContext;
 pub use filter::{
     CanonicalFilter, EqFilter, Filter, Filterable, IN_HASH_THRESHOLD, IdFilter, NumericFilter,
-    StringFilter, in_matches,
+    StringFilter, Unfilterable, in_matches,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::{

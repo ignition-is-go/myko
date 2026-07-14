@@ -93,6 +93,21 @@ mod compound_child {
     }
 }
 
+// Opaque JSON payload field fixture — mirrors rship's Snapshot entity
+// (json payload field), which hit `Filterable` not being implemented for
+// `serde_json::Value` before the Unfilterable marker filter existed.
+// #[myko_item] must still generate a compiling, derivable XFilter with a
+// `payload: Option<Unfilterable>` field that can only ever be `None`.
+pub use snapshot::BenchSnapshot;
+mod snapshot {
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchSnapshot {
+        pub payload: serde_json::Value,
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {
