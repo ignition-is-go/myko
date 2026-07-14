@@ -454,6 +454,95 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #krate::register_ts_export!(#filter_ident);
     };
 
+    // K-bucket union routing for In/Eq on #[belongs_to] fields — the spec
+    // §4 hard requirement. Mirrors belongs_to_fast_paths' subset
+    // enumeration (largest/most-selective combination first), but instead
+    // of a single Eq foreign_id, extracts each matched field's IdFilter
+    // key_values() (the Eq value, or the whole In set — id filters only
+    // ever express Eq/In, so this is always index-servable, never a scan)
+    // and unions the cartesian product of every field's value set through
+    // build_belongs_to_union_source_map. A field with an In set of size N
+    // and another of size M yields N*M compound keys, each backed by its
+    // own bucket in the union.
+    let filter_belongs_to_fast_paths: Vec<TokenStream> = {
+        let n = required_belongs_to.len();
+        let mut masks: Vec<u32> = (1u32..(1u32 << n)).collect();
+        masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
+
+        masks
+            .into_iter()
+            .map(|mask| {
+                let selected: Vec<&relationship::BelongsToInfo> = (0..n)
+                    .filter(|i| mask & (1 << i) != 0)
+                    .map(|i| required_belongs_to[i])
+                    .collect();
+
+                let field_idents: Vec<_> = selected
+                    .iter()
+                    .map(|bt| format_ident!("{}", bt.field_name))
+                    .collect();
+                let field_names: Vec<String> =
+                    selected.iter().map(|bt| bt.field_name.clone()).collect();
+                let f_idents: Vec<_> = (0..selected.len())
+                    .map(|i| format_ident!("filter{}", i))
+                    .collect();
+                let field_ref_exprs: Vec<TokenStream> = field_idents
+                    .iter()
+                    .map(|field_ident| quote! { ctx.query.0.#field_ident.as_ref() })
+                    .collect();
+
+                let if_let_expr = if selected.len() == 1 {
+                    let f0 = &f_idents[0];
+                    let ref_expr = &field_ref_exprs[0];
+                    quote! { if let Some(#f0) = #ref_expr }
+                } else {
+                    quote! { if let (#(Some(#f_idents)),*) = (#(#field_ref_exprs),*) }
+                };
+
+                let extractor_field_exprs: Vec<TokenStream> = field_idents
+                    .iter()
+                    .map(|field_ident| {
+                        quote! { std::sync::Arc::<str>::from(e.#field_ident.as_ref()) }
+                    })
+                    .collect();
+                let value_set_exprs: Vec<TokenStream> = f_idents
+                    .iter()
+                    .map(|f| {
+                        quote! {
+                            #f.key_values()
+                                .into_iter()
+                                .map(|v| std::sync::Arc::<str>::from(v.as_ref()))
+                                .collect::<Vec<std::sync::Arc<str>>>()
+                        }
+                    })
+                    .collect();
+
+                quote! {
+                    #if_let_expr {
+                        let value_sets: Vec<Vec<std::sync::Arc<str>>> = vec![#(#value_set_exprs),*];
+                        let keys = #krate::query::cartesian_product(value_sets);
+                        let source = #krate::query::build_belongs_to_union_source_map(
+                            ctx.query_context.registry(),
+                            ctx.query_context.request_ctx.host_id,
+                            #name_str,
+                            &[#(#field_names),*],
+                            |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
+                                item.downcast_ref::<#name>()
+                                    .map(|e| vec![#(#extractor_field_exprs),*])
+                            },
+                            keys,
+                        );
+                        return Some(#krate::query::filter_query_over_source::<#get_by_filter_ident>(
+                            source,
+                            ctx.query.clone(),
+                            ctx.query_context.query_context.clone(),
+                        ));
+                    }
+                }
+            })
+            .collect()
+    };
+
     let get_by_filter_query = quote! {
         // non_hash_cache_key: skips deriving Hash on the generated struct —
         // XFilter can contain floats/Vec, neither Hash-able, so the default
@@ -486,9 +575,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
-                // K-bucket union routing for In/Eq on #[belongs_to] fields
-                // lands in a follow-up commit (BelongsToSourceIndex union
-                // support) — scan fallback here is correct but unindexed.
+                #(#filter_belongs_to_fast_paths)*
                 None
             }
         }

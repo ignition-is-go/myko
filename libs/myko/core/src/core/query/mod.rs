@@ -22,7 +22,8 @@ pub use filter::{
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::{
     QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration, QueryRuntimeMetrics,
-    QueryRuntimePerIdMetrics, build_belongs_to_source_map, build_ids_source_map,
+    QueryRuntimePerIdMetrics, UNION_KEYS_WARN_THRESHOLD, build_belongs_to_source_map,
+    build_belongs_to_union_source_map, build_ids_source_map, cartesian_product,
     filter_query_over_source, query_runtime_metrics, query_runtime_metrics_by_id,
     sweep_all_belongs_to_source_indexes,
 };

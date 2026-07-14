@@ -521,15 +521,154 @@ pub fn build_belongs_to_source_map(
         foreign_ids.len(),
         "build_belongs_to_source_map: field_names and foreign_ids must be positionally paired"
     );
+    let index =
+        belongs_to_source_index_for(&registry, host_id, local_type, field_names, extract_fk);
+    index.bucket_for(foreign_ids, extract_fk).lock()
+}
+
+fn belongs_to_source_index_for(
+    registry: &Arc<StoreRegistry>,
+    host_id: Uuid,
+    local_type: &'static str,
+    field_names: &'static [&'static str],
+    extract_fk: CompoundFkExtractor,
+) -> Arc<BelongsToSourceIndex> {
     let key = format!("{host_id}:{local_type}:{}", field_names.join("+"));
-    let index = belongs_to_source_indexes()
+    belongs_to_source_indexes()
         .entry(key)
         .or_insert_with(|| {
             let store = registry.get_or_create(local_type);
             BelongsToSourceIndex::new(store, extract_fk)
         })
-        .clone();
-    index.bucket_for(foreign_ids, extract_fk).lock()
+        .clone()
+}
+
+/// Above this many union keys, `build_belongs_to_union_source_map` logs a
+/// warning instead of silently subscribing to a huge number of buckets — a
+/// caller combining several large `In` fields on the same query hits a
+/// cartesian-product blow-up (spec §4: "either cap the product size or
+/// document the blow-up and log when it exceeds a threshold"). No hard cap:
+/// per the spec's hard requirement, an indexed field must never fall back
+/// to a table scan, so this only observes, never degrades.
+pub const UNION_KEYS_WARN_THRESHOLD: usize = 1000;
+
+/// Rewrite a source bucket's diff into a form safe to apply additively to a
+/// union of several such sources: `Initial { entries }` becomes a `Batch`
+/// of `Insert`s (a source's Initial is "here is MY full state," which would
+/// otherwise replace the union's contents rather than contribute to it —
+/// see [`build_belongs_to_union_source_map`]). Insert/Remove/Update are
+/// already scoped to one key and forward unchanged; a nested `Batch` is
+/// rewritten recursively (its own `Initial`s get the same treatment) since
+/// a source can legitimately emit one. Returns `None` for an empty
+/// resulting batch (nothing to apply) rather than an empty `Batch` diff.
+fn additive_union_diff(diff: &BucketDiff) -> Option<BucketDiff> {
+    match diff {
+        MapDiff::Initial { entries } => {
+            if entries.is_empty() {
+                return None;
+            }
+            Some(MapDiff::Batch {
+                changes: entries
+                    .iter()
+                    .map(|(key, value)| MapDiff::Insert {
+                        key: key.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            })
+        }
+        MapDiff::Batch { changes } => {
+            let rewritten: Vec<BucketDiff> =
+                changes.iter().filter_map(additive_union_diff).collect();
+            if rewritten.is_empty() {
+                None
+            } else {
+                Some(MapDiff::Batch { changes: rewritten })
+            }
+        }
+        other => Some(other.clone()),
+    }
+}
+
+/// Union of K belongs_to buckets — routes an `In` (or multi-field compound
+/// `In`) query through [`BelongsToSourceIndex`] as a union of exact-key
+/// lookups instead of a table scan (spec §4 hard requirement: an `In` on an
+/// indexed field must be index-servable, by construction, since id filters
+/// only ever express `Eq`/`In`). Each item can only ever satisfy exactly
+/// one of the given compound keys — a field has exactly one value — so this
+/// is a partition merge, not a proper union: no dedup/collision handling is
+/// needed between the K sources.
+///
+/// Each source bucket is kept alive by `result.own(guard)` — the same
+/// pattern `typed_map_from_any_item_with_typed_id` uses, and deliberately
+/// NOT the bare-clone-with-nothing-retained shape that froze `CellMap::
+/// size()` (see the `count_fresh_cell_test.rs` regression this mirrors):
+/// the guard's own strong reference back to its source is what keeps each
+/// bucket's store subscription alive for as long as `result` is.
+pub fn build_belongs_to_union_source_map(
+    registry: Arc<StoreRegistry>,
+    host_id: Uuid,
+    local_type: &'static str,
+    field_names: &'static [&'static str],
+    extract_fk: CompoundFkExtractor,
+    keys: Vec<CompoundKey>,
+) -> FilteredCellMap {
+    if keys.len() > UNION_KEYS_WARN_THRESHOLD {
+        tracing::warn!(
+            target: "myko::core::query::registration",
+            "belongs_to union route for {local_type}[{}] is subscribing to {} buckets \
+             (> {UNION_KEYS_WARN_THRESHOLD}) — likely a cartesian product of several \
+             large `In` fields on the same query",
+            field_names.join("+"),
+            keys.len(),
+        );
+    }
+
+    let index =
+        belongs_to_source_index_for(&registry, host_id, local_type, field_names, extract_fk);
+    let result: AnyItemMap = AnyItemMap::new();
+    for key in keys {
+        let bucket = index.bucket_for(key, extract_fk).lock();
+        let result_weak = result.downgrade();
+        let guard = bucket.subscribe_diffs(move |diff| {
+            let Some(result) = result_weak.upgrade() else {
+                return;
+            };
+            // Each source's `Initial` means "here is MY full current state"
+            // — applying it to `result` as-is would REPLACE result's
+            // contents, wiping out every other source's entries (an
+            // Initial is a resync, not an incremental add). `result` is a
+            // union of K independently-diffing sources, so a source's
+            // Initial must be additive here: rewrite it into plain Inserts
+            // before forwarding. Insert/Remove/Update/Batch are already
+            // incremental relative to a single key, so they forward as-is.
+            let additive = additive_union_diff(diff);
+            if let Some(additive) = additive {
+                result.apply_batch(vec![additive]);
+            }
+        });
+        result.own(guard);
+    }
+    result.lock()
+}
+
+/// Cartesian product of N value sets — expands multi-field compound `In`
+/// filters into the full set of (v1, v2, ..., vN) compound keys to
+/// union-route through [`build_belongs_to_union_source_map`]. Empty if any
+/// input set is empty: an empty value set for one field means no key any
+/// item could satisfy exists, matching `In([])` matching nothing (spec §1).
+pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<Vec<Arc<str>>> {
+    sets.into_iter().fold(vec![Vec::new()], |acc, set| {
+        acc.into_iter()
+            .flat_map(|prefix| {
+                set.iter().map(move |v| {
+                    let mut next = prefix.clone();
+                    next.push(v.clone());
+                    next
+                })
+            })
+            .collect()
+    })
 }
 
 /// Sweep dead (no-longer-subscribed) buckets across every belongs-to
@@ -1043,5 +1182,111 @@ mod belongs_to_source_index_tests {
         let bucket = index.bucket_for(key.clone(), extract_node_and_session_fk);
         assert_eq!(bucket.snapshot().len(), 0);
         assert!(index.buckets.contains_key(&key));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // K-bucket union routing — what build_view routes an `In` (or
+    // multi-field compound `In`) filter on a #[belongs_to] field through,
+    // instead of a table scan (spec §4 hard requirement).
+    // ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cartesian_product_expands_multi_field_value_sets() {
+        let sets = vec![
+            vec![Arc::from("node-A"), Arc::from("node-B")],
+            vec![Arc::from("session-PROD")],
+        ];
+        let mut product = cartesian_product(sets);
+        product.sort();
+        assert_eq!(
+            product,
+            vec![
+                vec![Arc::<str>::from("node-A"), Arc::from("session-PROD")],
+                vec![Arc::<str>::from("node-B"), Arc::from("session-PROD")],
+            ]
+        );
+    }
+
+    #[test]
+    fn cartesian_product_empty_set_yields_no_keys() {
+        // In([]) on any one field means no key any item could satisfy
+        // exists — matches "In([]) matches nothing" (spec §1).
+        let sets = vec![vec![Arc::from("node-A")], vec![]];
+        assert!(cartesian_product(sets).is_empty());
+    }
+
+    #[test]
+    fn union_source_map_unions_k_buckets_and_stays_reactive() {
+        // The mechanism build_view routes an `In` filter through: N
+        // compound keys, each backed by its own BelongsToSourceIndex
+        // bucket, unioned into one reactive result. Proves both the
+        // partition-merge (every item appears exactly once, from whichever
+        // bucket it actually belongs to) and that the union keeps tracking
+        // writes made after construction — the keepalive pattern
+        // deliberately mirrors typed_map_from_any_item_with_typed_id's
+        // own(guard), not the bare-clone shape that froze hyphae's
+        // CellMap::size() (see count_fresh_cell_test.rs).
+        let registry = Arc::new(crate::store::StoreRegistry::new());
+        let store = registry.get_or_create("TestCursor");
+        let (id_a, item_a) = cursor("cursor-a", "node-A", "session-PROD");
+        let (id_b, item_b) = cursor("cursor-b", "node-B", "session-PROD");
+        let (id_c, item_c) = cursor("cursor-c", "node-C", "session-PROD"); // not in the union
+        store.insert(id_a, item_a);
+        store.insert(id_b, item_b);
+        store.insert(id_c, item_c);
+
+        let host_id = Uuid::new_v4();
+        let keys = vec![
+            vec![Arc::from("node-A"), Arc::from("session-PROD")],
+            vec![Arc::from("node-B"), Arc::from("session-PROD")],
+        ];
+        let union = build_belongs_to_union_source_map(
+            registry.clone(),
+            host_id,
+            "TestCursor",
+            &["node_id", "session_id"],
+            extract_node_and_session_fk,
+            keys,
+        );
+
+        assert_eq!(
+            union.snapshot().len(),
+            2,
+            "union must contain exactly node-A's and node-B's cursors, not node-C's"
+        );
+
+        let (id_a2, item_a2) = cursor("cursor-a2", "node-A", "session-PROD");
+        store.insert(id_a2, item_a2);
+        assert_eq!(
+            union.snapshot().len(),
+            3,
+            "union must keep tracking writes to any of its unioned buckets"
+        );
+
+        let (id_c2, item_c2) = cursor("cursor-c2", "node-C", "session-PROD");
+        store.insert(id_c2, item_c2);
+        assert_eq!(
+            union.snapshot().len(),
+            3,
+            "writes to a non-unioned bucket must never appear in the union"
+        );
+    }
+
+    #[test]
+    fn union_source_map_empty_keys_yields_empty_reactive_map() {
+        let registry = Arc::new(crate::store::StoreRegistry::new());
+        let store = registry.get_or_create("TestCursor");
+        let (id, item) = cursor("cursor-a", "node-A", "session-PROD");
+        store.insert(id, item);
+
+        let union = build_belongs_to_union_source_map(
+            registry,
+            Uuid::new_v4(),
+            "TestCursor",
+            &["node_id", "session_id"],
+            extract_node_and_session_fk,
+            Vec::new(),
+        );
+        assert_eq!(union.snapshot().len(), 0);
     }
 }
