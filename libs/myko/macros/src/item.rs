@@ -368,11 +368,21 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                  {
                 use #krate::prelude::MapExt;
 
-                // Query all items and count them
+                // Query all items and count them. `.size()` returns a bare
+                // clone of the map's internal len_cell — unlike entries()/
+                // items()/subscribe_diffs, it does NOT keep the map's own
+                // CellMapInner (and therefore its store subscription) alive.
+                // Capture `source` in the closure below so the returned
+                // count cell keeps the whole chain reachable for as long as
+                // it's subscribed to — otherwise the source map (and its
+                // subscription) can be dropped out from under len_cell,
+                // freezing the count.
                 let query = #get_all_query_ident {};
-                ctx.query_map_by_str(query)
-                    .size()
-                    .map(|count| std::sync::Arc::new(#count_result_ident { count: *count }))
+                let source = ctx.query_map_by_str(query);
+                source.size().map(move |count| {
+                    let _keepalive = &source;
+                    std::sync::Arc::new(#count_result_ident { count: *count })
+                })
             }
         }
     };
@@ -395,11 +405,15 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                  {
                 use #krate::prelude::MapExt;
 
-                // Query by partial filter and count results
+                // Query by partial filter and count results. See
+                // CountAll's compute (above) for why `source` must be
+                // captured here rather than dropped after `.size()`.
                 let query = #get_by_partial_ident(self.0.clone());
-                ctx.query_map_by_str(query)
-                    .size()
-                    .map(|count| std::sync::Arc::new(#count_result_ident { count: *count }))
+                let source = ctx.query_map_by_str(query);
+                source.size().map(move |count| {
+                    let _keepalive = &source;
+                    std::sync::Arc::new(#count_result_ident { count: *count })
+                })
             }
         }
     };
