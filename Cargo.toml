@@ -95,7 +95,26 @@ partially = { version = "0.2", features = ["derive"] }
 # again (e.g. a switch_map inner's diffs_cell) leaked everything the pinned
 # closure held alive. That's what caused query_cache_leak_test's two
 # remaining failures — myko's query cache itself was clean.
-hyphae = { version = "^1.3.1", features = ["scheduler", "profiling"] }
+#
+# 1.3.3 carries hyphae's own scheduler wins (whole-server output freeze fix
+# via localized height-cache invalidation, idle-CPU fix, timer co-due
+# ordering fix) — myko's own consumers benefit directly, so floor is bumped
+# to it deliberately rather than trailing behind.
+#
+# CountAll*/Count* reports returning 0 (or freezing at a stale count) traced
+# to hyphae's CellMap::size(): unlike entries()/items()/subscribe_diffs, it
+# returns a bare clone of the map's internal len_cell without capturing the
+# parent CellMapInner's keepalive, so a caller that doesn't separately hold
+# the source map — exactly myko's generated CountAll compute, previously —
+# gets a `len_cell` whose upstream store subscription can drop out from
+# under it once the local chain inside compute() goes out of scope. Fixed
+# on myko's side (see `libs/myko/macros/src/item.rs`) by capturing the
+# source map in the count cell's own closure. Confirmed pre-existing back
+# to 1.3.1, not something the 1.3.3 bump introduced.
+#
+# 1.3.4 makes size() self-retaining hyphae-side too (defense-in-depth on
+# top of myko's own fix) — floor bumped to pick it up.
+hyphae = { version = "^1.3.4", features = ["scheduler", "profiling"] }
 hyphae-leptos = { version = "^1.1.0" }
 
 # Internal crates
