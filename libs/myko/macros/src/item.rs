@@ -455,16 +455,22 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     };
 
     // K-bucket union routing for In/Eq on #[belongs_to] fields — the spec
-    // §4 hard requirement. Mirrors belongs_to_fast_paths' subset
-    // enumeration (largest/most-selective combination first), but instead
-    // of a single Eq foreign_id, extracts each matched field's IdFilter
-    // key_values() (the Eq value, or the whole In set — id filters only
-    // ever express Eq/In, so this is always index-servable, never a scan)
-    // and unions the cartesian product of every field's value set through
-    // build_belongs_to_union_source_map. A field with an In set of size N
-    // and another of size M yields N*M compound keys, each backed by its
-    // own bucket in the union.
-    let filter_belongs_to_fast_paths: Vec<TokenStream> = {
+    // §4 hard requirement. Subset enumeration (largest/most-selective
+    // combination first): instead of a single Eq foreign_id, extracts each
+    // matched field's IdFilter key_values() (the Eq value, or the whole In
+    // set — id filters only ever express Eq/In, so this is always
+    // index-servable, never a scan) and unions the cartesian product of
+    // every field's value set. A field with an In set of size N and
+    // another of size M yields N*M compound keys, each backed by its own
+    // bucket in the union.
+    //
+    // Emitted as a `belongs_to_route()` METHOD (returning the routing
+    // decision as data, not directly building/wrapping a source map)
+    // rather than inlined into build_view directly, so query_live's
+    // incremental per-tick diffing can call the exact same decision logic
+    // build_view uses for the one-shot value-based query — one routing
+    // rule, two consumers.
+    let filter_belongs_to_route_arms: Vec<TokenStream> = {
         let n = required_belongs_to.len();
         let mut masks: Vec<u32> = (1u32..(1u32 << n)).collect();
         masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
@@ -488,7 +494,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                     .collect();
                 let field_ref_exprs: Vec<TokenStream> = field_idents
                     .iter()
-                    .map(|field_ident| quote! { ctx.query.0.#field_ident.as_ref() })
+                    .map(|field_ident| quote! { self.#field_ident.as_ref() })
                     .collect();
 
                 let if_let_expr = if selected.len() == 1 {
@@ -521,26 +527,37 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                     #if_let_expr {
                         let value_sets: Vec<Vec<std::sync::Arc<str>>> = vec![#(#value_set_exprs),*];
                         let keys = #krate::query::cartesian_product(value_sets);
-                        let source = #krate::query::build_belongs_to_union_source_map(
-                            ctx.query_context.registry(),
-                            ctx.query_context.request_ctx.host_id,
-                            #name_str,
-                            &[#(#field_names),*],
-                            |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
+                        return Some(#krate::query::BelongsToRoute {
+                            field_names: &[#(#field_names),*],
+                            keys,
+                            extract_fk: |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
                                 item.downcast_ref::<#name>()
                                     .map(|e| vec![#(#extractor_field_exprs),*])
                             },
-                            keys,
-                        );
-                        return Some(#krate::query::filter_query_over_source::<#get_by_filter_ident>(
-                            source,
-                            ctx.query.clone(),
-                            ctx.query_context.query_context.clone(),
-                        ));
+                        });
                     }
                 }
             })
             .collect()
+    };
+
+    // BelongsToRoute (and everything in core::query::registration) is
+    // server-only — gate this impl the same way build_view already is,
+    // rather than the individual method, so wasm32 builds never see a type
+    // that doesn't exist there.
+    let filter_belongs_to_route_impl = quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #filter_ident {
+            /// The belongs_to routing decision for this filter instance, if
+            /// any belongs_to field combination is populated — the most
+            /// selective (most fields pinned) combination available, per
+            /// the same subset-enumeration `build_view` uses. `None` means
+            /// no belongs_to routing applies; the caller must scan.
+            pub fn belongs_to_route(&self) -> Option<#krate::query::BelongsToRoute> {
+                #(#filter_belongs_to_route_arms)*
+                None
+            }
+        }
     };
 
     let get_by_filter_query = quote! {
@@ -575,8 +592,20 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
-                #(#filter_belongs_to_fast_paths)*
-                None
+                let route = ctx.query.0.belongs_to_route()?;
+                let source = #krate::query::build_belongs_to_union_source_map(
+                    ctx.query_context.registry(),
+                    ctx.query_context.request_ctx.host_id,
+                    #name_str,
+                    route.field_names,
+                    route.extract_fk,
+                    route.keys,
+                );
+                Some(#krate::query::filter_query_over_source::<#get_by_filter_ident>(
+                    source,
+                    ctx.query.clone(),
+                    ctx.query_context.query_context.clone(),
+                ))
             }
         }
     };
@@ -1018,6 +1047,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #get_by_partial_query
 
         #filter_struct
+
+        #filter_belongs_to_route_impl
 
         #get_by_filter_query
 

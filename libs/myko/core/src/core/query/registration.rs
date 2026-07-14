@@ -57,7 +57,7 @@ type BucketDiffs = Vec<BucketDiff>;
 /// entity's declared field order. Two queries that populate different SETS
 /// of belongs_to fields land in different buckets even for the same entity
 /// type — the bucket only ever holds items matching every field in the key.
-type CompoundKey = Vec<Arc<str>>;
+pub type CompoundKey = Vec<Arc<str>>;
 
 /// Extracts the compound foreign-key values (see [`CompoundKey`]) an item
 /// contributes for one specific field combination. Position `i` in the
@@ -71,7 +71,22 @@ type CompoundKey = Vec<Arc<str>>;
 /// `RelationshipManager`'s own single-field child-index tracking and
 /// `export_tree`'s traversal, both unrelated to query routing — widening it
 /// in place would ripple into those unrelated subsystems for no reason.
-type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
+pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
+
+/// A belongs_to routing decision for one `XFilter` instance — which fields
+/// are pinned, the compound keys to union-route through
+/// [`BelongsToSourceIndex`], and the extractor needed to build/maintain
+/// that index. Returned by a generated `XFilter`'s `belongs_to_route()`
+/// method (see `#[myko_item]`'s codegen); shared between the value-based
+/// query's `build_view` (routes once per query construction) and
+/// `query_live`'s incremental per-tick diffing (routes on every filter
+/// change, diffing keys against the previous tick's route) — one routing
+/// rule, two consumers, so they can never disagree on what's index-servable.
+pub struct BelongsToRoute {
+    pub field_names: &'static [&'static str],
+    pub keys: Vec<CompoundKey>,
+    pub extract_fk: CompoundFkExtractor,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QueryRegistration - inventory-based registration
