@@ -36,6 +36,12 @@ anyhow.workspace = true
 tracing.workspace = true
 autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
+# Numeric newtype for foreign entity fields that need real ordering over
+# floats (e.g. a downstream Keyframe's `position: OrderedFloat<f64>`) —
+# optional since most consumers never touch it. See the `ordered-float`
+# feature below, which forwards to ts-rs's own `ordered-float-impl` feature
+# so `#[derive(TS)]` on a field of this type works when ts-export is on too.
+ordered-float = { version = "5", features = ["serde"], optional = true }
 inventory = "0.3.24"
 flume.workspace = true
 hyphae.workspace = true
@@ -121,11 +127,16 @@ ts-export = []
 # build. `tracing` spans (myko.reduce, myko.command, etc.) are always-on now
 # and not gated by this feature — see the `tracing` dependency comment above.
 profiling = ["dep:pprof"]
+# Filterable + TS support for ordered_float::OrderedFloat<f32>/<f64> entity
+# fields. Optional because most consumers never have a float field that
+# needs total ordering — a plain f32/f64 field already gets NumericFilter
+# via the built-in impl_numeric_filterable! instantiations above.
+ordered-float = ["dep:ordered-float", "ts-rs/ordered-float-impl"]
 
 # Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
 # behavior worth exercising, *except* `bench` — bench_entities/criterion are
 # for local profiling, not routine CI (see flux.toml's `test` task).
-ci = ["codegen", "search", "ts-export", "profiling", "doc-gen"]
+ci = ["codegen", "search", "ts-export", "profiling", "doc-gen", "ordered-float"]
 
 # Typegen/docgen bins need the codegen feature — declared explicitly so
 # `cargo build -p myko` doesn't try to compile them without the feature.

@@ -128,6 +128,24 @@ mod containers {
     }
 }
 
+// OrderedFloat fixture — mirrors rship's Keyframe entity (`position:
+// OrderedFloat<f64>`), which hit the same "foreign type, orphan rules
+// block a downstream Filterable impl" problem as the container fields
+// above, but is genuinely numeric (Range-filterable), not Unfilterable.
+#[cfg(feature = "ordered-float")]
+pub use keyframe::BenchKeyframe;
+#[cfg(feature = "ordered-float")]
+mod keyframe {
+    use ordered_float::OrderedFloat;
+
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchKeyframe {
+        pub position: OrderedFloat<f64>,
+    }
+}
+
 /// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {

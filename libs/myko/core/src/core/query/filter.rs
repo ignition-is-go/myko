@@ -285,6 +285,20 @@ impl_numeric_filterable!(
     i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
 );
 
+// OrderedFloat<T> is a foreign (ordered_float crate) newtype, so orphan
+// rules block downstream crates from ever implementing Filterable for it
+// themselves — it has to live here, same reasoning as the container
+// blanket impls below. Unlike those, it's genuinely numeric (that's the
+// whole point of the newtype: giving floats a total order), so NumericFilter
+// — including Range — is the right treatment, not Unfilterable. Only f32/f64
+// get impls, matching ts-rs's own `ordered-float-impl` feature (which only
+// implements TS for those two concrete instantiations, not generic T).
+#[cfg(feature = "ordered-float")]
+impl_numeric_filterable!(
+    ordered_float::OrderedFloat<f32>,
+    ordered_float::OrderedFloat<f64>
+);
+
 // ─────────────────────────────────────────────────────────────────────────
 // StringFilter — Eq / In / Contains / StartsWith. Never Range (meaningless
 // for strings without a locale-aware ordering myko doesn't want to own).
@@ -643,6 +657,30 @@ mod tests {
         assert!(max_only.matches(&5));
         assert!(max_only.matches(&-1000));
         assert!(!max_only.matches(&6));
+    }
+
+    #[test]
+    #[cfg(feature = "ordered-float")]
+    fn ordered_float_is_filterable_via_numeric_filter() {
+        // Mirrors a downstream crate's own Keyframe-style entity field
+        // (e.g. rship's `position: OrderedFloat<f64>`) — OrderedFloat is
+        // foreign to both myko and rship, so this impl has to live here.
+        use ordered_float::OrderedFloat;
+
+        fn assert_filterable<T: Filterable>() {}
+        assert_filterable::<OrderedFloat<f64>>();
+        assert_filterable::<Option<OrderedFloat<f64>>>();
+
+        let range = NumericFilter::Range {
+            min: Some(OrderedFloat(1.0)),
+            max: Some(OrderedFloat(5.0)),
+        };
+        assert!(range.matches(&OrderedFloat(3.0)));
+        assert!(!range.matches(&OrderedFloat(6.0)));
+
+        let eq = NumericFilter::Eq(OrderedFloat(2.5));
+        assert!(eq.matches(&OrderedFloat(2.5)));
+        assert!(!eq.matches(&OrderedFloat(2.6)));
     }
 
     #[test]
