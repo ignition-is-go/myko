@@ -385,6 +385,23 @@ pub fn in_matches<T: Eq + Hash>(values: &[T], value: &T) -> bool {
     }
 }
 
+// Register the four filter types for TS export, once per generic type here
+// (not per-entity — unlike XFilter, which is a concrete struct generated
+// fresh per entity by #[myko_item], these are ts-rs *generic* TS types:
+// `export type IdFilter<T> = ...`. ts-rs derives the TS output treating the
+// Rust generic parameter as a TS generic, so which concrete Rust type
+// triggers the underlying `TS::export()` call doesn't affect the emitted
+// `.ts` file's content — Arc<str>/i64 just need to satisfy each type's own
+// derive bounds (Clone/PartialEq/Eq/Serialize/Deserialize/TS). `bool`
+// (bare equality's own filter type) needs no registration: it maps
+// directly to the TS `boolean` primitive, not a named type declaration.
+crate::register_ts_export!(
+    IdFilter<Arc<str>>,
+    NumericFilter<i64>,
+    StringFilter,
+    EqFilter<Arc<str>>
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
