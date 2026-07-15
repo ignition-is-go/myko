@@ -1,6 +1,12 @@
 # Advanced Query: array-valued field matching (IN semantics)
 
-- **Status**: proposed — ready to implement
+- **Status**: shipped (phases 1 and 2 both landed on `feat/advanced-query-live`).
+  §3's `_filtered` naming and the "Non-goals: deprecating the Partial pattern"
+  line are **superseded by
+  `docs/superpowers/specs/2026-07-14-myko-5-query-api.md`** — myko 5.0 deletes
+  `PartialX`-as-query and the `_filtered` twins outright rather than
+  deprecating them later. Kept here for the historical record of why phase 1
+  shipped additively in the first place.
 - **Date**: 2026-07-13
 - **Origin**: rship-side audit (2026-07-13) of query-chain workarounds; requested by Trevor
 - **Scope**: myko + myko-macros + codegen/TS bindings. rship adoption is follow-up work tracked rship-side.
