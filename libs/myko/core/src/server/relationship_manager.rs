@@ -305,6 +305,7 @@ impl RelationshipManager {
     /// - BelongsTo cascade deletes (parent deleted → delete children)
     /// - OwnsMany parent deletes (parent deleted → delete owned children)
     /// - OwnsMany child deletes (child deleted → update parent arrays)
+    /// - EnsureFor cascade deletes (dependency deleted → delete derived entities)
     pub fn forward_del(
         &self,
         item: Arc<dyn AnyItem>,
@@ -318,6 +319,9 @@ impl RelationshipManager {
 
         // Handle OwnsMany child deleted → update parent arrays
         self.handle_owns_many_child_delete(&item, ctx)?;
+
+        // Handle EnsureFor dependency deleted → delete derived entities
+        self.handle_ensure_for_delete(&item, ctx)?;
 
         if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
             for lookup in lookups {
@@ -344,6 +348,7 @@ impl RelationshipManager {
 
         self.handle_belongs_to_cascade_batch(items, ctx)?;
         self.handle_owns_many_parent_delete_batch(items, ctx)?;
+        self.handle_ensure_for_delete_batch(items, ctx)?;
 
         for item in items {
             self.handle_owns_many_child_delete(item, ctx)?;
@@ -761,6 +766,92 @@ impl RelationshipManager {
         }
 
         Ok(())
+    }
+
+    /// Handle EnsureFor: when a dependency entity is deleted, delete the
+    /// entities that were auto-created for it — symmetric with
+    /// `handle_ensure_for`'s create-if-missing on the SET side. Without
+    /// this, `#[ensure_for(X)]`-created entities are orphaned forever once
+    /// `X` is deleted (they're never revisited by any other cascade path).
+    fn handle_ensure_for_delete(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
+        self.handle_ensure_for_delete_batch(std::slice::from_ref(item), ctx)
+    }
+
+    fn handle_ensure_for_delete_batch(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        ctx: &CellServerCtx,
+    ) -> Result<(), PersistError> {
+        let Some(first) = items.first() else {
+            return Ok(());
+        };
+        let item_type = first.entity_type();
+        let Some(lookups) = self.ensure_for_by_dependency.get(item_type) else {
+            return Ok(());
+        };
+
+        let dep_ids: HashSet<Arc<str>> = items.iter().map(|item| item.id()).collect();
+
+        for lookup in lookups {
+            // A lookup can depend on several types (Cartesian-product
+            // ensure_for); only the dependency matching the deleted type's
+            // extractor is relevant here.
+            let Some(dep) = lookup
+                .dependencies
+                .iter()
+                .find(|dep| dep.foreign_type == item_type)
+            else {
+                continue;
+            };
+
+            let orphaned = self.find_ensure_for_children_by_dependency(ctx, lookup, dep, &dep_ids);
+            if orphaned.is_empty() {
+                continue;
+            }
+
+            trace!(
+                "RelationshipManager: EnsureFor cascade delete {} count={} ({} {} dependencies deleted)",
+                lookup.local_type,
+                orphaned.len(),
+                dep_ids.len(),
+                item_type
+            );
+            self.publish_del_cascade_batch(ctx, &orphaned)?;
+        }
+
+        Ok(())
+    }
+
+    /// Scan `lookup.local_type`'s store for ensure_for-derived entities
+    /// whose `dep`-extracted FK is one of `dep_ids`. Unlike `belongs_to`,
+    /// there is no lazily-built reverse index for `ensure_for` — the
+    /// created entity's id is a random UUID (`make_entity` in
+    /// `handle_ensure_for`), not derivable from the dependency id, so a
+    /// full-store scan is the only option here (same as `belongs_to`'s own
+    /// fallback path when its index isn't loaded yet).
+    fn find_ensure_for_children_by_dependency(
+        &self,
+        ctx: &CellServerCtx,
+        lookup: &EnsureForLookup,
+        dep: &EnsureForDependency,
+        dep_ids: &HashSet<Arc<str>>,
+    ) -> Vec<Arc<dyn AnyItem>> {
+        let store = ctx.registry.get_or_create(lookup.local_type);
+        store
+            .entries()
+            .get()
+            .into_iter()
+            .filter(|(_, item)| {
+                (dep.extract_fk)(item.as_any())
+                    .map(|fk| dep_ids.contains(&fk))
+                    .unwrap_or(false)
+            })
+            .map(|(_, item)| item)
+            .collect()
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1371,6 +1462,166 @@ mod cascade_tests {
         assert!(
             !exists(&registry, "b"),
             "b deleted via the cycle, then terminated"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ensure_for_cascade_tests {
+    //! `#[ensure_for(X)]` delete-side cleanup. Regression coverage for the
+    //! orphan-accumulation bug reported against 4.24.2 (rship bead
+    //! rship-e3f): `RelationshipManager::forward_del` handled `belongs_to`
+    //! cascades and `owns_many` cleanup, but nothing ever revisited
+    //! `ensure_for`-created entities when their dependency was deleted —
+    //! `DeleteBindingNode` cascaded the node's `belongs_to` value correctly
+    //! but left its `#[ensure_for(BindingNode)]` position behind forever
+    //! (4,762 orphaned `BindingNodePosition`s accumulated on the rack, 516
+    //! on sandbox, before this fix).
+
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use self::fixtures::{EnsuredStatus, Parent};
+    use crate::{
+        core::item::AnyItem,
+        search::SearchIndex,
+        server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        store::StoreRegistry,
+        test_util::scheduler_test_serial,
+    };
+
+    // `#[myko_item]` re-imports hyphae traits at module scope, and two
+    // invocations in the same module collide — each entity gets its own
+    // submodule (mirrors `bench_entities::tree`/`compound_a`/`compound_b`).
+    mod fixtures {
+        pub use parent::{Parent, ParentId};
+        mod parent {
+            use crate::prelude::*;
+
+            #[myko_item]
+            pub struct Parent {
+                pub name: String,
+            }
+        }
+
+        pub use ensured_status::EnsuredStatus;
+        mod ensured_status {
+            use crate::prelude::*;
+
+            use super::{Parent, ParentId};
+
+            #[myko_item]
+            pub struct EnsuredStatus {
+                #[ensure_for(Parent)]
+                pub parent_id: ParentId,
+            }
+        }
+    }
+
+    fn make_ctx() -> (CellServerCtx, Arc<StoreRegistry>) {
+        let registry = Arc::new(StoreRegistry::new());
+        let ctx = CellServerCtx::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(PersisterRouter::default()),
+            Arc::new(SearchIndex::new()),
+            Arc::new(dashmap::DashMap::new()),
+            None,
+            None,
+        );
+        (ctx, registry)
+    }
+
+    fn make_parent(id: &str) -> Parent {
+        Parent {
+            id: id.into(),
+            name: format!("parent-{id}"),
+        }
+    }
+
+    /// Every `EnsuredStatus` row currently in the store whose
+    /// `#[ensure_for(Parent)]` field points at `parent_id`. The created
+    /// row's own id is a random UUID (not derivable from `parent_id`), so
+    /// this scans rather than looking up by a known id — same reason
+    /// `RelationshipManager`'s own delete-side handler has to scan.
+    fn ensured_statuses_for(registry: &StoreRegistry, parent_id: &str) -> Vec<Arc<str>> {
+        let Some(store) = registry.get("EnsuredStatus") else {
+            return Vec::new();
+        };
+        store
+            .snapshot()
+            .into_iter()
+            .filter(|(_, item)| {
+                item.as_any()
+                    .downcast_ref::<EnsuredStatus>()
+                    .map(|status| status.parent_id.as_ref() == parent_id)
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[test]
+    fn del_of_dependency_deletes_its_ensured_entity() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+
+        ctx.set(&make_parent("p1")).unwrap();
+        assert_eq!(
+            ensured_statuses_for(&registry, "p1").len(),
+            1,
+            "ensure_for auto-created exactly one EnsuredStatus for p1"
+        );
+
+        ctx.del(&make_parent("p1")).unwrap();
+
+        assert!(
+            ensured_statuses_for(&registry, "p1").is_empty(),
+            "EnsuredStatus for a deleted dependency must not be orphaned"
+        );
+    }
+
+    #[test]
+    fn batch_del_of_dependencies_deletes_their_ensured_entities() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+
+        ctx.set(&make_parent("p1")).unwrap();
+        ctx.set(&make_parent("p2")).unwrap();
+        assert_eq!(ensured_statuses_for(&registry, "p1").len(), 1);
+        assert_eq!(ensured_statuses_for(&registry, "p2").len(), 1);
+
+        let p1: Arc<dyn AnyItem> = Arc::new(make_parent("p1"));
+        let p2: Arc<dyn AnyItem> = Arc::new(make_parent("p2"));
+        ctx.batch_del_dyn(&[p1, p2]).unwrap();
+
+        assert!(ensured_statuses_for(&registry, "p1").is_empty());
+        assert!(ensured_statuses_for(&registry, "p2").is_empty());
+    }
+
+    /// A dependency unrelated to `parent_id` must not lose its own
+    /// `EnsuredStatus` — the delete-side cleanup must match by FK, not
+    /// wipe every `EnsuredStatus` whenever any `Parent` is deleted.
+    #[test]
+    fn del_of_one_dependency_does_not_orphan_unrelated_ensured_entities() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+
+        ctx.set(&make_parent("p1")).unwrap();
+        ctx.set(&make_parent("p2")).unwrap();
+        assert_eq!(ensured_statuses_for(&registry, "p1").len(), 1);
+        assert_eq!(ensured_statuses_for(&registry, "p2").len(), 1);
+
+        ctx.del(&make_parent("p1")).unwrap();
+
+        assert!(ensured_statuses_for(&registry, "p1").is_empty());
+        assert_eq!(
+            ensured_statuses_for(&registry, "p2").len(),
+            1,
+            "p2's EnsuredStatus must survive p1's deletion"
         );
     }
 }
