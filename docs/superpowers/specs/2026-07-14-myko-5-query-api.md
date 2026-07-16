@@ -1,7 +1,11 @@
 # myko 5.0: the filter pattern becomes the query pattern
 
-- **Status**: proposed — needs sign-off on naming + the `CountXs`/`PartialX` scope
-  decision (§3.2) before implementation starts
+- **Status**: implemented (commit `932a7a8d`, `feat/advanced-query-live`).
+  Naming (§1) and the `CountXs`/`PartialX` full-deletion scope (§3.2) both
+  confirmed by Trevor. Remaining: TS bindings need a `cargo flux run gen`
+  pass (user-run, hot-reload) before the wire/TS side reflects this; the
+  final migration table (§6) is ready to hand to rship for their scripted
+  rename.
 - **Date**: 2026-07-14
 - **Origin**: direction change from Trevor, relayed via marshal from quiet-ember's
   session (rship, currently testing against this branch)
