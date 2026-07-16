@@ -12,7 +12,6 @@ use syn::{
 mod command;
 mod item;
 mod message_events;
-mod partial_matches;
 mod query;
 mod relationship;
 mod report;
@@ -37,7 +36,7 @@ pub(crate) fn myko_path() -> syn::Path {
     }
 }
 
-/// Context for generating serde/partially derive paths in macros.
+/// Context for generating serde derive paths in macros.
 /// When inside myko, uses direct crate paths. When outside, uses re-exports.
 pub(crate) struct DeriveCtx {
     /// Path to myko (either `crate` or `myko`)
@@ -46,10 +45,6 @@ pub(crate) struct DeriveCtx {
     pub serde_path: proc_macro2::TokenStream,
     /// String value for #[serde(crate = "...")] — None when inside myko
     pub serde_crate_attr: Option<String>,
-    /// Path for partially derives (either `partially` or `myko::partially`)
-    pub partially_path: proc_macro2::TokenStream,
-    /// String value for #[partially(crate = "...")] — None when inside myko
-    pub partially_crate_attr: Option<String>,
 }
 
 impl DeriveCtx {
@@ -60,18 +55,13 @@ impl DeriveCtx {
                 krate,
                 serde_path: quote!(serde),
                 serde_crate_attr: None,
-                partially_path: quote!(partially),
-                partially_crate_attr: None,
             }
         } else {
             let serde_crate_str = "myko::serde".to_string();
-            let partially_crate_str = "myko::partially".to_string();
             Self {
                 krate,
                 serde_path: quote!(myko::serde),
                 serde_crate_attr: Some(serde_crate_str),
-                partially_path: quote!(myko::partially),
-                partially_crate_attr: Some(partially_crate_str),
             }
         }
     }
@@ -270,12 +260,6 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
     .into()
 }
 
-#[proc_macro_derive(PartialMatches)]
-pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as syn::DeriveInput);
-    partial_matches::derive_partial_matches_impl(input).into()
-}
-
 /// Marks a struct as a Myko entity, generating queries, reports, commands, and supporting types.
 ///
 /// # Struct Modifications
@@ -286,11 +270,11 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 /// # Derives
 ///
 /// On the entity:
-/// - `Partial`, `PartialEq`, `Clone`, `Serialize`, `Deserialize`, `Debug`, `TS`
+/// - `PartialEq`, `Clone`, `Serialize`, `Deserialize`, `Debug`, `TS`
 /// - `Default` (only if `#[ensure_for]` attributes are present)
 ///
-/// On the generated `Partial{Entity}`:
-/// - `Clone`, `Serialize`, `Deserialize`, `Debug`, `Default`, `PartialMatches`, `TS`
+/// On the generated `{Entity}Query`:
+/// - `Clone`, `Default`, `PartialEq`, `Debug`, `Serialize`, `Deserialize`, `TS`
 ///
 /// # Generated Queries
 ///
@@ -298,7 +282,7 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 /// |-------|-------------|
 /// | `GetAll{Entity}s` | Returns all entities of this type |
 /// | `Get{Entity}sByIds { ids: Vec<Arc<str>> }` | Returns entities matching the given IDs |
-/// | `Get{Entity}sByQuery(Partial{Entity})` | Returns entities matching partial field values |
+/// | `Get{Entity}sByQuery({Entity}Query)` | Returns entities matching the query — every field is `Option<<FieldType as Filterable>::Filter>` (`Eq`/`In`/`Range`/`Contains` depending on the field's type), not a flat value |
 ///
 /// # Generated Reports
 ///
@@ -306,7 +290,7 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 /// |--------|-------------|-------------|
 /// | `Get{Entity}ById { id: Arc<str> }` | `Option<{Entity}>` | Returns a single entity by ID |
 /// | `CountAll{Entity}s` | `{Entity}Count` | Returns total count of all entities |
-/// | `Count{Entity}s(Partial{Entity})` | `{Entity}Count` | Returns count matching partial filter |
+/// | `Count{Entity}s({Entity}Query)` | `{Entity}Count` | Returns count matching the query |
 ///
 /// # Generated Commands
 ///
@@ -320,7 +304,7 @@ pub fn derive_partial_matches(input: TokenStream) -> TokenStream {
 /// | Type | Description |
 /// |------|-------------|
 /// | `{Entity}Id` | Entity-specific ID wrapper over `Arc<str>` (TypeScript: `string`) |
-/// | `Partial{Entity}` | Partial version with all fields optional, for filtering |
+/// | `{Entity}Query` | Per-field filter struct, for `Get{Entity}sByQuery`/`Count{Entity}s`/`ctx.query_live(...)` |
 /// | `{Entity}Count` | Count result with `count: usize` field |
 /// | `Delete{Entity}Result` | Single delete result with `deleted: bool` field |
 /// | `Delete{Entity}sResult` | Bulk delete result with `deleted_count: usize` field |

@@ -91,28 +91,6 @@ impl QueryCellContext {
         )
     }
 
-    /// [`Self::query`]'s twin for advanced (`GetXsByFilter`) queries — see
-    /// docs/superpowers/specs/2026-07-13-advanced-query-design.md §3. A
-    /// thin wrapper: `GetXsByFilter` flows through the same generic
-    /// `QueryFactory` path as any other query type, so this exists purely
-    /// as a named, discoverable seam (and so the eventual Partial
-    /// deprecation is a mechanical rename at call sites) rather than adding
-    /// new dispatch logic.
-    pub fn query_filtered<Q>(&self, query: Q) -> Result<FilteredCellMap, String>
-    where
-        Q: QueryFactory + Clone,
-        Q::Item: crate::core::item::Eventable
-            + crate::common::with_id::WithId
-            + serde::de::DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.query(query)
-    }
-
     /// Build a reactive cell for a report using the same request context.
     pub fn report<R>(
         &self,

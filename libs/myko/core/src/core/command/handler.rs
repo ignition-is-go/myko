@@ -359,23 +359,6 @@ impl CommandContext {
         }
     }
 
-    /// [`Self::exec_query_first`]'s twin for advanced (`GetXsByFilter`)
-    /// queries — see docs/superpowers/specs/2026-07-13-advanced-query-
-    /// design.md §3. A thin wrapper: `GetXsByFilter` flows through the
-    /// same generic `QueryParams` path as any other query type, so this
-    /// exists purely as a named, discoverable seam rather than adding new
-    /// dispatch logic.
-    pub fn exec_query_first_filtered<Q>(
-        &self,
-        query: Q,
-    ) -> Result<Option<Arc<Q::Item>>, CommandError>
-    where
-        Q: QueryParams,
-        Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
-    {
-        self.exec_query_first(query)
-    }
-
     /// Execute a query and return all results.
     ///
     /// This performs a one-shot query against the store.
@@ -397,17 +380,6 @@ impl CommandContext {
             let _ = query;
             unreachable!();
         }
-    }
-
-    /// [`Self::exec_query`]'s twin for advanced (`GetXsByFilter`) queries —
-    /// see docs/superpowers/specs/2026-07-13-advanced-query-design.md §3.
-    /// A thin wrapper, same rationale as [`Self::exec_query_first_filtered`].
-    pub fn exec_query_filtered<Q>(&self, query: Q) -> Result<Vec<Arc<Q::Item>>, CommandError>
-    where
-        Q: QueryParams,
-        Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
-    {
-        self.exec_query(query)
     }
 
     /// Execute another command within this context.

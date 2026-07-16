@@ -800,9 +800,9 @@ impl<F> Default for LiveQueryState<F> {
 }
 
 /// Reactive filter parameters: `filter_cell` replaces the value-based
-/// `GetXsByFilter` query with a live `Cell`, so a filter whose value is
-/// itself derived reactively no longer needs a `switch_map` wrapper (spec
-/// §5). The returned map is a single persistent reactive graph node —
+/// `GetXsByQuery` query with a live `Cell`, so a filter whose value is
+/// itself derived reactively no longer needs a `switch_map` wrapper. The
+/// returned map is a single persistent reactive graph node —
 /// filter changes are handled by incrementally adding/removing bucket
 /// subscriptions (for `In`/`Eq` changes on indexed `#[belongs_to]` fields)
 /// or, for non-indexed (`Range`/`Contains`) changes, rescanning the

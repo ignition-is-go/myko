@@ -182,13 +182,12 @@ impl ReportContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Reactive filter parameters (advanced-query-design spec §5):
-    /// `filter_cell` replaces a value-based `GetXsByFilter` with a live
-    /// `Cell`, so a filter derived from other cells no longer needs a
-    /// `switch_map` wrapper. This is the entire phase-2 adoption surface
-    /// for report handlers — see `CellServerCtx::query_live` for the
-    /// mechanics (incremental bucket-diffing on indexed field changes,
-    /// scoped rescan on non-indexed changes, never a graph teardown).
+    /// Reactive filter parameters: `filter_cell` replaces a value-based
+    /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
+    /// cells no longer needs a `switch_map` wrapper — see
+    /// `CellServerCtx::query_live` for the mechanics (incremental
+    /// bucket-diffing on indexed field changes, scoped rescan on
+    /// non-indexed changes, never a graph teardown).
     pub fn query_live<F>(
         &self,
         filter_cell: impl hyphae::Watchable<F>,

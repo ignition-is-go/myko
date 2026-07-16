@@ -85,7 +85,6 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let partially_path = &ctx.partially_path;
     let ingest_buffer_registration = args.ingest_buffer_ms.map(|window_ms| {
         quote! {
             #krate::submit! {
@@ -122,8 +121,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         named.push(id_field);
 
         // Snapshot (name, type) for every field — including the id field
-        // just pushed — for XFilter codegen (see below). Mirrors exactly
-        // the field set `partially::Partial` uses to build PartialX.
+        // just pushed — for XQuery codegen (see below).
         filter_fields = named
             .iter()
             .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
@@ -132,36 +130,25 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
     let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
 
-    let partially_crate_attr = match &ctx.partially_crate_attr {
-        Some(s) => quote!(crate = #s,),
-        None => quote!(),
-    };
-
     let deserialize_derive = if args.post_deserialize.is_some() {
         quote!()
     } else {
         quote!(#serde_path::Deserialize,)
     };
 
-    // Add Default derive if entity has ensure_for relationships (needed for make_entity)
-    // NOTE(ts): `partially` forwards all container attributes (including #[serde(crate = ...)])
-    // from the main struct to the Partial struct automatically, so we must NOT also add
-    // `attribute(serde(crate = ...))` — that would cause "duplicate serde attribute `crate`".
-    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export` feature is on,
-    // so emit it unconditionally on both the item and the generated Partial — no
-    // consumer-side feature gate. A single `partially(...)` form always carries TS;
-    // `TsNoop` claims the `ts(optional_fields)` attr when typegen is off.
+    // Add Default derive if entity has ensure_for relationships (needed for
+    // make_entity, which calls Type::default() — see relationship.rs).
+    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export`
+    // feature is on, so emit it unconditionally — no consumer-side feature gate.
     let derives = if !rel_info.ensure_for_fields.is_empty() {
         quote! {
-            #[derive(Default, #partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
+            #[derive(Default, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
             #serde_rename_attr
-            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     } else {
         quote! {
-            #[derive(#partially_path::Partial, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
+            #[derive(PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
             #serde_rename_attr
-            #[partially(#partially_crate_attr derive(Clone, #serde_path::Serialize, #serde_path::Deserialize, Debug, Default, #krate::PartialMatches, #krate::TS), attribute(ts(optional_fields)))]
         }
     };
 
@@ -259,15 +246,12 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
     };
 
-    let get_by_partial_ident = format_ident!("Get{}sByQuery", name_str);
-    let partial_ident = format_ident!("Partial{}", name_str);
-
-    // Route by the intersection of every belongs_to field the query's
-    // Partial actually pins, not just the first one declared on the struct.
-    // For an entity with N required belongs_to fields there are 2^N - 1
-    // non-empty subsets of "which fields happen to be Some at runtime" —
-    // generate an if-let block per subset, tried from most fields-pinned
-    // (most selective) down to a single field, so a query pinning e.g. both
+    // Route by the intersection of every belongs_to field the query
+    // actually pins, not just the first one declared on the struct. For an
+    // entity with N required belongs_to fields there are 2^N - 1 non-empty
+    // subsets of "which fields happen to be Some at runtime" — generate an
+    // if-let block per subset, tried from most fields-pinned (most
+    // selective) down to a single field, so a query pinning e.g. both
     // node_id and session_id always routes on that exact pair rather than
     // silently collapsing onto whichever field was declared first. Each
     // subset gets its own BelongsToSourceIndex (keyed by the field-NAME SET,
@@ -279,111 +263,18 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         .filter(|bt| !bt.is_optional)
         .collect();
 
-    let belongs_to_fast_paths: Vec<TokenStream> = {
-        let n = required_belongs_to.len();
-        let mut masks: Vec<u32> = (1u32..(1u32 << n)).collect();
-        masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
-
-        masks
-            .into_iter()
-            .map(|mask| {
-                let selected: Vec<&relationship::BelongsToInfo> = (0..n)
-                    .filter(|i| mask & (1 << i) != 0)
-                    .map(|i| required_belongs_to[i])
-                    .collect();
-
-                let field_idents: Vec<_> = selected
-                    .iter()
-                    .map(|bt| format_ident!("{}", bt.field_name))
-                    .collect();
-                let field_names: Vec<String> =
-                    selected.iter().map(|bt| bt.field_name.clone()).collect();
-                let fk_idents: Vec<_> = (0..selected.len())
-                    .map(|i| format_ident!("fk{}", i))
-                    .collect();
-                let field_clone_exprs: Vec<TokenStream> = field_idents
-                    .iter()
-                    .map(|field_ident| quote! { ctx.query.0.#field_ident.clone() })
-                    .collect();
-
-                let if_let_expr = if selected.len() == 1 {
-                    let fk0 = &fk_idents[0];
-                    let clone_expr = &field_clone_exprs[0];
-                    quote! { if let Some(#fk0) = #clone_expr }
-                } else {
-                    quote! { if let (#(Some(#fk_idents)),*) = (#(#field_clone_exprs),*) }
-                };
-
-                let extractor_field_exprs: Vec<TokenStream> = field_idents
-                    .iter()
-                    .map(|field_ident| {
-                        quote! { std::sync::Arc::<str>::from(e.#field_ident.as_ref()) }
-                    })
-                    .collect();
-                let foreign_id_exprs: Vec<TokenStream> = fk_idents
-                    .iter()
-                    .map(|fk| quote! { std::sync::Arc::<str>::from(#fk.as_ref()) })
-                    .collect();
-
-                quote! {
-                    #if_let_expr {
-                        let source = #krate::query::build_belongs_to_source_map(
-                            ctx.query_context.registry(),
-                            ctx.query_context.request_ctx.host_id,
-                            #name_str,
-                            &[#(#field_names),*],
-                            |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
-                                item.downcast_ref::<#name>()
-                                    .map(|e| vec![#(#extractor_field_exprs),*])
-                            },
-                            vec![#(#foreign_id_exprs),*],
-                        );
-                        return Some(#krate::query::filter_query_over_source::<#get_by_partial_ident>(
-                            source,
-                            ctx.query.clone(),
-                            ctx.query_context.query_context.clone(),
-                        ));
-                    }
-                }
-            })
-            .collect()
-    };
-
-    let get_by_partial_query = quote! {
-        #[#krate::myko_non_hash_cache_key]
-        #[#krate::myko_query(#name)]
-         pub struct #get_by_partial_ident(pub #partial_ident);
-
-         impl #krate::prelude::QueryHandler for #get_by_partial_ident {
-             fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
-                 ctx.query.0.matches(&ctx.item)
-             }
-
-             #[cfg(not(target_arch = "wasm32"))]
-             fn build_view(
-                ctx: #krate::prelude::QueryBuildCellCtx<Self>,
-             ) -> Option<#krate::prelude::FilteredCellMap>
-             where
-                Self: std::marker::Send + std::marker::Sync + 'static,
-             {
-                #(#belongs_to_fast_paths)*
-                None
-             }
-         }
-
-    };
-
     // ─────────────────────────────────────────────────────────────────
-    // Advanced query filters (docs/superpowers/specs/2026-07-13-advanced-
-    // query-design.md). XFilter mirrors PartialX field-for-field, but each
-    // field is Option<<FieldType as Filterable>::Filter> instead of
+    // Query (myko 5.0, docs/superpowers/specs/2026-07-14-myko-5-query-
+    // api.md). XQuery mirrors the entity field-for-field, but each field is
+    // Option<<FieldType as Filterable>::Filter> instead of
     // Option<FieldType> — the per-type filter (IdFilter/NumericFilter/
     // StringFilter/EqFilter/bool) the compiler resolves via Filterable.
-    // Purely additive: PartialX/GetXsByQuery above are untouched.
+    // This is now the ONLY per-entity query-parameter type — there is no
+    // separate Partial-based query anymore.
     // ─────────────────────────────────────────────────────────────────
 
-    let filter_ident = format_ident!("{}Filter", name_str);
-    let get_by_filter_ident = format_ident!("Get{}sByFilter", name_str);
+    let filter_ident = format_ident!("{}Query", name_str);
+    let get_by_filter_ident = format_ident!("Get{}sByQuery", name_str);
 
     let filter_struct_fields: Vec<TokenStream> = filter_fields
         .iter()
@@ -443,7 +334,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             /// Normalize every field to canonical form (sorted+deduped `In`,
             /// `In([x])` -> `Eq(x)`, `Range{a,a}` -> `Eq(a)`) so equivalent
             /// filters hash/compare equal for query-cache identity — see
-            /// `Get{name}sByFilter`'s manually-written `CacheKey` impl below.
+            /// `Get{name}sByQuery`'s manually-written `CacheKey` impl below.
             pub fn canonicalize(self) -> Self {
                 Self {
                     #(#filter_canonicalize_terms),*
@@ -560,11 +451,10 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             }
         }
 
-        // Bridges this XFilter to #name for ctx.query_live(filter_cell) —
-        // phase 2 (docs/superpowers/specs/2026-07-13-advanced-query-design.md
-        // §5): "the entity/query type is inferred from Cell<XFilter>", so
-        // query_live needs no separate GetXsByFilter-style wrapper, just
-        // this trait delegating to methods already generated above.
+        // Bridges this XQuery to #name for ctx.query_live(filter_cell) —
+        // "the entity/query type is inferred from Cell<XQuery>", so
+        // query_live needs no separate wrapper type, just this trait
+        // delegating to methods already generated above.
         #[cfg(not(target_arch = "wasm32"))]
         impl #krate::query::LiveFilterQuery for #filter_ident {
             type Item = #name;
@@ -585,7 +475,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
 
     let get_by_filter_query = quote! {
         // non_hash_cache_key: skips deriving Hash on the generated struct —
-        // XFilter can contain floats/Vec, neither Hash-able, so the default
+        // XQuery can contain floats/Vec, neither Hash-able, so the default
         // #[derive(Hash)] path myko_query would otherwise take can't apply.
         // manual_cache_key: skips the auto-generated CacheKey impl entirely,
         // since the key must be computed from the CANONICALIZED filter, not
@@ -680,13 +570,24 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         }
     };
 
-    // Generate Count report with partial filter
+    // Generate Count report, filtered the same way GetXsByQuery is.
     let count_report_ident = format_ident!("Count{}s", name_str);
 
     let count_report = quote! {
+        // non_hash_cache_key + manual_cache_key: same reasoning as
+        // GetXsByQuery — XQuery can contain floats/Vec (not Hash-able), and
+        // the key must be computed from the CANONICALIZED filter so two
+        // equivalent-but-differently-ordered In sets share one report cell.
         #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_manual_cache_key]
         #[#krate::myko_report(#count_result_ident)]
-        pub struct #count_report_ident(pub #partial_ident);
+        pub struct #count_report_ident(pub #filter_ident);
+
+        impl #krate::prelude::CacheKey for #count_report_ident {
+            fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                #krate::cache::write_serde_cache_key(&self.0.clone().canonicalize(), state);
+            }
+        }
 
         impl #krate::prelude::ReportHandler for #count_report_ident {
             type Output = #count_result_ident;
@@ -698,10 +599,10 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                  {
                 use #krate::prelude::MapExt;
 
-                // Query by partial filter and count results. See
-                // CountAll's compute (above) for why `source` must be
-                // captured here rather than dropped after `.size()`.
-                let query = #get_by_partial_ident(self.0.clone());
+                // Query by filter and count results. See CountAll's
+                // compute (above) for why `source` must be captured here
+                // rather than dropped after `.size()`.
+                let query = #get_by_filter_ident(self.0.clone());
                 let source = ctx.query_map_by_str(query);
                 source.size().map(move |count| {
                     let _keepalive = &source;
@@ -1014,7 +915,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #post_deserialize_impl
 
         // Register for ts-rs export
-        #krate::register_ts_export!(#id_type_ident, #name, #partial_ident);
+        #krate::register_ts_export!(#id_type_ident, #name);
 
         #krate::submit! {
             #item_registration
@@ -1066,8 +967,6 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         #get_all_query
 
         #get_by_ids_query
-
-        #get_by_partial_query
 
         #filter_struct
 

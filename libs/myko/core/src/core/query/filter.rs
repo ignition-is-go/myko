@@ -26,7 +26,7 @@ pub trait Filter<T> {
 /// identity (see spec §1): sorted+deduped `In`, `In([x])` -> `Eq(x)`,
 /// `Range{a,a}` -> `Eq(a)`. Implemented uniformly across every filter type,
 /// including `bool` (a no-op — bare equality has nothing to canonicalize),
-/// so `#[myko_item]`'s generated `XFilter::canonicalize` can canonicalize
+/// so `#[myko_item]`'s generated `XQuery::canonicalize` can canonicalize
 /// every field the same way regardless of which filter type it holds.
 pub trait CanonicalFilter: Sized {
     fn canonicalize(self) -> Self;
@@ -71,10 +71,10 @@ pub type CompoundKey = Vec<Arc<str>>;
 /// in place would ripple into those unrelated subsystems for no reason.
 pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
 
-/// A belongs_to routing decision for one `XFilter` instance — which fields
+/// A belongs_to routing decision for one `XQuery` instance — which fields
 /// are pinned, the compound keys to union-route through
 /// `BelongsToSourceIndex`, and the extractor needed to build/maintain that
-/// index. Returned by a generated `XFilter`'s `belongs_to_route()` method
+/// index. Returned by a generated `XQuery`'s `belongs_to_route()` method
 /// (see `#[myko_item]`'s codegen); shared between the value-based query's
 /// `build_view` (routes once per query construction) and `query_live`'s
 /// incremental per-tick diffing (routes on every filter change, diffing
@@ -92,11 +92,11 @@ pub struct BelongsToRoute {
     pub extract_fk: CompoundFkExtractor,
 }
 
-/// Bridges a generated `XFilter` type to its entity, so `query_live` can be
-/// generic over just `impl Watchable<F>` — no `GetXsByFilter` wrapper
-/// needed; "the entity/query type is inferred from `Cell<XFilter>`" (spec
+/// Bridges a generated `XQuery` type to its entity, so `query_live` can be
+/// generic over just `impl Watchable<F>` — no `GetXsByQuery` wrapper
+/// needed; "the entity/query type is inferred from `Cell<XQuery>`" (spec
 /// §5). Implemented by `#[myko_item]`'s codegen for every generated
-/// `XFilter`, delegating to that type's own already-generated `matches`/
+/// `XQuery`, delegating to that type's own already-generated `matches`/
 /// `belongs_to_route` methods.
 ///
 /// The trait declaration lives in this ungated module so it resolves on
@@ -379,7 +379,7 @@ impl Filterable for String {
 /// matches, regardless of the filter) rather than needing an `Option`-aware
 /// filter type. This impl exists purely so `<Option<T> as Filterable>::Filter`
 /// resolves to the same type as `<T as Filterable>::Filter` for the
-/// generated `XFilter` struct's field declarations.
+/// generated `XQuery` struct's field declarations.
 impl<T: Filterable> Filterable for Option<T> {
     type Filter = T::Filter;
 }
@@ -484,7 +484,7 @@ macro_rules! impl_filterable_eq {
 /// [`Unfilterable`] for above). Unlike [`impl_filterable_eq!`], `$ty` need
 /// not implement `Eq`/`Ord`/`Hash` — `Unfilterable`'s `Filter`/`CanonicalFilter`
 /// impls are unconditional over any `T`, so this macro only needs `$ty` to
-/// exist as a type; the generated `XFilter` field is structurally always
+/// exist as a type; the generated `XQuery` field is structurally always
 /// `None`, same as any other `Unfilterable` field.
 #[macro_export]
 macro_rules! impl_filterable_opaque {
@@ -524,7 +524,7 @@ pub fn in_matches<T: Eq + Hash>(values: &[T], value: &T) -> bool {
 // canonicalization sort needs. Uninhabited (zero variants), so
 // `Option<Unfilterable>` — the field type #[myko_item] generates for a
 // Filterable::Filter = Unfilterable field — can only ever be `None`: the
-// field is structurally unfilterable while the containing XFilter still
+// field is structurally unfilterable while the containing XQuery still
 // compiles, derives, and (de)serializes normally.
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -576,7 +576,7 @@ impl<A, B, C, D> Filterable for (A, B, C, D) {
 }
 
 // Register the four filter types for TS export, once per generic type here
-// (not per-entity — unlike XFilter, which is a concrete struct generated
+// (not per-entity — unlike XQuery, which is a concrete struct generated
 // fresh per entity by #[myko_item], these are ts-rs *generic* TS types:
 // `export type IdFilter<T> = ...`. ts-rs derives the TS output treating the
 // Rust generic parameter as a TS generic, so which concrete Rust type
@@ -817,7 +817,7 @@ mod tests {
         // downstream crate can never impl our local Filterable trait for
         // them itself (orphan rule), so these blanket impls have to live
         // here or a field of any of these shapes blocks #[myko_item]'s
-        // XFilter derive entirely.
+        // XQuery derive entirely.
         fn assert_filterable<T: Filterable>() {}
         assert_filterable::<Vec<String>>();
         assert_filterable::<HashMap<String, i64>>();

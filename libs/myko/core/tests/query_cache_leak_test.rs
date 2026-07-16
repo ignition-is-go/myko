@@ -12,8 +12,9 @@
 use std::sync::Arc;
 
 use myko::{
-    bench_entities::{BenchItem, GetBenchItemsByQuery, PartialBenchItem, SwitchMapReport},
+    bench_entities::{BenchItem, BenchItemQuery, GetBenchItemsByQuery, SwitchMapReport},
     hyphae::{Cell, Gettable, Mutable, SwitchMapExt},
+    query::StringFilter,
     search::SearchIndex,
     server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
@@ -91,8 +92,8 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
         let request = ctx_clone.new_server_transaction();
         // Each different category produces a different cache key (different payload_hash)
         let query_result = ctx_clone.query_map(
-            GetBenchItemsByQuery(PartialBenchItem {
-                category: Some(category),
+            GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq(category.into())),
                 ..Default::default()
             }),
             request,
@@ -159,8 +160,8 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
         let request = ctx_clone.new_server_transaction();
         ctx_clone
             .query_map(
-                GetBenchItemsByQuery(PartialBenchItem {
-                    category: Some("tools".to_string()),
+                GetBenchItemsByQuery(BenchItemQuery {
+                    category: Some(StringFilter::Eq("tools".into())),
                     ..Default::default()
                 }),
                 request,
@@ -218,8 +219,8 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
         let request = ctx_clone.new_server_transaction();
         ctx_clone
             .query_map(
-                GetBenchItemsByQuery(PartialBenchItem {
-                    category: Some(category),
+                GetBenchItemsByQuery(BenchItemQuery {
+                    category: Some(StringFilter::Eq(category.into())),
                     ..Default::default()
                 }),
                 request,
@@ -282,8 +283,8 @@ fn query_cache_live_count_tracks_reachable_entries() {
     // Create a query_map and hold onto it
     let request = ctx.new_server_transaction();
     let map = ctx.query_map(
-        GetBenchItemsByQuery(PartialBenchItem {
-            category: Some("test".to_string()),
+        GetBenchItemsByQuery(BenchItemQuery {
+            category: Some(StringFilter::Eq("test".into())),
             ..Default::default()
         }),
         request,
@@ -294,8 +295,8 @@ fn query_cache_live_count_tracks_reachable_entries() {
     // Create another with different params
     let request2 = ctx.new_server_transaction();
     let map2 = ctx.query_map(
-        GetBenchItemsByQuery(PartialBenchItem {
-            category: Some("other".to_string()),
+        GetBenchItemsByQuery(BenchItemQuery {
+            category: Some(StringFilter::Eq("other".into())),
             ..Default::default()
         }),
         request2,

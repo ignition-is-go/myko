@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use myko::{
     bench_entities::{
-        BenchCompoundChild, BenchCompoundChildFilter, BenchParentAId, BenchParentBId,
-        GetBenchCompoundChildsByFilter,
+        BenchCompoundChild, BenchCompoundChildQuery, BenchParentAId, BenchParentBId,
+        GetBenchCompoundChildsByQuery,
     },
     entities::{
-        client::{Client, ClientFilter, GetClientsByFilter},
+        client::{Client, ClientQuery, GetClientsByQuery},
         server::ServerId,
     },
     query::{IdFilter, query_runtime_metrics_by_id},
@@ -98,7 +98,7 @@ fn compound_two_belongs_to_in_filter_returns_exact_union() {
     insert_compound_child(&ctx, "c3", "A1", "B3", 3); // parent_b not in set
     insert_compound_child(&ctx, "c4", "A3", "B1", 4); // parent_a not in set
 
-    let filter = BenchCompoundChildFilter {
+    let filter = BenchCompoundChildQuery {
         parent_a_id: Some(IdFilter::In(vec![
             BenchParentAId::from(Arc::<str>::from("A1")),
             BenchParentAId::from(Arc::<str>::from("A2")),
@@ -109,10 +109,7 @@ fn compound_two_belongs_to_in_filter_returns_exact_union() {
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(
-        GetBenchCompoundChildsByFilter(filter),
-        request(&ctx, "tx-1"),
-    );
+    let cell = ctx.query_map(GetBenchCompoundChildsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(
         cell.snapshot().len(),
         2,
@@ -126,13 +123,13 @@ fn writes_to_non_matching_belongs_to_buckets_do_not_change_the_result() {
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
 
-    let filter = ClientFilter {
+    let filter = ClientQuery {
         server_id: Some(IdFilter::In(vec![ServerId::from(Arc::<str>::from(
             "server-A",
         ))])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
 
     // Writes to servers outside the In set must not appear — the union
@@ -158,13 +155,13 @@ fn item_moving_out_of_the_in_set_disappears() {
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
 
-    let filter = ClientFilter {
+    let filter = ClientQuery {
         server_id: Some(IdFilter::In(vec![ServerId::from(Arc::<str>::from(
             "server-A",
         ))])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
 
     // Re-SET the same client id under a server OUTSIDE the In set — an fk
@@ -183,13 +180,13 @@ fn item_moving_into_the_in_set_appears() {
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-Z"); // starts outside the In set
 
-    let filter = ClientFilter {
+    let filter = ClientQuery {
         server_id: Some(IdFilter::In(vec![ServerId::from(Arc::<str>::from(
             "server-A",
         ))])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 0);
 
     // Re-SET the same client id under a server INSIDE the In set.
@@ -214,20 +211,20 @@ fn permuted_in_filters_share_one_query_cell() {
 
     let before = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
-        .find(|m| m.query_id.as_ref() == "GetClientsByFilter")
+        .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
         .map(|m| m.cell_factories_created)
         .unwrap_or(0);
 
     // Two DIFFERENT call sites, same logical filter, permuted + duplicated
     // In array — must canonicalize to the SAME cache key.
-    let filter_a = ClientFilter {
+    let filter_a = ClientQuery {
         server_id: Some(IdFilter::In(vec![
             ServerId::from(Arc::<str>::from("server-A")),
             ServerId::from(Arc::<str>::from("server-B")),
         ])),
         ..Default::default()
     };
-    let filter_b = ClientFilter {
+    let filter_b = ClientQuery {
         server_id: Some(IdFilter::In(vec![
             ServerId::from(Arc::<str>::from("server-B")),
             ServerId::from(Arc::<str>::from("server-A")),
@@ -236,14 +233,14 @@ fn permuted_in_filters_share_one_query_cell() {
         ..Default::default()
     };
 
-    let cell_a = ctx.query_map(GetClientsByFilter(filter_a), request(&ctx, "tx-a"));
-    let cell_b = ctx.query_map(GetClientsByFilter(filter_b), request(&ctx, "tx-b"));
+    let cell_a = ctx.query_map(GetClientsByQuery(filter_a), request(&ctx, "tx-a"));
+    let cell_b = ctx.query_map(GetClientsByQuery(filter_b), request(&ctx, "tx-b"));
     assert_eq!(cell_a.snapshot().len(), 2);
     assert_eq!(cell_b.snapshot().len(), 2);
 
     let after = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
-        .find(|m| m.query_id.as_ref() == "GetClientsByFilter")
+        .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
         .map(|m| m.cell_factories_created)
         .unwrap_or(0);
 
@@ -264,24 +261,24 @@ fn distinct_filters_do_not_share_a_query_cell() {
 
     let before = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
-        .find(|m| m.query_id.as_ref() == "GetClientsByFilter")
+        .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
         .map(|m| m.cell_factories_created)
         .unwrap_or(0);
 
-    let filter_a = ClientFilter {
+    let filter_a = ClientQuery {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
         ..Default::default()
     };
-    let filter_c = ClientFilter {
+    let filter_c = ClientQuery {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-C")))),
         ..Default::default()
     };
-    let _cell_a = ctx.query_map(GetClientsByFilter(filter_a), request(&ctx, "tx-a"));
-    let _cell_c = ctx.query_map(GetClientsByFilter(filter_c), request(&ctx, "tx-c"));
+    let _cell_a = ctx.query_map(GetClientsByQuery(filter_a), request(&ctx, "tx-a"));
+    let _cell_c = ctx.query_map(GetClientsByQuery(filter_c), request(&ctx, "tx-c"));
 
     let after = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
-        .find(|m| m.query_id.as_ref() == "GetClientsByFilter")
+        .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
         .map(|m| m.cell_factories_created)
         .unwrap_or(0);
 

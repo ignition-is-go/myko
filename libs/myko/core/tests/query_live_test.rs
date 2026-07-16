@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use myko::{
     entities::{
-        client::{Client, ClientFilter},
+        client::{Client, ClientQuery},
         server::ServerId,
     },
     hyphae::{Cell, CellMutable, MapExt, MaterializeDefinite, Mutable},
@@ -47,15 +47,15 @@ fn insert_client(ctx: &CellServerCtx, id: &str, server_id: &str) {
     ctx.apply_event_batch(vec![event]).unwrap();
 }
 
-fn eq_filter(server_id: &str) -> ClientFilter {
-    ClientFilter {
+fn eq_filter(server_id: &str) -> ClientQuery {
+    ClientQuery {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from(server_id)))),
         ..Default::default()
     }
 }
 
-fn in_filter(server_ids: &[&str]) -> ClientFilter {
-    ClientFilter {
+fn in_filter(server_ids: &[&str]) -> ClientQuery {
+    ClientQuery {
         server_id: Some(IdFilter::In(
             server_ids
                 .iter()
@@ -73,7 +73,7 @@ fn query_live_initial_population_matches_the_starting_filter() {
     insert_client(&ctx, "c1", "server-A");
     insert_client(&ctx, "c2", "server-B");
 
-    let filter_cell: Cell<ClientFilter, CellMutable> = Cell::new(eq_filter("server-A"));
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(eq_filter("server-A"));
     let result = ctx.query_live(filter_cell);
     assert_eq!(result.snapshot().len(), 1);
 }
@@ -86,7 +86,7 @@ fn query_live_updates_when_the_in_set_grows() {
     insert_client(&ctx, "c2", "server-B");
     insert_client(&ctx, "c3", "server-C");
 
-    let filter_cell: Cell<ClientFilter, CellMutable> = Cell::new(in_filter(&["server-A"]));
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(in_filter(&["server-A"]));
     let result = ctx.query_live(filter_cell.clone());
     assert_eq!(result.snapshot().len(), 1);
 
@@ -108,7 +108,7 @@ fn query_live_updates_when_the_in_set_shrinks() {
     insert_client(&ctx, "c1", "server-A");
     insert_client(&ctx, "c2", "server-B");
 
-    let filter_cell: Cell<ClientFilter, CellMutable> =
+    let filter_cell: Cell<ClientQuery, CellMutable> =
         Cell::new(in_filter(&["server-A", "server-B"]));
     let result = ctx.query_live(filter_cell.clone());
     assert_eq!(result.snapshot().len(), 2);
@@ -127,7 +127,7 @@ fn query_live_still_tracks_store_writes_after_a_filter_change() {
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
 
-    let filter_cell: Cell<ClientFilter, CellMutable> =
+    let filter_cell: Cell<ClientQuery, CellMutable> =
         Cell::new(in_filter(&["server-A", "server-B"]));
     let result = ctx.query_live(filter_cell.clone());
     assert_eq!(result.snapshot().len(), 1);
@@ -162,7 +162,7 @@ fn query_live_range_filter_change_reevaluates_correctly() {
     ctx.apply_event_batch(vec![MEvent::from_item(&client_a, MEventType::SET, "tx-1")])
         .unwrap();
 
-    let filter_cell: Cell<ClientFilter, CellMutable> = Cell::new(ClientFilter {
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(ClientQuery {
         windback: Some(myko::query::StringFilter::Eq(Arc::from(
             "2026-01-01T00:00:00Z",
         ))),
@@ -173,7 +173,7 @@ fn query_live_range_filter_change_reevaluates_correctly() {
 
     // Change to a non-matching value — scan mode must re-evaluate and
     // retract, even though nothing about the store changed.
-    filter_cell.set(ClientFilter {
+    filter_cell.set(ClientQuery {
         windback: Some(myko::query::StringFilter::Eq(Arc::from("nope"))),
         ..Default::default()
     });
@@ -184,7 +184,7 @@ fn query_live_range_filter_change_reevaluates_correctly() {
     );
 
     // Change back to a matching value.
-    filter_cell.set(ClientFilter {
+    filter_cell.set(ClientQuery {
         windback: Some(myko::query::StringFilter::Eq(Arc::from(
             "2026-01-01T00:00:00Z",
         ))),
@@ -199,7 +199,7 @@ fn query_live_downstream_state_survives_a_filter_change() {
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
 
-    let filter_cell: Cell<ClientFilter, CellMutable> = Cell::new(in_filter(&["server-A"]));
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(in_filter(&["server-A"]));
     let result = ctx.query_live(filter_cell.clone());
 
     // A stateful counter downstream of query_live's result — incremented
@@ -261,14 +261,14 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
     .unwrap();
 
     // Start indexed (belongs_to field pinned).
-    let filter_cell: Cell<ClientFilter, CellMutable> = Cell::new(eq_filter("server-A"));
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(eq_filter("server-A"));
     let result = ctx.query_live(filter_cell.clone());
     assert_eq!(result.snapshot().len(), 1);
 
     // Switch to scan mode (no belongs_to field pinned — only a non-indexed
     // field) — must tear down the indexed bucket subscription cleanly and
     // re-evaluate via the whole-store scan path.
-    filter_cell.set(ClientFilter {
+    filter_cell.set(ClientQuery {
         windback: Some(myko::query::StringFilter::Eq(Arc::from(
             "2026-01-01T00:00:00Z",
         ))),

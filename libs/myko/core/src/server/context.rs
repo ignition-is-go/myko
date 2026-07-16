@@ -1272,36 +1272,10 @@ impl CellServerCtx {
             .expect("typed projection from freshly inserted entry")
     }
 
-    /// [`Self::query_map`]'s twin for advanced (`GetXsByFilter`) queries —
-    /// see docs/superpowers/specs/2026-07-13-advanced-query-design.md §3. A
-    /// thin wrapper: `GetXsByFilter` flows through the same generic
-    /// `QueryParams` path as any other query type (already verified end to
-    /// end against `query_map` directly), so this exists purely as a named,
-    /// discoverable seam rather than adding new dispatch logic.
-    pub fn query_map_filtered<Q>(
-        &self,
-        query: Q,
-        request: Arc<RequestContext>,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
-    where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable
-            + WithId
-            + WithTypedId
-            + DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.query_map(query, request)
-    }
-
-    /// Reactive filter parameters (phase 2 of the advanced-query-design
-    /// spec, §5): `filter_cell` replaces a value-based `GetXsByFilter` with
-    /// a live `Cell`, so a filter derived from other cells no longer needs
-    /// a `switch_map` wrapper — see `query::query_live` for the mechanics
+    /// Reactive filter parameters: `filter_cell` replaces a value-based
+    /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
+    /// cells no longer needs a `switch_map` wrapper — see
+    /// `query::query_live` for the mechanics
     /// (incremental bucket-diffing on `In`/`Eq` field changes, scoped
     /// rescan on `Range`/`Contains` changes, never a graph teardown).
     ///

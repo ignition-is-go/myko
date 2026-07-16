@@ -1,14 +1,14 @@
-//! Smoke tests for the generated XFilter/GetXsByFilter advanced-query types
-//! (docs/superpowers/specs/2026-07-13-advanced-query-design.md, phase 1).
-//! Full acceptance-criteria coverage (routing metrics, reactive tick,
-//! TS round-trip, wasm) lands alongside the routing work.
+//! Smoke tests for the generated XQuery/GetXsByQuery per-field-filter query
+//! types (docs/superpowers/specs/2026-07-14-myko-5-query-api.md). Full
+//! acceptance-criteria coverage (routing metrics, reactive tick, TS
+//! round-trip, wasm) lands alongside the routing work.
 
 #![cfg(feature = "bench")]
 
 use std::sync::Arc;
 
 use myko::{
-    bench_entities::{BenchItem, BenchItemFilter, GetBenchItemsByFilter},
+    bench_entities::{BenchItem, BenchItemQuery, GetBenchItemsByQuery},
     query::NumericFilter,
     server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
@@ -56,24 +56,10 @@ fn default_filter_matches_everything() {
     insert_bench_item(&ctx, "b", "cat", 2);
 
     let cell = ctx.query_map(
-        GetBenchItemsByFilter(BenchItemFilter::default()),
+        GetBenchItemsByQuery(BenchItemQuery::default()),
         request(&ctx, "tx-1"),
     );
     assert_eq!(cell.snapshot().len(), 2);
-}
-
-#[test]
-fn query_map_filtered_is_a_working_alias_for_query_map() {
-    let ctx = make_ctx();
-    insert_bench_item(&ctx, "a", "cat", 1);
-    insert_bench_item(&ctx, "b", "cat", 2);
-
-    let filter = BenchItemFilter {
-        value: Some(NumericFilter::Eq(1)),
-        ..Default::default()
-    };
-    let cell = ctx.query_map_filtered(GetBenchItemsByFilter(filter), request(&ctx, "tx-1"));
-    assert_eq!(cell.snapshot().len(), 1);
 }
 
 #[test]
@@ -83,11 +69,11 @@ fn numeric_in_filter_matches_only_listed_values() {
     insert_bench_item(&ctx, "b", "cat", 2);
     insert_bench_item(&ctx, "c", "cat", 3);
 
-    let filter = BenchItemFilter {
+    let filter = BenchItemQuery {
         value: Some(NumericFilter::In(vec![1, 3])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetBenchItemsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetBenchItemsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 2);
 }
 
@@ -98,25 +84,25 @@ fn numeric_range_filter_matches_inclusive_bounds() {
     insert_bench_item(&ctx, "b", "cat", 5);
     insert_bench_item(&ctx, "c", "cat", 10);
 
-    let filter = BenchItemFilter {
+    let filter = BenchItemQuery {
         value: Some(NumericFilter::Range {
             min: Some(1),
             max: Some(5),
         }),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetBenchItemsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetBenchItemsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 2);
 }
 
 #[test]
 fn permuted_in_filters_canonicalize_identically() {
-    let a = BenchItemFilter {
+    let a = BenchItemQuery {
         value: Some(NumericFilter::In(vec![3, 1, 2])),
         ..Default::default()
     }
     .canonicalize();
-    let b = BenchItemFilter {
+    let b = BenchItemQuery {
         value: Some(NumericFilter::In(vec![1, 2, 3, 2])),
         ..Default::default()
     }
@@ -126,7 +112,7 @@ fn permuted_in_filters_canonicalize_identically() {
 
 #[test]
 fn single_element_in_canonicalizes_to_eq() {
-    let filter = BenchItemFilter {
+    let filter = BenchItemQuery {
         value: Some(NumericFilter::In(vec![7])),
         ..Default::default()
     }

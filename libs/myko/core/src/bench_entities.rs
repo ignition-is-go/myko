@@ -7,7 +7,7 @@
 //! The `#[myko_item]` macro auto-generates:
 //! - `GetAllBenchItems` - query all items
 //! - `GetBenchItemsByIds` - query by ID list
-//! - `GetBenchItemsByQuery` - query by partial match
+//! - `GetBenchItemsByQuery` - query by per-field filter
 //! - `CountAllBenchItems` / `CountBenchItems` - count reports
 //!
 //! We add a custom `GetBenchItemsByCategory` for category-based filtering,
@@ -76,7 +76,7 @@ mod compound_b {
 }
 
 pub use compound_child::{
-    BenchCompoundChild, BenchCompoundChildFilter, GetBenchCompoundChildsByFilter,
+    BenchCompoundChild, BenchCompoundChildQuery, GetBenchCompoundChildsByQuery,
 };
 mod compound_child {
     use crate::prelude::*;
@@ -96,7 +96,7 @@ mod compound_child {
 // Opaque JSON payload field fixture — mirrors rship's Snapshot entity
 // (json payload field), which hit `Filterable` not being implemented for
 // `serde_json::Value` before the Unfilterable marker filter existed.
-// #[myko_item] must still generate a compiling, derivable XFilter with a
+// #[myko_item] must still generate a compiling, derivable XQuery with a
 // `payload: Option<Unfilterable>` field that can only ever be `None`.
 pub use snapshot::BenchSnapshot;
 mod snapshot {
@@ -112,7 +112,7 @@ mod snapshot {
 // HashMap/tuple entity fields), which hit the same "no orphan-rule
 // workaround exists downstream" problem as serde_json::Value did before
 // the blanket container impls existed. #[myko_item] must generate a
-// compiling, derivable XFilter with `Unfilterable`-backed fields for all
+// compiling, derivable XQuery with `Unfilterable`-backed fields for all
 // three container shapes.
 pub use containers::BenchContainerFields;
 mod containers {
@@ -331,8 +331,8 @@ impl ReportHandler for SwitchMapReport {
 
         // Outer: watch all items matching the category
         let items = ctx
-            .query_map(GetBenchItemsByQuery(PartialBenchItem {
-                category: Some(category),
+            .query_map(GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq(category.into())),
                 ..Default::default()
             }))
             .items();

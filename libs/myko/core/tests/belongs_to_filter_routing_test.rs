@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use myko::{
     entities::{
-        client::{Client, ClientFilter, GetClientsByFilter},
+        client::{Client, ClientQuery, GetClientsByQuery},
         server::ServerId,
     },
     query::IdFilter,
@@ -60,14 +60,14 @@ fn in_filter_on_belongs_to_field_returns_the_union() {
     insert_client(&ctx, "c2", "server-B");
     insert_client(&ctx, "c3", "server-C"); // not in the In set
 
-    let filter = ClientFilter {
+    let filter = ClientQuery {
         server_id: Some(IdFilter::In(vec![
             ServerId::from(Arc::<str>::from("server-A")),
             ServerId::from(Arc::<str>::from("server-B")),
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(
         cell.snapshot().len(),
         2,
@@ -80,14 +80,14 @@ fn in_filter_on_belongs_to_field_stays_reactive() {
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
 
-    let filter = ClientFilter {
+    let filter = ClientQuery {
         server_id: Some(IdFilter::In(vec![
             ServerId::from(Arc::<str>::from("server-A")),
             ServerId::from(Arc::<str>::from("server-B")),
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
 
     // A new client under server-B (also in the In set) must appear.
@@ -105,10 +105,10 @@ fn eq_filter_on_belongs_to_field_still_works() {
     insert_client(&ctx, "c1", "server-A");
     insert_client(&ctx, "c2", "server-B");
 
-    let filter = ClientFilter {
+    let filter = ClientQuery {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-1"));
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
 }
