@@ -53,8 +53,18 @@ fn request(ctx: &CellServerCtx, tx: &str) -> Arc<myko::request::RequestContext> 
     ))
 }
 
+/// hyphae's scheduler tick queue is process-wide, so tests in this binary
+/// that assert on reactive propagation timing can perturb each other when
+/// run concurrently (the default) — see the matching helper (and full
+/// rationale) in query_cache_leak_test.rs.
+fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[test]
 fn in_filter_on_belongs_to_field_returns_the_union() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
     insert_client(&ctx, "c2", "server-B");
@@ -77,6 +87,7 @@ fn in_filter_on_belongs_to_field_returns_the_union() {
 
 #[test]
 fn in_filter_on_belongs_to_field_stays_reactive() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
 
@@ -101,6 +112,7 @@ fn in_filter_on_belongs_to_field_stays_reactive() {
 
 #[test]
 fn eq_filter_on_belongs_to_field_still_works() {
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
     insert_client(&ctx, "c2", "server-B");
