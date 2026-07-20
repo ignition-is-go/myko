@@ -132,7 +132,10 @@ where
 fn build_tracer_provider(endpoint: &str, resource: Resource) -> SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
-        .with_endpoint(endpoint)
+        // `.with_endpoint` is the exact per-signal URL (opentelemetry-otlp does NOT
+        // append the signal path when set programmatically), so append `/v1/traces`
+        // to the base gateway endpoint — otherwise it POSTs to `/` and gets 404.
+        .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
         .build()
         .expect("failed to build OTLP/HTTP trace exporter");
 
@@ -181,7 +184,9 @@ fn build_meter_provider(endpoint: &str, resource: Resource) -> SdkMeterProvider 
 
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
-        .with_endpoint(endpoint)
+        // See build_tracer_provider: append the `/v1/metrics` signal path to the base
+        // gateway endpoint, else the exporter POSTs to `/` and gets 404.
+        .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches('/')))
         .build()
         .expect("failed to build OTLP/HTTP metrics exporter");
 
