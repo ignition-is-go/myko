@@ -83,19 +83,17 @@ impl PendingQueryResponse {
             .iter()
             .map(|item| ErasedWrappedItem {
                 item: item.clone(),
-                item_type: item.entity_type().into(),
+                item_type: crate::wire::intern_entity_type(item.entity_type()),
             })
             .collect();
 
-        let mut changes: Vec<QueryChange> = Vec::with_capacity(
-            upserts.len() + self.deletes.len() + usize::from(self.window_order_ids.is_some()),
-        );
-        for item in &upserts {
-            changes.push(QueryChange::Upsert { item: item.clone() });
-        }
-        for id in &self.deletes {
-            changes.push(QueryChange::Delete { id: id.clone() });
-        }
+        // `changes` carries ONLY the WindowOrder entry. Every client (TS,
+        // Rust, and the other ports) reads item content from
+        // `upserts`/`deletes` and consults `changes` solely to find
+        // `windowOrder` — mirroring upserts/deletes into `changes` used to
+        // serialize every item twice on the wire for nothing.
+        let mut changes: Vec<QueryChange> =
+            Vec::with_capacity(usize::from(self.window_order_ids.is_some()));
         if let Some(ids) = self.window_order_ids {
             changes.push(QueryChange::WindowOrder {
                 ids,
