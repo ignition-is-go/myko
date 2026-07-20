@@ -31,23 +31,41 @@ pub struct MEvent {
 
     pub change_type: MEventType,
 
-    pub item_type: String,
+    // NOTE(ts): the string fields are Arc<str>, not String — an event is
+    // cloned across subsystems (persister, sink, buffers, sessions) far
+    // more often than it is built, and Arc makes every one of those clones
+    // a refcount bump. Serialized form is unchanged (plain JSON strings).
+    pub item_type: Arc<str>,
 
     #[serde(default = "utc_now_iso")]
-    pub created_at: String,
+    pub created_at: Arc<str>,
 
     #[serde(default = "generate_random_uuid")]
-    pub tx: String,
+    pub tx: Arc<str>,
 
-    pub source_id: Option<String>,
+    pub source_id: Option<Arc<str>>,
 }
 
-fn generate_random_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
+/// Interned `Arc<str>` for a `&'static str` entity type — one allocation
+/// per distinct type for the process lifetime, then refcount bumps. Every
+/// produced event stamps `item_type`; without interning each stamp would
+/// copy the type name into a fresh Arc.
+pub fn intern_entity_type(entity_type: &'static str) -> Arc<str> {
+    static INTERNED: std::sync::OnceLock<dashmap::DashMap<&'static str, Arc<str>>> =
+        std::sync::OnceLock::new();
+    INTERNED
+        .get_or_init(dashmap::DashMap::new)
+        .entry(entity_type)
+        .or_insert_with(|| Arc::from(entity_type))
+        .clone()
 }
 
-fn utc_now_iso() -> String {
-    Utc::now().to_rfc3339()
+fn generate_random_uuid() -> Arc<str> {
+    Arc::from(uuid::Uuid::new_v4().to_string())
+}
+
+fn utc_now_iso() -> Arc<str> {
+    Arc::from(Utc::now().to_rfc3339())
 }
 
 impl MEvent {
@@ -72,10 +90,10 @@ impl MEvent {
         MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type,
-            item_type: item.entity_type().to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            tx: uuid::Uuid::new_v4().to_string(),
-            source_id: Some(source_id.to_string()),
+            item_type: intern_entity_type(item.entity_type()),
+            created_at: Arc::from(Utc::now().to_rfc3339()),
+            tx: Arc::from(uuid::Uuid::new_v4().to_string()),
+            source_id: Some(Arc::from(source_id)),
         }
     }
 
@@ -84,10 +102,10 @@ impl MEvent {
         MEvent {
             item: serde_json::to_value(item).unwrap(),
             change_type: MEventType::DEL,
-            item_type: item.entity_type().to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            tx: uuid::Uuid::new_v4().to_string(),
-            source_id: Some(source_id.to_string()),
+            item_type: intern_entity_type(item.entity_type()),
+            created_at: Arc::from(Utc::now().to_rfc3339()),
+            tx: Arc::from(uuid::Uuid::new_v4().to_string()),
+            source_id: Some(Arc::from(source_id)),
         }
     }
 
@@ -96,10 +114,10 @@ impl MEvent {
         MEvent {
             item: item.to_value(),
             change_type: MEventType::DEL,
-            item_type: item.entity_type().to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            tx: uuid::Uuid::new_v4().to_string(),
-            source_id: Some(source_id.to_string()),
+            item_type: intern_entity_type(item.entity_type()),
+            created_at: Arc::from(Utc::now().to_rfc3339()),
+            tx: Arc::from(uuid::Uuid::new_v4().to_string()),
+            source_id: Some(Arc::from(source_id)),
         }
     }
 
@@ -108,10 +126,10 @@ impl MEvent {
         MEvent {
             item: value,
             change_type: MEventType::SET,
-            item_type: entity_type.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-            tx: uuid::Uuid::new_v4().to_string(),
-            source_id: Some(source_id.to_string()),
+            item_type: Arc::from(entity_type),
+            created_at: Arc::from(Utc::now().to_rfc3339()),
+            tx: Arc::from(uuid::Uuid::new_v4().to_string()),
+            source_id: Some(Arc::from(source_id)),
         }
     }
 
@@ -159,11 +177,17 @@ impl MEvent {
             }
         }
 
-        sanitize_string(&mut self.item_type);
-        sanitize_string(&mut self.created_at);
-        sanitize_string(&mut self.tx);
+        fn sanitize_arc(s: &mut Arc<str>) {
+            if s.as_bytes().contains(&0) {
+                *s = Arc::from(s.replace('\0', ""));
+            }
+        }
+
+        sanitize_arc(&mut self.item_type);
+        sanitize_arc(&mut self.created_at);
+        sanitize_arc(&mut self.tx);
         if let Some(ref mut sid) = self.source_id {
-            sanitize_string(sid);
+            sanitize_arc(sid);
         }
         sanitize_value(&mut self.item);
     }

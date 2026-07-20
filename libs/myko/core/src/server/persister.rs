@@ -17,7 +17,7 @@ use crate::wire::MEvent;
 /// Error returned when event persistence fails.
 #[derive(Debug, Clone)]
 pub struct PersistError {
-    pub entity_type: String,
+    pub entity_type: std::sync::Arc<str>,
     pub message: String,
 }
 

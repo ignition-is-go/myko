@@ -516,7 +516,7 @@ impl CellServer {
         let dispatcher = tokio::spawn(async move {
             while let Ok(event) = rx.recv_async().await {
                 for ch in &saga_channels {
-                    if event.item_type == ch.entity_type && event.change_type == ch.change_type {
+                    if &*event.item_type == ch.entity_type && event.change_type == ch.change_type {
                         let _ = ch.tx.send(event.clone());
                     }
                 }

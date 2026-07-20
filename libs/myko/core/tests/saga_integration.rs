@@ -27,11 +27,11 @@ fn make_bench_item_event(id: &str, name: &str) -> MEvent {
 
 fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
     MEvent {
-        tx: "test-tx".to_string(),
-        item_type: item_type.to_string(),
+        tx: "test-tx".into(),
+        item_type: item_type.into(),
         item: serde_json::json!({"id": "other-1", "hash": "h"}),
         change_type,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Utc::now().to_rfc3339().into(),
         source_id: None,
     }
 }

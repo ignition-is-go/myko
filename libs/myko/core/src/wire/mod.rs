@@ -25,7 +25,7 @@ pub use command::{
     CommandError, CommandResponse, EncodedCommandMessage, WrappedCommand, encode_command_message,
     wrap_command_request,
 };
-pub use event::{EventOptions, MEvent, MEventType};
+pub use event::{EventOptions, MEvent, MEventType, intern_entity_type};
 pub use item::{ErasedWrappedItem, WrappedItem};
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
 pub use query::{

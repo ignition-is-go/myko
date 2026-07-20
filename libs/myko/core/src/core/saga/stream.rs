@@ -281,11 +281,11 @@ mod tests {
 
     fn make_event(item_type: &str, change_type: MEventType) -> MEvent {
         MEvent {
-            tx: "test-tx".to_string(),
-            item_type: item_type.to_string(),
+            tx: "test-tx".into(),
+            item_type: item_type.into(),
             item: json!({"id": "test-id", "hash": "test-hash"}),
             change_type,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Utc::now().to_rfc3339().into(),
             source_id: None,
         }
     }

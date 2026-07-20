@@ -240,6 +240,9 @@ impl MapCacheEntry {
 pub struct CellServerCtx {
     /// Unique identifier for this server instance
     pub host_id: Uuid,
+    /// `host_id` pre-rendered once — the durable-backend producers stamp it
+    /// on every event, and `Uuid::to_string` per event is pure churn.
+    host_id_str: Arc<str>,
     /// Store registry for entity access
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for item parsers
@@ -290,6 +293,7 @@ impl CellServerCtx {
     ) -> Self {
         Self {
             host_id,
+            host_id_str: Arc::from(host_id.to_string()),
             registry,
             handler_registry,
             relationship_manager,
@@ -810,7 +814,7 @@ impl CellServerCtx {
             {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
-                    let entity_type: Arc<str> = event.item_type.clone().into();
+                    let entity_type: Arc<str> = event.item_type.clone();
                     buffered_by_type
                         .entry(entity_type)
                         .or_insert_with(|| (window_ms, Vec::new()))
@@ -1194,33 +1198,48 @@ impl CellServerCtx {
     // ─────────────────────────────────────────────────────────────────────────
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            let _ = sink.send(event);
+        // Build the event ONCE — `del_from_any` serializes the whole item
+        // into a JSON tree, so the persister/sink pair shares one build
+        // (cloning an MEvent is cheaper than a second serialization walk).
+        match (
+            self.persisters.resolve(item.entity_type()),
+            &self.event_sink,
+        ) {
+            (None, None) => {}
+            (Some(persister), None) => {
+                persister.persist(MEvent::del_from_any(item, &self.host_id_str))?;
+            }
+            (None, Some(sink)) => {
+                let _ = sink.send(MEvent::del_from_any(item, &self.host_id_str));
+            }
+            (Some(persister), Some(sink)) => {
+                let event = MEvent::del_from_any(item, &self.host_id_str);
+                let for_sink = event.clone();
+                persister.persist(event)?;
+                let _ = sink.send(for_sink);
+            }
         }
         Ok(())
     }
 
     fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            let _ = sink.send(event);
+        // Same single-build contract as produce_del_dyn above.
+        let build = || MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str);
+        match (
+            self.persisters.resolve(item.entity_type()),
+            &self.event_sink,
+        ) {
+            (None, None) => {}
+            (Some(persister), None) => persister.persist(build())?,
+            (None, Some(sink)) => {
+                let _ = sink.send(build());
+            }
+            (Some(persister), Some(sink)) => {
+                let event = build();
+                let for_sink = event.clone();
+                persister.persist(event)?;
+                let _ = sink.send(for_sink);
+            }
         }
         Ok(())
     }
@@ -1842,10 +1861,10 @@ mod tests {
                     "value": 7,
                 }),
                 change_type: MEventType::SET,
-                item_type: "ImmediateTestItem".to_string(),
-                created_at: "2026-03-12T00:00:00Z".to_string(),
-                tx: "tx-immediate".to_string(),
-                source_id: Some("test".to_string()),
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-immediate".into(),
+                source_id: Some("test".into()),
             }])
             .expect("apply_event_batch should succeed");
 
@@ -1865,10 +1884,10 @@ mod tests {
                     "value": 42,
                 }),
                 change_type: MEventType::SET,
-                item_type: "BufferedTestItem".to_string(),
-                created_at: "2026-03-12T00:00:00Z".to_string(),
-                tx: "tx-buffered".to_string(),
-                source_id: Some("test".to_string()),
+                item_type: "BufferedTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-buffered".into(),
+                source_id: Some("test".into()),
             }])
             .expect("apply_event_batch should succeed");
 
@@ -1897,10 +1916,10 @@ mod tests {
         ctx.apply_event_batch(vec![MEvent {
             item: json!({ "id": "old-1", "value": 1 }),
             change_type: MEventType::SET,
-            item_type: "ImmediateTestItem".to_string(),
-            created_at: "2026-03-12T00:00:00Z".to_string(),
-            tx: "tx-seed".to_string(),
-            source_id: Some("test".to_string()),
+            item_type: "ImmediateTestItem".into(),
+            created_at: "2026-03-12T00:00:00Z".into(),
+            tx: "tx-seed".into(),
+            source_id: Some("test".into()),
         }])
         .expect("seed apply_event_batch should succeed");
 
@@ -1922,18 +1941,18 @@ mod tests {
                 MEvent {
                     item: json!({ "id": "new-1", "value": 2 }),
                     change_type: MEventType::SET,
-                    item_type: "ImmediateTestItem".to_string(),
-                    created_at: "2026-03-12T00:00:01Z".to_string(),
-                    tx: "tx-mixed".to_string(),
-                    source_id: Some("test".to_string()),
+                    item_type: "ImmediateTestItem".into(),
+                    created_at: "2026-03-12T00:00:01Z".into(),
+                    tx: "tx-mixed".into(),
+                    source_id: Some("test".into()),
                 },
                 MEvent {
                     item: json!({ "id": "old-1", "value": 1 }),
                     change_type: MEventType::DEL,
-                    item_type: "ImmediateTestItem".to_string(),
-                    created_at: "2026-03-12T00:00:01Z".to_string(),
-                    tx: "tx-mixed".to_string(),
-                    source_id: Some("test".to_string()),
+                    item_type: "ImmediateTestItem".into(),
+                    created_at: "2026-03-12T00:00:01Z".into(),
+                    tx: "tx-mixed".into(),
+                    source_id: Some("test".into()),
                 },
             ])
             .expect("mixed apply_event_batch should succeed");

@@ -101,7 +101,7 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
 
     // Auto-populate #[myko_client_id] fields with the connection's client_id
     for reg in iter_client_id_registrations() {
-        if reg.entity_type == event.item_type {
+        if reg.entity_type == &*event.item_type {
             if let Some(obj) = event.item.as_object_mut() {
                 obj.insert(
                     reg.field_name_json.to_string(),
@@ -114,7 +114,7 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
 
     // Auto-populate #[server_owned] fields with this server's ID
     for reg in iter_server_owned_registrations() {
-        if reg.entity_type == event.item_type {
+        if reg.entity_type == &*event.item_type {
             if let Some(obj) = event.item.as_object_mut() {
                 let field = reg.field_name_json;
                 let current = obj.get(field).and_then(|v| v.as_str()).unwrap_or("");
@@ -135,7 +135,7 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
         && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(String::from)
     {
         for reg in iter_fallback_to_id_registrations() {
-            if reg.entity_type == event.item_type {
+            if reg.entity_type == &*event.item_type {
                 let field = reg.field_name_json;
                 if matches!(obj.get(field), None | Some(serde_json::Value::Null)) {
                     obj.insert(field.to_string(), serde_json::Value::String(id.clone()));

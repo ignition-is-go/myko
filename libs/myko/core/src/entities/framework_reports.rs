@@ -305,9 +305,10 @@ impl crate::command::CommandHandler for ImportItems {
     ) -> Result<usize, crate::command::CommandError> {
         use crate::wire::{MEvent, MEventType};
 
-        let tx = ctx.tx().to_string();
-        let source_id = Some(ctx.host_id().to_string());
-        let created_at = ctx.created_at().to_string();
+        let tx: std::sync::Arc<str> = ctx.tx();
+        let source_id: Option<std::sync::Arc<str>> =
+            Some(std::sync::Arc::from(ctx.host_id().to_string()));
+        let created_at: std::sync::Arc<str> = std::sync::Arc::from(ctx.created_at());
 
         let mut events = Vec::with_capacity(self.items.len() + self.delete_items.len());
 
@@ -315,7 +316,7 @@ impl crate::command::CommandHandler for ImportItems {
             events.push(MEvent {
                 item: wrapped.item.clone(),
                 change_type: MEventType::SET,
-                item_type: wrapped.item_type.to_string(),
+                item_type: wrapped.item_type.clone(),
                 created_at: created_at.clone(),
                 tx: tx.clone(),
                 source_id: source_id.clone(),
@@ -326,7 +327,7 @@ impl crate::command::CommandHandler for ImportItems {
             events.push(MEvent {
                 item: wrapped.item.clone(),
                 change_type: MEventType::DEL,
-                item_type: wrapped.item_type.to_string(),
+                item_type: wrapped.item_type.clone(),
                 created_at: created_at.clone(),
                 tx: tx.clone(),
                 source_id: source_id.clone(),

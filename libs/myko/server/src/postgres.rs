@@ -249,7 +249,7 @@ impl PostgresProducerHandle {
     /// returns immediately. Returns Err only if the channel is full (backpressure).
     pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
         if event.source_id.is_none() {
-            event.source_id = Some(self.host_id.to_string());
+            event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
 
@@ -366,7 +366,7 @@ fn run_producer_loop(
                     MEventType::SET => "SET",
                     MEventType::DEL => "DEL",
                 };
-                *counts.entry((ev.item_type.as_str(), kind)).or_insert(0) += 1;
+                *counts.entry((&*ev.item_type, kind)).or_insert(0) += 1;
             }
             let summary: Vec<String> = counts
                 .iter()
@@ -455,15 +455,19 @@ fn insert_event_batch(
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
         };
+        let item_type: &str = &event.item_type;
+        let created_at: &str = &event.created_at;
+        let tx: &str = &event.tx;
+        let source_id: Option<&str> = event.source_id.as_deref();
         client.execute(
             &sql,
             &[
-                &event.item_type,
+                &item_type,
                 &item_id,
                 &change_type,
-                &event.created_at,
-                &event.tx,
-                &event.source_id,
+                &created_at,
+                &tx,
+                &source_id,
                 &event_json,
             ],
         )?;
@@ -502,12 +506,12 @@ fn insert_event_batch(
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
         };
-        params.push(Box::new(event.item_type.clone()));
+        params.push(Box::new(event.item_type.to_string()));
         params.push(Box::new(item_id));
         params.push(Box::new(change_type.to_string()));
-        params.push(Box::new(event.created_at.clone()));
-        params.push(Box::new(event.tx.clone()));
-        params.push(Box::new(event.source_id.clone()));
+        params.push(Box::new(event.created_at.to_string()));
+        params.push(Box::new(event.tx.to_string()));
+        params.push(Box::new(event.source_id.as_ref().map(|s| s.to_string())));
         params.push(Box::new(event_json));
     }
 
@@ -806,7 +810,7 @@ fn apply_remote_event(
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
 ) {
-    let is_my_event = event.source_id.as_ref().is_some_and(|id| id == host_id);
+    let is_my_event = event.source_id.as_deref().is_some_and(|id| id == host_id);
     if is_my_event {
         return;
     }

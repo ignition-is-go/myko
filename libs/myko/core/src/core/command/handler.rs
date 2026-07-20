@@ -139,7 +139,9 @@ impl CommandContext {
                 return Ok(());
             }
 
-            let source_id = Some(self.req.host_id.to_string());
+            let source_id: Option<std::sync::Arc<str>> =
+                Some(std::sync::Arc::from(self.req.host_id.to_string()));
+            let created_at: std::sync::Arc<str> = std::sync::Arc::from(self.req.created_at.as_str());
             let mut events = Vec::with_capacity(items.len());
             for item in items {
                 let item_json = serde_json::to_value(item).map_err(|err| CommandError {
@@ -150,9 +152,9 @@ impl CommandContext {
                 events.push(MEvent {
                     item: item_json,
                     change_type: MEventType::SET,
-                    item_type: item.entity_type().to_string(),
-                    created_at: self.req.created_at.to_string(),
-                    tx: self.req.tx.to_string(),
+                    item_type: crate::wire::intern_entity_type(item.entity_type()),
+                    created_at: created_at.clone(),
+                    tx: self.req.tx.clone(),
                     source_id: source_id.clone(),
                 });
             }
@@ -187,15 +189,17 @@ impl CommandContext {
                 return Ok(());
             }
 
-            let source_id = Some(self.req.host_id.to_string());
+            let source_id: Option<std::sync::Arc<str>> =
+                Some(std::sync::Arc::from(self.req.host_id.to_string()));
+            let created_at: std::sync::Arc<str> = std::sync::Arc::from(self.req.created_at.as_str());
             let mut events = Vec::with_capacity(items.len());
             for item in items {
                 events.push(MEvent {
                     item: item.to_value(),
                     change_type: MEventType::SET,
-                    item_type: item.entity_type().to_string(),
-                    created_at: self.req.created_at.to_string(),
-                    tx: self.req.tx.to_string(),
+                    item_type: crate::wire::intern_entity_type(item.entity_type()),
+                    created_at: created_at.clone(),
+                    tx: self.req.tx.clone(),
                     source_id: source_id.clone(),
                 });
             }
@@ -252,7 +256,9 @@ impl CommandContext {
                 return Ok(());
             }
 
-            let source_id = Some(self.req.host_id.to_string());
+            let source_id: Option<std::sync::Arc<str>> =
+                Some(std::sync::Arc::from(self.req.host_id.to_string()));
+            let created_at: std::sync::Arc<str> = std::sync::Arc::from(self.req.created_at.as_str());
             let mut events = Vec::with_capacity(items.len());
             for item in items {
                 let item_json = serde_json::to_value(item).map_err(|err| CommandError {
@@ -263,9 +269,9 @@ impl CommandContext {
                 events.push(MEvent {
                     item: item_json,
                     change_type: MEventType::DEL,
-                    item_type: item.entity_type().to_string(),
-                    created_at: self.req.created_at.to_string(),
-                    tx: self.req.tx.to_string(),
+                    item_type: crate::wire::intern_entity_type(item.entity_type()),
+                    created_at: created_at.clone(),
+                    tx: self.req.tx.clone(),
                     source_id: source_id.clone(),
                 });
             }
