@@ -407,7 +407,7 @@ export class SvelteMykoClient {
 	 * <script>
 	 *   let { sceneId } = $props()
 	 *   const nodes = client.liveQuery(() =>
-	 *     sceneId ? new GetBindingNodesByQuery({ sceneId }) : null
+	 *     sceneId ? new GetBindingNodesByQuery({ sceneId: { kind: "eq", value: sceneId } }) : null
 	 *   )
 	 * </script>
 	 *

@@ -14,7 +14,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 use hyphae::{Cell, CellMutable, Mutable};
 use myko::{
     entities::{
-        client::{Client, ClientFilter, GetClientsByFilter},
+        client::{Client, ClientQuery, GetClientsByQuery},
         server::ServerId,
     },
     query::IdFilter,
@@ -79,14 +79,14 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
                 .iter()
                 .enumerate()
                 .map(|(i, sid)| {
-                    let filter = ClientFilter {
+                    let filter = ClientQuery {
                         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from(
                             sid.as_str(),
                         )))),
                         ..Default::default()
                     };
                     ctx.query_map(
-                        GetClientsByFilter(filter),
+                        GetClientsByQuery(filter),
                         request(&ctx, &format!("tx-{i}")),
                     )
                 })
@@ -97,7 +97,7 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
 
     g.bench_function("one_in_filter_cell", |b| {
         b.iter(|| {
-            let filter = ClientFilter {
+            let filter = ClientQuery {
                 server_id: Some(IdFilter::In(
                     server_ids
                         .iter()
@@ -106,7 +106,7 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
                 )),
                 ..Default::default()
             };
-            let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx-in"));
+            let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-in"));
             std::hint::black_box(cell)
         })
     });
@@ -154,11 +154,11 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                     ids.push(ServerId::from(Arc::<str>::from(format!(
                         "unique-{counter}"
                     ))));
-                    let filter = ClientFilter {
+                    let filter = ClientQuery {
                         server_id: Some(IdFilter::In(ids)),
                         ..Default::default()
                     };
-                    let cell = ctx.query_map(GetClientsByFilter(filter), request(&ctx, "tx"));
+                    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx"));
                     std::hint::black_box(cell)
                 })
             },
@@ -173,8 +173,8 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                         let ids: Vec<ServerId> = (0..existing)
                             .map(|i| ServerId::from(Arc::<str>::from(format!("server-{i}"))))
                             .collect();
-                        let filter_cell: Cell<ClientFilter, CellMutable> =
-                            Cell::new(ClientFilter {
+                        let filter_cell: Cell<ClientQuery, CellMutable> =
+                            Cell::new(ClientQuery {
                                 server_id: Some(IdFilter::In(ids.clone())),
                                 ..Default::default()
                             });
@@ -188,7 +188,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                         // this is the whole point of the incremental-diff
                         // design (see registration.rs's query_live).
                         ids.push(ServerId::from(Arc::<str>::from("server-new")));
-                        filter_cell.set(ClientFilter {
+                        filter_cell.set(ClientQuery {
                             server_id: Some(IdFilter::In(ids)),
                             ..Default::default()
                         });

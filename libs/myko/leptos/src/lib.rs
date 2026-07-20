@@ -50,8 +50,8 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 /// This lets callers pass filtered queries whose parameters come from signals:
 ///
 /// ```ignore
-/// let items = live_query(move || GetItemsByQuery(PartialItem {
-///     owner_id: user_id.get(),
+/// let items = live_query(move || GetItemsByQuery(ItemQuery {
+///     owner_id: Some(user_id.get().into()),
 ///     ..Default::default()
 /// }));
 /// ```
