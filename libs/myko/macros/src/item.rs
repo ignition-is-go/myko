@@ -276,10 +276,19 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     let filter_ident = format_ident!("{}Query", name_str);
     let get_by_filter_ident = format_ident!("Get{}sByQuery", name_str);
 
+    // Fields are optional on the wire and in TS (`field?: Filter | null`):
+    // a query pins a handful of fields, so callers — especially TS
+    // constructors, which would otherwise have to name every entity field —
+    // only write the pinned ones. `default` tolerates omitted fields on
+    // deserialize; `skip_serializing_if` keeps unpinned fields off the wire
+    // (and out of the serde-derived cache key, which only sees pinned
+    // fields either way since it hashes the canonicalized value).
     let filter_struct_fields: Vec<TokenStream> = filter_fields
         .iter()
         .map(|(field_ident, field_ty)| {
             quote! {
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                #[ts(optional = nullable)]
                 pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
             }
         })

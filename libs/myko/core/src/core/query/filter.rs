@@ -395,6 +395,33 @@ impl From<Vec<Arc<str>>> for StringFilter {
     }
 }
 
+// String/&str conveniences so call sites migrating off `PartialX { field:
+// Some(string) }` can stay `Some(string.into())` regardless of whether the
+// entity field is `String` or `Arc<str>`.
+impl From<String> for StringFilter {
+    fn from(value: String) -> Self {
+        StringFilter::Eq(Arc::from(value))
+    }
+}
+
+impl From<&str> for StringFilter {
+    fn from(value: &str) -> Self {
+        StringFilter::Eq(Arc::from(value))
+    }
+}
+
+impl From<Vec<String>> for StringFilter {
+    fn from(values: Vec<String>) -> Self {
+        StringFilter::In(values.into_iter().map(Arc::from).collect())
+    }
+}
+
+impl From<Vec<&str>> for StringFilter {
+    fn from(values: Vec<&str>) -> Self {
+        StringFilter::In(values.into_iter().map(Arc::from).collect())
+    }
+}
+
 impl Filterable for Arc<str> {
     type Filter = StringFilter;
 }
@@ -618,7 +645,8 @@ crate::register_ts_export!(
     IdFilter<Arc<str>>,
     NumericFilter<i64>,
     StringFilter,
-    EqFilter<Arc<str>>
+    EqFilter<Arc<str>>,
+    Unfilterable
 );
 
 #[cfg(test)]
