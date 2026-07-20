@@ -8,7 +8,7 @@
 //! `#[myko_item]` never has to sniff field types syntactically.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     hash::Hash,
     sync::Arc,
 };
@@ -55,11 +55,16 @@ pub trait Filterable: Sized {
 /// entity's declared field order. Two queries that populate different SETS
 /// of belongs_to fields land in different buckets even for the same entity
 /// type — the bucket only ever holds items matching every field in the key.
-pub type CompoundKey = Vec<Arc<str>>;
+///
+/// `SmallVec` with inline capacity 2: keys are built per item per diff and
+/// cloned on every routing decision / key-set diff, and virtually all
+/// entities have 1–2 `#[belongs_to]` fields — inline storage makes those
+/// clones allocation-free.
+pub type CompoundKey = smallvec::SmallVec<[Arc<str>; 2]>;
 
 /// Extracts the compound foreign-key values (see [`CompoundKey`]) an item
 /// contributes for one specific field combination. Position `i` in the
-/// returned `Vec` corresponds to field `i` of that combination. Returns
+/// returned key corresponds to field `i` of that combination. Returns
 /// `None` only on a downcast failure (item is the wrong entity type) —
 /// `#[belongs_to]` fields feeding this are all non-optional, so a
 /// correctly-typed item always has a value for every field in play.
@@ -69,7 +74,7 @@ pub type CompoundKey = Vec<Arc<str>>;
 /// `RelationshipManager`'s own single-field child-index tracking and
 /// `export_tree`'s traversal, both unrelated to query routing — widening it
 /// in place would ripple into those unrelated subsystems for no reason.
-pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
+pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<CompoundKey>;
 
 /// A belongs_to routing decision for one `XQuery` instance — which fields
 /// are pinned, the compound keys to union-route through
@@ -553,21 +558,19 @@ macro_rules! impl_filterable_opaque {
     };
 }
 
-/// Above this length, `matches` builds a `HashSet` for O(1) membership
-/// instead of a linear scan per call. Chosen to be well above the common
-/// case (a handful of ids/values) where a `Vec` scan is faster than hashing.
-pub const IN_HASH_THRESHOLD: usize = 16;
-
-/// Membership test that switches to a `HashSet` above [`IN_HASH_THRESHOLD`]
-/// elements — used by generated `matches` impls for non-indexed `In`
-/// filters over larger value sets (per spec §4: "For large `In` arrays
-/// build a `HashSet` above a small length threshold inside `matches`").
-pub fn in_matches<T: Eq + Hash>(values: &[T], value: &T) -> bool {
-    if values.len() > IN_HASH_THRESHOLD {
-        values.iter().collect::<HashSet<_>>().contains(value)
-    } else {
-        values.iter().any(|v| v == value)
-    }
+/// Membership test for `In` filters — a plain linear scan, deliberately.
+///
+/// The spec-§4 "build a `HashSet` above a length threshold" approach was
+/// tried and is strictly worse here: `matches` gets one membership question
+/// per call, so building the set (an allocation plus hashing all n values)
+/// always costs more than n direct comparisons. A set/binary-search only
+/// wins if it can be amortized across calls, which requires either caching
+/// alongside the filter (impossible in the serde/TS-mirrored enum) or a
+/// canonicalized-at-intake guarantee that match-path filters are sorted —
+/// neither holds today. TODO(ts): revisit with binary search if
+/// canonicalization is ever enforced at query intake.
+pub fn in_matches<T: PartialEq>(values: &[T], value: &T) -> bool {
+    values.iter().any(|v| v == value)
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -820,12 +823,12 @@ mod tests {
     }
 
     #[test]
-    fn in_matches_large_set_uses_hashset_path_correctly() {
-        let values: Vec<i64> = (0..(IN_HASH_THRESHOLD as i64 + 10)).collect();
+    fn in_matches_large_set_membership() {
+        let values: Vec<i64> = (0..64).collect();
         assert!(in_matches(&values, &0));
-        assert!(in_matches(&values, &(IN_HASH_THRESHOLD as i64 + 9)));
+        assert!(in_matches(&values, &63));
         assert!(!in_matches(&values, &-1));
-        assert!(!in_matches(&values, &(IN_HASH_THRESHOLD as i64 + 10)));
+        assert!(!in_matches(&values, &64));
     }
 
     #[test]

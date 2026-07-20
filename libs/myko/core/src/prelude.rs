@@ -41,7 +41,7 @@ pub use crate::{
         },
     },
     query::{
-        AnyQuery, EqFilter, Filter, Filterable, IN_HASH_THRESHOLD, IdFilter, NumericFilter, Query,
+        AnyQuery, EqFilter, Filter, Filterable, IdFilter, NumericFilter, Query,
         QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
         StringFilter, Unfilterable, in_matches,
     },

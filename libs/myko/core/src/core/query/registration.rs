@@ -19,7 +19,10 @@ use super::{
     super::item::Eventable,
     cell::FilteredCellMap,
     context::{QueryCellContext, QueryContext},
-    filter::{CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, LiveFilterQuery, QueryRoute},
+    filter::{
+        BelongsToRoute, CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, LiveFilterQuery,
+        QueryRoute,
+    },
     request::QueryRequest,
     traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
 };
@@ -50,6 +53,10 @@ type WeakAnyItemMap = hyphae::WeakCellMap<Arc<str>, AnyItemArc>;
 type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
+
+/// Lazily-built per-key source constructor for whichever indexed mode a
+/// `reconcile_live_query` tick is in (id route or belongs_to route).
+type BucketSourceFn = Box<dyn Fn(&CompoundKey) -> FilteredCellMap>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QueryRegistration - inventory-based registration
@@ -259,7 +266,7 @@ impl BelongsToSourceIndex {
             .filter(|(_, item)| extract_fk(item.as_any()).as_ref() == Some(key))
             .collect();
         if !backfill.is_empty() {
-            map.apply_batch(vec![MapDiff::Initial { entries: backfill }]);
+            map.apply_diff_owned(MapDiff::Initial { entries: backfill });
         }
         map
     }
@@ -312,9 +319,9 @@ impl BelongsToSourceIndex {
                     if !grouped.contains_key(key)
                         && let Some(bucket) = self.route_to_live_bucket(key)
                     {
-                        bucket.apply_batch(vec![MapDiff::Initial {
+                        bucket.apply_diff_owned(MapDiff::Initial {
                             entries: Vec::new(),
-                        }]);
+                        });
                     }
                 }
 
@@ -324,9 +331,9 @@ impl BelongsToSourceIndex {
                 // for it via `build_belongs_to_source_map`.
                 for (fk, bucket_entries) in grouped {
                     if let Some(bucket) = self.route_to_live_bucket(&fk) {
-                        bucket.apply_batch(vec![MapDiff::Initial {
+                        bucket.apply_diff_owned(MapDiff::Initial {
                             entries: bucket_entries,
-                        }]);
+                        });
                     }
                 }
             }
@@ -334,20 +341,20 @@ impl BelongsToSourceIndex {
                 if let Some(fk) = extract_fk(value.as_any())
                     && let Some(bucket) = self.route_to_live_bucket(&fk)
                 {
-                    bucket.apply_batch(vec![MapDiff::Insert {
+                    bucket.apply_diff_owned(MapDiff::Insert {
                         key: key.clone(),
                         value: value.clone(),
-                    }]);
+                    });
                 }
             }
             MapDiff::Remove { key, old_value } => {
                 if let Some(fk) = extract_fk(old_value.as_any())
                     && let Some(bucket) = self.route_to_live_bucket(&fk)
                 {
-                    bucket.apply_batch(vec![MapDiff::Remove {
+                    bucket.apply_diff_owned(MapDiff::Remove {
                         key: key.clone(),
                         old_value: old_value.clone(),
-                    }]);
+                    });
                 }
             }
             MapDiff::Update {
@@ -360,41 +367,41 @@ impl BelongsToSourceIndex {
                 match (old_fk, new_fk) {
                     (Some(old_fk), Some(new_fk)) if old_fk == new_fk => {
                         if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
-                            bucket.apply_batch(vec![MapDiff::Update {
+                            bucket.apply_diff_owned(MapDiff::Update {
                                 key: key.clone(),
                                 old_value: old_value.clone(),
                                 new_value: new_value.clone(),
-                            }]);
+                            });
                         }
                     }
                     (Some(old_fk), Some(new_fk)) => {
                         if let Some(bucket) = self.route_to_live_bucket(&old_fk) {
-                            bucket.apply_batch(vec![MapDiff::Remove {
+                            bucket.apply_diff_owned(MapDiff::Remove {
                                 key: key.clone(),
                                 old_value: old_value.clone(),
-                            }]);
+                            });
                         }
                         if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
-                            bucket.apply_batch(vec![MapDiff::Insert {
+                            bucket.apply_diff_owned(MapDiff::Insert {
                                 key: key.clone(),
                                 value: new_value.clone(),
-                            }]);
+                            });
                         }
                     }
                     (Some(old_fk), None) => {
                         if let Some(bucket) = self.route_to_live_bucket(&old_fk) {
-                            bucket.apply_batch(vec![MapDiff::Remove {
+                            bucket.apply_diff_owned(MapDiff::Remove {
                                 key: key.clone(),
                                 old_value: old_value.clone(),
-                            }]);
+                            });
                         }
                     }
                     (None, Some(new_fk)) => {
                         if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
-                            bucket.apply_batch(vec![MapDiff::Insert {
+                            bucket.apply_diff_owned(MapDiff::Insert {
                                 key: key.clone(),
                                 value: new_value.clone(),
-                            }]);
+                            });
                         }
                     }
                     (None, None) => {}
@@ -492,7 +499,7 @@ pub fn build_belongs_to_source_map(
     local_type: &'static str,
     field_names: &'static [&'static str],
     extract_fk: CompoundFkExtractor,
-    foreign_ids: Vec<Arc<str>>,
+    foreign_ids: CompoundKey,
 ) -> FilteredCellMap {
     debug_assert_eq!(
         field_names.len(),
@@ -622,7 +629,7 @@ pub fn build_belongs_to_union_source_map(
             // incremental relative to a single key, so they forward as-is.
             let additive = additive_union_diff(diff);
             if let Some(additive) = additive {
-                result.apply_batch(vec![additive]);
+                result.apply_diff_owned(additive);
             }
         });
         result.own(guard);
@@ -635,8 +642,8 @@ pub fn build_belongs_to_union_source_map(
 /// union-route through [`build_belongs_to_union_source_map`]. Empty if any
 /// input set is empty: an empty value set for one field means no key any
 /// item could satisfy exists, matching `In([])` matching nothing (spec §1).
-pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<Vec<Arc<str>>> {
-    sets.into_iter().fold(vec![Vec::new()], |acc, set| {
+pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<CompoundKey> {
+    sets.into_iter().fold(vec![CompoundKey::new()], |acc, set| {
         acc.into_iter()
             .flat_map(|prefix| {
                 set.iter().map(move |v| {
@@ -699,7 +706,12 @@ fn reconcile_full_scope_membership<F: LiveFilterQuery>(
     filter: &F,
     candidates: Vec<(Arc<str>, AnyItemArc)>,
 ) {
-    let current_ids: HashSet<Arc<str>> = result.snapshot().into_iter().map(|(id, _)| id).collect();
+    // for_each: read-only visit — no snapshot Vec cloned just to build the
+    // id set. All mutation of `result` happens after this returns.
+    let mut current_ids: HashSet<Arc<str>> = HashSet::new();
+    result.for_each(|id, _| {
+        current_ids.insert(id.clone());
+    });
     let mut seen: HashSet<Arc<str>> = HashSet::with_capacity(candidates.len());
     for (id, item) in candidates {
         seen.insert(id.clone());
@@ -861,15 +873,28 @@ fn reconcile_live_query<F: LiveFilterQuery>(
             // store's own per-id cells (each id wrapped as a single-field
             // CompoundKey), belongs_to's are the shared index buckets. The
             // sentinel ID_ROUTE_FIELD_NAMES keeps the two modes distinct in
-            // route-shape tracking.
-            let (route_field_names, new_keys_vec): (&'static [&'static str], Vec<CompoundKey>) =
-                match &route {
-                    QueryRoute::Ids(ids) => (
-                        ID_ROUTE_FIELD_NAMES,
-                        ids.iter().map(|id| vec![id.clone()]).collect(),
-                    ),
-                    QueryRoute::BelongsTo(bt) => (bt.field_names, bt.keys.clone()),
-                };
+            // route-shape tracking. The route is consumed — `bt.keys` MOVES
+            // into the new key set instead of being cloned every tick; the
+            // extractor (`Some` = belongs_to mode, `None` = id mode) is all
+            // the added-key pass needs from it afterwards.
+            let (route_field_names, new_keys, belongs_to_extract_fk): (
+                &'static [&'static str],
+                HashSet<CompoundKey>,
+                Option<CompoundFkExtractor>,
+            ) = match route {
+                QueryRoute::Ids(ids) => (
+                    ID_ROUTE_FIELD_NAMES,
+                    ids.into_iter()
+                        .map(|id| CompoundKey::from_iter([id]))
+                        .collect(),
+                    None,
+                ),
+                QueryRoute::BelongsTo(BelongsToRoute {
+                    field_names,
+                    keys,
+                    extract_fk,
+                }) => (field_names, keys.into_iter().collect(), Some(extract_fk)),
+            };
 
             let route_shape_changed = state.prev_route_field_names != Some(route_field_names);
             if route_shape_changed {
@@ -885,81 +910,32 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 // would leave scan mode's stale items behind.
                 state.bucket_guards.clear();
                 state.bucket_filter_refs.clear();
-                let stale_ids: Vec<Arc<str>> =
-                    result.snapshot().into_iter().map(|(id, _)| id).collect();
-                for id in stale_ids {
+                for (id, _) in result.snapshot() {
                     result.remove(&id);
                 }
             }
 
-            let new_keys: HashSet<CompoundKey> = new_keys_vec.into_iter().collect();
-            let old_keys: HashSet<CompoundKey> = state.bucket_guards.keys().cloned().collect();
-
             // Removed keys: retract every item that bucket contributed,
-            // then drop its subscription and filter reference.
-            for key in old_keys.difference(&new_keys) {
-                if let Some((bucket, _guard)) = state.bucket_guards.remove(key) {
-                    for (id, _) in bucket.snapshot() {
-                        result.remove(&id);
-                    }
+            // then drop its subscription and filter reference. `extract_if`
+            // drains matching entries in place — no cloned copy of the
+            // whole tracked key set just to diff it against `new_keys`.
+            for (key, (bucket, _guard)) in state
+                .bucket_guards
+                .extract_if(|key, _| !new_keys.contains(key))
+            {
+                for (id, _) in bucket.snapshot() {
+                    result.remove(&id);
                 }
-                state.bucket_filter_refs.remove(key);
-            }
-
-            // Added keys: subscribe fresh, populate from the bucket's
-            // current contents filtered through `new_filter`.
-            let added: Vec<CompoundKey> = new_keys.difference(&old_keys).cloned().collect();
-            if !added.is_empty() {
-                // Per-key source builder for whichever indexed mode is
-                // active — the reconcile loop below is mode-agnostic.
-                let make_source: Box<dyn Fn(&CompoundKey) -> FilteredCellMap> = match &route {
-                    QueryRoute::Ids(_) => {
-                        let store = registry.get_or_create(F::entity_type());
-                        Box::new(move |key: &CompoundKey| {
-                            build_ids_source_map(&store, std::slice::from_ref(&key[0]))
-                        })
-                    }
-                    QueryRoute::BelongsTo(bt) => {
-                        let index = belongs_to_source_index_for(
-                            registry,
-                            host_id,
-                            F::entity_type(),
-                            bt.field_names,
-                            bt.extract_fk,
-                        );
-                        let extract_fk = bt.extract_fk;
-                        Box::new(move |key: &CompoundKey| {
-                            index.bucket_for(key.clone(), extract_fk).lock()
-                        })
-                    }
-                };
-                for key in added {
-                    let bucket = make_source(&key);
-                    apply_bucket_candidates(result, new_filter, bucket.snapshot());
-
-                    let filter_state = Arc::new(Mutex::new(new_filter.clone()));
-                    let filter_state_for_cb = filter_state.clone();
-                    let result_weak = result.downgrade();
-                    let guard = bucket.subscribe_diffs(move |diff| {
-                        let Some(result) = result_weak.upgrade() else {
-                            return;
-                        };
-                        let filter = filter_state_for_cb
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .clone();
-                        apply_live_diff(&result, diff, &filter, LiveDiffScope::Bucket);
-                    });
-                    state.bucket_guards.insert(key.clone(), (bucket, guard));
-                    state.bucket_filter_refs.insert(key, filter_state);
-                }
+                state.bucket_filter_refs.remove(&key);
             }
 
             // Unchanged keys: the filter may still differ from last tick
             // (a non-indexed field changed) — rescan those buckets'
             // current contents, and update the shared filter reference
-            // their subscribe_diffs callbacks read from.
-            for key in new_keys.intersection(&old_keys) {
+            // their subscribe_diffs callbacks read from. Runs BEFORE the
+            // added pass so a freshly added bucket isn't immediately
+            // rescanned as "unchanged".
+            for key in &new_keys {
                 if let Some(filter_state) = state.bucket_filter_refs.get(key) {
                     *filter_state
                         .lock()
@@ -968,6 +944,56 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 if let Some((bucket, _)) = state.bucket_guards.get(key) {
                     apply_bucket_candidates(result, new_filter, bucket.snapshot());
                 }
+            }
+
+            // Added keys: subscribe fresh, populate from the bucket's
+            // current contents filtered through `new_filter`. The per-key
+            // source builder for whichever indexed mode is active is built
+            // lazily on the first genuinely-added key, so a no-add tick
+            // pays nothing for it.
+            let mut make_source: Option<BucketSourceFn> = None;
+            for key in &new_keys {
+                if state.bucket_guards.contains_key(key) {
+                    continue;
+                }
+                let make = make_source.get_or_insert_with(|| match belongs_to_extract_fk {
+                    None => {
+                        let store = registry.get_or_create(F::entity_type());
+                        Box::new(move |key: &CompoundKey| {
+                            build_ids_source_map(&store, std::slice::from_ref(&key[0]))
+                        })
+                    }
+                    Some(extract_fk) => {
+                        let index = belongs_to_source_index_for(
+                            registry,
+                            host_id,
+                            F::entity_type(),
+                            route_field_names,
+                            extract_fk,
+                        );
+                        Box::new(move |key: &CompoundKey| {
+                            index.bucket_for(key.clone(), extract_fk).lock()
+                        })
+                    }
+                });
+                let bucket = make(key);
+                apply_bucket_candidates(result, new_filter, bucket.snapshot());
+
+                let filter_state = Arc::new(Mutex::new(new_filter.clone()));
+                let filter_state_for_cb = filter_state.clone();
+                let result_weak = result.downgrade();
+                let guard = bucket.subscribe_diffs(move |diff| {
+                    let Some(result) = result_weak.upgrade() else {
+                        return;
+                    };
+                    let filter = filter_state_for_cb
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
+                    apply_live_diff(&result, diff, &filter, LiveDiffScope::Bucket);
+                });
+                state.bucket_guards.insert(key.clone(), (bucket, guard));
+                state.bucket_filter_refs.insert(key.clone(), filter_state);
             }
 
             state.prev_route_field_names = Some(route_field_names);
@@ -982,9 +1008,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
             if state.prev_route_field_names.is_some() {
                 state.bucket_guards.clear();
                 state.bucket_filter_refs.clear();
-                let stale_ids: Vec<Arc<str>> =
-                    result.snapshot().into_iter().map(|(id, _)| id).collect();
-                for id in stale_ids {
+                for (id, _) in result.snapshot() {
                     result.remove(&id);
                 }
                 state.prev_route_field_names = None;
@@ -1233,9 +1257,9 @@ mod belongs_to_source_index_tests {
         }
     }
 
-    fn extract_parent_fk(item: &dyn Any) -> Option<Vec<Arc<str>>> {
+    fn extract_parent_fk(item: &dyn Any) -> Option<CompoundKey> {
         item.downcast_ref::<TestChild>()
-            .map(|c| vec![c.parent_id.clone()])
+            .map(|c| smallvec::smallvec![c.parent_id.clone()])
     }
 
     fn child(id: &str, parent: &str) -> (Arc<str>, AnyItemArc) {
@@ -1263,7 +1287,7 @@ mod belongs_to_source_index_tests {
 
         for i in 0..50 {
             let parent: Arc<str> = Arc::from(format!("parent-{i}"));
-            let bucket = index.bucket_for(vec![parent], extract_parent_fk);
+            let bucket = index.bucket_for(smallvec::smallvec![parent], extract_parent_fk);
             drop(bucket); // simulates every subscriber unsubscribing
         }
 
@@ -1287,7 +1311,7 @@ mod belongs_to_source_index_tests {
         store.insert(id.clone(), item);
 
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
-        let bucket = index.bucket_for(vec![Arc::from("parent-x")], extract_parent_fk);
+        let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-x")], extract_parent_fk);
         assert_eq!(bucket.snapshot().len(), 1);
 
         // Remove the only child — bucket goes empty, but `bucket` is still
@@ -1319,13 +1343,13 @@ mod belongs_to_source_index_tests {
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
 
         {
-            let bucket = index.bucket_for(vec![Arc::from("parent-y")], extract_parent_fk);
+            let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-y")], extract_parent_fk);
             assert_eq!(bucket.snapshot().len(), 1);
         }
         index.sweep_dead_buckets();
         assert!(index.buckets.is_empty());
 
-        let bucket = index.bucket_for(vec![Arc::from("parent-y")], extract_parent_fk);
+        let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-y")], extract_parent_fk);
         assert_eq!(
             bucket.snapshot().len(),
             1,
@@ -1352,7 +1376,7 @@ mod belongs_to_source_index_tests {
         // callers race.
         let store = new_store();
         let index = Arc::new(BelongsToSourceIndex::new(store.clone(), extract_parent_fk));
-        let key: CompoundKey = vec![Arc::from("parent-race")];
+        let key: CompoundKey = smallvec::smallvec![Arc::from("parent-race")];
 
         const N: usize = 16;
         let barrier = Arc::new(std::sync::Barrier::new(N));
@@ -1440,9 +1464,9 @@ mod belongs_to_source_index_tests {
 
     // Mirrors the macro-generated compound extractor for a query that pins
     // BOTH belongs_to fields: position 0 = node_id, position 1 = session_id.
-    fn extract_node_and_session_fk(item: &dyn Any) -> Option<Vec<Arc<str>>> {
+    fn extract_node_and_session_fk(item: &dyn Any) -> Option<CompoundKey> {
         item.downcast_ref::<TestCursor>()
-            .map(|c| vec![c.node_id.clone(), c.session_id.clone()])
+            .map(|c| smallvec::smallvec![c.node_id.clone(), c.session_id.clone()])
     }
 
     #[test]
@@ -1461,8 +1485,8 @@ mod belongs_to_source_index_tests {
 
         let index = BelongsToSourceIndex::new(store.clone(), extract_node_and_session_fk);
 
-        let key_a: CompoundKey = vec![Arc::from("node-A"), Arc::from("session-PROD")];
-        let key_b: CompoundKey = vec![Arc::from("node-B"), Arc::from("session-PROD")];
+        let key_a: CompoundKey = smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")];
+        let key_b: CompoundKey = smallvec::smallvec![Arc::from("node-B"), Arc::from("session-PROD")];
 
         let bucket_a = index.bucket_for(key_a.clone(), extract_node_and_session_fk);
         let bucket_b = index.bucket_for(key_b.clone(), extract_node_and_session_fk);
@@ -1524,7 +1548,7 @@ mod belongs_to_source_index_tests {
         // supported mixed-arity usage).
         let store = new_store();
         let index = BelongsToSourceIndex::new(store, extract_node_and_session_fk);
-        let key: CompoundKey = vec![Arc::from("node-A"), Arc::from("session-PROD")];
+        let key: CompoundKey = smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")];
         let bucket = index.bucket_for(key.clone(), extract_node_and_session_fk);
         assert_eq!(bucket.snapshot().len(), 0);
         assert!(index.buckets.contains_key(&key));
@@ -1547,8 +1571,8 @@ mod belongs_to_source_index_tests {
         assert_eq!(
             product,
             vec![
-                vec![Arc::<str>::from("node-A"), Arc::from("session-PROD")],
-                vec![Arc::<str>::from("node-B"), Arc::from("session-PROD")],
+                CompoundKey::from_iter([Arc::<str>::from("node-A"), Arc::from("session-PROD")]),
+                CompoundKey::from_iter([Arc::<str>::from("node-B"), Arc::from("session-PROD")]),
             ]
         );
     }
@@ -1583,8 +1607,8 @@ mod belongs_to_source_index_tests {
 
         let host_id = Uuid::new_v4();
         let keys = vec![
-            vec![Arc::from("node-A"), Arc::from("session-PROD")],
-            vec![Arc::from("node-B"), Arc::from("session-PROD")],
+            smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")],
+            smallvec::smallvec![Arc::from("node-B"), Arc::from("session-PROD")],
         ];
         let union = build_belongs_to_union_source_map(
             registry.clone(),

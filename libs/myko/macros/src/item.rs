@@ -234,7 +234,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                     .query
                     .ids
                     .iter()
-                    .map(|id| std::sync::Arc::<str>::from(id.as_ref()))
+                    .map(|id| std::sync::Arc::<str>::from(id.clone()))
                     .collect();
                 let store = ctx
                     .query_context
@@ -405,10 +405,13 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                     quote! { if let (#(Some(#f_idents)),*) = (#(#field_ref_exprs),*) }
                 };
 
+                // `Arc::<str>::from(XId)` moves the id's inner Arc (a
+                // refcount bump) — never `from(id.as_ref())`, which would
+                // copy the string bytes per item per diff.
                 let extractor_field_exprs: Vec<TokenStream> = field_idents
                     .iter()
                     .map(|field_ident| {
-                        quote! { std::sync::Arc::<str>::from(e.#field_ident.as_ref()) }
+                        quote! { std::sync::Arc::<str>::from(e.#field_ident.clone()) }
                     })
                     .collect();
                 let value_set_exprs: Vec<TokenStream> = f_idents
@@ -417,7 +420,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                         quote! {
                             #f.key_values()
                                 .into_iter()
-                                .map(|v| std::sync::Arc::<str>::from(v.as_ref()))
+                                .map(std::sync::Arc::<str>::from)
                                 .collect::<Vec<std::sync::Arc<str>>>()
                         }
                     })
@@ -430,9 +433,9 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                         return Some(#krate::query::BelongsToRoute {
                             field_names: &[#(#field_names),*],
                             keys,
-                            extract_fk: |item: &dyn std::any::Any| -> Option<Vec<std::sync::Arc<str>>> {
+                            extract_fk: |item: &dyn std::any::Any| -> Option<#krate::query::CompoundKey> {
                                 item.downcast_ref::<#name>()
-                                    .map(|e| vec![#(#extractor_field_exprs),*])
+                                    .map(|e| #krate::query::CompoundKey::from_iter([#(#extractor_field_exprs),*]))
                             },
                         });
                     }
@@ -470,7 +473,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                         id_filter
                             .key_values()
                             .into_iter()
-                            .map(|v| std::sync::Arc::<str>::from(v.as_ref()))
+                            .map(std::sync::Arc::<str>::from)
                             .collect(),
                     ));
                 }

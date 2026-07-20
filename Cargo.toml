@@ -113,8 +113,15 @@ ahash = "0.8"
 #
 # 1.3.4 makes size() self-retaining hyphae-side too (defense-in-depth on
 # top of myko's own fix) — floor bumped to pick it up.
-hyphae = { version = "^1.3.4", features = ["scheduler", "profiling"] }
-hyphae-leptos = { version = "^1.1.0" }
+#
+# 1.4.0 publicizes CellMap::apply_diff_owned (single-diff apply, no Batch
+# wrap — myko's bucket router emits one diff per routed store event, and
+# apply_batch(vec![diff]) allocated a 1-element Vec each time) and adds
+# CellMap::for_each (borrowing iteration; snapshot() clones every entry
+# into a Vec even for read-only visits). Floor bumped — myko's query
+# routing calls both.
+hyphae = { version = "^1.4.0", features = ["scheduler", "profiling"] }
+hyphae-leptos = { version = "^1.4.0" }
 
 # Internal crates
 autosocket = { version = "4.24.2", path = "libs/autosocket" }
