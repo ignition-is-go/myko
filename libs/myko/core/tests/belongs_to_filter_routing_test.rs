@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use myko::prelude::AnyItem;
 use myko::{
     entities::{
         client::{Client, ClientQuery, GetClientsByQuery},
@@ -123,6 +124,45 @@ fn eq_filter_on_belongs_to_field_still_works() {
     };
     let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
+}
+
+/// Regression: an UPDATE to a non-FK field of an item already in a routed
+/// bucket must propagate through the filtered view (rship's dynamic-anchor
+/// "value flip doesn't propagate" failure shape, 2026-07-18).
+#[test]
+fn update_to_non_fk_field_propagates_through_routed_view() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+
+    let filter = ClientQuery {
+        server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
+        ..Default::default()
+    };
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let snap = cell.snapshot();
+    assert_eq!(snap.len(), 1);
+
+    // Update c1 in place: same server_id (FK unchanged), new address.
+    let updated = Client {
+        id: "c1".into(),
+        server_id: ServerId::from(Arc::<str>::from("server-A")),
+        address: Some("10.0.0.9".into()),
+        windback: None,
+    };
+    let event = MEvent::from_item(&updated, MEventType::SET, "tx-upd");
+    ctx.apply_event_batch(vec![event]).unwrap();
+
+    let snap = cell.snapshot();
+    assert_eq!(snap.len(), 1, "item must remain in the view");
+    let item = snap[0].1.clone();
+    let any_ref: &dyn std::any::Any = item.as_ref().as_any();
+    let client = any_ref.downcast_ref::<Client>().expect("downcast Client");
+    assert_eq!(
+        client.address.as_deref(),
+        Some("10.0.0.9"),
+        "update to non-FK field must propagate through the routed filtered view"
+    );
 }
 
 /// A value-based query pinning `id` must route through the store's per-id
