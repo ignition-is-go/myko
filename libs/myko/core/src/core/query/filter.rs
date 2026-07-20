@@ -92,6 +92,33 @@ pub struct BelongsToRoute {
     pub extract_fk: CompoundFkExtractor,
 }
 
+/// Sentinel `field_names` for the primary-key route, so `query_live`'s
+/// route-shape tracking (`prev_route_field_names`) distinguishes id mode
+/// from every belongs_to field combination (a real field named "(id)" is
+/// impossible — parentheses aren't valid in a Rust identifier).
+pub const ID_ROUTE_FIELD_NAMES: &[&str] = &["(id)"];
+
+/// The full routing decision for one `XQuery` instance, in priority order:
+///
+/// - [`QueryRoute::Ids`] — the filter pins `id` (`Eq`/`In`). The primary
+///   key is the strongest index in the system (the store itself is an
+///   id-keyed map of per-key cells), and an id pin bounds the result to
+///   ≤ N rows outright, so it wins over any belongs_to combination also
+///   present — those fields still narrow via `matches` on the ≤ N rows.
+/// - [`QueryRoute::BelongsTo`] — no id pin; route on `#[belongs_to]`
+///   buckets as before.
+///
+/// Returned by a generated `XQuery`'s `query_route()` method; `None` from
+/// that method means scan mode. Same one-rule/two-consumers contract as
+/// [`BelongsToRoute`]: `build_view` and `query_live` both dispatch on this.
+pub enum QueryRoute {
+    /// Primary-key route: subscribe the store's per-id cells for exactly
+    /// these ids (empty = `In([])` = matches nothing, an empty result —
+    /// NOT a fall-through to scan).
+    Ids(Vec<Arc<str>>),
+    BelongsTo(BelongsToRoute),
+}
+
 /// Bridges a generated `XQuery` type to its entity, so `query_live` can be
 /// generic over just `impl Watchable<F>` — no `GetXsByQuery` wrapper
 /// needed; "the entity/query type is inferred from `Cell<XQuery>`" (spec
@@ -115,7 +142,9 @@ pub trait LiveFilterQuery: Clone + PartialEq + Send + Sync + 'static {
 
     fn entity_type() -> &'static str;
     fn matches(&self, item: &Self::Item) -> bool;
-    fn belongs_to_route(&self) -> Option<BelongsToRoute>;
+    /// The full routing decision (id → belongs_to → scan); see
+    /// [`QueryRoute`]. `None` means scan mode.
+    fn query_route(&self) -> Option<QueryRoute>;
 }
 
 /// Sort + dedup an `In` value set. Order doesn't affect matching, only

@@ -124,3 +124,47 @@ fn eq_filter_on_belongs_to_field_still_works() {
     let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
 }
+
+/// A value-based query pinning `id` must route through the store's per-id
+/// cells (primary-key route), stay reactive to later inserts of ids in the
+/// set, and let secondary pinned fields narrow the id-selected rows.
+#[test]
+fn id_filter_routes_through_per_id_cells_and_stays_reactive() {
+    let _serial = scheduler_test_serial();
+    use myko::entities::client::ClientId;
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+    insert_client(&ctx, "c2", "server-B");
+
+    let filter = ClientQuery {
+        id: Some(IdFilter::In(vec![
+            ClientId::from(Arc::<str>::from("c1")),
+            ClientId::from(Arc::<str>::from("c3")),
+        ])),
+        ..Default::default()
+    };
+    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-id-1"));
+    assert_eq!(cell.snapshot().len(), 1);
+
+    // An id in the set inserted AFTER subscription must appear.
+    insert_client(&ctx, "c3", "server-C");
+    assert_eq!(cell.snapshot().len(), 2);
+
+    // An id outside the set never appears.
+    insert_client(&ctx, "c4", "server-A");
+    assert_eq!(cell.snapshot().len(), 2);
+
+    // id + belongs_to combined: id wins the route, server_id narrows.
+    let narrowed = ClientQuery {
+        id: Some(IdFilter::In(vec![
+            ClientId::from(Arc::<str>::from("c1")),
+            ClientId::from(Arc::<str>::from("c2")),
+        ])),
+        server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-B")))),
+        ..Default::default()
+    };
+    let cell = ctx.query_map(GetClientsByQuery(narrowed), request(&ctx, "tx-id-2"));
+    let snap = cell.snapshot();
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].0.as_ref(), "c2");
+}

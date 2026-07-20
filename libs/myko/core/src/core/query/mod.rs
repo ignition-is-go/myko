@@ -17,8 +17,8 @@ pub use context::QueryCellContext;
 pub use context::QueryContext;
 pub use filter::{
     BelongsToRoute, CanonicalFilter, CompoundFkExtractor, CompoundKey, EqFilter, Filter,
-    Filterable, IN_HASH_THRESHOLD, IdFilter, LiveFilterQuery, NumericFilter, StringFilter,
-    Unfilterable, in_matches,
+    Filterable, ID_ROUTE_FIELD_NAMES, IN_HASH_THRESHOLD, IdFilter, LiveFilterQuery, NumericFilter,
+    QueryRoute, StringFilter, Unfilterable, in_matches,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::{

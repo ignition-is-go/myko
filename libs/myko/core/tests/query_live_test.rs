@@ -292,3 +292,88 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
     insert_client(&ctx, "c3", "server-B");
     assert_eq!(result.snapshot().len(), 2);
 }
+
+// ─── Primary-key (id) routing ────────────────────────────────────────────
+
+fn id_in_filter(ids: &[&str]) -> ClientQuery {
+    use myko::entities::client::ClientId;
+    ClientQuery {
+        id: Some(IdFilter::In(
+            ids.iter()
+                .map(|s| ClientId::from(Arc::<str>::from(*s)))
+                .collect(),
+        )),
+        ..Default::default()
+    }
+}
+
+/// The id route must behave like any indexed route: initial population,
+/// tracking store writes for ids in the set, and full retraction/adoption
+/// across a swap to a completely disjoint id set.
+#[test]
+fn query_live_id_filter_routes_and_tracks_disjoint_swaps() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+    insert_client(&ctx, "c2", "server-B");
+
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(id_in_filter(&["c1", "c3"]));
+    let result = ctx.query_live(filter_cell.clone());
+    // c1 exists and is pinned; c3 doesn't exist yet; c2 is out of set.
+    assert_eq!(result.snapshot().len(), 1);
+
+    // A later insert of an id already in the set must appear (per-id cell
+    // subscription covers not-yet-existing ids).
+    insert_client(&ctx, "c3", "server-C");
+    assert_eq!(result.snapshot().len(), 2);
+
+    // Swap to a completely disjoint id set: old contributions retract,
+    // new ones adopt — no teardown of `result` itself.
+    filter_cell.set(id_in_filter(&["c2"]));
+    let snap = result.snapshot();
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].0.as_ref(), "c2");
+}
+
+/// Crossing between id mode and belongs_to mode is a route-shape change:
+/// contents must fully reconcile in both directions.
+#[test]
+fn query_live_switches_between_id_and_belongs_to_modes() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+    insert_client(&ctx, "c2", "server-A");
+    insert_client(&ctx, "c3", "server-B");
+
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(id_in_filter(&["c3"]));
+    let result = ctx.query_live(filter_cell.clone());
+    assert_eq!(result.snapshot().len(), 1);
+
+    // id mode -> belongs_to mode (server-A has two clients).
+    filter_cell.set(eq_filter("server-A"));
+    assert_eq!(result.snapshot().len(), 2);
+
+    // belongs_to mode -> id mode again.
+    filter_cell.set(id_in_filter(&["c1"]));
+    let snap = result.snapshot();
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].0.as_ref(), "c1");
+}
+
+/// A pinned id wins the route, and other pinned fields still narrow via
+/// `matches` on the ≤ N id-selected rows.
+#[test]
+fn query_live_id_route_narrows_by_secondary_fields() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+    insert_client(&ctx, "c2", "server-B");
+
+    let mut filter = id_in_filter(&["c1", "c2"]);
+    filter.server_id = Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-B"))));
+    let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(filter);
+    let result = ctx.query_live(filter_cell);
+    let snap = result.snapshot();
+    assert_eq!(snap.len(), 1);
+    assert_eq!(snap[0].0.as_ref(), "c2");
+}

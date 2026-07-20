@@ -449,6 +449,24 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                 #(#filter_belongs_to_route_arms)*
                 None
             }
+
+            /// The FULL routing decision, in priority order: a pinned `id`
+            /// (the primary key — the store itself is the index, per-key
+            /// cells, ≤ N rows outright) beats any belongs_to combination;
+            /// otherwise fall back to belongs_to buckets; `None` = scan.
+            /// Other pinned fields still narrow via `matches` downstream.
+            pub fn query_route(&self) -> Option<#krate::query::QueryRoute> {
+                if let Some(id_filter) = self.id.as_ref() {
+                    return Some(#krate::query::QueryRoute::Ids(
+                        id_filter
+                            .key_values()
+                            .into_iter()
+                            .map(|v| std::sync::Arc::<str>::from(v.as_ref()))
+                            .collect(),
+                    ));
+                }
+                self.belongs_to_route().map(#krate::query::QueryRoute::BelongsTo)
+            }
         }
 
         // Bridges this XQuery to #name for ctx.query_live(filter_cell) —
@@ -467,8 +485,8 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                 #filter_ident::matches(self, item)
             }
 
-            fn belongs_to_route(&self) -> Option<#krate::query::BelongsToRoute> {
-                #filter_ident::belongs_to_route(self)
+            fn query_route(&self) -> Option<#krate::query::QueryRoute> {
+                #filter_ident::query_route(self)
             }
         }
     };
@@ -505,15 +523,28 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
-                let route = ctx.query.0.belongs_to_route()?;
-                let source = #krate::query::build_belongs_to_union_source_map(
-                    ctx.query_context.registry(),
-                    ctx.query_context.request_ctx.host_id,
-                    #name_str,
-                    route.field_names,
-                    route.extract_fk,
-                    route.keys,
-                );
+                let source = match ctx.query.0.query_route()? {
+                    // Primary-key route: the store's own per-id cells —
+                    // O(ids) subscriptions, other pinned fields narrow via
+                    // test_entity in filter_query_over_source below.
+                    #krate::query::QueryRoute::Ids(ids) => {
+                        let store = ctx
+                            .query_context
+                            .registry()
+                            .get_or_create(#name_str);
+                        #krate::query::build_ids_source_map(&store, &ids)
+                    }
+                    #krate::query::QueryRoute::BelongsTo(route) => {
+                        #krate::query::build_belongs_to_union_source_map(
+                            ctx.query_context.registry(),
+                            ctx.query_context.request_ctx.host_id,
+                            #name_str,
+                            route.field_names,
+                            route.extract_fk,
+                            route.keys,
+                        )
+                    }
+                };
                 Some(#krate::query::filter_query_over_source::<#get_by_filter_ident>(
                     source,
                     ctx.query.clone(),

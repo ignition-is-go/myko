@@ -19,7 +19,7 @@ use super::{
     super::item::Eventable,
     cell::FilteredCellMap,
     context::{QueryCellContext, QueryContext},
-    filter::{CompoundFkExtractor, CompoundKey, LiveFilterQuery},
+    filter::{CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, LiveFilterQuery, QueryRoute},
     request::QueryRequest,
     traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
 };
@@ -848,7 +848,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
     state: &mut LiveQueryState<F>,
     new_filter: &F,
 ) {
-    let new_route = new_filter.belongs_to_route();
+    let new_route = new_filter.query_route();
 
     match new_route {
         Some(route) => {
@@ -856,7 +856,22 @@ fn reconcile_live_query<F: LiveFilterQuery>(
             // (if any) no longer applies.
             state.scan_guard = None;
 
-            let route_shape_changed = state.prev_route_field_names != Some(route.field_names);
+            // Normalize both indexed modes onto the same per-key bucket
+            // machinery: the id route's "buckets" are 1-row maps over the
+            // store's own per-id cells (each id wrapped as a single-field
+            // CompoundKey), belongs_to's are the shared index buckets. The
+            // sentinel ID_ROUTE_FIELD_NAMES keeps the two modes distinct in
+            // route-shape tracking.
+            let (route_field_names, new_keys_vec): (&'static [&'static str], Vec<CompoundKey>) =
+                match &route {
+                    QueryRoute::Ids(ids) => (
+                        ID_ROUTE_FIELD_NAMES,
+                        ids.iter().map(|id| vec![id.clone()]).collect(),
+                    ),
+                    QueryRoute::BelongsTo(bt) => (bt.field_names, bt.keys.clone()),
+                };
+
+            let route_shape_changed = state.prev_route_field_names != Some(route_field_names);
             if route_shape_changed {
                 // The SET of belongs_to fields being routed on changed
                 // shape (different field combination, or previously scan
@@ -877,7 +892,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 }
             }
 
-            let new_keys: HashSet<CompoundKey> = route.keys.iter().cloned().collect();
+            let new_keys: HashSet<CompoundKey> = new_keys_vec.into_iter().collect();
             let old_keys: HashSet<CompoundKey> = state.bucket_guards.keys().cloned().collect();
 
             // Removed keys: retract every item that bucket contributed,
@@ -895,15 +910,31 @@ fn reconcile_live_query<F: LiveFilterQuery>(
             // current contents filtered through `new_filter`.
             let added: Vec<CompoundKey> = new_keys.difference(&old_keys).cloned().collect();
             if !added.is_empty() {
-                let index = belongs_to_source_index_for(
-                    registry,
-                    host_id,
-                    F::entity_type(),
-                    route.field_names,
-                    route.extract_fk,
-                );
+                // Per-key source builder for whichever indexed mode is
+                // active — the reconcile loop below is mode-agnostic.
+                let make_source: Box<dyn Fn(&CompoundKey) -> FilteredCellMap> = match &route {
+                    QueryRoute::Ids(_) => {
+                        let store = registry.get_or_create(F::entity_type());
+                        Box::new(move |key: &CompoundKey| {
+                            build_ids_source_map(&store, std::slice::from_ref(&key[0]))
+                        })
+                    }
+                    QueryRoute::BelongsTo(bt) => {
+                        let index = belongs_to_source_index_for(
+                            registry,
+                            host_id,
+                            F::entity_type(),
+                            bt.field_names,
+                            bt.extract_fk,
+                        );
+                        let extract_fk = bt.extract_fk;
+                        Box::new(move |key: &CompoundKey| {
+                            index.bucket_for(key.clone(), extract_fk).lock()
+                        })
+                    }
+                };
                 for key in added {
-                    let bucket = index.bucket_for(key.clone(), route.extract_fk).lock();
+                    let bucket = make_source(&key);
                     apply_bucket_candidates(result, new_filter, bucket.snapshot());
 
                     let filter_state = Arc::new(Mutex::new(new_filter.clone()));
@@ -939,7 +970,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 }
             }
 
-            state.prev_route_field_names = Some(route.field_names);
+            state.prev_route_field_names = Some(route_field_names);
         }
         None => {
             // Scan mode: no belongs_to routing applies. Tear down any
