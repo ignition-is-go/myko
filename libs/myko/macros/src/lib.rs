@@ -717,16 +717,18 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 ///   `register_ts_export!` emission (same reasoning; the consumer's own
 ///   impl is responsible for registering itself if it needs to).
 ///
-/// `Debug`/`Clone`/`PartialEq`, any `derive(...)` extras, and the
-/// `Filterable` auto-impl below are unaffected by `manual(...)`.
+/// `Debug`/`Clone`/`PartialEq` and any `derive(...)` extras are
+/// unaffected by `manual(...)`.
 ///
 /// Also auto-implements `query::Filterable`, so the type can be used as an
 /// `#[myko_item]` entity field without a hand-written
 /// `impl_filterable_eq!`/`impl_filterable_opaque!` call: deriving both `Eq`
 /// and `Ord` gets you `EqFilter` (exact-match/`In` filtering); anything
 /// less falls back to `Unfilterable` (the field still compiles, it's just
-/// not filterable). If you separately hand-write a `Filterable` impl for a
-/// `#[myko_subtype]` type, this will conflict — delete one or the other.
+/// not filterable). A type with its own hand-written `Filterable` impl —
+/// e.g. a custom filter whose `matches` uses domain equivalence instead of
+/// derived `PartialEq` — opts out with `manual(filterable)`; without it the
+/// auto-impl conflicts with the hand-written one.
 ///
 /// # Usage
 ///
@@ -778,6 +780,11 @@ struct SubtypeArgs {
     /// reasoning as above), and the `register_ts_export!` emission — the
     /// consumer's own impl is responsible for registering itself if needed.
     manual_ts: bool,
+    /// `manual(filterable)` — the item has its own hand-written
+    /// `query::Filterable` impl (e.g. a custom filter type whose `matches`
+    /// uses domain equivalence instead of derived `PartialEq`); skips the
+    /// auto-impl, which would otherwise conflict.
+    manual_filterable: bool,
 }
 
 impl syn::parse::Parse for SubtypeArgs {
@@ -785,6 +792,7 @@ impl syn::parse::Parse for SubtypeArgs {
         let mut extra_derives = Vec::new();
         let mut manual_serde = false;
         let mut manual_ts = false;
+        let mut manual_filterable = false;
 
         // `derive(Foo, Bar)`, `manual(serde, ts)` — comma-separated, any order,
         // either or both omitted.
@@ -810,10 +818,12 @@ impl syn::parse::Parse for SubtypeArgs {
                         manual_serde = true;
                     } else if ident == "ts" {
                         manual_ts = true;
+                    } else if ident == "filterable" {
+                        manual_filterable = true;
                     } else {
                         return Err(syn::Error::new_spanned(
                             &ident,
-                            "expected `serde` or `ts` inside `manual(...)`",
+                            "expected `serde`, `ts`, or `filterable` inside `manual(...)`",
                         ));
                     }
                 }
@@ -829,6 +839,7 @@ impl syn::parse::Parse for SubtypeArgs {
             extra_derives,
             manual_serde,
             manual_ts,
+            manual_filterable,
         })
     }
 }
@@ -838,6 +849,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
         extra_derives,
         manual_serde,
         manual_ts,
+        manual_filterable,
     } = args;
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
@@ -937,7 +949,9 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     // treatment serde_json::Value and the container blanket impls get.
     let derives_total_order = extra_derives.iter().any(|p| p.is_ident("Ord"))
         && extra_derives.iter().any(|p| p.is_ident("Eq"));
-    let filterable_impl = if derives_total_order {
+    let filterable_impl = if manual_filterable {
+        quote!()
+    } else if derives_total_order {
         quote! {
             impl #krate::query::Filterable for #name {
                 type Filter = #krate::query::EqFilter<#name>;
