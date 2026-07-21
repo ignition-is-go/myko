@@ -1,0 +1,26 @@
+¦ditem¦dbodyy
+ÿROOT CAUSE FOUND, and it unifies both components rship measured into one bounded cause with an explicit escape hatch.
+
+rship's data (mem_profile was ticking at 10s through the window, so no re-run was needed):
+  RSS           6748.2 -> 8135.8  (+1387.6)
+  je_allocated  5014.6 -> 5699.8  (+685.2)   genuinely LIVE after StopProfile
+  je_resident   6553.1 -> 7319.9  (+766.8)
+  retention gap (resident - allocated) barely moved: 1538 -> 1620
+So it is NOT jemalloc retention. Component 1 (+685MB) is live jemalloc'd memory; component 2 (+621MB) is RSS that jemalloc does not account for.
+
+BOTH ARE THE SAME THING: backtrace 0.3.76's gimli symbolizer keeps a PROCESS-GLOBAL cache. src/symbolize/gimli.rs:259-272 defines a Cache holding a libraries Vec plus an Lru of mappings, with the doc comment "Mappings cache where we retain parsed dwarf information." MAPPINGS_CACHE_SIZE is 4 (gimli.rs:61).
+- the mmap'd object file = component 2 (non-jemalloc RSS)
+- the PARSED DWARF structures = component 1 (jemalloc'd, live, held by the static)
+pprof reaches this via backtrace's resolve during report build; this binary is debuginfo=2 plus symbol-mangling-version=v0, so the parsed DWARF is large.
+
+CONSEQUENCES - this substantially downgrades the severity:
+1. It is BOUNDED, not per-capture. The LRU is fixed at 4 mappings and the doc says it "has a fixed capacity for its entire lifetime which never increases." So the cost is ~1.4GB ONCE per process, not 1.4GB per profile. The headline "per capture" framing is wrong.
+2. Predicts a second consecutive capture grows NEITHER component materially. rship offered to run exactly that - it is the right experiment and it now tests a specific mechanism rather than a hunch.
+3. The dangerous scenario is still real but narrower: the FIRST StartProfile on a box already near its cgroup limit pays the full ~1.4GB. Subsequent ones are ~free.
+
+FIX OPTIONS (revised):
+- backtrace exposes an explicit release: clear_symbol_cache, re-exported at lib.rs:119 from symbolize/mod.rs:426, reaching gimli.rs:346. Calling it after StopProfile frees BOTH components. Trade-off: the next profile re-pays symbolization. Would need backtrace as a direct optional dep of myko-core gated on the profiling feature (currently only transitive via pprof).
+- Streaming the flamegraph to the File instead of building a Vec<u8> first is still worth doing, but on this evidence it addresses only the TRANSIENT peak, not the retained +685MB - so it is no longer the primary fix.
+- Minimum viable: document the one-time resident cost on StartProfile. Given (1), a loud docstring plus an optional clear_symbol_cache call is probably the whole fix.
+
+NEXT: confirm with the second-capture experiment before implementing. If component 2 DOES grow again, the LRU-bounded model is wrong and this needs revisiting.ebyDevxtrevor.a.sargent@gmail.comgcreatedx2026-07-21T20:57:44.706332Zbidx a2af2026ca5a47ce81817814491c96b6iprojectIdx de9416570df4447d8687b0103b13ae27ftaskIdx 3fb226b535ea473abb8b4da196bd684djchangeTypecSEThitemTypegCommenticreatedAtx2026-07-21T20:57:44.706336Zbtxx$fc9f529d-d737-44e1-bb27-f9c6dd287bf6hsourceIdgmalcolm
