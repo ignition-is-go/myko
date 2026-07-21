@@ -29,10 +29,11 @@ url.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 # Always-on span/event emission (myko.reduce, myko.command, etc. — see
-# server/context.rs and core/command/handler.rs). Cross-platform (unlike
-# pprof), and cheap enough with no subscriber attached that it doesn't need
-# a compile-time feature gate — filtering is a runtime concern (RUST_LOG /
-# an OTLP exporter), not a build-time one.
+# server/context.rs and core/command/handler.rs). This is how external
+# profilers and tracers see what the server is doing; myko ships no
+# in-process profiler of its own. Cheap enough with no subscriber attached
+# that it doesn't need a compile-time feature gate — filtering is a runtime
+# concern (RUST_LOG / an OTLP exporter), not a build-time one.
 tracing.workspace = true
 autosocket.workspace = true
 ts-rs = { workspace = true, features = ["serde-json-impl"] }
@@ -60,14 +61,6 @@ crossbeam.workspace = true
 # Native-only: rayon parallel scan over the typed search index. WASM falls
 # back to serial scan (single-threaded execution model).
 rayon = "1.10"
-
-# Unix-only deps. pprof relies on signal/pthread/ucontext APIs (via nix + libc)
-# that don't exist on Windows, so it can only build on unix — not merely
-# "native" (Windows-native would still fail to compile pprof).
-[target.'cfg(unix)'.dependencies]
-# Signal-based userspace CPU sampler (no perf_event_open → no sudo). Gated
-# behind the `profiling` feature; only compiled for unix targets.
-pprof = { version = "0.14", features = ["flamegraph"], optional = true }
 
 # WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -109,13 +102,20 @@ search = []
 # needs the TS impls) and propagated through entity crates via their own
 # `ts-export` feature forwards (see downstream entity-crate umbrellas).
 ts-export = []
-# In-process CPU profiling (StartProfile/StopProfile commands + profile() helper).
-# Pulls the unix-only pprof sampler — no-op on non-unix targets (wasm32,
-# Windows), where the dep doesn't apply — enabling the feature there compiles
-# to a stub that reports "profiling not enabled" rather than failing the
-# build. `tracing` spans (myko.reduce, myko.command, etc.) are always-on now
-# and not gated by this feature — see the `tracing` dependency comment above.
-profiling = ["dep:pprof"]
+# Instrument the reactive hot path for EXTERNAL profilers: hyphae's
+# `#[inline(never)]` propagation boundaries (so samplers resolve
+# notify/write_value/fanout as distinct frames instead of one folded symbol)
+# plus its per-fanout `tracing` spans.
+#
+# NOTE(ts): myko deliberately ships no in-process profiler. There used to be
+# StartProfile/StopProfile commands backed by a pprof sampler; a server that
+# samples itself perturbs what it is measuring, and it cost ~1.4GB resident on
+# first use (backtrace's global DWARF mapping cache — see the removal commit).
+# Attach perf/samply/Tracy or a heap profiler instead. myko's own `tracing`
+# spans (myko.reduce, myko.command, myko.query, myko.view, myko.report) are
+# always-on and NOT gated by this feature, so external tooling can follow the
+# work without turning anything on.
+profiling = ["hyphae/profiling"]
 
 # Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
 # behavior worth exercising, *except* `bench` — bench_entities/criterion are

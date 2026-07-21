@@ -57,22 +57,21 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
 default = []
-# Forward CPU profiling into myko-core. Opt-in (not default) so Windows/wasm
-# consumers don't pull the unix-only pprof tree; enable explicitly for dev/profiling.
-#
-# NOTE(ts): does NOT forward hyphae's own `profiling` feature — that's
-# already enabled unconditionally at the workspace `hyphae` dependency
-# (Cargo.toml, features = ["scheduler", "profiling"]) via feature
-# unification, since it backs the `hyphae::batch()`/`profiling::pass()` seam
-# in myko-core's ingest path regardless of which downstream crate is built.
+# Instrument the reactive hot path for external profilers (forwards to
+# myko-core, which forwards hyphae's `profiling`). Opt-in, never on by
+# default: it adds `#[inline(never)]` boundaries and a per-fanout span, which
+# is exactly what a sampler wants and exactly what a release build shouldn't
+# pay. It used to be forced on at the workspace `hyphae` dependency, so every
+# release build paid for it regardless.
 profiling = ["myko/profiling"]
-inspector = ["hyphae/inspector"]
-trace = ['hyphae/trace']
+
+# NOTE(ts): no `trace` or `inspector` feature. Both named hyphae features
+# that no longer exist: hyphae 2.0 collapsed its observability surface to the
+# single `profiling` feature above, deleting the per-cell trace registry and
+# the in-process inspector web server outright. Neither gated any myko source
+# — they were pure forwarding aliases. For attribution, attach an external
+# profiler (cell type parameters resolve from the symbols) or a heap profiler
+# (jemalloc/jeprof sees CellInner allocation sites directly).
 
 # Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
-# Excludes `inspector` deliberately: it spawns hyphae's inspector web server
-# via `tokio::spawn` at startup, which needs an active Tokio runtime that
-# plain `#[test]`s (e.g. `test_server_creation`) don't have — panics with
-# "there is no reactor running" outside one. Not a CI-safe feature to
-# blanket-enable; exercise it manually/in an async-runtime test instead.
-ci = ["profiling", "trace"]
+ci = ["profiling"]
