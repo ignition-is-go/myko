@@ -1,0 +1,26 @@
+¶ditem©dbodyyãMEASURED ON THE PRODUCTION RACK by rship (quick-pebble), 2026-07-21, via a 20s capture at 499Hz on a live server with 126 warmed scenes:
+
+  t+0.3 .. t+3.7min   6748-6749 MB   flat, deltas within +/-1 MB
+  t+4.0min            7786 MB        +1037  <- StartProfile
+  t+4.3min            8136 MB        +350   <- still capturing
+  t+4.7min            8136 MB        +0.1   <- StopProfile; NOT released (still there 45s+ later)
+
+Net ~1387 MB retained per capture. On the rack that is ~3% of a 48G cgroup consumed permanently, per profile. The dangerous shape: someone runs StartProfile on a box already at 45G to diagnose why it is at 45G.
+
+NOT A FORGOTTEN HANDLE. libs/myko/core/src/entities/profiling.rs stop() correctly .take()s ActiveProfile out of the OnceLock<Mutex<Option<..>>> slot and drops it (guard included) at end of scope. So the ProfilerGuard is released.
+
+WHERE THE MEMORY ACTUALLY IS - ranked, from reading pprof 0.14.1:
+1. NOT the sample collector. HashCounter is BUCKETS(4096) x BUCKETS_ASSOCIATIVITY(4) = 16,384 entries of UnresolvedFrames, each a SmallVec inline [Frame; MAX_DEPTH=128] + thread name. That is tens of MB, not 1.4GB.
+2. LIKELY the report-build + render path, which is a genuine transient peak we then fail to return:
+   - report().build() resolves symbols, allocating Strings per unique frame across a large binary.
+   - fold() builds a Vec<String> of every stack, then lines.sort() then lines.join - at least 2x the folded text resident simultaneously.
+   - write_svg() calls report.flamegraph(&mut buf) into an IN-MEMORY Vec<u8> and only then writes it to disk. A large-profile SVG is the single biggest allocation and it is fully materialized before any I/O.
+3. Allocator retention on top: the peak is transient but RSS never comes back. rship runs tikv-jemallocator; freed pages sit as dirty in arenas rather than returning to the OS.
+
+DIAGNOSTIC TO RUN FIRST (distinguishes true leak from allocator retention - the fix differs completely): capture jemalloc stats (allocated vs resident) before/after a StopProfile, or call a purge and re-measure RSS. If allocated returns to baseline but resident does not, it is retention, and the fix is an arena purge / malloc_trim after stop plus shrinking the peak. If allocated stays high, something is genuinely held.
+
+FIX DIRECTIONS: stream the flamegraph straight to the File instead of building a Vec<u8> first (removes the largest single allocation for free); build folded output without holding both the Vec<String> and the joined String; explicitly purge the allocator after stop; and document the per-capture cost loudly on StartProfile either way.
+
+RELATED: StopProfileOutput.folded is returned over the wire as a report response, so a large capture also feeds lv-7d5a (multi-hundred-MB ReportResponse frames buffered per slow client). Same capture can hit both.
+
+Found during hyphae 2.0 field validation - unrelated to hyphae, and explicitly not a gate on that release.gcreatedx2026-07-21T20:50:40.780540ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 3fb226b535ea473abb8b4da196bd684dflabelsÅfserverhprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlexMprofiling: StartProfile/StopProfile retains ~1.4GB RSS that is never releasedjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T20:50:40.780544Zbtxx$01d7ee3c-a8ad-4a05-b68a-8047757e6f0ahsourceIdgmalcolm
