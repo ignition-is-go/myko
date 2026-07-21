@@ -76,23 +76,28 @@ partially = { version = "0.2", features = ["derive"] }
 # `batch()` boundary, and downstream event-semantic subgraphs rely on the
 # `no_coalesce` opt-out it provides.
 #
-# `trace` (=> `metrics`) is kept on for everyone deliberately: it backs the
-# per-cell registry that gives a live-cell census in production, which is what
-# made the 2026-07 rship leak attributable at all. It is not free — a registry
-# entry + `Location::caller()` String per cell, an Arc<CellMetrics> + 2
-# ArcSwaps per cell, a DashMap write per notify; 0.63GB at a 21GB plateau
-# (~1.6M live cells) on the production rack. That cost is accepted; the
-# registry is drop-symmetric and bounded by live cells, so it is a constant
-# multiplier, not growth.
+# No observability features here, deliberately. Cargo features are additive
+# and unify across the graph, so anything listed is forced on every consumer's
+# release build with no way to opt out. `profiling` used to be listed, which
+# is how it reached production rship.
 #
-# `profiling` is deliberately NOT here — it is the strict superset that adds
-# hot-path cost with no diagnostic value we rely on: `#[inline(never)]` on
-# notify/write_value/fanout, plus a per-fanout `tracing` span that locks the
-# cell-name mutex. Cargo features are additive and unify across the graph, so
-# listing it here forced it on every consumer's release build with no way to
-# opt out. It now rides myko's own `profiling` feature (which needs it for
-# pass()/take_report() in context.rs) — see libs/myko/core/Cargo.toml.
-# (rship lv-1a3f)
+# The cost split in hyphae 1.3.4, since it is not what the names suggest —
+# `profiling = ["trace", "dep:tracing"]` and `trace = ["metrics"]`:
+#   * `trace` carries the MEMORY. It gates the per-cell registry entry +
+#     `Location::caller()` String (cell.rs register_cell), a DashMap write per
+#     notify, and — via `default_metrics()` — whether every cell gets an
+#     Arc<CellMetrics> + 2 ArcSwaps at all (without `trace` that default is
+#     None). Measured: 0.63GB at a 21GB plateau, ~1.6M live cells.
+#   * `profiling` adds only hot-path CPU on top: `#[inline(never)]` on
+#     notify/write_value/fanout, plus a per-fanout `tracing` span that takes
+#     the cell-name mutex on every emit.
+# So `trace` is not the cheap half — it is the whole measured overhead.
+#
+# myko's own `profiling` feature turns the full stack back on when asked (it
+# needs it for pass()/take_report() in context.rs) — see
+# libs/myko/core/Cargo.toml. Keeping this list bare is also forward-compatible
+# with hyphae collapsing `metrics`/`trace` into a single observability feature,
+# where naming either here would dangle. (rship lv-1a3f)
 #
 # 1.2.0 is the first published release with `scheduler`/`profiling` (feat/
 # scheduler merged to main, released via hyphae's own CI). Back to a version
@@ -128,7 +133,7 @@ partially = { version = "0.2", features = ["derive"] }
 #
 # 1.3.4 makes size() self-retaining hyphae-side too (defense-in-depth on
 # top of myko's own fix) — floor bumped to pick it up.
-hyphae = { version = "^1.3.4", features = ["scheduler", "trace"] }
+hyphae = { version = "^1.3.4", features = ["scheduler"] }
 hyphae-leptos = { version = "^1.1.0" }
 
 # Internal crates

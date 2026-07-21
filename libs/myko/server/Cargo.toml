@@ -63,11 +63,9 @@ default = []
 # NOTE(ts): this DOES pull in hyphae's own `profiling` feature, transitively
 # via myko's (see libs/myko/core/Cargo.toml), and that is now the only way it
 # reaches the build — it used to be forced on at the workspace `hyphae`
-# dependency. Keep it off the default path: `profiling` adds `#[inline(never)]`
-# on the fanout hot path and a per-fanout span that locks the cell-name mutex.
-# hyphae's `trace`/`metrics` diagnostics are unaffected — those stay on for
-# everyone at the workspace dependency, so the `trace` feature below is
-# redundant-but-harmless and kept for explicitness.
+# dependency, so every release build paid for it. Keep it off the default
+# path: `profiling` implies hyphae's `trace`/`metrics` (the per-cell registry
+# and CellMetrics — the memory) on top of its own hot-path cost.
 profiling = ["myko/profiling"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
