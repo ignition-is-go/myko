@@ -1,0 +1,8 @@
+¦ditem©dbodyyMFound during rship lv-fc26 OOM crash-loop investigation (rack rship_server1, 59M-event table, ~36GiB replay spike, 48G cgroup OOM).
+
+run_consumer_loop (libs/myko/server/src/postgres.rs) boot snapshot:
+1. reader.query() collects the entire DISTINCT ON (item_type, item_id) latest-per-item result into one Vec<Row> before applying â€” boot memory is proportional to (distinct items ever) x (event JSON size). Should stream via cursor / bounded batches (the tail loop right below it already batches by 1000).
+2. 'latest per item' includes every deleted item in history: its latest row is the DEL event, fetched just to no-op in apply_remote_event. Filter change_type = 'DEL' out of the snapshot join server-side.
+3. No compaction story for the events table. Live boot only ever reads latest-per-item; superseded rows serve only point-in-time windback (replay_to_store / load_until). A compaction/archival horizon is viable but is a product decision â€” needs Trevor sign-off on windback retention.
+
+Sizing SQL sent to deploy agent (gentle-pulsar) to confirm 1+2 are the actual driver before implementing.gcreatedx2026-07-21T04:23:19.897472ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx ad858abfa6694343ac61c3aec4b968efflabels€hprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlexYpostgres consumer: snapshot replay materializes full result set and fetches dead DEL rowsjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T04:23:19.897480Zbtxx$9efd13ad-5204-41ab-b24c-d803d47708bfhsourceIdgmalcolm
