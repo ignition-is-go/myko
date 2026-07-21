@@ -1,0 +1,18 @@
+¦ditem©dbodyy	kVerified in source during the rship lv-c065 leak hunt.
+
+MECHANISM:
+- CellServerCtx::new (core/src/server/context.rs:283-312) allocates FRESH query_cache / view_cache / report_cache / compute_gates / ingest_buffers DashMaps. Only registry, handler_registry, relationship_manager, persisters, search_index, peer_clients are shared Arcs.
+- CellServer::ctx() (server/src/lib.rs:391) CONSTRUCTS via CellServerCtx::new - it does not clone the struct (which would share the cache Arcs, since CellServerCtx: Clone).
+- The accept loop does Arc::new(self.ctx()) PER CONNECTION (lib.rs:737). ctx() is also called at lib.rs:364 (PeerRegistry), :557, :611, :614 (watch_peer_deaths, held for process life) - each an independent cache set.
+
+CONSEQUENCES:
+1. sweep_dead_cache_entries is called ONLY from tests and from rship main.rs:629 - on the instance main.rs:349 created for itself. NO connection caches are ever swept. Dead entries are otherwise reclaimed only lazily when the exact same key is requested again (context.rs:1418/1472/1683).
+2. Every distinct (kind, id, payload_hash) a connection ever subscribes to leaves a permanent entry for the life of that connection: the String key + MapCacheEntry (Mutex<HashMap<TypeId, Box<dyn Any>>> of typed projections) + the Weak-held cell allocation.
+3. mem_profile cache live/total/gap numbers describe a context nothing else uses - which is why repeated static passes cleared the caches. The observability measures the wrong object.
+4. No cache sharing across clients: N clients each materialize their own cell graph for the same query/view/report (a constant N-times multiplier on reactive-graph memory, distinct from the growth).
+
+RELATED (same root cause, not memory): lib.rs:364 builds PeerRegistry on one ctx while lib.rs:614 builds ServerOwnershipManager::watch_peer_deaths on another; register_peer_client bumps peer_clients_tick (context.rs:334) on the first only, so the second watcher can never observe it.
+
+FIX SHAPE: build one Arc<CellServerCtx> in CellServer and clone the Arc per connection (or make ctx() clone a stored instance so the cache Arcs are shared), then ensure the sweep runs against the shared caches.
+
+NOT YET PROVEN: whether this is the dominant term in the ~0.4GB/h creep (rship lv-c065). The creep reproduces with ONE client at the same rate as 13, consistent with a single churning UI driving it, but attribution needs the jeprof --base diff.gcreatedx2026-07-21T18:33:17.668211ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 38b741991c5b4f6ab300251c173e472dflabels€hprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlex„CellServer::ctx() constructs a NEW context per connection - per-connection caches never swept, mem_profile measures an unrelated ctxjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T18:33:17.668232Zbtxx$c5a94210-be2f-496a-8094-f9a1808b125dhsourceIdgmalcolm
