@@ -115,7 +115,7 @@ ts-export = []
 # to a stub that reports "profiling not enabled" rather than failing the
 # build. `tracing` spans (myko.reduce, myko.command, etc.) are always-on now
 # and not gated by this feature — see the `tracing` dependency comment above.
-profiling = ["dep:pprof"]
+profiling = ["dep:pprof", "hyphae/profiling"]
 
 # Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
 # behavior worth exercising, *except* `bench` — bench_entities/criterion are
