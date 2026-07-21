@@ -67,13 +67,14 @@ default = []
 # path: `profiling` implies hyphae's `trace`/`metrics` (the per-cell registry
 # and CellMetrics — the memory) on top of its own hot-path cost.
 profiling = ["myko/profiling"]
-inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
 
+# NOTE(ts): no `inspector` feature. hyphae's inspector is an in-process
+# tokio+serde_json web server that CellServer used to start at construction
+# and hold for its lifetime. Nothing consumed it — it was opt-in, no shipping
+# consumer enabled it, and it could not even be exercised in CI (it panics
+# with "there is no reactor running" in plain `#[test]`s). Reach for a real
+# profiler instead; jemalloc/jeprof sees CellInner allocation sites directly.
+
 # Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
-# Excludes `inspector` deliberately: it spawns hyphae's inspector web server
-# via `tokio::spawn` at startup, which needs an active Tokio runtime that
-# plain `#[test]`s (e.g. `test_server_creation`) don't have — panics with
-# "there is no reactor running" outside one. Not a CI-safe feature to
-# blanket-enable; exercise it manually/in an async-runtime test instead.
 ci = ["profiling", "trace"]

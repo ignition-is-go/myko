@@ -248,9 +248,6 @@ pub struct CellServer {
     saga_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Server ownership death-watch guard (kept alive for server lifetime).
     _server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
-    /// Hyphae cell inspector server (kept alive for the lifetime of the server)
-    #[cfg(feature = "inspector")]
-    _inspector: hyphae::server::InspectorServer,
 }
 
 impl CellServer {
@@ -319,12 +316,6 @@ impl CellServer {
         }
         let persisters = Arc::new(persister_router);
 
-        // Start the hyphae cell inspector server
-        #[cfg(feature = "inspector")]
-        let inspector = hyphae::server::start_server("myko");
-        #[cfg(feature = "inspector")]
-        tracing::info!("Hyphae inspector on port {}", inspector.port());
-
         let peer_clients = config
             .peer_clients
             .clone()
@@ -350,8 +341,6 @@ impl CellServer {
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
             _server_ownership_guard: std::sync::Mutex::new(None),
-            #[cfg(feature = "inspector")]
-            _inspector: inspector,
         }
     }
 
