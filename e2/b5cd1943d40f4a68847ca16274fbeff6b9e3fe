@@ -1,0 +1,18 @@
+¦ditem©dbodyy
+wThe workspace Cargo.toml declared hyphae = { features = ["scheduler", "profiling"] }. Cargo features are additive and unify across the graph, so NO downstream crate could turn it off - every consumer, including rship_server release builds, got it.
+
+WHERE THE COSTS ACTUALLY LIVE (verified in hyphae source, cell.rs):
+- `trace` gates ALL THREE per-cell MEMORY costs: the TRACE_RECORDS registry entry + Location::caller() String (cell.rs:462), the per-notify DashMap write (cell.rs:1088), AND the per-cell Arc<CellMetrics> + 2 ArcSwaps - because default_metrics() (cell.rs:1420-1428) is Some(..) under #[cfg(all(metrics, trace))] and None under #[cfg(all(metrics, not(trace)))]. So `metrics` alone allocates nothing; `trace` is the switch.
+- `profiling` (= ["trace", "dep:tracing"]) adds only HOT-PATH CPU on top: #[inline(never)] on notify/write_value/fanout, per-fanout spans, and a cell-name MUTEX acquisition on every emit.
+
+Measured on a production rship server: 0.63GB of trace registry at a 21GB steady state (~1.6M live cells), 1.7GB at a 41GB peak.
+
+myko's only use of hyphae::profiling (core/src/server/context.rs pass()/take_report()) was ALREADY gated behind myko's own `profiling` feature with a #[cfg(not(...))] emit() fallback, so the dependency-level force was never needed.
+
+RESOLUTION (confirmed with Trevor directly): workspace -> features = ["scheduler"]. That drops the per-cell memory AND the hot-path CPU from production builds. libs/myko/core -> profiling = ["dep:pprof", "hyphae/profiling"] so the gated call site still compiles on opt-in; myko-server already forwards profiling/trace, and rship's dev-profile passes --features profiling,hyphae/profiling. Also forward-compatible: the hyphae agent is collapsing metrics/trace/inspector/profiling into a single feature, so "trace" would dangle as a name.
+
+Production memory-profiling capability is NOT lost by this: the tool that actually found the leak was jemalloc/jeprof heap profiling, which is independent of every hyphae feature and shows CellInner allocation sites directly. The registry was a corroborating proxy for the live-cell census, not the primary instrument.
+
+NOTE: none of these features caused the production leak - that was hyphae add_height_dependent missing a dedup (hyphae/lv-ddfe + PR #20). This is a CPU + constant-memory fix, not a leak fix.
+
+PR #39, branch fix/no-prod-profiling, implemented by stormy-mole (41138972). Verified by negative control (stripping hyphae/profiling from myko-core makes `cargo check -p myko --features profiling` fail), since cargo tree -e features did not reflect --features in that workspace. Not merged - Trevor has the call, main triggers release CI.gcreatedx2026-07-21T19:05:29.446979ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 5f2d0aafb94441a591a72593eb33817fflabels€hprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlexrworkspace forces hyphae/profiling on every consumer (=> trace + metrics + inline(never) + per-fanout lock in prod)jchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T19:13:30.306263Zbtxx$0a701737-4b9f-4992-83a7-26b29e065ce6hsourceIdgmalcolm
