@@ -366,7 +366,11 @@ impl AutoReconnectSocket {
         while !teardown.load(Ordering::SeqCst) {
             match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(frame) => {
-                    let msg = frame_to_message(frame);
+                    // On WouldBlock, tungstenite has already stored the frame in
+                    // its write buffer ("will try again on the next call to write
+                    // or flush"), so retries must only flush — re-sending would
+                    // enqueue a duplicate copy of the whole frame every attempt.
+                    let mut msg = Some(frame_to_message(frame));
                     let mut attempts: u64 = 0;
                     loop {
                         if teardown.load(Ordering::SeqCst) {
@@ -375,7 +379,10 @@ impl AutoReconnectSocket {
                         attempts = attempts.saturating_add(1);
                         let send_result = {
                             let mut ws = socket.lock().unwrap();
-                            ws.send(msg.clone())
+                            match msg.take() {
+                                Some(m) => ws.send(m),
+                                None => ws.flush(),
+                            }
                         };
                         match send_result {
                             Ok(()) => break,
