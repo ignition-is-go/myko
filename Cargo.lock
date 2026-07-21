@@ -1476,9 +1476,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "1.3.4"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a979561f157c658383debba39d012c13939f446e4b8bd69bba2746899056afa"
+checksum = "c6dcdecc61f98569db6d2b6476d309e171b008ae2ea97329acc7bd7b9f674c1a"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1499,9 +1499,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "1.3.3"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f38bb7c653910c60b1499e37afe84b0dcb7bbdc6b7319d0ae1dc6998c3d7eb8"
+checksum = "b3917eaa4a5dee76af9ef9bb6541673ce00ea7510469c63ddf7b88c6c39f3e0c"
 dependencies = [
  "hyphae",
  "leptos",

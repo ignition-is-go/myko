@@ -64,14 +64,14 @@ default = []
 # pay. It used to be forced on at the workspace `hyphae` dependency, so every
 # release build paid for it regardless.
 profiling = ["myko/profiling"]
-trace = ['hyphae/trace']
 
-# NOTE(ts): no `inspector` feature. hyphae's inspector is an in-process
-# tokio+serde_json web server that CellServer used to start at construction
-# and hold for its lifetime. Nothing consumed it — it was opt-in, no shipping
-# consumer enabled it, and it could not even be exercised in CI (it panics
-# with "there is no reactor running" in plain `#[test]`s). Reach for a real
-# profiler instead; jemalloc/jeprof sees CellInner allocation sites directly.
+# NOTE(ts): no `trace` or `inspector` feature. Both named hyphae features
+# that no longer exist: hyphae 2.0 collapsed its observability surface to the
+# single `profiling` feature above, deleting the per-cell trace registry and
+# the in-process inspector web server outright. Neither gated any myko source
+# — they were pure forwarding aliases. For attribution, attach an external
+# profiler (cell type parameters resolve from the symbols) or a heap profiler
+# (jemalloc/jeprof sees CellInner allocation sites directly).
 
 # Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
-ci = ["profiling", "trace"]
+ci = ["profiling"]
