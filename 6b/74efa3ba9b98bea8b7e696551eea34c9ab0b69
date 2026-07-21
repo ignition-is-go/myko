@@ -1,0 +1,17 @@
+¶ditem©dbodyy@hyphae is collapsing metrics/trace/inspector/profiling into a single `profiling` feature (breaking, hyphae 2.0.0; design in hyphae PR #21, docs/superpowers/specs/2026-07-21-observability-feature-collapse-design.md). `metrics` and `trace` cease to exist as feature names.
+
+Benchmarks from the hyphae agent justifying the collapse (single-cell / chain-20):
+  scheduler baseline  47.8ns / 301ns
+  +metrics            47.4ns / 285ns   (free - metrics alone allocates nothing because trace is what flips default_metrics())
+  +trace             587.7ns / 1733ns  (12.3x / 5.8x)
+  +profiling         595.5ns / 1743ns
+So trace is ~100% of the hot-path cost as well as ~100% of the 0.63GB per-cell memory.
+
+MYKO EDIT SITES when it lands:
+1. libs/myko/server/Cargo.toml:71 `trace = ['hyphae/trace']` - DROP it. Gates no source (zero `feature = "trace"` cfgs in myko's Rust); it's a pure forwarding alias, and repointing at hyphae/profiling would just duplicate myko-server's existing `profiling` feature.
+2. libs/myko/server/Cargo.toml:79 `ci = ["profiling", "trace"]` - drop "trace" from the umbrella. Same decision as (1), separate edit; easy to half-land.
+3. libs/myko/server/Cargo.toml:70 `inspector = ["hyphae/inspector"]` - depends on what hyphae does (their lv-bc70). If extracted to a hyphae-inspector crate, repoint. If deleted, remove the feature plus the four cfg sites in libs/myko/server/src/lib.rs (252 struct field, 323/325 start_server + port log, 353 field init).
+
+NO CHANGE NEEDED: workspace `features = ["scheduler"]` is forward-compatible, myko-core's `profiling = ["dep:pprof", "hyphae/profiling"]` keeps working (the name survives deliberately), and the only source-level API use (hyphae::profiling::pass/take_report in core/src/server/context.rs) is untouched.
+
+Blocked until hyphae 2.0 ships; the hyphae agent will ping before the code lands.gcreatedx2026-07-21T19:23:17.624471ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 3248f22b2f4b484a870cc7f5006c35b1flabelsÅfserverhprioritybP2iprojectIdx de9416570df4447d8687b0103b13ae27etitlex`myko-server: migrate off hyphae trace/inspector when hyphae 2.0 collapses observability featuresjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T19:23:17.624490Zbtxx$1431e45e-fe47-458e-94cc-3e1c5d3c1e1ahsourceIdgmalcolm
