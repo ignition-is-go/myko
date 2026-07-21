@@ -1,0 +1,18 @@
+¦ditem©dbodyyvMEASURED on a live rship_server (dev-profile build, 126 warmed scenes) 2026-07-21.
+
+A single StartProfile(frequency_hz=499) / 20s / StopProfile cycle over the MCP endpoint cost +1,387 MB RSS, and NONE of it was released after StopProfile returned.
+
+Raw RSS series (20s samples), profiler window is unambiguous:
+  t+0.3 .. t+3.7min   6748-6749 MB   flat, deltas within +/-1 MB
+  t+4.0min            7786 MB        +1037  <- StartProfile
+  t+4.3min            8136 MB        +350   <- still capturing
+  t+4.7min            8136 MB        +0.1   <- StopProfile returned; NOT released
+  +45s later          8136 MB        still retained
+
+The returned folded-stack payload was only 2.3 MB, so the retention is internal (pprof sample buffers / symbol tables / backtrace storage), not the response.
+
+WHY IT MATTERS: on the rack that is ~3% of a 48G cgroup permanently consumed per capture. The dangerous shape is someone running StartProfile on a box already near the limit IN ORDER TO DIAGNOSE why it is near the limit â€” which is exactly the situation we were in earlier tonight during the OOM crash loop. It is also a footgun for repeated captures: N profiles = N x ~1.4GB.
+
+ASKS: free the profiler's buffers on StopProfile (or bound them), and until then a loud docstring on StartProfile stating the resident cost. Worth characterising across frequency_hz and duration â€” rship can re-measure on request; the harness is just RSS sampling around the two commands.
+
+Found while validating hyphae 2.0's profiling feature for the release train. Unrelated to hyphae â€” this is myko's in-process pprof. Cross-ref rship lv-c065 (the leak hunt this came out of).gcreatedx2026-07-21T20:50:20.170050ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx c8490dae04014f8dadcb945fdc7f992dflabels€hprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlexTStartProfile retains ~1.4GB after StopProfile (in-process pprof buffers never freed)jchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T20:50:20.170058Zbtxx$406bf0c4-a15d-4ee4-921d-0929e430e9a9hsourceIdgmalcolm
