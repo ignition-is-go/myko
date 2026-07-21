@@ -191,7 +191,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autosocket"
-version = "4.24.4"
+version = "5.0.0"
 dependencies = [
  "dashmap",
  "flume",
@@ -1984,7 +1984,7 @@ dependencies = [
 
 [[package]]
 name = "myko"
-version = "4.24.4"
+version = "5.0.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-version = "4.24.4"
+version = "5.0.0"
 dependencies = [
  "hyphae-leptos",
  "leptos",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "4.24.4"
+version = "5.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "4.24.4"
+version = "5.0.0"
 dependencies = [
  "chrono",
  "ciborium",
