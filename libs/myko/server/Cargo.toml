@@ -60,11 +60,14 @@ default = []
 # Forward CPU profiling into myko-core. Opt-in (not default) so Windows/wasm
 # consumers don't pull the unix-only pprof tree; enable explicitly for dev/profiling.
 #
-# NOTE(ts): does NOT forward hyphae's own `profiling` feature — that's
-# already enabled unconditionally at the workspace `hyphae` dependency
-# (Cargo.toml, features = ["scheduler", "profiling"]) via feature
-# unification, since it backs the `hyphae::batch()`/`profiling::pass()` seam
-# in myko-core's ingest path regardless of which downstream crate is built.
+# NOTE(ts): this DOES pull in hyphae's own `profiling` feature, transitively
+# via myko's (see libs/myko/core/Cargo.toml), and that is now the only way it
+# reaches the build — it used to be forced on at the workspace `hyphae`
+# dependency. Keep it off the default path: `profiling` adds `#[inline(never)]`
+# on the fanout hot path and a per-fanout span that locks the cell-name mutex.
+# hyphae's `trace`/`metrics` diagnostics are unaffected — those stay on for
+# everyone at the workspace dependency, so the `trace` feature below is
+# redundant-but-harmless and kept for explicitness.
 profiling = ["myko/profiling"]
 inspector = ["hyphae/inspector"]
 trace = ['hyphae/trace']
