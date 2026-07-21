@@ -1,0 +1,11 @@
+¦ditem©dbodyyIThe workspace Cargo.toml declared hyphae = { features = ["scheduler", "profiling"] }. Cargo features are additive and unify across the graph, so NO downstream crate could turn it off - every consumer, including rship_server release builds, got it.
+
+hyphae's profiling => trace => metrics, so production paid: a global TRACE_RECORDS entry + Location::caller() String per cell, an Arc<CellMetrics> + 2 ArcSwaps per cell, a DashMap write per notify, #[inline(never)] on notify/write_value/fanout, and (per stormy-mole) a cell-name MUTEX acquisition on every fanout emit from the profiling-gated span.
+
+myko's only use of hyphae::profiling (core/src/server/context.rs pass()/take_report()) was ALREADY gated behind myko's own `profiling` feature with a #[cfg(not(...))] emit() fallback, so the dependency-level force was never needed.
+
+RESOLUTION (Trevor's call): keep the observability, drop only the hot-path cost. Workspace -> features = ["scheduler", "trace"], which retains the registry census + per-cell metrics (~0.63GB of a 21GB production heap, knowingly) and drops the inline(never) boundaries and per-fanout span/lock. libs/myko/core -> profiling = ["dep:pprof", "hyphae/profiling"] so the gated call site still compiles on opt-in.
+
+This is a CPU/hot-path fix, NOT a memory fix - and none of these features caused the production leak (that was hyphae add_height_dependent missing a dedup, hyphae/lv-ddfe + PR #20).
+
+PR #39, branch fix/no-prod-profiling, implemented by stormy-mole at 7acb00f4. Verified by negative control (stripping hyphae/profiling from myko-core makes `cargo check -p myko --features profiling` fail), since cargo tree -e features did not reflect --features in this workspace. Also corrected a stale NOTE in libs/myko/server/Cargo.toml that had rationalized the always-on state. Not merged - Trevor has the call, main triggers release CI.gcreatedx2026-07-21T19:05:29.446979ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 5f2d0aafb94441a591a72593eb33817fflabels€hprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlexrworkspace forces hyphae/profiling on every consumer (=> trace + metrics + inline(never) + per-fanout lock in prod)jchangeTypecSEThitemTypedTaskicreatedAtx2026-07-21T19:05:29.446989Zbtxx$9770688a-a939-420c-935c-2c3d44451ad6hsourceIdgmalcolm
