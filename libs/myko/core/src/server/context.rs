@@ -881,21 +881,6 @@ impl CellServerCtx {
             self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
             Ok(())
         };
-        #[cfg(feature = "profiling")]
-        {
-            hyphae::profiling::pass(emit)?;
-            if let Some(report) = hyphae::profiling::take_report() {
-                tracing::trace!(
-                    target: "myko::server::context",
-                    "apply_event_batch fanout: cells_fired={} total_fires={} total_refires={} coalesceable_fraction={:.3}",
-                    report.cells_fired(),
-                    report.total_fires(),
-                    report.total_refires(),
-                    report.coalesceable_fraction()
-                );
-            }
-        }
-        #[cfg(not(feature = "profiling"))]
         emit()?;
 
         Ok(applied)

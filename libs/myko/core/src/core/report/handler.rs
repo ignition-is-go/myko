@@ -236,8 +236,8 @@ impl ReportContext {
     /// Returns a cell that updates whenever the sub-report output changes.
     /// This allows reports to compose other reports.
     ///
-    /// Forwards to `CellServerCtx::report()` which wraps the compute result
-    /// in a named relay for inspector visibility.
+    /// Forwards to `CellServerCtx::report()`, which memoizes the compute
+    /// result by cache key so concurrent requests share one computation.
     pub fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
