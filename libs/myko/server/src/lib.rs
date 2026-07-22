@@ -248,6 +248,15 @@ pub struct CellServer {
     saga_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Server ownership death-watch guard (kept alive for server lifetime).
     _server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
+    /// Memoized server context. Built once on first `ctx()` and shared by
+    /// every caller — the caches (`query_cache`/`view_cache`/`report_cache`/
+    /// `compute_gates`/`ingest_buffers`) and the `peer_clients_tick` cell are
+    /// then genuinely process-wide, so N connections subscribing to the same
+    /// query share one reactive cell graph instead of N copies, cache sweeps
+    /// actually reach live entries, and every peer-death watcher observes the
+    /// same tick. Every `CellServerCtx` field is an `Arc`/`Cell`/`Uuid`, so a
+    /// clone is a handful of refcount bumps that share the underlying state.
+    ctx_cache: std::sync::OnceLock<CellServerCtx>,
 }
 
 impl CellServer {
@@ -341,6 +350,7 @@ impl CellServer {
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
             _server_ownership_guard: std::sync::Mutex::new(None),
+            ctx_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -377,23 +387,35 @@ impl CellServer {
     }
 
     /// Get a server context for module use.
+    ///
+    /// Returns a clone of the one memoized [`CellServerCtx`] (see `ctx_cache`)
+    /// so all callers share the same caches and peer-tick cell. Building a
+    /// fresh context per call — the old behavior — gave every connection its
+    /// own caches: no cross-client cache sharing (an N× reactive-graph
+    /// memory multiplier), sweeps that never reached connection caches, and a
+    /// `peer_clients_tick` that register/unregister bumped on one context
+    /// while a watcher built on another never observed.
     pub fn ctx(&self) -> CellServerCtx {
-        let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
-            self.config.postgres.as_ref().map(|pg| {
-                Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
-                    as Arc<dyn myko::server::HistoryReplayProvider>
-            });
-        CellServerCtx::new(
-            self.host_id,
-            self.registry.clone(),
-            self.handler_registry.clone(),
-            self.relationship_manager.clone(),
-            self.persisters.clone(),
-            self.search_index.clone(),
-            self.peer_clients.clone(),
-            Some(self.saga_event_tx.clone()),
-            history_replay,
-        )
+        self.ctx_cache
+            .get_or_init(|| {
+                let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
+                    self.config.postgres.as_ref().map(|pg| {
+                        Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
+                            as Arc<dyn myko::server::HistoryReplayProvider>
+                    });
+                CellServerCtx::new(
+                    self.host_id,
+                    self.registry.clone(),
+                    self.handler_registry.clone(),
+                    self.relationship_manager.clone(),
+                    self.persisters.clone(),
+                    self.search_index.clone(),
+                    self.peer_clients.clone(),
+                    Some(self.saga_event_tx.clone()),
+                    history_replay,
+                )
+            })
+            .clone()
     }
 
     fn start_saga_runtime(&self) {
@@ -770,5 +792,45 @@ mod tests {
         };
         let server = CellServer::new(config);
         assert_eq!(server.host_id, host_id);
+    }
+
+    #[test]
+    fn ctx_is_memoized_and_shares_caches() {
+        // Regression for lv-38b7: every `ctx()` must return the SAME shared
+        // context, so a query cached through one call is visible through the
+        // next. Before the fix, each `ctx()` allocated its own caches, so a
+        // second call reported an empty query cache (and per-connection
+        // caches leaked, never swept).
+        let config = CellServerConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            tcp_nodelay: true,
+            postgres: None,
+            host_id: None,
+            peer_registry: None,
+            default_persister: None,
+            persister_overrides: HashMap::new(),
+            peer_clients: None,
+        };
+        let server = CellServer::new(config);
+        let ctx1 = server.ctx();
+        let ctx2 = server.ctx();
+
+        let req = Arc::new(RequestContext::internal(
+            Arc::from("test"),
+            server.host_id,
+            "ctx_sharing_test",
+        ));
+        // Hold the map so its cache entry (weak-referenced) stays live.
+        let _held = ctx1.query_map(myko::entities::client::GetAllClients {}, req);
+
+        assert!(
+            ctx1.query_cache_len() >= 1,
+            "querying through ctx1 should populate the shared query cache"
+        );
+        assert_eq!(
+            ctx2.query_cache_len(),
+            ctx1.query_cache_len(),
+            "both ctx() calls must share one query cache"
+        );
     }
 }
