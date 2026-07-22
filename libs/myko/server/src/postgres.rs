@@ -26,6 +26,13 @@ const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
 const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
+/// TCP_USER_TIMEOUT: tear down a connection whose sent data stays unacked for
+/// this long. Unlike keepalives — which only probe an *idle* socket — this
+/// fires on a peer that died mid-write, so a consumer killed mid-snapshot (OOM)
+/// has its Postgres backend reaped promptly instead of lingering in ClientWrite
+/// holding the events-table lock and stalling every subsequent boot's snapshot
+/// until the catch-up timeout (the lv-8c2f "boot convoy").
+const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
 
 /// PostgreSQL configuration.
@@ -995,6 +1002,10 @@ fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, Stri
     client_config.keepalives_idle(Duration::from_secs(PG_KEEPALIVE_IDLE_SECS));
     client_config.keepalives_interval(Duration::from_secs(PG_KEEPALIVE_INTERVAL_SECS));
     client_config.keepalives_retries(PG_KEEPALIVE_RETRIES);
+    // Reap a peer that died mid-write, which keepalives (idle-only) miss — see
+    // PG_TCP_USER_TIMEOUT_SECS. Applies to every role; on a live connection the
+    // data is acked normally so it never fires.
+    client_config.tcp_user_timeout(Duration::from_secs(PG_TCP_USER_TIMEOUT_SECS));
 
     client_config
         .connect(NoTls)
