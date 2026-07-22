@@ -179,8 +179,15 @@ fn canonical_in_values_partial<T: PartialOrd + PartialEq + Clone>(mut values: Ve
 // routing): there is no IdFilter variant that requires a table scan.
 // ─────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+// Wire (see `wire_serde` below): `Eq` is the bare value — identical to the
+// pre-6.0 `PartialX { field: value }` shape, so old payloads stay compatible
+// — and every other operator is a `$`-sigilled object. `$` can't collide with
+// a bare value: field/variant names are Rust identifiers, never `$`-prefixed.
+#[derive(Debug, Clone, PartialEq, Eq, TS)]
+// `bound` is required because `#[ts(type = …)]` on a generic drops the
+// auto-added `T: TS` bound but still emits it internally (ts-rs 11); it's a
+// no-op without the `ts-export` feature (myko's `TsNoop` claims the attr).
+#[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum IdFilter<T> {
     Eq(T),
     In(Vec<T>),
@@ -243,8 +250,11 @@ impl<T> From<Vec<T>> for IdFilter<T> {
 // NumericFilter — Eq / In / Range (inclusive bounds).
 // ─────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, TS)]
+#[ts(
+    type = "T | { \"$in\": Array<T> } | { \"$range\": { min?: T, max?: T } }",
+    bound = "T: ts_rs::TS"
+)]
 pub enum NumericFilter<T> {
     Eq(T),
     In(Vec<T>),
@@ -252,9 +262,7 @@ pub enum NumericFilter<T> {
     /// time is future work — for now it degenerates to "match everything,"
     /// same as an unset filter, since myko trusts callers not to write it).
     Range {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         min: Option<T>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         max: Option<T>,
     },
 }
@@ -338,8 +346,8 @@ impl_numeric_filterable!(
 // for strings without a locale-aware ordering myko doesn't want to own).
 // ─────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[ts(type = "string | { \"$in\": Array<string> } | { \"$contains\": string } | { \"$startsWith\": string }")]
 pub enum StringFilter {
     Eq(Arc<str>),
     In(Vec<Arc<str>>),
@@ -473,8 +481,8 @@ impl CanonicalFilter for bool {
 // set membership, no substring/range operations.
 // ─────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum EqFilter<T> {
     Eq(T),
     In(Vec<T>),
@@ -651,6 +659,163 @@ crate::register_ts_export!(
     EqFilter<Arc<str>>,
     Unfilterable
 );
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wire format. `Eq` serializes as the bare value — byte-identical to the
+// pre-6.0 `PartialX { field: value }` shape, so old wire payloads keep
+// deserializing (bare value == eq) even though the Rust API is a hard break.
+// Every richer operator is a single-key `$`-sigilled object (`{ "$in": … }`,
+// `{ "$range": … }`, …). The sigil can never collide with a bare value: a
+// bare value is either a scalar (different JSON type from an object) or a
+// Rust-derived object whose keys are identifiers — never `$`-prefixed.
+// Deserialization tries the sigilled operator first, then falls back to
+// bare==eq, via a self-describing-format untagged choice (myko's wire is
+// JSON and CBOR, both self-describing; this would not work over bincode).
+// ─────────────────────────────────────────────────────────────────────────
+mod wire_serde {
+    use super::*;
+    use serde::ser::SerializeMap;
+    use serde::{Deserializer, Serializer};
+
+    fn serialize_op<S: Serializer, T: Serialize + ?Sized>(
+        s: S,
+        key: &str,
+        value: &T,
+    ) -> Result<S::Ok, S::Error> {
+        let mut m = s.serialize_map(Some(1))?;
+        m.serialize_entry(key, value)?;
+        m.end()
+    }
+
+    // IdFilter / EqFilter share a wire: bare == eq, `{ "$in": [...] }`.
+    macro_rules! eq_in_wire {
+        ($filter:ident) => {
+            impl<T: Serialize> Serialize for $filter<T> {
+                fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                    match self {
+                        $filter::Eq(v) => v.serialize(s),
+                        $filter::In(vs) => serialize_op(s, "$in", vs),
+                    }
+                }
+            }
+            impl<'de, T: Deserialize<'de>> Deserialize<'de> for $filter<T> {
+                fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                    #[derive(Deserialize)]
+                    #[serde(bound(deserialize = "T: Deserialize<'de>"))]
+                    enum Op<T> {
+                        #[serde(rename = "$in")]
+                        In(Vec<T>),
+                    }
+                    #[derive(Deserialize)]
+                    #[serde(untagged, bound(deserialize = "T: Deserialize<'de>"))]
+                    enum Wire<T> {
+                        Op(Op<T>),
+                        Bare(T),
+                    }
+                    Ok(match Wire::deserialize(d)? {
+                        Wire::Op(Op::In(vs)) => $filter::In(vs),
+                        Wire::Bare(v) => $filter::Eq(v),
+                    })
+                }
+            }
+        };
+    }
+    eq_in_wire!(IdFilter);
+    eq_in_wire!(EqFilter);
+
+    impl Serialize for StringFilter {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self {
+                StringFilter::Eq(v) => v.serialize(s),
+                StringFilter::In(vs) => serialize_op(s, "$in", vs),
+                StringFilter::Contains(v) => serialize_op(s, "$contains", v),
+                StringFilter::StartsWith(v) => serialize_op(s, "$startsWith", v),
+            }
+        }
+    }
+    impl<'de> Deserialize<'de> for StringFilter {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            enum Op {
+                #[serde(rename = "$in")]
+                In(Vec<Arc<str>>),
+                #[serde(rename = "$contains")]
+                Contains(Arc<str>),
+                #[serde(rename = "$startsWith")]
+                StartsWith(Arc<str>),
+            }
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum Wire {
+                Op(Op),
+                Bare(Arc<str>),
+            }
+            Ok(match Wire::deserialize(d)? {
+                Wire::Op(Op::In(vs)) => StringFilter::In(vs),
+                Wire::Op(Op::Contains(v)) => StringFilter::Contains(v),
+                Wire::Op(Op::StartsWith(v)) => StringFilter::StartsWith(v),
+                Wire::Bare(v) => StringFilter::Eq(v),
+            })
+        }
+    }
+
+    impl<T: Serialize> Serialize for NumericFilter<T> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self {
+                NumericFilter::Eq(v) => v.serialize(s),
+                NumericFilter::In(vs) => serialize_op(s, "$in", vs),
+                NumericFilter::Range { min, max } => {
+                    struct Bounds<'a, T> {
+                        min: &'a Option<T>,
+                        max: &'a Option<T>,
+                    }
+                    impl<T: Serialize> Serialize for Bounds<'_, T> {
+                        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                            let len = self.min.is_some() as usize + self.max.is_some() as usize;
+                            let mut m = s.serialize_map(Some(len))?;
+                            if let Some(v) = self.min {
+                                m.serialize_entry("min", v)?;
+                            }
+                            if let Some(v) = self.max {
+                                m.serialize_entry("max", v)?;
+                            }
+                            m.end()
+                        }
+                    }
+                    serialize_op(s, "$range", &Bounds { min, max })
+                }
+            }
+        }
+    }
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for NumericFilter<T> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            #[derive(Deserialize)]
+            #[serde(bound(deserialize = "T: Deserialize<'de>"))]
+            enum Op<T> {
+                #[serde(rename = "$in")]
+                In(Vec<T>),
+                #[serde(rename = "$range")]
+                Range {
+                    #[serde(default)]
+                    min: Option<T>,
+                    #[serde(default)]
+                    max: Option<T>,
+                },
+            }
+            #[derive(Deserialize)]
+            #[serde(untagged, bound(deserialize = "T: Deserialize<'de>"))]
+            enum Wire<T> {
+                Op(Op<T>),
+                Bare(T),
+            }
+            Ok(match Wire::deserialize(d)? {
+                Wire::Op(Op::In(vs)) => NumericFilter::In(vs),
+                Wire::Op(Op::Range { min, max }) => NumericFilter::Range { min, max },
+                Wire::Bare(v) => NumericFilter::Eq(v),
+            })
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -832,14 +997,159 @@ mod tests {
     }
 
     #[test]
-    fn filter_serde_uses_explicit_tag() {
-        let filter = IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]);
-        let json = serde_json::to_value(&filter).unwrap();
-        assert_eq!(json["kind"], "in");
-        assert_eq!(json["value"], serde_json::json!(["a", "b"]));
+    fn eq_serializes_as_the_bare_value() {
+        // The whole point of the wire design: `Eq` IS the bare value, so the
+        // pre-6.0 `PartialX { field: value }` payload is still a valid query.
+        assert_eq!(
+            serde_json::to_value(IdFilter::Eq(Arc::<str>::from("abc"))).unwrap(),
+            serde_json::json!("abc")
+        );
+        assert_eq!(
+            serde_json::to_value(NumericFilter::Eq(42_i64)).unwrap(),
+            serde_json::json!(42)
+        );
+        assert_eq!(
+            serde_json::to_value(StringFilter::Eq(Arc::from("hi"))).unwrap(),
+            serde_json::json!("hi")
+        );
+    }
 
-        let round_tripped: IdFilter<Arc<str>> = serde_json::from_value(json).unwrap();
-        assert_eq!(round_tripped, filter);
+    #[test]
+    fn operators_serialize_as_sigilled_objects() {
+        assert_eq!(
+            serde_json::to_value(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]))
+                .unwrap(),
+            serde_json::json!({ "$in": ["a", "b"] })
+        );
+        assert_eq!(
+            serde_json::to_value(StringFilter::Contains(Arc::from("x"))).unwrap(),
+            serde_json::json!({ "$contains": "x" })
+        );
+        assert_eq!(
+            serde_json::to_value(StringFilter::StartsWith(Arc::from("p"))).unwrap(),
+            serde_json::json!({ "$startsWith": "p" })
+        );
+        assert_eq!(
+            serde_json::to_value(NumericFilter::Range {
+                min: Some(1_i64),
+                max: Some(9),
+            })
+            .unwrap(),
+            serde_json::json!({ "$range": { "min": 1, "max": 9 } })
+        );
+        // A half-open range omits the absent bound rather than emitting null.
+        assert_eq!(
+            serde_json::to_value(NumericFilter::Range {
+                min: Some(1_i64),
+                max: None,
+            })
+            .unwrap(),
+            serde_json::json!({ "$range": { "min": 1 } })
+        );
+    }
+
+    #[test]
+    fn old_bare_wire_deserializes_as_eq() {
+        // WIRE-COMPAT ACID TEST: a pre-6.0 payload (bare value per field)
+        // must deserialize to `Eq` under every active filter type.
+        let id: IdFilter<Arc<str>> = serde_json::from_value(serde_json::json!("abc")).unwrap();
+        assert_eq!(id, IdFilter::Eq(Arc::from("abc")));
+
+        let n: NumericFilter<i64> = serde_json::from_value(serde_json::json!(42)).unwrap();
+        assert_eq!(n, NumericFilter::Eq(42));
+
+        let s: StringFilter = serde_json::from_value(serde_json::json!("hi")).unwrap();
+        assert_eq!(s, StringFilter::Eq(Arc::from("hi")));
+
+        // And an EqFilter over an object-shaped value (the enum case): a bare
+        // object with no `$` key is Eq, never mistaken for an operator.
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        struct Enumish {
+            variant: String,
+        }
+        let e: EqFilter<Enumish> =
+            serde_json::from_value(serde_json::json!({ "variant": "connected" })).unwrap();
+        assert_eq!(
+            e,
+            EqFilter::Eq(Enumish {
+                variant: "connected".into()
+            })
+        );
+    }
+
+    #[test]
+    fn sigilled_wire_deserializes_as_operators() {
+        let id: IdFilter<Arc<str>> =
+            serde_json::from_value(serde_json::json!({ "$in": ["a", "b"] })).unwrap();
+        assert_eq!(id, IdFilter::In(vec![Arc::from("a"), Arc::from("b")]));
+
+        let s: StringFilter =
+            serde_json::from_value(serde_json::json!({ "$contains": "x" })).unwrap();
+        assert_eq!(s, StringFilter::Contains(Arc::from("x")));
+
+        let n: NumericFilter<i64> =
+            serde_json::from_value(serde_json::json!({ "$range": { "min": 1, "max": 9 } }))
+                .unwrap();
+        assert_eq!(n, NumericFilter::Range { min: Some(1), max: Some(9) });
+    }
+
+    #[test]
+    fn every_filter_round_trips_both_forms() {
+        fn rt<F>(f: F)
+        where
+            F: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+        {
+            let json = serde_json::to_value(&f).unwrap();
+            let back: F = serde_json::from_value(json).unwrap();
+            assert_eq!(f, back);
+        }
+        rt(IdFilter::Eq(Arc::<str>::from("a")));
+        rt(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]));
+        rt(StringFilter::Eq(Arc::from("a")));
+        rt(StringFilter::Contains(Arc::from("a")));
+        rt(StringFilter::StartsWith(Arc::from("a")));
+        rt(StringFilter::In(vec![Arc::from("a")]));
+        rt(NumericFilter::Eq(1_i64));
+        rt(NumericFilter::In(vec![1_i64, 2]));
+        rt(NumericFilter::Range { min: Some(1_i64), max: Some(9) });
+        rt(NumericFilter::Range { min: Some(1_i64), max: None });
+    }
+
+    #[test]
+    fn wire_round_trips_over_cbor_too() {
+        // The untagged deserialize needs a self-describing format; myko's
+        // wire is JSON AND CBOR (see wire/protocol.rs message_to_cbor), so
+        // prove both operator and bare forms survive a ciborium round trip.
+        fn rt_cbor<F>(f: F)
+        where
+            F: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+        {
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&f, &mut bytes).unwrap();
+            let back: F = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+            assert_eq!(f, back);
+        }
+        rt_cbor(IdFilter::Eq(Arc::<str>::from("a")));
+        rt_cbor(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]));
+        rt_cbor(StringFilter::Contains(Arc::from("x")));
+        rt_cbor(NumericFilter::Range { min: Some(1_i64), max: Some(9) });
+    }
+
+    #[test]
+    fn old_partial_query_payload_still_deserializes() {
+        // The end-to-end promise: a whole pre-6.0 `PartialClient`-shaped
+        // query — bare values per field — deserializes into the new
+        // `ClientQuery` with eq semantics on each supplied field, and
+        // omitted fields stay unconstrained (None).
+        use crate::entities::client::ClientQuery;
+        let q: ClientQuery = serde_json::from_value(serde_json::json!({
+            "address": "192.168.1.5:54320",
+        }))
+        .unwrap();
+        assert_eq!(q.address, Some(StringFilter::Eq(Arc::from("192.168.1.5:54320"))));
+        assert_eq!(q.server_id, None);
+        assert_eq!(q.windback, None);
+        assert_eq!(q.id, None);
     }
 
     #[test]
