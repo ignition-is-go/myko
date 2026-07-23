@@ -26,6 +26,13 @@ const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
 const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
+/// TCP_USER_TIMEOUT: tear down a connection whose sent data stays unacked for
+/// this long. Unlike keepalives — which only probe an *idle* socket — this
+/// fires on a peer that died mid-write, so a consumer killed mid-snapshot (OOM)
+/// has its Postgres backend reaped promptly instead of lingering in ClientWrite
+/// holding the events-table lock and stalling every subsequent boot's snapshot
+/// until the catch-up timeout (the lv-8c2f "boot convoy").
+const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
 
 /// PostgreSQL configuration.
@@ -653,6 +660,14 @@ fn run_consumer_loop(
         .query_one(&high_water_sql, &[])
         .map_err(|e| format_pg_error("query(high_water)", Some(&config.url), &e))?;
     let high_water: i64 = high_water_row.get(0);
+    // `latest` is the newest event per item; the outer `change_type = 'SET'`
+    // then drops items whose latest event is a DEL — i.e. deleted items, whose
+    // tombstone row would otherwise be fetched and applied only to no-op in
+    // apply_remote_event (~48% of rows on a long-lived table). The filter MUST
+    // be on the outer query, after DISTINCT ON has picked each item's latest
+    // row: filtering DEL inside the CTE would instead take a deleted item's
+    // latest *non-DEL* row and wrongly resurrect it. Mirrors the history-replay
+    // snapshot query above.
     let snapshot_sql = format!(
         "
         WITH latest AS (
@@ -665,25 +680,43 @@ fn run_consumer_loop(
         SELECT e.id, e.event::text
         FROM latest
         JOIN {table} e ON e.id = latest.id
+        WHERE latest.change_type = 'SET'
         ORDER BY e.id ASC
         "
     );
-    let snapshot_rows = reader
-        .query(&snapshot_sql, &[&high_water])
-        .map_err(|e| format_pg_error("query(snapshot latest events)", Some(&config.url), &e))?;
-    let snapshot_count = snapshot_rows.len();
-    for row in snapshot_rows {
-        let id: i64 = row.get(0);
-        let event_json: String = row.get(1);
-        match MEvent::from_str_trim(&event_json) {
-            Ok(event) => {
-                apply_remote_event(event, host_id, &handler_registry, &registry);
+    // Stream the snapshot with `query_raw` (server-side portal, fetched in
+    // batches) and apply each event as it arrives, rather than collecting the
+    // entire latest-per-item result into one `Vec<Row>` first — boot memory was
+    // proportional to (distinct live items) x (event JSON size), a multi-GiB
+    // spike on large tables. The RowIter borrows `reader` for the duration;
+    // apply_remote_event only touches the registries, never `reader`.
+    // Scoped so the RowIter's mutable borrow of `reader` is released before the
+    // tail catch-up loop below reuses (and reconnects) `reader`.
+    let snapshot_count: usize = {
+        let mut snapshot_rows = reader
+            .query_raw(
+                &snapshot_sql,
+                [&high_water as &(dyn postgres::types::ToSql + Sync)],
+            )
+            .map_err(|e| format_pg_error("query(snapshot latest events)", Some(&config.url), &e))?;
+        let mut count: usize = 0;
+        while let Some(row) = snapshot_rows.next().map_err(|e| {
+            format_pg_error("stream(snapshot latest events)", Some(&config.url), &e)
+        })? {
+            let id: i64 = row.get(0);
+            let event_json: String = row.get(1);
+            match MEvent::from_str_trim(&event_json) {
+                Ok(event) => {
+                    apply_remote_event(event, host_id, &handler_registry, &registry);
+                }
+                Err(err) => {
+                    error!("Invalid postgres snapshot row id={id}: {err}");
+                }
             }
-            Err(err) => {
-                error!("Invalid postgres snapshot row id={id}: {err}");
-            }
+            count += 1;
         }
-    }
+        count
+    };
     info!(
         "Postgres snapshot loaded latest state rows={} high_water={}",
         snapshot_count, high_water
@@ -969,6 +1002,10 @@ fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, Stri
     client_config.keepalives_idle(Duration::from_secs(PG_KEEPALIVE_IDLE_SECS));
     client_config.keepalives_interval(Duration::from_secs(PG_KEEPALIVE_INTERVAL_SECS));
     client_config.keepalives_retries(PG_KEEPALIVE_RETRIES);
+    // Reap a peer that died mid-write, which keepalives (idle-only) miss — see
+    // PG_TCP_USER_TIMEOUT_SECS. Applies to every role; on a live connection the
+    // data is acked normally so it never fires.
+    client_config.tcp_user_timeout(Duration::from_secs(PG_TCP_USER_TIMEOUT_SECS));
 
     client_config
         .connect(NoTls)
