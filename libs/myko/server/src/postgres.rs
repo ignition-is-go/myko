@@ -700,9 +700,10 @@ fn run_consumer_loop(
             )
             .map_err(|e| format_pg_error("query(snapshot latest events)", Some(&config.url), &e))?;
         let mut count: usize = 0;
-        while let Some(row) = snapshot_rows.next().map_err(|e| {
-            format_pg_error("stream(snapshot latest events)", Some(&config.url), &e)
-        })? {
+        while let Some(row) = snapshot_rows
+            .next()
+            .map_err(|e| format_pg_error("stream(snapshot latest events)", Some(&config.url), &e))?
+        {
             let id: i64 = row.get(0);
             let event_json: String = row.get(1);
             match MEvent::from_str_trim(&event_json) {
