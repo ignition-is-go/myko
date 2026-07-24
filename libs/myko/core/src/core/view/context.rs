@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::core::capability::{RegistryScoped, RequestScoped};
+use crate::core::capability::RequestScoped;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::{Querying, Reporting, ServerScoped, Viewing};
+use crate::core::capability::{Querying, RegistryScoped, Reporting, ServerScoped, Viewing};
 use crate::request::RequestContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::MykoServerContext;
