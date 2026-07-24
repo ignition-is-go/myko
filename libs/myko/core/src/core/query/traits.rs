@@ -8,11 +8,9 @@ use hyphae::MapQuery;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use super::{
-    super::item::{AnyItem, Eventable},
-    context::QueryContext,
-    request::QueryRequest,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use super::super::item::AnyItem;
+use super::{super::item::Eventable, context::QueryContext, request::QueryRequest};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::query::QueryBuildContext;
 #[cfg(not(target_arch = "wasm32"))]
@@ -116,14 +114,6 @@ impl<TQuery: QueryItemType> QueryTestCtx<TQuery> {
 pub struct QueryBuildCellCtx<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
     pub query_context: QueryBuildContext,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct QueryHandlerCtxAny {
-    pub item: Arc<dyn AnyItem>,
-    pub query: Arc<dyn AnyQuery>,
-    pub ctx: Arc<QueryContext>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

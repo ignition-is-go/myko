@@ -16,7 +16,7 @@ use std::{net::SocketAddr, sync::Arc};
 use myko::server::MykoServerCtx;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::{mcp, mcp::dispatch::ServerInfo, ws_handler::WsHandler};
+use crate::{mcp, mcp::dispatch::ServerInfo};
 
 /// Cap on the header section (request line + headers).
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -298,12 +298,6 @@ pub async fn shutdown_cleanly(mut stream: TcpStream) {
         }
     })
     .await;
-}
-
-// Wire WsHandler in scope so the path is documented at the module top.
-#[allow(dead_code)]
-fn _ws_handler_in_scope() -> WsHandler {
-    WsHandler
 }
 
 #[cfg(test)]

@@ -96,15 +96,3 @@ pub fn encode_command_message<C: CommandId + Serialize>(
         }
     }
 }
-
-/// Legacy wrap_command that takes tx separately.
-/// Prefer using `wrap_command_request` with `CommandRequest<C>` instead.
-#[deprecated(note = "Use wrap_command_request with CommandRequest instead")]
-pub fn wrap_command<C: CommandId + Serialize + Clone>(
-    tx: String,
-    command: &C,
-) -> Result<WrappedCommand, serde_json::Error> {
-    // Create a CommandRequest and delegate
-    let request = CommandRequest::with_tx(command.clone(), tx.into());
-    wrap_command_request(&request)
-}

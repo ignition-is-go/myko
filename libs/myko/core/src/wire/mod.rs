@@ -18,9 +18,6 @@ pub mod view;
 #[cfg(test)]
 mod cbor_roundtrip_tests;
 
-// Re-export deprecated function for backwards compat
-#[allow(deprecated)]
-pub use command::wrap_command;
 pub use command::{
     CommandError, CommandResponse, EncodedCommandMessage, WrappedCommand, encode_command_message,
     wrap_command_request,

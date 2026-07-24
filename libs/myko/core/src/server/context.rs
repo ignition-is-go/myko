@@ -15,8 +15,8 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MaterializeDefinite, Mutable,
-    Watchable, WeakCellMap,
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, MaterializeDefinite, Mutable, Watchable,
+    WeakCellMap,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     cache::CacheKey,
-    client::{ConnectionStatus, MykoClient},
+    client::MykoClient,
     common::{
         to_value::ToValue,
         with_id::{WithId, WithTypedId},
@@ -62,15 +62,6 @@ pub(crate) enum Origin {
     Local,
     /// A relationship cascade product — a consequence of another mutation here.
     Cascade,
-    /// An event replicated from a peer server: already durable and already
-    /// cascaded at its origin. Applied to the store + search index only — it must
-    /// not cascade (the origin already replicated its cascade products) and must
-    /// not produce (which would echo it back around the peer mesh).
-    ///
-    /// Reserved: nothing constructs this right now (peer-origin tracking has been
-    /// moved off the wire). The wiring is kept for when that mechanism returns.
-    #[allow(dead_code)]
-    Remote,
 }
 
 impl Origin {
@@ -82,7 +73,6 @@ impl Origin {
     ///   all removed at runtime (not just one level, and not deferred to the
     ///   boot-time orphan sweep). The owns_many array-fixup **SET** product must
     ///   not descend structurally.
-    /// - `Remote` never cascades (the origin already replicated its products).
     ///
     /// Transitive DEL cascade terminates without a depth counter or visited set:
     /// reduce runs before cascade, so each node is removed from the store before
@@ -93,18 +83,16 @@ impl Origin {
         match self {
             Origin::Local => true,
             Origin::Cascade => change == MEventType::DEL,
-            Origin::Remote => false,
         }
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
     ///
-    /// `Remote` events are already durable and already cascaded at their origin,
-    /// so re-producing them would echo them back around the peer mesh. Everything
-    /// else produces; per-type durability is the persister router's job
+    /// Both origins produce; per-type durability is the persister router's job
     /// (`BlackholePersister`), not a per-event flag.
     fn should_produce(self) -> bool {
-        self != Origin::Remote
+        let _ = self;
+        true
     }
 }
 
@@ -343,20 +331,9 @@ impl MykoServerCtx {
             .map(|entry| entry.value().clone())
     }
 
-    /// Get a peer's current connection status if the client is present.
-    pub fn peer_connection_status(&self, peer_id: &str) -> Option<ConnectionStatus> {
-        self.peer_client(peer_id)
-            .map(|client| client.get_connection_status_sync())
-    }
-
     /// Reactive tick that updates whenever peer client membership changes.
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.peer_clients_tick.clone().lock()
-    }
-
-    /// Number of currently tracked peer clients.
-    pub fn peer_client_count(&self) -> usize {
-        self.peer_clients.len()
     }
 
     /// Get the live persist health counters from the default persister.
@@ -367,11 +344,6 @@ impl MykoServerCtx {
     /// Number of entries in the query cache (includes dead weak refs).
     pub fn query_cache_len(&self) -> usize {
         self.query_cache.len()
-    }
-
-    /// Number of entries in the view cache (includes dead weak refs).
-    pub fn view_cache_len(&self) -> usize {
-        self.view_cache.len()
     }
 
     /// Number of entries in the report cache (includes dead weak refs).
@@ -390,14 +362,6 @@ impl MykoServerCtx {
     /// Count live (upgradeable) entries in the query cache.
     pub fn query_cache_live_count(&self) -> usize {
         self.query_cache
-            .iter()
-            .filter(|entry| entry.value().weak.upgrade().is_some())
-            .count()
-    }
-
-    /// Count live (upgradeable) entries in the view cache.
-    pub fn view_cache_live_count(&self) -> usize {
-        self.view_cache
             .iter()
             .filter(|entry| entry.value().weak.upgrade().is_some())
             .count()
@@ -1342,15 +1306,6 @@ impl MykoServerCtx {
         None
     }
 
-    /// Back-compat alias for type-erased view map.
-    pub fn view_map<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
-    where
-        V: ViewFactory + Clone + Send + Sync + 'static,
-        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
-    {
-        self.view_map_untyped(view, request)
-    }
-
     /// Build a typed reactive view cell map.
     pub fn view<V>(&self, view: V, request: Arc<RequestContext>) -> TypedViewCellMap<V::Item>
     where
@@ -1367,49 +1322,6 @@ impl MykoServerCtx {
             return typed;
         }
         unreachable!("view_map_untyped just populated the cache")
-    }
-
-    /// Get a one-shot typed entity snapshot by id.
-    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        let store = self.registry.get_or_create(T::entity_name_static());
-        let map_key = id.map_key();
-        let item = store.get_value(&map_key)?;
-        Some(downcast_any_item_arc::<T>(
-            &item,
-            "MykoServerCtx::entity_snapshot",
-        ))
-    }
-
-    /// Get one-shot typed entity snapshots for an item type.
-    pub fn entity_snapshots<T>(&self) -> Vec<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        let store = self.registry.get_or_create(T::entity_name_static());
-        store
-            .snapshot()
-            .into_iter()
-            .map(|(_, item)| downcast_any_item_arc::<T>(&item, "MykoServerCtx::entity_snapshots"))
-            .collect()
-    }
-
-    /// Get one-shot typed entity snapshots for the provided ids.
-    pub fn entity_snapshots_by_id<T>(
-        &self,
-        ids: impl IntoIterator<Item = <T as WithTypedId>::Id>,
-    ) -> Vec<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        ids.into_iter()
-            .filter_map(|id| self.entity_snapshot::<T>(&id))
-            .collect()
     }
 
     /// Run a one-shot (non-reactive) query.

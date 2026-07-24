@@ -457,13 +457,6 @@ pub trait PeerAccess: ServerScoped {
     fn peer_client(&self, peer_id: &str) -> Option<Arc<crate::client::MykoClient>> {
         self.__server_ctx().peer_client(peer_id)
     }
-    /// The connection status for a peer server id, if a peer client exists.
-    fn peer_connection_status(
-        &self,
-        peer_id: &str,
-    ) -> Option<crate::client::ConnectionStatus> {
-        self.__server_ctx().peer_connection_status(peer_id)
-    }
     /// A reactive tick that updates when peer-client membership changes.
     fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.__server_ctx().peer_clients_tick()
