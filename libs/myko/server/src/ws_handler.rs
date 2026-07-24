@@ -838,7 +838,7 @@ impl WsHandler {
                     host_id,
                 ));
 
-                if let Some(query_data) = handler_registry.get_query(query_id) {
+                if let Some(query_data) = handler_registry.query(query_id) {
                     let parsed = (query_data.parse)(wrapped.query.clone());
                     match parsed {
                         Ok(any_query) => {
@@ -943,7 +943,7 @@ impl WsHandler {
                     host_id,
                 ));
 
-                if let Some(view_data) = handler_registry.get_view(view_id) {
+                if let Some(view_data) = handler_registry.view(view_id) {
                     let parsed = (view_data.parse)(wrapped.view.clone());
                     match parsed {
                         Ok(any_view) => {
@@ -1091,7 +1091,7 @@ impl WsHandler {
                 );
 
                 // Look up the report registration
-                if let Some(report_data) = handler_registry.get_report(report_id) {
+                if let Some(report_data) = handler_registry.report(report_id) {
                     // Parse the report JSON to the concrete type
                     let parsed = (report_data.parse)(wrapped.report.clone());
                     match parsed {

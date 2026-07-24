@@ -349,7 +349,7 @@ fn in_process_execute_query(
 
     let query_data = ctx
         .handler_registry
-        .get_query(query_id)
+        .query(query_id)
         .ok_or_else(|| format!("Query handler not registered: {}", query_id))?;
 
     let mut query_json = arguments_object(arguments);
@@ -401,7 +401,7 @@ fn in_process_execute_view(
 
     let view_data = ctx
         .handler_registry
-        .get_view(view_id)
+        .view(view_id)
         .ok_or_else(|| format!("View handler not registered: {}", view_id))?;
 
     let mut view_json = arguments_object(arguments);
@@ -449,7 +449,7 @@ async fn in_process_execute_report(
 
     let report_data = ctx
         .handler_registry
-        .get_report(report_id)
+        .report(report_id)
         .ok_or_else(|| format!("Report handler not registered: {}", report_id))?;
 
     let mut report_json = arguments_object(arguments);

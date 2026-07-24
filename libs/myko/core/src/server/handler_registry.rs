@@ -165,12 +165,12 @@ impl HandlerRegistry {
     }
 
     /// Get an item parse function by entity type name.
-    pub fn get_item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
+    pub fn item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
         self.item_parsers.get(entity_type).copied()
     }
 
     /// Get the ingest buffering policy for an entity type.
-    pub fn get_item_buffer_policy(&self, entity_type: &str) -> IngestBufferPolicy {
+    pub fn item_buffer_policy(&self, entity_type: &str) -> IngestBufferPolicy {
         self.item_buffer_policies
             .get(entity_type)
             .copied()
@@ -178,17 +178,17 @@ impl HandlerRegistry {
     }
 
     /// Get query registration data by query id.
-    pub fn get_query(&self, query_id: &str) -> Option<&StoredQueryData> {
+    pub fn query(&self, query_id: &str) -> Option<&StoredQueryData> {
         self.query_data.get(query_id)
     }
 
     /// Get report registration data by report id.
-    pub fn get_report(&self, report_id: &str) -> Option<&StoredReportData> {
+    pub fn report(&self, report_id: &str) -> Option<&StoredReportData> {
         self.report_data.get(report_id)
     }
 
     /// Get view registration data by view id.
-    pub fn get_view(&self, view_id: &str) -> Option<&StoredViewData> {
+    pub fn view(&self, view_id: &str) -> Option<&StoredViewData> {
         self.view_data.get(view_id)
     }
 

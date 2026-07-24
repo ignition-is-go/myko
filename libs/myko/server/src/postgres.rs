@@ -215,7 +215,7 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
             let event_json: String = row.get(0);
             match MEvent::from_str_trim(&event_json) {
                 Ok(event) => {
-                    if let Some(parse) = handler_registry.get_item_parser(&event.item_type)
+                    if let Some(parse) = handler_registry.item_parser(&event.item_type)
                         && let Ok(item) = parse(event.item.clone())
                     {
                         let store = registry.get_or_create(&event.item_type);
@@ -851,7 +851,7 @@ fn apply_remote_event(
 
     match event.change_type {
         MEventType::SET => {
-            if let Some(parse) = handler_registry.get_item_parser(&event.item_type) {
+            if let Some(parse) = handler_registry.item_parser(&event.item_type) {
                 match parse(event.item.clone()) {
                     Ok(item) => {
                         let store = registry.get_or_create(item.entity_type());

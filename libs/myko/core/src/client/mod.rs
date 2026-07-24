@@ -746,13 +746,13 @@ impl MykoClient {
     }
 
     /// Get the current wire protocol.
-    pub fn get_protocol(&self) -> MykoProtocol {
+    pub fn protocol(&self) -> MykoProtocol {
         MykoProtocol::from(self.inner.protocol.load(Ordering::SeqCst))
     }
 
     /// Encode a message according to the current protocol.
     fn encode_message<T: Serialize>(&self, msg: &T) -> Result<WsFrame, String> {
-        match self.get_protocol() {
+        match self.protocol() {
             MykoProtocol::JSON => {
                 let json = serde_json::to_string(msg).map_err(|e| e.to_string())?;
                 Ok(WsFrame::Text(json))
@@ -790,7 +790,7 @@ impl MykoClient {
     }
 
     /// Get the current connection status synchronously.
-    pub fn get_connection_status_sync(&self) -> ConnectionStatus {
+    pub fn connection_status_sync(&self) -> ConnectionStatus {
         self.inner.socket.actual_connection_state().get()
     }
 
@@ -805,7 +805,7 @@ impl MykoClient {
     }
 
     /// Get the current ping synchronously.
-    pub fn get_ping_ms_sync(&self) -> Option<u64> {
+    pub fn ping_ms_sync(&self) -> Option<u64> {
         self.inner.ping_ms.get()
     }
 

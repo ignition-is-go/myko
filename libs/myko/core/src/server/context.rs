@@ -396,7 +396,7 @@ impl MykoServerContext {
         entity_type: &str,
         json: serde_json::Value,
     ) -> Option<Arc<dyn AnyItem>> {
-        let parse = self.handler_registry.get_item_parser(entity_type)?;
+        let parse = self.handler_registry.item_parser(entity_type)?;
         parse(json).ok()
     }
 
@@ -668,7 +668,7 @@ impl MykoServerContext {
         for event in events {
             match self
                 .handler_registry
-                .get_item_buffer_policy(&event.item_type)
+                .item_buffer_policy(&event.item_type)
             {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
