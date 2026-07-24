@@ -33,10 +33,10 @@ use crate::store::StoreRegistry;
 #[derive(Clone)]
 pub struct SagaContext {
     /// Server host ID
-    pub host_id: Uuid,
+    pub(crate) host_id: Uuid,
 
     /// Store registry for accessing entities
-    pub registry: Arc<StoreRegistry>,
+    pub(crate) registry: Arc<StoreRegistry>,
 }
 
 impl SagaContext {
@@ -45,13 +45,18 @@ impl SagaContext {
         Self { host_id, registry }
     }
 
-    /// Get the host ID for this server
+    /// Get the host ID for this server.
+    ///
+    /// Inherent (not [`RequestScoped`](crate::core::capability::RequestScoped)):
+    /// a saga has no originating [`RequestContext`], so `host_id` stays here.
     pub fn host_id(&self) -> Uuid {
         self.host_id
     }
+}
 
-    /// Get the store registry
-    pub fn registry(&self) -> &Arc<StoreRegistry> {
+impl crate::core::capability::sealed::Sealed for SagaContext {}
+impl crate::core::capability::RegistryScoped for SagaContext {
+    fn __registry(&self) -> &Arc<StoreRegistry> {
         &self.registry
     }
 }
