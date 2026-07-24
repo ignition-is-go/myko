@@ -14,7 +14,7 @@ use super::{
     request::QueryRequest,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::core::query::QueryCellContext;
+use crate::core::query::QueryBuildContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::query::cell::FilteredCellMap;
 use crate::{
@@ -115,7 +115,7 @@ impl<TQuery: QueryItemType> QueryTestCtx<TQuery> {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct QueryBuildCellCtx<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
-    pub query_context: QueryCellContext,
+    pub query_context: QueryBuildContext,
 }
 
 #[derive(Debug)]

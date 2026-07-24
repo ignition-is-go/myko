@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::{
     super::item::Eventable,
     cell::FilteredCellMap,
-    context::{QueryCellContext, QueryContext},
+    context::{QueryBuildContext, QueryContext},
     filter::{
         BelongsToRoute, CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, LiveFilterQuery,
         QueryRoute,
@@ -1194,7 +1194,7 @@ where
             req: request_ctx.clone(),
         });
         let query_cell_ctx =
-            QueryCellContext::new(request_ctx, query_ctx.clone(), registry.clone(), server_ctx);
+            QueryBuildContext::new(query_ctx.clone(), registry.clone(), server_ctx);
 
         if let Some(built) = Q::build_view(QueryBuildCellCtx {
             query: query.clone(),

@@ -549,7 +549,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                     #krate::query::QueryRoute::BelongsTo(route) => {
                         #krate::query::build_belongs_to_union_source_map(
                             ctx.query_context.registry(),
-                            ctx.query_context.request_ctx.host_id,
+                            ctx.query_context.query_context.req.host_id,
                             #name_str,
                             route.field_names,
                             route.extract_fk,

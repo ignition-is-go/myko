@@ -13,7 +13,7 @@ mod traits;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cell::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
-pub use context::QueryCellContext;
+pub use context::QueryBuildContext;
 pub use context::QueryContext;
 pub use filter::{
     BelongsToRoute, CanonicalFilter, CompoundFkExtractor, CompoundKey, EqFilter, Filter,
