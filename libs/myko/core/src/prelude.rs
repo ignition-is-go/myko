@@ -10,11 +10,13 @@ pub use hyphae::{
 pub use myko_macros::*;
 pub use uuid::Uuid;
 
-// Handler capability traits — bring the scoped methods (tx/registry, and on
-// native query_map/report/view/search/peer_*/replay_store, plus emit_* on
-// command handlers) into scope for handler bodies. See `core::capability`.
+// Handler capability traits — bring the scoped methods (tx/registry, emit_* +
+// execute_command on command handlers, and on native
+// query_map/report/view/search/peer_*/replay_store) into scope for handler
+// bodies. See `core::capability`.
 pub use crate::core::capability::{
-    Querying, RegistryScoped, Reporting, RequestScoped, Searching, ServerScoped,
+    CommandSending, EventPublishing, Querying, RegistryScoped, Reporting, RequestScoped, Searching,
+    ServerScoped,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::core::capability::{PeerAccess, Replaying, Viewing};

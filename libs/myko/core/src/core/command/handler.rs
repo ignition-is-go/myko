@@ -1,18 +1,15 @@
 use std::sync::Arc;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::{MykoServerCtx, Origin};
-// Only the native emit paths build events / convert items to values.
+use crate::server::MykoServerCtx;
 use crate::{
-    command::CommandError, entities::client::ClientId, event::EventOptions, item::Eventable,
-    query::QueryParams, request::RequestContext, wire::MEvent,
+    command::CommandError, entities::client::ClientId, query::QueryParams,
+    request::RequestContext,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{common::to_value::ToValue, wire::MEventType};
 
 /// Context provided to command handlers for accessing dependencies.
 ///
@@ -76,272 +73,6 @@ impl CommandContext {
         &self.req.created_at
     }
 
-    /// Emit a SET event for an item.
-    pub fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx.set(&*item).map_err(|e| CommandError {
-                tx: self.req.tx.to_string(),
-                command_id: self.command_id.to_string(),
-                message: e.to_string(),
-            })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = item;
-            unreachable!();
-        }
-    }
-
-    /// Emit a SET event for an item with custom options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_set`](Self::emit_set).
-    #[deprecated(note = "EventOptions is internal plumbing; use `emit_set` instead")]
-    pub fn emit_set_with_options<T>(
-        &self,
-        item: impl std::ops::Deref<Target = T>,
-        options: EventOptions,
-    ) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .set_with_origin(&*item, Origin::from_options(&options))
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (item, options);
-            unreachable!();
-        }
-    }
-
-    /// Emit a batch of SET events for items.
-    ///
-    /// This is more efficient than repeated `emit_set` calls because the server can
-    /// apply the events in one bulk pass.
-    pub fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
-        &self,
-        items: &[T],
-    ) -> Result<(), CommandError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            let source_id: Option<std::sync::Arc<str>> =
-                Some(std::sync::Arc::from(self.req.host_id.to_string()));
-            let created_at: std::sync::Arc<str> = std::sync::Arc::from(self.req.created_at.as_str());
-            let mut events = Vec::with_capacity(items.len());
-            for item in items {
-                let item_json = serde_json::to_value(item).map_err(|err| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: format!("Failed to serialize item for batch set: {}", err),
-                })?;
-                events.push(MEvent {
-                    item: item_json,
-                    change_type: MEventType::SET,
-                    item_type: crate::wire::intern_entity_type(item.entity_type()),
-                    created_at: created_at.clone(),
-                    tx: self.req.tx.clone(),
-                    source_id: source_id.clone(),
-                });
-            }
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!();
-        }
-    }
-
-    /// Emit a mixed batch of SET events for type-erased items.
-    ///
-    /// This is useful when a command needs to publish multiple entity types
-    /// together in one server batch.
-    pub fn emit_set_any_batch<I>(&self, items: I) -> Result<(), CommandError>
-    where
-        I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let items: Vec<_> = items.into_iter().collect();
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            let source_id: Option<std::sync::Arc<str>> =
-                Some(std::sync::Arc::from(self.req.host_id.to_string()));
-            let created_at: std::sync::Arc<str> = std::sync::Arc::from(self.req.created_at.as_str());
-            let mut events = Vec::with_capacity(items.len());
-            for item in items {
-                events.push(MEvent {
-                    item: item.to_value(),
-                    change_type: MEventType::SET,
-                    item_type: crate::wire::intern_entity_type(item.entity_type()),
-                    created_at: created_at.clone(),
-                    tx: self.req.tx.clone(),
-                    source_id: source_id.clone(),
-                });
-            }
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!();
-        }
-    }
-
-    /// Emit a DEL event for an item.
-    pub fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx.del(&*item).map_err(|e| CommandError {
-                tx: self.req.tx.to_string(),
-                command_id: self.command_id.to_string(),
-                message: e.to_string(),
-            })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = item;
-            unreachable!();
-        }
-    }
-
-    /// Emit a batch of DEL events for items.
-    ///
-    /// This is more efficient than repeated `emit_del` calls because the server can
-    /// apply the events in one bulk pass.
-    pub fn emit_del_batch<'a, T, I>(&self, items: I) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-        I: IntoIterator<Item = &'a T>,
-        T: 'a,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let items: Vec<&T> = items.into_iter().collect();
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            let source_id: Option<std::sync::Arc<str>> =
-                Some(std::sync::Arc::from(self.req.host_id.to_string()));
-            let created_at: std::sync::Arc<str> = std::sync::Arc::from(self.req.created_at.as_str());
-            let mut events = Vec::with_capacity(items.len());
-            for item in items {
-                let item_json = serde_json::to_value(item).map_err(|err| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: format!("Failed to serialize item for batch del: {}", err),
-                })?;
-                events.push(MEvent {
-                    item: item_json,
-                    change_type: MEventType::DEL,
-                    item_type: crate::wire::intern_entity_type(item.entity_type()),
-                    created_at: created_at.clone(),
-                    tx: self.req.tx.clone(),
-                    source_id: source_id.clone(),
-                });
-            }
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!();
-        }
-    }
-
-    /// Emit a DEL event for an item with custom options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_del`](Self::emit_del).
-    #[deprecated(note = "EventOptions is internal plumbing; use `emit_del` instead")]
-    pub fn emit_del_with_options<T>(
-        &self,
-        item: impl std::ops::Deref<Target = T>,
-        options: EventOptions,
-    ) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .del_with_origin(&*item, Origin::from_options(&options))
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (item, options);
-            unreachable!();
-        }
-    }
-
-    /// Emit a batch of pre-built MEvents (SET or DEL).
-    ///
-    /// This is useful for type-erased imports where the caller already has
-    /// the raw JSON and entity type strings.
-    pub fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = events;
-            unreachable!();
-        }
-    }
-
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
@@ -388,24 +119,6 @@ impl CommandContext {
         }
     }
 
-    /// Execute another command within this context.
-    ///
-    /// This allows command handlers to compose by calling other commands.
-    /// The nested command shares the same transaction context.
-    /// The command is consumed by execution, but the context is borrowed.
-    pub fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
-        // Typed by command id (bounded cardinality — number of command
-        // types, never per-invocation) so a span-based profiler shows which
-        // commands are firing hot, e.g. an engine dispatching a command per
-        // event during playback churn.
-        let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
-        // "internal": composed in-process by another handler/saga, not a
-        // fresh wire arrival — see `dispatch_metrics::record_command`.
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::server::dispatch_metrics::record_command(C::command_id_static(), "internal");
-        cmd.execute(self.clone())
-    }
-
     /// Execute a report and return the current value.
     ///
     /// This allows command handlers to query reports for decision making.
@@ -431,6 +144,36 @@ impl CommandContext {
             let _ = report;
             unreachable!();
         }
+    }
+}
+
+// Capability impls. The command context is the only one that carries
+// `EventPublishing` (emit typed SET/DEL events) and `CommandSending` (dispatch
+// nested commands) — which is exactly why a report/view/query/saga handler
+// cannot emit or dispatch: they don't implement these traits. The bodies live
+// in `core::capability`; these impls just wire the accessors.
+impl crate::core::capability::sealed::Sealed for CommandContext {}
+impl crate::core::capability::RequestScoped for CommandContext {
+    fn __request(&self) -> &Arc<RequestContext> {
+        &self.req
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::core::capability::ServerScoped for CommandContext {
+    fn __server_ctx(&self) -> &Arc<MykoServerCtx> {
+        &self.server_ctx
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl crate::core::capability::ServerScoped for CommandContext {}
+impl crate::core::capability::EventPublishing for CommandContext {
+    fn __command_id(&self) -> &Arc<str> {
+        &self.command_id
+    }
+}
+impl crate::core::capability::CommandSending for CommandContext {
+    fn __command_ctx(&self) -> CommandContext {
+        self.clone()
     }
 }
 

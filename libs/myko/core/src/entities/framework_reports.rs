@@ -4,6 +4,7 @@
 //! all entity types rather than specific domain entities.
 
 use std::sync::Arc;
+use crate::core::capability::EventPublishing;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::capability::{PeerAccess, Replaying};
 #[cfg(not(target_arch = "wasm32"))]

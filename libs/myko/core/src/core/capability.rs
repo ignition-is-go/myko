@@ -8,9 +8,10 @@
 //! capabilities its handler kind is allowed by implementing those traits
 //! (the impls are empty — the bodies are the trait defaults), and the scope
 //! is then a compile-time property: a `ReportContext` that does not
-//! `impl Emitting` simply has no `emit_set`/`emit_del`/`send_command` in
-//! scope, so a report cannot mutate state — that's an `E0599`, not a runtime
-//! check or a review-time convention.
+//! `impl EventPublishing` simply has no `emit_set`/`emit_del` in scope, so a
+//! report cannot mutate state — that's an `E0599`, not a runtime check or a
+//! review-time convention. (Dispatching nested commands is a second,
+//! independent capability, `CommandSending`.)
 //!
 //! The accessor traits are sealed via a crate-private supertrait, so nothing
 //! downstream can implement them, forge a capability, or reach the raw
@@ -94,11 +95,16 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     cache::CacheKey,
+    command::{CommandContext, CommandError, CommandHandler},
     common::with_id::{WithId, WithTypedId},
     core::item::Eventable,
+    event::EventOptions,
     query::{LiveFilterQuery, QueryParams},
     report::{ReportHandler, ReportId},
+    wire::MEvent,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::server::Origin;
 
 /// Subscribe to reactive query dependencies.
 pub trait Querying: ServerScoped {
@@ -257,6 +263,215 @@ pub trait Reporting: ServerScoped {
             let _ = report;
             unreachable!("report is not available on wasm32")
         }
+    }
+}
+
+/// Emit typed events — the write capability. Every method emits a SET/DEL of a
+/// typed entity, applied immediately: command emits never route through the
+/// WS-ingest time-window buffer (that buffer is for wire ingest only). A
+/// report/view/query handler does not `impl EventPublishing`, so it has no
+/// `emit_*` in scope and physically cannot mutate state — an `E0599`, not a
+/// convention.
+pub trait EventPublishing: ServerScoped {
+    #[doc(hidden)]
+    fn __command_id(&self) -> &Arc<str>;
+
+    #[doc(hidden)]
+    fn __emit_err(&self, message: impl std::fmt::Display) -> CommandError {
+        CommandError {
+            tx: self.__request().tx.to_string(),
+            command_id: self.__command_id().to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    /// Emit a SET event for an item.
+    fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.__server_ctx()
+                .set(&*item)
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = item;
+            unreachable!("emit_set is not available on wasm32")
+        }
+    }
+
+    /// Emit a SET event for an item with custom options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_set`](Self::emit_set).
+    #[deprecated(note = "EventOptions is internal plumbing; use `emit_set` instead")]
+    fn emit_set_with_options<T>(
+        &self,
+        item: impl std::ops::Deref<Target = T>,
+        options: EventOptions,
+    ) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.__server_ctx()
+                .set_with_origin(&*item, Origin::from_options(&options))
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (item, options);
+            unreachable!("emit_set_with_options is not available on wasm32")
+        }
+    }
+
+    /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
+    fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
+        &self,
+        items: &[T],
+    ) -> Result<(), CommandError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let anys = items
+                .iter()
+                .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
+            self.__server_ctx()
+                .set_batch_any(anys)
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = items;
+            unreachable!("emit_set_batch is not available on wasm32")
+        }
+    }
+
+    /// Emit a mixed batch of type-erased SET events (applied immediately).
+    fn emit_set_any_batch<I>(&self, items: I) -> Result<(), CommandError>
+    where
+        I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.__server_ctx()
+                .set_batch_any(items)
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = items;
+            unreachable!("emit_set_any_batch is not available on wasm32")
+        }
+    }
+
+    /// Emit a DEL event for an item.
+    fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.__server_ctx()
+                .del(&*item)
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = item;
+            unreachable!("emit_del is not available on wasm32")
+        }
+    }
+
+    /// Emit a batch of typed DEL events (applied immediately, in one bulk pass).
+    fn emit_del_batch<'a, T, I>(&self, items: I) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+        I: IntoIterator<Item = &'a T>,
+        T: 'a,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let anys = items
+                .into_iter()
+                .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
+            self.__server_ctx()
+                .del_batch_any(anys)
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = items;
+            unreachable!("emit_del_batch is not available on wasm32")
+        }
+    }
+
+    /// Emit a DEL event for an item with custom options.
+    ///
+    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_del`](Self::emit_del).
+    #[deprecated(note = "EventOptions is internal plumbing; use `emit_del` instead")]
+    fn emit_del_with_options<T>(
+        &self,
+        item: impl std::ops::Deref<Target = T>,
+        options: EventOptions,
+    ) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.__server_ctx()
+                .del_with_origin(&*item, Origin::from_options(&options))
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (item, options);
+            unreachable!("emit_del_with_options is not available on wasm32")
+        }
+    }
+
+    /// Apply a batch of pre-built raw events (SET or DEL), applied immediately.
+    ///
+    /// The one raw-`MEvent` path — for type-erased imports where the caller
+    /// already holds erased JSON + entity-type strings rather than typed
+    /// entities. Returns the number of events applied.
+    fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.__server_ctx()
+                .apply_events_immediate(events)
+                .map_err(|e| self.__emit_err(e))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = events;
+            unreachable!("emit_event_batch is not available on wasm32")
+        }
+    }
+}
+
+/// Dispatch nested commands — compose handlers by executing another command in
+/// the same transaction. Independent of [`EventPublishing`]: a context may be
+/// allowed to emit events without being allowed to send commands, or vice
+/// versa, since each is its own trait.
+pub trait CommandSending: ServerScoped {
+    #[doc(hidden)]
+    fn __command_ctx(&self) -> CommandContext;
+
+    /// Execute another command within this context. The nested command shares
+    /// the same transaction and is consumed by execution.
+    fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
+        // Bounded-cardinality span (per command id, never per-invocation) so a
+        // profiler shows which commands fire hot.
+        let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
+        // "internal": composed in-process by another handler/saga, not a fresh
+        // wire arrival — see `dispatch_metrics::record_command`.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::server::dispatch_metrics::record_command(C::command_id_static(), "internal");
+        cmd.execute(self.__command_ctx())
     }
 }
 

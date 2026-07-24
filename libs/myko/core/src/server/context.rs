@@ -798,6 +798,39 @@ impl MykoServerCtx {
     ///
     /// This reduces overhead versus calling `set_dyn`/`del_dyn` for each event individually.
     /// Returns the number of successfully parsed/applied events.
+    /// Emit a batch of typed SET events, applied immediately.
+    ///
+    /// Reduces + runs the cascade/produce tail via the shared typed path
+    /// ([`emit_grouped`](Self::emit_grouped)). Unlike
+    /// [`apply_event_batch`](Self::apply_event_batch), this never routes through
+    /// the WS-ingest time-window buffer — that buffer is for wire ingest only.
+    /// Command emit batches land here so everything a command emits is a typed,
+    /// immediately-applied event.
+    pub fn set_batch_any(
+        &self,
+        items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
+        self.emit_grouped(&items, MEventType::SET, Origin::Local)
+    }
+
+    /// Emit a batch of typed DEL events, applied immediately. DEL counterpart of
+    /// [`set_batch_any`](Self::set_batch_any).
+    pub fn del_batch_any(
+        &self,
+        items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
+        self.emit_grouped(&items, MEventType::DEL, Origin::Local)
+    }
+
+    /// Apply pre-built raw events immediately (type-erased import path),
+    /// bypassing the WS-ingest time-window buffer: each event is parsed to its
+    /// typed item, then reduced + cascaded. Returns the number applied.
+    pub fn apply_events_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_event_batch_immediate(events)
+    }
+
     pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
