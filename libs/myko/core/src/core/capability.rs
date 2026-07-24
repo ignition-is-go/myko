@@ -163,11 +163,42 @@ pub trait Querying: ServerScoped {
     #[cfg(not(target_arch = "wasm32"))]
     fn query_map_untyped<Q>(&self, query: Q) -> crate::query::FilteredCellMap
     where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug,
+        Q: crate::query::QueryFactory
+            + crate::query::QueryHandler
+            + QueryParams
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         self.__server_ctx()
             .query_map_untyped(query, self.__request().clone())
+    }
+
+    /// Subscribe to a query and get its incremental `MapDiff` stream.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn query_diff<Q>(
+        &self,
+        query: Q,
+    ) -> Cell<hyphae::MapDiff<Arc<str>, Q::Item>, CellImmutable>
+    where
+        Q: crate::query::QueryFactory
+            + crate::query::QueryHandler
+            + QueryParams
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        use hyphae::{MapExt, MaterializeDefinite};
+        self.query_map_untyped(query)
+            .diffs()
+            .map(|diff| {
+                crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff")
+            })
+            .materialize()
     }
 
     /// Reactive filter parameters: a live `Cell` filter instead of a value.
@@ -244,6 +275,16 @@ pub trait Viewing: ServerScoped {
         V::Item: DeserializeOwned + Clone + std::fmt::Debug,
     {
         self.__server_ctx().view(view, self.__request().clone())
+    }
+
+    /// Subscribe to a view and get an untyped (erased) reactive map.
+    fn view_map_untyped<V>(&self, view: V) -> crate::core::view::FilteredViewCellMap
+    where
+        V: crate::core::view::ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        self.__server_ctx()
+            .view_map_untyped(view, self.__request().clone())
     }
 }
 

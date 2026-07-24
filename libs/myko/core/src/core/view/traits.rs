@@ -4,7 +4,7 @@ use hyphae::MapQuery;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::context::ViewCellContext;
+use super::context::ViewBuildContext;
 use crate::{cache::CacheKey, common::with_transaction::WithTransaction, wire::WrappedView};
 
 pub trait ViewId {
@@ -23,7 +23,7 @@ pub trait ViewItemType {
 
 pub struct ViewBuildCellCtx<TView: ViewItemType> {
     pub view: Arc<TView>,
-    pub view_context: ViewCellContext,
+    pub view_context: ViewBuildContext,
 }
 
 /// Build the reactive CellMap for a view.

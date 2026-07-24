@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     cell::{FilteredViewCellMap, erase_typed_view_map},
-    context::{ViewCellContext, ViewContext},
+    context::{ViewBuildContext, ViewContext},
     request::ViewRequest,
     traits::{
         AnyView, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
@@ -111,8 +111,7 @@ where
             registry.clone(),
             server_ctx.clone(),
         ));
-        let view_cell_ctx =
-            ViewCellContext::new(request_ctx, view_ctx, registry.clone(), server_ctx);
+        let view_cell_ctx = ViewBuildContext::new(view_ctx);
 
         let built = V::build_cell(ViewBuildCellCtx {
             view: view.clone(),

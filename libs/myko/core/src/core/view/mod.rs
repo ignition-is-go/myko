@@ -10,7 +10,7 @@ mod request;
 mod traits;
 
 pub use cell::{FilteredViewCellMap, TypedViewCellMap};
-pub use context::{ViewCellContext, ViewContext};
+pub use context::{ViewBuildContext, ViewContext};
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::{ViewCellFactory, ViewFactory, ViewParseFn, ViewRegistration};
 pub use request::ViewRequest;
