@@ -60,7 +60,7 @@ pub use crate::{
         WrappedCommand, WrappedItem, WrappedQuery, WrappedReport,
     },
 };
-// Server-only re-exports (tokio-free types only; CellServer lives in myko-server)
+// Server-only re-exports (tokio-free types only; MykoServer lives in myko-server)
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{
     query::{QueryCellContext, QueryFactory, QueryParseFn, QueryRegistration},
@@ -68,6 +68,6 @@ pub use crate::{
     search::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
     },
-    server::CellServerCtx,
+    server::MykoServerCtx,
     view::{ViewFactory, ViewRegistration},
 };

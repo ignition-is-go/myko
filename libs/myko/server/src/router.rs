@@ -13,7 +13,7 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use myko::server::CellServerCtx;
+use myko::server::MykoServerCtx;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{mcp, mcp::dispatch::ServerInfo, ws_handler::WsHandler};
@@ -145,7 +145,7 @@ fn find_header_terminator(buf: &[u8]) -> Option<usize> {
 pub async fn route_connection(
     mut stream: TcpStream,
     addr: SocketAddr,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerCtx>,
     server_info: Arc<ServerInfo>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
@@ -214,7 +214,7 @@ enum WsTarget {
 async fn handle_ws_upgrade(
     stream: TcpStream,
     addr: SocketAddr,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerCtx>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
     target: WsTarget,

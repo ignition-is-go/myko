@@ -15,14 +15,14 @@ use myko::{
         server::ServerId,
     },
     query::IdFilter,
-    server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
 use uuid::Uuid;
 
-fn make_ctx() -> CellServerCtx {
-    CellServerCtx::new(
+fn make_ctx() -> MykoServerCtx {
+    MykoServerCtx::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
@@ -35,7 +35,7 @@ fn make_ctx() -> CellServerCtx {
     )
 }
 
-fn insert_client(ctx: &CellServerCtx, id: &str, server_id: &str) {
+fn insert_client(ctx: &MykoServerCtx, id: &str, server_id: &str) {
     let client = Client {
         id: id.into(),
         server_id: ServerId::from(Arc::<str>::from(server_id)),
@@ -46,7 +46,7 @@ fn insert_client(ctx: &CellServerCtx, id: &str, server_id: &str) {
     ctx.apply_event_batch(vec![event]).unwrap();
 }
 
-fn request(ctx: &CellServerCtx, tx: &str) -> Arc<myko::request::RequestContext> {
+fn request(ctx: &MykoServerCtx, tx: &str) -> Arc<myko::request::RequestContext> {
     Arc::new(myko::request::RequestContext::from_client(
         Arc::from(tx),
         Arc::from("client-1"),

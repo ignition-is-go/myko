@@ -11,7 +11,7 @@ use crate::core::view::{TypedViewCellMap, ViewFactory};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::CellServerCtx;
+use crate::server::MykoServerCtx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::PersistHealth;
 use crate::{
@@ -40,7 +40,7 @@ pub struct ReportContext {
     /// Store registry for reactive entity lookups (available on all targets).
     pub(crate) registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<CellServerCtx>,
+    server_ctx: Arc<MykoServerCtx>,
 }
 
 impl ReportContext {
@@ -49,7 +49,7 @@ impl ReportContext {
     // ─────────────────────────────────────────────────────────────────────────
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(req: Arc<RequestContext>, server_ctx: Arc<CellServerCtx>) -> Self {
+    pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerCtx>) -> Self {
         let registry = server_ctx.registry.clone();
         Self {
             req,
@@ -185,7 +185,7 @@ impl ReportContext {
     /// Reactive filter parameters: `filter_cell` replaces a value-based
     /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
     /// cells no longer needs a `switch_map` wrapper — see
-    /// `CellServerCtx::query_live` for the mechanics (incremental
+    /// `MykoServerCtx::query_live` for the mechanics (incremental
     /// bucket-diffing on indexed field changes, scoped rescan on
     /// non-indexed changes, never a graph teardown).
     pub fn query_live<F>(
@@ -236,7 +236,7 @@ impl ReportContext {
     /// Returns a cell that updates whenever the sub-report output changes.
     /// This allows reports to compose other reports.
     ///
-    /// Forwards to `CellServerCtx::report()`, which memoizes the compute
+    /// Forwards to `MykoServerCtx::report()`, which memoizes the compute
     /// result by cache key so concurrent requests share one computation.
     pub fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
     where

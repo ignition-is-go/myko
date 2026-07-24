@@ -1,7 +1,7 @@
 //! Server-side types for the cell-based Myko server.
 //!
 //! This module contains the tokio-free server types:
-//! - `CellServerCtx` — server context for queries, reports, and event publishing
+//! - `MykoServerCtx` — server context for queries, reports, and event publishing
 //! - `HandlerRegistry` — registry of item/query/report handlers from inventory
 //! - `ClientRegistry` — global WebSocket client writer registry
 //! - `ClientSession` — per-connection subscription management
@@ -26,7 +26,7 @@ pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
-pub use context::CellServerCtx;
+pub use context::MykoServerCtx;
 pub(crate) use context::Origin;
 pub use handler_registry::HandlerRegistry;
 pub use history_replay::HistoryReplayProvider;

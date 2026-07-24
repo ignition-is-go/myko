@@ -294,11 +294,11 @@ impl Persister for PostgresProducerHandle {
 }
 
 /// PostgreSQL producer — background thread with fail-fast error propagation.
-pub struct CellPostgresProducer {
+pub struct PostgresProducer {
     handle: PostgresProducerHandle,
 }
 
-impl CellPostgresProducer {
+impl PostgresProducer {
     /// Create a new PostgreSQL producer.
     pub fn new(config: &PostgresConfig, host_id: Uuid) -> Result<Self, String> {
         validate_ident(&config.table)?;
@@ -591,12 +591,12 @@ impl CatchUpStatus {
 }
 
 /// PostgreSQL consumer that replays + tails events.
-pub struct CellPostgresConsumer {
+pub struct PostgresConsumer {
     catch_up_status: Arc<CatchUpStatus>,
     _handle: std::thread::JoinHandle<()>,
 }
 
-impl CellPostgresConsumer {
+impl PostgresConsumer {
     /// Start a PostgreSQL event consumer thread.
     pub fn start(
         config: &PostgresConfig,
@@ -654,7 +654,7 @@ fn run_consumer_loop(
     let mut listener = connect_listener_client(config)?;
 
     info!(
-        "CellPostgresConsumer started (table={}, channel={})",
+        "PostgresConsumer started (table={}, channel={})",
         config.table, config.channel
     );
 

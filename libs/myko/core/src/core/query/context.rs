@@ -13,7 +13,7 @@ use super::{
 use crate::core::report::{AnyReport, ReportFactory, ReportOutputType, ReportRequest};
 use crate::request::RequestContext;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::CellServerCtx;
+use crate::server::MykoServerCtx;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::store::StoreRegistry;
 
@@ -23,7 +23,7 @@ use crate::store::StoreRegistry;
 /// - Server identity (`host_id`)
 /// - Entity stores (`registry`)
 ///
-/// For more capabilities (publishing, relationships), use `CellServerCtx`.
+/// For more capabilities (publishing, relationships), use `MykoServerCtx`.
 #[derive(Clone, Debug)]
 pub struct QueryContext {
     pub req: Arc<RequestContext>,
@@ -39,7 +39,7 @@ pub struct QueryCellContext {
     pub request_ctx: Arc<RequestContext>,
     pub query_context: Arc<QueryContext>,
     registry: Arc<StoreRegistry>,
-    server_ctx: Option<Arc<CellServerCtx>>,
+    server_ctx: Option<Arc<MykoServerCtx>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -48,7 +48,7 @@ impl QueryCellContext {
         request_ctx: Arc<RequestContext>,
         query_context: Arc<QueryContext>,
         registry: Arc<StoreRegistry>,
-        server_ctx: Option<Arc<CellServerCtx>>,
+        server_ctx: Option<Arc<MykoServerCtx>>,
     ) -> Self {
         Self {
             request_ctx,
@@ -60,7 +60,7 @@ impl QueryCellContext {
 
     /// Build a reactive CellMap for another query using the same request context.
     ///
-    /// Delegates to `CellServerCtx::query_map_untyped`, which is the canonical
+    /// Delegates to `MykoServerCtx::query_map_untyped`, which is the canonical
     /// cached path. A previous local `subquery_cache` was removed so that
     /// dedupe lives in exactly one place (the server context).
     pub fn query<Q>(&self, query: Q) -> Result<FilteredCellMap, String>
@@ -79,7 +79,7 @@ impl QueryCellContext {
             return Ok(server_ctx.query_map_untyped(query, self.request_ctx.clone()));
         }
 
-        // Fallback for test/wasm contexts that don't carry a CellServerCtx.
+        // Fallback for test/wasm contexts that don't carry a MykoServerCtx.
         // Builds the cell directly via the type's cell factory.
         let wrapped = QueryRequest::with_tx(query, self.request_ctx.tx.clone());
         let any_query: Arc<dyn AnyQuery> = Arc::new(wrapped);

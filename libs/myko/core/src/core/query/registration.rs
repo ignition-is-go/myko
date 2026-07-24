@@ -28,7 +28,7 @@ use super::{
 };
 use crate::{
     common::with_id::WithId, core::item::downcast_any_item_arc, request::RequestContext,
-    server::CellServerCtx, store::StoreRegistry,
+    server::MykoServerCtx, store::StoreRegistry,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ pub type QueryCellFactory = fn(
     Arc<dyn AnyQuery>,
     Arc<StoreRegistry>,
     Arc<RequestContext>,
-    Option<Arc<CellServerCtx>>,
+    Option<Arc<MykoServerCtx>>,
 ) -> Result<FilteredCellMap, String>;
 
 type AnyItemArc = Arc<dyn crate::core::item::AnyItem>;
@@ -276,7 +276,7 @@ impl BelongsToSourceIndex {
     /// dead and is never looked up again would otherwise sit in
     /// `self.buckets` forever (just a `Weak` + a small `Vec<Arc<str>>` key,
     /// far smaller than the leak this replaces, but still unbounded over
-    /// time). Called from `CellServerCtx::sweep_dead_cache_entries` via
+    /// time). Called from `MykoServerCtx::sweep_dead_cache_entries` via
     /// [`sweep_all_belongs_to_source_indexes`].
     fn sweep_dead_buckets(&self) {
         self.buckets.retain(|_, weak| weak.upgrade().is_some());
@@ -1045,7 +1045,7 @@ fn reconcile_live_query<F: LiveFilterQuery>(
 /// relation's source index. `route_to_live_bucket` reaps dead entries lazily
 /// on next access, but a foreign id that goes dead and is never looked up
 /// again would otherwise linger; called from
-/// `CellServerCtx::sweep_dead_cache_entries`.
+/// `MykoServerCtx::sweep_dead_cache_entries`.
 pub fn sweep_all_belongs_to_source_indexes() {
     for entry in belongs_to_source_indexes().iter() {
         entry.value().sweep_dead_buckets();
@@ -1155,7 +1155,7 @@ pub trait QueryFactory: QueryParams {
         query: Arc<dyn AnyQuery>,
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Option<Arc<CellServerCtx>>,
+        server_ctx: Option<Arc<MykoServerCtx>>,
     ) -> Result<FilteredCellMap, String>;
 }
 
@@ -1173,7 +1173,7 @@ where
         any_query: Arc<dyn AnyQuery>,
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Option<Arc<CellServerCtx>>,
+        server_ctx: Option<Arc<MykoServerCtx>>,
     ) -> Result<FilteredCellMap, String> {
         QUERY_CELL_FACTORIES_CREATED.fetch_add(1, Ordering::Relaxed);
         let query_id = Q::query_id_static();

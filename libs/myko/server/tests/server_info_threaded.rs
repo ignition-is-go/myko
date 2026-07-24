@@ -1,10 +1,10 @@
-//! Asserts that a `ServerInfo` set on `CellServerBuilder` reaches
+//! Asserts that a `ServerInfo` set on `MykoServerBuilder` reaches
 //! `handle_initialize` over HTTP — the wire shape pulse-mcp depends on.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use myko_server::{CellServer, mcp::dispatch::ServerInfo};
+use myko_server::{MykoServer, mcp::dispatch::ServerInfo};
 
 /// POST the `initialize` payload, retrying transient connect errors for up
 /// to ~2 seconds while the listener is still coming up. Avoids the flake
@@ -48,7 +48,7 @@ async fn http_initialize_uses_threaded_server_info() {
     };
 
     let server = Arc::new(
-        CellServer::builder()
+        MykoServer::builder()
             .with_bind_addr(actual)
             .with_server_info(info)
             .build(),

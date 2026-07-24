@@ -14,7 +14,7 @@ use crate::{
     item::downcast_any_item_map_diff,
     query::{FilteredCellMap, QueryFactory, QueryHandler},
     report::{ReportHandler, ReportId},
-    server::CellServerCtx,
+    server::MykoServerCtx,
     store::StoreRegistry,
 };
 use crate::{
@@ -30,7 +30,7 @@ pub struct ViewContext {
     #[cfg(not(target_arch = "wasm32"))]
     registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<CellServerCtx>,
+    server_ctx: Arc<MykoServerCtx>,
 }
 
 #[derive(Clone)]
@@ -40,7 +40,7 @@ pub struct ViewCellContext {
     #[cfg(not(target_arch = "wasm32"))]
     registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<CellServerCtx>,
+    server_ctx: Arc<MykoServerCtx>,
 }
 
 impl ViewCellContext {
@@ -49,7 +49,7 @@ impl ViewCellContext {
         request_ctx: Arc<RequestContext>,
         view_context: Arc<ViewContext>,
         registry: Arc<StoreRegistry>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerCtx>,
     ) -> Self {
         Self {
             request_ctx,
@@ -65,7 +65,7 @@ impl ViewCellContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn server_ctx(&self) -> Arc<CellServerCtx> {
+    pub fn server_ctx(&self) -> Arc<MykoServerCtx> {
         self.server_ctx.clone()
     }
 
@@ -164,7 +164,7 @@ impl ViewContext {
     pub fn new(
         req: Arc<RequestContext>,
         registry: Arc<StoreRegistry>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerCtx>,
     ) -> Self {
         Self {
             req,
@@ -179,7 +179,7 @@ impl ViewContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn server_ctx(&self) -> Arc<CellServerCtx> {
+    pub fn server_ctx(&self) -> Arc<MykoServerCtx> {
         self.server_ctx.clone()
     }
 

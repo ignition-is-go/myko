@@ -5,7 +5,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::{CellServerCtx, Origin};
+use crate::server::{MykoServerCtx, Origin};
 // Only the native emit paths build events / convert items to values.
 use crate::{
     command::CommandError, entities::client::ClientId, event::EventOptions, item::Eventable,
@@ -29,7 +29,7 @@ pub struct CommandContext {
     pub command_id: Arc<str>,
 
     #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<CellServerCtx>,
+    server_ctx: Arc<MykoServerCtx>,
 }
 
 impl CommandContext {
@@ -38,7 +38,7 @@ impl CommandContext {
     pub fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerCtx>,
     ) -> Self {
         Self {
             req,

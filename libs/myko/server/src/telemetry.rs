@@ -1,7 +1,7 @@
 //! Logging/tracing init: always-on console output, optional OTLP export.
 //!
 //! Host processes (e.g. rship-control-plane) call [`init_from_env`] once at
-//! startup — before `CellServer::builder()...build()` — replacing the
+//! startup — before `MykoServer::builder()...build()` — replacing the
 //! `env_logger::init()` call from before the log→tracing migration. See
 //! `README.md`'s Environment table for `MYKO_TRACING_ENDPOINT` /
 //! `MYKO_MEM_PROFILE_INTERVAL_SECS`.

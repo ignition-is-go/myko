@@ -9,7 +9,7 @@ use super::{
     request::ReportRequest,
     traits::{AnyReport, ReportParams},
 };
-use crate::{common::to_value::ToValue, request::RequestContext, server::CellServerCtx};
+use crate::{common::to_value::ToValue, request::RequestContext, server::MykoServerCtx};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AnyOutput - Type-erased output for the WebSocket layer
@@ -55,7 +55,7 @@ pub type ReportParseFn = fn(Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 pub type ReportCellFactory = fn(
     Arc<dyn AnyReport>,
     Arc<RequestContext>,
-    Arc<CellServerCtx>,
+    Arc<MykoServerCtx>,
 ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ pub trait ReportFactory: ReportParams {
     fn cell_factory(
         report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerCtx>,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 }
 
@@ -115,7 +115,7 @@ impl<R: ReportParams> ReportFactory for R {
     fn cell_factory(
         any_report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerCtx>,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
         // Downcast to the ReportRequest wrapper
         let any_ref: &dyn Any = any_report.as_ref();

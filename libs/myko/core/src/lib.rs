@@ -18,9 +18,9 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────────────┐
-//! │                             CellServer                                   │
+//! │                             MykoServer                                   │
 //! │                                                                          │
-//! │  WebSocket ──► WsHandler ──► CellServerCtx ──► StoreRegistry             │
+//! │  WebSocket ──► WsHandler ──► MykoServerCtx ──► StoreRegistry             │
 //! │      │              │             │                   │                  │
 //! │      │              │             │             CellMap<id, item>        │
 //! │      │              ▼             │                   │                  │
@@ -62,7 +62,7 @@
 //! | [`client`] | WebSocket client for connecting to Myko servers |
 //! | [`core`] | Core types: command, query, report, saga, item, relationship |
 //! | [`wire`] | Wire protocol types: MykoMessage, MEvent, responses, errors |
-//! | [`server`] | CellServer and server context |
+//! | [`server`] | MykoServer and server context |
 //! | [`store`] | Entity store and registry |
 //!
 //! ## Performance

@@ -11,14 +11,14 @@ use myko::{
     bench_entities::{BenchItem, BenchItemQuery, CountBenchItems, GetBenchItemsByQuery},
     hyphae::Gettable,
     query::{NumericFilter, StringFilter},
-    server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
 use uuid::Uuid;
 
-fn make_ctx() -> CellServerCtx {
-    CellServerCtx::new(
+fn make_ctx() -> MykoServerCtx {
+    MykoServerCtx::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
@@ -31,7 +31,7 @@ fn make_ctx() -> CellServerCtx {
     )
 }
 
-fn insert_bench_item(ctx: &CellServerCtx, id: &str, category: &str, value: i64) {
+fn insert_bench_item(ctx: &MykoServerCtx, id: &str, category: &str, value: i64) {
     let item = BenchItem {
         id: id.into(),
         name: format!("item-{id}"),
@@ -42,7 +42,7 @@ fn insert_bench_item(ctx: &CellServerCtx, id: &str, category: &str, value: i64) 
     ctx.apply_event_batch(vec![event]).unwrap();
 }
 
-fn request(ctx: &CellServerCtx, tx: &str) -> Arc<myko::request::RequestContext> {
+fn request(ctx: &MykoServerCtx, tx: &str) -> Arc<myko::request::RequestContext> {
     Arc::new(myko::request::RequestContext::from_client(
         Arc::from(tx),
         Arc::from("client-1"),

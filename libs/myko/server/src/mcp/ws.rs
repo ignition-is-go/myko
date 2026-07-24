@@ -7,7 +7,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use futures_util::{SinkExt, StreamExt};
-use myko::server::CellServerCtx;
+use myko::server::MykoServerCtx;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tokio_tungstenite::{
     WebSocketStream,
@@ -30,7 +30,7 @@ const MCP_SUBPROTOCOL: &str = "mcp";
 /// Upgrade `/myko/mcp` to a WebSocket carrying MCP JSON-RPC text frames.
 pub async fn handle_mcp_ws_upgrade(
     stream: TcpStream,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerCtx>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -64,7 +64,7 @@ pub async fn handle_mcp_ws_upgrade(
 pub async fn handle_myko_ws_upgrade(
     stream: TcpStream,
     addr: SocketAddr,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerCtx>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws_stream = match perform_handshake(stream, &head, false).await {
@@ -116,7 +116,7 @@ async fn perform_handshake(
 
 async fn run_mcp_loop(
     ws_stream: WebSocketStream<TcpStream>,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerCtx>,
     info: Arc<ServerInfo>,
     filter: ClientFilters,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

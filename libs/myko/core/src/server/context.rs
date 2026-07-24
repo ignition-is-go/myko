@@ -237,7 +237,7 @@ impl MapCacheEntry {
 /// - Event publishing (Reduce → Relationships → Persist)
 /// - Server identity
 #[derive(Clone)]
-pub struct CellServerCtx {
+pub struct MykoServerCtx {
     /// Unique identifier for this server instance
     pub host_id: Uuid,
     /// `host_id` pre-rendered once — the durable-backend producers stamp it
@@ -277,7 +277,7 @@ pub struct CellServerCtx {
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
 }
 
-impl CellServerCtx {
+impl MykoServerCtx {
     /// Create a new server context.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -416,7 +416,7 @@ impl CellServerCtx {
     }
 
     /// Remove dead weak-ref entries from all caches, including belongs-to
-    /// source index buckets (process-global, not per-`CellServerCtx`, but
+    /// source index buckets (process-global, not per-`MykoServerCtx`, but
     /// swept from here for hosting apps that already call this
     /// periodically). Bucket entries are also reaped lazily on next access
     /// regardless — this is a backstop for foreign ids that go dead and are
@@ -1259,7 +1259,7 @@ impl CellServerCtx {
         let untyped = self.query_map_untyped(query, request);
         if let Some(entry) = self.query_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
+                typed_map_from_any_item_with_typed_id(source, "MykoServerCtx::query_map")
             })
         {
             return typed;
@@ -1271,7 +1271,7 @@ impl CellServerCtx {
         entry
             .value()
             .get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
+                typed_map_from_any_item_with_typed_id(source, "MykoServerCtx::query_map")
             })
             .expect("typed projection from freshly inserted entry")
     }
@@ -1296,7 +1296,7 @@ impl CellServerCtx {
         F::Item: WithTypedId,
     {
         let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
-        typed_map_from_any_item_with_typed_id(untyped, "CellServerCtx::query_live")
+        typed_map_from_any_item_with_typed_id(untyped, "MykoServerCtx::query_live")
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -1316,7 +1316,7 @@ impl CellServerCtx {
         let untyped = self.query_map_untyped(query, request);
         if let Some(entry) = self.query_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
+                typed_map_arc_from_any_item(source, "MykoServerCtx::query_map_by_str")
             })
         {
             return typed;
@@ -1328,7 +1328,7 @@ impl CellServerCtx {
         entry
             .value()
             .get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
+                typed_map_arc_from_any_item(source, "MykoServerCtx::query_map_by_str")
             })
             .expect("typed projection from freshly inserted entry")
     }
@@ -1344,9 +1344,9 @@ impl CellServerCtx {
     /// use std::sync::Arc;
     /// use myko::entities::server::GetPeerServers;
     /// use myko::request::RequestContext;
-    /// use myko::server::CellServerCtx;
+    /// use myko::server::MykoServerCtx;
     ///
-    /// fn demo(ctx: &CellServerCtx, req: Arc<RequestContext>) {
+    /// fn demo(ctx: &MykoServerCtx, req: Arc<RequestContext>) {
     ///     let _peer_servers = ctx.query_map_untyped(GetPeerServers {}, req);
     ///     // _peer_servers is CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>
     /// }
@@ -1482,7 +1482,7 @@ impl CellServerCtx {
         let _untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::view")
+                typed_map_arc_from_any_item(source, "MykoServerCtx::view")
             })
         {
             return typed;
@@ -1501,7 +1501,7 @@ impl CellServerCtx {
         let item = store.get_value(&map_key)?;
         Some(downcast_any_item_arc::<T>(
             &item,
-            "CellServerCtx::entity_snapshot",
+            "MykoServerCtx::entity_snapshot",
         ))
     }
 
@@ -1515,7 +1515,7 @@ impl CellServerCtx {
         store
             .snapshot()
             .into_iter()
-            .map(|(_, item)| downcast_any_item_arc::<T>(&item, "CellServerCtx::entity_snapshots"))
+            .map(|(_, item)| downcast_any_item_arc::<T>(&item, "MykoServerCtx::entity_snapshots"))
             .collect()
     }
 
@@ -1556,7 +1556,7 @@ impl CellServerCtx {
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item =
-                    downcast_any_item_arc::<Q::Item>(&item, "CellServerCtx::query_snapshot");
+                    downcast_any_item_arc::<Q::Item>(&item, "MykoServerCtx::query_snapshot");
                 let ctx = QueryTestCtx {
                     item: typed_item.clone(),
                     query: query.clone(),
@@ -1692,9 +1692,9 @@ impl CellServerCtx {
     }
 }
 
-impl std::fmt::Debug for CellServerCtx {
+impl std::fmt::Debug for MykoServerCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CellServerCtx").finish()
+        f.debug_struct("MykoServerCtx").finish()
     }
 }
 
@@ -1706,7 +1706,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::CellServerCtx;
+    use super::MykoServerCtx;
     use crate::{
         common::with_id::WithId,
         core::item::{
@@ -1821,8 +1821,8 @@ mod tests {
         }
     }
 
-    fn make_ctx() -> CellServerCtx {
-        CellServerCtx::new(
+    fn make_ctx() -> MykoServerCtx {
+        MykoServerCtx::new(
             Uuid::new_v4(),
             Arc::new(StoreRegistry::new()),
             Arc::new(HandlerRegistry::new()),

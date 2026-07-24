@@ -16,7 +16,7 @@ use myko::{
     hyphae::{Cell, Gettable, Mutable, SwitchMapExt},
     query::StringFilter,
     search::SearchIndex,
-    server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
@@ -35,8 +35,8 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn make_ctx() -> CellServerCtx {
-    CellServerCtx::new(
+fn make_ctx() -> MykoServerCtx {
+    MykoServerCtx::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
@@ -49,7 +49,7 @@ fn make_ctx() -> CellServerCtx {
     )
 }
 
-fn insert_bench_item(ctx: &CellServerCtx, id: &str, category: &str, value: i64) {
+fn insert_bench_item(ctx: &MykoServerCtx, id: &str, category: &str, value: i64) {
     let item = BenchItem {
         id: id.into(),
         name: format!("item-{}", id),

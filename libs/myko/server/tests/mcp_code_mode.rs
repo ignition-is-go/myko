@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use myko_server::{CellServer, mcp::dispatch::ServerInfo};
+use myko_server::{MykoServer, mcp::dispatch::ServerInfo};
 
 async fn post_with_retry(
     client: &reqwest::Client,
@@ -49,7 +49,7 @@ async fn search_then_execute_round_trip_over_http() {
     // ServerInfo::default() builds the operation index automatically from
     // inventory-registered operations — no bindings-dir wiring needed.
     let server = Arc::new(
-        CellServer::builder()
+        MykoServer::builder()
             .with_bind_addr(addr)
             .with_server_info(ServerInfo::default())
             .build(),

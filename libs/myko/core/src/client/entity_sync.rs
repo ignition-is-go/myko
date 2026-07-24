@@ -9,7 +9,7 @@ use crate::{
     common::with_id::WithId,
     core::item::Eventable,
     query::{QueryFactory, QueryHandler, QueryParams},
-    server::CellServerCtx,
+    server::MykoServerCtx,
     wire::{MEvent, MEventType},
 };
 
@@ -35,7 +35,7 @@ where
     QRemote: QueryParams<Item = T> + Clone + Send + Sync + 'static,
 {
     pub client: MykoClient,
-    pub local_ctx: Arc<CellServerCtx>,
+    pub local_ctx: Arc<MykoServerCtx>,
     pub local_query: QLocal,
     pub remote_query: QRemote,
     pub options: EntityStoreSyncOptions,
