@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::MykoServerCtx;
 use crate::{
-    command::CommandError, entities::client::ClientId, query::QueryParams,
+    command::CommandError, core::capability::RequestScoped, query::QueryParams,
     request::RequestContext,
 };
 
@@ -47,26 +46,6 @@ impl CommandContext {
     // ─────────────────────────────────────────────────────────────────────────
     // Convenience accessors
     // ─────────────────────────────────────────────────────────────────────────
-
-    /// Get the transaction ID.
-    pub fn tx(&self) -> Arc<str> {
-        self.req.tx.clone()
-    }
-
-    /// Get the client ID if present.
-    pub fn client_id(&self) -> Option<ClientId> {
-        self.req.client_id.clone()
-    }
-
-    /// Get the host ID.
-    pub fn host_id(&self) -> Uuid {
-        self.req.host_id
-    }
-
-    /// Get the lineage (call chain).
-    pub fn lineage(&self) -> &[Arc<str>] {
-        &self.req.lineage
-    }
 
     /// Get the request creation timestamp.
     pub fn created_at(&self) -> &str {

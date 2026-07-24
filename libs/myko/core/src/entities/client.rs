@@ -117,7 +117,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
         // Find the client entity
         let client = ctx
             .exec_report(GetClientById {
-                id: ClientId::from(Arc::<str>::from(client_id.clone())),
+                id: ClientId::from(Arc::<str>::from(client_id)),
             })?
             .ok_or_else(|| CommandError {
                 tx: ctx.tx().to_string(),
@@ -161,7 +161,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         // Find the client entity
         let client = ctx
             .exec_report(GetClientById {
-                id: ClientId::from(Arc::<str>::from(client_id.clone())),
+                id: ClientId::from(Arc::<str>::from(client_id)),
             })?
             .ok_or_else(|| CommandError {
                 tx: ctx.tx().to_string(),

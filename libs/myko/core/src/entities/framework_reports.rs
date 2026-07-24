@@ -308,9 +308,9 @@ impl crate::command::CommandHandler for ImportItems {
     ) -> Result<usize, crate::command::CommandError> {
         use crate::wire::{MEvent, MEventType};
 
-        let tx: std::sync::Arc<str> = ctx.tx();
+        let tx: std::sync::Arc<str> = ctx.req.tx.clone();
         let source_id: Option<std::sync::Arc<str>> =
-            Some(std::sync::Arc::from(ctx.host_id().to_string()));
+            Some(std::sync::Arc::from(ctx.req.host_id.to_string()));
         let created_at: std::sync::Arc<str> = std::sync::Arc::from(ctx.created_at());
 
         let mut events = Vec::with_capacity(self.items.len() + self.delete_items.len());
