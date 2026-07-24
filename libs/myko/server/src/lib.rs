@@ -463,10 +463,9 @@ impl MykoServer {
                 },
             ));
 
-            let saga_ctx = Arc::new(myko::saga::SagaContext::with_event_sink(
+            let saga_ctx = Arc::new(myko::saga::SagaContext::new(
                 self.host_id,
                 self.registry.clone(),
-                self.saga_event_tx.clone(),
             ));
             let mut command_stream = saga.build_boxed(events, saga_ctx);
 
