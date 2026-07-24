@@ -10,7 +10,7 @@ use super::{
     context::{ViewBuildContext, ViewContext},
     request::ViewRequest,
     traits::{
-        AnyView, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
+        AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
     },
 };
 use crate::{
@@ -113,7 +113,7 @@ where
         ));
         let view_cell_ctx = ViewBuildContext::new(view_ctx);
 
-        let built = V::build_cell(ViewBuildCellCtx {
+        let built = V::build_cell(ViewBuildArgs {
             view: view.clone(),
             view_context: view_cell_ctx.clone(),
         });

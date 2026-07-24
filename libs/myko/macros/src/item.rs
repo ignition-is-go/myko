@@ -198,7 +198,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         pub struct #get_all_query_ident {}
 
         impl #krate::prelude::QueryHandler for #get_all_query_ident {
-            fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
+            fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 true
             }
         }
@@ -214,7 +214,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         }
 
         impl #krate::prelude::QueryHandler for #get_by_ids_query_ident {
-            fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
+            fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 ctx.query.ids.contains(&ctx.item.id.clone().into())
             }
 
@@ -225,7 +225,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             // only ever contains keys from `ctx.query.ids`.
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
-                ctx: #krate::prelude::QueryBuildCellCtx<Self>,
+                ctx: #krate::prelude::QueryBuildArgs<Self>,
             ) -> Option<#krate::prelude::FilteredCellMap>
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
@@ -524,13 +524,13 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
         }
 
         impl #krate::prelude::QueryHandler for #get_by_filter_ident {
-            fn test_entity(ctx: #krate::prelude::QueryTestCtx<Self>) -> bool {
+            fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 ctx.query.0.matches(&ctx.item)
             }
 
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
-                ctx: #krate::prelude::QueryBuildCellCtx<Self>,
+                ctx: #krate::prelude::QueryBuildArgs<Self>,
             ) -> Option<#krate::prelude::FilteredCellMap>
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,

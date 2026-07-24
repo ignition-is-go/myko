@@ -38,7 +38,7 @@ use crate::{
     },
     query::{
         FilteredCellMap, LiveFilterQuery, QueryContext, QueryFactory, QueryHandler, QueryParams,
-        QueryRequest, QueryTestCtx,
+        QueryRequest, QueryTestContext,
     },
     report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
@@ -1348,7 +1348,7 @@ impl MykoServerContext {
             .filter_map(|(_, item)| {
                 let typed_item =
                     downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot");
-                let ctx = QueryTestCtx {
+                let ctx = QueryTestContext {
                     item: typed_item.clone(),
                     query: query.clone(),
                     query_context: query_context.clone(),

@@ -56,7 +56,7 @@ pub trait QueryHandler: QueryItemType + Sized {
     ///
     /// Return `true` when an item should be included in the query result.
     #[cfg(not(target_arch = "wasm32"))]
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool
     where
         Self: Send + Sync + 'static;
 
@@ -67,7 +67,7 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// invoked on wasm (clients watch query results over the wire), so it
     /// simply returns `false`.
     #[cfg(target_arch = "wasm32")]
-    fn test_entity(_ctx: QueryTestCtx<Self>) -> bool
+    fn test_entity(_ctx: QueryTestContext<Self>) -> bool
     where
         Self: Send + Sync + 'static,
     {
@@ -86,7 +86,7 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// pre-built map continue to work unchanged.
     #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
-        _ctx: QueryBuildCellCtx<Self>,
+        _ctx: QueryBuildArgs<Self>,
     ) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
     where
         Self: Send + Sync + 'static,
@@ -95,23 +95,23 @@ pub trait QueryHandler: QueryItemType + Sized {
     }
 }
 
-pub struct QueryTestCtx<TQuery: QueryItemType> {
+pub struct QueryTestContext<TQuery: QueryItemType> {
     pub item: Arc<TQuery::Item>,
     pub query: Arc<TQuery>,
     pub query_context: Arc<QueryContext>,
 }
 
-impl<TQuery: QueryItemType> QueryTestCtx<TQuery> {
+impl<TQuery: QueryItemType> QueryTestContext<TQuery> {
     pub fn map_bool<F>(self, predicate: F) -> bool
     where
-        F: Fn(QueryTestCtx<TQuery>) -> bool,
+        F: Fn(QueryTestContext<TQuery>) -> bool,
     {
         predicate(self)
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub struct QueryBuildCellCtx<TQuery: QueryItemType> {
+pub struct QueryBuildArgs<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
     pub query_context: QueryBuildContext,
 }

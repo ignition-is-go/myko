@@ -306,7 +306,7 @@ pub struct GetBenchItemsByCategory {
 }
 
 impl QueryHandler for GetBenchItemsByCategory {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool {
         ctx.item.category == ctx.query.category.as_str()
     }
 }

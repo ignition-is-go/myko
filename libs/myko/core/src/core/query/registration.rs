@@ -24,7 +24,7 @@ use super::{
         QueryRoute,
     },
     request::QueryRequest,
-    traits::{AnyQuery, QueryBuildCellCtx, QueryHandler, QueryParams, QueryTestCtx},
+    traits::{AnyQuery, QueryBuildArgs, QueryHandler, QueryParams, QueryTestContext},
 };
 use crate::{
     common::with_id::WithId, core::item::downcast_any_item_arc, request::RequestContext,
@@ -1110,7 +1110,7 @@ where
 {
     hyphae::MapQuery::materialize(source.select(move |item_any: &AnyItemArc| {
         let item = downcast_any_item_arc::<Q::Item>(item_any, "filter_query_over_source");
-        Q::test_entity(QueryTestCtx {
+        Q::test_entity(QueryTestContext {
             item,
             query: query.clone(),
             query_context: query_context.clone(),
@@ -1196,7 +1196,7 @@ where
         let query_cell_ctx =
             QueryBuildContext::new(query_ctx.clone(), registry.clone(), server_ctx);
 
-        if let Some(built) = Q::build_view(QueryBuildCellCtx {
+        if let Some(built) = Q::build_view(QueryBuildArgs {
             query: query.clone(),
             query_context: query_cell_ctx.clone(),
         }) {
@@ -1208,7 +1208,7 @@ where
         Ok(hyphae::MapQuery::materialize(store.select(
             move |item_any: &AnyItemArc| {
                 let item = downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory");
-                Q::test_entity(QueryTestCtx {
+                Q::test_entity(QueryTestContext {
                     item,
                     query: query.clone(),
                     query_context: query_ctx.clone(),

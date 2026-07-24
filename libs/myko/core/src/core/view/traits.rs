@@ -21,7 +21,7 @@ pub trait ViewItemType {
     fn view_item_type_static() -> Arc<str>;
 }
 
-pub struct ViewBuildCellCtx<TView: ViewItemType> {
+pub struct ViewBuildArgs<TView: ViewItemType> {
     pub view: Arc<TView>,
     pub view_context: ViewBuildContext,
 }
@@ -44,7 +44,7 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
     /// still satisfy the bound via the blanket impl on `ReactiveMap`.
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
+    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
     where
         Self: Send + Sync + 'static;
 
@@ -57,7 +57,7 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// `MapQuery<Arc<str>, Arc<Self::Item>>` bound via the blanket
     /// `ReactiveMap` impl.
     #[cfg(target_arch = "wasm32")]
-    fn build_cell(_ctx: ViewBuildCellCtx<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
+    fn build_cell(_ctx: ViewBuildArgs<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
     where
         Self: Send + Sync + 'static,
     {

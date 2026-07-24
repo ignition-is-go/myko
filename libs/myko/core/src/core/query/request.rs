@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::traits::QueryBuildCellCtx;
+use super::traits::QueryBuildArgs;
 use super::traits::{
-    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
+    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::item::AnyItem;
@@ -96,8 +96,8 @@ impl<Q: QueryItemType> QueryItemType for QueryRequest<Q> {
 }
 
 impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequest<Q> {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
-        Q::test_entity(QueryTestCtx {
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool {
+        Q::test_entity(QueryTestContext {
             item: ctx.item,
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
@@ -106,11 +106,11 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
 
     #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
-        ctx: QueryBuildCellCtx<Self>,
+        ctx: QueryBuildArgs<Self>,
     ) -> Option<impl hyphae::MapQuery<Arc<str>, Arc<dyn AnyItem>>> {
         // Materialize at the wrapper boundary so the outer `Option<impl MapQuery>`
         // has a concrete type the borrow checker can infer through.
-        Q::build_view(QueryBuildCellCtx {
+        Q::build_view(QueryBuildArgs {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
         })

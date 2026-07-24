@@ -30,7 +30,7 @@ pub use registration::{
 };
 pub use request::QueryRequest;
 #[cfg(not(target_arch = "wasm32"))]
-pub use traits::QueryBuildCellCtx;
+pub use traits::QueryBuildArgs;
 pub use traits::{
-    AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
+    AnyQuery, Query, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext,
 };

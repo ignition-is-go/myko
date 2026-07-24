@@ -21,7 +21,7 @@ pub struct Server {
 pub struct GetConnectedServer {}
 
 impl QueryHandler for GetConnectedServer {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool {
         let item_id = ctx.item.id.to_string();
         let host_id = ctx.query_context.req.host_id.to_string();
         item_id == host_id
@@ -32,7 +32,7 @@ impl QueryHandler for GetConnectedServer {
 pub struct GetPeerServers {}
 
 impl QueryHandler for GetPeerServers {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool {
         let item_id = ctx.item.id.to_string();
         let host_id = ctx.query_context.req.host_id.to_string();
         item_id != host_id

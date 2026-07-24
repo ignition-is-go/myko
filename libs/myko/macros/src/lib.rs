@@ -448,7 +448,7 @@ pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// Query-style declaration syntax:
 /// `#[myko_view(ViewItemType)]`
 /// and then implement `myko::prelude::ViewHandler` for the params type with:
-/// `fn build_cell(ctx: ViewBuildCellCtx<Self>) -> FilteredViewCellMap`.
+/// `fn build_cell(ctx: ViewBuildArgs<Self>) -> FilteredViewCellMap`.
 #[proc_macro_attribute]
 pub fn myko_view(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);

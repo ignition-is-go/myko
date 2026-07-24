@@ -29,7 +29,7 @@ pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::query::QueryBuildCellCtx;
+pub use crate::query::QueryBuildArgs;
 pub use crate::{
     cache::{
         CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key,
@@ -53,7 +53,7 @@ pub use crate::{
     },
     query::{
         AnyQuery, EqFilter, Filter, Filterable, IdFilter, NumericFilter, Query,
-        QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
+        QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext,
         StringFilter, Unfilterable, in_matches,
     },
     report::{
@@ -62,7 +62,7 @@ pub use crate::{
     },
     utils::downcast_item,
     view::{
-        AnyView, FilteredViewCellMap, TypedViewCellMap, ViewBuildCellCtx, ViewHandler, ViewId,
+        AnyView, FilteredViewCellMap, TypedViewCellMap, ViewBuildArgs, ViewHandler, ViewId,
         ViewIdStatic, ViewItemType, ViewParams, ViewRequest,
     },
     wire::{
