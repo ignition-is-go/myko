@@ -101,7 +101,7 @@ Auto-generated for every `myko_item`:
 | `CountAllTargets`   | Report — count                         |
 | `DeleteTarget`      | Command — delete one                   |
 | `DeleteTargets`     | Command — delete many                  |
-| `PartialTarget`     | Patch type for partial updates         |
+| `TargetQuery`       | Filter type for query parameters       |
 
 ### Relationship attributes
 

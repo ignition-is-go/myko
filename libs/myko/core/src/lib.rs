@@ -52,7 +52,7 @@
 //! - `GetAllTargets`, `GetTargetsByIds`, `GetTargetsByQuery` queries
 //! - `CountAllTargets`, `CountTargets`, `GetTargetById` reports
 //! - `DeleteTarget`, `DeleteTargets` commands
-//! - `PartialTarget` struct for partial matching
+//! - `TargetQuery` struct for query filter parameters
 //! - Registration with the [`inventory`] system
 //!
 //! ## Module Guide

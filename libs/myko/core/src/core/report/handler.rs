@@ -18,7 +18,7 @@ use crate::{common::to_value::ToValue, request::RequestContext, store::StoreRegi
 ///
 /// ReportContext allows handlers to:
 /// - Subscribe to queries and get reactive streams
-/// - Access the report arguments via `report_args`
+/// - Access the report arguments directly via `&self` fields (e.g. `self.target_id`)
 /// - Access request context (tx, client_id, lineage, host_id)
 #[derive(Clone)]
 pub struct ReportContext {
@@ -47,7 +47,7 @@ impl ReportContext {
 // The report handler's scope: reactive queries, sub-reports, views, search,
 // federation, and history replay — but NOT command emission. A report cannot
 // mutate state, and that is enforced structurally by not implementing
-// `Emitting` (see `core::capability`): `ctx.emit_set(...)` in a report is a
+// `EventPublishing` (see `core::capability`): `ctx.emit_set(...)` in a report is a
 // compile error, not a convention.
 impl crate::core::capability::sealed::Sealed for ReportContext {}
 impl RequestScoped for ReportContext {
