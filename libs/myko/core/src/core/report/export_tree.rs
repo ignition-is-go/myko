@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::capability::{RegistryScoped, Replaying};
 
 // The BFS traversal + report handler are server-only (they pull in hyphae and
 // the store registry); their imports are gated alongside them below.

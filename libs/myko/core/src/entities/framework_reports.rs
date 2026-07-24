@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
+use crate::core::capability::{PeerAccess, Replaying};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;

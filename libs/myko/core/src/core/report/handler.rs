@@ -1,31 +1,18 @@
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, CellMap, CellValue, MaterializeDefinite};
+use hyphae::MaterializeDefinite;
+#[cfg(target_arch = "wasm32")]
+use hyphae::Cell;
 use serde::{Serialize, de::DeserializeOwned};
-use uuid::Uuid;
 
+use crate::core::capability::{
+    Querying, RegistryScoped, Reporting, RequestScoped, Searching, ServerScoped,
+};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::client::{ConnectionStatus, MykoClient};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::view::{TypedViewCellMap, ViewFactory};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::query::FilteredCellMap;
+use crate::core::capability::{PeerAccess, Replaying, Viewing};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::MykoServerCtx;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::PersistHealth;
-use crate::{
-    cache::CacheKey,
-    common::{
-        to_value::ToValue,
-        with_id::{WithId, WithTypedId},
-    },
-    core::item::Eventable,
-    query::QueryParams,
-    report::ReportId,
-    request::RequestContext,
-    store::StoreRegistry,
-};
+use crate::{common::to_value::ToValue, request::RequestContext, store::StoreRegistry};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -38,278 +25,63 @@ pub struct ReportContext {
     /// Request context with tracing information (tx, client_id, lineage, host_id).
     pub req: Arc<RequestContext>,
     /// Store registry for reactive entity lookups (available on all targets).
-    pub(crate) registry: Arc<StoreRegistry>,
+    /// Named `store_registry` so it doesn't shadow the `registry()` method
+    /// from [`RegistryScoped`].
+    pub(crate) store_registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<MykoServerCtx>,
 }
 
 impl ReportContext {
-    // ─────────────────────────────────────────────────────────────────────────
-    // Convenience accessors for request context
-    // ─────────────────────────────────────────────────────────────────────────
-
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerCtx>) -> Self {
-        let registry = server_ctx.registry.clone();
+        let store_registry = server_ctx.registry.clone();
         Self {
             req,
-            registry,
+            store_registry,
             server_ctx,
         }
     }
+}
 
-    /// Get the transaction ID.
-    pub fn tx(&self) -> &str {
-        &self.req.tx
-    }
-
-    /// Get the client ID if present.
-    pub fn client_id(&self) -> Option<&str> {
-        self.req.client_id.as_deref()
-    }
-
-    /// Get the host ID.
-    pub fn host_id(&self) -> Uuid {
-        self.req.host_id
-    }
-
-    /// Get the lineage (call chain).
-    pub fn lineage(&self) -> &[Arc<str>] {
-        &self.req.lineage
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Report-specific methods
-    // ─────────────────────────────────────────────────────────────────────────
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Subscribe to a query dependency and get a typed reactive CellMap keyed
-    /// by the item's typed id.
-    ///
-    /// Use this when you need incremental `MapDiff` semantics with row-level
-    /// granularity, while preserving the query's concrete item type.
-    pub fn query_map<Q>(
-        &self,
-        query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
-    where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable
-            + WithId
-            + WithTypedId
-            + DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + CellValue
-            + 'static,
-    {
-        self.server_ctx.query_map(query, self.req.clone())
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn query_map<Q>(
-        &self,
-        query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
-    where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable
-            + WithId
-            + WithTypedId
-            + DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + CellValue
-            + 'static,
-    {
-        let _ = query;
-        unreachable!("ReportContext::query_map is not available on wasm32");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Subscribe to a query dependency and get a typed reactive CellMap keyed
-    /// by canonical `Arc<str>` ids.
-    ///
-    /// Prefer `query_map()` unless you specifically need string ids.
-    pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
-    where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable
-            + WithId
-            + DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + CellValue
-            + 'static,
-    {
-        self.server_ctx.query_map_by_str(query, self.req.clone())
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
-    where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable
-            + WithId
-            + DeserializeOwned
-            + Clone
-            + std::fmt::Debug
-            + Send
-            + Sync
-            + CellValue
-            + 'static,
-    {
-        let _ = query;
-        unreachable!("ReportContext::query_map_by_str is not available on wasm32");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Subscribe to a query dependency and get an untyped reactive CellMap.
-    ///
-    /// Prefer `query_map()` unless you explicitly need erased `AnyItem`.
-    pub fn query_map_untyped<Q>(&self, query: Q) -> FilteredCellMap
-    where
-        Q: QueryParams + 'static,
-        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug,
-    {
-        self.server_ctx.query_map_untyped(query, self.req.clone())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    /// Reactive filter parameters: `filter_cell` replaces a value-based
-    /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
-    /// cells no longer needs a `switch_map` wrapper — see
-    /// `MykoServerCtx::query_live` for the mechanics (incremental
-    /// bucket-diffing on indexed field changes, scoped rescan on
-    /// non-indexed changes, never a graph teardown).
-    pub fn query_live<F>(
-        &self,
-        filter_cell: impl hyphae::Watchable<F>,
-    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
-    where
-        F: crate::query::LiveFilterQuery,
-        F::Item: WithTypedId,
-    {
-        self.server_ctx.query_live(filter_cell)
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn query_live<F>(
-        &self,
-        filter_cell: impl hyphae::Watchable<F>,
-    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
-    where
-        F: crate::query::LiveFilterQuery,
-        F::Item: WithTypedId,
-    {
-        let _ = filter_cell;
-        unreachable!("ReportContext::query_live is not available on wasm32");
-    }
-
-    /// Search for entities matching a query string.
-    ///
-    /// Returns matching entity IDs (up to `limit` results). Backed by the
-    /// per-type `typed::SearchIndex<T>` (see `search/SPEC.md`); operates on
-    /// fields marked with `#[searchable]`.
-    pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .search_index()
-                .search(entity_type, query, limit)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (entity_type, query, limit);
-            unreachable!();
-        }
-    }
-
-    /// Subscribe to a sub-report dependency.
-    ///
-    /// Returns a cell that updates whenever the sub-report output changes.
-    /// This allows reports to compose other reports.
-    ///
-    /// Forwards to `MykoServerCtx::report()`, which memoizes the compute
-    /// result by cache key so concurrent requests share one computation.
-    pub fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
-    where
-        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx.report(report, self.req.clone())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = report;
-            unreachable!();
-        }
-    }
-
-    /// Subscribe to a view dependency and get a typed reactive CellMap.
-    ///
-    /// This lets reports reuse incremental, map-native view logic instead of
-    /// rebuilding equivalent query/join pipelines locally.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn view<V>(&self, view: V) -> TypedViewCellMap<V::Item>
-    where
-        V: ViewFactory + Clone,
-        V::Item: DeserializeOwned + Clone + std::fmt::Debug,
-    {
-        self.server_ctx.view(view, self.req.clone())
-    }
-
-    /// Get the live peer client for a peer server id, if present.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn peer_client(&self, peer_id: &str) -> Option<Arc<MykoClient>> {
-        self.server_ctx.peer_client(peer_id)
-    }
-
-    /// Get the current connection status for a peer server id, if a peer client exists.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn peer_connection_status(&self, peer_id: &str) -> Option<ConnectionStatus> {
-        self.server_ctx.peer_connection_status(peer_id)
-    }
-
-    /// Reactive tick that updates when peer client membership changes.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
-        self.server_ctx.peer_clients_tick()
-    }
-
-    /// Get the live persist health counters (queued, errors, throughput).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn persist_health(&self) -> Arc<PersistHealth> {
-        self.server_ctx.persist_health()
-    }
-
-    /// Access the store registry for type-erased entity lookups.
-    ///
-    /// This enables reports that need to traverse entities by runtime-determined
-    /// type names (e.g., entity tree export walking relationship graphs).
-    pub fn registry(&self) -> Arc<StoreRegistry> {
-        self.registry.clone()
-    }
-
-    /// Replay historical events into a temporary StoreRegistry.
-    ///
-    /// Returns an error if no HistoryReplayProvider is configured.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn replay_store(&self, until: &str) -> Result<Arc<StoreRegistry>, String> {
-        let provider = self
-            .server_ctx
-            .history_replay()
-            .ok_or_else(|| "No history replay provider configured".to_string())?;
-        provider.replay_to_store(until, &self.server_ctx.handler_registry)
+// The report handler's scope: reactive queries, sub-reports, views, search,
+// federation, and history replay — but NOT command emission. A report cannot
+// mutate state, and that is enforced structurally by not implementing
+// `Emitting` (see `core::capability`): `ctx.emit_set(...)` in a report is a
+// compile error, not a convention.
+impl crate::core::capability::sealed::Sealed for ReportContext {}
+impl RequestScoped for ReportContext {
+    fn __request(&self) -> &Arc<RequestContext> {
+        &self.req
     }
 }
+impl RegistryScoped for ReportContext {
+    fn __registry(&self) -> &Arc<StoreRegistry> {
+        &self.store_registry
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl ServerScoped for ReportContext {
+    fn __server_ctx(&self) -> &Arc<MykoServerCtx> {
+        &self.server_ctx
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl ServerScoped for ReportContext {}
+
+// Cross-platform: authored once, compiled for wasm too (where the bodies are
+// `unreachable!` — reports only run server-side).
+impl Querying for ReportContext {}
+impl Searching for ReportContext {}
+impl Reporting for ReportContext {}
+
+// Native-only (server-only return types).
+#[cfg(not(target_arch = "wasm32"))]
+impl Viewing for ReportContext {}
+#[cfg(not(target_arch = "wasm32"))]
+impl PeerAccess for ReportContext {}
+#[cfg(not(target_arch = "wasm32"))]
+impl Replaying for ReportContext {}
 
 /// Trait for report handlers - defines how a report computes its output.
 ///

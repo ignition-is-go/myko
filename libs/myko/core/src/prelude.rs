@@ -10,6 +10,15 @@ pub use hyphae::{
 pub use myko_macros::*;
 pub use uuid::Uuid;
 
+// Handler capability traits — bring the scoped methods (tx/registry, and on
+// native query_map/report/view/search/peer_*/replay_store, plus emit_* on
+// command handlers) into scope for handler bodies. See `core::capability`.
+pub use crate::core::capability::{
+    Querying, RegistryScoped, Reporting, RequestScoped, Searching, ServerScoped,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::core::capability::{PeerAccess, Replaying, Viewing};
+
 // Re-export TS for derive macros — conditional on the `ts-export` feature
 // at the lib.rs level, so downstream derives go through the same switch.
 pub use crate::TS;

@@ -1,5 +1,6 @@
 //! Core types and traits for Myko.
 
+pub mod capability;
 pub mod command;
 pub mod common;
 pub mod item;
