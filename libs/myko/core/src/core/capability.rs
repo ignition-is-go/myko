@@ -98,13 +98,10 @@ use crate::{
     command::{CommandContext, CommandError, CommandHandler},
     common::with_id::{WithId, WithTypedId},
     core::item::Eventable,
-    event::EventOptions,
     query::{LiveFilterQuery, QueryParams},
     report::{ReportHandler, ReportId},
     wire::MEvent,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::Origin;
 
 /// Subscribe to reactive query dependencies.
 pub trait Querying: ServerScoped {
@@ -303,31 +300,6 @@ pub trait EventPublishing: ServerScoped {
         }
     }
 
-    /// Emit a SET event for an item with custom options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_set`](Self::emit_set).
-    #[deprecated(note = "EventOptions is internal plumbing; use `emit_set` instead")]
-    fn emit_set_with_options<T>(
-        &self,
-        item: impl std::ops::Deref<Target = T>,
-        options: EventOptions,
-    ) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.__server_ctx()
-                .set_with_origin(&*item, Origin::from_options(&options))
-                .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (item, options);
-            unreachable!("emit_set_with_options is not available on wasm32")
-        }
-    }
-
     /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
     fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
         &self,
@@ -405,31 +377,6 @@ pub trait EventPublishing: ServerScoped {
         {
             let _ = items;
             unreachable!("emit_del_batch is not available on wasm32")
-        }
-    }
-
-    /// Emit a DEL event for an item with custom options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`emit_del`](Self::emit_del).
-    #[deprecated(note = "EventOptions is internal plumbing; use `emit_del` instead")]
-    fn emit_del_with_options<T>(
-        &self,
-        item: impl std::ops::Deref<Target = T>,
-        options: EventOptions,
-    ) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.__server_ctx()
-                .del_with_origin(&*item, Origin::from_options(&options))
-                .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (item, options);
-            unreachable!("emit_del_with_options is not available on wasm32")
         }
     }
 

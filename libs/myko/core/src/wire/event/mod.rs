@@ -12,17 +12,6 @@ pub enum MEventType {
     DEL,
 }
 
-/// Options that can be attached to an event
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct EventOptions {
-    /// When true, relationship cascades are skipped for this event.
-    /// Used to prevent infinite loops during cascade processing.
-    #[serde(default)]
-    pub prevent_relationship_updates: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]

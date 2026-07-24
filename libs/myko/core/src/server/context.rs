@@ -45,7 +45,7 @@ use crate::{
     search::SearchIndex,
     store::StoreRegistry,
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
-    wire::{EventOptions, MEvent, MEventType},
+    wire::{MEvent, MEventType},
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
@@ -54,9 +54,7 @@ type AnyItemArc = Arc<dyn AnyItem>;
 /// pipeline's loop-safety: it determines whether a mutation should run
 /// relationship cascades. (Both origins produce.)
 ///
-/// It replaces the scattered per-call loop-guard flag checks; `from_options`
-/// bridges the legacy `EventOptions::prevent_relationship_updates` flag to an
-/// `Origin` for the deprecated `*_with_options` methods.
+/// It replaces the scattered per-call loop-guard flag checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Origin {
     /// A command handler / server module emitting a new mutation here (also a
@@ -76,16 +74,6 @@ pub(crate) enum Origin {
 }
 
 impl Origin {
-    /// Bridge the legacy `EventOptions::prevent_relationship_updates` flag to an
-    /// `Origin`: cascade products set it (→ `Cascade`); everything else `Local`.
-    pub(crate) fn from_options(options: &EventOptions) -> Origin {
-        if options.prevent_relationship_updates {
-            Origin::Cascade
-        } else {
-            Origin::Local
-        }
-    }
-
     /// Whether this origin's mutations should run relationship cascades.
     ///
     /// - `Local` mutations always cascade.
@@ -462,23 +450,6 @@ impl MykoServerCtx {
         self.set_with_origin(entity, Origin::Local)
     }
 
-    /// Publish an entity (SET) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal loop-guard plumbing (cascade
-    /// and peer-replication markers) and must not be set by callers — use
-    /// [`set`](Self::set) instead.
-    #[deprecated(note = "EventOptions is internal plumbing; use `set` instead")]
-    pub fn set_with_options<T>(
-        &self,
-        entity: &T,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + 'static,
-    {
-        self.set_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
-    }
-
     /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
     /// shared `apply_effects` tail, gated by `origin`.
     pub(crate) fn set_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
@@ -500,21 +471,6 @@ impl MykoServerCtx {
         self.del_with_origin(entity, Origin::Local)
     }
 
-    /// Delete an entity (DEL) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del`](Self::del).
-    #[deprecated(note = "EventOptions is internal plumbing; use `del` instead")]
-    pub fn del_with_options<T>(
-        &self,
-        entity: &T,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + Clone + 'static,
-    {
-        self.del_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
-    }
-
     pub(crate) fn del_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
@@ -532,21 +488,6 @@ impl MykoServerCtx {
         T: Eventable + Clone + 'static,
     {
         self.batch_set_with_origin(entities, Origin::Local)
-    }
-
-    /// Publish a batch of entities (SET) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set`](Self::batch_set).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set` instead")]
-    pub fn batch_set_with_options<T>(
-        &self,
-        entities: &[T],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + Clone + 'static,
-    {
-        self.batch_set_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
     }
 
     /// Publish a batch of entities (SET) with one grouped store insert.
@@ -576,21 +517,6 @@ impl MykoServerCtx {
         T: Eventable + Clone + 'static,
     {
         self.batch_del_with_origin(entities, Origin::Local)
-    }
-
-    /// Delete a batch of entities (DEL) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del`](Self::batch_del).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del` instead")]
-    pub fn batch_del_with_options<T>(
-        &self,
-        entities: &[T],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + Clone + 'static,
-    {
-        self.batch_del_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
     }
 
     /// Delete a batch of entities (DEL) with one grouped store remove.
@@ -623,18 +549,6 @@ impl MykoServerCtx {
         self.set_dyn_with_origin(item, Origin::Local)
     }
 
-    /// Publish a dynamic item (SET) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`set_dyn`](Self::set_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `set_dyn` instead")]
-    pub fn set_dyn_with_options(
-        &self,
-        item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.set_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
-    }
-
     pub(crate) fn set_dyn_with_origin(
         &self,
         item: Arc<dyn AnyItem>,
@@ -647,18 +561,6 @@ impl MykoServerCtx {
     /// Publish a batch of dynamic items (SET).
     pub fn batch_set_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         self.batch_set_dyn_with_origin(items, Origin::Local)
-    }
-
-    /// Publish a batch of dynamic items (SET) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set_dyn`](Self::batch_set_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set_dyn` instead")]
-    pub fn batch_set_dyn_with_options(
-        &self,
-        items: &[Arc<dyn AnyItem>],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.batch_set_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn batch_set_dyn_with_origin(
@@ -676,18 +578,6 @@ impl MykoServerCtx {
         self.del_dyn_with_origin(item, Origin::Local)
     }
 
-    /// Delete a dynamic item (DEL) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_dyn`](Self::del_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `del_dyn` instead")]
-    pub fn del_dyn_with_options(
-        &self,
-        item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.del_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
-    }
-
     pub(crate) fn del_dyn_with_origin(
         &self,
         item: Arc<dyn AnyItem>,
@@ -700,18 +590,6 @@ impl MykoServerCtx {
     /// Publish a batch of dynamic items (DEL).
     pub fn batch_del_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         self.batch_del_dyn_with_origin(items, Origin::Local)
-    }
-
-    /// Publish a batch of dynamic items (DEL) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del_dyn`](Self::batch_del_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del_dyn` instead")]
-    pub fn batch_del_dyn_with_options(
-        &self,
-        items: &[Arc<dyn AnyItem>],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.batch_del_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn batch_del_dyn_with_origin(
@@ -730,23 +608,6 @@ impl MykoServerCtx {
     /// Note: relationship cascades require the full item and are therefore skipped here.
     pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
         self.del_by_id_with_origin(entity_type, id, Origin::Local)
-    }
-
-    /// Delete an entity by type/id with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_by_id`](Self::del_by_id).
-    #[deprecated(note = "EventOptions is internal plumbing; use `del_by_id` instead")]
-    pub fn del_by_id_with_options(
-        &self,
-        entity_type: &str,
-        id: &str,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.del_by_id_with_origin(
-            entity_type,
-            id,
-            Origin::from_options(&options.unwrap_or_default()),
-        )
     }
 
     pub(crate) fn del_by_id_with_origin(

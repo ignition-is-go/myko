@@ -25,7 +25,7 @@ pub use command::{
     CommandError, CommandResponse, EncodedCommandMessage, WrappedCommand, encode_command_message,
     wrap_command_request,
 };
-pub use event::{EventOptions, MEvent, MEventType, intern_entity_type};
+pub use event::{MEvent, MEventType, intern_entity_type};
 pub use item::{ErasedWrappedItem, WrappedItem};
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
 pub use query::{
@@ -38,7 +38,6 @@ pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view
 // Ensure core wire types are exported to TS bindings for downstream packages.
 crate::register_ts_export!(
     event::MEventType,
-    event::EventOptions,
     event::MEvent,
     message::CancelSubscription,
     message::PingData,
