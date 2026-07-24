@@ -1093,21 +1093,6 @@ impl MykoServerCtx {
         // window — running effects outside the batch means that recursive call
         // opens its own fresh window instead of joining (and colliding with)
         // this one.
-        // Wrapped in `hyphae::batch` so N distinct types' stores settle in one
-        // glitch-free drain instead of firing eagerly per type — but scoped to
-        // *only* this loop, not the `apply_effects` tail below. `by_type`
-        // guarantees each type's `diffs_cell` is set at most once in this loop,
-        // which is the invariant `batch`'s last-write-wins coalescing needs
-        // (`diffs_cell` carries diff *events*, not latest-value state, and
-        // isn't `no_coalesce`-stamped — two sets to the same one in one window
-        // silently drops the first). `apply_effects` runs after this batch has
-        // already drained, specifically because cascades recurse back into
-        // `emit_grouped` (e.g. `handle_belongs_to_cascade_batch` ->
-        // `publish_del_cascade_batch` -> `batch_del_dyn_with_origin` ->
-        // `emit_grouped`) and could touch a type already reduced in this same
-        // window — running effects outside the batch means that recursive call
-        // opens its own fresh window instead of joining (and colliding with)
-        // this one.
         hyphae::batch(|| {
             for (entity_type, group) in &by_type {
                 let store = self.registry.get_or_create(entity_type);

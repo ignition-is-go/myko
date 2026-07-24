@@ -165,7 +165,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
             })?
             .ok_or_else(|| CommandError {
                 tx: ctx.tx().to_string(),
-                command_id: "SetClientWindbackTime".to_string(),
+                command_id: "ClearClientWindbackTime".to_string(),
                 message: format!("Client {} not found", client_id),
             })?;
         // Update client to clear windback
