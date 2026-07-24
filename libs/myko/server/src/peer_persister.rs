@@ -19,7 +19,7 @@
 //! entities this is intended for.
 //!
 //! Echo suppression: `MEvent::source_id` is populated with the origin
-//! server's host id when the event is produced (see `MykoServerCtx::produce_*`).
+//! server's host id when the event is produced (see `MykoServerContext::produce_*`).
 //! Receivers skip events they themselves originated (see
 //! `normalize_incoming_event` + `apply_event_batch_immediate` filtering).
 
@@ -42,7 +42,7 @@ pub struct PeerPersister {
 impl PeerPersister {
     /// Create a new `PeerPersister` that broadcasts through the given peer-client map.
     ///
-    /// The map is shared with `MykoServerCtx::peer_clients` so entries added by
+    /// The map is shared with `MykoServerContext::peer_clients` so entries added by
     /// `PeerRegistry::register_peer_client` become visible here automatically.
     pub fn new(peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>) -> Self {
         Self {

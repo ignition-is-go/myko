@@ -79,6 +79,6 @@ pub use crate::{
     search::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
     },
-    server::MykoServerCtx,
+    server::MykoServerContext,
     view::{ViewFactory, ViewRegistration},
 };

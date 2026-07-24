@@ -6,14 +6,14 @@ use std::{
 use myko::{
     entities::server::{GetAllServers, ServerId},
     relationship::iter_server_owned_registrations,
-    server::{MykoServerCtx, PersistError},
+    server::{MykoServerContext, PersistError},
 };
 
 pub struct ServerOwnershipManager;
 
 impl ServerOwnershipManager {
     /// Get IDs of all currently live servers.
-    fn live_server_ids(ctx: &MykoServerCtx) -> Vec<ServerId> {
+    fn live_server_ids(ctx: &MykoServerContext) -> Vec<ServerId> {
         use hyphae::Gettable;
         let req = ctx.new_server_transaction();
         ctx.query_map(GetAllServers {}, req)
@@ -26,7 +26,7 @@ impl ServerOwnershipManager {
 
     /// Count how many server_owned items each server currently owns
     /// across ALL registered #[server_owned] types.
-    fn count_distribution(ctx: &MykoServerCtx) -> HashMap<Arc<str>, usize> {
+    fn count_distribution(ctx: &MykoServerContext) -> HashMap<Arc<str>, usize> {
         let mut counts: HashMap<Arc<str>, usize> = HashMap::new();
 
         for reg in iter_server_owned_registrations() {
@@ -49,7 +49,7 @@ impl ServerOwnershipManager {
     }
 
     /// Scan all server_owned items and reassign any referencing dead/empty servers.
-    pub fn claim_orphaned(ctx: &MykoServerCtx) -> Result<(), PersistError> {
+    pub fn claim_orphaned(ctx: &MykoServerContext) -> Result<(), PersistError> {
         let live_ids = Self::live_server_ids(ctx);
         if live_ids.is_empty() {
             tracing::warn!("[ServerOwnership] No live servers found, skipping orphan claim");
@@ -98,7 +98,7 @@ impl ServerOwnershipManager {
 
     /// Watch for Server entity removals and redistribute orphaned items.
     /// Returns a SubscriptionGuard that must be kept alive.
-    pub fn watch_peer_deaths(ctx: &MykoServerCtx) -> hyphae::SubscriptionGuard {
+    pub fn watch_peer_deaths(ctx: &MykoServerContext) -> hyphae::SubscriptionGuard {
         use hyphae::{Gettable, Signal, Watchable};
 
         let req = ctx.new_server_transaction();

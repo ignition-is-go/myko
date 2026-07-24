@@ -3,7 +3,7 @@
 //! This module handles cascade operations based on relationships registered via
 //! `#[belongs_to]`, `#[owns_many]`, and `#[ensure_for]` attribute macros.
 //!
-//! Uses MykoServerCtx for queries and event publishing, keeping this module
+//! Uses MykoServerContext for queries and event publishing, keeping this module
 //! decoupled from direct store and event processor access.
 //!
 //! # Relationship Types
@@ -86,7 +86,7 @@ use dashmap::DashMap;
 use hyphae::Gettable;
 use tracing::{debug, info, trace};
 
-use super::{MykoServerCtx, persister::PersistError};
+use super::{MykoServerContext, persister::PersistError};
 use crate::{
     core::item::AnyItem,
     relationship::{
@@ -127,7 +127,7 @@ struct EnsureForLookup {
 /// builds lookup indexes for efficient cascade processing, and provides
 /// methods for processing events and establishing relations on startup.
 ///
-/// Unlike the actor-based version, this implementation uses MykoServerCtx
+/// Unlike the actor-based version, this implementation uses MykoServerContext
 /// for queries and event publishing, keeping it decoupled from direct
 /// store and event processor access.
 pub struct RelationshipManager {
@@ -281,7 +281,7 @@ impl RelationshipManager {
     pub fn forward_set(
         &self,
         item: Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
 
@@ -309,7 +309,7 @@ impl RelationshipManager {
     pub fn forward_del(
         &self,
         item: Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         // Handle BelongsTo cascades (parent deleted → delete children)
         self.handle_belongs_to_cascade(&item, ctx)?;
@@ -340,7 +340,7 @@ impl RelationshipManager {
     pub fn forward_del_batch(
         &self,
         items: &[Arc<dyn AnyItem>],
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         if items.is_empty() {
             return Ok(());
@@ -369,7 +369,7 @@ impl RelationshipManager {
     /// 1. BelongsTo orphan cleanup: Delete children pointing to non-existent parents
     /// 2. OwnsMany orphan cleanup: Delete children not referenced by any parent
     /// 3. EnsureFor initialization: Create missing entities for all dependency combinations
-    pub fn establish_relations(&self, ctx: &MykoServerCtx) -> Result<(), PersistError> {
+    pub fn establish_relations(&self, ctx: &MykoServerContext) -> Result<(), PersistError> {
         info!("RelationshipManager: Establishing relations on startup");
         trace!(
             "RelationshipManager: BelongsTo relations by local: {:?}",
@@ -401,7 +401,7 @@ impl RelationshipManager {
     fn handle_belongs_to_cascade(
         &self,
         item: &Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.belongs_to_by_foreign.get(item_type) else {
@@ -432,7 +432,7 @@ impl RelationshipManager {
     fn handle_belongs_to_cascade_batch(
         &self,
         items: &[Arc<dyn AnyItem>],
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let Some(first) = items.first() else {
             return Ok(());
@@ -472,7 +472,7 @@ impl RelationshipManager {
     /// Find children whose FK matches a given parent ID
     fn find_children_by_fk(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         lookup: &BelongsToLookup,
         parent_id: &str,
     ) -> Vec<Arc<dyn AnyItem>> {
@@ -546,7 +546,7 @@ impl RelationshipManager {
         }
     }
 
-    fn ensure_belongs_to_index_loaded(&self, ctx: &MykoServerCtx, lookup: &BelongsToLookup) {
+    fn ensure_belongs_to_index_loaded(&self, ctx: &MykoServerContext, lookup: &BelongsToLookup) {
         if self.belongs_to_parent_by_child.contains_key(&lookup.id) {
             return;
         }
@@ -576,7 +576,7 @@ impl RelationshipManager {
     fn handle_owns_many_parent_delete(
         &self,
         item: &Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.owns_many_by_local.get(item_type) else {
@@ -621,7 +621,7 @@ impl RelationshipManager {
     fn handle_owns_many_parent_delete_batch(
         &self,
         items: &[Arc<dyn AnyItem>],
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let Some(first) = items.first() else {
             return Ok(());
@@ -670,7 +670,7 @@ impl RelationshipManager {
     fn handle_owns_many_child_delete(
         &self,
         item: &Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.owns_many_by_foreign.get(item_type) else {
@@ -708,7 +708,7 @@ impl RelationshipManager {
     /// Find parents whose owned array contains a given child ID
     fn find_parents_containing(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         lookup: &OwnsManyLookup,
         child_id: &str,
     ) -> Vec<Arc<dyn AnyItem>> {
@@ -730,7 +730,7 @@ impl RelationshipManager {
     fn handle_ensure_for(
         &self,
         item: &Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let item_type = item.entity_type();
         let Some(lookups) = self.ensure_for_by_dependency.get(item_type) else {
@@ -776,7 +776,7 @@ impl RelationshipManager {
     fn handle_ensure_for_delete(
         &self,
         item: &Arc<dyn AnyItem>,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         self.handle_ensure_for_delete_batch(std::slice::from_ref(item), ctx)
     }
@@ -784,7 +784,7 @@ impl RelationshipManager {
     fn handle_ensure_for_delete_batch(
         &self,
         items: &[Arc<dyn AnyItem>],
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let Some(first) = items.first() else {
             return Ok(());
@@ -835,7 +835,7 @@ impl RelationshipManager {
     /// fallback path when its index isn't loaded yet).
     fn find_ensure_for_children_by_dependency(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         lookup: &EnsureForLookup,
         dep: &EnsureForDependency,
         dep_ids: &HashSet<Arc<str>>,
@@ -863,14 +863,14 @@ impl RelationshipManager {
     /// points at a parent that no longer exists).
     ///
     /// Runtime orphaning is handled by the transitive DEL cascade
-    /// (`Origin::Cascade` + DEL descends — see `MykoServerCtx::apply_effects`),
+    /// (`Origin::Cascade` + DEL descends — see `MykoServerContext::apply_effects`),
     /// so deleting a parent removes its whole subtree without a restart. This
     /// sweep remains only for the "child written with an FK to a never-existent
     /// parent" case. We deliberately do **not** delete such orphans eagerly on
     /// the child's SET: under out-of-order / eventually-consistent ingestion a
     /// child can legitimately arrive before its parent, so eager deletion would
     /// be data loss. The sweep runs at boot, once ordering has settled.
-    fn cleanup_belongs_to_orphans(&self, ctx: &MykoServerCtx) -> Result<(), PersistError> {
+    fn cleanup_belongs_to_orphans(&self, ctx: &MykoServerContext) -> Result<(), PersistError> {
         trace!(
             "RelationshipManager: cleanup_belongs_to_orphans - checking {} child types",
             self.belongs_to_by_local.len()
@@ -946,7 +946,7 @@ impl RelationshipManager {
     }
 
     /// Cleanup orphaned children for OwnsMany relationships
-    fn cleanup_owns_many_orphans(&self, ctx: &MykoServerCtx) -> Result<(), PersistError> {
+    fn cleanup_owns_many_orphans(&self, ctx: &MykoServerContext) -> Result<(), PersistError> {
         trace!(
             "RelationshipManager: cleanup_owns_many_orphans - checking {} parent types",
             self.owns_many_by_local.len()
@@ -1040,7 +1040,7 @@ impl RelationshipManager {
     }
 
     /// Initialize EnsureFor relationships (create missing derived entities)
-    fn initialize_ensure_for(&self, ctx: &MykoServerCtx) -> Result<(), PersistError> {
+    fn initialize_ensure_for(&self, ctx: &MykoServerContext) -> Result<(), PersistError> {
         // Track which local_types we've processed to avoid duplicates
         let mut processed: HashSet<&'static str> = HashSet::new();
 
@@ -1089,13 +1089,13 @@ impl RelationshipManager {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // Query helpers (using MykoServerCtx)
+    // Query helpers (using MykoServerContext)
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Get an entity by ID
     fn get_by_id(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         entity_type: &str,
         id: &str,
     ) -> Option<Arc<dyn AnyItem>> {
@@ -1104,7 +1104,7 @@ impl RelationshipManager {
     }
 
     /// Get all entities of a type
-    fn get_all_items(&self, ctx: &MykoServerCtx, entity_type: &str) -> Vec<Arc<dyn AnyItem>> {
+    fn get_all_items(&self, ctx: &MykoServerContext, entity_type: &str) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
         store.snapshot().into_iter().map(|(_, item)| item).collect()
     }
@@ -1112,7 +1112,7 @@ impl RelationshipManager {
     /// Get all combinations of dependency entity IDs for EnsureFor
     fn get_dependency_combinations(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         dependencies: &[EnsureForDependency],
     ) -> Vec<Vec<Arc<str>>> {
         if dependencies.is_empty() {
@@ -1182,7 +1182,7 @@ impl RelationshipManager {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // Publishing helpers (using MykoServerCtx)
+    // Publishing helpers (using MykoServerContext)
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Publish a SET for cascade operations.
@@ -1190,7 +1190,7 @@ impl RelationshipManager {
     /// Sets prevent_relationship_updates to avoid infinite loops.
     fn publish_set_cascade(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         _entity_type: &str,
         item: Arc<dyn AnyItem>,
     ) -> Result<(), PersistError> {
@@ -1207,7 +1207,7 @@ impl RelationshipManager {
 
     fn publish_set_cascade_batch(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         items: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
         ctx.batch_set_dyn_with_origin(items, super::Origin::Cascade)
@@ -1218,7 +1218,7 @@ impl RelationshipManager {
     /// Sets prevent_relationship_updates to avoid infinite loops.
     fn publish_del_cascade(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         entity_type: &str,
         id: &str,
     ) -> Result<(), PersistError> {
@@ -1242,7 +1242,7 @@ impl RelationshipManager {
 
     fn publish_del_cascade_batch(
         &self,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         items: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
         if items.is_empty() {
@@ -1319,7 +1319,7 @@ mod cascade_tests {
     use crate::{
         hyphae::Gettable,
         search::SearchIndex,
-        server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
         test_util::scheduler_test_serial,
     };
@@ -1339,9 +1339,9 @@ mod cascade_tests {
         }
     }
 
-    fn make_ctx() -> (MykoServerCtx, Arc<StoreRegistry>) {
+    fn make_ctx() -> (MykoServerContext, Arc<StoreRegistry>) {
         let registry = Arc::new(StoreRegistry::new());
-        let ctx = MykoServerCtx::new(
+        let ctx = MykoServerContext::new(
             Uuid::new_v4(),
             registry.clone(),
             Arc::new(HandlerRegistry::new()),
@@ -1486,7 +1486,7 @@ mod ensure_for_cascade_tests {
     use crate::{
         core::item::AnyItem,
         search::SearchIndex,
-        server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
         test_util::scheduler_test_serial,
     };
@@ -1519,9 +1519,9 @@ mod ensure_for_cascade_tests {
         }
     }
 
-    fn make_ctx() -> (MykoServerCtx, Arc<StoreRegistry>) {
+    fn make_ctx() -> (MykoServerContext, Arc<StoreRegistry>) {
         let registry = Arc::new(StoreRegistry::new());
-        let ctx = MykoServerCtx::new(
+        let ctx = MykoServerContext::new(
             Uuid::new_v4(),
             registry.clone(),
             Arc::new(HandlerRegistry::new()),

@@ -20,7 +20,7 @@
 //! ┌──────────────────────────────────────────────────────────────────────────┐
 //! │                             MykoServer                                   │
 //! │                                                                          │
-//! │  WebSocket ──► WsHandler ──► MykoServerCtx ──► StoreRegistry             │
+//! │  WebSocket ──► WsHandler ──► MykoServerContext ──► StoreRegistry             │
 //! │      │              │             │                   │                  │
 //! │      │              │             │             CellMap<id, item>        │
 //! │      │              ▼             │                   │                  │

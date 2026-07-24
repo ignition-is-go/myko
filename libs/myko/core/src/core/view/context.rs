@@ -5,7 +5,7 @@ use crate::core::capability::{RegistryScoped, RequestScoped};
 use crate::core::capability::{Querying, Reporting, ServerScoped, Viewing};
 use crate::request::RequestContext;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::MykoServerCtx;
+use crate::server::MykoServerContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::store::StoreRegistry;
 
@@ -18,7 +18,7 @@ pub struct ViewContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) server_ctx: Arc<MykoServerCtx>,
+    pub(crate) server_ctx: Arc<MykoServerContext>,
 }
 
 impl ViewContext {
@@ -26,7 +26,7 @@ impl ViewContext {
     pub fn new(
         req: Arc<RequestContext>,
         registry: Arc<StoreRegistry>,
-        server_ctx: Arc<MykoServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Self {
         Self {
             req,
@@ -50,7 +50,7 @@ impl RegistryScoped for ViewContext {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl ServerScoped for ViewContext {
-    fn __server_ctx(&self) -> &Arc<MykoServerCtx> {
+    fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
     }
 }
@@ -95,7 +95,7 @@ impl RegistryScoped for ViewBuildContext {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl ServerScoped for ViewBuildContext {
-    fn __server_ctx(&self) -> &Arc<MykoServerCtx> {
+    fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.view_context.server_ctx
     }
 }

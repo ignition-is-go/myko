@@ -17,7 +17,7 @@ use hyphae::{
 };
 use myko::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
-    server::MykoServerCtx,
+    server::MykoServerContext,
 };
 use tracing::info;
 
@@ -61,7 +61,7 @@ impl PeerRegistry {
     }
 
     fn spawn_self_advertise_guard(
-        ctx: MykoServerCtx,
+        ctx: MykoServerContext,
         local_server: Server,
         self_host_id: ServerId,
     ) -> SubscriptionGuard {
@@ -89,7 +89,7 @@ impl PeerRegistry {
         host_id: &ServerId,
         local_address: &str,
         local_port: u16,
-        ctx: &MykoServerCtx,
+        ctx: &MykoServerContext,
         connections: &Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: &Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) where
@@ -167,7 +167,7 @@ impl PeerRegistry {
         host_id: ServerId,
         local_address: String,
         local_port: u16,
-        ctx: MykoServerCtx,
+        ctx: MykoServerContext,
         connections: Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) -> SubscriptionGuard {
@@ -187,7 +187,7 @@ impl PeerRegistry {
             .subscribe(|_| {})
     }
 
-    pub fn new(ctx: MykoServerCtx, config: PeerRegistryConfig) -> Self {
+    pub fn new(ctx: MykoServerContext, config: PeerRegistryConfig) -> Self {
         let server_req = ctx.new_server_transaction();
 
         let connections = Arc::new(DashMap::new());

@@ -11,7 +11,7 @@ use myko::{
     },
     hyphae::{Cell, CellMutable, MapExt, MaterializeDefinite, Mutable},
     query::IdFilter,
-    server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
@@ -22,8 +22,8 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn make_ctx() -> MykoServerCtx {
-    MykoServerCtx::new(
+fn make_ctx() -> MykoServerContext {
+    MykoServerContext::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
@@ -36,7 +36,7 @@ fn make_ctx() -> MykoServerCtx {
     )
 }
 
-fn insert_client(ctx: &MykoServerCtx, id: &str, server_id: &str) {
+fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
     let client = Client {
         id: id.into(),
         server_id: ServerId::from(Arc::<str>::from(server_id)),

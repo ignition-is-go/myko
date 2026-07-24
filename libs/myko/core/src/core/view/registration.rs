@@ -14,7 +14,7 @@ use super::{
     },
 };
 use crate::{
-    common::with_id::WithId, item::Eventable, request::RequestContext, server::MykoServerCtx,
+    common::with_id::WithId, item::Eventable, request::RequestContext, server::MykoServerContext,
     store::StoreRegistry,
 };
 
@@ -26,7 +26,7 @@ pub type ViewCellFactory = fn(
     Arc<dyn AnyView>,
     Arc<StoreRegistry>,
     Arc<RequestContext>,
-    Arc<MykoServerCtx>,
+    Arc<MykoServerContext>,
 ) -> Result<FilteredViewCellMap, String>;
 
 /// Registration entry for a view type.
@@ -59,7 +59,7 @@ pub trait ViewFactory: ViewParams {
         view: Arc<dyn AnyView>,
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Arc<MykoServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Result<FilteredViewCellMap, String>;
 }
 
@@ -85,7 +85,7 @@ where
         any_view: Arc<dyn AnyView>,
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Arc<MykoServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Result<FilteredViewCellMap, String> {
         // Bounded cardinality (one span per view registration), matching
         // `myko.query`/`myko.command`.

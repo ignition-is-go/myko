@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use myko::server::MykoServerCtx;
+use myko::server::MykoServerContext;
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -30,7 +30,7 @@ const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 /// Handle `POST /myko/mcp`.
 pub async fn handle_post(
     mut stream: TcpStream,
-    ctx: Arc<MykoServerCtx>,
+    ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -91,7 +91,7 @@ pub async fn handle_post(
 /// notification wiring is future work.
 pub async fn handle_sse(
     mut stream: TcpStream,
-    _ctx: Arc<MykoServerCtx>,
+    _ctx: Arc<MykoServerContext>,
     _head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = "HTTP/1.1 200 OK\r\n\

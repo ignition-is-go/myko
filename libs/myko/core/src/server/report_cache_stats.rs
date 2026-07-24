@@ -1,6 +1,6 @@
 //! Periodic-summary report-cache hit/miss instrumentation.
 //!
-//! Replaces per-call `tracing::debug!` lines in `MykoServerCtx::report` (which
+//! Replaces per-call `tracing::debug!` lines in `MykoServerContext::report` (which
 //! were firing thousands of times per scene load and dominated I/O).
 //!
 //! The hot path increments per-report-id atomic counters via DashMap entry

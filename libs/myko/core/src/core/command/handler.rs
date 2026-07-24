@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::MykoServerCtx;
+use crate::server::MykoServerContext;
 use crate::{
     command::CommandError, core::capability::RequestScoped, query::QueryParams,
     request::RequestContext,
@@ -25,7 +25,7 @@ pub struct CommandContext {
     pub command_id: Arc<str>,
 
     #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<MykoServerCtx>,
+    server_ctx: Arc<MykoServerContext>,
 }
 
 impl CommandContext {
@@ -34,7 +34,7 @@ impl CommandContext {
     pub fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
-        server_ctx: Arc<MykoServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Self {
         Self {
             req,
@@ -139,7 +139,7 @@ impl crate::core::capability::RequestScoped for CommandContext {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::core::capability::ServerScoped for CommandContext {
-    fn __server_ctx(&self) -> &Arc<MykoServerCtx> {
+    fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
     }
 }

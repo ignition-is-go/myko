@@ -147,7 +147,7 @@ pub fn message_kind(msg: &MykoMessage) -> &'static str {
 }
 
 /// Spawn the dedicated summary thread. Idempotent — safe to call from any
-/// number of `MykoServerCtx::new` invocations.
+/// number of `MykoServerContext::new` invocations.
 pub fn start_periodic_logger() {
     static STARTED: OnceLock<()> = OnceLock::new();
     if STARTED.set(()).is_err() {

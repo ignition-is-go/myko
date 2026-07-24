@@ -5,7 +5,7 @@
 //! For querying, use `store.select(predicate)` directly:
 //!
 //! ```text
-//! // 1) Build a reactive query map from MykoServerCtx:
+//! // 1) Build a reactive query map from MykoServerContext:
 //! let map = ctx.query_map(GetTargetsByQuery { active: Some(true), ..Default::default() }, req);
 //!
 //! // 2) Derive values from the map:

@@ -7,7 +7,7 @@
 //! - `peer_registry` — federation with other servers
 //! - `mcp` — Model Context Protocol server
 //!
-//! Tokio-free server types (MykoServerCtx, HandlerRegistry, etc.) live in `myko::server`.
+//! Tokio-free server types (MykoServerContext, HandlerRegistry, etc.) live in `myko::server`.
 
 pub mod mcp;
 pub mod peer_persister;
@@ -254,9 +254,9 @@ pub struct MykoServer {
     /// then genuinely process-wide, so N connections subscribing to the same
     /// query share one reactive cell graph instead of N copies, cache sweeps
     /// actually reach live entries, and every peer-death watcher observes the
-    /// same tick. Every `MykoServerCtx` field is an `Arc`/`Cell`/`Uuid`, so a
+    /// same tick. Every `MykoServerContext` field is an `Arc`/`Cell`/`Uuid`, so a
     /// clone is a handful of refcount bumps that share the underlying state.
-    ctx_cache: std::sync::OnceLock<MykoServerCtx>,
+    ctx_cache: std::sync::OnceLock<MykoServerContext>,
 }
 
 impl MykoServer {
@@ -388,14 +388,14 @@ impl MykoServer {
 
     /// Get a server context for module use.
     ///
-    /// Returns a clone of the one memoized [`MykoServerCtx`] (see `ctx_cache`)
+    /// Returns a clone of the one memoized [`MykoServerContext`] (see `ctx_cache`)
     /// so all callers share the same caches and peer-tick cell. Building a
     /// fresh context per call — the old behavior — gave every connection its
     /// own caches: no cross-client cache sharing (an N× reactive-graph
     /// memory multiplier), sweeps that never reached connection caches, and a
     /// `peer_clients_tick` that register/unregister bumped on one context
     /// while a watcher built on another never observed.
-    pub fn ctx(&self) -> MykoServerCtx {
+    pub fn ctx(&self) -> MykoServerContext {
         self.ctx_cache
             .get_or_init(|| {
                 let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
@@ -403,7 +403,7 @@ impl MykoServer {
                         Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
                             as Arc<dyn myko::server::HistoryReplayProvider>
                     });
-                MykoServerCtx::new(
+                MykoServerContext::new(
                     self.host_id,
                     self.registry.clone(),
                     self.handler_registry.clone(),
@@ -491,7 +491,7 @@ impl MykoServer {
                     let cmd_ctx = CommandContext::new(
                         Arc::from(command_name),
                         req,
-                        Arc::new(MykoServerCtx::new(
+                        Arc::new(MykoServerContext::new(
                             host_id,
                             registry.clone(),
                             handler_registry.clone(),

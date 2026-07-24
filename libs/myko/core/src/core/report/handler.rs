@@ -11,7 +11,7 @@ use crate::core::capability::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::core::capability::{PeerAccess, Replaying, Viewing};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::server::MykoServerCtx;
+use crate::server::MykoServerContext;
 use crate::{common::to_value::ToValue, request::RequestContext, store::StoreRegistry};
 
 /// Context provided to report handlers for accessing dependencies.
@@ -29,12 +29,12 @@ pub struct ReportContext {
     /// from [`RegistryScoped`].
     pub(crate) store_registry: Arc<StoreRegistry>,
     #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<MykoServerCtx>,
+    server_ctx: Arc<MykoServerContext>,
 }
 
 impl ReportContext {
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerCtx>) -> Self {
+    pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerContext>) -> Self {
         let store_registry = server_ctx.registry.clone();
         Self {
             req,
@@ -62,7 +62,7 @@ impl RegistryScoped for ReportContext {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl ServerScoped for ReportContext {
-    fn __server_ctx(&self) -> &Arc<MykoServerCtx> {
+    fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
     }
 }

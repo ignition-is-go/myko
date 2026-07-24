@@ -27,7 +27,7 @@ use myko::{
     report::AnyOutput,
     request::RequestContext,
     server::{
-        MykoServerCtx, ClientSession, PendingQueryResponse, WsWriter,
+        MykoServerContext, ClientSession, PendingQueryResponse, WsWriter,
         client_registry::try_client_registry,
     },
     wire::{
@@ -246,7 +246,7 @@ impl WsHandler {
     pub async fn handle_connection(
         stream: TcpStream,
         addr: SocketAddr,
-        ctx: Arc<MykoServerCtx>,
+        ctx: Arc<MykoServerContext>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut ws_config = WebSocketConfig::default();
         ws_config.max_message_size = Some(WS_MAX_MESSAGE_SIZE_BYTES);
@@ -265,7 +265,7 @@ impl WsHandler {
     pub async fn handle_upgraded(
         ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,
         addr: SocketAddr,
-        ctx: Arc<MykoServerCtx>,
+        ctx: Arc<MykoServerContext>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let host_id = ctx.host_id;
 
@@ -762,7 +762,7 @@ impl WsHandler {
     #[allow(clippy::too_many_arguments)]
     fn handle_message<W: WsWriter>(
         session: &mut ClientSession<W>,
-        ctx: Arc<MykoServerCtx>,
+        ctx: Arc<MykoServerContext>,
         priority_tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &Arc<DropLogger>,
         query_ids_by_tx: &Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>,
@@ -1381,7 +1381,7 @@ impl WsHandler {
     }
 
     fn execute_command_job(
-        ctx: Arc<MykoServerCtx>,
+        ctx: Arc<MykoServerContext>,
         priority_tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &DropLogger,
         client_id: Arc<str>,

@@ -3,7 +3,7 @@
 //! Each handler context (report, view, query, command, saga) exposes a
 //! *scoped* slice of the server's functionality. Rather than each context
 //! hand-forwarding a curated set of methods to an internally-held
-//! `Arc<MykoServerCtx>`, that functionality lives here as a set of sealed
+//! `Arc<MykoServerContext>`, that functionality lives here as a set of sealed
 //! capability traits with default methods. A context opts into exactly the
 //! capabilities its handler kind is allowed by implementing those traits
 //! (the impls are empty — the bodies are the trait defaults), and the scope
@@ -15,7 +15,7 @@
 //!
 //! The accessor traits are sealed via a crate-private supertrait, so nothing
 //! downstream can implement them, forge a capability, or reach the raw
-//! `MykoServerCtx` to escape its scope.
+//! `MykoServerContext` to escape its scope.
 //!
 //! ## wasm
 //!
@@ -87,7 +87,7 @@ pub trait RegistryScoped: sealed::Sealed {
 pub trait ServerScoped: RequestScoped {
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
-    fn __server_ctx(&self) -> &Arc<crate::server::MykoServerCtx>;
+    fn __server_ctx(&self) -> &Arc<crate::server::MykoServerContext>;
 }
 
 use hyphae::{Cell, CellImmutable, CellMap, CellValue};

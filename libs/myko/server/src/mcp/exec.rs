@@ -4,7 +4,7 @@
 //!
 //! - [`Executor::Client`] — wraps a [`MykoClient`]; talks to a remote Myko server
 //!   over WebSocket. Used by the stdio MCP binary.
-//! - [`Executor::InProcess`] — talks directly to a [`MykoServerCtx`]; used by the
+//! - [`Executor::InProcess`] — talks directly to a [`MykoServerContext`]; used by the
 //!   HTTP/WS MCP endpoints hosted inside the server.
 
 use std::{
@@ -19,7 +19,7 @@ use myko::{
     query::QueryRegistration,
     report::ReportRegistration,
     request::RequestContext,
-    server::MykoServerCtx,
+    server::MykoServerContext,
     view::ViewRegistration,
     wire::{WrappedCommand, WrappedQuery, WrappedReport, WrappedView},
 };
@@ -37,8 +37,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum Executor {
     /// Talk to a remote Myko server over WebSocket via a `MykoClient`.
     Client(Arc<MykoClient>),
-    /// Talk to a server hosted in the same process via its `MykoServerCtx`.
-    InProcess(Arc<MykoServerCtx>),
+    /// Talk to a server hosted in the same process via its `MykoServerContext`.
+    InProcess(Arc<MykoServerContext>),
 }
 
 impl Executor {
@@ -338,7 +338,7 @@ async fn client_execute_command(
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn in_process_execute_query(
-    ctx: Arc<MykoServerCtx>,
+    ctx: Arc<MykoServerContext>,
     query_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
@@ -390,7 +390,7 @@ fn in_process_execute_query(
 }
 
 fn in_process_execute_view(
-    ctx: Arc<MykoServerCtx>,
+    ctx: Arc<MykoServerContext>,
     view_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
@@ -438,7 +438,7 @@ fn in_process_execute_view(
 }
 
 async fn in_process_execute_report(
-    ctx: Arc<MykoServerCtx>,
+    ctx: Arc<MykoServerContext>,
     report_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
@@ -490,7 +490,7 @@ async fn in_process_execute_report(
 }
 
 fn in_process_execute_command(
-    ctx: Arc<MykoServerCtx>,
+    ctx: Arc<MykoServerContext>,
     command_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {

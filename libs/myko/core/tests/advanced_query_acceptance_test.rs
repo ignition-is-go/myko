@@ -19,7 +19,7 @@ use myko::{
         server::ServerId,
     },
     query::{IdFilter, query_runtime_metrics_by_id},
-    server::{MykoServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
@@ -32,8 +32,8 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn make_ctx() -> MykoServerCtx {
-    MykoServerCtx::new(
+fn make_ctx() -> MykoServerContext {
+    MykoServerContext::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
@@ -46,7 +46,7 @@ fn make_ctx() -> MykoServerCtx {
     )
 }
 
-fn insert_client(ctx: &MykoServerCtx, id: &str, server_id: &str) {
+fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
     let client = Client {
         id: id.into(),
         server_id: ServerId::from(Arc::<str>::from(server_id)),
@@ -58,7 +58,7 @@ fn insert_client(ctx: &MykoServerCtx, id: &str, server_id: &str) {
 }
 
 fn insert_compound_child(
-    ctx: &MykoServerCtx,
+    ctx: &MykoServerContext,
     id: &str,
     parent_a: &str,
     parent_b: &str,
@@ -74,7 +74,7 @@ fn insert_compound_child(
     ctx.apply_event_batch(vec![event]).unwrap();
 }
 
-fn request(ctx: &MykoServerCtx, tx: &str) -> Arc<myko::request::RequestContext> {
+fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestContext> {
     Arc::new(myko::request::RequestContext::from_client(
         Arc::from(tx),
         Arc::from("client-1"),

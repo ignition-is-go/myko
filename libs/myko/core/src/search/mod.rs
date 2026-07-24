@@ -22,7 +22,7 @@
 //! ## Architecture
 //!
 //! ```text
-//! MykoServerCtx (set/del) --> SearchIndex (compat wrapper)
+//! MykoServerContext (set/del) --> SearchIndex (compat wrapper)
 //!                                  |
 //!                            typed::SearchRegistry (per-type)
 //!                                  |
