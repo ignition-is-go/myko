@@ -103,6 +103,25 @@ use crate::{
     wire::MEvent,
 };
 
+/// Body helper for a capability method that is real on native and a stub on
+/// wasm. Expands to the `#[cfg]`-split every wasm-compatible server capability
+/// shares: `$body` runs natively (reading through `__server_ctx()`), while on
+/// wasm32 it consumes its arguments (silencing unused-variable lints) and
+/// `unreachable!()`s — handlers only ever *run* server-side (see the module
+/// docs). Native-only capabilities (`view`, `peer_client`, …) name server-only
+/// types, so they are `#[cfg(not(wasm))]` on the trait and do not use this.
+macro_rules! wasm_native {
+    ($name:literal, ($($arg:ident),* $(,)?), $body:block) => {{
+        #[cfg(not(target_arch = "wasm32"))]
+        $body
+        #[cfg(target_arch = "wasm32")]
+        {
+            $(let _ = $arg;)*
+            unreachable!(concat!($name, " is not available on wasm32"))
+        }
+    }};
+}
+
 /// Subscribe to reactive query dependencies.
 pub trait Querying: ServerScoped {
     /// Subscribe to a query and get a typed reactive `CellMap` keyed by the
@@ -124,15 +143,9 @@ pub trait Querying: ServerScoped {
             + CellValue
             + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("query_map", (query), {
             self.__server_ctx().query_map(query, self.__request().clone())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!("query_map is not available on wasm32")
-        }
+        })
     }
 
     /// Subscribe to a query keyed by canonical `Arc<str>` ids.
@@ -150,16 +163,10 @@ pub trait Querying: ServerScoped {
             + CellValue
             + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("query_map_by_str", (query), {
             self.__server_ctx()
                 .query_map_by_str(query, self.__request().clone())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!("query_map_by_str is not available on wasm32")
-        }
+        })
     }
 
     /// Subscribe to a query and get an untyped (erased `AnyItem`) reactive map.
@@ -213,15 +220,9 @@ pub trait Querying: ServerScoped {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("query_live", (filter_cell), {
             self.__server_ctx().query_live(filter_cell)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = filter_cell;
-            unreachable!("query_live is not available on wasm32")
-        }
+        })
     }
 }
 
@@ -229,17 +230,11 @@ pub trait Querying: ServerScoped {
 pub trait Searching: ServerScoped {
     /// Matching entity ids (up to `limit`), backed by the per-type search index.
     fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("search", (entity_type, query, limit), {
             self.__server_ctx()
                 .search_index()
                 .search(entity_type, query, limit)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (entity_type, query, limit);
-            unreachable!("search is not available on wasm32")
-        }
+        })
     }
 }
 
@@ -251,15 +246,9 @@ pub trait Reporting: ServerScoped {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + Serialize + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("report", (report), {
             self.__server_ctx().report(report, self.__request().clone())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = report;
-            unreachable!("report is not available on wasm32")
-        }
+        })
     }
 }
 
@@ -287,17 +276,11 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("emit_set", (item), {
             self.__server_ctx()
                 .set(&*item)
                 .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = item;
-            unreachable!("emit_set is not available on wasm32")
-        }
+        })
     }
 
     /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
@@ -305,20 +288,14 @@ pub trait EventPublishing: ServerScoped {
         &self,
         items: &[T],
     ) -> Result<(), CommandError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("emit_set_batch", (items), {
             let anys = items
                 .iter()
                 .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
             self.__server_ctx()
                 .set_batch_any(anys)
                 .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!("emit_set_batch is not available on wasm32")
-        }
+        })
     }
 
     /// Emit a mixed batch of type-erased SET events (applied immediately).
@@ -326,17 +303,11 @@ pub trait EventPublishing: ServerScoped {
     where
         I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("emit_set_any_batch", (items), {
             self.__server_ctx()
                 .set_batch_any(items)
                 .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!("emit_set_any_batch is not available on wasm32")
-        }
+        })
     }
 
     /// Emit a DEL event for an item.
@@ -344,17 +315,11 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("emit_del", (item), {
             self.__server_ctx()
                 .del(&*item)
                 .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = item;
-            unreachable!("emit_del is not available on wasm32")
-        }
+        })
     }
 
     /// Emit a batch of typed DEL events (applied immediately, in one bulk pass).
@@ -364,20 +329,14 @@ pub trait EventPublishing: ServerScoped {
         I: IntoIterator<Item = &'a T>,
         T: 'a,
     {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("emit_del_batch", (items), {
             let anys = items
                 .into_iter()
                 .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
             self.__server_ctx()
                 .del_batch_any(anys)
                 .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!("emit_del_batch is not available on wasm32")
-        }
+        })
     }
 
     /// Apply a batch of pre-built raw events (SET or DEL), applied immediately.
@@ -386,17 +345,11 @@ pub trait EventPublishing: ServerScoped {
     /// already holds erased JSON + entity-type strings rather than typed
     /// entities. Returns the number of events applied.
     fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
+        wasm_native!("emit_event_batch", (events), {
             self.__server_ctx()
                 .apply_events_immediate(events)
                 .map_err(|e| self.__emit_err(e))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = events;
-            unreachable!("emit_event_batch is not available on wasm32")
-        }
+        })
     }
 }
 
