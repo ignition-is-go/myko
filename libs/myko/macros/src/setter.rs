@@ -175,11 +175,11 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
               ) -> Result<(), #krate::prelude::CommandError> {
                   let report = #get_by_id_ident { id: self.id.clone() };
                   let entity = ctx.exec_report(report)?.ok_or_else(|| {
-                      #krate::prelude::CommandError {
-                          tx: ctx.tx().to_string(),
-                          command_id: ctx.command_id.to_string(),
-                          message: format!("{} {} not found", stringify!(#entity_ident), self.id),
-                      }
+                      #krate::prelude::CommandError::new(
+                          ctx.tx(),
+                          ctx.command_id.to_string(),
+                          format!("{} {} not found", stringify!(#entity_ident), self.id),
+                      )
                   })?;
 
                   let updated = #entity_ident {

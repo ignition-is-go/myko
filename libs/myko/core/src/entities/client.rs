@@ -107,11 +107,12 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
     ) -> Result<bool, crate::command::CommandError> {
         let client_id = ctx
             .client_id()
-            .ok_or_else(|| crate::command::CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "SetClientWindbackTime".to_string(),
-                message: "No client_id in context - windback requires a WebSocket connection"
-                    .to_string(),
+            .ok_or_else(|| {
+                crate::command::CommandError::new(
+                    ctx.tx(),
+                    "SetClientWindbackTime",
+                    "No client_id in context - windback requires a WebSocket connection",
+                )
             })?;
 
         // Find the client entity
@@ -119,10 +120,12 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
             .exec_report(GetClientById {
                 id: ClientId::from(Arc::<str>::from(client_id)),
             })?
-            .ok_or_else(|| CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "SetClientWindbackTime".to_string(),
-                message: format!("Client {} not found", client_id),
+            .ok_or_else(|| {
+                CommandError::new(
+                    ctx.tx(),
+                    "SetClientWindbackTime",
+                    format!("Client {} not found", client_id),
+                )
             })?;
 
         // Update client with new windback time
@@ -151,11 +154,12 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
     ) -> Result<bool, crate::command::CommandError> {
         let client_id = ctx
             .client_id()
-            .ok_or_else(|| crate::command::CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "ClearClientWindbackTime".to_string(),
-                message: "No client_id in context - windback requires a WebSocket connection"
-                    .to_string(),
+            .ok_or_else(|| {
+                crate::command::CommandError::new(
+                    ctx.tx(),
+                    "ClearClientWindbackTime",
+                    "No client_id in context - windback requires a WebSocket connection",
+                )
             })?;
 
         // Find the client entity
@@ -163,10 +167,12 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
             .exec_report(GetClientById {
                 id: ClientId::from(Arc::<str>::from(client_id)),
             })?
-            .ok_or_else(|| CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "ClearClientWindbackTime".to_string(),
-                message: format!("Client {} not found", client_id),
+            .ok_or_else(|| {
+                CommandError::new(
+                    ctx.tx(),
+                    "ClearClientWindbackTime",
+                    format!("Client {} not found", client_id),
+                )
             })?;
         // Update client to clear windback
         let updated_client = Client {

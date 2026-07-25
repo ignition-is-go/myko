@@ -39,6 +39,20 @@ pub struct CommandError {
     pub message: String,
 }
 
+impl CommandError {
+    pub fn new(
+        tx: impl Into<String>,
+        command_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tx: tx.into(),
+            command_id: command_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
 pub enum EncodedCommandMessage {
     Json(String),
     Cbor(Vec<u8>),

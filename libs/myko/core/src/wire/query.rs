@@ -381,6 +381,20 @@ pub struct QueryError {
     pub message: String,
 }
 
+impl QueryError {
+    pub fn new(
+        tx: impl Into<String>,
+        query_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tx: tx.into(),
+            query_id: query_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Client-side (inbound) deserialization types
 // ─────────────────────────────────────────────────────────────────────────────

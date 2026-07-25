@@ -275,11 +275,11 @@ pub trait EventPublishing: ServerScoped {
 
     #[doc(hidden)]
     fn __emit_err(&self, message: impl std::fmt::Display) -> CommandError {
-        CommandError {
-            tx: self.__request().tx.to_string(),
-            command_id: self.__command_id().to_string(),
-            message: message.to_string(),
-        }
+        CommandError::new(
+            self.__request().tx.to_string(),
+            self.__command_id().to_string(),
+            message.to_string(),
+        )
     }
 
     /// Emit a SET event for an item.

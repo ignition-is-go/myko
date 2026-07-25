@@ -76,10 +76,10 @@ mod tests {
 
     #[test]
     fn command_error_roundtrip_cbor() {
-        assert_roundtrip(MykoMessage::CommandError(crate::wire::CommandError {
-            tx: "tx-cmd-1".into(),
-            command_id: "MyCommand".into(),
-            message: "validation failed: name is required".into(),
-        }));
+        assert_roundtrip(MykoMessage::CommandError(crate::wire::CommandError::new(
+            "tx-cmd-1",
+            "MyCommand",
+            "validation failed: name is required",
+        )));
     }
 }

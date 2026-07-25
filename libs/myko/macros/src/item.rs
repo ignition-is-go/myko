@@ -725,11 +725,11 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
                         ctx.emit_del(e)?;
                         Ok(#delete_result_ident { deleted: true })
                     }
-                    None => Err(#krate::prelude::CommandError {
-                        tx: ctx.tx().to_string(),
-                        command_id: ctx.command_id.to_string(),
-                        message: format!("{} not found: {}", #name_str, self.id),
-                    }),
+                    None => Err(#krate::prelude::CommandError::new(
+                        ctx.tx(),
+                        ctx.command_id.to_string(),
+                        format!("{} not found: {}", #name_str, self.id),
+                    )),
                 }
             }
         }

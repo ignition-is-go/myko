@@ -985,11 +985,11 @@ impl WsHandler {
                                             e
                                         );
                                         if let Err(err) = priority_tx.try_send(
-                                            MykoMessage::ViewError(ViewError {
-                                                tx: tx_id.to_string(),
-                                                view_id: view_id_clone.to_string(),
-                                                message: e,
-                                            }),
+                                            MykoMessage::ViewError(ViewError::new(
+                                                tx_id.to_string(),
+                                                view_id_clone.to_string(),
+                                                e,
+                                            )),
                                         ) {
                                             drop_logger.on_drop("ViewError", &err);
                                         }
@@ -1005,11 +1005,11 @@ impl WsHandler {
                                 serde_json::to_string(&wrapped.view).unwrap_or_default()
                             );
                             if let Err(err) =
-                                priority_tx.try_send(MykoMessage::ViewError(ViewError {
-                                    tx: tx_id.to_string(),
-                                    view_id: view_id.to_string(),
+                                priority_tx.try_send(MykoMessage::ViewError(ViewError::new(
+                                    tx_id.to_string(),
+                                    view_id.to_string(),
                                     message,
-                                }))
+                                )))
                             {
                                 drop_logger.on_drop("ViewError", &err);
                             }
@@ -1018,11 +1018,11 @@ impl WsHandler {
                 } else {
                     let message = format!("No registered handler for view: {}", view_id);
                     tracing::warn!("{}", message);
-                    if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(ViewError {
-                        tx: tx_id.to_string(),
-                        view_id: view_id.to_string(),
+                    if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(ViewError::new(
+                        tx_id.to_string(),
+                        view_id.to_string(),
                         message,
-                    })) {
+                    ))) {
                         drop_logger.on_drop("ViewError", &err);
                     }
                 }
@@ -1215,11 +1215,11 @@ impl WsHandler {
                         tx_id,
                         e
                     );
-                    let error = MykoMessage::CommandError(CommandError {
-                        tx: tx_id.to_string(),
-                        command_id: command_id.to_string(),
-                        message: "Command queue unavailable".to_string(),
-                    });
+                    let error = MykoMessage::CommandError(CommandError::new(
+                        tx_id.to_string(),
+                        command_id.to_string(),
+                        "Command queue unavailable",
+                    ));
                     if let Err(err) = priority_tx.try_send(error) {
                         drop_logger.on_drop("CommandError", &err);
                     }
@@ -1418,11 +1418,11 @@ impl WsHandler {
                         }
                     }
                     Err(e) => {
-                        let error = MykoMessage::CommandError(CommandError {
-                            tx: job.tx_id.to_string(),
-                            command_id: command_id.clone(),
-                            message: e.message,
-                        });
+                        let error = MykoMessage::CommandError(CommandError::new(
+                            job.tx_id.to_string(),
+                            command_id.clone(),
+                            e.message,
+                        ));
                         if let Err(err) = priority_tx.try_send(error) {
                             drop_logger.on_drop("CommandError", &err);
                         }
@@ -1446,11 +1446,11 @@ impl WsHandler {
 
         if !handler_found {
             tracing::warn!("No registered handler for command: {}", command_id);
-            let error = MykoMessage::CommandError(CommandError {
-                tx: job.tx_id.to_string(),
-                command_id: command_id.clone(),
-                message: format!("Command handler not found: {}", command_id),
-            });
+            let error = MykoMessage::CommandError(CommandError::new(
+                job.tx_id.to_string(),
+                command_id.clone(),
+                format!("Command handler not found: {}", command_id),
+            ));
             if let Err(e) = priority_tx.try_send(error) {
                 drop_logger.on_drop("CommandError", &e);
             }

@@ -38,6 +38,20 @@ pub struct ViewError {
     pub message: String,
 }
 
+impl ViewError {
+    pub fn new(
+        tx: impl Into<String>,
+        view_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tx: tx.into(),
+            view_id: view_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
 pub type ViewResponse = QueryResponse;
 
 pub fn wrap_view<V: ViewId + ViewItemType + Serialize + Clone>(

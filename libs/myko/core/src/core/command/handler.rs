@@ -196,11 +196,11 @@ pub trait CommandHandler: crate::command::CommandParams {
     /// wasm — it returns an "unsupported on wasm" error to type-check.
     #[cfg(target_arch = "wasm32")]
     fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError> {
-        Err(CommandError {
-            tx: ctx.tx().to_string(),
-            command_id: ctx.command_id.to_string(),
-            message: "CommandHandler::execute is not supported on wasm32".to_string(),
-        })
+        Err(CommandError::new(
+            ctx.tx(),
+            ctx.command_id.to_string(),
+            "CommandHandler::execute is not supported on wasm32",
+        ))
     }
 }
 
@@ -250,10 +250,12 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         ctx: CommandContext,
     ) -> Result<Value, CommandError> {
         // Deserialize the command
-        let cmd: C = serde_json::from_value(command).map_err(|e| CommandError {
-            tx: ctx.tx().to_string(),
-            command_id: C::command_id_static().to_string(),
-            message: format!("Failed to deserialize command: {}", e),
+        let cmd: C = serde_json::from_value(command).map_err(|e| {
+            CommandError::new(
+                ctx.tx(),
+                C::command_id_static(),
+                format!("Failed to deserialize command: {}", e),
+            )
         })?;
 
         // Execute the handler. Same "myko.command" span as
@@ -269,10 +271,12 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         let result = cmd.execute(ctx)?;
 
         // Serialize the result
-        serde_json::to_value(result).map_err(|e| CommandError {
-            tx: String::new(),
-            command_id: C::command_id_static().to_string(),
-            message: format!("Failed to serialize result: {}", e),
+        serde_json::to_value(result).map_err(|e| {
+            CommandError::new(
+                String::new(),
+                C::command_id_static(),
+                format!("Failed to serialize result: {}", e),
+            )
         })
     }
 }

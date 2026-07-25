@@ -355,11 +355,11 @@ impl<W: WsWriter> ClientSession<W> {
             }
             Signal::Complete => {}
             Signal::Error(e) => {
-                writer.send(MykoMessage::ReportError(ReportError {
-                    tx: tx_clone.to_string(),
-                    report_id: report_id.to_string(),
-                    message: e.to_string(),
-                }));
+                writer.send(MykoMessage::ReportError(ReportError::new(
+                    tx_clone.to_string(),
+                    report_id.to_string(),
+                    e.to_string(),
+                )));
             }
         });
 

@@ -36,6 +36,20 @@ pub struct ReportError {
     pub message: String,
 }
 
+impl ReportError {
+    pub fn new(
+        tx: impl Into<String>,
+        report_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tx: tx.into(),
+            report_id: report_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
 pub fn wrap_report<Q: ReportId + Serialize + Clone>(
     tx: String,
     report: &Q,
