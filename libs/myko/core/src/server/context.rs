@@ -1025,34 +1025,16 @@ impl MykoServerContext {
     // durable backend production (private)
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        // Build the event ONCE — `del_from_any` serializes the whole item
-        // into a JSON tree, so the persister/sink pair shares one build
-        // (cloning an MEvent is cheaper than a second serialization walk).
-        match (
-            self.persisters.resolve(item.entity_type()),
-            &self.event_sink,
-        ) {
-            (None, None) => {}
-            (Some(persister), None) => {
-                persister.persist(MEvent::del_from_any(item, &self.host_id_str))?;
-            }
-            (None, Some(sink)) => {
-                let _ = sink.send(MEvent::del_from_any(item, &self.host_id_str));
-            }
-            (Some(persister), Some(sink)) => {
-                let event = MEvent::del_from_any(item, &self.host_id_str);
-                let for_sink = event.clone();
-                persister.persist(event)?;
-                let _ = sink.send(for_sink);
-            }
-        }
-        Ok(())
-    }
-
-    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        // Same single-build contract as produce_del_dyn above.
-        let build = || MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str);
+    /// Fan one produced event out to the durable persister and/or the saga
+    /// event sink. `build` is the change-type-specific event constructor
+    /// (SET vs DEL); it is invoked ONCE per call — event construction
+    /// serializes the whole item into a JSON tree, so the persister/sink pair
+    /// shares a single build and clones the cheaper `MEvent` for the sink.
+    fn produce_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        build: impl Fn() -> MEvent,
+    ) -> Result<(), PersistError> {
         match (
             self.persisters.resolve(item.entity_type()),
             &self.event_sink,
@@ -1070,6 +1052,16 @@ impl MykoServerContext {
             }
         }
         Ok(())
+    }
+
+    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.produce_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
+    }
+
+    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.produce_dyn(item, || {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        })
     }
 
     // ─────────────────────────────────────────────────────────────────────────
