@@ -1184,10 +1184,8 @@ where
         crate::server::dispatch_metrics::record_query(query_id.as_ref(), request_ctx.origin());
         increment_counter(query_factories_by_id(), query_id);
         let any_ref: &dyn Any = any_query.as_ref();
-        let request: QueryRequest<Q> = any_ref
-            .downcast_ref::<QueryRequest<Q>>()
-            .cloned()
-            .ok_or_else(|| "Failed to downcast query payload".to_string())?;
+        let request: QueryRequest<Q> =
+            crate::common::downcast::downcast_request(any_ref, "query payload")?;
         let query: Arc<Q> = Arc::new(request.query);
 
         let query_ctx = Arc::new(QueryContext {

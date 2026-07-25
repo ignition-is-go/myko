@@ -119,15 +119,10 @@ impl<R: ReportParams> ReportFactory for R {
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
         // Downcast to the ReportRequest wrapper
         let any_ref: &dyn Any = any_report.as_ref();
-        let request: ReportRequest<R> = any_ref
-            .downcast_ref::<ReportRequest<R>>()
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "Failed to downcast report to ReportRequest<{}>",
-                    R::report_id_static()
-                )
-            })?;
+        let request: ReportRequest<R> = crate::common::downcast::downcast_request(
+            any_ref,
+            &format!("report to ReportRequest<{}>", R::report_id_static()),
+        )?;
 
         let report_id = R::report_id_static();
 

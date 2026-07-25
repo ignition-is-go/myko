@@ -100,10 +100,8 @@ where
             V::view_id_static()
         );
         let any_ref: &dyn Any = any_view.as_ref();
-        let request: ViewRequest<V> = any_ref
-            .downcast_ref::<ViewRequest<V>>()
-            .cloned()
-            .ok_or_else(|| "Failed to downcast view payload".to_string())?;
+        let request: ViewRequest<V> =
+            crate::common::downcast::downcast_request(any_ref, "view payload")?;
         let view: Arc<V> = Arc::new(request.view);
 
         let view_ctx = Arc::new(ViewContext::new(
