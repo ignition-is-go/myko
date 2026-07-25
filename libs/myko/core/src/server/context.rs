@@ -1100,23 +1100,9 @@ impl MykoServerContext {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
-            })
-        {
-            return typed;
-        }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&untyped));
-        let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
-            })
-            .expect("typed projection from freshly inserted entry")
+        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+        })
     }
 
     /// Reactive filter parameters: `filter_cell` replaces a value-based
@@ -1157,23 +1143,9 @@ impl MykoServerContext {
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
-            })
-        {
-            return typed;
-        }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&untyped));
-        let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
-            })
-            .expect("typed projection from freshly inserted entry")
+        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+        })
     }
 
     /// Run a reactive query.
@@ -1200,9 +1172,81 @@ impl MykoServerContext {
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        self.compute_or_cache(key, &self.query_cache, || {
+            let query_req = QueryRequest::with_tx(query, request.tx.clone());
+            let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
+            Q::cell_factory(
+                any_query,
+                self.registry.clone(),
+                request,
+                Some(Arc::new(self.clone())),
+            )
+            .expect("query cell factory should not fail for typed query")
+        })
+    }
 
+    /// Fast-path lookup shared by the query and view untyped-map caches:
+    /// return the live shared map if the weak ref still upgrades, otherwise
+    /// evict the dead entry and report a miss.
+    fn try_get_cached(
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        key: &str,
+    ) -> Option<FilteredCellMap> {
+        let existing = cache.get(key)?;
+        if let Some(shared) = existing.value().get() {
+            return Some(shared);
+        }
+        drop(existing);
+        cache.remove(key);
+        None
+    }
+
+    /// Shared typed-projection retrieval for `query_map` and `query_map_by_str`.
+    ///
+    /// Returns the cached typed projection under `key`; if a concurrent cache
+    /// sweep evicted the untyped entry between computing `untyped` and this
+    /// lookup, re-inserts it from `untyped` and retries. `project` builds the
+    /// typed map from the untyped source and is the only per-caller difference.
+    fn typed_projection<K, V>(
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        key: &str,
+        untyped: &FilteredCellMap,
+        project: impl Fn(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
+        V: hyphae::traits::CellValue + 'static,
+    {
+        if let Some(entry) = cache.get(key)
+            && let Some(typed) = entry.value().get_or_create_typed(&project)
+        {
+            return typed;
+        }
+        // Concurrent cache sweep may have evicted the entry — re-insert and retry
+        cache.insert(key.to_owned(), MapCacheEntry::new(untyped));
+        let entry = cache.get(key).expect("just re-inserted");
+        entry
+            .value()
+            .get_or_create_typed(&project)
+            .expect("typed projection from freshly inserted entry")
+    }
+
+    /// Compute-gate + double-checked caching shared by `query_map_untyped` and
+    /// `view_map_untyped`. Returns the cached untyped map on a fast-path or
+    /// post-gate hit; otherwise runs `build` exactly once under the per-key
+    /// compute gate, caches the result, and releases the gate.
+    ///
+    /// `build` is the only per-caller difference — each caller keeps its exact
+    /// request-wrap and `cell_factory` invocation (queries pass
+    /// `Some(server_ctx)`, views pass `server_ctx`) inside the closure.
+    fn compute_or_cache(
+        &self,
+        key: String,
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        build: impl FnOnce() -> FilteredCellMap,
+    ) -> FilteredCellMap {
         // Fast path
-        if let Some(cell) = self.try_get_cached_query(&key) {
+        if let Some(cell) = Self::try_get_cached(cache, &key) {
             return cell;
         }
 
@@ -1214,42 +1258,21 @@ impl MykoServerContext {
         let _lock = gate.lock().unwrap();
 
         // Re-check after gate
-        if let Some(cell) = self.try_get_cached_query(&key) {
+        if let Some(cell) = Self::try_get_cached(cache, &key) {
             return cell;
         }
 
-        let query_req = QueryRequest::with_tx(query, request.tx.clone());
-        let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
-
-        let built = Q::cell_factory(
-            any_query,
-            self.registry.clone(),
-            request,
-            Some(Arc::new(self.clone())),
-        )
-        .expect("query cell factory should not fail for typed query");
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&built));
+        let built = build();
+        cache.insert(key.clone(), MapCacheEntry::new(&built));
         // The gate's only job was deduping concurrent first-computation; once
-        // the cache entry above is visible, any racing caller's re-check
-        // (line ~1268 above) will hit it directly, gate or no gate. Removing
-        // it here — rather than never, which is a compute_gates memory leak
-        // that grows with every distinct query/param combination ever
-        // computed — is safe regardless of ordering relative to `_lock`'s
-        // drop, since a fresh gate + a cache hit on re-check behaves
-        // identically to blocking on the old gate.
+        // the cache entry above is visible, any racing caller's re-check will
+        // hit it directly, gate or no gate. Removing it here — rather than
+        // never, which is a compute_gates memory leak that grows with every
+        // distinct query/param combination ever computed — is safe regardless
+        // of ordering relative to `_lock`'s drop, since a fresh gate + a cache
+        // hit on re-check behaves identically to blocking on the old gate.
         self.compute_gates.remove(&key);
         built
-    }
-
-    fn try_get_cached_query(&self, key: &str) -> Option<FilteredCellMap> {
-        let existing = self.query_cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        self.query_cache.remove(key);
-        None
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
@@ -1259,51 +1282,17 @@ impl MykoServerContext {
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-
-        // Fast path
-        if let Some(cell) = self.try_get_cached_view(&key) {
-            return cell;
-        }
-
-        let gate = self
-            .compute_gates
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-            .clone();
-        let _lock = gate.lock().unwrap();
-
-        // Re-check after gate
-        if let Some(cell) = self.try_get_cached_view(&key) {
-            return cell;
-        }
-
-        let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
-        let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
-
-        let built = V::cell_factory(
-            any_view,
-            self.registry.clone(),
-            request,
-            Arc::new(self.clone()),
-        )
-        .expect("view cell factory should not fail for typed view");
-        self.view_cache
-            .insert(key.clone(), MapCacheEntry::new(&built));
-        // See the matching comment in `query_map_untyped` — the gate is only
-        // needed to dedupe concurrent first-computation, not after the cache
-        // entry above is visible.
-        self.compute_gates.remove(&key);
-        built
-    }
-
-    fn try_get_cached_view(&self, key: &str) -> Option<FilteredViewCellMap> {
-        let existing = self.view_cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        self.view_cache.remove(key);
-        None
+        self.compute_or_cache(key, &self.view_cache, || {
+            let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
+            let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
+            V::cell_factory(
+                any_view,
+                self.registry.clone(),
+                request,
+                Arc::new(self.clone()),
+            )
+            .expect("view cell factory should not fail for typed view")
+        })
     }
 
     /// Build a typed reactive view cell map.
