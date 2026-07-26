@@ -1,0 +1,30 @@
+¶ditem©dbodyy.Downstream impact of hyphae/lv-c682.
+
+myko caches one materialized map per distinct (query_id, params_hash) ‚Äî server/context.rs:298
+builds the key as {host_id}:{kind}:{id}:{payload_hash}. Sharing across clients works
+correctly, but a query parameterized by parent id gets a separate materialization per
+distinct parameter value, and each one mirrors its ENTIRE source map (hyphae/lv-c682).
+
+Measured on the rack deployment (2026-07-26, myko 4.0.0-canary.79, 8 clients):
+  82,164 total records across 156 declared entity types (49 non-empty)
+  top 10 types hold 96.8% of records; largest is Action @ 25,457
+  data at rest ~40-170 MB; observed process RSS tens of GB
+
+Per hyphae measurements, one materialized select over the Action map costs ~1 MB floor
+regardless of how few rows match. A few thousand live materializations over mid-sized maps
+reaches single-digit GB before accounting for plan depth ‚Äî each chained operator stage
+carries its own MapState.
+
+Not yet measured: how many materialized stages are actually live on a running server. That
+is the multiplier the whole estimate rests on, and myko already has the accessors to answer
+it ‚Äî query_cache_len / query_cache_live_count / view_cache_len / view_cache_live_count on
+MykoServerContext. They are not currently surfaced through any report, so there is no way to
+read them from a deployed node.
+
+Suggested follow-ups:
+  1. Expose cache sizes + live counts via a diagnostic report so a running server can be
+     inspected (also answers whether dead weak-ref entries are accumulating vs being swept).
+  2. Re-measure once hyphae/lv-c682 lands.
+  3. If materialization count is the multiplier rather than per-stage cost, consider whether
+     parameterized queries should share a single materialization over the source with
+     per-subscriber filtering applied downstream.gcreatedx2026-07-26T07:30:52.472328ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 4a878a99ce264bea8b605ffde24e87c2flabelsÅdperfhprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlexOquery/view cache memory scales with materializations x source size, not matchesjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-26T07:30:52.472332Zbtxx$f6157093-9cf4-4a3a-9595-1465eff4ce01hsourceIdgmalcolm
