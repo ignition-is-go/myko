@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::core::capability::RequestScoped;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::{Querying, RegistryScoped, Reporting, ServerScoped, Viewing};
+use crate::core::capability::{Querying, RegistryScoped, Reporting, Searching, ServerScoped, Viewing};
 use crate::request::RequestContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::MykoServerContext;
@@ -105,3 +105,9 @@ impl Querying for ViewBuildContext {}
 impl Reporting for ViewBuildContext {}
 #[cfg(not(target_arch = "wasm32"))]
 impl Viewing for ViewBuildContext {}
+// NOTE(ts): view builders can seed a map from a full-text lookup — rship's
+// target-search view does exactly this. Search is a point-in-time read (the
+// index is not reactive), same as the `server_ctx().search_index()` call this
+// replaces, so the built cell tracks the query results, not the index.
+#[cfg(not(target_arch = "wasm32"))]
+impl Searching for ViewBuildContext {}
