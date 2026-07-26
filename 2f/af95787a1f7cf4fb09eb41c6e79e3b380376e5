@@ -1,0 +1,28 @@
+¦ditem¦dbodyyûCORRECTION to the original body â€” the myko-side extrapolation was wrong about which code path is affected.
+
+myko's generated queries do NOT go through hyphae's MapState. query/registration.rs has its
+own machinery:
+  - Get*ById            -> store.get(id), a per-key observation cell. No mirror.
+  - Get*sByIds          -> build_ids_source_map: a small CellMap of just those ids.
+  - Get*sByQuery pinning a belongs_to -> build_belongs_to_source_map returns a pre-narrowed
+                           index bucket (BelongsToSourceIndex).
+  - Get*sByQuery pinning nothing      -> scan mode (LiveDiffScope::FullStore): subscribes to
+                           whole-store diffs and maintains a matches-only result via
+                           reconcile_full_scope_membership / apply_live_diff. CPU cost on
+                           every store change, but NO source mirror.
+
+So the claim that 'a query parameterized by parent id ... mirrors its ENTIRE source map' is
+false â€” belongs_to routing narrows the source first.
+
+Where hyphae's MapState (and its per-stage source mirror) actually appears:
+  - views (ViewFactory / build_view) and reports using MapExt operators
+  - capability.rs:206 query_diff -> .diffs().map(..).materialize()
+  - any hand-written chain of hyphae operators
+
+Each chained operator stage carries its own MapState, so plan depth still multiplies â€” but
+over whatever that stage's input is, which for a belongs_to-routed query is a narrow bucket.
+
+Net: hyphae/lv-c682 is still real and measured, but the exposure here is the view/report
+layer rather than the generated query layer. Re-scope before estimating impact, and measure
+live materialized stage counts (see follow-up 1 in the original body) before assuming this is
+the dominant term in the observed RSS.ebyDevxtrevor.a.sargent@gmail.comgcreatedx2026-07-26T07:34:38.863071Zbidx 0859bdd89c7b401a8d875c85f3928f09iprojectIdx de9416570df4447d8687b0103b13ae27ftaskIdx 4a878a99ce264bea8b605ffde24e87c2jchangeTypecSEThitemTypegCommenticreatedAtx2026-07-26T07:34:38.863074Zbtxx$639694d3-a4c3-4dfb-9607-b0c960105a39hsourceIdgmalcolm
