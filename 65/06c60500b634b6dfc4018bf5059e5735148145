@@ -1,0 +1,7 @@
+¶ditem©dbodyyAll registration macros emit `crate_name: module_path!()` (macros/src/item.rs:777, command.rs:139, query.rs:74, view.rs:138, report.rs:68) ‚Äî a full module path, not a crate name.
+
+codegen/mod.rs:158 filters with `x.crate_name.contains(&crate_name)` against the underscored CARGO_PKG_NAME. Because it is a substring match over a module path, generating for a crate named `rship` also matches registrations from `rship_core`, `rship_server`, etc., pulling foreign types into the output.
+
+Fix: compare the first segment of module_path!() for equality instead of substring-matching the whole path.
+
+Found while designing crate-qualified type namespacing (docs/superpowers/specs/2026-07-25-myko-mesh-node-architecture.md ¬ß8.4), which needs that same first-segment extraction.gcreatedx2026-07-26T01:06:36.639973ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx ea59591f94224c639e0ddcc2aed9540aflabelsÅgcodegenhprioritybP2iprojectIdx de9416570df4447d8687b0103b13ae27etitlexUcodegen crate filter uses substring match on module_path, over-matches sibling cratesjchangeTypecSEThitemTypedTaskicreatedAtx2026-07-26T01:06:36.640200Zbtxx$0867e0d3-4874-457b-b118-7634cdfe6341hsourceIdgmalcolm
