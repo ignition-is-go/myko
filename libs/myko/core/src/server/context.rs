@@ -336,9 +336,37 @@ impl MykoServerContext {
         self.peer_clients_tick.clone().lock()
     }
 
+    /// Number of currently tracked peer clients.
+    ///
+    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
+    /// sync heartbeat gates its anchor re-emit on this (skip the re-emit when
+    /// no peers are connected, since nobody would catch up from it).
+    pub fn peer_client_count(&self) -> usize {
+        self.peer_clients.len()
+    }
+
     /// Get the live persist health counters from the default persister.
     pub fn persist_health(&self) -> Arc<PersistHealth> {
         self.persisters.default_health()
+    }
+
+    /// Get a one-shot typed entity snapshot by id.
+    ///
+    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
+    /// multi-action executor resolves a single Action this way, deliberately
+    /// avoiding a reactive subscription for a point lookup.
+    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
+    where
+        T: Eventable + WithTypedId + Send + Sync + 'static,
+        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
+    {
+        let store = self.registry.get_or_create(T::entity_name_static());
+        let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
+        let item = store.get_value(&map_key)?;
+        Some(downcast_any_item_arc::<T>(
+            &item,
+            "MykoServerContext::entity_snapshot",
+        ))
     }
 
     /// Number of entries in the query cache (includes dead weak refs).
@@ -362,6 +390,23 @@ impl MykoServerContext {
     /// Count live (upgradeable) entries in the query cache.
     pub fn query_cache_live_count(&self) -> usize {
         self.query_cache
+            .iter()
+            .filter(|entry| entry.value().weak.upgrade().is_some())
+            .count()
+    }
+
+    // NOTE(ts): the view_cache_* pair was dropped by f8c71afd as zero-caller,
+    // but it completes the query/view/report cache-diagnostics triple that
+    // rship_server's periodic health log reports — restored for symmetry.
+
+    /// Number of entries in the view cache (includes dead weak refs).
+    pub fn view_cache_len(&self) -> usize {
+        self.view_cache.len()
+    }
+
+    /// Count live (upgradeable) entries in the view cache.
+    pub fn view_cache_live_count(&self) -> usize {
+        self.view_cache
             .iter()
             .filter(|entry| entry.value().weak.upgrade().is_some())
             .count()
