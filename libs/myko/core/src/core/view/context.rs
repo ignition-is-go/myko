@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use crate::core::capability::RequestScoped;
+use crate::core::capability::{Querying, Reporting, RequestScoped, Searching, ServerScoped};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::{Querying, RegistryScoped, Reporting, Searching, ServerScoped, Viewing};
+use crate::core::capability::{RegistryScoped, Viewing};
 use crate::request::RequestContext;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::MykoServerContext;
@@ -54,10 +54,16 @@ impl ServerScoped for ViewContext {
         &self.server_ctx
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+impl ServerScoped for ViewContext {}
+
+// Cross-platform: authored once, compiled for wasm too (where the bodies are
+// `unreachable!` — views only build server-side). Must stay un-gated: see
+// `core::capability::_capability_matrix`.
 impl Querying for ViewContext {}
-#[cfg(not(target_arch = "wasm32"))]
 impl Reporting for ViewContext {}
+
+// Native-only (server-only return types).
 #[cfg(not(target_arch = "wasm32"))]
 impl Viewing for ViewContext {}
 
@@ -99,15 +105,26 @@ impl ServerScoped for ViewBuildContext {
         &self.view_context.server_ctx
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
+impl ServerScoped for ViewBuildContext {}
+
+// Cross-platform: authored once, compiled for wasm too (where the bodies are
+// `unreachable!` — views only build server-side). NOTE(ts): this is the context
+// `ViewHandler::build_cell` receives, and hand-written `build_cell` bodies live
+// in consumer entity crates that DO compile to wasm32 (the leptos UI cdylibs
+// pull them in), so gating these off wasm breaks every one of them. myko 5.0.0
+// kept an explicit wasm `query_map` stub here for exactly that reason; the
+// guard in `core::capability::_capability_matrix` now holds the line.
+//
+// `Searching` is here because view builders can seed a map from a full-text
+// lookup — rship's target-search view does exactly this. Search is a
+// point-in-time read (the index is not reactive), same as the
+// `server_ctx().search_index()` call it replaces, so the built cell tracks the
+// query results, not the index.
 impl Querying for ViewBuildContext {}
-#[cfg(not(target_arch = "wasm32"))]
 impl Reporting for ViewBuildContext {}
+impl Searching for ViewBuildContext {}
+
+// Native-only (server-only return types).
 #[cfg(not(target_arch = "wasm32"))]
 impl Viewing for ViewBuildContext {}
-// NOTE(ts): view builders can seed a map from a full-text lookup — rship's
-// target-search view does exactly this. Search is a point-in-time read (the
-// index is not reactive), same as the `server_ctx().search_index()` call this
-// replaces, so the built cell tracks the query results, not the index.
-#[cfg(not(target_arch = "wasm32"))]
-impl Searching for ViewBuildContext {}
