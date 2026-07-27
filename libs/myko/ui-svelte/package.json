@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@myko/core": "^5.0.1",
+    "@myko/core": "^5.0.2",
     "luxon": "^3.5.0",
     "ramda": "^0.30.1",
     "rxjs": "^7.8.1",
@@ -75,5 +75,5 @@
     "**/*.css"
   ],
   "type": "module",
-  "version": "5.0.1"
+  "version": "5.0.2"
 }
