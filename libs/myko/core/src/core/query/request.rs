@@ -6,14 +6,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::traits::QueryBuildArgs;
 use super::traits::{
-    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext,
+    AnyQuery, QueryBuildArgs, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
+    QueryTestContext,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::item::AnyItem;
-use crate::{TS, common::with_transaction::WithTransaction};
+use crate::{TS, common::with_transaction::WithTransaction, core::item::AnyItem};
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -103,8 +100,6 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
             query_context: ctx.query_context,
         })
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
         ctx: QueryBuildArgs<Self>,
     ) -> Option<impl hyphae::MapQuery<Arc<str>, Arc<dyn AnyItem>>> {

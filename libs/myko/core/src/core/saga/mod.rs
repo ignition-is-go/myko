@@ -34,13 +34,9 @@
 //! | `of_change_type(SET/DEL)` | Filter by change type |
 //! | `pairwise()` | Compare prev/current for transitions |
 //! | `scan(initial, f)` | Accumulate state across events |
-
-#[cfg(not(target_arch = "wasm32"))]
 mod context;
 mod stream;
 mod traits;
-
-#[cfg(not(target_arch = "wasm32"))]
 pub use context::SagaContext;
 pub use stream::{
     OfChangeType, OfItemType, Pairwise, SagaStreamExt, Scan, is_change_type, is_item_type,

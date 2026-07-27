@@ -2,23 +2,20 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hyphae::CellImmutable;
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::MapQuery;
+use hyphae::{CellImmutable, MapQuery};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::super::item::AnyItem;
-use super::{super::item::Eventable, context::QueryContext, request::QueryRequest};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::query::QueryBuildContext;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::query::cell::FilteredCellMap;
+use super::{
+    super::item::{AnyItem, Eventable},
+    context::QueryContext,
+    request::QueryRequest,
+};
 use crate::{
     cache::CacheKey,
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
+    core::query::{QueryBuildContext, cell::FilteredCellMap},
     prelude::WithTypedId,
     wire::WrappedQuery,
 };
@@ -55,24 +52,9 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Per-entity membership predicate.
     ///
     /// Return `true` when an item should be included in the query result.
-    #[cfg(not(target_arch = "wasm32"))]
     fn test_entity(ctx: QueryTestContext<Self>) -> bool
     where
         Self: Send + Sync + 'static;
-
-    /// Per-entity membership predicate (wasm no-op).
-    ///
-    /// Query evaluation only runs server-side; on wasm32 the hand-written
-    /// native body is gated out and this no-op default applies. It is never
-    /// invoked on wasm (clients watch query results over the wire), so it
-    /// simply returns `false`.
-    #[cfg(target_arch = "wasm32")]
-    fn test_entity(_ctx: QueryTestContext<Self>) -> bool
-    where
-        Self: Send + Sync + 'static,
-    {
-        false
-    }
 
     /// Optional set-wise reactive builder for complex many-to-many joins.
     ///
@@ -84,10 +66,7 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
     /// via the blanket impl on `ReactiveMap`, so simple impls returning a
     /// pre-built map continue to work unchanged.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn build_view(
-        _ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
+    fn build_view(_ctx: QueryBuildArgs<Self>) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
     where
         Self: Send + Sync + 'static,
     {
@@ -110,7 +89,6 @@ impl<TQuery: QueryItemType> QueryTestContext<TQuery> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub struct QueryBuildArgs<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
     pub query_context: QueryBuildContext,

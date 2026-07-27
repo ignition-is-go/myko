@@ -2,20 +2,17 @@
 
 use std::sync::Arc;
 
-#[cfg(not(target_arch = "wasm32"))]
 use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite};
 
-#[cfg(not(target_arch = "wasm32"))]
 use super::{
     cell::FilteredCellMap, registration::QueryFactory, request::QueryRequest, traits::AnyQuery,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::report::{AnyReport, ReportFactory, ReportOutputType, ReportRequest};
-use crate::request::RequestContext;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::MykoServerContext;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::store::StoreRegistry;
+use crate::{
+    core::report::{AnyReport, ReportFactory, ReportOutputType, ReportRequest},
+    request::RequestContext,
+    server::MykoServerContext,
+    store::StoreRegistry,
+};
 
 /// Minimal server context provided to query handlers.
 ///
@@ -40,7 +37,6 @@ impl crate::core::capability::RequestScoped for QueryContext {
 ///
 /// Use this from `QueryHandler::build_view` to compose query cells from other
 /// queries while preserving request context (tx, host_id, lineage).
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct QueryBuildContext {
     pub query_context: Arc<QueryContext>,
@@ -48,7 +44,6 @@ pub struct QueryBuildContext {
     server_ctx: Option<Arc<MykoServerContext>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl QueryBuildContext {
     pub fn new(
         query_context: Arc<QueryContext>,
@@ -135,9 +130,7 @@ impl QueryBuildContext {
 // Query build keeps its own `query`/`report` (fallible over an optional
 // server context) and `registry` inherent — they don't fit the infallible
 // capability traits — but adopts RequestScoped for tx/host_id/lineage.
-#[cfg(not(target_arch = "wasm32"))]
 impl crate::core::capability::sealed::Sealed for QueryBuildContext {}
-#[cfg(not(target_arch = "wasm32"))]
 impl crate::core::capability::RequestScoped for QueryBuildContext {
     fn __request(&self) -> &Arc<RequestContext> {
         &self.query_context.req

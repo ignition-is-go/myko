@@ -3,11 +3,9 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::MykoServerContext;
 use crate::{
     command::CommandError, core::capability::RequestScoped, query::QueryParams,
-    request::RequestContext,
+    request::RequestContext, server::MykoServerContext,
 };
 
 /// Context provided to command handlers for accessing dependencies.
@@ -24,13 +22,11 @@ pub struct CommandContext {
     /// The command ID being executed (for error reporting).
     pub command_id: Arc<str>,
 
-    #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<MykoServerContext>,
 }
 
 impl CommandContext {
     /// Create a new CommandContext.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
@@ -60,18 +56,12 @@ impl CommandContext {
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             Ok(self
                 .server_ctx
                 .query_snapshot(query, self.req.clone())
                 .into_iter()
                 .next())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!();
         }
     }
 
@@ -83,18 +73,12 @@ impl CommandContext {
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             Ok(self
                 .server_ctx
                 .query_snapshot(query, self.req.clone())
                 .into_iter()
                 .collect())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!();
         }
     }
 
@@ -108,7 +92,6 @@ impl CommandContext {
     where
         R: crate::report::ReportParams + Clone,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             use hyphae::Gettable;
             Ok(self
@@ -117,11 +100,6 @@ impl CommandContext {
                 .get()
                 .as_ref()
                 .clone())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = report;
-            unreachable!();
         }
     }
 }
@@ -137,14 +115,11 @@ impl crate::core::capability::RequestScoped for CommandContext {
         &self.req
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
 impl crate::core::capability::ServerScoped for CommandContext {
     fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
     }
 }
-#[cfg(target_arch = "wasm32")]
-impl crate::core::capability::ServerScoped for CommandContext {}
 impl crate::core::capability::EventPublishing for CommandContext {
     fn __command_id(&self) -> &Arc<str> {
         &self.command_id
@@ -185,23 +160,7 @@ pub trait CommandHandler: crate::command::CommandParams {
     /// Execute the command synchronously.
     ///
     /// `self` is the deserialized command parameters (owned, consumed by execution).
-    #[cfg(not(target_arch = "wasm32"))]
     fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError>;
-
-    /// Execute the command synchronously (wasm no-op).
-    ///
-    /// Command handling only runs server-side; on wasm32 the hand-written
-    /// native body is gated out and this no-op default applies. Commands are
-    /// dispatched to the server over the wire, so this is never invoked on
-    /// wasm — it returns an "unsupported on wasm" error to type-check.
-    #[cfg(target_arch = "wasm32")]
-    fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError> {
-        Err(CommandError::new(
-            ctx.tx(),
-            ctx.command_id.to_string(),
-            "CommandHandler::execute is not supported on wasm32",
-        ))
-    }
 }
 
 /// Type-erased command executor for dynamic dispatch.
@@ -266,7 +225,6 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         // "external": arrived pre-serialized — the funnel for both native-WS
         // command dispatch and MCP HTTP/WS in-process tool calls — see
         // `dispatch_metrics::record_command`.
-        #[cfg(not(target_arch = "wasm32"))]
         crate::server::dispatch_metrics::record_command(C::command_id_static(), "external");
         let result = cmd.execute(ctx)?;
 

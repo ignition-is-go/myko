@@ -18,10 +18,9 @@
 //!
 
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::Searching;
 
 use crate::{
+    core::capability::Searching,
     item::Eventable,
     report::{ReportContext, ReportHandler},
 };

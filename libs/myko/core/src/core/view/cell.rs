@@ -1,15 +1,12 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap};
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::MapDiff;
+use hyphae::{CellImmutable, CellMap, MapDiff};
 
 use crate::core::item::AnyItem;
 
 pub type TypedViewCellMap<T> = CellMap<Arc<str>, Arc<T>, CellImmutable>;
 pub type FilteredViewCellMap = CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub fn erase_typed_view_map<T>(typed: TypedViewCellMap<T>) -> FilteredViewCellMap
 where
     T: AnyItem + PartialEq + Send + Sync + 'static,

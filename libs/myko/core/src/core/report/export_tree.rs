@@ -3,24 +3,19 @@
 //! BFS walks the relationship graph from a root entity, collecting all
 //! descendant entities into a flat `EntityTreeExport` structure.
 
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Arc,
+};
 
+use chrono::Utc;
+use hyphae::{Cell, MaterializeDefinite};
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::{RegistryScoped, Replaying};
 
+use crate::core::capability::{RegistryScoped, Replaying};
 // The BFS traversal + report handler are server-only (they pull in hyphae and
 // the store registry); their imports are gated alongside them below.
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::{HashMap, HashSet, VecDeque};
-
-#[cfg(not(target_arch = "wasm32"))]
-use chrono::Utc;
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, MaterializeDefinite};
-
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{
     common::to_value::ToValue,
     relationship::{Relation, iter_relations},
@@ -83,15 +78,12 @@ pub struct ExportEntityTree {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Describes how to find children of a given parent entity type.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct ChildRelation {
     /// The child entity type.
     pub child_type: &'static str,
     /// How to discover child IDs from the parent.
     pub kind: ChildKind,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
 pub enum ChildKind {
     /// BelongsTo: scan the child store for entities whose FK matches the parent ID.
     BelongsTo {
@@ -111,7 +103,6 @@ pub enum ChildKind {
 ///
 /// This processes all registered relationships once and inverts them into
 /// a lookup table suitable for BFS traversal.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
     let mut map: HashMap<&'static str, Vec<ChildRelation>> = HashMap::new();
 
@@ -188,7 +179,6 @@ pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
 /// Walk the entity tree via BFS starting from `(root_type, root_id)`.
 ///
 /// Returns all reachable entities (including the root) as `ExportedEntity` values.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn walk_tree(
     root_type: &str,
     root_id: &str,
@@ -287,8 +277,6 @@ pub fn walk_tree(
 // (report computation runs server-side; the client receives values over the wire).
 impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn compute(
         &self,
         ctx: crate::report::ReportContext,

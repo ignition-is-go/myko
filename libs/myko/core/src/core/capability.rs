@@ -20,20 +20,25 @@
 //! ## wasm
 //!
 //! Handlers are authored once and compile for both native and wasm even
-//! though they only *run* server-side. The capability methods whose
-//! signatures are wasm-compatible (`query_map`, `report`, `search`, …) keep a
-//! wasm default that `unreachable!()`s — the single home for what used to be
-//! a per-context stub. Methods whose types are inherently server-only
-//! (`view`, `peer_client`, `replay_store`, …) are native-only; handlers that
-//! call them are themselves native-gated.
+//! though they only *run* server-side. Every capability is available on both
+//! targets, with one body — no `#[cfg]` on any capability trait, method, or
+//! impl, and no per-target signature divergence.
 //!
-//! A wasm-compatible capability therefore needs *both* arms wired on every
-//! context that has it: the native `ServerScoped` impl and an empty
-//! `#[cfg(target_arch = "wasm32")] impl ServerScoped` (the accessor method is
-//! itself cfg'd off), with the capability impl left un-gated. Gating the
-//! capability impl instead removes the method from wasm entirely — see
-//! `_capability_matrix` at the bottom of this file for why that break is
-//! invisible to myko's own CI.
+//! This is deliberate and it is the whole ergonomic contract: a consumer
+//! writes a `ViewHandler`/`ReportHandler`/`CommandHandler` once and it
+//! compiles everywhere. Entity crates DO compile to wasm32 (the leptos UI
+//! cdylibs pull them in), so any capability missing on wasm forces every
+//! downstream handler that touches it to carry a
+//! `#[cfg(not(target_arch = "wasm32"))]` — boilerplate that scales with
+//! handler count and breaks one crate at a time as each is pulled into a wasm
+//! build. Do not reintroduce a `#[cfg]` here to "save" wasm binary size; the
+//! cost lands on every consumer.
+//!
+//! What made the split necessary before was `crate::server` being native-only,
+//! so `ServerScoped::__server_ctx` had nothing to return on wasm and every
+//! capability reading through it had to be stubbed. `server` and `search` now
+//! build for wasm32, which removed the reason. See `_capability_matrix` below
+//! for why a regression here is invisible to myko's own CI.
 
 use std::sync::Arc;
 
@@ -93,7 +98,6 @@ pub trait RegistryScoped: sealed::Sealed {
 /// A context backed by the live server. The sealed accessor every server
 /// capability reads through — native-only, since there is no server on wasm.
 pub trait ServerScoped: RequestScoped {
-    #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     fn __server_ctx(&self) -> &Arc<crate::server::MykoServerContext>;
 }
@@ -110,25 +114,6 @@ use crate::{
     report::{ReportHandler, ReportId},
     wire::MEvent,
 };
-
-/// Body helper for a capability method that is real on native and a stub on
-/// wasm. Expands to the `#[cfg]`-split every wasm-compatible server capability
-/// shares: `$body` runs natively (reading through `__server_ctx()`), while on
-/// wasm32 it consumes its arguments (silencing unused-variable lints) and
-/// `unreachable!()`s — handlers only ever *run* server-side (see the module
-/// docs). Native-only capabilities (`view`, `peer_client`, …) name server-only
-/// types, so they are `#[cfg(not(wasm))]` on the trait and do not use this.
-macro_rules! wasm_native {
-    ($name:literal, ($($arg:ident),* $(,)?), $body:block) => {{
-        #[cfg(not(target_arch = "wasm32"))]
-        $body
-        #[cfg(target_arch = "wasm32")]
-        {
-            $(let _ = $arg;)*
-            unreachable!(concat!($name, " is not available on wasm32"))
-        }
-    }};
-}
 
 /// Subscribe to reactive query dependencies.
 pub trait Querying: ServerScoped {
@@ -151,9 +136,8 @@ pub trait Querying: ServerScoped {
             + CellValue
             + 'static,
     {
-        wasm_native!("query_map", (query), {
-            self.__server_ctx().query_map(query, self.__request().clone())
-        })
+        self.__server_ctx()
+            .query_map(query, self.__request().clone())
     }
 
     /// Subscribe to a query keyed by canonical `Arc<str>` ids.
@@ -171,14 +155,11 @@ pub trait Querying: ServerScoped {
             + CellValue
             + 'static,
     {
-        wasm_native!("query_map_by_str", (query), {
-            self.__server_ctx()
-                .query_map_by_str(query, self.__request().clone())
-        })
+        self.__server_ctx()
+            .query_map_by_str(query, self.__request().clone())
     }
 
     /// Subscribe to a query and get an untyped (erased `AnyItem`) reactive map.
-    #[cfg(not(target_arch = "wasm32"))]
     fn query_map_untyped<Q>(&self, query: Q) -> crate::query::FilteredCellMap
     where
         Q: crate::query::QueryFactory
@@ -195,11 +176,7 @@ pub trait Querying: ServerScoped {
     }
 
     /// Subscribe to a query and get its incremental `MapDiff` stream.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn query_diff<Q>(
-        &self,
-        query: Q,
-    ) -> Cell<hyphae::MapDiff<Arc<str>, Q::Item>, CellImmutable>
+    fn query_diff<Q>(&self, query: Q) -> Cell<hyphae::MapDiff<Arc<str>, Q::Item>, CellImmutable>
     where
         Q: crate::query::QueryFactory
             + crate::query::QueryHandler
@@ -213,9 +190,7 @@ pub trait Querying: ServerScoped {
         use hyphae::{MapExt, MaterializeDefinite};
         self.query_map_untyped(query)
             .diffs()
-            .map(|diff| {
-                crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff")
-            })
+            .map(|diff| crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff"))
             .materialize()
     }
 
@@ -228,9 +203,7 @@ pub trait Querying: ServerScoped {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        wasm_native!("query_live", (filter_cell), {
-            self.__server_ctx().query_live(filter_cell)
-        })
+        self.__server_ctx().query_live(filter_cell)
     }
 }
 
@@ -238,11 +211,9 @@ pub trait Querying: ServerScoped {
 pub trait Searching: ServerScoped {
     /// Matching entity ids (up to `limit`), backed by the per-type search index.
     fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
-        wasm_native!("search", (entity_type, query, limit), {
-            self.__server_ctx()
-                .search_index()
-                .search(entity_type, query, limit)
-        })
+        self.__server_ctx()
+            .search_index()
+            .search(entity_type, query, limit)
     }
 }
 
@@ -254,9 +225,7 @@ pub trait Reporting: ServerScoped {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + Serialize + 'static,
     {
-        wasm_native!("report", (report), {
-            self.__server_ctx().report(report, self.__request().clone())
-        })
+        self.__server_ctx().report(report, self.__request().clone())
     }
 }
 
@@ -284,11 +253,9 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
-        wasm_native!("emit_set", (item), {
-            self.__server_ctx()
-                .set(&*item)
-                .map_err(|e| self.__emit_err(e))
-        })
+        self.__server_ctx()
+            .set(&*item)
+            .map_err(|e| self.__emit_err(e))
     }
 
     /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
@@ -296,14 +263,12 @@ pub trait EventPublishing: ServerScoped {
         &self,
         items: &[T],
     ) -> Result<(), CommandError> {
-        wasm_native!("emit_set_batch", (items), {
-            let anys = items
-                .iter()
-                .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
-            self.__server_ctx()
-                .set_batch_any(anys)
-                .map_err(|e| self.__emit_err(e))
-        })
+        let anys = items
+            .iter()
+            .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
+        self.__server_ctx()
+            .set_batch_any(anys)
+            .map_err(|e| self.__emit_err(e))
     }
 
     /// Emit a mixed batch of type-erased SET events (applied immediately).
@@ -311,11 +276,9 @@ pub trait EventPublishing: ServerScoped {
     where
         I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
     {
-        wasm_native!("emit_set_any_batch", (items), {
-            self.__server_ctx()
-                .set_batch_any(items)
-                .map_err(|e| self.__emit_err(e))
-        })
+        self.__server_ctx()
+            .set_batch_any(items)
+            .map_err(|e| self.__emit_err(e))
     }
 
     /// Emit a DEL event for an item.
@@ -323,11 +286,9 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
-        wasm_native!("emit_del", (item), {
-            self.__server_ctx()
-                .del(&*item)
-                .map_err(|e| self.__emit_err(e))
-        })
+        self.__server_ctx()
+            .del(&*item)
+            .map_err(|e| self.__emit_err(e))
     }
 
     /// Emit a batch of typed DEL events (applied immediately, in one bulk pass).
@@ -337,14 +298,12 @@ pub trait EventPublishing: ServerScoped {
         I: IntoIterator<Item = &'a T>,
         T: 'a,
     {
-        wasm_native!("emit_del_batch", (items), {
-            let anys = items
-                .into_iter()
-                .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
-            self.__server_ctx()
-                .del_batch_any(anys)
-                .map_err(|e| self.__emit_err(e))
-        })
+        let anys = items
+            .into_iter()
+            .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
+        self.__server_ctx()
+            .del_batch_any(anys)
+            .map_err(|e| self.__emit_err(e))
     }
 
     /// Apply a batch of pre-built raw events (SET or DEL), applied immediately.
@@ -353,11 +312,9 @@ pub trait EventPublishing: ServerScoped {
     /// already holds erased JSON + entity-type strings rather than typed
     /// entities. Returns the number of events applied.
     fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
-        wasm_native!("emit_event_batch", (events), {
-            self.__server_ctx()
-                .apply_events_immediate(events)
-                .map_err(|e| self.__emit_err(e))
-        })
+        self.__server_ctx()
+            .apply_events_immediate(events)
+            .map_err(|e| self.__emit_err(e))
     }
 }
 
@@ -377,19 +334,12 @@ pub trait CommandSending: ServerScoped {
         let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
         // "internal": composed in-process by another handler/saga, not a fresh
         // wire arrival — see `dispatch_metrics::record_command`.
-        #[cfg(not(target_arch = "wasm32"))]
         crate::server::dispatch_metrics::record_command(C::command_id_static(), "internal");
         cmd.execute(self.__command_ctx())
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Native-only capabilities: their signatures name server-only types, so
-// handlers that use them are themselves native-gated.
-// ─────────────────────────────────────────────────────────────────────────
-
 /// Subscribe to view dependencies (reuse incremental map-native view logic).
-#[cfg(not(target_arch = "wasm32"))]
 pub trait Viewing: ServerScoped {
     /// Subscribe to a view and get a typed reactive `CellMap`.
     fn view<V>(&self, view: V) -> crate::core::view::TypedViewCellMap<V::Item>
@@ -412,7 +362,6 @@ pub trait Viewing: ServerScoped {
 }
 
 /// Reach live peer servers (federation).
-#[cfg(not(target_arch = "wasm32"))]
 pub trait PeerAccess: ServerScoped {
     /// The live peer client for a peer server id, if present.
     fn peer_client(&self, peer_id: &str) -> Option<Arc<crate::client::MykoClient>> {
@@ -425,7 +374,6 @@ pub trait PeerAccess: ServerScoped {
 }
 
 /// Point-in-time history replay and persistence health.
-#[cfg(not(target_arch = "wasm32"))]
 pub trait Replaying: ServerScoped {
     /// Live persist-health counters (queued, errors, throughput).
     fn persist_health(&self) -> Arc<crate::server::PersistHealth> {
@@ -448,11 +396,12 @@ pub trait Replaying: ServerScoped {
 // Which capabilities each context carries is public API, and on wasm it has
 // *no in-crate callers*: the only code that calls `view_ctx.query_map(..)` on
 // a wasm build lives in consumer entity crates, which compile to wasm32
-// because the leptos UI cdylibs pull them in. So dropping a wasm arm here
+// because the leptos UI cdylibs pull them in. So re-gating a capability here
 // passes myko's own `check-wasm` silently and breaks only downstream, one
 // crate at a time as each gets pulled into a wasm build (that is exactly how
-// `ViewBuildContext::query_map` went missing). These assertions give the wasm
-// arm in-crate callers, so `cargo flux run check-wasm` fails here first.
+// `ViewBuildContext::query_map` went missing). These assertions give every
+// capability an in-crate caller on both targets, so `check-wasm` fails here
+// first.
 //
 // Never called — an un-called fn body is still fully type-checked.
 // ─────────────────────────────────────────────────────────────────────────
@@ -474,6 +423,7 @@ fn _capability_matrix() {
     reporting::<ReportContext>();
 
     querying::<ViewContext>();
+    searching::<ViewContext>();
     reporting::<ViewContext>();
 
     querying::<ViewBuildContext>();
@@ -483,18 +433,13 @@ fn _capability_matrix() {
     event_publishing::<CommandContext>();
     command_sending::<CommandContext>();
 
-    // Native-only capabilities: their signatures name server-only types, so
-    // consumers that call them gate their handlers themselves.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        fn viewing<T: Viewing>() {}
-        fn peer_access<T: PeerAccess>() {}
-        fn replaying<T: Replaying>() {}
+    fn viewing<T: Viewing>() {}
+    fn peer_access<T: PeerAccess>() {}
+    fn replaying<T: Replaying>() {}
 
-        viewing::<ReportContext>();
-        peer_access::<ReportContext>();
-        replaying::<ReportContext>();
-        viewing::<ViewContext>();
-        viewing::<ViewBuildContext>();
-    }
+    viewing::<ReportContext>();
+    peer_access::<ReportContext>();
+    replaying::<ReportContext>();
+    viewing::<ViewContext>();
+    viewing::<ViewBuildContext>();
 }

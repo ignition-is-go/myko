@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use hyphae::MaterializeDefinite;
-#[cfg(target_arch = "wasm32")]
-use hyphae::Cell;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::core::capability::{
-    Querying, RegistryScoped, Reporting, RequestScoped, Searching, ServerScoped,
+use crate::{
+    common::to_value::ToValue,
+    core::capability::{
+        PeerAccess, Querying, RegistryScoped, Replaying, Reporting, RequestScoped, Searching,
+        ServerScoped, Viewing,
+    },
+    request::RequestContext,
+    server::MykoServerContext,
+    store::StoreRegistry,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::{PeerAccess, Replaying, Viewing};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::MykoServerContext;
-use crate::{common::to_value::ToValue, request::RequestContext, store::StoreRegistry};
 
 /// Context provided to report handlers for accessing dependencies.
 ///
@@ -28,12 +28,10 @@ pub struct ReportContext {
     /// Named `store_registry` so it doesn't shadow the `registry()` method
     /// from [`RegistryScoped`].
     pub(crate) store_registry: Arc<StoreRegistry>,
-    #[cfg(not(target_arch = "wasm32"))]
     server_ctx: Arc<MykoServerContext>,
 }
 
 impl ReportContext {
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerContext>) -> Self {
         let store_registry = server_ctx.registry.clone();
         Self {
@@ -60,15 +58,11 @@ impl RegistryScoped for ReportContext {
         &self.store_registry
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
 impl ServerScoped for ReportContext {
     fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
     }
 }
-#[cfg(target_arch = "wasm32")]
-impl ServerScoped for ReportContext {}
-
 // Cross-platform: authored once, compiled for wasm too (where the bodies are
 // `unreachable!` — reports only run server-side).
 impl Querying for ReportContext {}
@@ -76,11 +70,8 @@ impl Searching for ReportContext {}
 impl Reporting for ReportContext {}
 
 // Native-only (server-only return types).
-#[cfg(not(target_arch = "wasm32"))]
 impl Viewing for ReportContext {}
-#[cfg(not(target_arch = "wasm32"))]
 impl PeerAccess for ReportContext {}
-#[cfg(not(target_arch = "wasm32"))]
 impl Replaying for ReportContext {}
 
 /// Trait for report handlers - defines how a report computes its output.
@@ -163,23 +154,5 @@ pub trait ReportHandler: Sized {
     /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
     /// `deduped`, etc. already implement `MaterializeDefinite<U>`, so
     /// returning them directly is fine.
-    #[cfg(not(target_arch = "wasm32"))]
     fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>>;
-
-    /// Compute the report output (wasm no-op).
-    ///
-    /// Report computation only runs server-side; on wasm32 the hand-written
-    /// native body is gated out and this no-op default applies. It is never
-    /// invoked on wasm (clients receive report values over the wire), so it
-    /// only has to type-check. A `Cell<Arc<Self::Output>>` implements
-    /// `MaterializeDefinite<Arc<Self::Output>>`; the seed value is produced by
-    /// `unreachable!()`, which diverges and coerces to any `Output` (no
-    /// `Default` bound required).
-    #[cfg(target_arch = "wasm32")]
-    fn compute(&self, _ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
-        let _seed: Arc<Self::Output> =
-            unreachable!("ReportHandler::compute is not available on wasm32");
-        #[allow(unreachable_code)]
-        Cell::new(_seed)
-    }
 }

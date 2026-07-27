@@ -5,7 +5,6 @@
 // (which pull in hyphae + the store registry) stay gated inside the module.
 pub mod export_tree;
 mod handler;
-#[cfg(not(target_arch = "wasm32"))]
 mod registration;
 mod request;
 mod traits;
@@ -23,7 +22,6 @@ pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 pub use handler::{ReportContext, ReportHandler};
 // Re-export registration types (server-only)
-#[cfg(not(target_arch = "wasm32"))]
 pub use registration::{
     AnyOutput, ReportCellFactory, ReportFactory, ReportParseFn, ReportRegistration,
 };
