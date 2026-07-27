@@ -173,6 +173,7 @@ All endpoints share a single TCP listener; the front-door router peeks at the HT
 | `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
 | `MYKO_CCMD_TIMEOUT_MS`           | —                     | Slow-command threshold for warn logs       |
 | `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); only applies when `MYKO_TRACING_ENDPOINT` is set |
+| `MYKO_MALLOC_TRIM_INTERVAL_SECS` | —                     | Periodic `malloc_trim(0)` probe: logs RSS before/after returning free glibc arena pages (distinguishes allocator page retention from real retention). Unset/0 = off; glibc-only. Measures glibc arenas only — meaningless if the host binary sets a non-glibc `#[global_allocator]` (e.g. jemalloc); use that allocator's own stats instead |
 
 ---
 
