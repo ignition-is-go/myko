@@ -26,6 +26,14 @@
 //! a per-context stub. Methods whose types are inherently server-only
 //! (`view`, `peer_client`, `replay_store`, …) are native-only; handlers that
 //! call them are themselves native-gated.
+//!
+//! A wasm-compatible capability therefore needs *both* arms wired on every
+//! context that has it: the native `ServerScoped` impl and an empty
+//! `#[cfg(target_arch = "wasm32")] impl ServerScoped` (the accessor method is
+//! itself cfg'd off), with the capability impl left un-gated. Gating the
+//! capability impl instead removes the method from wasm entirely — see
+//! `_capability_matrix` at the bottom of this file for why that break is
+//! invisible to myko's own CI.
 
 use std::sync::Arc;
 
@@ -431,5 +439,62 @@ pub trait Replaying: ServerScoped {
             .history_replay()
             .ok_or_else(|| "No history replay provider configured".to_string())?;
         provider.replay_to_store(until, &ctx.handler_registry)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Capability matrix — compile-time guard.
+//
+// Which capabilities each context carries is public API, and on wasm it has
+// *no in-crate callers*: the only code that calls `view_ctx.query_map(..)` on
+// a wasm build lives in consumer entity crates, which compile to wasm32
+// because the leptos UI cdylibs pull them in. So dropping a wasm arm here
+// passes myko's own `check-wasm` silently and breaks only downstream, one
+// crate at a time as each gets pulled into a wasm build (that is exactly how
+// `ViewBuildContext::query_map` went missing). These assertions give the wasm
+// arm in-crate callers, so `cargo flux run check-wasm` fails here first.
+//
+// Never called — an un-called fn body is still fully type-checked.
+// ─────────────────────────────────────────────────────────────────────────
+#[allow(dead_code)]
+fn _capability_matrix() {
+    fn querying<T: Querying>() {}
+    fn searching<T: Searching>() {}
+    fn reporting<T: Reporting>() {}
+    fn event_publishing<T: EventPublishing>() {}
+    fn command_sending<T: CommandSending>() {}
+
+    use crate::core::{
+        report::ReportContext,
+        view::{ViewBuildContext, ViewContext},
+    };
+
+    querying::<ReportContext>();
+    searching::<ReportContext>();
+    reporting::<ReportContext>();
+
+    querying::<ViewContext>();
+    reporting::<ViewContext>();
+
+    querying::<ViewBuildContext>();
+    searching::<ViewBuildContext>();
+    reporting::<ViewBuildContext>();
+
+    event_publishing::<CommandContext>();
+    command_sending::<CommandContext>();
+
+    // Native-only capabilities: their signatures name server-only types, so
+    // consumers that call them gate their handlers themselves.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        fn viewing<T: Viewing>() {}
+        fn peer_access<T: PeerAccess>() {}
+        fn replaying<T: Replaying>() {}
+
+        viewing::<ReportContext>();
+        peer_access::<ReportContext>();
+        replaying::<ReportContext>();
+        viewing::<ViewContext>();
+        viewing::<ViewBuildContext>();
     }
 }
