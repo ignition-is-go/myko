@@ -673,6 +673,11 @@ impl CellServer {
         // no-op when telemetry isn't configured.
         crate::telemetry::register_item_count_gauge(self.registry.clone());
 
+        // Opt-in malloc_trim probe (MYKO_MALLOC_TRIM_INTERVAL_SECS): logs RSS
+        // before/after returning free glibc arena pages, to tell allocator
+        // page retention apart from real memory retention in deployments.
+        crate::telemetry::start_malloc_trim_probe();
+
         // Bind WebSocket listener last, once all synchronous startup work
         // (including after_init) is done, so peer publication only happens
         // once the gateway is actually available to serve requests, not just
