@@ -1,0 +1,6 @@
+¦ditem¦dbodyybConfirmed against rship-myko-6 @ feat/myko-6-migration (bright-proton, 2026-07-27). Exactly 6 call sites, two crates:
+  rship-entities-assignment â€” libs/entities/assignment/src/target_tree.rs:138, 547, 635, 820
+  rship-entities-assets     â€” libs/entities/assets/src/file.rs:535, 650
+Neither crate is currently in the wasm dep tree â€” 'cargo tree --target wasm32-unknown-unknown -p link-ui-leptos' matches 0 of them, which is why rship's check-wasm is green today. Latent, not broken.
+
+rship is NOT adopting the consumer-side #[cfg(not(wasm32))] workaround: with Viewing that gate is the only option available, and per Trev's 'as little boilerplate in consumer apps as possible' it is the wrong shape to adopt voluntarily. An rship-side levi task will point here via the patch dep. If the ViewParams-vs-ViewFactory divergence lands, those 6 sites need no change.ebyDevxtrevor.a.sargent@gmail.comgcreatedx2026-07-27T20:21:51.759731Zbidx cf20039afc974ed191a2803ece2f3084iprojectIdx de9416570df4447d8687b0103b13ae27ftaskIdx 3816c03250c342beb8e34b89ac5bf7fbjchangeTypecSEThitemTypegCommenticreatedAtx2026-07-27T20:21:51.759734Zbtxx$150e73bb-0ef4-4de5-a328-62edd117b5c0hsourceIdgmalcolm
