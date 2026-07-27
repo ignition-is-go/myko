@@ -1,0 +1,7 @@
+¶ditem©dbodyy4`Viewing::view`/`view_map_untyped` are `#[cfg(not(wasm32))]` because they bound on `ViewFactory`, whose `cell_factory` names `MykoServerContext` (view/registration.rs is a native-only module). The return types themselves (`TypedViewCellMap`, `FilteredViewCellMap`) are plain hyphae `CellMap` aliases and ARE wasm-portable.
+
+So a consumer's hand-written `ViewHandler::build_cell` that calls `view_ctx.view(..)` still needs a `#[cfg(not(target_arch = "wasm32"))]` on the whole impl. rship has ~6 such call sites today; they don't break yet only because those crates aren't in a wasm dep tree.
+
+This is NOT a regression from the capability refactor ‚Äî pre-refactor (9ad41b31^) only `query_map` had a wasm stub on the view contexts, never `view`. Fixing it is a deliberate scope widening: split `view`/`view_map_untyped` into cfg'd decls that bound on `ViewParams` (wasm) vs `ViewFactory` (native), body via `wasm_native!`. Needs Trev's call, since it diverges the public signature per target.
+
+Same class as the ViewBuildContext::query_map gap fixed on feat/advanced-query-live.gcreatedx2026-07-27T20:19:40.219781ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 3816c03250c342beb8e34b89ac5bf7fbflabelsÅdwasmhprioritybP2iprojectIdx de9416570df4447d8687b0103b13ae27etitlexqViewing capability is native-only, so hand-written build_cell bodies that call ctx.view() can't compile to wasm32jchangeTypecSEThitemTypedTaskicreatedAtx2026-07-27T20:19:40.219785Zbtxx$4dc33913-557b-490f-b32b-54aacd0ccf00hsourceIdgmalcolm
