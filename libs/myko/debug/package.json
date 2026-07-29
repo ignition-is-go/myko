@@ -4,5 +4,5 @@
   "main": "./src/index.ts",
   "name": "@myko/debug",
   "types": "./src/index.ts",
-  "version": "5.0.2"
+  "version": "5.0.3"
 }
