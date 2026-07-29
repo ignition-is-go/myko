@@ -2,7 +2,6 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cell;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod export_tree;
 mod handler;
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,8 +17,9 @@ use futures::Stream;
 pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 
 // Re-export handler types (available on all platforms for entity impls)
-// Re-export entity tree export types
-#[cfg(not(target_arch = "wasm32"))]
+// Re-export entity tree export types. Visible on wasm: the request/output
+// types are part of the wire contract, so clients must be able to name them
+// to call live_report — only the server-side compute is native-gated.
 pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 pub use handler::{ReportContext, ReportHandler};
 // Re-export registration types (server-only)

@@ -8,7 +8,10 @@ use std::{
     sync::Arc,
 };
 
+// Used only by the native-gated compute body below.
+#[cfg(not(target_arch = "wasm32"))]
 use chrono::Utc;
+#[cfg(not(target_arch = "wasm32"))]
 use hyphae::{Cell, MaterializeDefinite};
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
@@ -269,10 +272,13 @@ pub fn walk_tree(
 // ReportHandler impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
 impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
 
+    // The impl exists on wasm so clients can name the report and call
+    // live_report; only the server-side computation is gated (the wasm
+    // no-op default on ReportHandler::compute applies there).
+    #[cfg(not(target_arch = "wasm32"))]
     fn compute(
         &self,
         ctx: crate::report::ReportContext,
