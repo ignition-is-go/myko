@@ -2,10 +2,25 @@
 //! over a real HTTP connection, against this repo's own built-in `Server`
 //! entity — not just the in-memory `dispatch::handle_request` unit tests.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
+use myko::{
+    command::{CommandContext, CommandError, CommandHandler},
+    myko_command,
+};
 use myko_server::{CellServer, mcp::dispatch::ServerInfo};
+
+#[myko_command(String)]
+#[serde(deny_unknown_fields)]
+struct StrictEcho {
+    value: String,
+}
+
+impl CommandHandler for StrictEcho {
+    fn execute(self, _ctx: CommandContext) -> Result<String, CommandError> {
+        Ok(self.value)
+    }
+}
 
 async fn post_with_retry(
     client: &reqwest::Client,
@@ -42,6 +57,10 @@ fn tool_call(id: i64, name: &str, arguments: serde_json::Value) -> serde_json::V
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_then_execute_round_trip_over_http() {
+    let _strict_args_type_is_used = StrictEchoArgs {
+        value: "probe".to_string(),
+    };
+
     let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = probe.local_addr().unwrap();
     drop(probe);
@@ -129,6 +148,47 @@ async fn search_then_execute_round_trip_over_http() {
         .parse()
         .expect("execute should return the query's item count");
     assert!(count >= 0);
+
+    // 4. The wire-level `tx` metadata is extracted into CommandContext before
+    // strict user params are deserialized. A strict command therefore accepts
+    // its declared fields while still rejecting an actual unknown user field.
+    let strict_resp = post_with_retry(
+        &client,
+        &url,
+        &tool_call(
+            4,
+            "execute",
+            serde_json::json!({ "code": "return await myko.command('StrictEcho', {value: 'ok'});" }),
+        ),
+    )
+    .await;
+    let strict_text = strict_resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("strict command text content");
+    let strict_body: serde_json::Value =
+        serde_json::from_str(strict_text).expect("strict command wrapper JSON");
+    assert_eq!(strict_body["success"], serde_json::json!(true));
+    assert_eq!(strict_body["result"], serde_json::json!("ok"));
+
+    let unknown_resp = post_with_retry(
+        &client,
+        &url,
+        &tool_call(
+            5,
+            "execute",
+            serde_json::json!({
+                "code": "try { await myko.command('StrictEcho', {value: 'ok', unexpected: true}); return 'accepted'; } catch (e) { return e.message; }"
+            }),
+        ),
+    )
+    .await;
+    let unknown_text = unknown_resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("strict rejection text content");
+    assert!(
+        unknown_text.contains("unknown field `unexpected`"),
+        "strict command must keep rejecting user fields: {unknown_text}"
+    );
 
     handle.abort();
 }
