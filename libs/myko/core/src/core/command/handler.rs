@@ -517,9 +517,17 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
 
     fn execute_from_value(
         &self,
-        command: Value,
+        mut command: Value,
         ctx: CommandContext,
     ) -> Result<Value, CommandError> {
+        // `tx` belongs to CommandRequest and is already represented by the
+        // RequestContext. Leaving it in the flattened wire object makes a
+        // command with `#[serde(deny_unknown_fields)]` reject every valid
+        // native-WS and MCP invocation before its handler can run.
+        if let Some(params) = command.as_object_mut() {
+            params.remove("tx");
+        }
+
         // Deserialize the command
         let cmd: C = serde_json::from_value(command).map_err(|e| CommandError {
             tx: ctx.tx().to_string(),
