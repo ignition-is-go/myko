@@ -10,6 +10,7 @@ use std::{
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::AtomicBool;
 
+mod cbor_json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
 mod query_map;
@@ -769,8 +770,7 @@ impl MykoClient {
     fn decode_message(frame: &WsFrame) -> Option<Value> {
         match frame {
             WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
-            WsFrame::Binary(bytes) => match ciborium::de::from_reader::<Value, _>(bytes.as_slice())
-            {
+            WsFrame::Binary(bytes) => match cbor_json::from_slice(bytes) {
                 Ok(v) => Some(v),
                 Err(e) => {
                     warn!("CBOR decode failed ({} bytes): {}", bytes.len(), e);
