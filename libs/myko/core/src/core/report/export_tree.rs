@@ -8,10 +8,7 @@ use std::{
     sync::Arc,
 };
 
-// Used only by the native-gated compute body below.
-#[cfg(not(target_arch = "wasm32"))]
 use chrono::Utc;
-#[cfg(not(target_arch = "wasm32"))]
 use hyphae::{Cell, MaterializeDefinite};
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
@@ -274,14 +271,11 @@ pub fn walk_tree(
 // ReportHandler impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The impl block is present on all targets so `ExportEntityTree` satisfies
-// `ReportParams` (and thus `live_report`) on the wasm client; only the native
-// `compute` body is gated. On wasm the trait's no-op `compute` default applies
-// (report computation runs server-side; the client receives values over the wire).
+// Handlers compile on every target so downstream entity crates do not need to
+// duplicate target gates. Report computation still runs server-side in practice.
 impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn compute(
         &self,
         ctx: crate::report::ReportContext,
