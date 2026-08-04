@@ -630,7 +630,7 @@ impl MykoServerContext {
         let existing = self
             .registry
             .get(entity_type)
-            .and_then(|store| store.get(&id_arc).get());
+            .and_then(|store| store.get(&id_arc).materialize().get());
 
         crate::server::entity_set_stats::record_del(entity_type);
 
@@ -1529,7 +1529,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::Gettable,
+        hyphae::{Gettable, MaterializeDefinite},
         search::SearchIndex,
         server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
@@ -1672,7 +1672,13 @@ mod tests {
 
         assert_eq!(applied, 1);
         let store = ctx.registry.get_or_create("ImmediateTestItem");
-        assert!(store.get(&Arc::<str>::from("immediate-1")).get().is_some());
+        assert!(
+            store
+                .get(&Arc::<str>::from("immediate-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1695,11 +1701,23 @@ mod tests {
 
         assert_eq!(applied, 1);
         let store = ctx.registry.get_or_create("BufferedTestItem");
-        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_none());
+        assert!(
+            store
+                .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_none()
+        );
 
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
-        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
+        assert!(
+            store
+                .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1760,8 +1778,20 @@ mod tests {
             .expect("mixed apply_event_batch should succeed");
 
         assert_eq!(applied, 2);
-        assert!(store.get(&Arc::<str>::from("new-1")).get().is_some());
-        assert!(store.get(&Arc::<str>::from("old-1")).get().is_none());
+        assert!(
+            store
+                .get(&Arc::<str>::from("new-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&Arc::<str>::from("old-1"))
+                .materialize()
+                .get()
+                .is_none()
+        );
 
         let seen = diffs_seen.lock().unwrap();
         assert_eq!(

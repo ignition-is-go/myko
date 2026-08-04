@@ -83,7 +83,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hyphae::Gettable;
+use hyphae::{Gettable, MaterializeDefinite};
 use tracing::{debug, info, trace};
 
 use super::{MykoServerContext, persister::PersistError};
@@ -491,6 +491,7 @@ impl RelationshipManager {
         let store = ctx.registry.get_or_create(lookup.local_type);
         store
             .entries()
+            .materialize()
             .get()
             .into_iter()
             .filter(|(_, item)| {
@@ -715,6 +716,7 @@ impl RelationshipManager {
         let store = ctx.registry.get_or_create(lookup.local_type);
         store
             .entries()
+            .materialize()
             .get()
             .into_iter()
             .filter(|(_, item)| {
@@ -843,6 +845,7 @@ impl RelationshipManager {
         let store = ctx.registry.get_or_create(lookup.local_type);
         store
             .entries()
+            .materialize()
             .get()
             .into_iter()
             .filter(|(_, item)| {
@@ -1317,7 +1320,7 @@ mod cascade_tests {
 
     use self::node::CascadeNode;
     use crate::{
-        hyphae::Gettable,
+        hyphae::{Gettable, MaterializeDefinite},
         search::SearchIndex,
         server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,
@@ -1366,7 +1369,7 @@ mod cascade_tests {
     fn exists(registry: &StoreRegistry, id: &str) -> bool {
         registry
             .get("CascadeNode")
-            .and_then(|store| store.get(&Arc::<str>::from(id)).get())
+            .and_then(|store| store.get(&Arc::<str>::from(id)).materialize().get())
             .is_some()
     }
 

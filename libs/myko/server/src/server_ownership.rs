@@ -14,10 +14,11 @@ pub struct ServerOwnershipManager;
 impl ServerOwnershipManager {
     /// Get IDs of all currently live servers.
     fn live_server_ids(ctx: &MykoServerContext) -> Vec<ServerId> {
-        use hyphae::Gettable;
+        use hyphae::{Gettable, MaterializeDefinite};
         let req = ctx.new_server_transaction();
         ctx.query_map(GetAllServers {}, req)
             .items()
+            .materialize()
             .get()
             .iter()
             .map(|s| s.id.clone())
@@ -99,10 +100,13 @@ impl ServerOwnershipManager {
     /// Watch for Server entity removals and redistribute orphaned items.
     /// Returns a SubscriptionGuard that must be kept alive.
     pub fn watch_peer_deaths(ctx: &MykoServerContext) -> hyphae::SubscriptionGuard {
-        use hyphae::{Gettable, Signal, Watchable};
+        use hyphae::{Gettable, MaterializeDefinite, Signal, Watchable};
 
         let req = ctx.new_server_transaction();
-        let servers_cell = ctx.query_map(GetAllServers {}, req).items();
+        let servers_cell = ctx
+            .query_map(GetAllServers {}, req)
+            .items()
+            .materialize();
 
         let prev_ids: std::sync::Mutex<HashSet<Arc<str>>> =
             std::sync::Mutex::new(servers_cell.get().iter().map(|s| s.id.0.clone()).collect());

@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use hyphae::Gettable;
+use hyphae::{Gettable, MaterializeDefinite};
 use myko::store::StoreRegistry;
 use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;
@@ -166,7 +166,11 @@ pub fn register_item_count_gauge(registry: Arc<StoreRegistry>) {
         .with_description("Live entity count per store, sampled on each metrics export")
         .with_callback(move |observer| {
             for entity_type in registry.entity_types() {
-                let count = registry.get_or_create(&entity_type).len().get() as u64;
+                let count = registry
+                    .get_or_create(&entity_type)
+                    .len()
+                    .materialize()
+                    .get() as u64;
                 observer.observe(
                     count,
                     &[KeyValue::new("entity_type", entity_type.to_string())],

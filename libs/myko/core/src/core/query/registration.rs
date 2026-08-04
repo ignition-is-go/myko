@@ -1064,11 +1064,11 @@ pub fn build_ids_source_map(
     store: &Arc<crate::store::EntityStore>,
     ids: &[Arc<str>],
 ) -> FilteredCellMap {
-    use hyphae::{Signal, Watchable};
+    use hyphae::{MaterializeDefinite, Signal, Watchable};
 
     let result: hyphae::CellMap<Arc<str>, AnyItemArc> = hyphae::CellMap::new();
     for id in ids {
-        let key_cell = store.get(id);
+        let key_cell = store.get(id).materialize();
         // Weak, not a strong clone: `key_cell` belongs to the store, which
         // lives for the whole process — a strong capture here would make the
         // store's per-key subscriber list hold `result` (and everything
