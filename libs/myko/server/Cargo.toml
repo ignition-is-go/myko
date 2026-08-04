@@ -1,6 +1,6 @@
 [package]
 name = "myko-server"
-version = "5.0.1"
+version = "5.0.6"
 edition = "2024"
 description = "Myko server runtime — WebSocket, peer federation"
 license = "AGPL-3.0-or-later"
@@ -54,6 +54,8 @@ tracing-opentelemetry = "0.33.0"
 [dev-dependencies]
 # Loopback integration test only — no TLS toolchain needed.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# `#[myko_command]` derives TS metadata for integration-test command fixtures.
+ts-rs.workspace = true
 
 [features]
 default = []

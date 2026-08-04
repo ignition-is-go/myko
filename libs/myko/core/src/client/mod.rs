@@ -1,3 +1,6 @@
+// AtomicBool is only used by the native command-cancellation path below.
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicBool;
 use std::{
     any::Any,
     collections::HashMap,
@@ -6,10 +9,8 @@ use std::{
         atomic::{AtomicU8, Ordering},
     },
 };
-// AtomicBool is only used by the native command-cancellation path below.
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::AtomicBool;
 
+mod cbor_json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
 mod query_map;
@@ -765,8 +766,7 @@ impl MykoClient {
     fn decode_message(frame: &WsFrame) -> Option<Value> {
         match frame {
             WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
-            WsFrame::Binary(bytes) => match ciborium::de::from_reader::<Value, _>(bytes.as_slice())
-            {
+            WsFrame::Binary(bytes) => match cbor_json::from_slice(bytes) {
                 Ok(v) => Some(v),
                 Err(e) => {
                     warn!("CBOR decode failed ({} bytes): {}", bytes.len(), e);
@@ -819,31 +819,14 @@ impl MykoClient {
         }
 
         let addr = addr.unwrap();
-
-        let mut parsed = match Url::parse(addr.as_str()) {
-            Ok(url) if url.scheme() == "ws" || url.scheme() == "wss" => url,
-            _ => {
-                let add_ws = format!("ws://{addr}");
-                match Url::parse(add_ws.as_str()) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        warn!("Could not parse url: {e:?}");
-                        self.inner.socket.set_addr(None);
-                        return;
-                    }
-                }
+        let parsed_addr = match normalize_myko_address(&addr) {
+            Ok(address) => address,
+            Err(error) => {
+                warn!("Could not parse url: {error:?}");
+                self.inner.socket.set_addr(None);
+                return;
             }
         };
-
-        if parsed.path() != "/myko" {
-            parsed.set_path("/myko");
-        }
-
-        if parsed.port().is_none() {
-            let _ = parsed.set_port(Some(5155));
-        }
-
-        let parsed_addr = parsed.to_string();
         let current = self.inner.current_address.lock().unwrap().clone();
         if current.as_ref() == Some(&parsed_addr) {
             debug!("set_address({parsed_addr}) ignored; address unchanged");
@@ -1664,5 +1647,97 @@ impl MykoClient {
         }
 
         cell.lock()
+    }
+}
+
+fn normalize_myko_address(addr: &str) -> Result<String, url::ParseError> {
+    let has_explicit_port = address_has_explicit_port(addr);
+    let mut parsed = match Url::parse(addr) {
+        Ok(url) if url.scheme() == "ws" || url.scheme() == "wss" => url,
+        _ => Url::parse(&format!("ws://{addr}"))?,
+    };
+
+    if parsed.path() != "/myko" {
+        parsed.set_path("/myko");
+    }
+
+    // `url::Url` canonicalizes explicit default ports (`:80` for ws and
+    // `:443` for wss) to `None`. Preserve that standard-port intent instead of
+    // replacing it with Myko's legacy 5155 default. Inputs that omit a port
+    // entirely retain the established 5155 behavior.
+    if parsed.port().is_none() && !has_explicit_port {
+        let _ = parsed.set_port(Some(5155));
+    }
+
+    Ok(parsed.to_string())
+}
+
+fn address_has_explicit_port(addr: &str) -> bool {
+    let authority = addr
+        .split_once("://")
+        .map_or(addr, |(_, remainder)| remainder)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+
+    if let Some(remainder) = authority.strip_prefix('[')
+        && let Some((_, suffix)) = remainder.split_once(']')
+    {
+        return suffix
+            .strip_prefix(':')
+            .is_some_and(|port| port.parse::<u16>().is_ok());
+    }
+
+    authority
+        .rsplit_once(':')
+        .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::normalize_myko_address;
+
+    #[test]
+    fn preserves_explicit_websocket_default_ports() {
+        assert_eq!(
+            normalize_myko_address("ws://agents.example:80/myko").unwrap(),
+            "ws://agents.example/myko"
+        );
+        assert_eq!(
+            normalize_myko_address("wss://agents.example:443/myko").unwrap(),
+            "wss://agents.example/myko"
+        );
+        assert_eq!(
+            normalize_myko_address("[::1]:80").unwrap(),
+            "ws://[::1]/myko"
+        );
+    }
+
+    #[test]
+    fn retains_legacy_default_when_port_is_omitted() {
+        assert_eq!(
+            normalize_myko_address("agents.example").unwrap(),
+            "ws://agents.example:5155/myko"
+        );
+        assert_eq!(
+            normalize_myko_address("ws://agents.example").unwrap(),
+            "ws://agents.example:5155/myko"
+        );
+        assert_eq!(
+            normalize_myko_address("[::1]").unwrap(),
+            "ws://[::1]:5155/myko"
+        );
+    }
+
+    #[test]
+    fn preserves_explicit_non_default_ports_and_normalizes_path() {
+        assert_eq!(
+            normalize_myko_address("ws://127.0.0.1:5174/ignored").unwrap(),
+            "ws://127.0.0.1:5174/myko"
+        );
+        assert_eq!(
+            normalize_myko_address("agents.example:80").unwrap(),
+            "ws://agents.example/myko"
+        );
     }
 }

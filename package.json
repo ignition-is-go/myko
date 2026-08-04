@@ -17,7 +17,7 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write ."
   },
-  "version": "5.0.1",
+  "version": "5.0.6",
   "workspaces": [
     "libs/myko/**"
   ]

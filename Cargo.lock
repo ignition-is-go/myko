@@ -191,7 +191,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autosocket"
-version = "5.0.1"
+version = "5.0.6"
 dependencies = [
  "dashmap",
  "flume",
@@ -1945,7 +1945,7 @@ dependencies = [
 
 [[package]]
 name = "myko"
-version = "5.0.1"
+version = "5.0.6"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-version = "5.0.1"
+version = "5.0.6"
 dependencies = [
  "hyphae-leptos",
  "leptos",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "5.0.1"
+version = "5.0.6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "5.0.1"
+version = "5.0.6"
 dependencies = [
  "chrono",
  "ciborium",
@@ -2031,6 +2031,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "ts-rs",
  "tungstenite",
  "uuid",
 ]
