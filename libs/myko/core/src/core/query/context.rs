@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite};
+use hyphae::{Cell, CellImmutable, MapExt, Materialize};
 
 use super::{
     cell::FilteredCellMap, registration::QueryFactory, request::QueryRequest, traits::AnyQuery,

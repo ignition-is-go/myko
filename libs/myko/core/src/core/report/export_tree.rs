@@ -9,7 +9,7 @@ use std::{
 };
 
 use chrono::Utc;
-use hyphae::{Cell, MaterializeDefinite};
+use hyphae::{Cell, Definite, Materialize};
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
 
@@ -279,7 +279,7 @@ impl crate::report::ReportHandler for ExportEntityTree {
     fn compute(
         &self,
         ctx: crate::report::ReportContext,
-    ) -> impl MaterializeDefinite<Arc<Self::Output>> {
+    ) -> impl Materialize<Arc<Self::Output>, Definite> {
         let registry = if let Some(as_of) = &self.as_of {
             match ctx.replay_store(as_of) {
                 Ok(r) => r,

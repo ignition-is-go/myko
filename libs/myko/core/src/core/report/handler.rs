@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::MaterializeDefinite;
+use hyphae::{Definite, Materialize};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -114,7 +114,7 @@ impl Replaying for ReportContext {}
 ///   fn compute(
 ///     &self,
 ///     ctx: ReportContext,
-///   ) -> impl MaterializeDefinite<Arc<Self::Output>> {
+///   ) -> impl Materialize<Arc<Self::Output>, Definite> {
 ///     ctx.query(GetTargetsByQuery { active: Some(true), ..Default::default() })
 ///       .map(|items| Arc::new(ActiveTargetCount { count: items.len() }))
 ///   }
@@ -139,12 +139,12 @@ pub trait ReportHandler: Sized {
     /// Report arguments are parsed by the framework and passed as `&self`,
     /// so fields are directly accessible (e.g., `self.target_id`).
     ///
-    /// # Returning a `MaterializeDefinite` pipeline (not a `Cell`)
+    /// # Returning a `Materialize` pipeline (not a `Cell`)
     ///
-    /// `compute` returns `impl MaterializeDefinite<Arc<Output>>` rather than a
+    /// `compute` returns `impl Materialize<Arc<Output>, Definite>` rather than a
     /// concrete `Cell`, so reports can chain `.map(...)`, `.tap(...)`, etc. on
     /// hyphae's lazy operators without materializing an intermediate cell.
-    /// `MaterializeDefinite` is the bound for pipelines that have a known
+    /// `Definite` is the seedness for pipelines that have a known
     /// initial value (definite seedness) and can be compiled into a `Cell`
     /// via `.materialize()`. The framework type-erases the output and
     /// materializes once at the registration boundary, so each report
@@ -152,7 +152,7 @@ pub trait ReportHandler: Sized {
     /// `ctx.report(...)` calls.
     ///
     /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
-    /// `deduped`, etc. already implement `MaterializeDefinite<U>`, so
+    /// `deduped`, etc. already implement `Materialize<U, Definite>`, so
     /// returning them directly is fine.
-    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>>;
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite>;
 }

@@ -83,7 +83,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hyphae::{Gettable, MaterializeDefinite};
+use hyphae::{Gettable, Materialize};
 use tracing::{debug, info, trace};
 
 use super::{MykoServerContext, persister::PersistError};
@@ -1320,7 +1320,7 @@ mod cascade_tests {
 
     use self::node::CascadeNode;
     use crate::{
-        hyphae::{Gettable, MaterializeDefinite},
+        hyphae::{Gettable, Materialize},
         search::SearchIndex,
         server::{
             HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter,

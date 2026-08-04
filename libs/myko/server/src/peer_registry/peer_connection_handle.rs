@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use hyphae::{
-    Cell, CellImmutable, DedupedExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty,
-    PairwiseExt, TapExt,
+    Cell, CellImmutable, DedupedExt, JoinExt, MapExt, Materialize, PairwiseExt, TapExt,
 };
 use myko::{
     client::{ConnectionStatus, MykoClient},

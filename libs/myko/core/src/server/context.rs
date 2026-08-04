@@ -15,7 +15,7 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, MaterializeDefinite, Mutable, Watchable,
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, Materialize, Mutable, Watchable,
     WeakCellMap,
 };
 use serde::de::DeserializeOwned;
@@ -1526,7 +1526,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::{Gettable, MaterializeDefinite},
+        hyphae::{Gettable, Materialize},
         search::SearchIndex,
         server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
         store::StoreRegistry,

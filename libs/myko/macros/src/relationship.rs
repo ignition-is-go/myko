@@ -796,7 +796,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 fn compute(
                     &self,
                     ctx: #krate::prelude::ReportContext,
-                ) -> impl #krate::prelude::MaterializeDefinite<::std::sync::Arc<Self::Output>> {
+                ) -> impl #krate::prelude::Materialize<::std::sync::Arc<Self::Output>, #krate::prelude::Definite> {
                     let arc_ids = ctx.search(#local_type, &self.query, self.limit);
                     let ids: ::std::vec::Vec<#id_type_ident> = arc_ids
                         .into_iter()

@@ -187,7 +187,7 @@ pub trait Querying: ServerScoped {
             + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        use hyphae::{MapExt, MaterializeDefinite};
+        use hyphae::{MapExt, Materialize};
         self.query_map_untyped(query)
             .diffs()
             .map(|diff| crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff"))

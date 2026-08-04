@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use myko::{
     bench_entities::{BenchItem, BenchItemQuery, GetBenchItemsByQuery, SwitchMapReport},
-    hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, SwitchMapExt},
+    hyphae::{Cell, Gettable, Materialize, Mutable, SwitchMapExt},
     query::StringFilter,
     search::SearchIndex,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},

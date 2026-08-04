@@ -82,7 +82,7 @@ impl SearchIndex {
     /// Build the initial index from all entities currently in the store
     /// registry. Call after durable backend catch-up.
     pub fn build_from_registry(&self, registry: &crate::store::StoreRegistry) {
-        use hyphae::{Gettable, MaterializeDefinite};
+        use hyphae::{Gettable, Materialize};
 
         let mut count = 0;
         // Snapshot the registered entity types so we don't hold any registry

@@ -19,8 +19,8 @@ pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable,
-    SubscriptionGuard, Watchable,
+    Cell, CellImmutable, CellMutable, Gettable, MapExt, Materialize, Mutable, SubscriptionGuard,
+    Watchable,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;

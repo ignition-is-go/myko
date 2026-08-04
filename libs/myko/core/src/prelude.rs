@@ -3,9 +3,9 @@
 pub use chrono::Utc;
 // Re-export hyphae cell types for reports
 pub use hyphae::{
-    Cell, CellImmutable, CellMutable, CountByExt, Gettable, GroupByExt, MapExt, MapQuery,
-    MaterializeDefinite, MaterializeEmpty, Mutable, Pipeline, ProjectCellExt, ProjectMapExt,
-    SelectCellExt, SelectExt, Watchable,
+    Cell, CellImmutable, CellMutable, CountByExt, Definite, Gettable, GroupByExt, MapExt, MapQuery,
+    Materialize, Mutable, Pipeline, ProjectCellExt, ProjectMapExt, SelectCellExt, SelectExt,
+    Watchable,
 };
 pub use myko_macros::*;
 pub use uuid::Uuid;

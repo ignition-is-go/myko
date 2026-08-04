@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use hyphae::{Gettable, MaterializeDefinite};
+use hyphae::{Gettable, Materialize};
 use myko::store::StoreRegistry;
 use opentelemetry::{KeyValue, global, trace::TracerProvider};
 use opentelemetry_otlp::WithExportConfig;

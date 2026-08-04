@@ -325,7 +325,7 @@ pub struct SwitchMapReport {
 impl ReportHandler for SwitchMapReport {
     type Output = Vec<String>;
 
-    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
         let category = self.category.clone();
 
         // Outer: watch all items matching the category

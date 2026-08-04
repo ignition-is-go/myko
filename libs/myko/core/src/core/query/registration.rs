@@ -2,7 +2,7 @@
 
 use std::{
     any::Any,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -53,6 +53,13 @@ type WeakAnyItemMap = hyphae::WeakCellMap<Arc<str>, AnyItemArc>;
 type BucketEntries = Vec<(Arc<str>, AnyItemArc)>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
+type BucketAction = (AnyItemMap, BucketDiff);
+
+#[derive(Default)]
+struct BelongsToMutationState {
+    pending: VecDeque<Vec<BucketAction>>,
+    dispatching: bool,
+}
 
 /// Lazily-built per-key source constructor for whichever indexed mode a
 /// `reconcile_live_query` tick is in (id route or belongs_to route).
@@ -177,7 +184,7 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
 struct BelongsToSourceIndex {
     store: Arc<crate::store::EntityStore>,
     buckets: DashMap<CompoundKey, WeakAnyItemMap>,
-    mutation_gate: Mutex<()>,
+    mutation_gate: Mutex<BelongsToMutationState>,
     _driver: Arc<AnyItemMap>,
 }
 
@@ -187,7 +194,7 @@ impl BelongsToSourceIndex {
         let index = Arc::new(Self {
             store: store.clone(),
             buckets: DashMap::new(),
-            mutation_gate: Mutex::new(()),
+            mutation_gate: Mutex::new(BelongsToMutationState::default()),
             _driver: driver.clone(),
         });
 
@@ -313,14 +320,48 @@ impl BelongsToSourceIndex {
     }
 
     fn apply_diff(&self, diff: &BucketDiff, extract_fk: CompoundFkExtractor) {
-        let _mutation = self
-            .mutation_gate
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.apply_diff_locked(diff, extract_fk);
+        {
+            let mut mutation = self
+                .mutation_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let actions = self.prepare_diff_locked(diff, extract_fk);
+            mutation.pending.push_back(actions);
+            if mutation.dispatching {
+                return;
+            }
+            mutation.dispatching = true;
+        }
+
+        // CellMap fanout is synchronous and may construct another query,
+        // which re-enters bucket_for on this index. Never notify while the
+        // non-reentrant publication gate is held. A single drainer preserves
+        // store-diff order even when callbacks arrive concurrently; reentrant
+        // diffs enqueue above and are picked up by this loop.
+        loop {
+            let actions = {
+                let mut mutation = self
+                    .mutation_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let Some(actions) = mutation.pending.pop_front() else {
+                    mutation.dispatching = false;
+                    return;
+                };
+                actions
+            };
+            for (bucket, diff) in actions {
+                bucket.apply_diff_owned(diff);
+            }
+        }
     }
 
-    fn apply_diff_locked(&self, diff: &BucketDiff, extract_fk: CompoundFkExtractor) {
+    fn prepare_diff_locked(
+        &self,
+        diff: &BucketDiff,
+        extract_fk: CompoundFkExtractor,
+    ) -> Vec<BucketAction> {
+        let mut actions = Vec::new();
         match diff {
             MapDiff::Initial { entries } => {
                 let mut grouped: HashMap<CompoundKey, BucketEntries> = HashMap::new();
@@ -353,25 +394,14 @@ impl BelongsToSourceIndex {
                     .filter(|entry| entry.value().upgrade().is_some())
                     .map(|entry| entry.key().clone())
                     .collect();
-                for key in &live_keys {
-                    if !grouped.contains_key(key)
-                        && let Some(bucket) = self.route_to_live_bucket(key)
-                    {
-                        bucket.apply_diff_owned(MapDiff::Initial {
-                            entries: Vec::new(),
-                        });
-                    }
-                }
-
-                // Route new state only to buckets someone's actually
-                // watching — an FK with no live subscriber gets built
-                // lazily (with backfill) next time `bucket_for` is called
-                // for it via `build_belongs_to_source_map`.
-                for (fk, bucket_entries) in grouped {
-                    if let Some(bucket) = self.route_to_live_bucket(&fk) {
-                        bucket.apply_diff_owned(MapDiff::Initial {
-                            entries: bucket_entries,
-                        });
+                for key in live_keys {
+                    if let Some(bucket) = self.route_to_live_bucket(&key) {
+                        actions.push((
+                            bucket,
+                            MapDiff::Initial {
+                                entries: grouped.remove(&key).unwrap_or_default(),
+                            },
+                        ));
                     }
                 }
             }
@@ -379,20 +409,26 @@ impl BelongsToSourceIndex {
                 if let Some(fk) = extract_fk(value.as_any())
                     && let Some(bucket) = self.route_to_live_bucket(&fk)
                 {
-                    bucket.apply_diff_owned(MapDiff::Insert {
-                        key: key.clone(),
-                        value: value.clone(),
-                    });
+                    actions.push((
+                        bucket,
+                        MapDiff::Insert {
+                            key: key.clone(),
+                            value: value.clone(),
+                        },
+                    ));
                 }
             }
             MapDiff::Remove { key, old_value } => {
                 if let Some(fk) = extract_fk(old_value.as_any())
                     && let Some(bucket) = self.route_to_live_bucket(&fk)
                 {
-                    bucket.apply_diff_owned(MapDiff::Remove {
-                        key: key.clone(),
-                        old_value: old_value.clone(),
-                    });
+                    actions.push((
+                        bucket,
+                        MapDiff::Remove {
+                            key: key.clone(),
+                            old_value: old_value.clone(),
+                        },
+                    ));
                 }
             }
             MapDiff::Update {
@@ -405,41 +441,56 @@ impl BelongsToSourceIndex {
                 match (old_fk, new_fk) {
                     (Some(old_fk), Some(new_fk)) if old_fk == new_fk => {
                         if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
-                            bucket.apply_diff_owned(MapDiff::Update {
-                                key: key.clone(),
-                                old_value: old_value.clone(),
-                                new_value: new_value.clone(),
-                            });
+                            actions.push((
+                                bucket,
+                                MapDiff::Update {
+                                    key: key.clone(),
+                                    old_value: old_value.clone(),
+                                    new_value: new_value.clone(),
+                                },
+                            ));
                         }
                     }
                     (Some(old_fk), Some(new_fk)) => {
                         if let Some(bucket) = self.route_to_live_bucket(&old_fk) {
-                            bucket.apply_diff_owned(MapDiff::Remove {
-                                key: key.clone(),
-                                old_value: old_value.clone(),
-                            });
+                            actions.push((
+                                bucket,
+                                MapDiff::Remove {
+                                    key: key.clone(),
+                                    old_value: old_value.clone(),
+                                },
+                            ));
                         }
                         if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
-                            bucket.apply_diff_owned(MapDiff::Insert {
-                                key: key.clone(),
-                                value: new_value.clone(),
-                            });
+                            actions.push((
+                                bucket,
+                                MapDiff::Insert {
+                                    key: key.clone(),
+                                    value: new_value.clone(),
+                                },
+                            ));
                         }
                     }
                     (Some(old_fk), None) => {
                         if let Some(bucket) = self.route_to_live_bucket(&old_fk) {
-                            bucket.apply_diff_owned(MapDiff::Remove {
-                                key: key.clone(),
-                                old_value: old_value.clone(),
-                            });
+                            actions.push((
+                                bucket,
+                                MapDiff::Remove {
+                                    key: key.clone(),
+                                    old_value: old_value.clone(),
+                                },
+                            ));
                         }
                     }
                     (None, Some(new_fk)) => {
                         if let Some(bucket) = self.route_to_live_bucket(&new_fk) {
-                            bucket.apply_diff_owned(MapDiff::Insert {
-                                key: key.clone(),
-                                value: new_value.clone(),
-                            });
+                            actions.push((
+                                bucket,
+                                MapDiff::Insert {
+                                    key: key.clone(),
+                                    value: new_value.clone(),
+                                },
+                            ));
                         }
                     }
                     (None, None) => {}
@@ -507,18 +558,24 @@ impl BelongsToSourceIndex {
                             }
                         }
                         MapDiff::Initial { .. } | MapDiff::Batch { .. } => {
-                            self.apply_diff_locked(change, extract_fk);
+                            actions.extend(self.prepare_diff_locked(change, extract_fk));
                         }
                     }
                 }
 
                 for (fk, bucket_changes) in by_fk {
                     if let Some(bucket) = self.route_to_live_bucket(&fk) {
-                        bucket.apply_batch(bucket_changes);
+                        actions.push((
+                            bucket,
+                            MapDiff::Batch {
+                                changes: bucket_changes,
+                            },
+                        ));
                     }
                 }
             }
         }
+        actions
     }
 }
 
@@ -1216,7 +1273,7 @@ pub fn build_ids_source_map(
     store: &Arc<crate::store::EntityStore>,
     ids: &[Arc<str>],
 ) -> FilteredCellMap {
-    use hyphae::{MaterializeDefinite, Signal, Watchable};
+    use hyphae::{Materialize, Signal, Watchable};
 
     let result: hyphae::CellMap<Arc<str>, AnyItemArc> = hyphae::CellMap::new();
     for id in ids {
@@ -1612,6 +1669,41 @@ mod belongs_to_source_index_tests {
                 "iteration {i} lost the insert racing first bucket construction"
             );
         }
+    }
+
+    #[test]
+    fn bucket_diff_fanout_can_reenter_bucket_creation() {
+        let store = new_store();
+        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+        let bucket = index.bucket_for(
+            smallvec::smallvec![Arc::from("parent-source")],
+            extract_parent_fk,
+        );
+        let (sent, received) = std::sync::mpsc::channel();
+        let index_for_callback = index.clone();
+        let guard = bucket.subscribe_diffs(move |_| {
+            // Real query graphs can synchronously construct another routed
+            // query while handling this diff. That must not attempt to
+            // reacquire an index gate still held by apply_diff.
+            let nested = index_for_callback.bucket_for(
+                smallvec::smallvec![Arc::from("parent-nested")],
+                extract_parent_fk,
+            );
+            drop(nested);
+            sent.send(()).unwrap();
+        });
+
+        // Discard subscribe_diffs' synchronous Initial notification.
+        received.recv().unwrap();
+        let insert = std::thread::spawn(move || {
+            let (id, item) = child("child-reentrant", "parent-source");
+            store.insert(id, item);
+        });
+        received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("bucket fanout deadlocked while re-entering bucket_for");
+        insert.join().unwrap();
+        drop(guard);
     }
 
     #[test]

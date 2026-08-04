@@ -9,7 +9,7 @@ use myko::{
         client::{Client, ClientQuery},
         server::ServerId,
     },
-    hyphae::{Cell, CellMutable, MapExt, MaterializeDefinite, Mutable},
+    hyphae::{Cell, CellMutable, MapExt, Materialize, Mutable},
     query::IdFilter,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,

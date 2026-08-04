@@ -90,7 +90,10 @@ impl EntitySearch {
 impl ReportHandler for EntitySearch {
     type Output = EntitySearchResult;
 
-    fn compute(&self, ctx: ReportContext) -> impl hyphae::MaterializeDefinite<Arc<Self::Output>> {
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> impl hyphae::Materialize<Arc<Self::Output>, hyphae::Definite> {
         // Perform search via ReportContext (sync call)
         let ids = ctx.search(&self.entity_type, &self.query, self.limit);
 
