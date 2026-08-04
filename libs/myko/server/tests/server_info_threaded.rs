@@ -1,8 +1,7 @@
 //! Asserts that a `ServerInfo` set on `MykoServerBuilder` reaches
 //! `handle_initialize` over HTTP — the wire shape pulse-mcp depends on.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use myko_server::{MykoServer, mcp::dispatch::ServerInfo};
 

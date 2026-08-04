@@ -10,6 +10,11 @@ pub use hyphae::{
 pub use myko_macros::*;
 pub use uuid::Uuid;
 
+// Re-export TS for derive macros — conditional on the `ts-export` feature
+// at the lib.rs level, so downstream derives go through the same switch.
+pub use crate::TS;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 // Handler capability traits — bring the scoped methods (tx/registry, emit_* +
 // execute_command on command handlers, and on native
 // query_map/report/view/search/peer_*/replay_store) into scope for handler
@@ -20,12 +25,6 @@ pub use crate::core::capability::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::core::capability::{PeerAccess, Replaying, Viewing};
-
-// Re-export TS for derive macros — conditional on the `ts-export` feature
-// at the lib.rs level, so downstream derives go through the same switch.
-pub use crate::TS;
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::FilteredCellMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,9 +51,9 @@ pub use crate::{
         },
     },
     query::{
-        AnyQuery, EqFilter, Filter, Filterable, IdFilter, NumericFilter, Query,
-        QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext,
-        StringFilter, Unfilterable, in_matches,
+        AnyQuery, EqFilter, Filter, Filterable, IdFilter, NumericFilter, Query, QueryHandler,
+        QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext, StringFilter,
+        Unfilterable, in_matches,
     },
     report::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,

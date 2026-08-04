@@ -9,9 +9,7 @@ use super::{
     cell::{FilteredViewCellMap, erase_typed_view_map},
     context::{ViewBuildContext, ViewContext},
     request::ViewRequest,
-    traits::{
-        AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
-    },
+    traits::{AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams},
 };
 use crate::{
     common::with_id::WithId, item::Eventable, request::RequestContext, server::MykoServerContext,

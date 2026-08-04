@@ -1322,7 +1322,9 @@ mod cascade_tests {
     use crate::{
         hyphae::{Gettable, MaterializeDefinite},
         search::SearchIndex,
-        server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{
+            HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter,
+        },
         store::StoreRegistry,
         test_util::scheduler_test_serial,
     };
@@ -1489,7 +1491,9 @@ mod ensure_for_cascade_tests {
     use crate::{
         core::item::AnyItem,
         search::SearchIndex,
-        server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{
+            HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter,
+        },
         store::StoreRegistry,
         test_util::scheduler_test_serial,
     };
@@ -1510,9 +1514,8 @@ mod ensure_for_cascade_tests {
 
         pub use ensured_status::EnsuredStatus;
         mod ensured_status {
-            use crate::prelude::*;
-
             use super::{Parent, ParentId};
+            use crate::prelude::*;
 
             #[myko_item]
             pub struct EnsuredStatus {

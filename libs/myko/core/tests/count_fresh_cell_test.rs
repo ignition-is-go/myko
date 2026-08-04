@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use myko::{
     bench_entities::{BenchItem, CountAllBenchItems},
-    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };

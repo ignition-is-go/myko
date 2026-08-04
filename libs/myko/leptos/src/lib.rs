@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use leptos::prelude::*;
-use myko::{common::with_id::WithTypedId, hyphae::IdFor};
-
 // Re-export the hyphae→Leptos bridge primitives so consumers get them from a
 // single place (`myko_leptos`) without depending on `hyphae-leptos` directly.
 pub use hyphae_leptos::{
     CellMapStore, CellMapStoreExt, MapGroup, NestedMapStore, NestedMapStoreExt, ToLeptosSignal,
 };
+use leptos::prelude::*;
+use myko::{common::with_id::WithTypedId, hyphae::IdFor};
 
 /// Initialize the myko-leptos bridge.
 ///

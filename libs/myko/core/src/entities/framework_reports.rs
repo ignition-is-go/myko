@@ -4,9 +4,6 @@
 //! all entity types rather than specific domain entities.
 
 use std::sync::Arc;
-use crate::core::capability::EventPublishing;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::capability::{PeerAccess, Replaying};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::Ordering;
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,8 +19,11 @@ use hyphae::{DedupedExt, interval};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::core::capability::{PeerAccess, Replaying};
 use crate::{
     TS,
+    core::capability::EventPublishing,
     report::{ReportContext, ReportHandler},
     wire::{MEvent, WrappedItem},
 };

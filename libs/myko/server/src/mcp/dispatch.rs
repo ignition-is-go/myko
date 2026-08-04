@@ -543,8 +543,9 @@ fn get_command_schema(command_id: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::Value;
+
+    use super::*;
 
     fn make_request(method: &str) -> McpRequest {
         McpRequest {

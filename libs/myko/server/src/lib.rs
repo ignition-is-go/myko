@@ -41,8 +41,8 @@ pub use server_ownership::ServerOwnershipManager;
 use uuid::Uuid;
 
 use crate::postgres::{
-    PostgresConsumer, PostgresProducer, PostgresConfig, PostgresHistoryReplayProvider,
-    PostgresHistoryStore, PostgresProducerHandle,
+    PostgresConfig, PostgresConsumer, PostgresHistoryReplayProvider, PostgresHistoryStore,
+    PostgresProducer, PostgresProducerHandle,
 };
 
 /// Cell-based Myko server configuration.

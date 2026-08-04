@@ -27,7 +27,7 @@ use myko::{
     report::AnyOutput,
     request::RequestContext,
     server::{
-        MykoServerContext, ClientSession, PendingQueryResponse, WsWriter,
+        ClientSession, MykoServerContext, PendingQueryResponse, WsWriter,
         client_registry::try_client_registry,
     },
     wire::{
@@ -1004,13 +1004,9 @@ impl WsHandler {
                                 message,
                                 serde_json::to_string(&wrapped.view).unwrap_or_default()
                             );
-                            if let Err(err) =
-                                priority_tx.try_send(MykoMessage::ViewError(ViewError::new(
-                                    tx_id.to_string(),
-                                    view_id.to_string(),
-                                    message,
-                                )))
-                            {
+                            if let Err(err) = priority_tx.try_send(MykoMessage::ViewError(
+                                ViewError::new(tx_id.to_string(), view_id.to_string(), message),
+                            )) {
                                 drop_logger.on_drop("ViewError", &err);
                             }
                         }

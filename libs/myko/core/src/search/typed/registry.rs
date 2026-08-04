@@ -6,8 +6,10 @@
 //! - The single dyn cost is a `TypeId`-keyed downcast at insert/remove; the
 //!   typed search side stays fully monomorphized.
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use super::{Hit, SearchIndex, SearchOptions, Searchable};
 use crate::core::item::AnyItem;

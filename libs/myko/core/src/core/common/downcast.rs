@@ -13,7 +13,10 @@ use std::any::Any;
 // which are monomorphized server-side only — on wasm the generic callers are
 // never instantiated, so the fn reads as dead there.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-pub(crate) fn downcast_request<T: Clone + 'static>(any: &dyn Any, label: &str) -> Result<T, String> {
+pub(crate) fn downcast_request<T: Clone + 'static>(
+    any: &dyn Any,
+    label: &str,
+) -> Result<T, String> {
     any.downcast_ref::<T>()
         .cloned()
         .ok_or_else(|| format!("Failed to downcast {label}"))

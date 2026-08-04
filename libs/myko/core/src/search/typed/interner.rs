@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash};
 
 /// Maps opaque ids to dense `u32` slots so the index can use compact bitmaps
 /// and Vec-indexed records. Reuses freed slots across compactions.

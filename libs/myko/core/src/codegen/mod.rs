@@ -9,6 +9,11 @@ use dprint_plugin_typescript::{
     configuration::{ConfigurationBuilder, TrailingCommas},
 };
 
+// The MCP "Code Mode" operation index (`OperationSchema`/`build_operation_index`)
+// lives in `crate::operation_index` rather than here: it's pure text parsing with
+// no `dprint-plugin-typescript` dependency, so it stays available to `myko-server`
+// at runtime without pulling the heavy `codegen`-feature dependency tree.
+pub use crate::operation_index::{OperationArg, OperationSchema, build_operation_index};
 use crate::{
     codegen_types::{TsConstRegistration, TsConstValue, TsExportRegistration},
     command::CommandRegistration,
@@ -21,12 +26,6 @@ use crate::{
     view::ViewRegistration,
     wire::MessageEventRegistration,
 };
-
-// The MCP "Code Mode" operation index (`OperationSchema`/`build_operation_index`)
-// lives in `crate::operation_index` rather than here: it's pure text parsing with
-// no `dprint-plugin-typescript` dependency, so it stays available to `myko-server`
-// at runtime without pulling the heavy `codegen`-feature dependency tree.
-pub use crate::operation_index::{OperationArg, OperationSchema, build_operation_index};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -629,8 +628,7 @@ mod tests {
             "generate_item_types must wipe stale files from a previous run, \
              not just add/overwrite current ones"
         );
-        let index_contents =
-            fs::read_to_string(dir.join("index.ts")).expect("index.ts must exist");
+        let index_contents = fs::read_to_string(dir.join("index.ts")).expect("index.ts must exist");
         assert!(
             !index_contents.contains("StaleTestArtifact"),
             "index.ts must not re-export a type whose file no longer exists"

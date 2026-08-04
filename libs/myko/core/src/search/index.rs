@@ -9,8 +9,7 @@
 //! `remove_entity` is new — tantivy could delete by id alone, but the typed
 //! registry needs the type to find the right `SearchIndex<T>` shim.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use super::{build_typed_registry, search_stats, typed};
 use crate::core::item::AnyItem;

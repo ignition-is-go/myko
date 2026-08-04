@@ -11,7 +11,7 @@ use myko::{
     bench_entities::{BenchItem, BenchItemQuery, CountBenchItems, GetBenchItemsByQuery},
     hyphae::Gettable,
     query::{NumericFilter, StringFilter},
-    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };

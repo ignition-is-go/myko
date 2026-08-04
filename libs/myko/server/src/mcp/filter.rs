@@ -312,8 +312,9 @@ fn normalize_tool_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     // ─── Visibility ────────────────────────────────────────────────────────
 

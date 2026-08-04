@@ -98,7 +98,11 @@ impl CommandResponder {
 
     /// Send an error response.
     pub fn respond_err(&self, message: String) {
-        let err = crate::command::CommandError::new(self.tx.clone(), self.command_id.to_string(), message);
+        let err = crate::command::CommandError::new(
+            self.tx.clone(),
+            self.command_id.to_string(),
+            message,
+        );
         let msg = MykoMessage::CommandError(err);
         if let Some(frame) = encode_protocol(&self.protocol, &msg) {
             let _ = self.socket.send(frame);

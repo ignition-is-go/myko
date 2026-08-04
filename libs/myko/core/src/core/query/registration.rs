@@ -4,8 +4,8 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet},
     sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -85,7 +85,7 @@ static QUERY_PER_ITEM_GUARDS_REMOVED: AtomicU64 = AtomicU64::new(0);
 static QUERY_FACTORIES_BY_ID: OnceLock<DashMap<Arc<str>, u64>> = OnceLock::new();
 static QUERY_GUARDS_CREATED_BY_ID: OnceLock<DashMap<Arc<str>, u64>> = OnceLock::new();
 static QUERY_GUARDS_REMOVED_BY_ID: OnceLock<DashMap<Arc<str>, u64>> = OnceLock::new();
-static BELONGS_TO_SOURCE_INDEXES: OnceLock<DashMap<String, Arc<BelongsToSourceIndex>>> =
+static BELONGS_TO_SOURCE_INDEXES: OnceLock<DashMap<String, Weak<BelongsToSourceIndex>>> =
     OnceLock::new();
 
 fn query_factories_by_id() -> &'static DashMap<Arc<str>, u64> {
@@ -100,7 +100,7 @@ fn query_guards_removed_by_id() -> &'static DashMap<Arc<str>, u64> {
     QUERY_GUARDS_REMOVED_BY_ID.get_or_init(DashMap::new)
 }
 
-fn belongs_to_source_indexes() -> &'static DashMap<String, Arc<BelongsToSourceIndex>> {
+fn belongs_to_source_indexes() -> &'static DashMap<String, Weak<BelongsToSourceIndex>> {
     BELONGS_TO_SOURCE_INDEXES.get_or_init(DashMap::new)
 }
 
@@ -177,6 +177,7 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
 struct BelongsToSourceIndex {
     store: Arc<crate::store::EntityStore>,
     buckets: DashMap<CompoundKey, WeakAnyItemMap>,
+    mutation_gate: Mutex<()>,
     _driver: Arc<AnyItemMap>,
 }
 
@@ -186,12 +187,15 @@ impl BelongsToSourceIndex {
         let index = Arc::new(Self {
             store: store.clone(),
             buckets: DashMap::new(),
+            mutation_gate: Mutex::new(()),
             _driver: driver.clone(),
         });
 
-        let index_for_diffs = index.clone();
+        let index_for_diffs = Arc::downgrade(&index);
         let guard = store.subscribe_diffs(move |diff| {
-            index_for_diffs.apply_diff(diff, extract_fk);
+            if let Some(index) = index_for_diffs.upgrade() {
+                index.apply_diff(diff, extract_fk);
+            }
         });
         driver.own_guard(guard);
         index
@@ -236,22 +240,48 @@ impl BelongsToSourceIndex {
     /// one-time backfill and then nothing else, ever). `entry()` holds the
     /// shard lock across the whole check-or-create, so only one caller per
     /// key can ever end up as the live entry.
-    fn bucket_for(&self, key: CompoundKey, extract_fk: CompoundFkExtractor) -> AnyItemMap {
+    fn bucket_for(
+        self: &Arc<Self>,
+        key: CompoundKey,
+        extract_fk: CompoundFkExtractor,
+    ) -> AnyItemMap {
+        // Store callbacks take the same gate. This makes the snapshot and
+        // bucket publication one logical operation relative to every diff:
+        // a concurrent write is either present in the backfill or routed to
+        // the newly published bucket after this critical section.
+        let _mutation = self
+            .mutation_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match self.buckets.entry(key) {
             dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
                 if let Some(map) = occupied.get().upgrade() {
                     return map;
                 }
                 let map = Self::build_backfilled_bucket(&self.store, occupied.key(), extract_fk);
+                self.retain_for_bucket(&map);
                 occupied.insert(map.downgrade());
                 map
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
                 let map = Self::build_backfilled_bucket(&self.store, vacant.key(), extract_fk);
+                self.retain_for_bucket(&map);
                 vacant.insert(map.downgrade());
                 map
             }
         }
+    }
+
+    /// Keep the routing subscription alive exactly as long as a bucket is
+    /// live. The global registry is intentionally weak, and the index holds
+    /// only weak bucket handles, so this bucket -> index edge cannot form a
+    /// cycle but still prevents active subscribers from losing their driver.
+    fn retain_for_bucket(self: &Arc<Self>, map: &AnyItemMap) {
+        let index = self.clone();
+        let guard = self._driver.subscribe_diffs(move |_| {
+            let _ = &index;
+        });
+        map.own_guard(guard);
     }
 
     fn build_backfilled_bucket(
@@ -283,6 +313,14 @@ impl BelongsToSourceIndex {
     }
 
     fn apply_diff(&self, diff: &BucketDiff, extract_fk: CompoundFkExtractor) {
+        let _mutation = self
+            .mutation_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.apply_diff_locked(diff, extract_fk);
+    }
+
+    fn apply_diff_locked(&self, diff: &BucketDiff, extract_fk: CompoundFkExtractor) {
         match diff {
             MapDiff::Initial { entries } => {
                 let mut grouped: HashMap<CompoundKey, BucketEntries> = HashMap::new();
@@ -469,7 +507,7 @@ impl BelongsToSourceIndex {
                             }
                         }
                         MapDiff::Initial { .. } | MapDiff::Batch { .. } => {
-                            self.apply_diff(change, extract_fk);
+                            self.apply_diff_locked(change, extract_fk);
                         }
                     }
                 }
@@ -519,13 +557,23 @@ fn belongs_to_source_index_for(
     extract_fk: CompoundFkExtractor,
 ) -> Arc<BelongsToSourceIndex> {
     let key = format!("{host_id}:{local_type}:{}", field_names.join("+"));
-    belongs_to_source_indexes()
-        .entry(key)
-        .or_insert_with(|| {
+    match belongs_to_source_indexes().entry(key) {
+        dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+            if let Some(index) = occupied.get().upgrade() {
+                return index;
+            }
             let store = registry.get_or_create(local_type);
-            BelongsToSourceIndex::new(store, extract_fk)
-        })
-        .clone()
+            let index = BelongsToSourceIndex::new(store, extract_fk);
+            occupied.insert(Arc::downgrade(&index));
+            index
+        }
+        dashmap::mapref::entry::Entry::Vacant(vacant) => {
+            let store = registry.get_or_create(local_type);
+            let index = BelongsToSourceIndex::new(store, extract_fk);
+            vacant.insert(Arc::downgrade(&index));
+            index
+        }
+    }
 }
 
 /// Above this many union keys, `build_belongs_to_union_source_map` logs a
@@ -793,10 +841,21 @@ struct LiveQueryState<F> {
     // Shared with each bucket's subscribe_diffs callback so it always
     // reads the LATEST filter (never one captured at subscribe time) —
     // a bucket subscription outlives many filter ticks.
-    bucket_filter_refs: HashMap<CompoundKey, Arc<Mutex<F>>>,
+    bucket_filter_refs: HashMap<CompoundKey, Arc<Mutex<LiveFilterGeneration<F>>>>,
     scan_guard: Option<SubscriptionGuard>,
-    scan_filter_ref: Option<Arc<Mutex<F>>>,
+    scan_filter_ref: Option<Arc<Mutex<LiveFilterGeneration<F>>>>,
     prev_route_field_names: Option<&'static [&'static str]>,
+}
+
+struct LiveFilterGeneration<F> {
+    generation: u64,
+    filter: F,
+}
+
+#[derive(Default)]
+struct LiveQuerySynchronization {
+    generation: AtomicU64,
+    reconciliation_gate: Mutex<()>,
 }
 
 impl<F> Default for LiveQueryState<F> {
@@ -835,6 +894,7 @@ where
 {
     let result: AnyItemMap = AnyItemMap::new();
     let state: Arc<Mutex<LiveQueryState<F>>> = Arc::new(Mutex::new(LiveQueryState::default()));
+    let synchronization = Arc::new(LiveQuerySynchronization::default());
 
     let result_weak = result.downgrade();
     let guard = filter_cell.subscribe(move |signal| {
@@ -844,10 +904,23 @@ where
         let Some(result) = result_weak.upgrade() else {
             return;
         };
+        let _reconciliation = synchronization
+            .reconciliation_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut state = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        reconcile_live_query(&registry, host_id, &result, &mut state, new_filter.as_ref());
+        let current_generation = synchronization.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        reconcile_live_query(
+            &registry,
+            host_id,
+            &result,
+            &mut state,
+            new_filter.as_ref(),
+            current_generation,
+            &synchronization,
+        );
     });
     result.own(guard);
     result.lock()
@@ -859,6 +932,8 @@ fn reconcile_live_query<F: LiveFilterQuery>(
     result: &AnyItemMap,
     state: &mut LiveQueryState<F>,
     new_filter: &F,
+    current_generation: u64,
+    synchronization: &Arc<LiveQuerySynchronization>,
 ) {
     let new_route = new_filter.query_route();
 
@@ -939,7 +1014,10 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 if let Some(filter_state) = state.bucket_filter_refs.get(key) {
                     *filter_state
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_filter.clone();
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = LiveFilterGeneration {
+                        generation: current_generation,
+                        filter: new_filter.clone(),
+                    };
                 }
                 if let Some((bucket, _)) = state.bucket_guards.get(key) {
                     apply_bucket_candidates(result, new_filter, bucket.snapshot());
@@ -979,18 +1057,51 @@ fn reconcile_live_query<F: LiveFilterQuery>(
                 let bucket = make(key);
                 apply_bucket_candidates(result, new_filter, bucket.snapshot());
 
-                let filter_state = Arc::new(Mutex::new(new_filter.clone()));
+                let filter_state = Arc::new(Mutex::new(LiveFilterGeneration {
+                    generation: current_generation,
+                    filter: new_filter.clone(),
+                }));
                 let filter_state_for_cb = filter_state.clone();
+                let synchronization_for_cb = synchronization.clone();
                 let result_weak = result.downgrade();
+                let first = AtomicBool::new(true);
                 let guard = bucket.subscribe_diffs(move |diff| {
                     let Some(result) = result_weak.upgrade() else {
                         return;
                     };
-                    let filter = filter_state_for_cb
+                    if first.swap(false, Ordering::Relaxed) {
+                        // subscribe_diffs delivers this Initial synchronously
+                        // while reconciliation already owns the gate. Apply
+                        // it directly; subsequent asynchronous diffs take
+                        // the gate below.
+                        let filter_state = filter_state_for_cb
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if filter_state.generation
+                            == synchronization_for_cb.generation.load(Ordering::Relaxed)
+                        {
+                            apply_live_diff(
+                                &result,
+                                diff,
+                                &filter_state.filter,
+                                LiveDiffScope::Bucket,
+                            );
+                        }
+                        return;
+                    }
+                    let _reconciliation = synchronization_for_cb
+                        .reconciliation_gate
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone();
-                    apply_live_diff(&result, diff, &filter, LiveDiffScope::Bucket);
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let filter_state = filter_state_for_cb
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if filter_state.generation
+                        != synchronization_for_cb.generation.load(Ordering::Relaxed)
+                    {
+                        return;
+                    }
+                    apply_live_diff(&result, diff, &filter_state.filter, LiveDiffScope::Bucket);
                 });
                 state.bucket_guards.insert(key.clone(), (bucket, guard));
                 state.bucket_filter_refs.insert(key.clone(), filter_state);
@@ -1018,24 +1129,61 @@ fn reconcile_live_query<F: LiveFilterQuery>(
             reconcile_full_scope_membership(result, new_filter, store.snapshot());
 
             if state.scan_guard.is_none() {
-                let filter_state = Arc::new(Mutex::new(new_filter.clone()));
+                let filter_state = Arc::new(Mutex::new(LiveFilterGeneration {
+                    generation: current_generation,
+                    filter: new_filter.clone(),
+                }));
                 state.scan_filter_ref = Some(filter_state.clone());
+                let synchronization_for_cb = synchronization.clone();
                 let result_weak = result.downgrade();
+                let first = AtomicBool::new(true);
                 let guard = store.subscribe_diffs(move |diff| {
                     let Some(result) = result_weak.upgrade() else {
                         return;
                     };
-                    let filter = filter_state
+                    if first.swap(false, Ordering::Relaxed) {
+                        let filter_state = filter_state
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if filter_state.generation
+                            == synchronization_for_cb.generation.load(Ordering::Relaxed)
+                        {
+                            apply_live_diff(
+                                &result,
+                                diff,
+                                &filter_state.filter,
+                                LiveDiffScope::FullStore,
+                            );
+                        }
+                        return;
+                    }
+                    let _reconciliation = synchronization_for_cb
+                        .reconciliation_gate
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .clone();
-                    apply_live_diff(&result, diff, &filter, LiveDiffScope::FullStore);
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let filter_state = filter_state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if filter_state.generation
+                        != synchronization_for_cb.generation.load(Ordering::Relaxed)
+                    {
+                        return;
+                    }
+                    apply_live_diff(
+                        &result,
+                        diff,
+                        &filter_state.filter,
+                        LiveDiffScope::FullStore,
+                    );
                 });
                 state.scan_guard = Some(guard);
             } else if let Some(filter_state) = &state.scan_filter_ref {
                 *filter_state
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = new_filter.clone();
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = LiveFilterGeneration {
+                    generation: current_generation,
+                    filter: new_filter.clone(),
+                };
             }
         }
     }
@@ -1047,9 +1195,13 @@ fn reconcile_live_query<F: LiveFilterQuery>(
 /// again would otherwise linger; called from
 /// `MykoServerContext::sweep_dead_cache_entries`.
 pub fn sweep_all_belongs_to_source_indexes() {
-    for entry in belongs_to_source_indexes().iter() {
-        entry.value().sweep_dead_buckets();
-    }
+    belongs_to_source_indexes().retain(|_, weak| {
+        let Some(index) = weak.upgrade() else {
+            return false;
+        };
+        index.sweep_dead_buckets();
+        true
+    });
 }
 
 /// Build a `FilteredCellMap` containing only the entries at the given ids,
@@ -1309,7 +1461,10 @@ mod belongs_to_source_index_tests {
         store.insert(id.clone(), item);
 
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
-        let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-x")], extract_parent_fk);
+        let bucket = index.bucket_for(
+            smallvec::smallvec![Arc::from("parent-x")],
+            extract_parent_fk,
+        );
         assert_eq!(bucket.snapshot().len(), 1);
 
         // Remove the only child — bucket goes empty, but `bucket` is still
@@ -1341,13 +1496,19 @@ mod belongs_to_source_index_tests {
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
 
         {
-            let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-y")], extract_parent_fk);
+            let bucket = index.bucket_for(
+                smallvec::smallvec![Arc::from("parent-y")],
+                extract_parent_fk,
+            );
             assert_eq!(bucket.snapshot().len(), 1);
         }
         index.sweep_dead_buckets();
         assert!(index.buckets.is_empty());
 
-        let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-y")], extract_parent_fk);
+        let bucket = index.bucket_for(
+            smallvec::smallvec![Arc::from("parent-y")],
+            extract_parent_fk,
+        );
         assert_eq!(
             bucket.snapshot().len(),
             1,
@@ -1409,6 +1570,84 @@ mod belongs_to_source_index_tests {
                 "handle {i} must observe the post-race insert — an orphaned bucket stays empty forever"
             );
         }
+    }
+
+    #[test]
+    fn concurrent_first_subscription_and_insert_cannot_lose_the_insert() {
+        // Exercise the publication/backfill boundary repeatedly. The index
+        // mutation gate makes the insert callback fall wholly before or
+        // after bucket construction, so either ordering must converge on
+        // the inserted child without requiring a later source diff.
+        for i in 0..128 {
+            let store = new_store();
+            let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+
+            let bucket_thread = {
+                let index = index.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    index.bucket_for(
+                        smallvec::smallvec![Arc::from("parent-race")],
+                        extract_parent_fk,
+                    )
+                })
+            };
+            let insert_thread = {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let (id, item) = child(&format!("child-{i}"), "parent-race");
+                    store.insert(id, item);
+                })
+            };
+
+            let bucket = bucket_thread.join().unwrap();
+            insert_thread.join().unwrap();
+            assert_eq!(
+                bucket.snapshot().len(),
+                1,
+                "iteration {i} lost the insert racing first bucket construction"
+            );
+        }
+    }
+
+    #[test]
+    fn global_registry_does_not_retain_an_unused_index() {
+        let registry = Arc::new(crate::store::StoreRegistry::new());
+        let host_id = Uuid::new_v4();
+        let registry_key = format!("{host_id}:TestChild:parent_id");
+        let index = belongs_to_source_index_for(
+            &registry,
+            host_id,
+            "TestChild",
+            &["parent_id"],
+            extract_parent_fk,
+        );
+        let weak = Arc::downgrade(&index);
+        let bucket = index.bucket_for(
+            smallvec::smallvec![Arc::from("parent-live")],
+            extract_parent_fk,
+        );
+
+        drop(index);
+        assert!(
+            weak.upgrade().is_some(),
+            "a live bucket must retain the index that routes its updates"
+        );
+        drop(bucket);
+        assert!(
+            weak.upgrade().is_none(),
+            "the global registry or driver subscription retained an unused index"
+        );
+
+        sweep_all_belongs_to_source_indexes();
+        assert!(
+            !belongs_to_source_indexes().contains_key(&registry_key),
+            "sweeping must remove the dead weak registry entry"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -1483,8 +1722,10 @@ mod belongs_to_source_index_tests {
 
         let index = BelongsToSourceIndex::new(store.clone(), extract_node_and_session_fk);
 
-        let key_a: CompoundKey = smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")];
-        let key_b: CompoundKey = smallvec::smallvec![Arc::from("node-B"), Arc::from("session-PROD")];
+        let key_a: CompoundKey =
+            smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")];
+        let key_b: CompoundKey =
+            smallvec::smallvec![Arc::from("node-B"), Arc::from("session-PROD")];
 
         let bucket_a = index.bucket_for(key_a.clone(), extract_node_and_session_fk);
         let bucket_b = index.bucket_for(key_b.clone(), extract_node_and_session_fk);

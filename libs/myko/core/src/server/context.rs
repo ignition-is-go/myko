@@ -711,10 +711,7 @@ impl MykoServerContext {
         let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
 
         for event in events {
-            match self
-                .handler_registry
-                .item_buffer_policy(&event.item_type)
-            {
+            match self.handler_registry.item_buffer_policy(&event.item_type) {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
                     let entity_type: Arc<str> = event.item_type.clone();

@@ -19,7 +19,7 @@ use myko::{
         server::ServerId,
     },
     query::{IdFilter, query_runtime_metrics_by_id},
-    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };

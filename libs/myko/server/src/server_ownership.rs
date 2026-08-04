@@ -103,10 +103,7 @@ impl ServerOwnershipManager {
         use hyphae::{Gettable, MaterializeDefinite, Signal, Watchable};
 
         let req = ctx.new_server_transaction();
-        let servers_cell = ctx
-            .query_map(GetAllServers {}, req)
-            .items()
-            .materialize();
+        let servers_cell = ctx.query_map(GetAllServers {}, req).items().materialize();
 
         let prev_ids: std::sync::Mutex<HashSet<Arc<str>>> =
             std::sync::Mutex::new(servers_cell.get().iter().map(|s| s.id.0.clone()).collect());

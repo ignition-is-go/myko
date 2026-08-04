@@ -18,7 +18,7 @@ use myko::{
         server::ServerId,
     },
     query::IdFilter,
-    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
@@ -85,10 +85,7 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
                         )))),
                         ..Default::default()
                     };
-                    ctx.query_map(
-                        GetClientsByQuery(filter),
-                        request(&ctx, &format!("tx-{i}")),
-                    )
+                    ctx.query_map(GetClientsByQuery(filter), request(&ctx, &format!("tx-{i}")))
                 })
                 .collect();
             std::hint::black_box(cells)
@@ -173,11 +170,10 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                         let ids: Vec<ServerId> = (0..existing)
                             .map(|i| ServerId::from(Arc::<str>::from(format!("server-{i}"))))
                             .collect();
-                        let filter_cell: Cell<ClientQuery, CellMutable> =
-                            Cell::new(ClientQuery {
-                                server_id: Some(IdFilter::In(ids.clone())),
-                                ..Default::default()
-                            });
+                        let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(ClientQuery {
+                            server_id: Some(IdFilter::In(ids.clone())),
+                            ..Default::default()
+                        });
                         let result = ctx.query_live(filter_cell.clone());
                         (filter_cell, ids, result)
                     },

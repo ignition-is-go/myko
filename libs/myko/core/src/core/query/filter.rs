@@ -7,11 +7,7 @@
 //! Selection is driven by the [`Filterable`] trait's associated type, so
 //! `#[myko_item]` never has to sniff field types syntactically.
 
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    sync::Arc,
-};
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -347,7 +343,9 @@ impl_numeric_filterable!(
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
-#[ts(type = "string | { \"$in\": Array<string> } | { \"$contains\": string } | { \"$startsWith\": string }")]
+#[ts(
+    type = "string | { \"$in\": Array<string> } | { \"$contains\": string } | { \"$startsWith\": string }"
+)]
 pub enum StringFilter {
     Eq(Arc<str>),
     In(Vec<Arc<str>>),
@@ -673,9 +671,9 @@ crate::register_ts_export!(
 // JSON and CBOR, both self-describing; this would not work over bincode).
 // ─────────────────────────────────────────────────────────────────────────
 mod wire_serde {
+    use serde::{Deserializer, Serializer, ser::SerializeMap};
+
     use super::*;
-    use serde::ser::SerializeMap;
-    use serde::{Deserializer, Serializer};
 
     fn serialize_op<S: Serializer, T: Serialize + ?Sized>(
         s: S,
@@ -1090,7 +1088,13 @@ mod tests {
         let n: NumericFilter<i64> =
             serde_json::from_value(serde_json::json!({ "$range": { "min": 1, "max": 9 } }))
                 .unwrap();
-        assert_eq!(n, NumericFilter::Range { min: Some(1), max: Some(9) });
+        assert_eq!(
+            n,
+            NumericFilter::Range {
+                min: Some(1),
+                max: Some(9)
+            }
+        );
     }
 
     #[test]
@@ -1111,8 +1115,14 @@ mod tests {
         rt(StringFilter::In(vec![Arc::from("a")]));
         rt(NumericFilter::Eq(1_i64));
         rt(NumericFilter::In(vec![1_i64, 2]));
-        rt(NumericFilter::Range { min: Some(1_i64), max: Some(9) });
-        rt(NumericFilter::Range { min: Some(1_i64), max: None });
+        rt(NumericFilter::Range {
+            min: Some(1_i64),
+            max: Some(9),
+        });
+        rt(NumericFilter::Range {
+            min: Some(1_i64),
+            max: None,
+        });
     }
 
     #[test]
@@ -1132,7 +1142,10 @@ mod tests {
         rt_cbor(IdFilter::Eq(Arc::<str>::from("a")));
         rt_cbor(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]));
         rt_cbor(StringFilter::Contains(Arc::from("x")));
-        rt_cbor(NumericFilter::Range { min: Some(1_i64), max: Some(9) });
+        rt_cbor(NumericFilter::Range {
+            min: Some(1_i64),
+            max: Some(9),
+        });
     }
 
     #[test]
@@ -1146,7 +1159,10 @@ mod tests {
             "address": "192.168.1.5:54320",
         }))
         .unwrap();
-        assert_eq!(q.address, Some(StringFilter::Eq(Arc::from("192.168.1.5:54320"))));
+        assert_eq!(
+            q.address,
+            Some(StringFilter::Eq(Arc::from("192.168.1.5:54320")))
+        );
         assert_eq!(q.server_id, None);
         assert_eq!(q.windback, None);
         assert_eq!(q.id, None);

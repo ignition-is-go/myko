@@ -6,8 +6,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::wire::{MykoMessage, ReportResponse};
     use serde_json::json;
+
+    use crate::wire::{MykoMessage, ReportResponse};
 
     fn sample_report_response() -> MykoMessage {
         MykoMessage::ReportResponse(ReportResponse {

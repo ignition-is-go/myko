@@ -79,9 +79,8 @@ pub use compound_child::{
     BenchCompoundChild, BenchCompoundChildQuery, GetBenchCompoundChildsByQuery,
 };
 mod compound_child {
-    use crate::prelude::*;
-
     use super::{BenchParentA, BenchParentAId, BenchParentB, BenchParentBId};
+    use crate::prelude::*;
 
     #[myko_item]
     pub struct BenchCompoundChild {

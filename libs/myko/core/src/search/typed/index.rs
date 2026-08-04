@@ -1,14 +1,14 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::marker::PhantomData;
+use std::{cell::RefCell, collections::HashMap, marker::PhantomData};
 
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use roaring::RoaringBitmap;
 use smallvec::SmallVec;
 use thread_local::ThreadLocal;
 
-use super::searchable::{FIELD_SEP, SearchableExtractor};
-use super::{Hit, IdInterner, Score, Searchable};
+use super::{
+    Hit, IdInterner, Score, Searchable,
+    searchable::{FIELD_SEP, SearchableExtractor},
+};
 
 /// Tokens are split on whitespace, the field separator, and a small set of
 /// identifier-shaped punctuation. Mirrors how users tend to type fragments of
