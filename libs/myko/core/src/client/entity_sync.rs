@@ -143,7 +143,7 @@ where
             })
             .materialize();
         let remote_cell = client.watch_query(remote_query);
-        let joined = local_cell.join(&remote_cell);
+        let joined = local_cell.join(remote_cell).materialize();
         let sync_client = client.clone();
         let options_for_join = options;
         let items_equal_for_join = items_equal.clone();

@@ -87,7 +87,7 @@ impl ReportHandler for ServerStats {
         // Combine server and client cells - emit whenever either changes
         ctx.query_map(GetConnectedServer {})
             .entries()
-            .join(&ctx.query_map(GetAllClients {}).entries())
+            .join(ctx.query_map(GetAllClients {}).entries())
             .map(flat!(|servers, clients| {
                 let server = servers.first().map(|(_, server)| server.clone());
 

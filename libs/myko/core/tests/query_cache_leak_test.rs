@@ -13,10 +13,10 @@ use std::sync::Arc;
 
 use myko::{
     bench_entities::{BenchItem, BenchItemQuery, GetBenchItemsByQuery, SwitchMapReport},
-    hyphae::{Cell, Gettable, Mutable, SwitchMapExt},
+    hyphae::{Cell, Gettable, MaterializeDefinite, Mutable, SwitchMapExt},
     query::StringFilter,
     search::SearchIndex,
-    server::{MykoServerContext, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
@@ -87,19 +87,22 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     let selector = Cell::new(0usize);
     let ctx_clone = ctx.clone();
 
-    let switched = selector.switch_map(move |idx| {
-        let category = categories[*idx % categories.len()].to_string();
-        let request = ctx_clone.new_server_transaction();
-        // Each different category produces a different cache key (different payload_hash)
-        let query_result = ctx_clone.query_map(
-            GetBenchItemsByQuery(BenchItemQuery {
-                category: Some(StringFilter::Eq(category.into())),
-                ..Default::default()
-            }),
-            request,
-        );
-        query_result.items()
-    });
+    let switched = selector
+        .clone()
+        .switch_map(move |idx| {
+            let category = categories[*idx % categories.len()].to_string();
+            let request = ctx_clone.new_server_transaction();
+            // Each different category produces a different cache key (different payload_hash)
+            let query_result = ctx_clone.query_map(
+                GetBenchItemsByQuery(BenchItemQuery {
+                    category: Some(StringFilter::Eq(category.into())),
+                    ..Default::default()
+                }),
+                request,
+            );
+            query_result.items()
+        })
+        .materialize();
 
     // Initial: should see alpha items
     assert_eq!(switched.get().len(), 10);
@@ -156,18 +159,21 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
     let ctx_clone = ctx.clone();
 
     // Every switch creates query_map with SAME params — should cache-hit
-    let switched = trigger.switch_map(move |_| {
-        let request = ctx_clone.new_server_transaction();
-        ctx_clone
-            .query_map(
-                GetBenchItemsByQuery(BenchItemQuery {
-                    category: Some(StringFilter::Eq("tools".into())),
-                    ..Default::default()
-                }),
-                request,
-            )
-            .items()
-    });
+    let switched = trigger
+        .clone()
+        .switch_map(move |_| {
+            let request = ctx_clone.new_server_transaction();
+            ctx_clone
+                .query_map(
+                    GetBenchItemsByQuery(BenchItemQuery {
+                        category: Some(StringFilter::Eq("tools".into())),
+                        ..Default::default()
+                    }),
+                    request,
+                )
+                .items()
+        })
+        .materialize();
 
     assert_eq!(switched.get().len(), 5);
     let cache_after_init = ctx.query_cache_len();
@@ -214,19 +220,22 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
     let selector = Cell::new(0usize);
     let ctx_clone = ctx.clone();
 
-    let switched = selector.switch_map(move |idx| {
-        let category = categories[*idx % categories.len()].to_string();
-        let request = ctx_clone.new_server_transaction();
-        ctx_clone
-            .query_map(
-                GetBenchItemsByQuery(BenchItemQuery {
-                    category: Some(StringFilter::Eq(category.into())),
-                    ..Default::default()
-                }),
-                request,
-            )
-            .items()
-    });
+    let switched = selector
+        .clone()
+        .switch_map(move |idx| {
+            let category = categories[*idx % categories.len()].to_string();
+            let request = ctx_clone.new_server_transaction();
+            ctx_clone
+                .query_map(
+                    GetBenchItemsByQuery(BenchItemQuery {
+                        category: Some(StringFilter::Eq(category.into())),
+                        ..Default::default()
+                    }),
+                    request,
+                )
+                .items()
+        })
+        .materialize();
 
     assert_eq!(switched.get().len(), 10);
 

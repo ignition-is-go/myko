@@ -99,7 +99,7 @@ impl PeerConnectionHandle {
         let signal_server_port = server_ent.port;
 
         let signal_state = connection_status
-            .join(&identity)
+            .join(identity)
             .map(move |(status, identity)| {
                 tracing::debug!(
                     "server: {}:{}:{}, status: {:?}, {:?}",

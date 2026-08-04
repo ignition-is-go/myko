@@ -1442,8 +1442,6 @@ dependencies = [
 [[package]]
 name = "hyphae"
 version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a03e9eca73e1e7851eb6b16924ccf0994a56a0b29cdb4e74bd84d0d05c7c8e7a"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1465,8 +1463,6 @@ dependencies = [
 [[package]]
 name = "hyphae-leptos"
 version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac7c14b3a518fa2f9d84475d7deec55b7f0dc7aea1ff99a390514217d7c17c97"
 dependencies = [
  "hyphae",
  "leptos",
@@ -2661,7 +2657,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
