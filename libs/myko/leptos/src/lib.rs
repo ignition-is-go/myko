@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use leptos::prelude::*;
-use myko::{common::with_id::WithTypedId, hyphae::IdFor};
-
 // Re-export the hyphae→Leptos bridge primitives so consumers get them from a
 // single place (`myko_leptos`) without depending on `hyphae-leptos` directly.
 pub use hyphae_leptos::{
     CellMapStore, CellMapStoreExt, MapGroup, NestedMapStore, NestedMapStoreExt, ToLeptosSignal,
 };
+use leptos::prelude::*;
+use myko::{common::with_id::WithTypedId, hyphae::IdFor};
 
 /// Initialize the myko-leptos bridge.
 ///
@@ -19,6 +18,9 @@ pub fn provide_myko(address: &str) {
     use myko::client::MykoClient;
     let client = MykoClient::new();
     client.set_protocol(myko::client::MykoProtocol::JSON);
+    // NOTE(ts): The Leptos bridge consumes typed cells, never the raw-message
+    // debug cell. Avoid a deep JSON/CBOR value clone for every incoming frame.
+    client.set_last_message_capture(false);
     client.set_address(Some(address.to_string()));
     provide_context(client);
 }
