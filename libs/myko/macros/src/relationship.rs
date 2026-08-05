@@ -1,13 +1,13 @@
-//! Relationship attribute parsing helpers for myko_item macro
+//! Relationship attribute parsing helpers for `myko_item` macro
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Field, ItemStruct, Path};
 
-/// Information about a belongs_to relationship on a field
+/// Information about a `belongs_to` relationship on a field
 #[derive(Debug)]
 pub struct BelongsToInfo {
-    /// Field name in Rust (snake_case)
+    /// Field name in Rust (`snake_case`)
     pub field_name: String,
     /// Field name in JSON (camelCase)
     pub field_name_json: String,
@@ -19,24 +19,21 @@ pub struct BelongsToInfo {
     pub exclude_from_tree: bool,
 }
 
-/// Information about an owns_many relationship on a field
+/// Information about an `owns_many` relationship on a field
 #[derive(Debug)]
 pub struct OwnsManyInfo {
-    /// Field name in Rust (snake_case)
+    /// Field name in Rust (`snake_case`)
     pub field_name: String,
-    /// Field name in JSON (camelCase) - reserved for future use
-    #[allow(dead_code)]
-    pub field_name_json: String,
     /// Owned entity type name
     pub foreign_type: String,
     /// If true, exclude this child from entity tree exports
     pub exclude_from_tree: bool,
 }
 
-/// Information about a single ensure_for dependency on a field
+/// Information about a single `ensure_for` dependency on a field
 #[derive(Debug)]
 pub struct EnsureForFieldInfo {
-    /// Field name in Rust (snake_case)
+    /// Field name in Rust (`snake_case`)
     pub field_name: String,
     /// Field name in JSON (camelCase)
     pub field_name_json: String,
@@ -46,26 +43,22 @@ pub struct EnsureForFieldInfo {
     pub exclude_from_tree: bool,
 }
 
-/// Information about ensure_for relationships on the struct (collected from fields)
+/// Information about `ensure_for` relationships on the struct (collected from fields)
 #[derive(Debug)]
 pub struct EnsureForInfo {
-    /// Dependencies (foreign_type, local_key, local_key_json, exclude_from_tree)
+    /// Dependencies (`foreign_type`, `local_key`, `local_key_json`, `exclude_from_tree`)
     pub dependencies: Vec<(String, String, String, bool)>,
 }
 
-/// Information about a default_value on a field
+/// Information about a `default_value` on a field
 #[derive(Debug)]
 pub struct DefaultValueInfo {
-    #[allow(dead_code)]
     pub field_name: String,
-    /// Field name in JSON (camelCase) - reserved for future use
-    #[allow(dead_code)]
-    pub field_name_json: String,
     pub value_tokens: TokenStream,
 }
 
-/// Information about a myko_client_id attribute on a field.
-/// When present, the server will auto-populate this field with the client_id
+/// Information about a `myko_client_id` attribute on a field.
+/// When present, the server will auto-populate this field with the `client_id`
 /// of the WebSocket connection that sent the event.
 #[derive(Debug)]
 pub struct ClientIdFieldInfo {
@@ -73,7 +66,7 @@ pub struct ClientIdFieldInfo {
     pub field_name_json: String,
 }
 
-/// Information about a fallback_to_id attribute on a field.
+/// Information about a `fallback_to_id` attribute on a field.
 /// When present, the server will auto-populate this field with the entity's `id`
 /// if the value is null or missing at ingest time.
 #[derive(Debug)]
@@ -82,12 +75,12 @@ pub struct FallbackToIdFieldInfo {
     pub field_name_json: String,
 }
 
-/// Information about a server_owned attribute on a field.
-/// When present, the framework auto-manages this ServerId field —
+/// Information about a `server_owned` attribute on a field.
+/// When present, the framework auto-manages this `ServerId` field —
 /// populating on creation and redistributing on peer death.
 #[derive(Debug)]
 pub struct ServerOwnedFieldInfo {
-    /// Field name in Rust (snake_case)
+    /// Field name in Rust (`snake_case`)
     pub field_name: String,
     /// Field name in JSON (camelCase)
     pub field_name_json: String,
@@ -96,7 +89,7 @@ pub struct ServerOwnedFieldInfo {
 /// Information about a searchable field for full-text search indexing.
 #[derive(Debug)]
 pub struct SearchableFieldInfo {
-    /// Field name in Rust (snake_case) — used to reference `self.<field>`
+    /// Field name in Rust (`snake_case`) — used to reference `self.<field>`
     /// in the generated `Searchable::extract_searchable` body.
     pub field_name: String,
     /// Field name in JSON (camelCase) - used for indexing
@@ -106,7 +99,7 @@ pub struct SearchableFieldInfo {
     pub is_optional: bool,
 }
 
-/// Convert snake_case to camelCase
+/// Convert `snake_case` to camelCase
 pub fn to_camel_case(s: &str) -> String {
     let mut result = String::new();
     let mut capitalize_next = false;
@@ -147,7 +140,7 @@ fn is_option_type(ty: &syn::Type) -> bool {
     false
 }
 
-/// Parse belongs_to attribute from a field
+/// Parse `belongs_to` attribute from a field
 pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
     let field_name = field.ident.as_ref()?.to_string();
     let field_name_json = to_camel_case(&field_name);
@@ -174,10 +167,9 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
     None
 }
 
-/// Parse owns_many attribute from a field
+/// Parse `owns_many` attribute from a field
 pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
     let field_name = field.ident.as_ref()?.to_string();
-    let field_name_json = to_camel_case(&field_name);
     let exclude_from_tree = field
         .attrs
         .iter()
@@ -190,7 +182,6 @@ pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
             let foreign_type = path.segments.last()?.ident.to_string();
             return Some(OwnsManyInfo {
                 field_name,
-                field_name_json,
                 foreign_type,
                 exclude_from_tree,
             });
@@ -199,10 +190,10 @@ pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
     None
 }
 
-/// Parse ensure_for attribute from a field.
+/// Parse `ensure_for` attribute from a field.
 ///
 /// `#[ensure_for(Type)]` on a field indicates this entity should be auto-created
-/// for each instance of the dependency type. Multiple ensure_for attributes on
+/// for each instance of the dependency type. Multiple `ensure_for` attributes on
 /// different fields create a Cartesian product.
 ///
 /// # Example
@@ -241,10 +232,9 @@ pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
     None
 }
 
-/// Parse default_value attribute from a field
+/// Parse `default_value` attribute from a field
 pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
     let field_name = field.ident.as_ref()?.to_string();
-    let field_name_json = to_camel_case(&field_name);
 
     for attr in &field.attrs {
         if attr.path().is_ident("default_value") {
@@ -253,7 +243,6 @@ pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
                 let value_tokens = quote! { #lit };
                 return Some(DefaultValueInfo {
                     field_name,
-                    field_name_json,
                     value_tokens,
                 });
             }
@@ -262,7 +251,6 @@ pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
                 let value_tokens = quote! { #expr };
                 return Some(DefaultValueInfo {
                     field_name,
-                    field_name_json,
                     value_tokens,
                 });
             }
@@ -271,9 +259,9 @@ pub fn parse_default_value(field: &Field) -> Option<DefaultValueInfo> {
     None
 }
 
-/// Parse myko_client_id attribute from a field.
+/// Parse `myko_client_id` attribute from a field.
 ///
-/// When present, the server will auto-populate this field with the client_id
+/// When present, the server will auto-populate this field with the `client_id`
 /// of the WebSocket connection that sent the event.
 ///
 /// # Example
@@ -297,7 +285,7 @@ pub fn parse_client_id(field: &Field) -> Option<ClientIdFieldInfo> {
     None
 }
 
-/// Parse fallback_to_id attribute from a field.
+/// Parse `fallback_to_id` attribute from a field.
 ///
 /// When present, the server will auto-populate this field with the entity's own `id`
 /// if the value is null or missing at ingest time. Useful for optional fields that
@@ -324,9 +312,9 @@ pub fn parse_fallback_to_id(field: &Field) -> Option<FallbackToIdFieldInfo> {
     None
 }
 
-/// Parse server_owned attribute from a field.
+/// Parse `server_owned` attribute from a field.
 ///
-/// When present, the framework auto-manages this ServerId field —
+/// When present, the framework auto-manages this `ServerId` field —
 /// populating on creation and redistributing on peer death.
 ///
 /// # Example
@@ -404,7 +392,7 @@ pub struct RelationshipInfo {
 }
 
 impl RelationshipInfo {
-    /// Convert ensure_for_fields to EnsureForInfo for registration
+    /// Convert `ensure_for_fields` to `EnsureForInfo` for registration
     pub fn ensure_for(&self) -> Option<EnsureForInfo> {
         if self.ensure_for_fields.is_empty() {
             None
@@ -464,18 +452,17 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
     info
 }
 
-/// Generate relationship registration code
-pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> TokenStream {
-    let mut registrations = Vec::new();
+fn generate_belongs_to_registrations(
+    local_type: &str,
+    info: &RelationshipInfo,
+) -> Vec<TokenStream> {
     let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
     let krate = crate::myko_path();
-
-    // Generate BelongsTo registrations
-    for bt in &info.belongs_to {
+    info.belongs_to
+        .iter()
+        .map(|bt| {
         let field_ident = syn::Ident::new(&bt.field_name, proc_macro2::Span::call_site());
         let foreign_type = &bt.foreign_type;
-
-        // Generate different extract_fk code for optional vs non-optional fields
         let extract_fk = if bt.is_optional {
             quote! {
                 |item: &dyn std::any::Any| -> Option<std::sync::Arc<str>> {
@@ -491,10 +478,9 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 }
             }
         };
-
         let exclude_from_tree = bt.exclude_from_tree;
         let fk_field_json = &bt.field_name_json;
-        registrations.push(quote! {
+        quote! {
             #krate::submit! {
                 #krate::relationship::RelationRegistration {
                     relation: #krate::relationship::Relation::BelongsTo {
@@ -506,16 +492,24 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                     }
                 }
             }
-        });
-    }
+        }
+    })
+    .collect()
+}
 
-    // Generate OwnsMany registrations
-    for om in &info.owns_many {
+fn generate_owns_many_registrations(
+    local_type: &str,
+    info: &RelationshipInfo,
+) -> Vec<TokenStream> {
+    let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
+    let krate = crate::myko_path();
+    info.owns_many
+        .iter()
+        .map(|om| {
         let field_ident = syn::Ident::new(&om.field_name, proc_macro2::Span::call_site());
         let foreign_type = &om.foreign_type;
         let exclude_from_tree = om.exclude_from_tree;
-
-        registrations.push(quote! {
+        quote! {
             #krate::submit! {
                 #krate::relationship::RelationRegistration {
                     relation: #krate::relationship::Relation::OwnsMany {
@@ -536,11 +530,18 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                     }
                 }
             }
-        });
-    }
+        }
+    })
+    .collect()
+}
 
-    // Generate EnsureFor registration if present
-    if let Some(ref ef) = info.ensure_for() {
+fn generate_ensure_for_registration(
+    local_type: &str,
+    info: &RelationshipInfo,
+) -> Option<TokenStream> {
+    let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
+    let krate = crate::myko_path();
+    info.ensure_for().map(|ef| {
         let exclude_from_tree = ef.dependencies.iter().any(|(_, _, _, ex)| *ex);
         let deps: Vec<_> = ef
             .dependencies
@@ -559,9 +560,6 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             })
             .collect();
 
-        // Generate make_entity function that creates entity with dependency IDs populated
-        // The function takes &[Arc<str>] with IDs in the same order as dependencies.
-        // Assign via Into so typed ID wrappers and Arc<str>/String all work.
         let fk_field_assignments: Vec<_> = ef
             .dependencies
             .iter()
@@ -570,12 +568,13 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                 let field_ident = syn::Ident::new(lk, proc_macro2::Span::call_site());
                 let idx = syn::Index::from(i);
                 quote! {
-                    entity.#field_ident = dep_ids[#idx].clone().into();
+                    if let Some(dep_id) = dep_ids.get(#idx) {
+                        entity.#field_ident = dep_id.clone().into();
+                    }
                 }
             })
             .collect();
 
-        // Generate default value assignments
         let default_assignments: Vec<_> = info
             .default_values
             .iter()
@@ -588,7 +587,7 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             })
             .collect();
 
-        registrations.push(quote! {
+        quote! {
             #krate::submit! {
                 #krate::relationship::RelationRegistration {
                     relation: #krate::relationship::Relation::EnsureFor {
@@ -605,13 +604,16 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
                     }
                 }
             }
-        });
-    }
+        }
+    })
+}
 
-    // Generate ClientId registration if present
-    if let Some(ref ci) = info.client_id_field {
+fn generate_marker_registrations(local_type: &str, info: &RelationshipInfo) -> Vec<TokenStream> {
+    let krate = crate::myko_path();
+    let mut registrations = Vec::new();
+
+    if let Some(ci) = &info.client_id_field {
         let field_name_json = &ci.field_name_json;
-
         registrations.push(quote! {
             #krate::submit! {
                 #krate::relationship::ClientIdRegistration {
@@ -621,11 +623,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             }
         });
     }
-
-    // Generate FallbackToId registrations
     for fi in &info.fallback_to_id_fields {
         let field_name_json = &fi.field_name_json;
-
         registrations.push(quote! {
             #krate::submit! {
                 #krate::relationship::FallbackToIdRegistration {
@@ -635,11 +634,8 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             }
         });
     }
-
-    // Generate ServerOwned registration if present
-    if let Some(ref so) = info.server_owned_field {
+    if let Some(so) = &info.server_owned_field {
         let field_name_json = &so.field_name_json;
-
         registrations.push(quote! {
             #[cfg(not(target_arch = "wasm32"))]
             #krate::submit! {
@@ -650,163 +646,151 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
             }
         });
     }
+    registrations
+}
 
-    // Generate Searchable registration + typed `Searchable` impl if any
-    // fields are marked searchable.
-    if !info.searchable_fields.is_empty() {
-        let json_fields: Vec<_> = info
-            .searchable_fields
-            .iter()
-            .map(|sf| {
-                let field = &sf.field_name_json;
-                quote! { #field }
-            })
-            .collect();
+fn generate_search_registration(local_type: &str, info: &RelationshipInfo) -> TokenStream {
+    let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
+    let krate = crate::myko_path();
+    let json_fields = info.searchable_fields.iter().map(|field| {
+        let field = &field.field_name_json;
+        quote! { #field }
+    });
 
-        registrations.push(quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #krate::submit! {
-                #krate::search::SearchableRegistration {
-                    entity_type: #local_type,
-                    fields: &[#(#json_fields),*],
-                    // Carries the type identity into the typed registry so it
-                    // can monomorphize SearchIndex<T> for this entity at startup.
-                    register_typed: ::std::option::Option::Some(
-                        |reg: &mut #krate::search::typed::SearchRegistry|
-                            reg.register::<#local_type_ident>(#local_type),
-                    ),
-                }
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! {
+            #krate::search::SearchableRegistration {
+                entity_type: #local_type,
+                fields: &[#(#json_fields),*],
+                register_typed: ::std::option::Option::Some(
+                    |reg: &mut #krate::search::typed::SearchRegistry|
+                        reg.register::<#local_type_ident>(#local_type),
+                ),
             }
-        });
-
-        // Per-type `Searchable` impl consumed by `SearchIndex<T>`. Pushes one
-        // field per `#[searchable]` attribute, in declaration order.
-        // `searchable_field_names` mirrors that order using camelCase names so
-        // it matches the wire-format keys.
-        let push_calls: Vec<_> = info
-            .searchable_fields
-            .iter()
-            .map(|sf| {
-                let ident = syn::Ident::new(&sf.field_name, proc_macro2::Span::call_site());
-                if sf.is_optional {
-                    // `Option<impl AsRef<str>>` — index the inner value when present,
-                    // contribute nothing (still consume the field slot) when `None`.
-                    quote! {
-                        match &self.#ident {
-                            ::std::option::Option::Some(__v) => {
-                                extractor.push_field(::std::convert::AsRef::<str>::as_ref(__v));
-                            }
-                            ::std::option::Option::None => {
-                                extractor.push_field("");
-                            }
-                        }
-                    }
-                } else {
-                    quote! { extractor.push_field(::std::convert::AsRef::<str>::as_ref(&self.#ident)); }
-                }
-            })
-            .collect();
-        let name_strs: Vec<_> = info
-            .searchable_fields
-            .iter()
-            .map(|sf| {
-                let n = &sf.field_name_json;
-                quote! { #n }
-            })
-            .collect();
-
-        // wasm-gated: `crate::search::typed::Searchable` lives behind
-        // `#[cfg(not(target_arch = "wasm32"))] pub mod search;` in
-        // `myko::core::lib.rs`. Without this gate the impl block fails to
-        // resolve `crate::search::typed::Searchable` on wasm targets — an
-        // actual downstream Windows CI failure (a Tauri/trunk-build pipeline
-        // that compiles the leptos UI against wasm32 and pulls myko in
-        // transitively).
-        registrations.push(quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            impl #krate::search::typed::Searchable for #local_type_ident {
-                fn extract_searchable(
-                    &self,
-                    extractor: &mut #krate::search::typed::SearchableExtractor<'_>,
-                ) {
-                    #(#push_calls)*
-                }
-
-                fn searchable_field_names() -> &'static [&'static str] {
-                    &[#(#name_strs),*]
-                }
-            }
-        });
-
-        // Per-type typed search report: `Search{T}` returning `Search{T}Result`.
-        // Mirrors the auto-generated `GetAllTargets`, `CountAllTargets`, etc.
-        // shape — sits alongside them in the entity's auto-generated suite.
-        let id_type_ident =
-            syn::Ident::new(&format!("{local_type}Id"), proc_macro2::Span::call_site());
-        let search_result_ident = syn::Ident::new(
-            &format!("Search{local_type}Result"),
-            proc_macro2::Span::call_site(),
-        );
-        let search_report_ident = syn::Ident::new(
-            &format!("Search{local_type}"),
-            proc_macro2::Span::call_site(),
-        );
-        // Per-entity local default fn for `serde(default = "...")` — `serde`
-        // attribute paths are string literals that don't expand `#krate::`,
-        // so we emit a local helper alongside the report struct.
-        let default_limit_fn = syn::Ident::new(
-            &format!("__myko_search_default_limit_{local_type}"),
-            proc_macro2::Span::call_site(),
-        );
-        let default_limit_fn_str = default_limit_fn.to_string();
-
-        // wasm-gated: the report handler calls `ctx.search(...)`, which is
-        // only defined on non-wasm builds (see `pub mod search;` cfg in
-        // `myko::core::lib.rs`). The companion result/report types are
-        // gated together so they don't outlive the handler. Identical
-        // rationale to the `impl Searchable` gate above.
-        registrations.push(quote! {
-            #[cfg(not(target_arch = "wasm32"))]
-            #[#krate::myko_report_output]
-            pub struct #search_result_ident {
-                pub ids: ::std::vec::Vec<#id_type_ident>,
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            #[doc(hidden)]
-            pub fn #default_limit_fn() -> usize {
-                #krate::search::default_search_limit()
-            }
-
-            /// Search this entity type by query string. Backed by the typed
-            /// per-entity `SearchIndex<T>` (exact + nucleo subsequence +
-            /// Levenshtein typo). Returns matching ids in tier order.
-            #[cfg(not(target_arch = "wasm32"))]
-            #[#krate::myko_report(#search_result_ident)]
-            pub struct #search_report_ident {
-                pub query: ::std::string::String,
-                #[serde(default = #default_limit_fn_str)]
-                pub limit: usize,
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            impl #krate::prelude::ReportHandler for #search_report_ident {
-                type Output = #search_result_ident;
-
-                fn compute(
-                    &self,
-                    ctx: #krate::prelude::ReportContext,
-                ) -> impl #krate::prelude::Materialize<::std::sync::Arc<Self::Output>, #krate::prelude::Definite> {
-                    let arc_ids = ctx.search(#local_type, &self.query, self.limit);
-                    let ids: ::std::vec::Vec<#id_type_ident> = arc_ids
-                        .into_iter()
-                        .map(<#id_type_ident as ::std::convert::From<::std::sync::Arc<str>>>::from)
-                        .collect();
-                    #krate::hyphae::Cell::new(::std::sync::Arc::new(#search_result_ident { ids })).lock()
-                }
-            }
-        });
+        }
     }
+}
+
+fn generate_searchable_impl(local_type: &str, info: &RelationshipInfo) -> TokenStream {
+    let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
+    let krate = crate::myko_path();
+    let push_calls = info.searchable_fields.iter().map(|field| {
+        let ident = syn::Ident::new(&field.field_name, proc_macro2::Span::call_site());
+        if field.is_optional {
+            quote! {
+                match &self.#ident {
+                    ::std::option::Option::Some(__v) => {
+                        extractor.push_field(::std::convert::AsRef::<str>::as_ref(__v));
+                    }
+                    ::std::option::Option::None => {
+                        extractor.push_field("");
+                    }
+                }
+            }
+        } else {
+            quote! { extractor.push_field(::std::convert::AsRef::<str>::as_ref(&self.#ident)); }
+        }
+    });
+    let name_strs = info.searchable_fields.iter().map(|field| {
+        let name = &field.field_name_json;
+        quote! { #name }
+    });
+
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #krate::search::typed::Searchable for #local_type_ident {
+            fn extract_searchable(
+                &self,
+                extractor: &mut #krate::search::typed::SearchableExtractor<'_>,
+            ) {
+                #(#push_calls)*
+            }
+
+            fn searchable_field_names() -> &'static [&'static str] {
+                &[#(#name_strs),*]
+            }
+        }
+    }
+}
+
+fn generate_search_report(local_type: &str) -> TokenStream {
+    let krate = crate::myko_path();
+    let id_type_ident = syn::Ident::new(&format!("{local_type}Id"), proc_macro2::Span::call_site());
+    let search_result_ident = syn::Ident::new(
+        &format!("Search{local_type}Result"),
+        proc_macro2::Span::call_site(),
+    );
+    let search_report_ident = syn::Ident::new(
+        &format!("Search{local_type}"),
+        proc_macro2::Span::call_site(),
+    );
+    let default_limit_fn = syn::Ident::new(
+        &format!("__myko_search_default_limit_{local_type}"),
+        proc_macro2::Span::call_site(),
+    );
+    let default_limit_fn_str = default_limit_fn.to_string();
+
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        #[#krate::myko_report_output]
+        pub struct #search_result_ident {
+            pub ids: ::std::vec::Vec<#id_type_ident>,
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        #[doc(hidden)]
+        pub fn #default_limit_fn() -> usize {
+            #krate::search::default_search_limit()
+        }
+
+        /// Search this entity type by query string.
+        #[cfg(not(target_arch = "wasm32"))]
+        #[#krate::myko_report(#search_result_ident)]
+        pub struct #search_report_ident {
+            pub query: ::std::string::String,
+            #[serde(default = #default_limit_fn_str)]
+            pub limit: usize,
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #krate::prelude::ReportHandler for #search_report_ident {
+            type Output = #search_result_ident;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<::std::sync::Arc<Self::Output>, #krate::prelude::Definite> {
+                let arc_ids = ctx.search(#local_type, &self.query, self.limit);
+                let ids: ::std::vec::Vec<#id_type_ident> = arc_ids
+                    .into_iter()
+                    .map(<#id_type_ident as ::std::convert::From<::std::sync::Arc<str>>>::from)
+                    .collect();
+                #krate::hyphae::Cell::new(::std::sync::Arc::new(#search_result_ident { ids })).lock()
+            }
+        }
+    }
+}
+
+fn generate_search_registrations(local_type: &str, info: &RelationshipInfo) -> Vec<TokenStream> {
+    if info.searchable_fields.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            generate_search_registration(local_type, info),
+            generate_searchable_impl(local_type, info),
+            generate_search_report(local_type),
+        ]
+    }
+}
+
+/// Generate relationship registration code.
+pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> TokenStream {
+    let mut registrations = generate_belongs_to_registrations(local_type, info);
+    registrations.extend(generate_owns_many_registrations(local_type, info));
+    registrations.extend(generate_ensure_for_registration(local_type, info));
+    registrations.extend(generate_marker_registrations(local_type, info));
+    registrations.extend(generate_search_registrations(local_type, info));
 
     quote! {
         #(#registrations)*

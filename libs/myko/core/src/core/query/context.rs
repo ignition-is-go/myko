@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, MapExt, Materialize};
+use hyphae::{Cell, CellImmutable};
 
 use super::{
     cell::FilteredCellMap, registration::QueryFactory, request::QueryRequest, traits::AnyQuery,
 };
 use crate::{
-    core::report::{AnyReport, ReportFactory, ReportOutputType, ReportRequest},
+    core::report::{ReportFactory, ReportHandler, ReportOutputType},
     request::RequestContext,
     server::MykoServerContext,
     store::StoreRegistry,
@@ -36,7 +36,7 @@ impl crate::core::capability::RequestScoped for QueryContext {
 /// Server-only context for advanced query composition.
 ///
 /// Use this from `QueryHandler::build_view` to compose query cells from other
-/// queries while preserving request context (tx, host_id, lineage).
+/// queries while preserving request context (tx, `host_id`, lineage).
 #[derive(Clone)]
 pub struct QueryBuildContext {
     pub query_context: Arc<QueryContext>,
@@ -45,7 +45,8 @@ pub struct QueryBuildContext {
 }
 
 impl QueryBuildContext {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         query_context: Arc<QueryContext>,
         registry: Arc<StoreRegistry>,
         server_ctx: Option<Arc<MykoServerContext>>,
@@ -57,11 +58,15 @@ impl QueryBuildContext {
         }
     }
 
-    /// Build a reactive CellMap for another query using the same request context.
+    /// Build a reactive `CellMap` for another query using the same request context.
     ///
     /// Delegates to `MykoServerContext::query_map_untyped`, which is the canonical
     /// cached path. A previous local `subquery_cache` was removed so that
     /// dedupe lives in exactly one place (the server context).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn query<Q>(&self, query: Q) -> Result<FilteredCellMap, String>
     where
         Q: QueryFactory + Clone,
@@ -91,12 +96,18 @@ impl QueryBuildContext {
     }
 
     /// Build a reactive cell for a report using the same request context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn report<R>(
         &self,
         report: R,
     ) -> Result<Cell<Arc<<R as ReportOutputType>::Output>, CellImmutable>, String>
     where
-        R: ReportFactory + Clone,
+        R: ReportFactory
+            + ReportHandler<Output = <R as ReportOutputType>::Output>
+            + Clone,
         <R as ReportOutputType>::Output:
             crate::common::to_value::ToValue + std::fmt::Debug + Send + Sync + 'static,
     {
@@ -104,24 +115,10 @@ impl QueryBuildContext {
             return Err("QueryBuildContext.report requires server context".to_string());
         };
 
-        let wrapped = ReportRequest::with_tx(report, self.query_context.req.tx.clone());
-        let any_report: Arc<dyn AnyReport> = Arc::new(wrapped);
-        let erased = R::cell_factory(any_report, self.query_context.req.clone(), server_ctx)
-            .map_err(|e| e.to_string())?;
-        Ok(erased
-            .map(|output| {
-                Arc::new(
-                    output
-                        .as_ref()
-                        .as_any()
-                        .downcast_ref::<<R as ReportOutputType>::Output>()
-                        .expect("Report output downcast should match ReportFactory type")
-                        .clone(),
-                )
-            })
-            .materialize())
+        Ok(server_ctx.report(report, self.query_context.req.clone()))
     }
 
+    #[must_use]
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
     }

@@ -19,16 +19,19 @@ pub trait Filter<T> {
 }
 
 /// Normalizes a filter to its canonical form — required for query-cache
+///
 /// identity (see spec §1): sorted+deduped `In`, `In([x])` -> `Eq(x)`,
 /// `Range{a,a}` -> `Eq(a)`. Implemented uniformly across every filter type,
 /// including `bool` (a no-op — bare equality has nothing to canonicalize),
 /// so `#[myko_item]`'s generated `XQuery::canonicalize` can canonicalize
 /// every field the same way regardless of which filter type it holds.
 pub trait CanonicalFilter: Sized {
+    #[must_use]
     fn canonicalize(self) -> Self;
 }
 
 /// Associates a type with the filter type that can express queries over it.
+///
 /// Implemented for every field type `#[myko_item]` can generate a filter
 /// for — numeric primitives, `String`/`Arc<str>`, `bool`, entity id
 /// newtypes, and (via a per-type impl or macro-emitted default) opaque/enum
@@ -45,11 +48,12 @@ pub trait Filterable: Sized {
 }
 
 /// Ordered foreign-key values for a `BelongsToSourceIndex` bucket. A single
+///
 /// `#[belongs_to]` field yields a 1-element key (the pre-compound-routing
 /// shape); an entity with 2+ `#[belongs_to]` fields queried with more than
 /// one set at once yields one element per field that was `Some`, in the
 /// entity's declared field order. Two queries that populate different SETS
-/// of belongs_to fields land in different buckets even for the same entity
+/// of `belongs_to` fields land in different buckets even for the same entity
 /// type — the bucket only ever holds items matching every field in the key.
 ///
 /// `SmallVec` with inline capacity 2: keys are built per item per diff and
@@ -59,6 +63,7 @@ pub trait Filterable: Sized {
 pub type CompoundKey = smallvec::SmallVec<[Arc<str>; 2]>;
 
 /// Extracts the compound foreign-key values (see [`CompoundKey`]) an item
+///
 /// contributes for one specific field combination. Position `i` in the
 /// returned key corresponds to field `i` of that combination. Returns
 /// `None` only on a downcast failure (item is the wrong entity type) —
@@ -72,7 +77,8 @@ pub type CompoundKey = smallvec::SmallVec<[Arc<str>; 2]>;
 /// in place would ripple into those unrelated subsystems for no reason.
 pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<CompoundKey>;
 
-/// A belongs_to routing decision for one `XQuery` instance — which fields
+/// A `belongs_to` routing decision for one `XQuery` instance — which fields
+///
 /// are pinned, the compound keys to union-route through
 /// `BelongsToSourceIndex`, and the extractor needed to build/maintain that
 /// index. Returned by a generated `XQuery`'s `belongs_to_route()` method
@@ -94,8 +100,9 @@ pub struct BelongsToRoute {
 }
 
 /// Sentinel `field_names` for the primary-key route, so `query_live`'s
+///
 /// route-shape tracking (`prev_route_field_names`) distinguishes id mode
-/// from every belongs_to field combination (a real field named "(id)" is
+/// from every `belongs_to` field combination (a real field named "(id)" is
 /// impossible — parentheses aren't valid in a Rust identifier).
 pub const ID_ROUTE_FIELD_NAMES: &[&str] = &["(id)"];
 
@@ -104,7 +111,7 @@ pub const ID_ROUTE_FIELD_NAMES: &[&str] = &["(id)"];
 /// - [`QueryRoute::Ids`] — the filter pins `id` (`Eq`/`In`). The primary
 ///   key is the strongest index in the system (the store itself is an
 ///   id-keyed map of per-key cells), and an id pin bounds the result to
-///   ≤ N rows outright, so it wins over any belongs_to combination also
+///   ≤ N rows outright, so it wins over any `belongs_to` combination also
 ///   present — those fields still narrow via `matches` on the ≤ N rows.
 /// - [`QueryRoute::BelongsTo`] — no id pin; route on `#[belongs_to]`
 ///   buckets as before.
@@ -121,6 +128,7 @@ pub enum QueryRoute {
 }
 
 /// Bridges a generated `XQuery` type to its entity, so `query_live` can be
+///
 /// generic over just `impl Watchable<F>` — no `GetXsByQuery` wrapper
 /// needed; "the entity/query type is inferred from `Cell<XQuery>`" (spec
 /// §5). Implemented by `#[myko_item]`'s codegen for every generated
@@ -143,7 +151,7 @@ pub trait LiveFilterQuery: Clone + PartialEq + Send + Sync + 'static {
 
     fn entity_type() -> &'static str;
     fn matches(&self, item: &Self::Item) -> bool;
-    /// The full routing decision (id → belongs_to → scan); see
+    /// The full routing decision (id → `belongs_to` → scan); see
     /// [`QueryRoute`]. `None` means scan mode.
     fn query_route(&self) -> Option<QueryRoute>;
 }
@@ -196,8 +204,8 @@ impl<T: Clone> IdFilter<T> {
     /// `BelongsToSourceIndex` as a bucket union instead of a table scan.
     pub fn key_values(&self) -> Vec<T> {
         match self {
-            IdFilter::Eq(value) => vec![value.clone()],
-            IdFilter::In(values) => values.clone(),
+            Self::Eq(value) => vec![value.clone()],
+            Self::In(values) => values.clone(),
         }
     }
 }
@@ -206,14 +214,14 @@ impl<T: Ord + Clone> CanonicalFilter for IdFilter<T> {
     /// Sort + dedup `In`, collapse a 1-element `In` to `Eq`.
     fn canonicalize(self) -> Self {
         match self {
-            IdFilter::In(values) => {
+            Self::In(values) => {
                 let values = canonical_in_values(values);
                 match <[T; 1]>::try_from(values) {
-                    Ok([only]) => IdFilter::Eq(only),
-                    Err(values) => IdFilter::In(values),
+                    Ok([only]) => Self::Eq(only),
+                    Err(values) => Self::In(values),
                 }
             }
-            other => other,
+            Self::Eq(value) => Self::Eq(value),
         }
     }
 }
@@ -221,24 +229,24 @@ impl<T: Ord + Clone> CanonicalFilter for IdFilter<T> {
 impl<T: Eq + Hash> Filter<T> for IdFilter<T> {
     fn matches(&self, value: &T) -> bool {
         match self {
-            IdFilter::Eq(expected) => value == expected,
+            Self::Eq(expected) => value == expected,
             // In([]) matches nothing — this is correct behavior for
             // "scope to this (possibly empty) derived set" call sites, not
             // a bug. Document loudly (see spec §1) rather than special-case.
-            IdFilter::In(values) => in_matches(values, value),
+            Self::In(values) => in_matches(values, value),
         }
     }
 }
 
 impl<T> From<T> for IdFilter<T> {
     fn from(value: T) -> Self {
-        IdFilter::Eq(value)
+        Self::Eq(value)
     }
 }
 
 impl<T> From<Vec<T>> for IdFilter<T> {
     fn from(values: Vec<T>) -> Self {
-        IdFilter::In(values)
+        Self::In(values)
     }
 }
 
@@ -246,7 +254,7 @@ impl<T> From<Vec<T>> for IdFilter<T> {
 // NumericFilter — Eq / In / Range (inclusive bounds).
 // ─────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, TS)]
 #[ts(
     type = "T | { \"$in\": Array<T> } | { \"$range\": { min?: T, max?: T } }",
     bound = "T: ts_rs::TS"
@@ -268,18 +276,19 @@ impl<T: PartialOrd + PartialEq + Clone> CanonicalFilter for NumericFilter<T> {
     /// `Range{min: Some(a), max: Some(a)}` to `Eq(a)`.
     fn canonicalize(self) -> Self {
         match self {
-            NumericFilter::In(values) => {
+            Self::In(values) => {
                 let values = canonical_in_values_partial(values);
                 match <[T; 1]>::try_from(values) {
-                    Ok([only]) => NumericFilter::Eq(only),
-                    Err(values) => NumericFilter::In(values),
+                    Ok([only]) => Self::Eq(only),
+                    Err(values) => Self::In(values),
                 }
             }
-            NumericFilter::Range {
+            Self::Range {
                 min: Some(a),
                 max: Some(b),
-            } if a == b => NumericFilter::Eq(a),
-            other => other,
+            } if a == b => Self::Eq(a),
+            Self::Eq(value) => Self::Eq(value),
+            range @ Self::Range { .. } => range,
         }
     }
 }
@@ -287,9 +296,9 @@ impl<T: PartialOrd + PartialEq + Clone> CanonicalFilter for NumericFilter<T> {
 impl<T: PartialEq + PartialOrd> Filter<T> for NumericFilter<T> {
     fn matches(&self, value: &T) -> bool {
         match self {
-            NumericFilter::Eq(expected) => value == expected,
-            NumericFilter::In(values) => values.iter().any(|v| v == value),
-            NumericFilter::Range { min, max } => {
+            Self::Eq(expected) => value == expected,
+            Self::In(values) => values.iter().any(|v| v == value),
+            Self::Range { min, max } => {
                 min.as_ref().is_none_or(|min| value >= min)
                     && max.as_ref().is_none_or(|max| value <= max)
             }
@@ -299,13 +308,13 @@ impl<T: PartialEq + PartialOrd> Filter<T> for NumericFilter<T> {
 
 impl<T> From<T> for NumericFilter<T> {
     fn from(value: T) -> Self {
-        NumericFilter::Eq(value)
+        Self::Eq(value)
     }
 }
 
 impl<T> From<Vec<T>> for NumericFilter<T> {
     fn from(values: Vec<T>) -> Self {
-        NumericFilter::In(values)
+        Self::In(values)
     }
 }
 
@@ -358,14 +367,16 @@ impl CanonicalFilter for StringFilter {
     /// Sort + dedup `In`, collapse a 1-element `In` to `Eq`.
     fn canonicalize(self) -> Self {
         match self {
-            StringFilter::In(values) => {
+            Self::In(values) => {
                 let values = canonical_in_values(values);
                 match <[Arc<str>; 1]>::try_from(values) {
-                    Ok([only]) => StringFilter::Eq(only),
-                    Err(values) => StringFilter::In(values),
+                    Ok([only]) => Self::Eq(only),
+                    Err(values) => Self::In(values),
                 }
             }
-            other => other,
+            Self::Eq(value) => Self::Eq(value),
+            Self::Contains(value) => Self::Contains(value),
+            Self::StartsWith(value) => Self::StartsWith(value),
         }
     }
 }
@@ -373,10 +384,10 @@ impl CanonicalFilter for StringFilter {
 impl Filter<Arc<str>> for StringFilter {
     fn matches(&self, value: &Arc<str>) -> bool {
         match self {
-            StringFilter::Eq(expected) => value == expected,
-            StringFilter::In(values) => in_matches(values, value),
-            StringFilter::Contains(needle) => value.contains(needle.as_ref()),
-            StringFilter::StartsWith(prefix) => value.starts_with(prefix.as_ref()),
+            Self::Eq(expected) => value == expected,
+            Self::In(values) => in_matches(values, value),
+            Self::Contains(needle) => value.contains(needle.as_ref()),
+            Self::StartsWith(prefix) => value.starts_with(prefix.as_ref()),
         }
     }
 }
@@ -386,23 +397,23 @@ impl Filter<Arc<str>> for StringFilter {
 impl Filter<String> for StringFilter {
     fn matches(&self, value: &String) -> bool {
         match self {
-            StringFilter::Eq(expected) => value.as_str() == expected.as_ref(),
-            StringFilter::In(values) => values.iter().any(|v| v.as_ref() == value.as_str()),
-            StringFilter::Contains(needle) => value.contains(needle.as_ref()),
-            StringFilter::StartsWith(prefix) => value.starts_with(prefix.as_ref()),
+            Self::Eq(expected) => value.as_str() == expected.as_ref(),
+            Self::In(values) => values.iter().any(|v| v.as_ref() == value.as_str()),
+            Self::Contains(needle) => value.contains(needle.as_ref()),
+            Self::StartsWith(prefix) => value.starts_with(prefix.as_ref()),
         }
     }
 }
 
 impl From<Arc<str>> for StringFilter {
     fn from(value: Arc<str>) -> Self {
-        StringFilter::Eq(value)
+        Self::Eq(value)
     }
 }
 
 impl From<Vec<Arc<str>>> for StringFilter {
     fn from(values: Vec<Arc<str>>) -> Self {
-        StringFilter::In(values)
+        Self::In(values)
     }
 }
 
@@ -411,25 +422,25 @@ impl From<Vec<Arc<str>>> for StringFilter {
 // entity field is `String` or `Arc<str>`.
 impl From<String> for StringFilter {
     fn from(value: String) -> Self {
-        StringFilter::Eq(Arc::from(value))
+        Self::Eq(Arc::from(value))
     }
 }
 
 impl From<&str> for StringFilter {
     fn from(value: &str) -> Self {
-        StringFilter::Eq(Arc::from(value))
+        Self::Eq(Arc::from(value))
     }
 }
 
 impl From<Vec<String>> for StringFilter {
     fn from(values: Vec<String>) -> Self {
-        StringFilter::In(values.into_iter().map(Arc::from).collect())
+        Self::In(values.into_iter().map(Arc::from).collect())
     }
 }
 
 impl From<Vec<&str>> for StringFilter {
     fn from(values: Vec<&str>) -> Self {
-        StringFilter::In(values.into_iter().map(Arc::from).collect())
+        Self::In(values.into_iter().map(Arc::from).collect())
     }
 }
 
@@ -457,14 +468,14 @@ impl<T: Filterable> Filterable for Option<T> {
 // own filter type.
 // ─────────────────────────────────────────────────────────────────────────
 
-impl Filter<bool> for bool {
-    fn matches(&self, value: &bool) -> bool {
+impl Filter<Self> for bool {
+    fn matches(&self, value: &Self) -> bool {
         self == value
     }
 }
 
 impl Filterable for bool {
-    type Filter = bool;
+    type Filter = Self;
 }
 
 impl CanonicalFilter for bool {
@@ -490,14 +501,14 @@ impl<T: Ord + Clone> CanonicalFilter for EqFilter<T> {
     /// Sort + dedup `In`, collapse a 1-element `In` to `Eq`.
     fn canonicalize(self) -> Self {
         match self {
-            EqFilter::In(values) => {
+            Self::In(values) => {
                 let values = canonical_in_values(values);
                 match <[T; 1]>::try_from(values) {
-                    Ok([only]) => EqFilter::Eq(only),
-                    Err(values) => EqFilter::In(values),
+                    Ok([only]) => Self::Eq(only),
+                    Err(values) => Self::In(values),
                 }
             }
-            other => other,
+            Self::Eq(value) => Self::Eq(value),
         }
     }
 }
@@ -505,25 +516,26 @@ impl<T: Ord + Clone> CanonicalFilter for EqFilter<T> {
 impl<T: PartialEq> Filter<T> for EqFilter<T> {
     fn matches(&self, value: &T) -> bool {
         match self {
-            EqFilter::Eq(expected) => value == expected,
-            EqFilter::In(values) => values.iter().any(|v| v == value),
+            Self::Eq(expected) => value == expected,
+            Self::In(values) => values.iter().any(|v| v == value),
         }
     }
 }
 
 impl<T> From<T> for EqFilter<T> {
     fn from(value: T) -> Self {
-        EqFilter::Eq(value)
+        Self::Eq(value)
     }
 }
 
 impl<T> From<Vec<T>> for EqFilter<T> {
     fn from(values: Vec<T>) -> Self {
-        EqFilter::In(values)
+        Self::In(values)
     }
 }
 
 /// Marks `$ty` filterable via [`EqFilter`] (`Eq`/`In`, no partial/range
+///
 /// operations) — the fallback for enums and other exact-only opaque types
 /// per spec §1. For a downstream crate's own entity-field enums (state
 /// machines, tagged values, etc.) that want the same treatment
@@ -531,7 +543,7 @@ impl<T> From<Vec<T>> for EqFilter<T> {
 /// automatically via a built-in `Filterable` impl.
 ///
 /// `$ty` must already satisfy `Debug + Clone + PartialEq + Eq + Ord +
-/// Serialize + Deserialize + TS` (ts_rs's `TS`, or `myko::TS`'s no-op form
+/// Serialize + Deserialize + TS` (`ts_rs`'s `TS`, or `myko::TS`'s no-op form
 /// when the `ts-export` feature is off) — this macro only wires up the
 /// `Filterable` impl, it doesn't derive anything on `$ty` itself.
 #[macro_export]
@@ -546,6 +558,7 @@ macro_rules! impl_filterable_eq {
 }
 
 /// Marks `$ty` filterable via [`Unfilterable`] — the escape hatch for a
+///
 /// downstream crate's own opaque payload structs (arbitrary nested data with
 /// no query-meaningful equality, the same shape `serde_json::Value` needed
 /// [`Unfilterable`] for above). Unlike [`impl_filterable_eq!`], `$ty` need
@@ -598,7 +611,7 @@ pub enum Unfilterable {}
 
 impl<T> Filter<T> for Unfilterable {
     fn matches(&self, _value: &T) -> bool {
-        match *self {}
+        false
     }
 }
 
@@ -624,7 +637,7 @@ impl<T> Filterable for Vec<T> {
     type Filter = Unfilterable;
 }
 
-impl<K, V> Filterable for HashMap<K, V> {
+impl<K, V, S> Filterable for HashMap<K, V, S> {
     type Filter = Unfilterable;
 }
 
@@ -673,7 +686,7 @@ crate::register_ts_export!(
 mod wire_serde {
     use serde::{Deserializer, Serializer, ser::SerializeMap};
 
-    use super::*;
+    use super::{Deserialize, Serialize, IdFilter, EqFilter, StringFilter, Arc, NumericFilter};
 
     fn serialize_op<S: Serializer, T: Serialize + ?Sized>(
         s: S,
@@ -724,10 +737,10 @@ mod wire_serde {
     impl Serialize for StringFilter {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             match self {
-                StringFilter::Eq(v) => v.serialize(s),
-                StringFilter::In(vs) => serialize_op(s, "$in", vs),
-                StringFilter::Contains(v) => serialize_op(s, "$contains", v),
-                StringFilter::StartsWith(v) => serialize_op(s, "$startsWith", v),
+                Self::Eq(v) => v.serialize(s),
+                Self::In(vs) => serialize_op(s, "$in", vs),
+                Self::Contains(v) => serialize_op(s, "$contains", v),
+                Self::StartsWith(v) => serialize_op(s, "$startsWith", v),
             }
         }
     }
@@ -749,10 +762,10 @@ mod wire_serde {
                 Bare(Arc<str>),
             }
             Ok(match Wire::deserialize(d)? {
-                Wire::Op(Op::In(vs)) => StringFilter::In(vs),
-                Wire::Op(Op::Contains(v)) => StringFilter::Contains(v),
-                Wire::Op(Op::StartsWith(v)) => StringFilter::StartsWith(v),
-                Wire::Bare(v) => StringFilter::Eq(v),
+                Wire::Op(Op::In(vs)) => Self::In(vs),
+                Wire::Op(Op::Contains(v)) => Self::Contains(v),
+                Wire::Op(Op::StartsWith(v)) => Self::StartsWith(v),
+                Wire::Bare(v) => Self::Eq(v),
             })
         }
     }
@@ -760,16 +773,17 @@ mod wire_serde {
     impl<T: Serialize> Serialize for NumericFilter<T> {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             match self {
-                NumericFilter::Eq(v) => v.serialize(s),
-                NumericFilter::In(vs) => serialize_op(s, "$in", vs),
-                NumericFilter::Range { min, max } => {
+                Self::Eq(v) => v.serialize(s),
+                Self::In(vs) => serialize_op(s, "$in", vs),
+                Self::Range { min, max } => {
                     struct Bounds<'a, T> {
                         min: &'a Option<T>,
                         max: &'a Option<T>,
                     }
                     impl<T: Serialize> Serialize for Bounds<'_, T> {
                         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                            let len = self.min.is_some() as usize + self.max.is_some() as usize;
+                            let len = usize::from(self.min.is_some())
+                                .saturating_add(usize::from(self.max.is_some()));
                             let mut m = s.serialize_map(Some(len))?;
                             if let Some(v) = self.min {
                                 m.serialize_entry("min", v)?;
@@ -807,9 +821,9 @@ mod wire_serde {
                 Bare(T),
             }
             Ok(match Wire::deserialize(d)? {
-                Wire::Op(Op::In(vs)) => NumericFilter::In(vs),
-                Wire::Op(Op::Range { min, max }) => NumericFilter::Range { min, max },
-                Wire::Bare(v) => NumericFilter::Eq(v),
+                Wire::Op(Op::In(vs)) => Self::In(vs),
+                Wire::Op(Op::Range { min, max }) => Self::Range { min, max },
+                Wire::Bare(v) => Self::Eq(v),
             })
         }
     }
@@ -818,6 +832,23 @@ mod wire_serde {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    macro_rules! require_ok {
+        ($value:expr) => {
+            match {
+                let result = $value;
+                assert!(
+                    result.is_ok(),
+                    "unexpected error: {:?}",
+                    result.as_ref().err()
+                );
+                result
+            } {
+                Ok(value) => value,
+                Err(_) => return,
+            }
+        };
+    }
 
     #[test]
     fn id_filter_eq_and_in() {
@@ -999,15 +1030,15 @@ mod tests {
         // The whole point of the wire design: `Eq` IS the bare value, so the
         // pre-6.0 `PartialX { field: value }` payload is still a valid query.
         assert_eq!(
-            serde_json::to_value(IdFilter::Eq(Arc::<str>::from("abc"))).unwrap(),
+            require_ok!(serde_json::to_value(IdFilter::Eq(Arc::<str>::from("abc")))),
             serde_json::json!("abc")
         );
         assert_eq!(
-            serde_json::to_value(NumericFilter::Eq(42_i64)).unwrap(),
+            require_ok!(serde_json::to_value(NumericFilter::Eq(42_i64))),
             serde_json::json!(42)
         );
         assert_eq!(
-            serde_json::to_value(StringFilter::Eq(Arc::from("hi"))).unwrap(),
+            require_ok!(serde_json::to_value(StringFilter::Eq(Arc::from("hi")))),
             serde_json::json!("hi")
         );
     }
@@ -1015,58 +1046,57 @@ mod tests {
     #[test]
     fn operators_serialize_as_sigilled_objects() {
         assert_eq!(
-            serde_json::to_value(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]))
-                .unwrap(),
+            require_ok!(serde_json::to_value(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]))),
             serde_json::json!({ "$in": ["a", "b"] })
         );
         assert_eq!(
-            serde_json::to_value(StringFilter::Contains(Arc::from("x"))).unwrap(),
+            require_ok!(serde_json::to_value(StringFilter::Contains(Arc::from("x")))),
             serde_json::json!({ "$contains": "x" })
         );
         assert_eq!(
-            serde_json::to_value(StringFilter::StartsWith(Arc::from("p"))).unwrap(),
+            require_ok!(serde_json::to_value(StringFilter::StartsWith(Arc::from("p")))),
             serde_json::json!({ "$startsWith": "p" })
         );
         assert_eq!(
-            serde_json::to_value(NumericFilter::Range {
+            require_ok!(serde_json::to_value(NumericFilter::Range {
                 min: Some(1_i64),
                 max: Some(9),
-            })
-            .unwrap(),
+            })),
             serde_json::json!({ "$range": { "min": 1, "max": 9 } })
         );
         // A half-open range omits the absent bound rather than emitting null.
         assert_eq!(
-            serde_json::to_value(NumericFilter::Range {
+            require_ok!(serde_json::to_value(NumericFilter::Range {
                 min: Some(1_i64),
                 max: None,
-            })
-            .unwrap(),
+            })),
             serde_json::json!({ "$range": { "min": 1 } })
         );
     }
 
     #[test]
     fn old_bare_wire_deserializes_as_eq() {
-        // WIRE-COMPAT ACID TEST: a pre-6.0 payload (bare value per field)
-        // must deserialize to `Eq` under every active filter type.
-        let id: IdFilter<Arc<str>> = serde_json::from_value(serde_json::json!("abc")).unwrap();
-        assert_eq!(id, IdFilter::Eq(Arc::from("abc")));
-
-        let n: NumericFilter<i64> = serde_json::from_value(serde_json::json!(42)).unwrap();
-        assert_eq!(n, NumericFilter::Eq(42));
-
-        let s: StringFilter = serde_json::from_value(serde_json::json!("hi")).unwrap();
-        assert_eq!(s, StringFilter::Eq(Arc::from("hi")));
-
-        // And an EqFilter over an object-shaped value (the enum case): a bare
-        // object with no `$` key is Eq, never mistaken for an operator.
         #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
         struct Enumish {
             variant: String,
         }
-        let e: EqFilter<Enumish> =
-            serde_json::from_value(serde_json::json!({ "variant": "connected" })).unwrap();
+
+        // WIRE-COMPAT ACID TEST: a pre-6.0 payload (bare value per field)
+        // must deserialize to `Eq` under every active filter type.
+        let id: IdFilter<Arc<str>> = require_ok!(serde_json::from_value(serde_json::json!("abc")));
+        assert_eq!(id, IdFilter::Eq(Arc::from("abc")));
+
+        let n: NumericFilter<i64> = require_ok!(serde_json::from_value(serde_json::json!(42)));
+        assert_eq!(n, NumericFilter::Eq(42));
+
+        let s: StringFilter = require_ok!(serde_json::from_value(serde_json::json!("hi")));
+        assert_eq!(s, StringFilter::Eq(Arc::from("hi")));
+
+        // And an EqFilter over an object-shaped value (the enum case): a bare
+        // object with no `$` key is Eq, never mistaken for an operator.
+        let e: EqFilter<Enumish> = require_ok!(serde_json::from_value(
+            serde_json::json!({ "variant": "connected" })
+        ));
         assert_eq!(
             e,
             EqFilter::Eq(Enumish {
@@ -1077,17 +1107,19 @@ mod tests {
 
     #[test]
     fn sigilled_wire_deserializes_as_operators() {
-        let id: IdFilter<Arc<str>> =
-            serde_json::from_value(serde_json::json!({ "$in": ["a", "b"] })).unwrap();
+        let id: IdFilter<Arc<str>> = require_ok!(serde_json::from_value(
+            serde_json::json!({ "$in": ["a", "b"] })
+        ));
         assert_eq!(id, IdFilter::In(vec![Arc::from("a"), Arc::from("b")]));
 
-        let s: StringFilter =
-            serde_json::from_value(serde_json::json!({ "$contains": "x" })).unwrap();
+        let s: StringFilter = require_ok!(serde_json::from_value(
+            serde_json::json!({ "$contains": "x" })
+        ));
         assert_eq!(s, StringFilter::Contains(Arc::from("x")));
 
-        let n: NumericFilter<i64> =
-            serde_json::from_value(serde_json::json!({ "$range": { "min": 1, "max": 9 } }))
-                .unwrap();
+        let n: NumericFilter<i64> = require_ok!(serde_json::from_value(
+            serde_json::json!({ "$range": { "min": 1, "max": 9 } })
+        ));
         assert_eq!(
             n,
             NumericFilter::Range {
@@ -1103,9 +1135,10 @@ mod tests {
         where
             F: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
         {
-            let json = serde_json::to_value(&f).unwrap();
-            let back: F = serde_json::from_value(json).unwrap();
+            let json = require_ok!(serde_json::to_value(&f));
+            let back: F = require_ok!(serde_json::from_value(json));
             assert_eq!(f, back);
+            drop(f);
         }
         rt(IdFilter::Eq(Arc::<str>::from("a")));
         rt(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]));
@@ -1135,9 +1168,10 @@ mod tests {
             F: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
         {
             let mut bytes = Vec::new();
-            ciborium::ser::into_writer(&f, &mut bytes).unwrap();
-            let back: F = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+            require_ok!(ciborium::ser::into_writer(&f, &mut bytes));
+            let back: F = require_ok!(ciborium::de::from_reader(bytes.as_slice()));
             assert_eq!(f, back);
+            drop(f);
         }
         rt_cbor(IdFilter::Eq(Arc::<str>::from("a")));
         rt_cbor(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]));
@@ -1155,10 +1189,9 @@ mod tests {
         // `ClientQuery` with eq semantics on each supplied field, and
         // omitted fields stay unconstrained (None).
         use crate::entities::client::ClientQuery;
-        let q: ClientQuery = serde_json::from_value(serde_json::json!({
+        let q: ClientQuery = require_ok!(serde_json::from_value(serde_json::json!({
             "address": "192.168.1.5:54320",
-        }))
-        .unwrap();
+        })));
         assert_eq!(
             q.address,
             Some(StringFilter::Eq(Arc::from("192.168.1.5:54320")))
@@ -1174,9 +1207,9 @@ mod tests {
         // of Option<Unfilterable> is None, and it stays that way through a
         // full serde round-trip.
         let none: Option<Unfilterable> = None;
-        let json = serde_json::to_value(&none).unwrap();
+        let json = require_ok!(serde_json::to_value(&none));
         assert_eq!(json, serde_json::Value::Null);
-        let round_tripped: Option<Unfilterable> = serde_json::from_value(json).unwrap();
+        let round_tripped: Option<Unfilterable> = require_ok!(serde_json::from_value(json));
         assert_eq!(round_tripped, None);
     }
 
@@ -1212,7 +1245,7 @@ mod tests {
         assert_filterable::<(String, i64, bool, Arc<str>)>();
 
         let none: Option<<Vec<String> as Filterable>::Filter> = None;
-        let json = serde_json::to_value(&none).unwrap();
+        let json = require_ok!(serde_json::to_value(&none));
         assert_eq!(json, serde_json::Value::Null);
     }
 
@@ -1223,17 +1256,14 @@ mod tests {
         // no query-meaningful equality — impl_filterable_opaque! is how it
         // opts into Unfilterable without hand-writing the impl.
         #[derive(Debug, Clone, PartialEq)]
-        struct OpaquePayload {
-            #[allow(dead_code)]
-            blob: Vec<u8>,
-        }
+        struct OpaquePayload;
         crate::impl_filterable_opaque!(OpaquePayload);
 
         fn assert_filterable<T: Filterable>() {}
         assert_filterable::<OpaquePayload>();
 
         let none: Option<<OpaquePayload as Filterable>::Filter> = None;
-        let json = serde_json::to_value(&none).unwrap();
+        let json = require_ok!(serde_json::to_value(&none));
         assert_eq!(json, serde_json::Value::Null);
     }
 }

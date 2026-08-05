@@ -45,7 +45,9 @@ impl Drop for TelemetryGuard {
     }
 }
 
-/// Initialize logging/tracing from environment — the simple-case wrapper
+/// Initialize logging/tracing from environment.
+///
+/// This is the simple-case wrapper
 /// around [`otel_layer_from_env`] for host processes that don't already
 /// compose their own `tracing_subscriber` (no existing fmt layer, no Tracy/
 /// other tracing consumer to combine with — see [`otel_layer_from_env`] if
@@ -62,6 +64,7 @@ impl Drop for TelemetryGuard {
 /// interval from `MYKO_MEM_PROFILE_INTERVAL_SECS` (seconds, default 60). If
 /// unset, telemetry stays local-only (console logging), matching the prior
 /// dev-loop behavior.
+#[must_use]
 pub fn init_from_env() -> TelemetryGuard {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let fmt_layer = tracing_subscriber::fmt::layer();
@@ -79,7 +82,9 @@ pub fn init_from_env() -> TelemetryGuard {
     })
 }
 
-/// Build just the OTLP trace layer (+ register the OTLP metrics
+/// Build just the OTLP trace layer.
+///
+/// This also registers the OTLP metrics
 /// `MeterProvider` globally, as a side effect) from `MYKO_TRACING_ENDPOINT`/
 /// `MYKO_MEM_PROFILE_INTERVAL_SECS` — for host processes that compose their
 /// *own* `tracing_subscriber::registry()` (an existing custom fmt layer, a
@@ -103,6 +108,7 @@ pub fn init_from_env() -> TelemetryGuard {
 ///     .with(otel_layer)                       // adds OTLP export alongside it
 ///     .init();
 /// ```
+#[must_use]
 pub fn otel_layer_from_env<S>() -> (Option<impl Layer<S> + Send + Sync>, Option<TelemetryGuard>)
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a> + Send + Sync,
@@ -112,8 +118,12 @@ where
     };
 
     let resource = Resource::builder().with_service_name("myko-server").build();
-    let tracer_provider = build_tracer_provider(&endpoint, resource.clone());
-    let meter_provider = build_meter_provider(&endpoint, resource);
+    let Some(tracer_provider) = build_tracer_provider(&endpoint, resource.clone()) else {
+        return (None, None);
+    };
+    let Some(meter_provider) = build_meter_provider(&endpoint, resource) else {
+        return (None, None);
+    };
 
     global::set_meter_provider(meter_provider.clone());
 
@@ -129,23 +139,31 @@ where
     )
 }
 
-fn build_tracer_provider(endpoint: &str, resource: Resource) -> SdkTracerProvider {
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
+fn build_tracer_provider(endpoint: &str, resource: Resource) -> Option<SdkTracerProvider> {
+    let exporter = match opentelemetry_otlp::SpanExporter::builder()
         .with_http()
         // `.with_endpoint` is the exact per-signal URL (opentelemetry-otlp does NOT
         // append the signal path when set programmatically), so append `/v1/traces`
         // to the base gateway endpoint — otherwise it POSTs to `/` and gets 404.
         .with_endpoint(format!("{}/v1/traces", endpoint.trim_end_matches('/')))
         .build()
-        .expect("failed to build OTLP/HTTP trace exporter");
+    {
+        Ok(exporter) => exporter,
+        Err(error) => {
+            tracing::error!(%error, "failed to build OTLP/HTTP trace exporter");
+            return None;
+        }
+    };
 
-    SdkTracerProvider::builder()
+    Some(SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
         .with_resource(resource)
-        .build()
+        .build())
 }
 
-/// Registers an OTLP `ObservableGauge` reporting live per-entity-type item
+/// Register an OTLP `ObservableGauge`.
+///
+/// It reports live per-entity-type item
 /// counts (`myko.store.item_count`, tagged `entity_type`) — the Rust
 /// equivalent of the old TS gateway's `itemCountsGuage`/`repo.getItemCount()`.
 ///
@@ -170,7 +188,9 @@ pub fn register_item_count_gauge(registry: Arc<StoreRegistry>) {
                     .get_or_create(&entity_type)
                     .len()
                     .materialize()
-                    .get() as u64;
+                    .get()
+                    .try_into()
+                    .unwrap_or(u64::MAX);
                 observer.observe(
                     count,
                     &[KeyValue::new("entity_type", entity_type.to_string())],
@@ -182,7 +202,9 @@ pub fn register_item_count_gauge(registry: Arc<StoreRegistry>) {
 
 const MALLOC_TRIM_INTERVAL_ENV: &str = "MYKO_MALLOC_TRIM_INTERVAL_SECS";
 
-/// Periodic `malloc_trim(0)` probe: logs RSS before/after asking glibc to
+/// Start the periodic `malloc_trim(0)` probe.
+///
+/// It logs RSS before/after asking glibc to
 /// return free arena pages to the OS. Opt-in via `MYKO_MALLOC_TRIM_INTERVAL_SECS`
 /// (seconds); unset or 0 = disabled, no thread spawned.
 ///
@@ -202,7 +224,7 @@ const MALLOC_TRIM_INTERVAL_ENV: &str = "MYKO_MALLOC_TRIM_INTERVAL_SECS";
 /// allocations never touch glibc, `malloc_trim` has ~nothing to release, and
 /// `released≈0` says nothing about retention — the probe warns once when a
 /// tick looks like that instead of letting it read as a clean result. Under
-/// jemalloc, use its own allocated-vs-resident stats (rship's mem_profile
+/// jemalloc, use its own allocated-vs-resident stats (rship's `mem_profile`
 /// ticks) as the discriminator.
 pub fn start_malloc_trim_probe() {
     let Some(interval_secs) = std::env::var(MALLOC_TRIM_INTERVAL_ENV)
@@ -244,7 +266,7 @@ pub fn start_malloc_trim_probe() {
                 tracing::warn!(
                     target: "myko_server::mem_probe",
                     "Failed to spawn malloc_trim probe thread: {e}"
-                )
+                );
             });
     }
 
@@ -264,7 +286,8 @@ fn run_malloc_trim_loop(interval_secs: u64) {
         fn malloc_trim(pad: usize) -> i32;
     }
 
-    let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+    use num_traits::ToPrimitive;
+    let mb = |bytes: u64| bytes.to_f64().unwrap_or(0.0) / (1024.0 * 1024.0);
     let mut warned_wrong_allocator = false;
 
     loop {
@@ -334,29 +357,35 @@ fn rss_bytes() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
     let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
-    Some(kb * 1024)
+    Some(kb.saturating_mul(1024))
 }
 
-fn build_meter_provider(endpoint: &str, resource: Resource) -> SdkMeterProvider {
+fn build_meter_provider(endpoint: &str, resource: Resource) -> Option<SdkMeterProvider> {
     let interval_secs = std::env::var("MYKO_MEM_PROFILE_INTERVAL_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_METRICS_INTERVAL_SECS);
 
-    let exporter = opentelemetry_otlp::MetricExporter::builder()
+    let exporter = match opentelemetry_otlp::MetricExporter::builder()
         .with_http()
         // See build_tracer_provider: append the `/v1/metrics` signal path to the base
         // gateway endpoint, else the exporter POSTs to `/` and gets 404.
         .with_endpoint(format!("{}/v1/metrics", endpoint.trim_end_matches('/')))
         .build()
-        .expect("failed to build OTLP/HTTP metrics exporter");
+    {
+        Ok(exporter) => exporter,
+        Err(error) => {
+            tracing::error!(%error, "failed to build OTLP/HTTP metrics exporter");
+            return None;
+        }
+    };
 
     let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
         .with_interval(Duration::from_secs(interval_secs))
         .build();
 
-    SdkMeterProvider::builder()
+    Some(SdkMeterProvider::builder()
         .with_reader(reader)
         .with_resource(resource)
-        .build()
+        .build())
 }

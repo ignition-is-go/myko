@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {
@@ -30,9 +30,11 @@ fn make_ctx() -> MykoServerContext {
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(myko::search::SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
@@ -44,7 +46,7 @@ fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
         windback: None,
     };
     let event = MEvent::from_item(&client, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 fn eq_filter(server_id: &str) -> ClientQuery {
@@ -159,8 +161,7 @@ fn query_live_range_filter_change_reevaluates_correctly() {
         address: None,
         windback: Some(Arc::from("2026-01-01T00:00:00Z")),
     };
-    ctx.apply_event_batch(vec![MEvent::from_item(&client_a, MEventType::SET, "tx-1")])
-        .unwrap();
+    assert!(ctx.apply_event_batch(vec![MEvent::from_item(&client_a, MEventType::SET, "tx-1")]).is_ok());
 
     let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(ClientQuery {
         windback: Some(myko::query::StringFilter::Eq(Arc::from(
@@ -195,6 +196,8 @@ fn query_live_range_filter_change_reevaluates_correctly() {
 
 #[test]
 fn query_live_downstream_state_survives_a_filter_change() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
@@ -205,11 +208,11 @@ fn query_live_downstream_state_survives_a_filter_change() {
     // A stateful counter downstream of query_live's result — incremented
     // once per graph NODE CREATION (i.e. once, ever, if query_live never
     // tears down and rebuilds `result`), not once per filter tick.
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let build_count = Arc::new(AtomicUsize::new(0));
     let build_count_for_map = build_count.clone();
     let downstream = result
         .entries()
+        .materialize()
         .map(move |_entries| {
             build_count_for_map.fetch_add(1, Ordering::SeqCst);
             build_count_for_map.load(Ordering::SeqCst)
@@ -254,11 +257,10 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
         address: None,
         windback: None,
     };
-    ctx.apply_event_batch(vec![
+    assert!(ctx.apply_event_batch(vec![
         MEvent::from_item(&client_a, MEventType::SET, "tx-1"),
         MEvent::from_item(&client_b, MEventType::SET, "tx-2"),
-    ])
-    .unwrap();
+    ]).is_ok());
 
     // Start indexed (belongs_to field pinned).
     let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(eq_filter("server-A"));
@@ -332,10 +334,10 @@ fn query_live_id_filter_routes_and_tracks_disjoint_swaps() {
     filter_cell.set(id_in_filter(&["c2"]));
     let snap = result.snapshot();
     assert_eq!(snap.len(), 1);
-    assert_eq!(snap[0].0.as_ref(), "c2");
+    assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c2"));
 }
 
-/// Crossing between id mode and belongs_to mode is a route-shape change:
+/// Crossing between id mode and `belongs_to` mode is a route-shape change:
 /// contents must fully reconcile in both directions.
 #[test]
 fn query_live_switches_between_id_and_belongs_to_modes() {
@@ -357,7 +359,7 @@ fn query_live_switches_between_id_and_belongs_to_modes() {
     filter_cell.set(id_in_filter(&["c1"]));
     let snap = result.snapshot();
     assert_eq!(snap.len(), 1);
-    assert_eq!(snap[0].0.as_ref(), "c1");
+    assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c1"));
 }
 
 /// A pinned id wins the route, and other pinned fields still narrow via
@@ -375,5 +377,5 @@ fn query_live_id_route_narrows_by_secondary_fields() {
     let result = ctx.query_live(filter_cell);
     let snap = result.snapshot();
     assert_eq!(snap.len(), 1);
-    assert_eq!(snap[0].0.as_ref(), "c2");
+    assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c2"));
 }

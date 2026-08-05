@@ -32,6 +32,7 @@ pub fn disconnect_myko() {
 ///
 /// The status cell is bridged to a Leptos signal via `hyphae-leptos`
 /// ([`ToLeptosSignal`]) and projected to a `bool` (connected or not).
+#[must_use]
 pub fn use_connection_status() -> ReadSignal<bool> {
     use myko::client::{ConnectionStatus, MykoClient};
 
@@ -88,10 +89,12 @@ where
 /// // loaded.get() == true && projects.get().is_empty()  →  "No items"
 /// // loaded.get() == true && !projects.get().is_empty() →  render list
 /// ```
-#[allow(clippy::type_complexity)]
+pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
+type QueryResultCell<T> = myko::hyphae::Cell<Vec<Arc<T>>, myko::hyphae::CellImmutable>;
+
 pub fn live_query_loaded<Q>(
     query: impl Fn() -> Q + Send + Sync + 'static,
-) -> (ReadSignal<Vec<Arc<Q::Item>>>, ReadSignal<bool>)
+) -> LiveQuerySignals<Q::Item>
 where
     Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
     Q::Item: myko::core::item::Eventable
@@ -115,9 +118,7 @@ where
 
     // `prev_cell` holds the previous Cell so it drops (and unsubscribes) on
     // each re-run of the effect, before the new subscription is created.
-    let prev_cell: StoredValue<
-        Option<myko::hyphae::Cell<Vec<Arc<Q::Item>>, myko::hyphae::CellImmutable>>,
-    > = StoredValue::new(None);
+    let prev_cell: StoredValue<Option<QueryResultCell<Q::Item>>> = StoredValue::new(None);
 
     Effect::new(move || {
         let q = query(); // tracks signals read inside the closure
@@ -126,7 +127,7 @@ where
         let cell = client.watch_query(q);
         let guard = cell.subscribe(move |signal| {
             if let Signal::Value(items) = signal {
-                write.set((**items).to_vec());
+                write.set((**items).clone());
                 // First emission (even an empty vec) means the query returned.
                 set_loaded.set(true);
             }
@@ -200,7 +201,7 @@ where
         let cell = client.watch_view(v);
         let guard = cell.subscribe(move |signal| {
             if let Signal::Value(items) = signal {
-                write.set((**items).to_vec());
+                write.set((**items).clone());
                 set_loaded.set(true);
             }
         });
@@ -211,10 +212,11 @@ where
     (read, loaded)
 }
 
-/// Returns a reactive signal of a report's value that updates live whenever the
-/// server pushes a recomputed response — online status, computed values, scene
-/// state, etc. Starts as `None` and resolves to `Some(value)` on the first
-/// response; the same persistent subscription then delivers every later change.
+/// Returns a reactive signal of a report's value that updates live.
+///
+/// The server pushes recomputed responses for online status, computed values,
+/// scene state, and similar data. The signal starts as `None`, resolves to
+/// `Some(value)` on the first response, and then delivers every later change.
 ///
 /// `report` is a reactive closure — it re-subscribes whenever a Leptos signal it
 /// reads changes (e.g. a selected entity id):
@@ -315,7 +317,9 @@ where
     // until the response lands; `to_leptos_signal` seeds it (`None`) and ties
     // the subscription to the reactive owner (released on unmount). It returns a
     // read-only signal — the response flows one way, server → UI.
-    client.send_command::<C, R>(&cmd).to_leptos_signal()
+    let signal = client.send_command::<C, R>(&cmd).to_leptos_signal();
+    drop(cmd);
+    signal
 }
 
 /// An owner-independent command sender that still observes command responses.
@@ -349,21 +353,20 @@ pub struct CommandSink {
     // In-flight result cells kept alive until their response lands. Each entry's
     // flag flips to `true` once observed; resolved entries are pruned on the next
     // send (outside any subscription callback, so guards drop safely).
-    #[allow(clippy::type_complexity)]
-    inflight: std::sync::Arc<
-        std::sync::Mutex<
-            Vec<(
-                std::sync::Arc<std::sync::atomic::AtomicBool>,
-                Box<dyn std::any::Any + Send>,
-            )>,
-        >,
-    >,
+    inflight: InflightCommands,
 }
+
+type InflightCommand = (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Box<dyn std::any::Any + Send>,
+);
+type InflightCommands = std::sync::Arc<std::sync::Mutex<Vec<InflightCommand>>>;
 
 /// Capture a [`CommandSink`] from the current reactive owner context.
 ///
 /// Must be called where `provide_myko` is in scope (a component body / reactive
 /// owner). The returned sink can then be used from deferred callbacks.
+#[must_use]
 pub fn use_command_sink() -> CommandSink {
     CommandSink {
         client: expect_context::<myko::client::MykoClient>(),
@@ -411,7 +414,7 @@ impl CommandSink {
 
         // Drop already-resolved keepalives first (safe: not inside a callback).
         {
-            let mut inflight = self.inflight.lock().unwrap();
+            let mut inflight = self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             inflight.retain(|(done, _)| !done.load(std::sync::atomic::Ordering::Acquire));
         }
 
@@ -419,6 +422,7 @@ impl CommandSink {
         let done_cb = done.clone();
 
         let cell = self.client.send_command::<C, R>(&cmd);
+        drop(cmd);
         let guard = cell.subscribe(move |signal| {
             if let Signal::Value(value) = signal
                 && let Some(result) = &**value
@@ -429,16 +433,16 @@ impl CommandSink {
         });
         cell.own(guard);
 
-        self.inflight.lock().unwrap().push((done, Box::new(cell)));
+        self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((done, Box::new(cell)));
     }
 }
 
 // ── Server-mirrored local value ────────────────────────────────────────────
 
-/// A locally-writable mirror of a live server value, with an explicit
-/// commit/cancel lifecycle — the recurring "edit a server-backed value locally,
-/// persist on drop/blur/save" shape (drag a node, type in a field, drag a split
-/// handle, …).
+/// A locally-writable mirror of a live server value.
+///
+/// It provides an explicit commit/cancel lifecycle for editing a server-backed
+/// value locally and persisting on drop, blur, or save.
 ///
 /// [`value`](Self::value) is a writable signal you bind to inputs or hand to a
 /// widget that mutates it. It re-seeds from `server` whenever the server value
@@ -533,10 +537,10 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> ServerMirror<T> {
 
 // ── Optimistic committer ────────────────────────────────────────────────────
 
-/// A server-backed value with optimistic local commits and rollback — the
-/// recurring "click a button / pick an option that writes a value: show it
-/// immediately, but snap back if the server rejects it" shape (the same
-/// optimistic feel as a dragged node position, but for discrete writes).
+/// A server-backed value with optimistic local commits and rollback.
+///
+/// It shows a discrete write immediately, then rolls back if the server rejects
+/// it.
 ///
 /// [`value`](Self::value) shows the optimistic override while a commit is
 /// pending, otherwise the live `server` value. [`commit`](Self::commit)

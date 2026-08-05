@@ -1,9 +1,9 @@
 //! Server context for the cell-based server.
 //!
-//! Provides modules (like PeerRegistry) with the ability to:
-//! - Run reactive queries (like GetPeerServers)
+//! Provides modules (like `PeerRegistry`) with the ability to:
+//! - Run reactive queries (like `GetPeerServers`)
 //! - Publish entities (Reduce → Relationships → Persist)
-//! - Access server identity (host_id)
+//! - Access server identity (`host_id`)
 
 use std::{
     any::Any,
@@ -56,7 +56,7 @@ type AnyItemArc = Arc<dyn AnyItem>;
 ///
 /// It replaces the scattered per-call loop-guard flag checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Origin {
+pub enum Origin {
     /// A command handler / server module emitting a new mutation here (also a
     /// client event ingested over the WebSocket). Cascades and produces.
     Local,
@@ -71,7 +71,7 @@ impl Origin {
     /// - `Cascade` products are gated on the change type: a **DEL** product
     ///   keeps cascading, so a deleted parent's children, grandchildren, … are
     ///   all removed at runtime (not just one level, and not deferred to the
-    ///   boot-time orphan sweep). The owns_many array-fixup **SET** product must
+    ///   boot-time orphan sweep). The `owns_many` array-fixup **SET** product must
     ///   not descend structurally.
     ///
     /// Transitive DEL cascade terminates without a depth counter or visited set:
@@ -81,8 +81,8 @@ impl Origin {
     /// a cascade-deleted child cannot resurrect its already-removed parent.
     fn should_cascade(self, change: MEventType) -> bool {
         match self {
-            Origin::Local => true,
-            Origin::Cascade => change == MEventType::DEL,
+            Self::Local => true,
+            Self::Cascade => change == MEventType::DEL,
         }
     }
 
@@ -90,7 +90,7 @@ impl Origin {
     ///
     /// Both origins produce; per-type durability is the persister router's job
     /// (`BlackholePersister`), not a per-event flag.
-    fn should_produce(self) -> bool {
+    const fn should_produce(self) -> bool {
         let _ = self;
         true
     }
@@ -171,7 +171,7 @@ impl MapCacheEntry {
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
-        self.weak.upgrade().map(|map| map.lock())
+        self.weak.upgrade().map(hyphae::CellMap::lock)
     }
 
     /// Get or create a typed projection of this untyped map.
@@ -185,7 +185,8 @@ impl MapCacheEntry {
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
-        let mut typed = self.typed.lock().unwrap();
+        let source = self.weak.upgrade()?.lock();
+        let mut typed = self.typed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Try to upgrade an existing weak ref
         if let Some(entry) = typed.get(&type_key) {
@@ -199,9 +200,9 @@ impl MapCacheEntry {
         }
 
         // Create from the untyped source
-        let source = self.weak.upgrade()?.lock();
         let built = create(source);
         typed.insert(type_key, Box::new(built.downgrade()));
+        drop(typed);
         Some(built)
     }
 }
@@ -253,9 +254,15 @@ pub struct MykoServerContext {
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
 }
 
+pub struct MykoServerRuntime {
+    pub peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
+    pub event_sink: Option<flume::Sender<MEvent>>,
+    pub history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+}
+
 impl MykoServerContext {
     /// Create a new server context.
-    #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         host_id: Uuid,
         registry: Arc<StoreRegistry>,
@@ -263,10 +270,13 @@ impl MykoServerContext {
         relationship_manager: Arc<RelationshipManager>,
         persisters: Arc<PersisterRouter>,
         search_index: Arc<SearchIndex>,
-        peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
-        event_sink: Option<flume::Sender<MEvent>>,
-        history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+        runtime: MykoServerRuntime,
     ) -> Self {
+        let MykoServerRuntime {
+            peer_clients,
+            event_sink,
+            history_replay,
+        } = runtime;
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
@@ -288,7 +298,6 @@ impl MykoServerContext {
     }
 
     fn cache_key<T: CacheKey>(
-        &self,
         kind: &str,
         id: &str,
         params: &T,
@@ -299,11 +308,13 @@ impl MykoServerContext {
     }
 
     /// Get the search index.
-    pub fn search_index(&self) -> &Arc<SearchIndex> {
+    #[must_use]
+    pub const fn search_index(&self) -> &Arc<SearchIndex> {
         &self.search_index
     }
 
     /// Get the history replay provider, if configured.
+    #[must_use]
     pub fn history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>> {
         self.history_replay.as_ref()
     }
@@ -325,6 +336,7 @@ impl MykoServerContext {
     }
 
     /// Get a live peer client by server id, if present.
+    #[must_use]
     pub fn peer_client(&self, peer_id: &str) -> Option<Arc<MykoClient>> {
         self.peer_clients
             .get(peer_id)
@@ -332,6 +344,7 @@ impl MykoServerContext {
     }
 
     /// Reactive tick that updates whenever peer client membership changes.
+    #[must_use]
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.peer_clients_tick.clone().lock()
     }
@@ -341,11 +354,13 @@ impl MykoServerContext {
     /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
     /// sync heartbeat gates its anchor re-emit on this (skip the re-emit when
     /// no peers are connected, since nobody would catch up from it).
+    #[must_use]
     pub fn peer_client_count(&self) -> usize {
         self.peer_clients.len()
     }
 
     /// Get the live persist health counters from the default persister.
+    #[must_use]
     pub fn persist_health(&self) -> Arc<PersistHealth> {
         self.persisters.default_health()
     }
@@ -363,23 +378,26 @@ impl MykoServerContext {
         let store = self.registry.get_or_create(T::entity_name_static());
         let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
         let item = store.get_value(&map_key)?;
-        Some(downcast_any_item_arc::<T>(
+        downcast_any_item_arc::<T>(
             &item,
             "MykoServerContext::entity_snapshot",
-        ))
+        )
     }
 
     /// Number of entries in the query cache (includes dead weak refs).
+    #[must_use]
     pub fn query_cache_len(&self) -> usize {
         self.query_cache.len()
     }
 
     /// Number of entries in the report cache (includes dead weak refs).
+    #[must_use]
     pub fn report_cache_len(&self) -> usize {
         self.report_cache.len()
     }
 
     /// Count live (upgradeable) entries in the report cache.
+    #[must_use]
     pub fn report_cache_live_count(&self) -> usize {
         self.report_cache
             .iter()
@@ -388,6 +406,7 @@ impl MykoServerContext {
     }
 
     /// Count live (upgradeable) entries in the query cache.
+    #[must_use]
     pub fn query_cache_live_count(&self) -> usize {
         self.query_cache
             .iter()
@@ -400,11 +419,13 @@ impl MykoServerContext {
     // rship_server's periodic health log reports — restored for symmetry.
 
     /// Number of entries in the view cache (includes dead weak refs).
+    #[must_use]
     pub fn view_cache_len(&self) -> usize {
         self.view_cache.len()
     }
 
     /// Count live (upgradeable) entries in the view cache.
+    #[must_use]
     pub fn view_cache_live_count(&self) -> usize {
         self.view_cache
             .iter()
@@ -432,10 +453,11 @@ impl MykoServerContext {
     /// Takes the `Value` by ownership so we don't pay a deep-clone of the
     /// nested-enum tree on every applied event. Bench `from_value_with_clone`
     /// shows the clone is ~136 ns/event on a typical entity payload — small
-    /// per event, but multiplied by the apply_event_batch hot path it's the
+    /// per event, but multiplied by the `apply_event_batch` hot path it's the
     /// cheapest non-breaking win on the ingest path.
     ///
     /// Returns None if the entity type is not registered or parsing fails.
+    #[must_use]
     pub fn parse_item(
         &self,
         entity_type: &str,
@@ -452,6 +474,10 @@ impl MykoServerContext {
     /// Publish an entity (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
@@ -473,6 +499,10 @@ impl MykoServerContext {
     /// Delete an entity (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
@@ -492,6 +522,10 @@ impl MykoServerContext {
     /// Publish a batch of entities (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_set<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
@@ -513,7 +547,7 @@ impl MykoServerContext {
         }
         let items: Vec<Arc<dyn AnyItem>> = entities
             .iter()
-            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
             .collect();
         self.emit_grouped(&items, MEventType::SET, origin)
     }
@@ -521,6 +555,10 @@ impl MykoServerContext {
     /// Delete a batch of entities (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_del<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
@@ -542,7 +580,7 @@ impl MykoServerContext {
         }
         let items: Vec<Arc<dyn AnyItem>> = entities
             .iter()
-            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
             .collect();
         self.emit_grouped(&items, MEventType::DEL, origin)
     }
@@ -554,6 +592,10 @@ impl MykoServerContext {
     /// Publish a dynamic item (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
         self.set_dyn_with_origin(item, Origin::Local)
     }
@@ -564,10 +606,16 @@ impl MykoServerContext {
         origin: Origin,
     ) -> Result<(), PersistError> {
         self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+        let result = self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin);
+        drop(item);
+        result
     }
 
     /// Publish a batch of dynamic items (SET).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_set_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         self.batch_set_dyn_with_origin(items, Origin::Local)
     }
@@ -583,6 +631,10 @@ impl MykoServerContext {
     /// Delete a dynamic item (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
         self.del_dyn_with_origin(item, Origin::Local)
     }
@@ -593,10 +645,16 @@ impl MykoServerContext {
         origin: Origin,
     ) -> Result<(), PersistError> {
         self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+        let result = self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin);
+        drop(item);
+        result
     }
 
     /// Publish a batch of dynamic items (DEL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_del_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         self.batch_del_dyn_with_origin(items, Origin::Local)
     }
@@ -615,6 +673,10 @@ impl MykoServerContext {
     /// where we must ensure a DEL event is produced to durable backend.
     ///
     /// Note: relationship cascades require the full item and are therefore skipped here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
         self.del_by_id_with_origin(entity_type, id, Origin::Local)
     }
@@ -660,6 +722,10 @@ impl MykoServerContext {
     /// Apply a single wire event (parse -> reduce -> relationships -> persist).
     ///
     /// Returns `true` when the event was parsed and applied, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event(&self, event: MEvent) -> Result<bool, PersistError> {
         Ok(self.apply_event_batch(vec![event])? == 1)
     }
@@ -676,6 +742,10 @@ impl MykoServerContext {
     /// the WS-ingest time-window buffer — that buffer is for wire ingest only.
     /// Command emit batches land here so everything a command emits is a typed,
     /// immediately-applied event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set_batch_any(
         &self,
         items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
@@ -686,6 +756,10 @@ impl MykoServerContext {
 
     /// Emit a batch of typed DEL events, applied immediately. DEL counterpart of
     /// [`set_batch_any`](Self::set_batch_any).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del_batch_any(
         &self,
         items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
@@ -697,10 +771,18 @@ impl MykoServerContext {
     /// Apply pre-built raw events immediately (type-erased import path),
     /// bypassing the WS-ingest time-window buffer: each event is parsed to its
     /// typed item, then reduced + cascaded. Returns the number applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_events_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         self.apply_event_batch_immediate(events)
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
@@ -725,11 +807,11 @@ impl MykoServerContext {
         }
 
         if !immediate_events.is_empty() {
-            accepted += self.apply_event_batch_immediate(immediate_events)?;
+            accepted = accepted.saturating_add(self.apply_event_batch_immediate(immediate_events)?);
         }
 
         for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
-            accepted += buffered_events.len();
+            accepted = accepted.saturating_add(buffered_events.len());
             self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
         }
 
@@ -759,7 +841,7 @@ impl MykoServerContext {
             }
         }
 
-        let applied = set_items.len() + del_items.len();
+        let applied = set_items.len().saturating_add(del_items.len());
         if applied == 0 {
             return Ok(0);
         }
@@ -1012,7 +1094,7 @@ impl MykoServerContext {
         // the time it reaches here (see the doc comment above).
         let _span = tracing::trace_span!(
             "myko.apply_effects",
-            ty = items.first().map(|i| i.entity_type()).unwrap_or("empty"),
+            ty = items.first().map_or("empty", |i| i.entity_type()),
             op = ?change,
         )
         .entered();
@@ -1131,7 +1213,7 @@ impl MykoServerContext {
             + Sync
             + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
         Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
@@ -1175,7 +1257,7 @@ impl MykoServerContext {
         Q::Item:
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
         Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
             typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
@@ -1205,8 +1287,8 @@ impl MykoServerContext {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        self.compute_or_cache(key, &self.query_cache, || {
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        self.compute_or_cache(&key, &self.query_cache, || {
             let query_req = QueryRequest::with_tx(query, request.tx.clone());
             let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
             Q::cell_factory(
@@ -1215,7 +1297,14 @@ impl MykoServerContext {
                 request,
                 Some(Arc::new(self.clone())),
             )
-            .expect("query cell factory should not fail for typed query")
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    query_id = %Q::query_id_static(),
+                    %error,
+                    "typed query factory failed; returning an empty query"
+                );
+                CellMap::new().lock()
+            })
         })
     }
 
@@ -1258,11 +1347,13 @@ impl MykoServerContext {
         }
         // Concurrent cache sweep may have evicted the entry — re-insert and retry
         cache.insert(key.to_owned(), MapCacheEntry::new(untyped));
-        let entry = cache.get(key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(&project)
-            .expect("typed projection from freshly inserted entry")
+        if let Some(entry) = cache.get(key)
+            && let Some(typed) = entry.value().get_or_create_typed(&project)
+        {
+            return typed;
+        }
+        tracing::error!(%key, "typed projection cache entry disappeared after insertion");
+        project(untyped.clone())
     }
 
     /// Compute-gate + double-checked caching shared by `query_map_untyped` and
@@ -1275,29 +1366,29 @@ impl MykoServerContext {
     /// `Some(server_ctx)`, views pass `server_ctx`) inside the closure.
     fn compute_or_cache(
         &self,
-        key: String,
+        key: &str,
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
-        build: impl FnOnce() -> FilteredCellMap,
+        compute: impl FnOnce() -> FilteredCellMap,
     ) -> FilteredCellMap {
         // Fast path
-        if let Some(cell) = Self::try_get_cached(cache, &key) {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
 
         let gate = self
             .compute_gates
-            .entry(key.clone())
+            .entry(key.to_string())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap();
+        let _lock = gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after gate
-        if let Some(cell) = Self::try_get_cached(cache, &key) {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
 
-        let built = build();
-        cache.insert(key.clone(), MapCacheEntry::new(&built));
+        let computed = compute();
+        cache.insert(key.to_string(), MapCacheEntry::new(&computed));
         // The gate's only job was deduping concurrent first-computation; once
         // the cache entry above is visible, any racing caller's re-check will
         // hit it directly, gate or no gate. Removing it here — rather than
@@ -1305,8 +1396,8 @@ impl MykoServerContext {
         // distinct query/param combination ever computed — is safe regardless
         // of ordering relative to `_lock`'s drop, since a fresh gate + a cache
         // hit on re-check behaves identically to blocking on the old gate.
-        self.compute_gates.remove(&key);
-        built
+        self.compute_gates.remove(key);
+        computed
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
@@ -1315,8 +1406,8 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        self.compute_or_cache(key, &self.view_cache, || {
+        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        self.compute_or_cache(&key, &self.view_cache, || {
             let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
             let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
             V::cell_factory(
@@ -1325,7 +1416,14 @@ impl MykoServerContext {
                 request,
                 Arc::new(self.clone()),
             )
-            .expect("view cell factory should not fail for typed view")
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    view_id = %V::view_id_static(),
+                    %error,
+                    "typed view factory failed; returning an empty view"
+                );
+                CellMap::new().lock()
+            })
         })
     }
 
@@ -1335,8 +1433,8 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        let _untyped = self.view_map_untyped(view, request);
+        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        let untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "MykoServerContext::view")
@@ -1344,7 +1442,11 @@ impl MykoServerContext {
         {
             return typed;
         }
-        unreachable!("view_map_untyped just populated the cache")
+        tracing::error!(
+            view_id = %V::view_id_static(),
+            "view cache entry disappeared after construction; using an uncached projection"
+        );
+        typed_map_arc_from_any_item(untyped, "MykoServerContext::view fallback")
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -1361,7 +1463,7 @@ impl MykoServerContext {
         let store = self.registry.get_or_create(&query_item_type);
 
         let query_context = Arc::new(QueryContext {
-            req: request.clone(),
+            req: request,
         });
         let query = Arc::new(query);
 
@@ -1370,7 +1472,7 @@ impl MykoServerContext {
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item =
-                    downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot");
+                    downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot")?;
                 let ctx = QueryTestContext {
                     item: typed_item.clone(),
                     query: query.clone(),
@@ -1393,7 +1495,7 @@ impl MykoServerContext {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
+        let key = Self::cache_key("report", report.report_id().as_ref(), &report, &request);
         let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
@@ -1415,7 +1517,7 @@ impl MykoServerContext {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap();
+        let _lock = gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
@@ -1454,6 +1556,7 @@ impl MykoServerContext {
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
         let built = report.compute(nested_ctx).materialize();
+        drop(report);
         // Named by report id (bounded cardinality — one name per report
         // *type*, not per invocation) so hyphae's `hyphae.fanout` span
         // (under the `profiling` feature) surfaces `cell.name` instead of
@@ -1494,6 +1597,7 @@ impl MykoServerContext {
         None
     }
 
+    #[must_use]
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {
         Arc::new(RequestContext {
             tx: Arc::<str>::from(Uuid::new_v4().to_string()),
@@ -1520,7 +1624,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::MykoServerContext;
+    use super::{MykoServerContext, MykoServerRuntime};
     use crate::{
         common::with_id::WithId,
         core::item::{
@@ -1559,8 +1663,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -1575,7 +1678,9 @@ mod tests {
             parse: BufferedTestItem::parse,
             parse_bytes: BufferedTestItem::parse_bytes,
             serialize_json: |any| {
-                let typed = any.as_any().downcast_ref::<BufferedTestItem>().unwrap();
+                let typed = any.as_any().downcast_ref::<BufferedTestItem>().ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("BufferedTestItem type mismatch"))
+                })?;
                 ::serde_json::value::to_raw_value(typed)
             },
         }
@@ -1613,8 +1718,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -1629,7 +1733,9 @@ mod tests {
             parse: ImmediateTestItem::parse,
             parse_bytes: ImmediateTestItem::parse_bytes,
             serialize_json: |any| {
-                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().unwrap();
+                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("ImmediateTestItem type mismatch"))
+                })?;
                 ::serde_json::value::to_raw_value(typed)
             },
         }
@@ -1643,9 +1749,11 @@ mod tests {
             Arc::new(RelationshipManager::new()),
             Arc::new(PersisterRouter::default()),
             Arc::new(SearchIndex::new()),
-            Arc::new(dashmap::DashMap::new()),
-            None,
-            None,
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
         )
     }
 
@@ -1665,9 +1773,9 @@ mod tests {
                 tx: "tx-immediate".into(),
                 source_id: Some("test".into()),
             }])
-            .expect("apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 1);
+        assert_eq!(applied, Some(1));
         let store = ctx.registry.get_or_create("ImmediateTestItem");
         assert!(
             store
@@ -1694,9 +1802,9 @@ mod tests {
                 tx: "tx-buffered".into(),
                 source_id: Some("test".into()),
             }])
-            .expect("apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 1);
+        assert_eq!(applied, Some(1));
         let store = ctx.registry.get_or_create("BufferedTestItem");
         assert!(
             store
@@ -1730,15 +1838,14 @@ mod tests {
         let _serial = scheduler_test_serial();
         let ctx = make_ctx();
 
-        ctx.apply_event_batch(vec![MEvent {
+        assert!(ctx.apply_event_batch(vec![MEvent {
             item: json!({ "id": "old-1", "value": 1 }),
             change_type: MEventType::SET,
             item_type: "ImmediateTestItem".into(),
             created_at: "2026-03-12T00:00:00Z".into(),
             tx: "tx-seed".into(),
             source_id: Some("test".into()),
-        }])
-        .expect("seed apply_event_batch should succeed");
+        }]).is_ok());
 
         let store = ctx.registry.get_or_create("ImmediateTestItem");
         let diffs_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1746,12 +1853,12 @@ mod tests {
         let _guard = store.subscribe_diffs(move |diff| {
             diffs_seen_for_closure
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(format!("{diff:?}"));
         });
         // subscribe_diffs replays the current snapshot synchronously on
         // subscribe -- drop that so only diffs from the batch below count.
-        diffs_seen.lock().unwrap().clear();
+        diffs_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
 
         let applied = ctx
             .apply_event_batch(vec![
@@ -1772,9 +1879,9 @@ mod tests {
                     source_id: Some("test".into()),
                 },
             ])
-            .expect("mixed apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 2);
+        assert_eq!(applied, Some(2));
         assert!(
             store
                 .get(&Arc::<str>::from("new-1"))
@@ -1790,13 +1897,14 @@ mod tests {
                 .is_none()
         );
 
-        let seen = diffs_seen.lock().unwrap();
+        let seen = diffs_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             seen.len(),
             2,
             "both the SET and DEL diffs must reach subscribers, not just the last one: {:?}",
             *seen
         );
+        drop(seen);
     }
 
     #[test]

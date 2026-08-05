@@ -17,13 +17,15 @@ pub struct SetterField {
     pub command_name_override: Option<String>, // Optional custom command name
 }
 
-/// Collect fields marked with #[myko_rename] or #[myko_setter]
+/// Collect fields marked with #[`myko_rename`] or #[`myko_setter`]
 pub fn collect_setter_fields(input: &ItemStruct) -> Vec<SetterField> {
     let mut setters = Vec::new();
 
     if let syn::Fields::Named(fields) = &input.fields {
         for field in &fields.named {
-            let field_name = field.ident.clone().unwrap();
+            let Some(field_name) = field.ident.clone() else {
+                continue;
+            };
             let field_type = field.ty.clone();
 
             for attr in &field.attrs {
@@ -65,22 +67,21 @@ fn parse_string_arg(attr: &syn::Attribute) -> Option<String> {
     None
 }
 
-/// Strip #[myko_rename] and #[myko_setter] attributes from a field
+/// Strip #[`myko_rename`] and #[`myko_setter`] attributes from a field
 pub fn strip_setter_attrs(field: &mut Field) {
     field.attrs.retain(|attr| {
         !attr.path().is_ident("myko_rename") && !attr.path().is_ident("myko_setter")
     });
 }
 
-/// Convert snake_case to PascalCase
+/// Convert `snake_case` to `PascalCase`
 fn to_pascal_case(s: &str) -> String {
     s.split('_')
         .map(|part| {
             let mut chars = part.chars();
-            match chars.next() {
-                Some(c) => c.to_uppercase().chain(chars).collect(),
-                None => String::new(),
-            }
+            chars
+                .next()
+                .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
         })
         .collect()
 }
@@ -103,20 +104,16 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
                 // #[myko_rename] or #[myko_rename("CustomName")]
                 let cmd_name = setter
                     .command_name_override
-                    .as_ref()
-                    .map(|s| format_ident!("{}", s))
-                    .unwrap_or_else(|| format_ident!("Rename{}", entity_name));
+                    .as_ref().map_or_else(|| format_ident!("Rename{}", entity_name), |s| format_ident!("{}", s));
                 (cmd_name, format_ident!("name"))
             } else {
                 // #[myko_setter] or #[myko_setter("CustomName")]
                 let cmd_name = setter
                     .command_name_override
-                    .as_ref()
-                    .map(|s| format_ident!("{}", s))
-                    .unwrap_or_else(|| {
+                    .as_ref().map_or_else(|| {
                         let field_pascal = to_pascal_case(&field_name.to_string());
                         format_ident!("Set{}{}", entity_name, field_pascal)
-                    });
+                    }, |s| format_ident!("{}", s));
                 (cmd_name, field_name.clone())
             };
 

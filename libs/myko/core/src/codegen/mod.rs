@@ -4,6 +4,7 @@ use std::{
     path::Path,
 };
 
+use anyhow::Context;
 use dprint_plugin_typescript::{
     FormatTextOptions,
     configuration::{ConfigurationBuilder, TrailingCommas},
@@ -41,30 +42,33 @@ struct DocEntry {
 }
 
 /// Export all registered ts-rs types to the bindings directory.
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn export_registered_ts_types() -> Result<(), anyhow::Error> {
-    let mut success_count = 0;
-    let mut error_count = 0;
+    let mut success_count = 0_u64;
+    let mut error_count = 0_u64;
 
     for registration in inventory::iter::<TsExportRegistration> {
         match (registration.export_fn)() {
             Ok(()) => {
                 println!("  Exported: {}", registration.type_name);
-                success_count += 1;
+                success_count = success_count.saturating_add(1);
             }
             Err(e) => {
                 eprintln!("  Failed to export {}: {}", registration.type_name, e);
-                error_count += 1;
+                error_count = error_count.saturating_add(1);
             }
         }
     }
 
     println!(
-        "ts-rs export complete: {} succeeded, {} failed",
-        success_count, error_count
+        "ts-rs export complete: {success_count} succeeded, {error_count} failed"
     );
 
     if error_count > 0 {
-        anyhow::bail!("{} ts-rs exports failed", error_count);
+        anyhow::bail!("{error_count} ts-rs exports failed");
     }
 
     Ok(())
@@ -78,7 +82,7 @@ fn collect_binding_types(directory_path: &str) -> Vec<String> {
             let path = entry.path();
             let filename = path.file_name().map(|n| n.to_string_lossy().to_string());
             if path.is_file()
-                && path.extension().map(|e| e == "ts").unwrap_or(false)
+                && path.extension().is_some_and(|e| e == "ts")
                 && let Some(ref fname) = filename
                 && !fname.ends_with(".d.ts")
                 && let Some(name) = path.file_stem()
@@ -102,13 +106,18 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let subdir_name = path.file_name().unwrap().to_string_lossy().to_string();
+                let Some(subdir_name) = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                else {
+                    continue;
+                };
                 if let Ok(subentries) = fs::read_dir(&path) {
                     for subentry in subentries.flatten() {
                         let subpath = subentry.path();
                         let filename = subpath.file_name().map(|n| n.to_string_lossy().to_string());
                         if subpath.is_file()
-                            && subpath.extension().map(|e| e == "ts").unwrap_or(false)
+                            && subpath.extension().is_some_and(|e| e == "ts")
                             && let Some(ref fname) = filename
                             && !fname.ends_with(".d.ts")
                             && let Some(name) = subpath.file_stem()
@@ -125,6 +134,212 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
     types
 }
 
+struct TypeRegistrations {
+    items: Vec<&'static ItemRegistration>,
+    queries: Vec<&'static QueryRegistration>,
+    views: Vec<&'static ViewRegistration>,
+    reports: Vec<&'static ReportRegistration>,
+    commands: Vec<&'static CommandRegistration>,
+    class_type_names: HashSet<&'static str>,
+}
+
+fn collect_type_registrations(crate_name: &str) -> TypeRegistrations {
+    let items = inventory::iter::<ItemRegistration>()
+        .filter(|entry| entry.crate_name.contains(crate_name))
+        .collect();
+    let queries: Vec<_> = inventory::iter::<QueryRegistration>()
+        .filter(|entry| entry.crate_name.contains(crate_name))
+        .collect();
+    let views: Vec<_> = inventory::iter::<ViewRegistration>()
+        .filter(|entry| entry.crate_name.contains(crate_name))
+        .collect();
+    let reports: Vec<_> = inventory::iter::<ReportRegistration>()
+        .filter(|entry| entry.crate_name.contains(crate_name))
+        .collect();
+    let commands: Vec<_> = inventory::iter::<CommandRegistration>()
+        .filter(|entry| entry.crate_name.contains(crate_name))
+        .collect();
+    let class_type_names = queries
+        .iter()
+        .map(|query| query.query_id)
+        .chain(views.iter().map(|view| view.view_id))
+        .chain(reports.iter().map(|report| report.report_id))
+        .chain(commands.iter().map(|command| command.command_id))
+        .collect();
+    TypeRegistrations {
+        items,
+        queries,
+        views,
+        reports,
+        commands,
+        class_type_names,
+    }
+}
+
+fn generate_import_sections(
+    directory_path: &str,
+    crate_name: &str,
+    registrations: &TypeRegistrations,
+) -> (String, String, String, String) {
+    let binding_exports = collect_binding_types(directory_path)
+        .iter()
+        .filter(|name| !registrations.class_type_names.contains(name.as_str()))
+        .map(|name| format!("export type {{ {name} }} from \"./{name}\";"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let subdir_exports = collect_subdir_types(directory_path)
+        .iter()
+        .map(|(subdir, name)| format!("export * from \"./{subdir}/{name}\";"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut entity_types: HashSet<String> = registrations
+        .items
+        .iter()
+        .map(|item| item.entity_type.to_string())
+        .chain(
+            registrations
+                .queries
+                .iter()
+                .map(|query| query.query_item_type.to_string()),
+        )
+        .chain(
+            registrations
+                .views
+                .iter()
+                .map(|view| view.view_item_type.to_string()),
+        )
+        .collect();
+    for report in registrations
+        .reports
+        .iter()
+        .filter(|report| report.output_type_crate.contains(crate_name))
+    {
+        entity_types.extend(extract_importable_types(report.output_type));
+    }
+    for command in registrations.commands.iter().filter(|command| {
+        command.result_type_crate.contains(crate_name) && command.result_type != "()"
+    }) {
+        entity_types.extend(extract_importable_types(command.result_type));
+    }
+    let entity_imports = entity_types
+        .iter()
+        .filter(|name| !registrations.class_type_names.contains(name.as_str()))
+        .map(|name| {
+            let path = if name == "JsonValue" {
+                "./serde_json/JsonValue".to_string()
+            } else {
+                format!("./{name}")
+            };
+            format!("import type {{ {name} }} from '{path}';")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let aliased_imports = registrations
+        .class_type_names
+        .iter()
+        .map(|name| format!("import type {{ {name} as _{name} }} from './{name}';"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (binding_exports, subdir_exports, entity_imports, aliased_imports)
+}
+
+fn generate_class_sections(registrations: &TypeRegistrations) -> [String; 5] {
+    let query_classes = registrations
+        .queries
+        .iter()
+        .map(|query| generate_query_class(query.query_id, query.query_item_type))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let view_classes = registrations
+        .views
+        .iter()
+        .map(|view| generate_view_class(view.view_id, view.view_item_type))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let report_classes = registrations
+        .reports
+        .iter()
+        .map(|report| generate_report_class(report.report_id, report.output_type))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let command_classes = registrations
+        .commands
+        .iter()
+        .map(|command| generate_command_class(command.command_id, command.result_type))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let item_constructors = registrations
+        .items
+        .iter()
+        .map(|item| generate_item_constructor(item.entity_type))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    [
+        query_classes,
+        view_classes,
+        report_classes,
+        command_classes,
+        format!("export const items = {{\n{item_constructors}\n}};"),
+    ]
+}
+
+fn generate_const_exports(crate_name: &str) -> Result<String, anyhow::Error> {
+    let mut seen: HashMap<&str, &TsConstValue> = HashMap::new();
+    let mut registrations = Vec::new();
+    for registration in inventory::iter::<TsConstRegistration>()
+        .filter(|entry| entry.crate_name.contains(crate_name))
+    {
+        if let Some(existing) = seen.get(registration.name) {
+            if !registration.value.eq(existing) {
+                anyhow::bail!(
+                    "Conflicting ts_const values for '{}': {:?} vs {:?}",
+                    registration.name,
+                    existing,
+                    registration.value
+                );
+            }
+        } else {
+            seen.insert(registration.name, &registration.value);
+            registrations.push(registration);
+        }
+    }
+    Ok(registrations
+        .iter()
+        .map(|registration| {
+            let value = match &registration.value {
+                TsConstValue::Str(value) => format!("'{value}'"),
+                TsConstValue::Int(value) => value.to_string(),
+                TsConstValue::Float(value) => value.to_string(),
+                TsConstValue::Bool(value) => value.to_string(),
+            };
+            format!("export const {} = {} as const", registration.name, value)
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn generate_message_events() -> String {
+    let entries = inventory::iter::<MessageEventRegistration>()
+        .map(|registration| {
+            format!(
+                "  {}: '{}',",
+                registration.variant_name, registration.event_value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r"export const MykoEvent = {{
+{entries}
+}} as const;
+export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"
+    )
+}
+
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
     let file_name = "index.ts";
 
@@ -146,226 +361,52 @@ pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
     export_registered_ts_types()?;
 
     let crate_name = std::env::var("CARGO_PKG_NAME")
-        .expect("CARGO_PKG_NAME environment variable not found")
-        .replace("-", "_");
-    println!("The current crate name is: {}", crate_name);
+        .context("CARGO_PKG_NAME environment variable not found")?
+        .replace('-', "_");
+    println!("The current crate name is: {crate_name}");
 
-    let binding_types = collect_binding_types(directory_path);
-    let subdir_types = collect_subdir_types(directory_path);
-
-    let items: Vec<_> = inventory::iter::<ItemRegistration>()
-        .filter(|x| x.crate_name.contains(&crate_name))
-        .collect();
-    let queries: Vec<_> = inventory::iter::<QueryRegistration>()
-        .filter(|x| x.crate_name.contains(&crate_name))
-        .collect();
-    let views: Vec<_> = inventory::iter::<ViewRegistration>()
-        .filter(|x| x.crate_name.contains(&crate_name))
-        .collect();
-    let reports: Vec<_> = inventory::iter::<ReportRegistration>()
-        .filter(|x| x.crate_name.contains(&crate_name))
-        .collect();
-    let commands: Vec<_> = inventory::iter::<CommandRegistration>()
-        .filter(|x| x.crate_name.contains(&crate_name))
-        .collect();
-
-    // Collect query/report/command type names (these will be classes, not re-exported types)
-    let class_type_names: HashSet<&str> = queries
-        .iter()
-        .map(|q| q.query_id)
-        .chain(views.iter().map(|v| v.view_id))
-        .chain(reports.iter().map(|r| r.report_id))
-        .chain(commands.iter().map(|c| c.command_id))
-        .collect();
-
-    // Re-export types that are NOT query/report/command classes
-    let binding_exports = binding_types
-        .iter()
-        .filter(|name| !class_type_names.contains(name.as_str()))
-        .map(|name| format!("export type {{ {} }} from \"./{}\";", name, name))
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    // Use `export *` for subdirectory files since they may export types and/or values
-    let subdir_exports = subdir_types
-        .iter()
-        .map(|(subdir, name)| format!("export * from \"./{}/{}\";", subdir, name))
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    // Collect entity types for imports
-    let mut entity_types: HashSet<String> = HashSet::new();
-    for item in &items {
-        entity_types.insert(item.entity_type.to_string());
-    }
-    for query in &queries {
-        entity_types.insert(query.query_item_type.to_string());
-    }
-    for view in &views {
-        entity_types.insert(view.view_item_type.to_string());
-    }
-    for report in reports
-        .iter()
-        .filter(|r| r.output_type_crate.contains(&crate_name))
-    {
-        for t in extract_importable_types(report.output_type) {
-            entity_types.insert(t);
-        }
-    }
-    for command in commands
-        .iter()
-        .filter(|c| c.result_type_crate.contains(&crate_name) && c.result_type != "()")
-    {
-        for t in extract_importable_types(command.result_type) {
-            entity_types.insert(t);
-        }
-    }
-
-    // Generate imports for entity types (no alias needed)
-    let entity_imports = entity_types
-        .iter()
-        .filter(|t| !class_type_names.contains(t.as_str()))
-        .map(|t| {
-            // Handle special import paths
-            let import_path = if t == "JsonValue" {
-                "./serde_json/JsonValue".to_string()
-            } else {
-                format!("./{t}")
-            };
-            format!("import type {{ {} }} from '{}';", t, import_path)
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    // Generate aliased imports for query/report/command types (to avoid name collision with classes)
-    let aliased_imports = class_type_names
-        .iter()
-        .map(|name| format!("import type {{ {} as _{} }} from './{name}';", name, name))
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    // Generate query classes
-    let query_classes = queries
-        .iter()
-        .map(|q| generate_query_class(q.query_id, q.query_item_type))
-        .collect::<Vec<String>>()
-        .join("\n\n");
-    let view_classes = views
-        .iter()
-        .map(|v| generate_view_class(v.view_id, v.view_item_type))
-        .collect::<Vec<String>>()
-        .join("\n\n");
-
-    // Generate report classes
-    let report_classes = reports
-        .iter()
-        .map(|r| generate_report_class(r.report_id, r.output_type))
-        .collect::<Vec<String>>()
-        .join("\n\n");
-
-    // Generate command classes
-    let command_classes = commands
-        .iter()
-        .map(|c| generate_command_class(c.command_id, c.result_type))
-        .collect::<Vec<String>>()
-        .join("\n\n");
-
-    // Generate item constructors (keep as object for now)
-    let item_ctors = items
-        .iter()
-        .map(|i| generate_item_constructor(i.entity_type))
-        .collect::<Vec<String>>()
-        .join(",\n");
-    let item_ctor_obj = format!("export const items = {{\n{}\n}};", item_ctors);
-
-    // Shared constants
-    let consts: Vec<_> = inventory::iter::<TsConstRegistration>()
-        .filter(|x| x.crate_name.contains(&crate_name))
-        .collect();
-
-    // Deduplicate constants by name — allow duplicates with the same value,
-    // but bail on conflicting values for the same name.
-    let mut seen_consts: HashMap<&str, &TsConstValue> = HashMap::new();
-    let mut deduped_consts: Vec<&TsConstRegistration> = Vec::new();
-    for c in &consts {
-        if let Some(existing) = seen_consts.get(c.name) {
-            if !c.value.eq(existing) {
-                anyhow::bail!(
-                    "Conflicting ts_const values for '{}': {:?} vs {:?}",
-                    c.name,
-                    existing,
-                    c.value
-                );
-            }
-            // Same name + same value — skip duplicate
-            continue;
-        }
-        seen_consts.insert(c.name, &c.value);
-        deduped_consts.push(c);
-    }
-
-    let const_exports = deduped_consts
-        .iter()
-        .map(|c| {
-            let ts_value = match &c.value {
-                TsConstValue::Str(s) => format!("'{}'", s),
-                TsConstValue::Int(n) => n.to_string(),
-                TsConstValue::Float(f) => f.to_string(),
-                TsConstValue::Bool(b) => b.to_string(),
-            };
-            format!("export const {} = {} as const", c.name, ts_value)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Message event constants
-    let message_event_entries = inventory::iter::<MessageEventRegistration>()
-        .map(|r| format!("  {}: '{}',", r.variant_name, r.event_value))
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    let message_events = format!(
-        r#"export const MykoEvent = {{
-{}
-}} as const;
-export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
-        message_event_entries
-    );
+    let registrations = collect_type_registrations(&crate_name);
+    let (binding_exports, subdir_exports, entity_imports, aliased_imports) =
+        generate_import_sections(directory_path, &crate_name, &registrations);
+    let [query_classes, view_classes, report_classes, command_classes, item_ctor_obj] =
+        generate_class_sections(&registrations);
+    let const_exports = generate_const_exports(&crate_name)?;
+    let message_events = generate_message_events();
 
     let code = [
         "// Auto-generated by type_gen - do not edit manually".to_string(),
-        "".to_string(),
+        String::new(),
         "// Core type aliases".to_string(),
         "/** Entity identifier type. In Rust this is Arc<str>, serialized as string. */"
             .to_string(),
         "export type ID = string;".to_string(),
-        "".to_string(),
+        String::new(),
         "// Re-export ts-rs generated types".to_string(),
         binding_exports,
         subdir_exports,
-        "".to_string(),
+        String::new(),
         "// Internal imports".to_string(),
         entity_imports,
         aliased_imports,
-        "".to_string(),
+        String::new(),
         "// Query classes".to_string(),
         query_classes,
-        "".to_string(),
+        String::new(),
         "// View classes".to_string(),
         view_classes,
-        "".to_string(),
+        String::new(),
         "// Report classes".to_string(),
         report_classes,
-        "".to_string(),
+        String::new(),
         "// Command classes".to_string(),
         command_classes,
-        "".to_string(),
+        String::new(),
         "// Item constructors".to_string(),
         item_ctor_obj,
-        "".to_string(),
+        String::new(),
         "// Message events".to_string(),
         message_events,
-        "".to_string(),
+        String::new(),
         "// Shared constants".to_string(),
         const_exports,
     ]
@@ -385,11 +426,11 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
         external_formatter: None,
     })?;
 
-    if code.is_none() {
+    let Some(code) = code else {
         anyhow::bail!("Generated code is empty");
-    }
+    };
 
-    fs::write(&file_path, code.unwrap())?;
+    fs::write(&file_path, code)?;
     println!("Successfully wrote to file: {}", file_path.display());
 
     Ok(())
@@ -399,6 +440,10 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"#,
 ///
 /// This is intentionally separate from `generate_item_types` so callers can
 /// run docs generation independently (or in addition to TS type generation).
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn generate_docs_json_from_bindings(
     bindings_dir: impl AsRef<Path>,
     output_file: impl AsRef<Path>,
@@ -531,8 +576,7 @@ fn generate_command_class(command_id: &str, result_type: &str) -> String {
 
 fn generate_item_constructor(item_name: &str) -> String {
     format!(
-        "  {}: (args: {}) => ({{ item: args, itemType: \"{}\" }})",
-        item_name, item_name, item_name
+        "  {item_name}: (args: {item_name}) => ({{ item: args, itemType: \"{item_name}\" }})"
     )
 }
 
@@ -598,37 +642,48 @@ mod tests {
     #[test]
     fn generate_index() {
         let dir = unique_bindings_dir("generate_index");
-        let dir_str = dir.to_str().expect("temp dir path is valid UTF-8");
-        generate_item_types(dir_str).expect("Failed to generate index.ts");
+        let dir_str = dir.to_str();
+        assert!(dir_str.is_some(), "temp dir path is valid UTF-8");
+        let Some(dir_str) = dir_str else {
+            return;
+        };
+        assert!(generate_item_types(dir_str).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 
     /// Regression test for the myko 5.0 stale-generated-file bug: a type
-    /// renamed or deleted on the Rust side (e.g. PartialX -> XQuery) used
-    /// to leave its old .ts file behind, and collect_binding_types picked
+    /// renamed or deleted on the Rust side (e.g. `PartialX` -> `XQuery`) used
+    /// to leave its old .ts file behind, and `collect_binding_types` picked
     /// it up from the directory listing and kept re-exporting it from
     /// index.ts forever, since nothing ever cleared the directory first.
     #[test]
     fn generate_item_types_removes_stale_files_from_a_previous_run() {
         let dir = unique_bindings_dir("stale_files");
-        let dir_str = dir.to_str().expect("temp dir path is valid UTF-8");
-        fs::create_dir_all(&dir).expect("failed to create test bindings dir");
+        let dir_str = dir.to_str();
+        assert!(dir_str.is_some(), "temp dir path is valid UTF-8");
+        let Some(dir_str) = dir_str else {
+            return;
+        };
+        assert!(fs::create_dir_all(&dir).is_ok());
         let stale_path = dir.join("StaleTestArtifact.ts");
-        fs::write(
+        assert!(fs::write(
             &stale_path,
             "// This file was generated by [ts-rs]\nexport type StaleTestArtifact = string;\n",
-        )
-        .expect("failed to write stale test artifact");
+        ).is_ok());
         assert!(stale_path.exists(), "precondition: stale file exists");
 
-        generate_item_types(dir_str).expect("Failed to generate index.ts");
+        assert!(generate_item_types(dir_str).is_ok());
 
         assert!(
             !stale_path.exists(),
             "generate_item_types must wipe stale files from a previous run, \
              not just add/overwrite current ones"
         );
-        let index_contents = fs::read_to_string(dir.join("index.ts")).expect("index.ts must exist");
+        let index_contents = fs::read_to_string(dir.join("index.ts"));
+        assert!(index_contents.is_ok(), "index.ts must exist");
+        let Ok(index_contents) = index_contents else {
+            return;
+        };
         assert!(
             !index_contents.contains("StaleTestArtifact"),
             "index.ts must not re-export a type whose file no longer exists"

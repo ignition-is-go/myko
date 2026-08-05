@@ -22,8 +22,7 @@ mod view;
 /// Returns whether we are compiling inside the myko crate itself.
 pub(crate) fn is_myko_crate() -> bool {
     std::env::var("CARGO_PKG_NAME")
-        .map(|name| name == "myko")
-        .unwrap_or(false)
+        .is_ok_and(|name| name == "myko")
 }
 
 /// Returns the path to use for `myko` depending on the current crate.
@@ -67,23 +66,23 @@ impl DeriveCtx {
     }
 
     /// Generate #[serde(crate = "...", ...rest)] or just #[serde(...rest)]
-    pub fn serde_attr(&self, rest: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-        match &self.serde_crate_attr {
-            Some(crate_str) => {
-                if rest.is_empty() {
-                    quote!(#[serde(crate = #crate_str)])
-                } else {
-                    quote!(#[serde(crate = #crate_str, #rest)])
-                }
-            }
-            None => {
+    pub fn serde_attr(&self, rest: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        self.serde_crate_attr.as_ref().map_or_else(
+            || {
                 if rest.is_empty() {
                     quote!()
                 } else {
                     quote!(#[serde(#rest)])
                 }
-            }
-        }
+            },
+            |crate_str| {
+                if rest.is_empty() {
+                    quote!(#[serde(crate = #crate_str)])
+                } else {
+                    quote!(#[serde(crate = #crate_str, #rest)])
+                }
+            },
+        )
     }
 }
 
@@ -160,7 +159,7 @@ pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
 /// `ts-export` feature is on). Because that derive always claims the `ts`
 /// helper-attribute namespace, user-written `#[ts(...)]` attrs are valid
 /// as-is and no longer need wrapping in a consumer-side `cfg_attr`.
-pub(crate) fn gate_ts_attrs(_attrs: &mut [syn::Attribute]) {}
+pub(crate) const fn gate_ts_attrs(_attrs: &mut [syn::Attribute]) {}
 
 /// Extract a struct's doc comment (`/// ...` lines, which desugar to
 /// `#[doc = "..."]` attrs) as one joined string, or `None` if there isn't
@@ -205,27 +204,40 @@ pub(crate) fn field_metadata_tokens(
         syn::Fields::Named(named) => named
             .named
             .iter()
-            .map(|f| {
-                let name = f
-                    .ident
-                    .as_ref()
-                    .expect("named field has an identifier")
-                    .to_string();
+            .filter_map(|f| {
+                let name = f.ident.as_ref()?.to_string();
                 let ty = &f.ty;
                 let rust_type = quote!(#ty).to_string();
                 let optional = is_option_type(ty);
-                quote! {
+                Some(quote! {
                     #krate::reflection::OperationArgField {
                         name: #name,
                         rust_type: #rust_type,
                         optional: #optional,
                     }
-                }
+                })
             })
             .collect(),
         _ => Vec::new(),
     };
     quote! { &[ #(#entries),* ] }
+}
+
+pub(crate) fn operation_metadata_tokens(
+    input: &syn::ItemStruct,
+    krate: &syn::Path,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let description = extract_doc_comment(&input.attrs);
+    let description = description
+        .as_ref()
+        .map_or_else(|| quote!(None), |value| quote!(Some(#value)));
+    (description, field_metadata_tokens(&input.fields, krate))
+}
+
+pub(crate) fn gate_field_ts_attrs(fields: &mut syn::Fields) {
+    for field in fields {
+        gate_ts_attrs(&mut field.attrs);
+    }
 }
 
 fn is_option_type(ty: &syn::Type) -> bool {
@@ -236,8 +248,7 @@ fn is_option_type(ty: &syn::Type) -> bool {
         .path
         .segments
         .last()
-        .map(|seg| seg.ident == "Option")
-        .unwrap_or(false)
+        .is_some_and(|seg| seg.ident == "Option")
 }
 
 #[proc_macro_attribute]
@@ -415,14 +426,14 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 pub fn myko_item(attr: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as item::ItemArgs);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    item::myko_item_impl(args, input).into()
+    item::myko_item_impl(&args, input).into()
 }
 
 #[proc_macro_attribute]
 pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let query_item_type = parse_macro_input!(attr as syn::Path);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    query::myko_query_impl(query_item_type, input).into()
+    query::myko_query_impl(&query_item_type, input).into()
 }
 
 /// Defines a reactive view query.
@@ -504,7 +515,7 @@ pub fn myko_view_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
     let report_output_type = parse_macro_input!(attr as syn::Path);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    report::myko_report_impl(report_output_type, input).into()
+    report::myko_report_impl(&report_output_type, input).into()
 }
 
 /// Generates a command with handler struct and registration.
@@ -598,7 +609,7 @@ impl Parse for CommandArgs {
 }
 
 /// Derive macro that extracts serde rename values from enum variants
-/// and generates MessageEventRegistration inventory submissions.
+/// and generates `MessageEventRegistration` inventory submissions.
 ///
 /// # Usage
 /// ```ignore
@@ -613,7 +624,7 @@ impl Parse for CommandArgs {
 #[proc_macro_derive(MessageEvents)]
 pub fn derive_message_events(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::DeriveInput);
-    message_events::derive_message_events_impl(input).into()
+    message_events::derive_message_events_impl(&input).into()
 }
 
 /// Generates a saga with registration for runtime discovery.
@@ -642,7 +653,8 @@ pub fn derive_message_events(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn myko_saga(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as syn::ItemStruct);
-    saga::myko_saga_impl(attr.into(), input).into()
+    let attr = attr.into();
+    saga::myko_saga_impl(&attr, &input).into()
 }
 
 /// Adds standard derives and registers for TypeScript export.
@@ -671,18 +683,35 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
 
     gate_ts_attrs(&mut input.attrs);
-    for field in input.fields.iter_mut() {
+    for field in &mut input.fields {
         gate_ts_attrs(&mut field.attrs);
     }
+    let equal_fields = input
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let member = field.ident.clone().map_or_else(
+                || syn::Member::Unnamed(syn::Index::from(index)),
+                syn::Member::Named,
+            );
+            quote! { self.#member == other.#member }
+        })
+        .reduce(|acc, term| quote! { (#acc) && (#term) })
+        .unwrap_or_else(|| quote! { true });
 
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
-        #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+        #[derive(Debug, Clone, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
         #serde_rename_attr
         #input
+
+        impl PartialEq for #name {
+            fn eq(&self, other: &Self) -> bool { #equal_fields }
+        }
 
         #krate::register_ts_export!(#name);
     };
@@ -691,7 +720,9 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 }
 
 /// Declare a data subtype used by myko entities (field types, payloads,
-/// enum variants carried on commands/queries/reports/views). Bundles the
+/// enum variants carried on commands/queries/reports/views).
+///
+/// Bundles the
 /// standard derives + serde camelCase rename + conditional TS export +
 /// `register_ts_export!` so subtype definitions don't repeat 3–4 lines of
 /// boilerplate each.
@@ -869,16 +900,16 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     let (name, has_rename_all, is_struct) = match &mut item {
         syn::Item::Struct(s) => {
             gate_ts_attrs(&mut s.attrs);
-            for field in s.fields.iter_mut() {
+            for field in &mut s.fields {
                 gate_ts_attrs(&mut field.attrs);
             }
             (s.ident.clone(), attrs_have_serde_rename_all(&s.attrs), true)
         }
         syn::Item::Enum(e) => {
             gate_ts_attrs(&mut e.attrs);
-            for variant in e.variants.iter_mut() {
+            for variant in &mut e.variants {
                 gate_ts_attrs(&mut variant.attrs);
-                for field in variant.fields.iter_mut() {
+                for field in &mut variant.fields {
                     gate_ts_attrs(&mut field.attrs);
                 }
             }
@@ -908,7 +939,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     // `#[derive(Serialize/Deserialize)]` present, `#[serde(...)]` is an
     // unrecognized attribute (a hard compile error, not a no-op).
     let serde_rename_attr = if is_struct && !has_rename_all && !manual_serde {
-        ctx.serde_attr(quote!(rename_all = "camelCase"))
+        ctx.serde_attr(&quote!(rename_all = "camelCase"))
     } else {
         quote!()
     };
@@ -984,7 +1015,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
 
 /// Returns true if any attribute in the slice is `#[serde(... rename_all = "...")]`.
 /// Used by `myko_subtype` to skip its default camelCase rename when the user
-/// already wrote a different one (e.g. snake_case for enum variants).
+/// already wrote a different one (e.g. `snake_case` for enum variants).
 fn attrs_have_serde_rename_all(attrs: &[syn::Attribute]) -> bool {
     use quote::ToTokens;
     attrs.iter().any(|a| {

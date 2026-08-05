@@ -30,11 +30,11 @@ pub type ViewCellFactory = fn(
 /// Registration entry for a view type.
 /// Collected via inventory for automatic discovery.
 pub struct ViewRegistration {
-    /// View identifier (e.g., "GetTargetTreeByParentFiltered")
+    /// View identifier (e.g., "`GetTargetTreeByParentFiltered`")
     pub view_id: &'static str,
-    /// View output item type (e.g., "TargetTreeView")
+    /// View output item type (e.g., "`TargetTreeView`")
     pub view_item_type: &'static str,
-    /// Crate where this view is defined (for type_gen filtering)
+    /// Crate where this view is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
     /// Parse function for deserializing view params from JSON
     pub parse: ViewParseFn,
@@ -51,8 +51,16 @@ inventory::collect!(ViewRegistration);
 
 /// Factory trait for creating view registration data.
 pub trait ViewFactory: ViewParams {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn parse(value: Value) -> Result<Arc<dyn AnyView>, anyhow::Error>;
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn cell_factory(
         view: Arc<dyn AnyView>,
         registry: Arc<StoreRegistry>,
@@ -103,15 +111,15 @@ where
         let view: Arc<V> = Arc::new(request.view);
 
         let view_ctx = Arc::new(ViewContext::new(
-            request_ctx.clone(),
-            registry.clone(),
-            server_ctx.clone(),
+            request_ctx,
+            registry,
+            server_ctx,
         ));
         let view_cell_ctx = ViewBuildContext::new(view_ctx);
 
         let built = V::build_cell(ViewBuildArgs {
-            view: view.clone(),
-            view_context: view_cell_ctx.clone(),
+            view,
+            view_context: view_cell_ctx,
         });
         tracing::trace!(
             "ViewFactory::cell_factory using build_cell view_id={}",

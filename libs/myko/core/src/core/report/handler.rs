@@ -16,13 +16,13 @@ use crate::{
 
 /// Context provided to report handlers for accessing dependencies.
 ///
-/// ReportContext allows handlers to:
+/// `ReportContext` allows handlers to:
 /// - Subscribe to queries and get reactive streams
 /// - Access the report arguments directly via `&self` fields (e.g. `self.target_id`)
-/// - Access request context (tx, client_id, lineage, host_id)
+/// - Access request context (tx, `client_id`, lineage, `host_id`)
 #[derive(Clone)]
 pub struct ReportContext {
-    /// Request context with tracing information (tx, client_id, lineage, host_id).
+    /// Request context with tracing information (tx, `client_id`, lineage, `host_id`).
     pub req: Arc<RequestContext>,
     /// Store registry for reactive entity lookups (available on all targets).
     /// Named `store_registry` so it doesn't shadow the `registry()` method
@@ -32,6 +32,7 @@ pub struct ReportContext {
 }
 
 impl ReportContext {
+    #[must_use]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerContext>) -> Self {
         let store_registry = server_ctx.registry.clone();
         Self {

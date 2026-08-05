@@ -30,8 +30,8 @@ fn records() -> &'static Mutex<Vec<SearchRecord>> {
 /// next to the search work itself.
 #[inline]
 pub fn record_search(entity_type: &str, hits: usize, elapsed: Duration) {
-    let elapsed_us = elapsed.as_micros().min(u32::MAX as u128) as u32;
-    let hits = hits.min(u32::MAX as usize) as u32;
+    let elapsed_us = u32::try_from(elapsed.as_micros()).unwrap_or(u32::MAX);
+    let hits = u32::try_from(hits).unwrap_or(u32::MAX);
     if let Ok(mut guard) = records().lock() {
         guard.push(SearchRecord {
             entity_type: entity_type.to_string(),
@@ -54,7 +54,7 @@ pub fn start_periodic_logger() {
             tracing::warn!(
                 target: "myko::search::search_stats",
                 "Failed to spawn search_stats thread: {}", e
-            )
+            );
         });
 }
 
@@ -74,7 +74,7 @@ fn emit_window() {
         return;
     }
     let total_searches = drained.len();
-    let total_hits: u64 = drained.iter().map(|r| r.hits as u64).sum();
+    let total_hits: u64 = drained.iter().map(|r| u64::from(r.hits)).sum();
     let detail = drained
         .iter()
         .map(|r| {
@@ -82,7 +82,7 @@ fn emit_window() {
                 "{}=N{}/{:.2}ms",
                 r.entity_type,
                 r.hits,
-                r.elapsed_us as f64 / 1000.0,
+                f64::from(r.elapsed_us) / 1000.0,
             )
         })
         .collect::<Vec<_>>()

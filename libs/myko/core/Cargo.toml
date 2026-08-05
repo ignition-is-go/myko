@@ -8,11 +8,14 @@ documentation = "https://docs.rs/myko"
 homepage = "https://docs.rs/myko"
 repository = "https://github.com/ignition-is-go/myko"
 
+[lints]
+workspace = true
 
 [package.metadata.flux]
 tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
+num-traits.workspace = true
 # Core deps (available on all targets)
 serde.workspace = true
 serde_json.workspace = true

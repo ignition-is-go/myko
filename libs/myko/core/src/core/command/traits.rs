@@ -20,7 +20,8 @@ pub trait CommandIdStatic {
     /// The command ID as a const string (usable in static contexts)
     const COMMAND_ID: &'static str;
 
-    /// Get the command ID (convenience method, defaults to COMMAND_ID)
+    /// Get the command ID (convenience method, defaults to `COMMAND_ID`)
+    #[must_use]
     fn command_id_static() -> &'static str {
         Self::COMMAND_ID
     }
@@ -92,7 +93,7 @@ impl<T> CommandParams for T where
 // Conversion from Arc<dyn AnyCommand> to WrappedCommand
 impl From<&dyn AnyCommand> for WrappedCommand {
     fn from(command: &dyn AnyCommand) -> Self {
-        WrappedCommand {
+        Self {
             command: command.to_value(),
             command_id: command.command_id().to_string(),
         }
@@ -101,12 +102,12 @@ impl From<&dyn AnyCommand> for WrappedCommand {
 
 impl From<Arc<dyn AnyCommand>> for WrappedCommand {
     fn from(command: Arc<dyn AnyCommand>) -> Self {
-        WrappedCommand::from(command.as_ref())
+        Self::from(command.as_ref())
     }
 }
 
 impl From<&Arc<dyn AnyCommand>> for WrappedCommand {
     fn from(command: &Arc<dyn AnyCommand>) -> Self {
-        WrappedCommand::from(command.as_ref())
+        Self::from(command.as_ref())
     }
 }

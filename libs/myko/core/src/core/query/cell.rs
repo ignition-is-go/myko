@@ -23,9 +23,9 @@ use hyphae::{CellImmutable, CellMap};
 
 use super::super::item::AnyItem;
 
-/// Type alias for a filtered CellMap of entities.
+/// Type alias for a filtered `CellMap` of entities.
 ///
-/// This is an immutable CellMap that automatically stays synchronized
+/// This is an immutable `CellMap` that automatically stays synchronized
 /// with its source store. The subscription is managed internally by
-/// hyphae's CellMap.
+/// hyphae's `CellMap`.
 pub type FilteredCellMap = CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>;

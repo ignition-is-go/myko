@@ -38,9 +38,9 @@ pub trait QueryItemType {
     fn query_item_type_static() -> Arc<str>;
 }
 
-/// Implementing QueryHandler for a MykoQuery is required to define the logic for filtering entities based on the query.
+/// Implementing `QueryHandler` for a `MykoQuery` is required to define the logic for filtering entities based on the query.
 ///
-/// It requires one function: test_entity which takes a `QueryHandlerContext<Self>` and returns a `bool`.
+/// It requires one function: `test_entity` which takes a `QueryHandlerContext<Self>` and returns a `bool`.
 /// This answers the question of whether an entity should be included in the query results.
 ///
 /// If `true`, updates to this query will be calculated, and the item will be added or updated as appropriate.
@@ -66,6 +66,7 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
     /// via the blanket impl on `ReactiveMap`, so simple impls returning a
     /// pre-built map continue to work unchanged.
+    #[must_use]
     fn build_view(_ctx: QueryBuildArgs<Self>) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
     where
         Self: Send + Sync + 'static,
@@ -83,7 +84,7 @@ pub struct QueryTestContext<TQuery: QueryItemType> {
 impl<TQuery: QueryItemType> QueryTestContext<TQuery> {
     pub fn map_bool<F>(self, predicate: F) -> bool
     where
-        F: Fn(QueryTestContext<TQuery>) -> bool,
+        F: Fn(Self) -> bool,
     {
         predicate(self)
     }
@@ -200,7 +201,7 @@ pub trait AnyQuery: WithTransaction + QueryId + Debug + Send + Sync + 'static {
 // Conversion from Arc<dyn AnyQuery> to WrappedQuery
 impl From<&dyn AnyQuery> for WrappedQuery {
     fn from(query: &dyn AnyQuery) -> Self {
-        WrappedQuery {
+        Self {
             query: query.to_value(),
             query_id: query.query_id(),
             query_item_type: query.query_item_type(),
@@ -211,12 +212,12 @@ impl From<&dyn AnyQuery> for WrappedQuery {
 
 impl From<Arc<dyn AnyQuery>> for WrappedQuery {
     fn from(query: Arc<dyn AnyQuery>) -> Self {
-        WrappedQuery::from(query.as_ref())
+        Self::from(query.as_ref())
     }
 }
 
 impl From<&Arc<dyn AnyQuery>> for WrappedQuery {
     fn from(query: &Arc<dyn AnyQuery>) -> Self {
-        WrappedQuery::from(query.as_ref())
+        Self::from(query.as_ref())
     }
 }

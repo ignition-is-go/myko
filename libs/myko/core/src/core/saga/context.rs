@@ -40,8 +40,9 @@ pub struct SagaContext {
 }
 
 impl SagaContext {
-    /// Create a new SagaContext
-    pub fn new(host_id: Uuid, registry: Arc<StoreRegistry>) -> Self {
+    /// Create a new `SagaContext`
+    #[must_use]
+    pub const fn new(host_id: Uuid, registry: Arc<StoreRegistry>) -> Self {
         Self { host_id, registry }
     }
 
@@ -49,7 +50,8 @@ impl SagaContext {
     ///
     /// Inherent (not [`RequestScoped`](crate::core::capability::RequestScoped)):
     /// a saga has no originating [`RequestContext`], so `host_id` stays here.
-    pub fn host_id(&self) -> Uuid {
+    #[must_use]
+    pub const fn host_id(&self) -> Uuid {
         self.host_id
     }
 }

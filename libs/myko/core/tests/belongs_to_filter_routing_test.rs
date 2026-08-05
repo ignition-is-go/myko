@@ -29,9 +29,11 @@ fn make_ctx() -> MykoServerContext {
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(myko::search::SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
@@ -43,7 +45,7 @@ fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
         windback: None,
     };
     let event = MEvent::from_item(&client, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestContext> {
@@ -57,10 +59,10 @@ fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestConte
 /// hyphae's scheduler tick queue is process-wide, so tests in this binary
 /// that assert on reactive propagation timing can perturb each other when
 /// run concurrently (the default) — see the matching helper (and full
-/// rationale) in query_cache_leak_test.rs.
+/// rationale) in `query_cache_leak_test.rs`.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
@@ -151,13 +153,21 @@ fn update_to_non_fk_field_propagates_through_routed_view() {
         windback: None,
     };
     let event = MEvent::from_item(&updated, MEventType::SET, "tx-upd");
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 
     let snap = cell.snapshot();
     assert_eq!(snap.len(), 1, "item must remain in the view");
-    let item = snap[0].1.clone();
+    let item = snap.first().map(|entry| entry.1.clone());
+    assert!(item.is_some(), "expected routed item");
+    let Some(item) = item else {
+        return;
+    };
     let any_ref: &dyn std::any::Any = item.as_ref().as_any();
-    let client = any_ref.downcast_ref::<Client>().expect("downcast Client");
+    let client = any_ref.downcast_ref::<Client>();
+    assert!(client.is_some(), "downcast Client");
+    let Some(client) = client else {
+        return;
+    };
     assert_eq!(
         client.address.as_deref(),
         Some("10.0.0.9"),
@@ -170,8 +180,9 @@ fn update_to_non_fk_field_propagates_through_routed_view() {
 /// set, and let secondary pinned fields narrow the id-selected rows.
 #[test]
 fn id_filter_routes_through_per_id_cells_and_stays_reactive() {
-    let _serial = scheduler_test_serial();
     use myko::entities::client::ClientId;
+
+    let _serial = scheduler_test_serial();
     let ctx = make_ctx();
     insert_client(&ctx, "c1", "server-A");
     insert_client(&ctx, "c2", "server-B");
@@ -206,5 +217,5 @@ fn id_filter_routes_through_per_id_cells_and_stays_reactive() {
     let cell = ctx.query_map(GetClientsByQuery(narrowed), request(&ctx, "tx-id-2"));
     let snap = cell.snapshot();
     assert_eq!(snap.len(), 1);
-    assert_eq!(snap[0].0.as_ref(), "c2");
+    assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c2"));
 }

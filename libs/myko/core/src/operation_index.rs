@@ -27,6 +27,7 @@
 //!    be an always-on dependency of `myko-server` without forcing every
 //!    server binary to pull in a full TS formatter.
 
+#[cfg(any(feature = "codegen", test))]
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -49,7 +50,7 @@ pub struct OperationArg {
 
 impl From<&OperationArgField> for OperationArg {
     fn from(field: &OperationArgField) -> Self {
-        OperationArg {
+        Self {
             name: field.name.to_string(),
             ts_type: rust_type_to_ts(field.rust_type),
             optional: field.optional,
@@ -73,6 +74,7 @@ pub struct OperationSchema {
 }
 
 /// Build the full operation index from `inventory`-registered
+///
 /// query/view/report/command operations. Pure in-memory, no I/O, no
 /// configuration — every operation from every linked-in crate is included
 /// with full argument detail, since that detail is embedded in the
@@ -171,34 +173,34 @@ pub(crate) fn split_outer_generic(s: &str) -> Option<(&str, &str)> {
     if end <= start {
         return None;
     }
-    let outer = s[..start].trim();
-    let inner = s[start + 1..end].trim();
+    let outer = s.get(..start)?.trim();
+    let inner = s.get(start.saturating_add(1)..end)?.trim();
     if outer.is_empty() || inner.is_empty() {
         return None;
     }
     Some((outer, inner))
 }
 
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
     for (idx, ch) in s.char_indices() {
         match ch {
-            '<' => depth += 1,
+            '<' => depth = depth.saturating_add(1),
             '>' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
-                let arg = s[start..idx].trim();
+                let arg = s.get(start..idx).unwrap_or_default().trim();
                 if !arg.is_empty() {
                     args.push(arg.to_string());
                 }
-                start = idx + 1;
+                start = idx.saturating_add(1);
             }
             _ => {}
         }
     }
-    let tail = s[start..].trim();
+    let tail = s.get(start..).unwrap_or_default().trim();
     if !tail.is_empty() {
         args.push(tail.to_string());
     }
@@ -211,7 +213,7 @@ pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
 
 // Only consumed by `crate::codegen::generate_docs_json_from_bindings`, which
 // is gated behind the (non-default) `codegen` feature.
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBuf>, anyhow::Error> {
     let mut files = Vec::new();
     for entry in fs::read_dir(bindings_dir)? {
@@ -219,13 +221,12 @@ pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBu
         if !path.is_file() {
             continue;
         }
-        let is_ts = path.extension().map(|x| x == "ts").unwrap_or(false);
-        let is_dts = path
+        let is_ts = path.extension().is_some_and(|x| x == "ts");
+        let is_declaration_file = path
             .file_name()
             .and_then(|x| x.to_str())
-            .map(|x| x.ends_with(".d.ts"))
-            .unwrap_or(false);
-        if is_ts && !is_dts {
+            .is_some_and(|x| x.ends_with(".d.ts"));
+        if is_ts && !is_declaration_file {
             files.push(path);
         }
     }
@@ -233,26 +234,27 @@ pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBu
     Ok(files)
 }
 
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 pub(crate) fn extract_exported_object_type_body(content: &str, type_name: &str) -> Option<String> {
     let marker = format!("export type {type_name} =");
     let start = content.find(&marker)?;
-    let rest = &content[start + marker.len()..];
+    let marker_end = start.checked_add(marker.len())?;
+    let rest = content.get(marker_end..)?;
     let brace_start_rel = rest.find('{')?;
-    let brace_start = start + marker.len() + brace_start_rel;
+    let brace_start = marker_end.checked_add(brace_start_rel)?;
 
     let mut depth = 0usize;
     let mut end_idx = None;
-    for (i, ch) in content[brace_start..].char_indices() {
+    for (i, ch) in content.get(brace_start..)?.char_indices() {
         match ch {
-            '{' => depth += 1,
+            '{' => depth = depth.saturating_add(1),
             '}' => {
                 if depth == 0 {
                     return None;
                 }
-                depth -= 1;
+                depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    end_idx = Some(brace_start + i);
+                    end_idx = brace_start.checked_add(i);
                     break;
                 }
             }
@@ -260,12 +262,14 @@ pub(crate) fn extract_exported_object_type_body(content: &str, type_name: &str) 
         }
     }
     let end_idx = end_idx?;
-    Some(content[brace_start + 1..end_idx].to_string())
+    content
+        .get(brace_start.saturating_add(1)..end_idx)
+        .map(str::to_string)
 }
 
 /// Returns `(field_name, ts_type, doc_comment, optional)` for each field of
 /// a parsed ts-rs object type body.
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Option<String>, bool)> {
     let mut fields = Vec::new();
     let mut pending_doc: Option<String> = None;
@@ -277,12 +281,15 @@ pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Optio
         }
 
         while let Some(start) = segment.find("/**") {
-            let tail = &segment[start + 3..];
+            let tail = segment.get(start.saturating_add(3)..).unwrap_or_default();
             let Some(end_rel) = tail.find("*/") else {
                 break;
             };
-            let end = start + 3 + end_rel + 2;
-            let comment_block = &segment[start..end];
+            let end = start
+                .saturating_add(3)
+                .saturating_add(end_rel)
+                .saturating_add(2);
+            let comment_block = segment.get(start..end).unwrap_or_default();
             let doc = normalize_jsdoc(comment_block);
             if !doc.is_empty() {
                 pending_doc = Some(doc);
@@ -298,8 +305,8 @@ pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Optio
         let Some(colon_idx) = find_top_level_colon(segment) else {
             continue;
         };
-        let raw_name = segment[..colon_idx].trim();
-        let raw_type = segment[colon_idx + 1..].trim();
+        let raw_name = segment.get(..colon_idx).unwrap_or_default().trim();
+        let raw_type = segment.get(colon_idx.saturating_add(1)..).unwrap_or_default().trim();
 
         let prop_name = raw_name
             .trim_start_matches("readonly ")
@@ -329,7 +336,7 @@ pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Optio
     fields
 }
 
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 fn split_top_level_commas(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut start = 0usize;
@@ -344,37 +351,33 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0usize;
     while i < chars.len() {
-        let ch = chars[i];
-        let next = if i + 1 < chars.len() {
-            Some(chars[i + 1])
-        } else {
-            None
-        };
-        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+        let Some(&ch) = chars.get(i) else { break };
+        let next = chars.get(i.saturating_add(1)).copied();
+        let prev = i.checked_sub(1).and_then(|index| chars.get(index)).copied();
         if in_block_comment {
             if ch == '*' && next == Some('/') {
                 in_block_comment = false;
-                i += 2;
+                i = i.saturating_add(2);
                 continue;
             }
-            i += 1;
+            i = i.saturating_add(1);
             continue;
         }
         if in_line_comment {
             if ch == '\n' {
                 in_line_comment = false;
             }
-            i += 1;
+            i = i.saturating_add(1);
             continue;
         }
         if ch == '/' && next == Some('*') {
             in_block_comment = true;
-            i += 2;
+            i = i.saturating_add(2);
             continue;
         }
         if ch == '/' && next == Some('/') {
             in_line_comment = true;
-            i += 2;
+            i = i.saturating_add(2);
             continue;
         }
         if ch == '\'' && !in_double && prev != Some('\\') {
@@ -383,30 +386,30 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
             in_double = !in_double;
         } else if !in_single && !in_double {
             match ch {
-                '{' => brace += 1,
+                '{' => brace = brace.saturating_add(1),
                 '}' => brace = brace.saturating_sub(1),
-                '[' => bracket += 1,
+                '[' => bracket = bracket.saturating_add(1),
                 ']' => bracket = bracket.saturating_sub(1),
-                '(' => paren += 1,
+                '(' => paren = paren.saturating_add(1),
                 ')' => paren = paren.saturating_sub(1),
-                '<' => angle += 1,
+                '<' => angle = angle.saturating_add(1),
                 '>' => angle = angle.saturating_sub(1),
                 ',' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => {
-                    out.push(chars[start..i].iter().collect::<String>());
-                    start = i + 1;
+                    out.push(chars.get(start..i).unwrap_or_default().iter().collect::<String>());
+                    start = i.saturating_add(1);
                 }
                 _ => {}
             }
         }
-        i += 1;
+        i = i.saturating_add(1);
     }
     if start < chars.len() {
-        out.push(chars[start..].iter().collect::<String>());
+        out.push(chars.get(start..).unwrap_or_default().iter().collect::<String>());
     }
     out
 }
 
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 fn find_top_level_colon(input: &str) -> Option<usize> {
     let chars: Vec<char> = input.chars().collect();
     let mut brace = 0usize;
@@ -416,7 +419,7 @@ fn find_top_level_colon(input: &str) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
     for (i, ch) in chars.iter().enumerate() {
-        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+        let prev = i.checked_sub(1).and_then(|index| chars.get(index)).copied();
         if *ch == '\'' && !in_double && prev != Some('\\') {
             in_single = !in_single;
             continue;
@@ -429,13 +432,13 @@ fn find_top_level_colon(input: &str) -> Option<usize> {
             continue;
         }
         match ch {
-            '{' => brace += 1,
+            '{' => brace = brace.saturating_add(1),
             '}' => brace = brace.saturating_sub(1),
-            '[' => bracket += 1,
+            '[' => bracket = bracket.saturating_add(1),
             ']' => bracket = bracket.saturating_sub(1),
-            '(' => paren += 1,
+            '(' => paren = paren.saturating_add(1),
             ')' => paren = paren.saturating_sub(1),
-            '<' => angle += 1,
+            '<' => angle = angle.saturating_add(1),
             '>' => angle = angle.saturating_sub(1),
             ':' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => return Some(i),
             _ => {}
@@ -444,7 +447,7 @@ fn find_top_level_colon(input: &str) -> Option<usize> {
     None
 }
 
-#[cfg_attr(not(feature = "codegen"), allow(dead_code))]
+#[cfg(any(feature = "codegen", test))]
 fn normalize_jsdoc(block: &str) -> String {
     block
         .replace("/**", "")
@@ -463,13 +466,17 @@ mod tests {
     #[test]
     fn extracts_object_body_and_fields() {
         let content = "export type Foo = { a: string, b: number | null, };";
-        let body = extract_exported_object_type_body(content, "Foo").expect("body");
+        let body = extract_exported_object_type_body(content, "Foo");
+        assert!(body.is_some(), "object body");
+        let Some(body) = body else {
+            return;
+        };
         let fields = parse_object_type_fields(&body);
         assert_eq!(fields.len(), 2);
-        assert_eq!(fields[0].0, "a");
-        assert!(!fields[0].3);
-        assert_eq!(fields[1].0, "b");
-        assert!(fields[1].3, "`T | null` field should be optional");
+        assert_eq!(fields.first().map(|field| field.0.as_str()), Some("a"));
+        assert_eq!(fields.first().map(|field| field.3), Some(false));
+        assert_eq!(fields.get(1).map(|field| field.0.as_str()), Some("b"));
+        assert_eq!(fields.get(1).map(|field| field.3), Some(true));
     }
 
     #[test]
@@ -500,8 +507,14 @@ mod tests {
 
         let delete_server = index
             .iter()
-            .find(|op| op.kind == "command" && op.id == "DeleteServer")
-            .expect("DeleteServer command must be in the index");
+            .find(|op| op.kind == "command" && op.id == "DeleteServer");
+        assert!(
+            delete_server.is_some(),
+            "DeleteServer command must be in the index"
+        );
+        let Some(delete_server) = delete_server else {
+            return;
+        };
         assert!(
             delete_server.args.iter().any(|a| a.name == "id"),
             "DeleteServer's own `id` field should surface as an arg, got {:?}",
@@ -510,8 +523,14 @@ mod tests {
 
         let get_all_servers = index
             .iter()
-            .find(|op| op.kind == "query" && op.id == "GetAllServers")
-            .expect("GetAllServers query must be in the index");
+            .find(|op| op.kind == "query" && op.id == "GetAllServers");
+        assert!(
+            get_all_servers.is_some(),
+            "GetAllServers query must be in the index"
+        );
+        let Some(get_all_servers) = get_all_servers else {
+            return;
+        };
         assert_eq!(get_all_servers.output_type, "Server[]");
     }
 }

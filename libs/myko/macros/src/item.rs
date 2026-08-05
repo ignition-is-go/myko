@@ -17,7 +17,7 @@ pub struct ItemArgs {
 
 impl Parse for ItemArgs {
     fn parse(input: ParseStream) -> Result<Self> {
-        let mut args = ItemArgs::default();
+        let mut args = Self::default();
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -71,158 +71,41 @@ fn option_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
     })
 }
 
-pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStream {
-    // Collect relationship information BEFORE stripping attributes
-    let rel_info = relationship::collect_relationships(&input_struct);
-
-    // Collect setter fields BEFORE stripping attributes
-    let setter_fields = setter::collect_setter_fields(&input_struct);
-
-    let name = &input_struct.ident;
-    let name_str = name.to_string();
-    let id_type_ident = format_ident!("{}Id", name_str);
-
-    let ctx = DeriveCtx::new();
-    let krate = &ctx.krate;
-    let serde_path = &ctx.serde_path;
-    let ingest_buffer_registration = args.ingest_buffer_ms.map(|window_ms| {
-        quote! {
-            #krate::submit! {
-                #krate::prelude::IngestBufferRegistration {
-                    entity_type: #name_str,
-                    policy: #krate::prelude::IngestBufferPolicy::TimeWindow { window_ms: #window_ms },
-                }
-            }
-        }
-    });
-
-    // Rewrite any `#[ts(...)]` attrs on the container/fields so they only
-    // apply when the consuming crate has `ts-export` on — the ts-rs TS
-    // derive we're about to emit conditionally would otherwise leave these
-    // orphaned and break compilation when the feature is off.
-    crate::gate_ts_attrs(&mut input_struct.attrs);
-
-    let mut filter_fields: Vec<(syn::Ident, syn::Type)> = Vec::new();
-    if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
-        // Strip relationship and setter attributes from each field
-        for field in named.iter_mut() {
-            relationship::strip_relationship_attrs(field);
-            setter::strip_setter_attrs(field);
-            crate::gate_ts_attrs(&mut field.attrs);
-        }
-
-        let id = quote! { id };
-        let pub_viz = quote! { pub };
-
-        let id_field: Field = syn::parse_quote! {
-            #pub_viz #id: #id_type_ident
-        };
-
-        named.push(id_field);
-
-        // Snapshot (name, type) for every field — including the id field
-        // just pushed — for XQuery codegen (see below).
-        filter_fields = named
-            .iter()
-            .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
-            .collect();
-    };
-
-    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
-
-    let deserialize_derive = if args.post_deserialize.is_some() {
-        quote!()
-    } else {
-        quote!(#serde_path::Deserialize,)
-    };
-
-    // Add Default derive if entity has ensure_for relationships (needed for
-    // make_entity, which calls Type::default() — see relationship.rs).
-    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export`
-    // feature is on, so emit it unconditionally — no consumer-side feature gate.
-    let derives = if !rel_info.ensure_for_fields.is_empty() {
-        quote! {
-            #[derive(Default, PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
-            #serde_rename_attr
-        }
-    } else {
-        quote! {
-            #[derive(PartialEq, Clone, #serde_path::Serialize, #deserialize_derive Debug, #krate::TS)]
-            #serde_rename_attr
-        }
-    };
-
-    let post_deserialize_impl = args.post_deserialize.as_ref().map(|post_deserialize| {
-        let helper_ident = format_ident!("{}DeserializeHelper", name_str);
-        let mut helper_struct = input_struct.clone();
-        helper_struct.ident = helper_ident.clone();
-        let helper_fields =
-            if let syn::Fields::Named(FieldsNamed { named, .. }) = &input_struct.fields {
-                named
-                    .iter()
-                    .filter_map(|field| field.ident.clone())
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-
-        quote! {
-            #[derive(#serde_path::Deserialize)]
-            #[derive(#krate::TS)]
-            #serde_rename_attr
-            #helper_struct
-
-            impl<'de> #serde_path::Deserialize<'de> for #name {
-                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-                where
-                    D: #serde_path::Deserializer<'de>,
-                {
-                    let #helper_ident {
-                        #(#helper_fields),*
-                    } = #helper_ident::deserialize(deserializer)?;
-                    let mut value = #name {
-                        #(#helper_fields),*
-                    };
-                    #post_deserialize(&mut value);
-                    Ok(value)
-                }
-            }
-        }
-    });
-
-    let get_all_query_ident = format_ident!("GetAll{}s", name_str);
-
-    let get_all_query = quote! {
-
+fn generate_get_all_query(
+    name: &syn::Ident,
+    query_ident: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
         #[#krate::myko_query(#name)]
-        pub struct #get_all_query_ident {}
+        pub struct #query_ident {}
 
-        impl #krate::prelude::QueryHandler for #get_all_query_ident {
-            fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
+        impl #krate::prelude::QueryHandler for #query_ident {
+            fn test_entity(_ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 true
             }
         }
+    }
+}
 
-    };
-
-    let get_by_ids_query_ident = format_ident!("Get{}sByIds", name_str);
-
-    let get_by_ids_query = quote! {
+fn generate_get_by_ids_query(
+    name: &syn::Ident,
+    name_str: &str,
+    id_type_ident: &syn::Ident,
+    query_ident: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
         #[#krate::myko_query(#name)]
-        pub struct #get_by_ids_query_ident {
+        pub struct #query_ident {
             pub ids: Vec<#id_type_ident>,
         }
 
-        impl #krate::prelude::QueryHandler for #get_by_ids_query_ident {
+        impl #krate::prelude::QueryHandler for #query_ident {
             fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 ctx.query.ids.contains(&ctx.item.id.clone().into())
             }
 
-            // Skip the O(N) test_entity scan over every item in the store
-            // during initial-list construction. We know the exact ids we
-            // care about, so subscribe to those per-key cells directly.
-            // `test_entity` semantics still hold because the resulting map
-            // only ever contains keys from `ctx.query.ids`.
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::prelude::QueryBuildArgs<Self>,
@@ -230,21 +113,653 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
-                let ids: Vec<std::sync::Arc<str>> = ctx
-                    .query
-                    .ids
-                    .iter()
+                let ids: Vec<std::sync::Arc<str>> = ctx.query.ids.iter()
                     .map(|id| std::sync::Arc::<str>::from(id.clone()))
                     .collect();
-                let store = ctx
-                    .query_context
-                    .registry()
-                    .get_or_create(#name_str);
+                let store = ctx.query_context.registry().get_or_create(#name_str);
                 Some(#krate::query::build_ids_source_map(&store, &ids))
             }
         }
+    }
+}
 
+fn generate_filter_struct(
+    name: &syn::Ident,
+    filter_ident: &syn::Ident,
+    filter_fields: &[(syn::Ident, syn::Type)],
+    ctx: &DeriveCtx,
+) -> TokenStream {
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let fields = filter_fields.iter().map(|(field_ident, field_ty)| quote! {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional = nullable)]
+        pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
+    });
+    let matches = filter_fields.iter().map(|(field_ident, field_ty)| {
+        if option_inner_type(field_ty).is_some() {
+            quote! {
+                self.#field_ident.as_ref().is_none_or(|f| {
+                    item.#field_ident.as_ref().is_some_and(|v| #krate::query::Filter::matches(f, v))
+                })
+            }
+        } else {
+            quote! {
+                self.#field_ident.as_ref().is_none_or(|f| #krate::query::Filter::matches(f, &item.#field_ident))
+            }
+        }
+    }).reduce(|acc, term| quote! { (#acc) && (#term) }).unwrap_or_else(|| quote! { true });
+    let canonical_fields = filter_fields.iter().map(|(field_ident, _)| quote! {
+        #field_ident: self.#field_ident.map(#krate::query::CanonicalFilter::canonicalize)
+    });
+    let equal_fields = filter_fields
+        .iter()
+        .map(|(field_ident, _)| quote! { self.#field_ident == other.#field_ident })
+        .reduce(|acc, term| quote! { (#acc) && (#term) })
+        .unwrap_or_else(|| quote! { true });
+
+    quote! {
+        #[derive(Clone, Default, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+        #[derive(#krate::TS)]
+        #serde_rename_attr
+        pub struct #filter_ident { #(#fields),* }
+
+        impl PartialEq for #filter_ident {
+            fn eq(&self, other: &Self) -> bool { #equal_fields }
+        }
+
+        impl #filter_ident {
+            pub fn matches(&self, item: &#name) -> bool { #matches }
+
+            pub fn canonicalize(self) -> Self {
+                Self { #(#canonical_fields),* }
+            }
+        }
+
+        #krate::register_ts_export!(#filter_ident);
+    }
+}
+
+fn generate_route_arms(
+    name: &syn::Ident,
+    belongs_to: &[&relationship::BelongsToInfo],
+    krate: &syn::Path,
+) -> Vec<TokenStream> {
+    let count = belongs_to.len();
+    let Some(mask_limit) = 1u32.checked_shl(u32::try_from(count).unwrap_or(u32::MAX)) else {
+        return Vec::new();
     };
+    let mut masks: Vec<u32> = (1..mask_limit).collect();
+    masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
+    masks.into_iter().map(|mask| {
+        let selected: Vec<_> = (0..count)
+            .filter(|index| mask & 1u32.checked_shl(u32::try_from(*index).unwrap_or(u32::MAX)).unwrap_or(0) != 0)
+            .filter_map(|index| belongs_to.get(index).copied())
+            .collect();
+        let field_idents: Vec<_> = selected.iter().map(|item| format_ident!("{}", item.field_name)).collect();
+        let field_names: Vec<_> = selected.iter().map(|item| item.field_name.clone()).collect();
+        let filters: Vec<_> = (0..selected.len()).map(|index| format_ident!("filter{index}")).collect();
+        let refs: Vec<_> = field_idents.iter().map(|field| quote! { self.#field.as_ref() }).collect();
+        let condition = if selected.len() == 1 {
+            filters.first().zip(refs.first()).map_or_else(
+                || quote! { if false },
+                |(filter, field)| quote! { if let Some(#filter) = #field },
+            )
+        } else {
+            quote! { if let (#(Some(#filters)),*) = (#(#refs),*) }
+        };
+        let extracted = field_idents.iter().map(|field| quote! { std::sync::Arc::<str>::from(e.#field.clone()) });
+        let values = filters.iter().map(|filter| quote! {
+            #filter.key_values().into_iter().map(std::sync::Arc::<str>::from).collect::<Vec<_>>()
+        });
+        quote! {
+            #condition {
+                let keys = #krate::query::cartesian_product(vec![#(#values),*]);
+                return Some(#krate::query::BelongsToRoute {
+                    field_names: &[#(#field_names),*], keys,
+                    extract_fk: |item: &dyn std::any::Any| {
+                        item.downcast_ref::<#name>()
+                            .map(|e| #krate::query::CompoundKey::from_iter([#(#extracted),*]))
+                    },
+                });
+            }
+        }
+    }).collect()
+}
+
+fn generate_route_impl(
+    name: &syn::Ident,
+    name_str: &str,
+    filter_ident: &syn::Ident,
+    route_arms: &[TokenStream],
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #filter_ident {
+            pub fn belongs_to_route(&self) -> Option<#krate::query::BelongsToRoute> {
+                #(#route_arms)*
+                None
+            }
+
+            pub fn query_route(&self) -> Option<#krate::query::QueryRoute> {
+                if let Some(id_filter) = self.id.as_ref() {
+                    return Some(#krate::query::QueryRoute::Ids(
+                        id_filter.key_values().into_iter().map(std::sync::Arc::<str>::from).collect(),
+                    ));
+                }
+                self.belongs_to_route().map(#krate::query::QueryRoute::BelongsTo)
+            }
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        impl #krate::query::LiveFilterQuery for #filter_ident {
+            type Item = #name;
+            fn entity_type() -> &'static str { #name_str }
+            fn matches(&self, item: &Self::Item) -> bool { #filter_ident::matches(self, item) }
+            fn query_route(&self) -> Option<#krate::query::QueryRoute> { #filter_ident::query_route(self) }
+        }
+    }
+}
+
+fn generate_filter_query(
+    name: &syn::Ident,
+    name_str: &str,
+    filter_ident: &syn::Ident,
+    query_ident: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_manual_cache_key]
+        #[#krate::myko_query(#name)]
+        pub struct #query_ident(pub #filter_ident);
+
+        impl #krate::prelude::CacheKey for #query_ident {
+            fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                #krate::cache::write_serde_cache_key(&self.0.clone().canonicalize(), state);
+            }
+        }
+
+        impl #krate::prelude::QueryHandler for #query_ident {
+            fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
+                ctx.query.0.matches(&ctx.item)
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            fn build_view(ctx: #krate::prelude::QueryBuildArgs<Self>) -> Option<#krate::prelude::FilteredCellMap>
+            where Self: std::marker::Send + std::marker::Sync + 'static,
+            {
+                let source = match ctx.query.0.query_route()? {
+                    #krate::query::QueryRoute::Ids(ids) => {
+                        let store = ctx.query_context.registry().get_or_create(#name_str);
+                        #krate::query::build_ids_source_map(&store, &ids)
+                    }
+                    #krate::query::QueryRoute::BelongsTo(route) => {
+                        #krate::query::build_belongs_to_union_source_map(
+                            ctx.query_context.registry(),
+                            ctx.query_context.query_context.req.host_id,
+                            #name_str, route.field_names, route.extract_fk, route.keys,
+                        )
+                    }
+                };
+                Some(#krate::query::filter_query_over_source::<#query_ident>(
+                    source, ctx.query.clone(), ctx.query_context.query_context.clone(),
+                ))
+            }
+        }
+    }
+}
+
+fn generate_count_all_report(
+    query_ident: &syn::Ident,
+    result_ident: &syn::Ident,
+    report_ident: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
+        #[#krate::myko_report_output]
+        pub struct #result_ident { pub count: usize }
+
+        #[#krate::myko_report(#result_ident)]
+        pub struct #report_ident {}
+
+        impl #krate::prelude::ReportHandler for #report_ident {
+            type Output = #result_ident;
+            fn compute(&self, ctx: #krate::prelude::ReportContext)
+                -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
+            {
+                use #krate::prelude::MapExt;
+                let query = #query_ident {};
+                let source = ctx.query_map_by_str(query);
+                source.size().map(move |count| {
+                    let _keepalive = &source;
+                    std::sync::Arc::new(#result_ident { count: *count })
+                })
+            }
+        }
+    }
+}
+
+fn generate_count_report(
+    filter_ident: &syn::Ident,
+    query_ident: &syn::Ident,
+    result_ident: &syn::Ident,
+    report_ident: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_manual_cache_key]
+        #[#krate::myko_report(#result_ident)]
+        pub struct #report_ident(pub #filter_ident);
+
+        impl #krate::prelude::CacheKey for #report_ident {
+            fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                #krate::cache::write_serde_cache_key(&self.0.clone().canonicalize(), state);
+            }
+        }
+
+        impl #krate::prelude::ReportHandler for #report_ident {
+            type Output = #result_ident;
+            fn compute(&self, ctx: #krate::prelude::ReportContext)
+                -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
+            {
+                use #krate::prelude::MapExt;
+                let source = ctx.query_map_by_str(#query_ident(self.0.clone()));
+                source.size().map(move |count| {
+                    let _keepalive = &source;
+                    std::sync::Arc::new(#result_ident { count: *count })
+                })
+            }
+        }
+    }
+}
+
+fn generate_get_by_id_report(
+    name: &syn::Ident,
+    id_type_ident: &syn::Ident,
+    report_ident: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
+        #[#krate::myko_report(Option<std::sync::Arc<#name>>)]
+        pub struct #report_ident { pub id: #id_type_ident }
+
+        impl #krate::prelude::ReportHandler for #report_ident {
+            type Output = Option<std::sync::Arc<#name>>;
+            fn compute(&self, ctx: #krate::prelude::ReportContext)
+                -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
+            {
+                use #krate::prelude::{Eventable, MapExt, Materialize};
+                let id: std::sync::Arc<str> = self.id.clone().into();
+                let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
+                store.get(&id).materialize().map(move |item| std::sync::Arc::new(
+                    item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
+                        .map(|typed| std::sync::Arc::new(typed.clone()))
+                ))
+            }
+        }
+    }
+}
+
+struct DeleteGeneration<'a> {
+    name_str: &'a str,
+    id_type_ident: &'a syn::Ident,
+    get_by_id_ident: &'a syn::Ident,
+    get_by_ids_ident: &'a syn::Ident,
+    ctx: &'a DeriveCtx,
+}
+
+fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
+    let krate = &input.ctx.krate;
+    let serde_path = &input.ctx.serde_path;
+    let serde_attr = input.ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let delete_ident = format_ident!("Delete{}", input.name_str);
+    let delete_result = format_ident!("Delete{}Result", input.name_str);
+    let delete_many_ident = format_ident!("Delete{}s", input.name_str);
+    let delete_many_result = format_ident!("Delete{}sResult", input.name_str);
+    let name_str = input.name_str;
+    let id = input.id_type_ident;
+    let get_one = input.get_by_id_ident;
+    let get_many = input.get_by_ids_ident;
+    quote! {
+        #[derive(Clone, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #serde_attr
+        pub struct #delete_result { pub deleted: bool }
+        #krate::register_ts_export!(#delete_result);
+
+        #[#krate::myko_command(#delete_result)]
+        pub struct #delete_ident { pub id: #id }
+        impl #krate::command::CommandHandler for #delete_ident {
+            fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_result, #krate::prelude::CommandError> {
+                match ctx.exec_report(#get_one { id: self.id.clone() })? {
+                    Some(entity) => { ctx.emit_del(entity)?; Ok(#delete_result { deleted: true }) }
+                    None => Err(#krate::prelude::CommandError::new(
+                        ctx.tx(), ctx.command_id.to_string(), format!("{} not found: {}", #name_str, self.id),
+                    )),
+                }
+            }
+        }
+
+        #[derive(Clone, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #serde_attr
+        pub struct #delete_many_result { pub deleted_count: usize }
+        #krate::register_ts_export!(#delete_many_result);
+
+        #[#krate::myko_command(#delete_many_result)]
+        pub struct #delete_many_ident { pub ids: Vec<#id> }
+        impl #krate::command::CommandHandler for #delete_many_ident {
+            fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_many_result, #krate::prelude::CommandError> {
+                let entities = ctx.exec_query(#get_many { ids: self.ids.clone() })?;
+                let deleted_count = entities.len();
+                ctx.emit_del_batch(entities.iter().map(|entity| entity.as_ref()))?;
+                Ok(#delete_many_result { deleted_count })
+            }
+        }
+    }
+}
+
+struct PreparedItem {
+    input_struct: ItemStruct,
+    relationships: relationship::RelationshipInfo,
+    setters: Vec<setter::SetterField>,
+    name: syn::Ident,
+    name_str: String,
+    id_type_ident: syn::Ident,
+    ctx: DeriveCtx,
+    filter_fields: Vec<(syn::Ident, syn::Type)>,
+    derives: TokenStream,
+    partial_eq_impl: TokenStream,
+    post_deserialize: Option<TokenStream>,
+    ingest_registration: Option<TokenStream>,
+}
+
+fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
+    let relationships = relationship::collect_relationships(&input_struct);
+    let setters = setter::collect_setter_fields(&input_struct);
+    let name = input_struct.ident.clone();
+    let name_str = name.to_string();
+    let id_type_ident = format_ident!("{}Id", name_str);
+    let ctx = DeriveCtx::new();
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    let ingest_registration = args.ingest_buffer_ms.map(|window_ms| quote! {
+        #krate::submit! {
+            #krate::prelude::IngestBufferRegistration {
+                entity_type: #name_str,
+                policy: #krate::prelude::IngestBufferPolicy::TimeWindow { window_ms: #window_ms },
+            }
+        }
+    });
+    crate::gate_ts_attrs(&mut input_struct.attrs);
+    let filter_fields = if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+        for field in named.iter_mut() {
+            relationship::strip_relationship_attrs(field);
+            setter::strip_setter_attrs(field);
+            crate::gate_ts_attrs(&mut field.attrs);
+        }
+        let id_field: Field = syn::parse_quote! { pub id: #id_type_ident };
+        named.push(id_field);
+        named.iter().filter_map(|field| Some((field.ident.clone()?, field.ty.clone()))).collect()
+    } else {
+        Vec::new()
+    };
+    let serde_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let deserialize = args.post_deserialize.as_ref().map_or_else(
+        || quote!(#serde_path::Deserialize,),
+        |_| quote!(),
+    );
+    let default = (!relationships.ensure_for_fields.is_empty()).then(|| quote!(Default,));
+    let derives = quote! {
+        #[derive(#default Clone, #serde_path::Serialize, #deserialize Debug, #krate::TS)]
+        #serde_attr
+    };
+    let equal_fields = input_struct
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            let member = field.ident.clone().map_or_else(
+                || syn::Member::Unnamed(syn::Index::from(index)),
+                syn::Member::Named,
+            );
+            quote! { self.#member == other.#member }
+        })
+        .reduce(|acc, term| quote! { (#acc) && (#term) })
+        .unwrap_or_else(|| quote! { true });
+    let partial_eq_impl = quote! {
+        impl PartialEq for #name {
+            fn eq(&self, other: &Self) -> bool { #equal_fields }
+        }
+    };
+    let post_deserialize = args.post_deserialize.as_ref().map(|callback| {
+        let helper_ident = format_ident!("{}DeserializeHelper", name_str);
+        let mut helper_struct = input_struct.clone();
+        helper_struct.ident = helper_ident.clone();
+        let helper_fields = match &input_struct.fields {
+            syn::Fields::Named(FieldsNamed { named, .. }) => named.iter().filter_map(|field| field.ident.clone()).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        quote! {
+            #[derive(#serde_path::Deserialize, #krate::TS)]
+            #serde_attr
+            #helper_struct
+            impl<'de> #serde_path::Deserialize<'de> for #name {
+                fn deserialize<D: #serde_path::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                    let #helper_ident { #(#helper_fields),* } = #helper_ident::deserialize(deserializer)?;
+                    let mut value = #name { #(#helper_fields),* };
+                    #callback(&mut value);
+                    Ok(value)
+                }
+            }
+        }
+    });
+    PreparedItem { input_struct, relationships, setters, name, name_str, id_type_ident, ctx, filter_fields, derives, partial_eq_impl, post_deserialize, ingest_registration }
+}
+
+fn generate_foreign_key_impls(
+    name: &syn::Ident,
+    input_struct: &ItemStruct,
+    relationships: &relationship::RelationshipInfo,
+    krate: &syn::Path,
+) -> Vec<TokenStream> {
+    let field_types = match &input_struct.fields {
+        syn::Fields::Named(FieldsNamed { named, .. }) => named.iter().filter_map(|field| {
+            Some((field.ident.as_ref()?.to_string(), field.ty.clone()))
+        }).collect::<HashMap<_, _>>(),
+        _ => HashMap::new(),
+    };
+    let fields = relationships.belongs_to.iter().map(|item| (&item.field_name, &item.foreign_type))
+        .chain(relationships.ensure_for_fields.iter().map(|item| (&item.field_name, &item.foreign_type)));
+    let mut parents = BTreeSet::new();
+    fields.filter_map(|(field_name, foreign_type)| {
+        let field_ty = field_types.get(field_name)?;
+        if !parents.insert(foreign_type.clone()) { return None; }
+        let field_ident = format_ident!("{field_name}");
+        let foreign_ident = format_ident!("{foreign_type}");
+        Some(quote! {
+            impl #krate::hyphae::HasForeignKey<#foreign_ident> for #name
+            where #field_ty: #krate::hyphae::IdFor<#foreign_ident>,
+            {
+                type ForeignKey = #field_ty;
+                fn fk(&self) -> Self::ForeignKey { self.#field_ident.clone() }
+            }
+        })
+    }).collect()
+}
+
+fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> TokenStream {
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    quote! {
+        #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[ts(type = "string")]
+        pub struct #id(pub std::sync::Arc<str>);
+        impl std::ops::Deref for #id { type Target = str; fn deref(&self) -> &str { self.0.as_ref() } }
+        impl std::fmt::Display for #id {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Display::fmt(self.0.as_ref(), f) }
+        }
+        impl AsRef<str> for #id { fn as_ref(&self) -> &str { self.0.as_ref() } }
+        impl From<std::sync::Arc<str>> for #id { fn from(value: std::sync::Arc<str>) -> Self { Self(value) } }
+        impl From<#id> for std::sync::Arc<str> { fn from(value: #id) -> Self { value.0 } }
+        impl From<String> for #id { fn from(value: String) -> Self { Self(value.into()) } }
+        impl From<&str> for #id { fn from(value: &str) -> Self { Self(value.into()) } }
+        impl #krate::hyphae::IdFor<#name> for #id {
+            type MapKey = std::sync::Arc<str>;
+            fn map_key(&self) -> Self::MapKey { self.0.clone() }
+        }
+        impl #krate::hyphae::IdType for #id { type Parent = #name; }
+        impl #krate::query::Filterable for #id { type Filter = #krate::query::IdFilter<#id>; }
+    }
+}
+
+struct ItemExpansion {
+    name: syn::Ident,
+    name_str: String,
+    id_type_ident: syn::Ident,
+    ctx: DeriveCtx,
+    input_struct: ItemStruct,
+    derives: TokenStream,
+    partial_eq_impl: TokenStream,
+    post_deserialize: Option<TokenStream>,
+    ingest_registration: Option<TokenStream>,
+    item_registration: TokenStream,
+    server_owned_impls: TokenStream,
+    foreign_key_impls: Vec<TokenStream>,
+    generated_items: Vec<TokenStream>,
+}
+
+fn expand_item(input: ItemExpansion) -> TokenStream {
+    let ItemExpansion {
+        name,
+        name_str,
+        id_type_ident,
+        ctx,
+        input_struct,
+        derives,
+        partial_eq_impl,
+        post_deserialize,
+        ingest_registration,
+        item_registration,
+        server_owned_impls,
+        foreign_key_impls,
+        generated_items,
+    } = input;
+    let krate = &ctx.krate;
+    let id_type = generate_id_type(&name, &id_type_ident, &ctx);
+    quote! {
+        use #krate::prelude::Query;
+        use #krate::hyphae::MapExt as _HyphaMapExt;
+        #id_type
+        #derives
+        #input_struct
+        #partial_eq_impl
+        #post_deserialize
+        #krate::register_ts_export!(#id_type_ident, #name);
+        #krate::submit! { #item_registration }
+        #ingest_registration
+
+        impl #krate::item::Eventable for #name {
+            const ENTITY_NAME_STATIC: &'static str = #name_str;
+        }
+        impl #krate::prelude::AnyItem for #name {
+            fn as_any(&self) -> &dyn std::any::Any { self }
+            fn entity_type(&self) -> &'static str { #name_str }
+            fn equals(&self, other: &dyn #krate::prelude::AnyItem) -> bool {
+                other.as_any().downcast_ref::<Self>().is_some_and(|typed| self == typed)
+            }
+            #server_owned_impls
+        }
+        impl #krate::prelude::WithId for #name {
+            fn id(&self) -> std::sync::Arc<str> { self.id.clone().into() }
+        }
+        impl #krate::common::with_id::WithTypedId for #name {
+            type Id = #id_type_ident;
+            fn typed_id(&self) -> Self::Id { self.id.clone().into() }
+        }
+        #(#foreign_key_impls)*
+        #(#generated_items)*
+    }
+}
+
+fn generate_item_registration(
+    name: &syn::Ident,
+    name_str: &str,
+    krate: &syn::Path,
+) -> TokenStream {
+    quote! {
+        #krate::prelude::ItemRegistration {
+            entity_type: #name_str,
+            crate_name: module_path!(),
+            parse: <#name as #krate::item::Eventable>::parse,
+            parse_bytes: <#name as #krate::item::Eventable>::parse_bytes,
+            serialize_json: |any| {
+                let typed = any.as_any().downcast_ref::<#name>().ok_or_else(|| {
+                    #krate::serde_json::Error::io(std::io::Error::other(
+                        "ItemRegistration::serialize_json: entity_type/type mismatch",
+                    ))
+                })?;
+                #krate::serde_json::value::to_raw_value(typed)
+            },
+        }
+    }
+}
+
+fn generate_server_owned_impls(
+    relationships: &relationship::RelationshipInfo,
+    krate: &syn::Path,
+) -> TokenStream {
+    relationships.server_owned_field.as_ref().map_or_else(|| quote! {}, |field| {
+        let field_ident = format_ident!("{}", field.field_name);
+        quote! {
+            fn server_owner(&self) -> Option<&str> {
+                let owner: &str = &self.#field_ident;
+                (!owner.is_empty()).then_some(owner)
+            }
+            fn bake_server_owner(&self, server_id: &str) -> Option<std::sync::Arc<dyn #krate::prelude::AnyItem>> {
+                let mut patched = self.clone();
+                patched.#field_ident = server_id.to_string().into();
+                Some(std::sync::Arc::new(patched))
+            }
+        }
+    })
+}
+
+fn required_belongs_to(rel_info: &relationship::RelationshipInfo) -> Vec<&relationship::BelongsToInfo> {
+    rel_info.belongs_to.iter().filter(|item| !item.is_optional).collect()
+}
+
+pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream {
+    let PreparedItem {
+        input_struct,
+        relationships: rel_info,
+        setters: setter_fields,
+        name,
+        name_str,
+        id_type_ident,
+        ctx,
+        filter_fields,
+        derives,
+        partial_eq_impl,
+        post_deserialize: post_deserialize_impl,
+        ingest_registration: ingest_buffer_registration,
+    } = prepare_item(args, input_struct);
+    let name = &name;
+    let krate = &ctx.krate;
+
+    let get_all_query_ident = format_ident!("GetAll{}s", name_str);
+    let get_all_query = generate_get_all_query(name, &get_all_query_ident, krate);
+
+    let get_by_ids_query_ident = format_ident!("Get{}sByIds", name_str);
+    let get_by_ids_query = generate_get_by_ids_query(
+        name,
+        &name_str,
+        &id_type_ident,
+        &get_by_ids_query_ident,
+        krate,
+    );
 
     // Route by the intersection of every belongs_to field the query
     // actually pins, not just the first one declared on the struct. For an
@@ -257,11 +772,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // subset gets its own BelongsToSourceIndex (keyed by the field-NAME SET,
     // see build_belongs_to_source_map), so different subsets never share a
     // bucket even when they overlap on one field.
-    let required_belongs_to: Vec<&relationship::BelongsToInfo> = rel_info
-        .belongs_to
-        .iter()
-        .filter(|bt| !bt.is_optional)
-        .collect();
+    let required_belongs_to = required_belongs_to(&rel_info);
 
     // ─────────────────────────────────────────────────────────────────
     // Query (myko 5.0, docs/superpowers/specs/2026-07-14-myko-5-query-
@@ -283,76 +794,7 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // deserialize; `skip_serializing_if` keeps unpinned fields off the wire
     // (and out of the serde-derived cache key, which only sees pinned
     // fields either way since it hashes the canonicalized value).
-    let filter_struct_fields: Vec<TokenStream> = filter_fields
-        .iter()
-        .map(|(field_ident, field_ty)| {
-            quote! {
-                #[serde(default, skip_serializing_if = "Option::is_none")]
-                #[ts(optional = nullable)]
-                pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
-            }
-        })
-        .collect();
-
-    let filter_match_terms: Vec<TokenStream> = filter_fields
-        .iter()
-        .map(|(field_ident, field_ty)| {
-            if option_inner_type(field_ty).is_some() {
-                // Optional entity field: a filter only matches items whose
-                // field is Some AND whose inner value satisfies it — None
-                // never matches, regardless of what the filter says.
-                quote! {
-                    self.#field_ident.as_ref().is_none_or(|f| {
-                        item.#field_ident.as_ref().is_some_and(|v| #krate::query::Filter::matches(f, v))
-                    })
-                }
-            } else {
-                quote! {
-                    self.#field_ident.as_ref().is_none_or(|f| #krate::query::Filter::matches(f, &item.#field_ident))
-                }
-            }
-        })
-        .collect();
-    let filter_matches_body = filter_match_terms
-        .into_iter()
-        .reduce(|acc, term| quote! { (#acc) && (#term) })
-        .unwrap_or_else(|| quote! { true });
-
-    let filter_canonicalize_terms: Vec<TokenStream> = filter_fields
-        .iter()
-        .map(|(field_ident, _field_ty)| {
-            quote! {
-                #field_ident: self.#field_ident.map(#krate::query::CanonicalFilter::canonicalize)
-            }
-        })
-        .collect();
-
-    let filter_struct = quote! {
-        #[derive(Clone, Default, PartialEq, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
-        #[derive(#krate::TS)]
-        #serde_rename_attr
-        pub struct #filter_ident {
-            #(#filter_struct_fields),*
-        }
-
-        impl #filter_ident {
-            pub fn matches(&self, item: &#name) -> bool {
-                #filter_matches_body
-            }
-
-            /// Normalize every field to canonical form (sorted+deduped `In`,
-            /// `In([x])` -> `Eq(x)`, `Range{a,a}` -> `Eq(a)`) so equivalent
-            /// filters hash/compare equal for query-cache identity — see
-            /// `Get{name}sByQuery`'s manually-written `CacheKey` impl below.
-            pub fn canonicalize(self) -> Self {
-                Self {
-                    #(#filter_canonicalize_terms),*
-                }
-            }
-        }
-
-        #krate::register_ts_export!(#filter_ident);
-    };
+    let filter_struct = generate_filter_struct(name, &filter_ident, &filter_fields, &ctx);
 
     // K-bucket union routing for In/Eq on #[belongs_to] fields — the spec
     // §4 hard requirement. Subset enumeration (largest/most-selective
@@ -370,676 +812,96 @@ pub fn myko_item_impl(args: ItemArgs, mut input_struct: ItemStruct) -> TokenStre
     // incremental per-tick diffing can call the exact same decision logic
     // build_view uses for the one-shot value-based query — one routing
     // rule, two consumers.
-    let filter_belongs_to_route_arms: Vec<TokenStream> = {
-        let n = required_belongs_to.len();
-        let mut masks: Vec<u32> = (1u32..(1u32 << n)).collect();
-        masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
-
-        masks
-            .into_iter()
-            .map(|mask| {
-                let selected: Vec<&relationship::BelongsToInfo> = (0..n)
-                    .filter(|i| mask & (1 << i) != 0)
-                    .map(|i| required_belongs_to[i])
-                    .collect();
-
-                let field_idents: Vec<_> = selected
-                    .iter()
-                    .map(|bt| format_ident!("{}", bt.field_name))
-                    .collect();
-                let field_names: Vec<String> =
-                    selected.iter().map(|bt| bt.field_name.clone()).collect();
-                let f_idents: Vec<_> = (0..selected.len())
-                    .map(|i| format_ident!("filter{}", i))
-                    .collect();
-                let field_ref_exprs: Vec<TokenStream> = field_idents
-                    .iter()
-                    .map(|field_ident| quote! { self.#field_ident.as_ref() })
-                    .collect();
-
-                let if_let_expr = if selected.len() == 1 {
-                    let f0 = &f_idents[0];
-                    let ref_expr = &field_ref_exprs[0];
-                    quote! { if let Some(#f0) = #ref_expr }
-                } else {
-                    quote! { if let (#(Some(#f_idents)),*) = (#(#field_ref_exprs),*) }
-                };
-
-                // `Arc::<str>::from(XId)` moves the id's inner Arc (a
-                // refcount bump) — never `from(id.as_ref())`, which would
-                // copy the string bytes per item per diff.
-                let extractor_field_exprs: Vec<TokenStream> = field_idents
-                    .iter()
-                    .map(|field_ident| {
-                        quote! { std::sync::Arc::<str>::from(e.#field_ident.clone()) }
-                    })
-                    .collect();
-                let value_set_exprs: Vec<TokenStream> = f_idents
-                    .iter()
-                    .map(|f| {
-                        quote! {
-                            #f.key_values()
-                                .into_iter()
-                                .map(std::sync::Arc::<str>::from)
-                                .collect::<Vec<std::sync::Arc<str>>>()
-                        }
-                    })
-                    .collect();
-
-                quote! {
-                    #if_let_expr {
-                        let value_sets: Vec<Vec<std::sync::Arc<str>>> = vec![#(#value_set_exprs),*];
-                        let keys = #krate::query::cartesian_product(value_sets);
-                        return Some(#krate::query::BelongsToRoute {
-                            field_names: &[#(#field_names),*],
-                            keys,
-                            extract_fk: |item: &dyn std::any::Any| -> Option<#krate::query::CompoundKey> {
-                                item.downcast_ref::<#name>()
-                                    .map(|e| #krate::query::CompoundKey::from_iter([#(#extractor_field_exprs),*]))
-                            },
-                        });
-                    }
-                }
-            })
-            .collect()
-    };
+    let filter_belongs_to_route_arms = generate_route_arms(name, &required_belongs_to, krate);
 
     // BelongsToRoute is a plain data type visible on every target (needed so
     // ReportContext::query_live's wasm32 stub can name LiveFilterQuery in its
     // bound), but this impl's body calls cartesian_product, which lives in
     // the server-only core::query::registration engine — gate the impl the
     // same way build_view already is, rather than the individual method.
-    let filter_belongs_to_route_impl = quote! {
-        #[cfg(not(target_arch = "wasm32"))]
-        impl #filter_ident {
-            /// The belongs_to routing decision for this filter instance, if
-            /// any belongs_to field combination is populated — the most
-            /// selective (most fields pinned) combination available, per
-            /// the same subset-enumeration `build_view` uses. `None` means
-            /// no belongs_to routing applies; the caller must scan.
-            pub fn belongs_to_route(&self) -> Option<#krate::query::BelongsToRoute> {
-                #(#filter_belongs_to_route_arms)*
-                None
-            }
+    let filter_belongs_to_route_impl = generate_route_impl(
+        name,
+        &name_str,
+        &filter_ident,
+        &filter_belongs_to_route_arms,
+        krate,
+    );
 
-            /// The FULL routing decision, in priority order: a pinned `id`
-            /// (the primary key — the store itself is the index, per-key
-            /// cells, ≤ N rows outright) beats any belongs_to combination;
-            /// otherwise fall back to belongs_to buckets; `None` = scan.
-            /// Other pinned fields still narrow via `matches` downstream.
-            pub fn query_route(&self) -> Option<#krate::query::QueryRoute> {
-                if let Some(id_filter) = self.id.as_ref() {
-                    return Some(#krate::query::QueryRoute::Ids(
-                        id_filter
-                            .key_values()
-                            .into_iter()
-                            .map(std::sync::Arc::<str>::from)
-                            .collect(),
-                    ));
-                }
-                self.belongs_to_route().map(#krate::query::QueryRoute::BelongsTo)
-            }
-        }
-
-        // Bridges this XQuery to #name for ctx.query_live(filter_cell) —
-        // "the entity/query type is inferred from Cell<XQuery>", so
-        // query_live needs no separate wrapper type, just this trait
-        // delegating to methods already generated above.
-        #[cfg(not(target_arch = "wasm32"))]
-        impl #krate::query::LiveFilterQuery for #filter_ident {
-            type Item = #name;
-
-            fn entity_type() -> &'static str {
-                #name_str
-            }
-
-            fn matches(&self, item: &Self::Item) -> bool {
-                #filter_ident::matches(self, item)
-            }
-
-            fn query_route(&self) -> Option<#krate::query::QueryRoute> {
-                #filter_ident::query_route(self)
-            }
-        }
-    };
-
-    let get_by_filter_query = quote! {
-        // non_hash_cache_key: skips deriving Hash on the generated struct —
-        // XQuery can contain floats/Vec, neither Hash-able, so the default
-        // #[derive(Hash)] path myko_query would otherwise take can't apply.
-        // manual_cache_key: skips the auto-generated CacheKey impl entirely,
-        // since the key must be computed from the CANONICALIZED filter, not
-        // the as-constructed one — so e.g. In([b,a]) and In([a,b]) share one
-        // query cell (spec §1 canonicalization requirement / acceptance
-        // criterion 4) regardless of which order a caller built the filter in.
-        #[#krate::myko_non_hash_cache_key]
-        #[#krate::myko_manual_cache_key]
-        #[#krate::myko_query(#name)]
-        pub struct #get_by_filter_ident(pub #filter_ident);
-
-        impl #krate::prelude::CacheKey for #get_by_filter_ident {
-            fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
-                #krate::cache::write_serde_cache_key(&self.0.clone().canonicalize(), state);
-            }
-        }
-
-        impl #krate::prelude::QueryHandler for #get_by_filter_ident {
-            fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
-                ctx.query.0.matches(&ctx.item)
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            fn build_view(
-                ctx: #krate::prelude::QueryBuildArgs<Self>,
-            ) -> Option<#krate::prelude::FilteredCellMap>
-            where
-                Self: std::marker::Send + std::marker::Sync + 'static,
-            {
-                let source = match ctx.query.0.query_route()? {
-                    // Primary-key route: the store's own per-id cells —
-                    // O(ids) subscriptions, other pinned fields narrow via
-                    // test_entity in filter_query_over_source below.
-                    #krate::query::QueryRoute::Ids(ids) => {
-                        let store = ctx
-                            .query_context
-                            .registry()
-                            .get_or_create(#name_str);
-                        #krate::query::build_ids_source_map(&store, &ids)
-                    }
-                    #krate::query::QueryRoute::BelongsTo(route) => {
-                        #krate::query::build_belongs_to_union_source_map(
-                            ctx.query_context.registry(),
-                            ctx.query_context.query_context.req.host_id,
-                            #name_str,
-                            route.field_names,
-                            route.extract_fk,
-                            route.keys,
-                        )
-                    }
-                };
-                Some(#krate::query::filter_query_over_source::<#get_by_filter_ident>(
-                    source,
-                    ctx.query.clone(),
-                    ctx.query_context.query_context.clone(),
-                ))
-            }
-        }
-    };
+    let get_by_filter_query =
+        generate_filter_query(name, &name_str, &filter_ident, &get_by_filter_ident, krate);
 
     // Generate per-entity count result type (e.g., TargetCount, InstanceCount)
     // This avoids the shared CountResult type which causes duplicate imports in TypeScript
     let count_result_ident = format_ident!("{}Count", name_str);
 
-    let count_result_type = quote! {
-        #[#krate::myko_report_output]
-        pub struct #count_result_ident {
-            pub count: usize,
-        }
-    };
-
-    // Generate CountAll report
     let count_all_report_ident = format_ident!("CountAll{}s", name_str);
-
-    let count_all_report = quote! {
-        #[#krate::myko_report(#count_result_ident)]
-        pub struct #count_all_report_ident {}
-
-        impl #krate::prelude::ReportHandler for #count_all_report_ident {
-            type Output = #count_result_ident;
-
-            fn compute(
-                &self,
-                ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
-                 {
-                use #krate::prelude::MapExt;
-
-                // Query all items and count them. `.size()` returns a bare
-                // clone of the map's internal len_cell — unlike entries()/
-                // items()/subscribe_diffs, it does NOT keep the map's own
-                // CellMapInner (and therefore its store subscription) alive.
-                // Capture `source` in the closure below so the returned
-                // count cell keeps the whole chain reachable for as long as
-                // it's subscribed to — otherwise the source map (and its
-                // subscription) can be dropped out from under len_cell,
-                // freezing the count.
-                let query = #get_all_query_ident {};
-                let source = ctx.query_map_by_str(query);
-                source.size().map(move |count| {
-                    let _keepalive = &source;
-                    std::sync::Arc::new(#count_result_ident { count: *count })
-                })
-            }
-        }
-    };
+    let count_all_report = generate_count_all_report(
+        &get_all_query_ident,
+        &count_result_ident,
+        &count_all_report_ident,
+        krate,
+    );
 
     // Generate Count report, filtered the same way GetXsByQuery is.
     let count_report_ident = format_ident!("Count{}s", name_str);
 
-    let count_report = quote! {
-        // non_hash_cache_key + manual_cache_key: same reasoning as
-        // GetXsByQuery — XQuery can contain floats/Vec (not Hash-able), and
-        // the key must be computed from the CANONICALIZED filter so two
-        // equivalent-but-differently-ordered In sets share one report cell.
-        #[#krate::myko_non_hash_cache_key]
-        #[#krate::myko_manual_cache_key]
-        #[#krate::myko_report(#count_result_ident)]
-        pub struct #count_report_ident(pub #filter_ident);
-
-        impl #krate::prelude::CacheKey for #count_report_ident {
-            fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
-                #krate::cache::write_serde_cache_key(&self.0.clone().canonicalize(), state);
-            }
-        }
-
-        impl #krate::prelude::ReportHandler for #count_report_ident {
-            type Output = #count_result_ident;
-
-            fn compute(
-                &self,
-                ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
-                 {
-                use #krate::prelude::MapExt;
-
-                // Query by filter and count results. See CountAll's
-                // compute (above) for why `source` must be captured here
-                // rather than dropped after `.size()`.
-                let query = #get_by_filter_ident(self.0.clone());
-                let source = ctx.query_map_by_str(query);
-                source.size().map(move |count| {
-                    let _keepalive = &source;
-                    std::sync::Arc::new(#count_result_ident { count: *count })
-                })
-            }
-        }
-    };
+    let count_report = generate_count_report(
+        &filter_ident,
+        &get_by_filter_ident,
+        &count_result_ident,
+        &count_report_ident,
+        krate,
+    );
 
     // Generate Get{Entity}ById report that returns Option<Arc<Entity>>
     let get_by_id_report_ident = format_ident!("Get{}ById", name_str);
 
-    let get_by_id_report = quote! {
-        #[#krate::myko_report(Option<std::sync::Arc<#name>>)]
-        pub struct #get_by_id_report_ident {
-            pub id: #id_type_ident,
-        }
+    let get_by_id_report =
+        generate_get_by_id_report(name, &id_type_ident, &get_by_id_report_ident, krate);
+    let delete_commands = generate_delete_commands(&DeleteGeneration {
+        name_str: &name_str,
+        id_type_ident: &id_type_ident,
+        get_by_id_ident: &get_by_id_report_ident,
+        get_by_ids_ident: &get_by_ids_query_ident,
+        ctx: &ctx,
+    });
 
-        impl #krate::prelude::ReportHandler for #get_by_id_report_ident {
-            type Output = Option<std::sync::Arc<#name>>;
-
-            fn compute(
-                &self,
-                ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
-                 {
-                use #krate::prelude::{MapExt, Eventable};
-
-                let id: std::sync::Arc<str> = self.id.clone().into();
-                let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
-                store.get(&id).map(move |opt| {
-                    std::sync::Arc::new(opt.as_ref().map(|any_item| {
-                        std::sync::Arc::new(any_item.as_any().downcast_ref::<#name>().expect(
-                            concat!("downcast failed in ", stringify!(#get_by_id_report_ident))
-                        ).clone())
-                    }))
-                })
-            }
-        }
-    };
-
-    // Generate Delete{Entity} command (single ID)
-    let delete_command_ident = format_ident!("Delete{}", name_str);
-    let delete_result_ident = format_ident!("Delete{}Result", name_str);
-
-    let delete_serde_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
-
-    let delete_command = quote! {
-        /// Result type for Delete command
-        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug)]
-        #[derive(#krate::TS)]
-        #delete_serde_attr
-        pub struct #delete_result_ident {
-            pub deleted: bool,
-        }
-
-        #krate::register_ts_export!(#delete_result_ident);
-
-        /// Command to delete a single entity by ID
-        #[#krate::myko_command(#delete_result_ident)]
-        pub struct #delete_command_ident {
-            pub id: #id_type_ident,
-        }
-
-        impl #krate::command::CommandHandler for #delete_command_ident {
-            fn execute(
-                self,
-                ctx: #krate::prelude::CommandContext,
-            ) -> Result<#delete_result_ident, #krate::prelude::CommandError> {
-
-                let report = #get_by_id_report_ident { id: self.id.clone() };
-
-                let entity = ctx.exec_report(report)?;
-
-                match entity {
-                    Some(e) => {
-                        ctx.emit_del(e)?;
-                        Ok(#delete_result_ident { deleted: true })
-                    }
-                    None => Err(#krate::prelude::CommandError::new(
-                        ctx.tx(),
-                        ctx.command_id.to_string(),
-                        format!("{} not found: {}", #name_str, self.id),
-                    )),
-                }
-            }
-        }
-    };
-
-    // Generate Delete{Entity}s command (multiple IDs)
-    let delete_many_command_ident = format_ident!("Delete{}s", name_str);
-    let delete_many_result_ident = format_ident!("Delete{}sResult", name_str);
-
-    let delete_many_command = quote! {
-        /// Result type for bulk Delete command
-        #[derive(Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize, Debug)]
-        #[derive(#krate::TS)]
-        #delete_serde_attr
-        pub struct #delete_many_result_ident {
-            pub deleted_count: usize,
-        }
-
-        #krate::register_ts_export!(#delete_many_result_ident);
-
-        /// Command to delete multiple entities by ID
-        #[#krate::myko_command(#delete_many_result_ident)]
-        pub struct #delete_many_command_ident {
-            pub ids: Vec<#id_type_ident>,
-        }
-
-        impl #krate::command::CommandHandler for #delete_many_command_ident {
-            fn execute(
-                self,
-                ctx: #krate::prelude::CommandContext,
-            ) -> Result<#delete_many_result_ident, #krate::prelude::CommandError> {
-                let q = #get_by_ids_query_ident { ids: self.ids.clone() };
-                let entities = ctx.exec_query(q)?;
-                let deleted_count = entities.len();
-                ctx.emit_del_batch(entities.iter().map(|entity| entity.as_ref()))?;
-
-                Ok(#delete_many_result_ident { deleted_count })
-            }
-        }
-    };
-
-    let item_registration = quote! {
-        #krate::prelude::ItemRegistration {
-            entity_type: #name_str,
-            crate_name: module_path!(),
-            parse: <#name as #krate::item::Eventable>::parse,
-            parse_bytes: <#name as #krate::item::Eventable>::parse_bytes,
-            // Typed JSON serialize shim: downcast once, then call typed
-            // `to_raw_value` so the inner field-by-field serialize is
-            // monomorphized — no erased_serde on the JSON hot path.
-            serialize_json: |any| {
-                let typed = any
-                    .as_any()
-                    .downcast_ref::<#name>()
-                    .expect("ItemRegistration::serialize_json: entity_type/type mismatch");
-                #krate::serde_json::value::to_raw_value(typed)
-            },
-        }
-    };
+    let item_registration = generate_item_registration(name, &name_str, krate);
 
     // Generate relationship registrations
     let relationship_registrations = relationship::generate_registrations(&name_str, &rel_info);
 
-    let mut field_types = HashMap::<String, syn::Type>::new();
-    if let syn::Fields::Named(FieldsNamed { named, .. }) = &input_struct.fields {
-        for field in named {
-            if let Some(field_ident) = &field.ident {
-                field_types.insert(field_ident.to_string(), field.ty.clone());
-            }
-        }
-    }
-
-    // Generate HasForeignKey impls from #[belongs_to] / #[ensure_for] fields.
-    // Deduplicate by foreign parent type so a field tagged with both
-    // #[belongs_to(X)] and #[ensure_for(X)] yields a single impl.
-    let mut fk_impl_parents = BTreeSet::<String>::new();
-    let mut has_foreign_key_impls: Vec<TokenStream> = Vec::new();
-
-    for bt in &rel_info.belongs_to {
-        let Some(field_ty) = field_types.get(&bt.field_name) else {
-            continue;
-        };
-        let field_ident = format_ident!("{}", bt.field_name);
-        let foreign_ty_ident = format_ident!("{}", bt.foreign_type);
-        if fk_impl_parents.insert(bt.foreign_type.clone()) {
-            has_foreign_key_impls.push(quote! {
-                impl #krate::hyphae::HasForeignKey<#foreign_ty_ident> for #name
-                where
-                    #field_ty: #krate::hyphae::IdFor<#foreign_ty_ident>,
-                {
-                    type ForeignKey = #field_ty;
-
-                    fn fk(&self) -> Self::ForeignKey {
-                        self.#field_ident.clone()
-                    }
-                }
-            });
-        }
-    }
-
-    for ef in &rel_info.ensure_for_fields {
-        let Some(field_ty) = field_types.get(&ef.field_name) else {
-            continue;
-        };
-        let field_ident = format_ident!("{}", ef.field_name);
-        let foreign_ty_ident = format_ident!("{}", ef.foreign_type);
-        if fk_impl_parents.insert(ef.foreign_type.clone()) {
-            has_foreign_key_impls.push(quote! {
-                impl #krate::hyphae::HasForeignKey<#foreign_ty_ident> for #name
-                where
-                    #field_ty: #krate::hyphae::IdFor<#foreign_ty_ident>,
-                {
-                    type ForeignKey = #field_ty;
-
-                    fn fk(&self) -> Self::ForeignKey {
-                        self.#field_ident.clone()
-                    }
-                }
-            });
-        }
-    }
+    let has_foreign_key_impls = generate_foreign_key_impls(name, &input_struct, &rel_info, krate);
 
     // Generate setter commands for fields with #[myko_rename] or #[myko_setter]
     let setter_commands = setter::generate_setter_commands(&name_str, &setter_fields);
 
-    // Generate server_owner / bake_server_owner overrides for #[server_owned] fields
-    let server_owned_impls = if let Some(ref so) = rel_info.server_owned_field {
-        let field_ident = format_ident!("{}", so.field_name);
-        quote! {
-            fn server_owner(&self) -> Option<&str> {
-                let s: &str = &self.#field_ident;
-                if s.is_empty() { None } else { Some(s) }
-            }
-
-            fn bake_server_owner(&self, server_id: &str) -> Option<std::sync::Arc<dyn #krate::prelude::AnyItem>> {
-                let mut patched = self.clone();
-                patched.#field_ident = server_id.to_string().into();
-                Some(std::sync::Arc::new(patched))
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let expanded = quote! {
-
-        use #krate::prelude::Query;
-        use #krate::hyphae::MapExt as _HyphaMapExt;
-
-        #[derive(
-            Clone,
-            Default,
-            PartialEq,
-            Eq,
-            PartialOrd,
-            Ord,
-            Hash,
-            #serde_path::Serialize,
-            #serde_path::Deserialize,
-            Debug,
-        )]
-        #[derive(#krate::TS)]
-        #[ts(type = "string")]
-        pub struct #id_type_ident(pub std::sync::Arc<str>);
-
-        impl std::ops::Deref for #id_type_ident {
-            type Target = str;
-
-            fn deref(&self) -> &Self::Target {
-                self.0.as_ref()
-            }
-        }
-
-        impl std::fmt::Display for #id_type_ident {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Display::fmt(self.0.as_ref(), f)
-            }
-        }
-
-        impl AsRef<str> for #id_type_ident {
-            fn as_ref(&self) -> &str {
-                self.0.as_ref()
-            }
-        }
-
-        impl From<std::sync::Arc<str>> for #id_type_ident {
-            fn from(value: std::sync::Arc<str>) -> Self {
-                Self(value)
-            }
-        }
-
-        impl From<#id_type_ident> for std::sync::Arc<str> {
-            fn from(value: #id_type_ident) -> Self {
-                value.0
-            }
-        }
-
-        impl From<String> for #id_type_ident {
-            fn from(value: String) -> Self {
-                Self(std::sync::Arc::<str>::from(value))
-            }
-        }
-
-        impl From<&str> for #id_type_ident {
-            fn from(value: &str) -> Self {
-                Self(std::sync::Arc::<str>::from(value))
-            }
-        }
-
-        impl #krate::hyphae::IdFor<#name> for #id_type_ident {
-            type MapKey = std::sync::Arc<str>;
-
-            fn map_key(&self) -> Self::MapKey {
-                self.0.clone()
-            }
-        }
-        impl #krate::hyphae::IdType for #id_type_ident {
-            type Parent = #name;
-        }
-        impl #krate::query::Filterable for #id_type_ident {
-            type Filter = #krate::query::IdFilter<#id_type_ident>;
-        }
-
-        #derives
-        #input_struct
-        #post_deserialize_impl
-
-        // Register for ts-rs export
-        #krate::register_ts_export!(#id_type_ident, #name);
-
-        #krate::submit! {
-            #item_registration
-        }
-        #ingest_buffer_registration
-
-        impl #krate::item::Eventable for #name {
-            const ENTITY_NAME_STATIC: &'static str = #name_str;
-        }
-
-        impl #krate::prelude::AnyItem for #name {
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-
-            fn entity_type(&self) -> &'static str {
-                #name_str
-            }
-
-            fn equals(&self, other: &dyn #krate::prelude::AnyItem) -> bool {
-                other
-                    .as_any()
-                    .downcast_ref::<Self>()
-                    .map(|typed| self == typed)
-                    .unwrap_or(false)
-            }
-
-            #server_owned_impls
-        }
-
-        impl #krate::prelude::WithId for #name {
-            fn id(&self) -> std::sync::Arc<str> {
-                self.id.clone().into()
-            }
-        }
-
-        impl #krate::common::with_id::WithTypedId for #name {
-            type Id = #id_type_ident;
-
-            fn typed_id(&self) -> Self::Id {
-                self.id.clone().into()
-            }
-        }
-
-        #(#has_foreign_key_impls)*
-
-        // ToValue is implemented via blanket impl for all Serialize types
-
-        #get_all_query
-
-        #get_by_ids_query
-
-        #filter_struct
-
-        #filter_belongs_to_route_impl
-
-        #get_by_filter_query
-
-        #count_result_type
-
-        #count_all_report
-
-        #count_report
-
-        #get_by_id_report
-
-        #delete_command
-
-        #delete_many_command
-
-        // Setter commands (from #[myko_rename] and #[myko_setter] field attributes)
-        #setter_commands
-
-        // Relationship registrations (belongs_to, owns_many, ensure_for)
-        #relationship_registrations
-
-        // Note: Auto-generated queries (GetAll*, Get*sByIds, Get*sByQuery) and reports
-        // (CountAll*, Count*, Get*ById) are registered via their #[myko_query] and
-        // #[myko_report] macro attributes which emit inventory registrations.
-
-    };
-
-    expanded
+    let server_owned_impls = generate_server_owned_impls(&rel_info, krate);
+    expand_item(ItemExpansion {
+        name: name.clone(),
+        name_str,
+        id_type_ident,
+        ctx,
+        input_struct,
+        derives,
+        partial_eq_impl,
+        post_deserialize: post_deserialize_impl,
+        ingest_registration: ingest_buffer_registration,
+        item_registration,
+        server_owned_impls,
+        foreign_key_impls: has_foreign_key_impls,
+        generated_items: vec![
+            get_all_query,
+            get_by_ids_query,
+            filter_struct,
+            filter_belongs_to_route_impl,
+            get_by_filter_query,
+            count_all_report,
+            count_report,
+            get_by_id_report,
+            delete_commands,
+            setter_commands,
+            relationship_registrations,
+        ],
+    })
 }

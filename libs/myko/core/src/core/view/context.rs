@@ -20,7 +20,8 @@ pub struct ViewContext {
 }
 
 impl ViewContext {
-    pub fn new(
+    #[must_use]
+    pub const fn new(
         req: Arc<RequestContext>,
         registry: Arc<StoreRegistry>,
         server_ctx: Arc<MykoServerContext>,
@@ -58,6 +59,7 @@ impl Reporting for ViewContext {}
 impl Viewing for ViewContext {}
 
 /// Context for a view handler's `build_cell` step — where the reactive map is
+///
 /// constructed. Wraps the per-request [`ViewContext`]; it used to also carry
 /// its own duplicate `registry`/`server_ctx` and a separate `request_ctx`
 /// (which was always `view_context.req`), all now read straight through the
@@ -71,7 +73,8 @@ pub struct ViewBuildContext {
 }
 
 impl ViewBuildContext {
-    pub fn new(view_context: Arc<ViewContext>) -> Self {
+    #[must_use]
+    pub const fn new(view_context: Arc<ViewContext>) -> Self {
         Self { view_context }
     }
 }

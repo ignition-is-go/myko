@@ -44,6 +44,7 @@ impl PeerPersister {
     ///
     /// The map is shared with `MykoServerContext::peer_clients` so entries added by
     /// `PeerRegistry::register_peer_client` become visible here automatically.
+    #[must_use]
     pub fn new(peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>) -> Self {
         Self {
             peer_clients,
@@ -52,6 +53,7 @@ impl PeerPersister {
     }
 
     /// Peer client count — mostly for diagnostics and health reporting.
+    #[must_use]
     pub fn peer_count(&self) -> usize {
         self.peer_clients.len()
     }
@@ -85,14 +87,13 @@ impl Persister for PeerPersister {
                     entry.key(),
                     e
                 );
-                error_count += 1;
+                error_count = error_count.saturating_add(1);
             }
         }
 
         if error_count == peer_count {
             let msg = format!(
-                "PeerPersister: broadcast failed for all {} peer(s)",
-                peer_count
+                "PeerPersister: broadcast failed for all {peer_count} peer(s)"
             );
             self.health.record_error(msg.clone());
             return Err(PersistError {

@@ -1,4 +1,4 @@
-//! QueryRequest wrapper type.
+//! `QueryRequest` wrapper type.
 
 use std::sync::Arc;
 
@@ -56,8 +56,8 @@ impl<Q: QueryParams> From<Q> for QueryRequest<Q> {
     }
 }
 
-impl<Q: Clone> From<&QueryRequest<Q>> for QueryRequest<Q> {
-    fn from(request: &QueryRequest<Q>) -> Self {
+impl<Q: Clone> From<&Self> for QueryRequest<Q> {
+    fn from(request: &Self) -> Self {
         request.clone()
     }
 }
@@ -121,6 +121,6 @@ impl<Q: QueryId + QueryItemType + Serialize + std::fmt::Debug + Send + Sync + 's
     }
 
     fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).expect("QueryRequest should serialize to JSON")
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 }

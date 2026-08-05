@@ -61,8 +61,8 @@
 //! |--------|---------|
 //! | [`client`] | WebSocket client for connecting to Myko servers |
 //! | [`core`] | Core types: command, query, report, saga, item, relationship |
-//! | [`wire`] | Wire protocol types: MykoMessage, MEvent, responses, errors |
-//! | [`server`] | MykoServer and server context |
+//! | [`wire`] | Wire protocol types: `MykoMessage`, `MEvent`, responses, errors |
+//! | [`server`] | `MykoServer` and server context |
 //! | [`store`] | Entity store and registry |
 //!
 //! ## Performance
@@ -70,8 +70,8 @@
 //! Myko-rs is optimized for high-throughput, low-latency scenarios:
 //!
 //! - **Hyphae cells**: Reactive queries and reports using the hyphae cell library
-//! - **Lock-free stores**: CellMap for concurrent entity access
-//! - **MessagePack serialization**: Binary format for efficient WebSocket communication
+//! - **Lock-free stores**: `CellMap` for concurrent entity access
+//! - **`MessagePack` serialization**: Binary format for efficient WebSocket communication
 //! - **Pluggable persistence**: Run in-memory for development, add Postgres for production persistence
 //!
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
@@ -260,8 +260,8 @@ pub(crate) mod test_util {
     //! the first line of any test asserting on reactive state at an instant
     //! (same fix as `tests/query_cache_leak_test.rs`, which is a separate
     //! process and doesn't need to share this lock).
-    pub(crate) fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
+    pub fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

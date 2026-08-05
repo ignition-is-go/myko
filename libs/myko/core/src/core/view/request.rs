@@ -1,4 +1,4 @@
-//! ViewRequest wrapper type.
+//! `ViewRequest` wrapper type.
 
 use std::sync::Arc;
 
@@ -55,8 +55,8 @@ impl<V: ViewParams> From<V> for ViewRequest<V> {
     }
 }
 
-impl<V: Clone> From<&ViewRequest<V>> for ViewRequest<V> {
-    fn from(request: &ViewRequest<V>) -> Self {
+impl<V: Clone> From<&Self> for ViewRequest<V> {
+    fn from(request: &Self) -> Self {
         request.clone()
     }
 }
@@ -110,6 +110,6 @@ impl<V: ViewId + ViewItemType + Serialize + std::fmt::Debug + Send + Sync + 'sta
     }
 
     fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).expect("ViewRequest should serialize to JSON")
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 }

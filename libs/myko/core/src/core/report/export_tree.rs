@@ -28,6 +28,7 @@ use crate::{
 
 /// A single exported entity within the tree.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct ExportedEntity {
     /// The entity type name (e.g., "Scene", "Binding").
     pub entity_type: Arc<str>,
@@ -37,6 +38,7 @@ pub struct ExportedEntity {
 
 /// The complete tree export containing all entities reachable from the root.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct EntityTreeExport {
     /// Export format version.
     pub version: u32,
@@ -85,15 +87,15 @@ pub struct ChildRelation {
     pub kind: ChildKind,
 }
 pub enum ChildKind {
-    /// BelongsTo: scan the child store for entities whose FK matches the parent ID.
+    /// `BelongsTo`: scan the child store for entities whose FK matches the parent ID.
     BelongsTo {
         extract_fk: crate::relationship::FkExtractor,
     },
-    /// OwnsMany: extract child IDs directly from the parent entity.
+    /// `OwnsMany`: extract child IDs directly from the parent entity.
     OwnsMany {
         extract_ids: crate::relationship::ArrayExtractor,
     },
-    /// EnsureFor: scan the local (ensured) store for entities whose FK matches the parent ID.
+    /// `EnsureFor`: scan the local (ensured) store for entities whose FK matches the parent ID.
     EnsureFor {
         extract_fk: crate::relationship::FkExtractor,
     },
@@ -103,6 +105,7 @@ pub enum ChildKind {
 ///
 /// This processes all registered relationships once and inverts them into
 /// a lookup table suitable for BFS traversal.
+#[must_use]
 pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
     let mut map: HashMap<&'static str, Vec<ChildRelation>> = HashMap::new();
 
@@ -179,12 +182,16 @@ pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
 /// Walk the entity tree via BFS starting from `(root_type, root_id)`.
 ///
 /// Returns all reachable entities (including the root) as `ExportedEntity` values.
-pub fn walk_tree(
+#[must_use]
+pub fn walk_tree<S>(
     root_type: &str,
     root_id: &str,
     registry: &StoreRegistry,
-    adjacency: &HashMap<&'static str, Vec<ChildRelation>>,
-) -> Vec<ExportedEntity> {
+    adjacency: &HashMap<&'static str, Vec<ChildRelation>, S>,
+) -> Vec<ExportedEntity>
+where
+    S: std::hash::BuildHasher,
+{
     let mut result = Vec::new();
     let mut visited: HashSet<(Arc<str>, Arc<str>)> = HashSet::new();
     let mut queue: VecDeque<(Arc<str>, Arc<str>)> = VecDeque::new();
@@ -285,8 +292,7 @@ impl crate::report::ReportHandler for ExportEntityTree {
                 Ok(r) => r,
                 Err(err) => {
                     eprintln!(
-                        "[ExportEntityTree] replay_store FAILED: as_of={} err={}",
-                        as_of, err
+                        "[ExportEntityTree] replay_store FAILED: as_of={as_of} err={err}"
                     );
                     return Cell::new(Arc::new(EntityTreeExport {
                         version: 1,

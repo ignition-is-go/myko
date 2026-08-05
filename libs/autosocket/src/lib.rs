@@ -52,6 +52,7 @@ impl CallbackGuard {
     }
 
     /// Create a no-op guard that does nothing on drop.
+    #[must_use]
     pub fn noop() -> Self {
         Self { drop_fn: None }
     }
@@ -87,6 +88,10 @@ pub trait SocketTransport: Send + Sync + 'static {
     fn actual_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable>;
 
     /// Send a frame to the remote end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transport's outgoing channel is disconnected.
     fn send(&self, frame: WsFrame) -> Result<(), String>;
 
     /// Read stream of incoming websocket frames.

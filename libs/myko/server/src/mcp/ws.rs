@@ -4,7 +4,7 @@
 //! frames) and `/myko` (Myko gateway), the latter handing off to the
 //! existing [`crate::ws_handler::WsHandler::handle_upgraded`].
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{fmt::Write as _, net::SocketAddr, sync::Arc};
 
 use futures_util::{SinkExt, StreamExt};
 use myko::server::MykoServerContext;
@@ -28,6 +28,9 @@ use crate::router::{HttpRequestHead, write_status};
 const MCP_SUBPROTOCOL: &str = "mcp";
 
 /// Upgrade `/myko/mcp` to a WebSocket carrying MCP JSON-RPC text frames.
+/// # Errors
+///
+/// Returns an error when the WebSocket upgrade or MCP session fails.
 pub async fn handle_mcp_ws_upgrade(
     stream: TcpStream,
     ctx: Arc<MykoServerContext>,
@@ -43,11 +46,10 @@ pub async fn handle_mcp_ws_upgrade(
 
     let want_mcp_subprotocol = head
         .header("Sec-WebSocket-Protocol")
-        .map(|v| {
+        .is_some_and(|v| {
             v.split(',')
                 .any(|p| p.trim().eq_ignore_ascii_case(MCP_SUBPROTOCOL))
-        })
-        .unwrap_or(false);
+        });
 
     let ws_stream = match perform_handshake(stream, &head, want_mcp_subprotocol).await {
         Ok(s) => s,
@@ -61,6 +63,9 @@ pub async fn handle_mcp_ws_upgrade(
 }
 
 /// Upgrade `/myko` to a WebSocket and hand off to the existing Myko gateway.
+/// # Errors
+///
+/// Returns an error when the WebSocket upgrade or Myko session fails.
 pub async fn handle_myko_ws_upgrade(
     stream: TcpStream,
     addr: SocketAddr,
@@ -85,7 +90,7 @@ async fn perform_handshake(
     let version = head.header("Sec-WebSocket-Version").unwrap_or("");
     if version.trim() != "13" {
         let _ = write_status(&mut stream, 400, "Bad Request").await;
-        return Err(format!("unsupported Sec-WebSocket-Version: {}", version).into());
+        return Err(format!("unsupported Sec-WebSocket-Version: {version}").into());
     }
     let key = head
         .header("Sec-WebSocket-Key")
@@ -99,9 +104,9 @@ async fn perform_handshake(
     response.push_str("HTTP/1.1 101 Switching Protocols\r\n");
     response.push_str("Upgrade: websocket\r\n");
     response.push_str("Connection: Upgrade\r\n");
-    response.push_str(&format!("Sec-WebSocket-Accept: {}\r\n", accept));
+    let _ = write!(response, "Sec-WebSocket-Accept: {accept}\r\n");
     if echo_mcp_subprotocol {
-        response.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", MCP_SUBPROTOCOL));
+        let _ = write!(response, "Sec-WebSocket-Protocol: {MCP_SUBPROTOCOL}\r\n");
     }
     response.push_str("\r\n");
     stream.write_all(response.as_bytes()).await?;

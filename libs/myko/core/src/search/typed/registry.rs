@@ -15,6 +15,7 @@ use super::{Hit, SearchIndex, SearchOptions, Searchable};
 use crate::core::item::AnyItem;
 
 /// Type-erased shim over a per-type `RwLock<SearchIndex<T>>`. Allows
+///
 /// `&dyn AnyItem` call sites to dispatch into the right monomorphized index
 /// without naming `T`. The `'static` bound + `as_any` is what lets typed
 /// reports recover their concrete `TypedShim<T>` from the registry.
@@ -38,6 +39,7 @@ pub struct TypedShim<T: Searchable + AnyItem> {
 }
 
 impl<T: Searchable + AnyItem> TypedShim<T> {
+    #[must_use]
     pub fn new(entity_type: &'static str) -> Self {
         Self {
             entity_type,
@@ -47,7 +49,7 @@ impl<T: Searchable + AnyItem> TypedShim<T> {
 
     /// Direct typed access — used by macro-generated typed reports that
     /// don't need to cross the dyn boundary.
-    pub fn inner(&self) -> &RwLock<SearchIndex<T>> {
+    pub const fn inner(&self) -> &RwLock<SearchIndex<T>> {
         &self.inner
     }
 }
@@ -107,11 +109,11 @@ where
     }
 
     fn len(&self) -> usize {
-        self.inner.read().map(|g| g.len()).unwrap_or(0)
+        self.inner.read().map_or(0, |g| g.len())
     }
 }
 
-/// Per-type indexes keyed by entity_type. Built once at startup by walking
+/// Per-type indexes keyed by `entity_type`. Built once at startup by walking
 /// the `SearchableRegistration` inventory and calling each registration's
 /// `register` fn.
 pub struct SearchRegistry {
@@ -119,13 +121,14 @@ pub struct SearchRegistry {
 }
 
 impl SearchRegistry {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             indexes: HashMap::new(),
         }
     }
 
-    /// Register a per-type index. Idempotent within an entity_type — a second
+    /// Register a per-type index. Idempotent within an `entity_type` — a second
     /// call replaces the existing index (intended for testing; production
     /// startup calls each `register` fn exactly once).
     pub fn register<T>(&mut self, entity_type: &'static str)
@@ -159,6 +162,7 @@ impl SearchRegistry {
     /// by cross-type "search anything" command palettes. Typed reports
     /// bypass this and call into `SearchIndex<T>` directly via
     /// `typed_handle`.
+    #[must_use]
     pub fn search(
         &self,
         entity_type: &str,
@@ -188,10 +192,12 @@ impl SearchRegistry {
         Some(f(&typed.inner))
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.indexes.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.indexes.is_empty()
     }
@@ -233,7 +239,7 @@ mod tests {
 
         let hits = registry.search("BenchItem", "mixer", SearchOptions::default());
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id.as_ref(), "1");
+        assert_eq!(hits.first().map(|hit| hit.id.as_ref()), Some("1"));
     }
 
     #[test]
@@ -283,12 +289,15 @@ mod tests {
         let hits = registry
             .with_typed::<BenchItem, _>("BenchItem", |lock| {
                 lock.read()
-                    .unwrap()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .search("mixer", SearchOptions::default())
-            })
-            .unwrap();
+            });
+        assert!(hits.is_some(), "typed registry handle");
+        let Some(hits) = hits else {
+            return;
+        };
         assert_eq!(hits.len(), 1);
         // Note: typed hits carry the typed BenchItemId, not Arc<str>.
-        assert_eq!(hits[0].id.0.as_ref(), "1");
+        assert_eq!(hits.first().map(|hit| hit.id.0.as_ref()), Some("1"));
     }
 }

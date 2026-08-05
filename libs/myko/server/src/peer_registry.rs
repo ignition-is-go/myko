@@ -203,7 +203,7 @@ impl PeerRegistry {
 
         let peer_sub = Self::spawn_peer_reconcile_guard(
             peer_servers,
-            host_id.clone(),
+            host_id,
             config.address.clone(),
             config.port,
             ctx.clone(),
@@ -220,6 +220,8 @@ impl PeerRegistry {
         if let Err(e) = ctx.set(&server) {
             tracing::error!("Failed to publish local server bootstrap advert: {e}");
         }
+        drop(ctx);
+        drop(config);
 
         Self {
             _peers_guard: peer_sub,

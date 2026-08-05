@@ -60,16 +60,13 @@ impl PeerConnectionHandle {
                     status_log_port,
                     s.0,
                     s.1
-                )
+                );
             })
             .materialize()
             .deduped()
             .map(move |status| match status.as_ref() {
                 Some((_, ConnectionStatus::Connected(_))) => PeerConnectionCycle::Connected,
-                Some((ConnectionStatus::Connected(_), ConnectionStatus::Disconnected)) => {
-                    PeerConnectionCycle::Failed
-                }
-                Some((ConnectionStatus::Connecting(_), ConnectionStatus::Disconnected)) => {
+                Some((ConnectionStatus::Connected(_) | ConnectionStatus::Connecting(_), ConnectionStatus::Disconnected)) => {
                     PeerConnectionCycle::Failed
                 }
                 _ => PeerConnectionCycle::Pending,
@@ -109,8 +106,9 @@ impl PeerConnectionHandle {
                     identity
                 );
                 match (status, identity) {
-                    (_, IdentityCycle::Imposter) => PeerState::Delete,
-                    (PeerConnectionCycle::Failed, _) => PeerState::Delete,
+                    (_, IdentityCycle::Imposter) | (PeerConnectionCycle::Failed, _) => {
+                        PeerState::Delete
+                    }
                     (_, _) => PeerState::Keep,
                 }
             })
@@ -132,7 +130,7 @@ impl std::fmt::Debug for PeerConnectionHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerConnectionHandle")
             .field("server_id", &self.server_ent.id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

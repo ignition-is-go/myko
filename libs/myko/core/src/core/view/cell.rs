@@ -11,6 +11,13 @@ pub fn erase_typed_view_map<T>(typed: TypedViewCellMap<T>) -> FilteredViewCellMa
 where
     T: AnyItem + PartialEq + Send + Sync + 'static,
 {
+    fn erase_item<T>(value: &Arc<T>) -> Arc<dyn AnyItem>
+    where
+        T: AnyItem + PartialEq + Send + Sync + 'static,
+    {
+        value.clone()
+    }
+
     fn map_any_diff<T>(diff: &MapDiff<Arc<str>, Arc<T>>) -> MapDiff<Arc<str>, Arc<dyn AnyItem>>
     where
         T: AnyItem + PartialEq + Send + Sync + 'static,
@@ -19,16 +26,16 @@ where
             MapDiff::Initial { entries } => MapDiff::Initial {
                 entries: entries
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.clone() as Arc<dyn AnyItem>))
+                    .map(|(k, v)| (k.clone(), erase_item(v)))
                     .collect(),
             },
             MapDiff::Insert { key, value } => MapDiff::Insert {
                 key: key.clone(),
-                value: value.clone() as Arc<dyn AnyItem>,
+                value: erase_item(value),
             },
             MapDiff::Remove { key, old_value } => MapDiff::Remove {
                 key: key.clone(),
-                old_value: old_value.clone() as Arc<dyn AnyItem>,
+                old_value: erase_item(old_value),
             },
             MapDiff::Update {
                 key,
@@ -36,8 +43,8 @@ where
                 new_value,
             } => MapDiff::Update {
                 key: key.clone(),
-                old_value: old_value.clone() as Arc<dyn AnyItem>,
-                new_value: new_value.clone() as Arc<dyn AnyItem>,
+                old_value: erase_item(old_value),
+                new_value: erase_item(new_value),
             },
             MapDiff::Batch { changes } => MapDiff::Batch {
                 changes: changes.iter().map(map_any_diff::<T>).collect(),
@@ -56,5 +63,6 @@ where
         }
     });
     output.own_guard(guard);
+    drop(typed);
     output.lock()
 }

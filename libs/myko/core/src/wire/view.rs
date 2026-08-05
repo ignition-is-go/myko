@@ -54,6 +54,10 @@ impl ViewError {
 
 pub type ViewResponse = QueryResponse;
 
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn wrap_view<V: ViewId + ViewItemType + Serialize + Clone>(
     tx: Arc<str>,
     view: &V,

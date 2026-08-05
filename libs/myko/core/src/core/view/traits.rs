@@ -26,11 +26,11 @@ pub struct ViewBuildArgs<TView: ViewItemType> {
     pub view_context: ViewBuildContext,
 }
 
-/// Build the reactive CellMap for a view.
+/// Build the reactive `CellMap` for a view.
 ///
 /// # Ordering
 ///
-/// Views are **sorted by their CellMap key** (the `id` field on each view item).
+/// Views are **sorted by their `CellMap` key** (the `id` field on each view item).
 /// The wire protocol sorts items lexicographically by key before sending them
 /// to clients. To control sort order, use a compound key like
 /// `format!("{sort_field}\x1F{unique_id}")` where `\x1F` (Unit Separator) sorts
@@ -55,7 +55,7 @@ pub trait AnyView: WithTransaction + ViewId + std::fmt::Debug + Send + Sync + 's
 
 impl From<&dyn AnyView> for WrappedView {
     fn from(view: &dyn AnyView) -> Self {
-        WrappedView {
+        Self {
             view: view.to_value(),
             view_id: view.view_id(),
             view_item_type: view.view_item_type(),
@@ -66,13 +66,13 @@ impl From<&dyn AnyView> for WrappedView {
 
 impl From<Arc<dyn AnyView>> for WrappedView {
     fn from(view: Arc<dyn AnyView>) -> Self {
-        WrappedView::from(view.as_ref())
+        Self::from(view.as_ref())
     }
 }
 
 impl From<&Arc<dyn AnyView>> for WrappedView {
     fn from(view: &Arc<dyn AnyView>) -> Self {
-        WrappedView::from(view.as_ref())
+        Self::from(view.as_ref())
     }
 }
 

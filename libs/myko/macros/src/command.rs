@@ -18,24 +18,17 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
 
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`. The Args
     // struct is field-identical to `input_struct` (cloned below), so
     // capturing from `input_struct.fields` covers both.
-    let description = crate::extract_doc_comment(&input_struct.attrs);
-    let description_tokens = match &description {
-        Some(d) => quote!(Some(#d)),
-        None => quote!(None),
-    };
-    let args_tokens = crate::field_metadata_tokens(&input_struct.fields, krate);
+    let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
 
     // Gate user-written `#[ts(...)]` attrs behind the ts-export feature.
     crate::gate_ts_attrs(&mut input_struct.attrs);
-    for field in input_struct.fields.iter_mut() {
-        crate::gate_ts_attrs(&mut field.attrs);
-    }
+    crate::gate_field_ts_attrs(&mut input_struct.fields);
 
     let ts_cfg_derive = quote!(#[derive(#krate::TS)]);
 
@@ -48,22 +41,20 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         syn::parse_quote!(#ts_cfg_derive),
     ];
     // Add serde rename attr
-    let serde_rename_attr_clone = ctx.serde_attr(quote!(rename_all = "camelCase"));
+    let serde_rename_attr_clone = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     args_struct
         .attrs
         .push(syn::parse_quote!(#serde_rename_attr_clone));
 
     // Default to () if no result type specified
-    let result_type_tokens = match &result_type {
-        Some(path) => quote! { #path },
-        None => quote! { () },
-    };
+    let result_type_tokens = result_type
+        .as_ref()
+        .map_or_else(|| quote! { () }, |path| quote! { #path });
 
     // Get the result type name as a string for registration (including generic args)
-    let result_type_str = match &result_type {
-        Some(path) => quote!(#path).to_string(),
-        None => "()".to_string(),
-    };
+    let result_type_str = result_type
+        .as_ref()
+        .map_or_else(|| "()".to_string(), |path| quote!(#path).to_string());
 
     let derives = if custom_serialize {
         quote! {
@@ -82,9 +73,9 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let pairs = input_struct
         .fields
         .iter()
-        .map(|f| {
-            let f_name = f.ident.as_ref().expect("must be field struct");
-            quote! {#f_name: args.#f_name,}
+        .filter_map(|f| {
+            let f_name = f.ident.as_ref()?;
+            Some(quote! {#f_name: args.#f_name,})
         })
         .collect::<Vec<_>>();
 

@@ -1,7 +1,7 @@
 //! Client session management for WebSocket connections
 //!
-//! Each WebSocket connection gets a ClientSession that manages:
-//! - Active subscriptions via SubscriptionGuards
+//! Each WebSocket connection gets a `ClientSession` that manages:
+//! - Active subscriptions via `SubscriptionGuards`
 //! - Message sending to the client
 //! - Automatic cleanup on disconnect
 
@@ -77,6 +77,7 @@ pub struct PendingQueryResponse {
 }
 
 impl PendingQueryResponse {
+    #[must_use]
     pub fn into_wire(self) -> QueryResponse {
         let upserts: Vec<ErasedWrappedItem> = self
             .upsert_items
@@ -162,9 +163,9 @@ impl<W: WsWriter> ClientSession<W> {
         }
     }
 
-    /// Subscribe to a CellMap from a query cell factory.
+    /// Subscribe to a `CellMap` from a query cell factory.
     ///
-    /// This is used by WsHandler when the query registration provides a cell factory.
+    /// This is used by `WsHandler` when the query registration provides a cell factory.
     pub fn subscribe_query(
         &mut self,
         tx: Arc<str>,
@@ -185,7 +186,7 @@ impl<W: WsWriter> ClientSession<W> {
         let writer = self.writer.clone();
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
-        let query_id_for_diffs = query_id.clone();
+        let query_id_for_diffs = query_id;
         let state = Arc::new(Mutex::new(QuerySubscriptionState {
             window,
             ..Default::default()
@@ -194,18 +195,16 @@ impl<W: WsWriter> ClientSession<W> {
 
         // subscribe_diffs sends Initial first, then subsequent diffs
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = match state_for_diffs.lock() {
-                Ok(mut state) => state.apply_source_diff(diff, tx_clone.clone()),
-                Err(_) => {
-                    tracing::error!("Query subscription state poisoned for tx={}", tx_clone);
-                    return;
-                }
+            let response = if let Ok(mut state) = state_for_diffs.lock() { state.apply_source_diff(diff, tx_clone.clone()) } else {
+                tracing::error!("Query subscription state poisoned for tx={}", tx_clone);
+                return;
             };
             if let Some(response) = response {
                 crate::server::dispatch_metrics::record_query_response(&query_id_for_diffs);
                 writer.send_query_response(response, false);
             }
         });
+        drop(cell);
 
         self.subscriptions.insert(
             tx,
@@ -233,7 +232,7 @@ impl<W: WsWriter> ClientSession<W> {
         }
     }
 
-    /// Subscribe to a CellMap from a view cell factory.
+    /// Subscribe to a `CellMap` from a view cell factory.
     pub fn subscribe_view(
         &mut self,
         tx: Arc<str>,
@@ -243,7 +242,7 @@ impl<W: WsWriter> ClientSession<W> {
         self.subscribe_view_with_id(tx, "unknown".into(), cell, window);
     }
 
-    /// Subscribe to a CellMap from a view cell factory with explicit view id for perf logging.
+    /// Subscribe to a `CellMap` from a view cell factory with explicit view id for perf logging.
     pub fn subscribe_view_with_id(
         &mut self,
         tx: Arc<str>,
@@ -265,12 +264,9 @@ impl<W: WsWriter> ClientSession<W> {
         let state_for_diffs = state.clone();
 
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = match state_for_diffs.lock() {
-                Ok(mut state) => state.apply_source_diff(diff, tx_clone.clone()),
-                Err(_) => {
-                    tracing::error!("View subscription state poisoned for tx={}", tx_clone);
-                    return;
-                }
+            let response = if let Ok(mut state) = state_for_diffs.lock() { state.apply_source_diff(diff, tx_clone.clone()) } else {
+                tracing::error!("View subscription state poisoned for tx={}", tx_clone);
+                return;
             };
             let Some(response) = response else {
                 return;
@@ -282,9 +278,11 @@ impl<W: WsWriter> ClientSession<W> {
                 response.sequence,
                 response.upsert_items.len(),
                 response.deletes.len(),
-                response.upsert_items.len()
-                    + response.deletes.len()
-                    + usize::from(response.window_order_ids.is_some()),
+                response
+                    .upsert_items
+                    .len()
+                    .saturating_add(response.deletes.len())
+                    .saturating_add(usize::from(response.window_order_ids.is_some())),
                 response.window,
                 response.total_count
             );
@@ -305,6 +303,7 @@ impl<W: WsWriter> ClientSession<W> {
             crate::server::dispatch_metrics::record_view_response(&view_id_for_metrics);
             writer.send_query_response(response, true);
         });
+        drop(cell);
 
         self.subscriptions.insert(
             tx,
@@ -322,6 +321,7 @@ impl<W: WsWriter> ClientSession<W> {
             tx_for_log,
             self.subscriptions.len()
         );
+        drop(view_id);
     }
 
     /// Subscribe to a report cell.
@@ -362,6 +362,7 @@ impl<W: WsWriter> ClientSession<W> {
                 )));
             }
         });
+        drop(cell);
 
         self.subscriptions
             .insert(tx, SubscriptionEntry::Guard { _guard: guard });
@@ -397,15 +398,12 @@ impl<W: WsWriter> ClientSession<W> {
             return;
         };
 
-        let response = match sub.state.lock() {
-            Ok(mut state) => state.apply_window_update(window, tx.clone()),
-            Err(_) => {
-                tracing::error!(
-                    "Query subscription state poisoned on window update for tx={}",
-                    tx
-                );
-                return;
-            }
+        let response = if let Ok(mut state) = sub.state.lock() { state.apply_window_update(window, tx.clone()) } else {
+            tracing::error!(
+                "Query subscription state poisoned on window update for tx={}",
+                tx
+            );
+            return;
         };
 
         let Some(response) = response else {
@@ -465,11 +463,13 @@ impl<W: WsWriter> ClientSession<W> {
     }
 
     /// Get the number of active subscriptions.
+    #[must_use]
     pub fn subscription_count(&self) -> usize {
         self.subscriptions.len()
     }
 
     /// Check if a subscription exists.
+    #[must_use]
     pub fn has_subscription(&self, tx: &Arc<str>) -> bool {
         self.subscriptions.contains_key(tx)
     }
@@ -701,85 +701,104 @@ impl QuerySubscriptionState {
         force_emit: bool,
     ) -> Option<PendingQueryResponse> {
         if self.window.is_none() {
-            if self.sequence == 0 {
-                self.visible_items = self.all_items.clone();
-            } else {
-                for id in removed_ids {
-                    self.visible_items.remove(id);
-                }
-                for id in changed_ids {
-                    if let Some(item) = self.all_items.get(id.as_ref()) {
-                        self.visible_items.insert(id.clone(), item.clone());
-                    }
-                }
-            }
-
-            let mut deletes: Vec<Arc<str>> = removed_ids
-                .iter()
-                .filter(|id| !self.all_items.contains_key(id.as_ref()))
-                .cloned()
-                .collect();
-            deletes.sort_unstable();
-
-            let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-            if self.sequence == 0 {
-                let mut ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
-                ids.sort_unstable();
-                for id in ids {
-                    if let Some(item) = self.all_items.get(id.as_ref()) {
-                        upsert_items.push(item.clone());
-                    }
-                }
-            } else {
-                let mut ids: Vec<Arc<str>> = changed_ids.iter().cloned().collect();
-                ids.sort_unstable();
-                for id in ids {
-                    if let Some(item) = self.all_items.get(id.as_ref()) {
-                        upsert_items.push(item.clone());
-                    }
-                }
-            }
-
-            let total_count = self.all_items.len();
-            let window_order_changed = false;
-            let total_count_changed = previous_total_count != total_count;
-            let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
-            let should_emit =
-                force_emit || self.sequence == 0 || visible_changed || total_count_changed;
-
-            tracing::trace!(
-                "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
+            return self.compute_unwindowed_response(
                 tx,
+                changed_ids,
+                removed_ids,
+                previous_total_count,
                 force_emit,
-                self.sequence,
-                changed_ids.len(),
-                upsert_items.len(),
-                deletes.len(),
-                visible_changed,
-                window_order_changed,
-                total_count_changed,
-                should_emit,
-                total_count,
-                self.window
             );
-
-            if !should_emit {
-                return None;
-            }
-
-            let seq = self.sequence;
-            self.sequence = self.sequence.saturating_add(1);
-
-            return Some(PendingQueryResponse {
-                tx,
-                sequence: seq,
-                upsert_items,
-                deletes,
-                total_count,
-                window: None,
-                window_order_ids: None,
-            });
         }
+
+        self.compute_bounded_window_response(
+            tx,
+            changed_ids,
+            previous_total_count,
+            force_emit,
+        )
+    }
+
+    fn compute_unwindowed_response(
+        &mut self,
+        tx: Arc<str>,
+        changed_ids: &HashSet<Arc<str>>,
+        removed_ids: &HashSet<Arc<str>>,
+        previous_total_count: usize,
+        force_emit: bool,
+    ) -> Option<PendingQueryResponse> {
+        if self.sequence == 0 {
+            self.visible_items = self.all_items.clone();
+        } else {
+            for id in removed_ids {
+                self.visible_items.remove(id);
+            }
+            for id in changed_ids {
+                if let Some(item) = self.all_items.get(id.as_ref()) {
+                    self.visible_items.insert(id.clone(), item.clone());
+                }
+            }
+        }
+
+        let mut deletes: Vec<Arc<str>> = removed_ids
+            .iter()
+            .filter(|id| !self.all_items.contains_key(id.as_ref()))
+            .cloned()
+            .collect();
+        deletes.sort_unstable();
+        let source_ids: Vec<Arc<str>> = if self.sequence == 0 {
+            self.all_items.keys().cloned().collect()
+        } else {
+            changed_ids.iter().cloned().collect()
+        };
+        let mut source_ids = source_ids;
+        source_ids.sort_unstable();
+        let upsert_items: Vec<Arc<dyn AnyItem>> = source_ids
+            .into_iter()
+            .filter_map(|id| self.all_items.get(id.as_ref()).cloned())
+            .collect();
+        let total_count = self.all_items.len();
+        let total_count_changed = previous_total_count != total_count;
+        let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
+        let should_emit =
+            force_emit || self.sequence == 0 || visible_changed || total_count_changed;
+
+        tracing::trace!(
+            "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed=false total_count_changed={} should_emit={} total_count={} window={:?}",
+            tx,
+            force_emit,
+            self.sequence,
+            changed_ids.len(),
+            upsert_items.len(),
+            deletes.len(),
+            visible_changed,
+            total_count_changed,
+            should_emit,
+            total_count,
+            self.window
+        );
+        if !should_emit {
+            return None;
+        }
+        let sequence = self.sequence;
+        self.sequence = self.sequence.saturating_add(1);
+        Some(PendingQueryResponse {
+            tx,
+            sequence,
+            upsert_items,
+            deletes,
+            total_count,
+            window: None,
+            window_order_ids: None,
+        })
+    }
+
+    fn compute_bounded_window_response(
+        &mut self,
+        tx: Arc<str>,
+        changed_ids: &HashSet<Arc<str>>,
+        previous_total_count: usize,
+        force_emit: bool,
+    ) -> Option<PendingQueryResponse> {
 
         let mut ordered_ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
         ordered_ids.sort_unstable();
@@ -790,7 +809,7 @@ impl QuerySubscriptionState {
             } else {
                 let start = window.offset.min(ordered_ids.len());
                 let end = start.saturating_add(window.limit).min(ordered_ids.len());
-                ordered_ids[start..end].to_vec()
+                ordered_ids.get(start..end).unwrap_or_default().to_vec()
             }
         } else {
             ordered_ids
@@ -857,12 +876,12 @@ impl QuerySubscriptionState {
             return None;
         }
 
-        let seq = self.sequence;
+        let sequence = self.sequence;
         self.sequence = self.sequence.saturating_add(1);
 
         Some(PendingQueryResponse {
             tx,
-            sequence: seq,
+            sequence,
             upsert_items,
             deletes,
             total_count,
@@ -905,21 +924,21 @@ mod tests {
         }
 
         fn message_count(&self) -> usize {
-            self.messages.lock().unwrap().len()
+            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
         }
 
         fn last_message(&self) -> Option<MykoMessage> {
-            self.messages.lock().unwrap().last().cloned()
+            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last().cloned()
         }
 
         fn messages(&self) -> Vec<MykoMessage> {
-            self.messages.lock().unwrap().clone()
+            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
         }
     }
 
     impl WsWriter for MockWriter {
         fn send(&self, msg: MykoMessage) {
-            self.messages.lock().unwrap().push(msg);
+            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(msg);
         }
 
         fn send_serialized_command(
@@ -928,14 +947,18 @@ mod tests {
             _command_id: String,
             payload: EncodedCommandMessage,
         ) {
-            let msg = match payload {
+            match payload {
                 EncodedCommandMessage::Json(json) => {
-                    serde_json::from_str(&json).expect("Serialized command JSON should decode")
+                    if let Ok(message) = serde_json::from_str(&json) {
+                        self.send(message);
+                    }
                 }
-                EncodedCommandMessage::Cbor(bytes) => ciborium::de::from_reader(bytes.as_slice())
-                    .expect("Serialized command CBOR should decode"),
-            };
-            self.send(msg);
+                EncodedCommandMessage::Cbor(bytes) => {
+                    if let Ok(message) = ciborium::de::from_reader(bytes.as_slice()) {
+                        self.send(message);
+                    }
+                }
+            }
         }
     }
 
@@ -983,8 +1006,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -992,7 +1014,7 @@ mod tests {
         Arc::new(TestEntity {
             id: id.into(),
             name: name.to_string(),
-        }) as Arc<dyn AnyItem>
+        })
     }
 
     #[test]
@@ -1024,7 +1046,7 @@ mod tests {
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         let mock = Arc::new(MockWriter::new());
-        let writer = ArcMockWriter(mock.clone());
+        let writer = ArcMockWriter(mock);
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
@@ -1044,7 +1066,7 @@ mod tests {
 
         {
             let mock = Arc::new(MockWriter::new());
-            let writer = ArcMockWriter(mock.clone());
+            let writer = ArcMockWriter(mock);
             let mut session = ClientSession::new("client-1".into(), writer);
 
             let cellmap1 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
@@ -1106,7 +1128,11 @@ mod tests {
         assert!(mock.message_count() > initial_count);
 
         // Find the delete message (it should be the last one)
-        let last_msg = mock.last_message().unwrap();
+        let last_msg = mock.last_message();
+        assert!(last_msg.is_some(), "expected response message");
+        let Some(last_msg) = last_msg else {
+            return;
+        };
         if let MykoMessage::QueryResponse(QueryResponse {
             deletes, upserts, ..
         }) = last_msg
@@ -1118,7 +1144,10 @@ mod tests {
             );
             assert!(upserts.is_empty(), "Upserts should be empty for delete");
         } else {
-            panic!("Expected QueryResponse");
+            assert!(
+                matches!(last_msg, MykoMessage::QueryResponse(_)),
+                "Expected QueryResponse"
+            );
         }
     }
 
@@ -1150,15 +1179,17 @@ mod tests {
             MykoMessage::ViewResponse(r) => Some(r),
             _ => None,
         });
+        assert!(first.is_some(), "expected at least one ViewResponse");
         let Some(resp) = first else {
-            panic!("expected at least one ViewResponse");
+            return;
         };
 
         assert_eq!(resp.upserts.len(), 1);
         assert_eq!(resp.deletes.len(), 0);
         assert_eq!(resp.total_count, Some(3));
+        assert!(resp.window.is_some(), "expected window in response");
         let Some(window) = resp.window else {
-            panic!("expected window in response");
+            return;
         };
         assert_eq!(window.offset, 0);
         assert_eq!(window.limit, 1);

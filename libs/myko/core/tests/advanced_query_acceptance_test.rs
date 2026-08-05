@@ -26,10 +26,10 @@ use myko::{
 use uuid::Uuid;
 
 /// hyphae's scheduler tick queue is process-wide — serialize against other
-/// tests in this binary the same way query_cache_leak_test.rs does.
+/// tests in this binary the same way `query_cache_leak_test.rs` does.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {
@@ -40,9 +40,11 @@ fn make_ctx() -> MykoServerContext {
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(myko::search::SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
@@ -54,7 +56,7 @@ fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
         windback: None,
     };
     let event = MEvent::from_item(&client, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 fn insert_compound_child(
@@ -71,7 +73,7 @@ fn insert_compound_child(
         value,
     };
     let event = MEvent::from_item(&child, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestContext> {
@@ -212,8 +214,7 @@ fn permuted_in_filters_share_one_query_cell() {
     let before = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
         .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
-        .map(|m| m.cell_factories_created)
-        .unwrap_or(0);
+        .map_or(0, |m| m.cell_factories_created);
 
     // Two DIFFERENT call sites, same logical filter, permuted + duplicated
     // In array — must canonicalize to the SAME cache key.
@@ -241,11 +242,10 @@ fn permuted_in_filters_share_one_query_cell() {
     let after = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
         .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
-        .map(|m| m.cell_factories_created)
-        .unwrap_or(0);
+        .map_or(0, |m| m.cell_factories_created);
 
     assert_eq!(
-        after - before,
+        after.saturating_sub(before),
         1,
         "two equivalent (canonicalization-wise) advanced queries from different call sites \
          must share one query cell — exactly one cell_factory invocation, not two"
@@ -262,8 +262,7 @@ fn distinct_filters_do_not_share_a_query_cell() {
     let before = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
         .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
-        .map(|m| m.cell_factories_created)
-        .unwrap_or(0);
+        .map_or(0, |m| m.cell_factories_created);
 
     let filter_a = ClientQuery {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
@@ -279,11 +278,10 @@ fn distinct_filters_do_not_share_a_query_cell() {
     let after = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()
         .find(|m| m.query_id.as_ref() == "GetClientsByQuery")
-        .map(|m| m.cell_factories_created)
-        .unwrap_or(0);
+        .map_or(0, |m| m.cell_factories_created);
 
     assert_eq!(
-        after - before,
+        after.saturating_sub(before),
         2,
         "genuinely distinct filters must NOT collapse onto one cache entry"
     );

@@ -1,4 +1,4 @@
-//! EntitySearch report for full-text search across entities.
+//! `EntitySearch` report for full-text search across entities.
 //!
 //! This report searches for entities matching a query string and returns the matching IDs.
 //!
@@ -27,6 +27,7 @@ use crate::{
 
 /// Result of an entity search.
 #[myko_macros::myko_report_output]
+#[derive(Eq)]
 pub struct EntitySearchResult {
     /// IDs of entities matching the search query
     pub ids: Vec<Arc<str>>,
@@ -47,12 +48,12 @@ pub struct EntitySearch {
     pub limit: usize,
 }
 
-fn default_limit() -> usize {
+const fn default_limit() -> usize {
     100
 }
 
 impl EntitySearch {
-    /// Create a new EntitySearch for a specific entity type with default limit (100).
+    /// Create a new `EntitySearch` for a specific entity type with default limit (100).
     ///
     /// # Example
     ///
@@ -63,11 +64,12 @@ impl EntitySearch {
     /// let search = EntitySearch::for_type::<Server>("audio mixer");
     /// let _ = search;
     /// ```
+    #[must_use]
     pub fn for_type<T: Eventable>(query: &str) -> Self {
         Self::for_type_with_limit::<T>(query, 100)
     }
 
-    /// Create a new EntitySearch for a specific entity type with custom limit.
+    /// Create a new `EntitySearch` for a specific entity type with custom limit.
     ///
     /// # Example
     ///
@@ -78,6 +80,7 @@ impl EntitySearch {
     /// let search = EntitySearch::for_type_with_limit::<Server>("audio mixer", 50);
     /// let _ = search;
     /// ```
+    #[must_use]
     pub fn for_type_with_limit<T: Eventable>(query: &str, limit: usize) -> Self {
         Self {
             entity_type: T::ENTITY_NAME_STATIC.to_string(),

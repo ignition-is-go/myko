@@ -43,7 +43,7 @@ where
 }
 
 /// Generic reconciler that keeps a local authoritative entity set in sync with
-/// the remote result of a query by emitting SET/DEL events through MykoClient.
+/// the remote result of a query by emitting SET/DEL events through `MykoClient`.
 pub struct EntityStoreSync<T>
 where
     T: Eventable + WithId + Clone + Send + Sync + 'static,
@@ -98,10 +98,9 @@ where
         let mut events = Vec::new();
 
         for (id, local_item) in local {
-            let should_set = match remote.get(id) {
-                Some(remote_item) => !items_equal(local_item.as_ref(), remote_item.as_ref()),
-                None => true,
-            };
+            let should_set = remote.get(id).is_none_or(|remote_item| {
+                !items_equal(local_item.as_ref(), remote_item.as_ref())
+            });
             if should_set {
                 events.push(MEvent::from_item(local_item.as_ref(), MEventType::SET, ""));
             }
@@ -135,6 +134,7 @@ where
         let local_cell = local_ctx
             .query_map_by_str(local_query, local_ctx.new_server_transaction())
             .entries()
+            .materialize()
             .map(|entries: &Vec<(Arc<str>, Arc<T>)>| {
                 entries
                     .iter()
@@ -144,7 +144,7 @@ where
             .materialize();
         let remote_cell = client.watch_query(remote_query);
         let joined = local_cell.join(remote_cell).materialize();
-        let sync_client = client.clone();
+        let sync_client = client;
         let options_for_join = options;
         let items_equal_for_join = items_equal.clone();
         let joined_guard = joined.subscribe(move |signal| {
@@ -160,7 +160,7 @@ where
             }
         });
 
-        Arc::new(EntityStoreSync {
+        Arc::new(Self {
             _sync_guard: joined_guard,
             _marker: PhantomData,
         })

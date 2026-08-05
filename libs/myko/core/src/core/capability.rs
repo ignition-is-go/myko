@@ -115,6 +115,8 @@ use crate::{
     wire::MEvent,
 };
 
+type QueryDiffCell<T> = Cell<Option<hyphae::MapDiff<Arc<str>, T>>, CellImmutable>;
+
 /// Subscribe to reactive query dependencies.
 pub trait Querying: ServerScoped {
     /// Subscribe to a query and get a typed reactive `CellMap` keyed by the
@@ -176,7 +178,10 @@ pub trait Querying: ServerScoped {
     }
 
     /// Subscribe to a query and get its incremental `MapDiff` stream.
-    fn query_diff<Q>(&self, query: Q) -> Cell<hyphae::MapDiff<Arc<str>, Q::Item>, CellImmutable>
+    fn query_diff<Q>(
+        &self,
+        query: Q,
+    ) -> QueryDiffCell<Q::Item>
     where
         Q: crate::query::QueryFactory
             + crate::query::QueryHandler
@@ -190,6 +195,7 @@ pub trait Querying: ServerScoped {
         use hyphae::{MapExt, Materialize};
         self.query_map_untyped(query)
             .diffs()
+            .materialize()
             .map(|diff| crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff"))
             .materialize()
     }
@@ -230,6 +236,7 @@ pub trait Reporting: ServerScoped {
 }
 
 /// Emit typed events — the write capability. Every method emits a SET/DEL of a
+///
 /// typed entity, applied immediately: command emits never route through the
 /// WS-ingest time-window buffer (that buffer is for wire ingest only). A
 /// report/view/query handler does not `impl EventPublishing`, so it has no
@@ -249,6 +256,10 @@ pub trait EventPublishing: ServerScoped {
     }
 
     /// Emit a SET event for an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
     where
         T: Eventable + Serialize + Clone + 'static,
@@ -259,19 +270,27 @@ pub trait EventPublishing: ServerScoped {
     }
 
     /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
         &self,
         items: &[T],
     ) -> Result<(), CommandError> {
-        let anys = items
-            .iter()
-            .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
+        let anys = items.iter().map(|item| -> Arc<dyn crate::item::AnyItem> {
+            Arc::new(item.clone())
+        });
         self.__server_ctx()
             .set_batch_any(anys)
             .map_err(|e| self.__emit_err(e))
     }
 
     /// Emit a mixed batch of type-erased SET events (applied immediately).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn emit_set_any_batch<I>(&self, items: I) -> Result<(), CommandError>
     where
         I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
@@ -282,6 +301,10 @@ pub trait EventPublishing: ServerScoped {
     }
 
     /// Emit a DEL event for an item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
     where
         T: Eventable + Serialize + Clone + 'static,
@@ -292,6 +315,10 @@ pub trait EventPublishing: ServerScoped {
     }
 
     /// Emit a batch of typed DEL events (applied immediately, in one bulk pass).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn emit_del_batch<'a, T, I>(&self, items: I) -> Result<(), CommandError>
     where
         T: Eventable + Serialize + Clone + 'static,
@@ -300,7 +327,7 @@ pub trait EventPublishing: ServerScoped {
     {
         let anys = items
             .into_iter()
-            .map(|item| Arc::new(item.clone()) as Arc<dyn crate::item::AnyItem>);
+            .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
         self.__server_ctx()
             .del_batch_any(anys)
             .map_err(|e| self.__emit_err(e))
@@ -311,6 +338,10 @@ pub trait EventPublishing: ServerScoped {
     /// The one raw-`MEvent` path — for type-erased imports where the caller
     /// already holds erased JSON + entity-type strings rather than typed
     /// entities. Returns the number of events applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
         self.__server_ctx()
             .apply_events_immediate(events)
@@ -319,6 +350,7 @@ pub trait EventPublishing: ServerScoped {
 }
 
 /// Dispatch nested commands — compose handlers by executing another command in
+///
 /// the same transaction. Independent of [`EventPublishing`]: a context may be
 /// allowed to emit events without being allowed to send commands, or vice
 /// versa, since each is its own trait.
@@ -328,6 +360,10 @@ pub trait CommandSending: ServerScoped {
 
     /// Execute another command within this context. The nested command shares
     /// the same transaction and is consumed by execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
         // Bounded-cardinality span (per command id, never per-invocation) so a
         // profiler shows which commands fire hot.
@@ -381,6 +417,10 @@ pub trait Replaying: ServerScoped {
     }
     /// Replay historical events into a temporary `StoreRegistry`. Errs if no
     /// history-replay provider is configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn replay_store(&self, until: &str) -> Result<Arc<StoreRegistry>, String> {
         let ctx = self.__server_ctx();
         let provider = ctx
@@ -405,13 +445,15 @@ pub trait Replaying: ServerScoped {
 //
 // Never called — an un-called fn body is still fully type-checked.
 // ─────────────────────────────────────────────────────────────────────────
-#[allow(dead_code)]
-fn _capability_matrix() {
-    fn querying<T: Querying>() {}
-    fn searching<T: Searching>() {}
-    fn reporting<T: Reporting>() {}
-    fn event_publishing<T: EventPublishing>() {}
-    fn command_sending<T: CommandSending>() {}
+const fn capability_matrix() {
+    const fn querying<T: Querying>() {}
+    const fn searching<T: Searching>() {}
+    const fn reporting<T: Reporting>() {}
+    const fn event_publishing<T: EventPublishing>() {}
+    const fn command_sending<T: CommandSending>() {}
+    const fn viewing<T: Viewing>() {}
+    const fn peer_access<T: PeerAccess>() {}
+    const fn replaying<T: Replaying>() {}
 
     use crate::core::{
         report::ReportContext,
@@ -433,13 +475,11 @@ fn _capability_matrix() {
     event_publishing::<CommandContext>();
     command_sending::<CommandContext>();
 
-    fn viewing<T: Viewing>() {}
-    fn peer_access<T: PeerAccess>() {}
-    fn replaying<T: Replaying>() {}
-
     viewing::<ReportContext>();
     peer_access::<ReportContext>();
     replaying::<ReportContext>();
     viewing::<ViewContext>();
     viewing::<ViewBuildContext>();
 }
+
+const _: () = capability_matrix();

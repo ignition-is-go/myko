@@ -8,7 +8,7 @@
 //! Rather than one MCP tool per registered query/view/report/command (which
 //! scales as `N_entities × ~8 auto-ops`, blowing up the tools/list token
 //! footprint the same way a large hand-rolled REST-per-endpoint MCP server
-//! does — see Cloudflare's ["Code Mode"][code-mode] writeup), `tools/list`
+//! does — see Cloudflare's [`Code Mode`][code-mode] writeup), `tools/list`
 //! advertises exactly two operational tools:
 //!
 //! - **`search`** — looks up operations in [`ServerInfo::operation_index`]
@@ -145,12 +145,10 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
             "version": info.version,
         }
     });
-    if let Some(text) = &info.instructions {
-        payload
-            .as_object_mut()
-            .expect("payload is an object literal above")
-            .insert("instructions".to_string(), Value::String(text.clone()));
-    }
+    if let Some(text) = &info.instructions
+        && let Value::Object(object) = &mut payload {
+            object.insert("instructions".to_string(), Value::String(text.clone()));
+        }
     McpResponse::success(id, payload)
 }
 
@@ -253,7 +251,7 @@ async fn handle_tools_call(
             id,
             McpError {
                 code: McpError::INVALID_PARAMS,
-                message: format!("Unknown tool: {}", tool_name),
+                message: format!("Unknown tool: {tool_name}"),
                 data: None,
             },
         );
@@ -430,17 +428,15 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
         return McpResponse::error(id, McpError::invalid_params("Missing uri"));
     };
 
-    if let Some(path) = uri.strip_prefix("myko://schema/") {
-        let parts: Vec<&str> = path.splitn(2, '/').collect();
-        if parts.len() == 2 {
-            let (schema_type, schema_id) = (parts[0], parts[1]);
-            let tool_name = format!("{}:{}", schema_type, schema_id);
+    if let Some(path) = uri.strip_prefix("myko://schema/")
+        && let Some((schema_type, schema_id)) = path.split_once('/') {
+            let tool_name = format!("{schema_type}:{schema_id}");
             if !filter.tool_visible(&tool_name) {
                 return McpResponse::error(
                     id,
                     McpError {
                         code: McpError::INVALID_PARAMS,
-                        message: format!("Resource not accessible: {}", uri),
+                        message: format!("Resource not accessible: {uri}"),
                         data: None,
                     },
                 );
@@ -465,13 +461,12 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
                 );
             }
         }
-    }
 
     McpResponse::error(
         id,
         McpError {
             code: McpError::INVALID_PARAMS,
-            message: format!("Resource not found: {}", uri),
+            message: format!("Resource not found: {uri}"),
             data: None,
         },
     )
@@ -547,6 +542,18 @@ mod tests {
 
     use super::*;
 
+    macro_rules! require_some {
+        ($value:expr, $message:literal) => {
+            match $value {
+                Some(value) => value,
+                None => {
+                    assert!(false, $message);
+                    return;
+                }
+            }
+        };
+    }
+
     fn make_request(method: &str) -> McpRequest {
         McpRequest {
             jsonrpc: "2.0".to_string(),
@@ -587,12 +594,13 @@ mod tests {
         // so just use a dummy MykoClient.
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
-        let response = handle_request(make_request("initialize"), &filter, &executor, &info)
-            .await
-            .expect("initialize must produce a response");
-        let result = response.result.expect("initialize must have a result");
-        assert_eq!(result["serverInfo"]["name"], "test");
-        assert_eq!(result["serverInfo"]["version"], "0.0.0");
+        let response = require_some!(
+            handle_request(make_request("initialize"), &filter, &executor, &info).await,
+            "initialize must produce a response"
+        );
+        let result = require_some!(response.result, "initialize must have a result");
+        assert_eq!(result.pointer("/serverInfo/name"), Some(&json!("test")));
+        assert_eq!(result.pointer("/serverInfo/version"), Some(&json!("0.0.0")));
     }
 
     #[tokio::test]
@@ -607,14 +615,14 @@ mod tests {
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
 
-        let resp = handle_request(make_request("initialize"), &filter, &executor, &info)
-            .await
-            .expect("initialize must return a response");
-        let result = resp.result.expect("initialize must succeed");
-
-        assert_eq!(result["serverInfo"]["name"], json!("pulse-mcp"));
-        assert_eq!(result["serverInfo"]["version"], json!("0.2.0"));
-        assert_eq!(result["instructions"], json!("teach me"));
+        let resp = require_some!(
+            handle_request(make_request("initialize"), &filter, &executor, &info).await,
+            "initialize must return a response"
+        );
+        let result = require_some!(resp.result, "initialize must succeed");
+        assert_eq!(result.pointer("/serverInfo/name"), Some(&json!("pulse-mcp")));
+        assert_eq!(result.pointer("/serverInfo/version"), Some(&json!("0.2.0")));
+        assert_eq!(result.get("instructions"), Some(&json!("teach me")));
     }
 
     #[tokio::test]
@@ -624,10 +632,11 @@ mod tests {
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
 
-        let resp = handle_request(make_request("initialize"), &filter, &executor, &info)
-            .await
-            .expect("response");
-        let result = resp.result.expect("ok");
+        let resp = require_some!(
+            handle_request(make_request("initialize"), &filter, &executor, &info).await,
+            "response"
+        );
+        let result = require_some!(resp.result, "ok");
         assert!(
             result.get("instructions").is_none(),
             "instructions must be omitted when ServerInfo.instructions is None"
@@ -658,21 +667,24 @@ mod tests {
         let info = ServerInfo::default();
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
-        let response = handle_request(make_request("unknown/method"), &filter, &executor, &info)
-            .await
-            .expect("must produce a response");
+        let response = require_some!(
+            handle_request(make_request("unknown/method"), &filter, &executor, &info).await,
+            "must produce a response"
+        );
         assert!(response.error.is_some());
     }
 
     // ─── Code Mode: search / execute ──────────────────────────────────────
 
     fn make_tool_call(name: &str, arguments: Value) -> McpRequest {
-        McpRequest {
+        let request = McpRequest {
             jsonrpc: "2.0".to_string(),
             id: Value::Number(1.into()),
             method: "tools/call".to_string(),
             params: Some(json!({ "name": name, "arguments": arguments })),
-        }
+        };
+        drop(arguments);
+        request
     }
 
     fn dummy_executor() -> Executor {
@@ -706,14 +718,14 @@ mod tests {
         let filter = ClientFilters::allow_all();
         let info = ServerInfo::default();
         let executor = dummy_executor();
-        let resp = handle_request(make_request("tools/list"), &filter, &executor, &info)
-            .await
-            .expect("response");
-        let tools = resp.result.expect("ok")["tools"]
-            .as_array()
-            .expect("array")
+        let resp = require_some!(
+            handle_request(make_request("tools/list"), &filter, &executor, &info).await,
+            "response"
+        );
+        let result = require_some!(resp.result, "ok");
+        let tools = require_some!(result.get("tools").and_then(Value::as_array), "array")
             .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(
             tools,
@@ -737,16 +749,14 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let text = resp.result.expect("ok")["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let parsed: Value = serde_json::from_str(&text).expect("valid JSON content");
-        let ops = parsed["operations"].as_array().expect("array");
+        .await;
+        let resp = require_some!(resp, "response");
+        let result = require_some!(resp.result, "ok");
+        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON content");
+        let ops = require_some!(parsed.get("operations").and_then(Value::as_array), "array");
         assert_eq!(ops.len(), 1);
-        assert_eq!(ops[0]["id"], "DeleteServer");
+        assert_eq!(ops.first().and_then(|op| op.get("id")), Some(&json!("DeleteServer")));
     }
 
     #[tokio::test]
@@ -763,18 +773,15 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let text = resp.result.expect("ok")["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let parsed: Value = serde_json::from_str(&text).unwrap();
-        let ids: Vec<&str> = parsed["operations"]
-            .as_array()
-            .unwrap()
+        .await;
+        let resp = require_some!(resp, "response");
+        let result = require_some!(resp.result, "ok");
+        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON");
+        let operations = require_some!(parsed.get("operations").and_then(Value::as_array), "operations");
+        let ids: Vec<&str> = operations
             .iter()
-            .map(|o| o["id"].as_str().unwrap())
+            .filter_map(|operation| operation.get("id").and_then(Value::as_str))
             .collect();
         assert_eq!(ids, vec!["GetAllServers"]);
     }
@@ -791,11 +798,11 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let result = resp.result.expect("ok");
-        assert_ne!(result["isError"], json!(true));
-        let text = result["content"][0]["text"].as_str().unwrap();
+        .await;
+        let resp = require_some!(resp, "response");
+        let result = require_some!(resp.result, "ok");
+        assert_ne!(result.get("isError"), Some(&json!(true)));
+        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
         assert_eq!(text.trim(), "42");
     }
 
@@ -815,15 +822,13 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let text = resp.result.expect("ok")["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let parsed: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed["name"], "pulse-ctx");
-        assert_eq!(parsed["version"], "1.2.3");
+        .await;
+        let resp = require_some!(resp, "response");
+        let result = require_some!(resp.result, "ok");
+        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON");
+        assert_eq!(parsed.get("name"), Some(&json!("pulse-ctx")));
+        assert_eq!(parsed.get("version"), Some(&json!("1.2.3")));
     }
 
     #[tokio::test]
@@ -838,10 +843,10 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let result = resp.result.expect("ok");
-        assert_eq!(result["isError"], json!(true));
+        .await;
+        let resp = require_some!(resp, "response");
+        let result = require_some!(resp.result, "ok");
+        assert_eq!(result.get("isError"), Some(&json!(true)));
     }
 
     #[tokio::test]
@@ -856,8 +861,8 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
+        .await;
+        let resp = require_some!(resp, "response");
         assert!(
             resp.error.is_some(),
             "denied tool must be a protocol error, not a tool result"
@@ -877,14 +882,14 @@ mod tests {
         let info = info_with_index();
         let executor = dummy_executor();
 
-        let list_resp = handle_request(make_request("tools/list"), &filter, &executor, &info)
-            .await
-            .expect("response");
-        let tools: Vec<String> = list_resp.result.expect("ok")["tools"]
-            .as_array()
-            .expect("array")
+        let list_resp = require_some!(
+            handle_request(make_request("tools/list"), &filter, &executor, &info).await,
+            "response"
+        );
+        let list_result = require_some!(list_resp.result, "ok");
+        let tools: Vec<String> = require_some!(list_result.get("tools").and_then(Value::as_array), "array")
             .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
             .collect();
         assert!(
             tools.contains(&SEARCH_TOOL.to_string()) && tools.contains(&EXECUTE_TOOL.to_string()),
@@ -897,18 +902,15 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let text = search_resp.result.expect("ok")["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let parsed: Value = serde_json::from_str(&text).unwrap();
-        let ids: Vec<&str> = parsed["operations"]
-            .as_array()
-            .unwrap()
+        .await;
+        let search_resp = require_some!(search_resp, "response");
+        let search_result = require_some!(search_resp.result, "ok");
+        let text = require_some!(search_result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON");
+        let operations = require_some!(parsed.get("operations").and_then(Value::as_array), "operations");
+        let ids: Vec<&str> = operations
             .iter()
-            .map(|o| o["id"].as_str().unwrap())
+            .filter_map(|operation| operation.get("id").and_then(Value::as_str))
             .collect();
         assert_eq!(
             ids,
@@ -927,11 +929,11 @@ mod tests {
             &executor,
             &info,
         )
-        .await
-        .expect("response");
-        let execute_result = execute_resp.result.expect("ok");
-        assert_ne!(execute_result["isError"], json!(true));
-        let message = execute_result["content"][0]["text"].as_str().unwrap();
+        .await;
+        let execute_resp = require_some!(execute_resp, "response");
+        let execute_result = require_some!(execute_resp.result, "ok");
+        assert_ne!(execute_result.get("isError"), Some(&json!(true)));
+        let message = require_some!(execute_result.pointer("/content/0/text").and_then(Value::as_str), "text");
         // ...but the un-listed command it tries to call is still rejected
         // per-call inside the sandbox.
         assert_eq!(

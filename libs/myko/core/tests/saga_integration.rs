@@ -22,7 +22,7 @@ fn make_bench_item_event(id: &str, name: &str) -> MEvent {
         value: 42,
     };
 
-    MEvent::from_item(&item, MEventType::SET, &format!("tx-{}", id))
+    MEvent::from_item(&item, MEventType::SET, &format!("tx-{id}"))
 }
 
 fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
@@ -48,11 +48,11 @@ fn test_saga_pairwise_operator() {
 
     assert_eq!(pairs.len(), 2);
     assert_eq!(
-        pairs[0].0.item_json().get("id").and_then(|v| v.as_str()),
+        pairs.first().and_then(|pair| pair.0.item_json().get("id")).and_then(|value| value.as_str()),
         Some("id-1")
     );
     assert_eq!(
-        pairs[0].1.item_json().get("id").and_then(|v| v.as_str()),
+        pairs.first().and_then(|pair| pair.1.item_json().get("id")).and_then(|value| value.as_str()),
         Some("id-2")
     );
 }
@@ -65,7 +65,11 @@ fn test_saga_scan_operator() {
         make_bench_item_event("id-3", "Third"),
     ]);
 
-    let counts: Vec<_> = block_on(events.accumulate(0, |count, _| *count + 1).collect());
+    let counts: Vec<_> = block_on(
+        events
+            .accumulate(0_u32, |count, _| count.saturating_add(1))
+            .collect(),
+    );
 
     assert_eq!(counts, vec![1, 2, 3]);
 }

@@ -10,13 +10,13 @@ use crate::{
 
 /// Context provided to command handlers for accessing dependencies.
 ///
-/// CommandContext allows handlers to:
+/// `CommandContext` allows handlers to:
 /// - Emit SET/DEL events
 /// - Execute queries against the store
-/// - Access request context (tx, client_id, lineage, host_id)
+/// - Access request context (tx, `client_id`, lineage, `host_id`)
 #[derive(Clone)]
 pub struct CommandContext {
-    /// Request context with tracing information (tx, client_id, lineage, host_id).
+    /// Request context with tracing information (tx, `client_id`, lineage, `host_id`).
     pub req: Arc<RequestContext>,
 
     /// The command ID being executed (for error reporting).
@@ -26,8 +26,9 @@ pub struct CommandContext {
 }
 
 impl CommandContext {
-    /// Create a new CommandContext.
-    pub fn new(
+    /// Create a new `CommandContext`.
+    #[must_use]
+    pub const fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
@@ -44,6 +45,7 @@ impl CommandContext {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Get the request creation timestamp.
+    #[must_use]
     pub fn created_at(&self) -> &str {
         &self.req.created_at
     }
@@ -51,6 +53,10 @@ impl CommandContext {
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
@@ -68,6 +74,10 @@ impl CommandContext {
     /// Execute a query and return all results.
     ///
     /// This performs a one-shot query against the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
@@ -85,6 +95,10 @@ impl CommandContext {
     /// Execute a report and return the current value.
     ///
     /// This allows command handlers to query reports for decision making.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn exec_report<R>(
         &self,
         report: R,
@@ -160,6 +174,10 @@ pub trait CommandHandler: crate::command::CommandParams {
     /// Execute the command synchronously.
     ///
     /// `self` is the deserialized command parameters (owned, consumed by execution).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError>;
 }
 
@@ -172,6 +190,10 @@ pub trait DynCommandExecutor: Send + Sync + 'static {
     fn command_id(&self) -> &'static str;
 
     /// Execute the command from a JSON value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn execute_from_value(
         &self,
         command: Value,
@@ -179,13 +201,14 @@ pub trait DynCommandExecutor: Send + Sync + 'static {
     ) -> Result<Value, CommandError>;
 }
 
-/// Adapter that wraps a CommandHandler to provide DynCommandExecutor
+/// Adapter that wraps a `CommandHandler` to provide `DynCommandExecutor`
 pub struct CommandExecutorAdapter<C: CommandHandler> {
     _phantom: std::marker::PhantomData<C>,
 }
 
 impl<C: CommandHandler> CommandExecutorAdapter<C> {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
         }
@@ -221,7 +244,7 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
             CommandError::new(
                 ctx.tx(),
                 C::command_id_static(),
-                format!("Failed to deserialize command: {}", e),
+                format!("Failed to deserialize command: {e}"),
             )
         })?;
 
@@ -241,7 +264,7 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
             CommandError::new(
                 String::new(),
                 C::command_id_static(),
-                format!("Failed to serialize result: {}", e),
+                format!("Failed to serialize result: {e}"),
             )
         })
     }

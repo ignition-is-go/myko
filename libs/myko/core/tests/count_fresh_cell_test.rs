@@ -1,4 +1,4 @@
-//! Regression tests for CountAll* reports returning 0 (or freezing at a
+//! Regression tests for `CountAll`* reports returning 0 (or freezing at a
 //! stale count) — reported against myko v4.24.1 (rship canary.71).
 //!
 //! Root cause (confirmed by cosmic-marten against hyphae directly):
@@ -30,7 +30,7 @@ use uuid::Uuid;
 /// against cross-test interference the same way.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {
@@ -41,9 +41,11 @@ fn make_ctx() -> MykoServerContext {
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(myko::search::SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
@@ -55,7 +57,7 @@ fn insert_bench_item(ctx: &MykoServerContext, id: &str, category: &str, value: i
         value,
     };
     let event = MEvent::from_item(&item, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 #[test]
@@ -63,7 +65,7 @@ fn count_all_report_sees_correct_count_on_first_compute() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
     for i in 0..5 {
-        insert_bench_item(&ctx, &format!("item-{i}"), "cat", i as i64);
+        insert_bench_item(&ctx, &format!("item-{i}"), "cat", i64::from(i));
     }
 
     let request = Arc::new(myko::request::RequestContext::from_client(
@@ -92,7 +94,7 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
     for round in 0..200 {
         let ctx = Arc::new(make_ctx());
         for i in 0..5 {
-            insert_bench_item(&ctx, &format!("item-{round}-{i}"), "cat", i as i64);
+            insert_bench_item(&ctx, &format!("item-{round}-{i}"), "cat", i64::from(i));
         }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
@@ -114,7 +116,11 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
             .collect();
 
         for (t, h) in handles.into_iter().enumerate() {
-            let count = h.join().unwrap();
+            let count = h.join();
+            assert!(count.is_ok(), "count thread must complete");
+            let Ok(count) = count else {
+                return;
+            };
             assert_eq!(
                 count, 5,
                 "round {round} thread {t}: fresh concurrent CountAll read must see 5, not a stale/racing value"
@@ -145,7 +151,7 @@ fn count_all_report_tracks_writes_after_the_computing_call_returns() {
     // Writes AFTER compute() has already returned must still be tracked —
     // a frozen chain would leave `cell` stuck at 1 forever from here on.
     for i in 1..5 {
-        insert_bench_item(&ctx, &format!("item-{i}"), "cat", i as i64);
+        insert_bench_item(&ctx, &format!("item-{i}"), "cat", i64::from(i));
     }
 
     assert_eq!(

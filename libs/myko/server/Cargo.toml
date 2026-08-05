@@ -5,10 +5,14 @@ edition = "2024"
 description = "Myko server runtime — WebSocket, peer federation"
 license = "AGPL-3.0-or-later"
 
+[lints]
+workspace = true
+
 [package.metadata.flux]
 tasks = ["check", "build", "test", "lint", "publish"]
 
 [dependencies]
+num-traits.workspace = true
 # Internal
 # myko-server instantiates `SearchIndex::new()` unconditionally, so it needs
 # the real (tantivy-backed) implementation. Consumers that only use myko

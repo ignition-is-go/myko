@@ -32,9 +32,11 @@ fn make_ctx() -> MykoServerContext {
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(myko::search::SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
@@ -46,7 +48,7 @@ fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
         windback: None,
     };
     let event = MEvent::from_item(&client, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestContext> {
@@ -71,7 +73,7 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
     let server_ids: Vec<String> = (0..N).map(|i| format!("server-{i}")).collect();
 
     let mut g = c.benchmark_group("n_values_query_construction");
-    g.throughput(criterion::Throughput::Elements(N as u64));
+    g.throughput(criterion::Throughput::Elements(u64::try_from(N).unwrap_or(u64::MAX)));
 
     g.bench_function("n_separate_eq_cells", |b| {
         b.iter(|| {
@@ -89,7 +91,7 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
                 })
                 .collect();
             std::hint::black_box(cells)
-        })
+        });
     });
 
     g.bench_function("one_in_filter_cell", |b| {
@@ -105,7 +107,7 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
             };
             let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-in"));
             std::hint::black_box(cell)
-        })
+        });
     });
 
     g.finish();
@@ -129,7 +131,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
     let mut g = c.benchmark_group("filter_change_cost");
 
     for &existing in &[10usize, 50, 100, 200] {
-        g.throughput(criterion::Throughput::Elements(existing as u64));
+        g.throughput(criterion::Throughput::Elements(u64::try_from(existing).unwrap_or(u64::MAX)));
 
         g.bench_with_input(
             BenchmarkId::new("full_rebuild_like_switch_map", existing),
@@ -143,7 +145,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                     // fresh reconstruction on every "tick", exactly what
                     // wrapping query_map in switch_map forces since a
                     // changed filter value is a new cache key every time.
-                    counter += 1;
+                    counter = counter.saturating_add(1);
                     let mut ids: Vec<ServerId> = base_ids
                         .iter()
                         .map(|s| ServerId::from(Arc::<str>::from(s.as_str())))
@@ -157,7 +159,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                     };
                     let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx"));
                     std::hint::black_box(cell)
-                })
+                });
             },
         );
 
@@ -191,7 +193,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                         std::hint::black_box(result)
                     },
                     BatchSize::SmallInput,
-                )
+                );
             },
         );
     }

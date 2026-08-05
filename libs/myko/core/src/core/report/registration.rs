@@ -32,8 +32,7 @@ impl<T: ToValue + std::fmt::Debug + PartialEq + Send + Sync + 'static> AnyOutput
         other
             .as_any()
             .downcast_ref::<Self>()
-            .map(|typed| self == typed)
-            .unwrap_or(false)
+            .is_some_and(|typed| self == typed)
     }
 }
 
@@ -51,7 +50,7 @@ impl PartialEq for dyn AnyOutput {
 pub type ReportParseFn = fn(Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 
 /// Type-erased cell factory for reports.
-/// Takes a typed report, registry, and host_id, returns a cell of type-erased output.
+/// Takes a typed report, registry, and `host_id`, returns a cell of type-erased output.
 pub type ReportCellFactory = fn(
     Arc<dyn AnyReport>,
     Arc<RequestContext>,
@@ -67,11 +66,11 @@ inventory::collect!(ReportRegistration);
 /// Registration entry for a report type.
 /// Collected via inventory for automatic discovery.
 pub struct ReportRegistration {
-    /// Report identifier (e.g., "ServerStats")
+    /// Report identifier (e.g., "`ServerStats`")
     pub report_id: &'static str,
-    /// Crate where this report is defined (for type_gen filtering)
+    /// Crate where this report is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
-    /// Output type name (e.g., "ServerStatsOutput")
+    /// Output type name (e.g., "`ServerStatsOutput`")
     pub output_type: &'static str,
     /// Crate where the output type is defined
     pub output_type_crate: &'static str,
@@ -96,9 +95,17 @@ pub struct ReportRegistration {
 /// so user-defined reports automatically get `parse` and `cell_factory` methods.
 pub trait ReportFactory: ReportParams {
     /// Parse JSON into this report type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn parse(value: Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 
     /// Create a reactive cell for this report.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn cell_factory(
         report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
@@ -134,9 +141,9 @@ impl<R: ReportParams> ReportFactory for R {
         let cell = server_ctx.report(request.report, request_ctx);
 
         // Map to type-erased output for the WS/report subscription layer.
-        let report_name = format!("report:{}", report_id);
+        let report_name = format!("report:{report_id}");
         Ok(cell
-            .map(|output| output.clone() as Arc<dyn AnyOutput>)
+            .map(|output| -> Arc<dyn AnyOutput> { output.clone() })
             .materialize()
             .with_name(report_name.as_str()))
     }

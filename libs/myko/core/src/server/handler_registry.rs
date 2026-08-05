@@ -18,6 +18,24 @@ use crate::{
 // vs default SipHash on Arc<str> keys.
 type AMap<K, V> = std::collections::HashMap<K, V, ahash::RandomState>;
 
+fn format_list<'a>(keys: impl Iterator<Item = &'a Arc<str>>) -> String {
+    let mut items: Vec<&str> = keys.map(std::convert::AsRef::as_ref).collect();
+    items.sort_unstable();
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+fn format_str_list(items: &[&str]) -> String {
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
 /// Stored query registration data.
 pub struct StoredQueryData {
     pub query_id: Arc<str>,
@@ -123,24 +141,6 @@ impl HandlerRegistry {
             .collect();
         command_ids.sort_unstable();
 
-        fn format_list<'a>(keys: impl Iterator<Item = &'a Arc<str>>) -> String {
-            let mut items: Vec<&str> = keys.map(|k| k.as_ref()).collect();
-            items.sort_unstable();
-            if items.is_empty() {
-                "(none)".to_string()
-            } else {
-                items.join(", ")
-            }
-        }
-
-        fn format_str_list(items: &[&str]) -> String {
-            if items.is_empty() {
-                "(none)".to_string()
-            } else {
-                items.join(", ")
-            }
-        }
-
         tracing::trace!(
             "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Views ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
@@ -165,11 +165,13 @@ impl HandlerRegistry {
     }
 
     /// Get an item parse function by entity type name.
+    #[must_use]
     pub fn item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
         self.item_parsers.get(entity_type).copied()
     }
 
     /// Get the ingest buffering policy for an entity type.
+    #[must_use]
     pub fn item_buffer_policy(&self, entity_type: &str) -> IngestBufferPolicy {
         self.item_buffer_policies
             .get(entity_type)
@@ -178,21 +180,25 @@ impl HandlerRegistry {
     }
 
     /// Get query registration data by query id.
+    #[must_use]
     pub fn query(&self, query_id: &str) -> Option<&StoredQueryData> {
         self.query_data.get(query_id)
     }
 
     /// Get report registration data by report id.
+    #[must_use]
     pub fn report(&self, report_id: &str) -> Option<&StoredReportData> {
         self.report_data.get(report_id)
     }
 
     /// Get view registration data by view id.
+    #[must_use]
     pub fn view(&self, view_id: &str) -> Option<&StoredViewData> {
         self.view_data.get(view_id)
     }
 
     /// Check if an entity type has a registered parser.
+    #[must_use]
     pub fn has_item_parser(&self, entity_type: &str) -> bool {
         self.item_parsers.contains_key(entity_type)
     }

@@ -40,6 +40,7 @@ mod index;
 #[cfg(feature = "search")]
 pub mod search_stats;
 /// Per-type, monomorphized search indexes. Always compiled (light deps) —
+///
 /// the `search` feature only gates the `SearchIndex` *wrapper* that exposes
 /// these to downstream call sites.
 pub mod typed;
@@ -61,19 +62,27 @@ mod stub_index {
     pub struct SearchIndex;
 
     impl SearchIndex {
-        pub fn new() -> Self {
+        #[must_use]
+        pub const fn new() -> Self {
             Self
         }
         pub fn index_item(&self, _item: &Arc<dyn AnyItem>) {}
-        pub fn remove_entity(&self, _entity_type: &str, _entity_id: &str) {}
-        pub fn commit(&self) {}
-        pub fn search(&self, _entity_type: &str, _query: &str, _limit: usize) -> Vec<Arc<str>> {
+        pub const fn remove_entity(&self, _entity_type: &str, _entity_id: &str) {}
+        pub const fn commit(&self) {}
+        #[must_use]
+        pub const fn search(
+            &self,
+            _entity_type: &str,
+            _query: &str,
+            _limit: usize,
+        ) -> Vec<Arc<str>> {
             Vec::new()
         }
-        pub fn is_searchable(&self, _entity_type: &str) -> bool {
+        #[must_use]
+        pub const fn is_searchable(&self, _entity_type: &str) -> bool {
             false
         }
-        pub fn build_from_registry(&self, _registry: &crate::store::StoreRegistry) {}
+        pub const fn build_from_registry(&self, _registry: &crate::store::StoreRegistry) {}
     }
 
     impl Default for SearchIndex {
@@ -112,6 +121,7 @@ pub fn iter_searchable() -> impl Iterator<Item = &'static SearchableRegistration
 
 /// Build a `typed::SearchRegistry` populated with one `SearchIndex<T>` per
 /// entity that registered a `register_typed` closure.
+#[must_use]
 pub fn build_typed_registry() -> typed::SearchRegistry {
     let mut registry = typed::SearchRegistry::new();
     for reg in iter_searchable() {
@@ -128,6 +138,7 @@ pub fn build_typed_registry() -> typed::SearchRegistry {
 
 /// Default `limit` for macro-generated typed `Search<T>` reports. Referenced
 /// by `#[serde(default = "...")]` so unspecified limits use this constant.
-pub fn default_search_limit() -> usize {
+#[must_use]
+pub const fn default_search_limit() -> usize {
     100
 }

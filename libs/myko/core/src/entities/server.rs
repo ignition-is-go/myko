@@ -9,6 +9,7 @@ use crate::{
 };
 
 #[myko_item]
+#[derive(Eq)]
 pub struct Server {
     pub version: String,
     #[searchable]
@@ -46,12 +47,13 @@ impl QueryHandler for GetPeerServers {
 /// Server statistics including connected client count.
 /// This is a manually implemented report demonstrating reactive query subscriptions.
 #[myko_macros::myko_report_output]
+#[derive(Eq)]
 pub struct ServerStatsOutput {
     /// The server entity (if found)
     pub server: Option<Arc<Server>>,
     /// Number of clients connected to this server
     pub client_count: usize,
-    /// Server uptime in seconds (computed from started_at)
+    /// Server uptime in seconds (computed from `started_at`)
     pub uptime_seconds: Option<i64>,
 }
 
@@ -87,7 +89,8 @@ impl ReportHandler for ServerStats {
         // Combine server and client cells - emit whenever either changes
         ctx.query_map(GetConnectedServer {})
             .entries()
-            .join(ctx.query_map(GetAllClients {}).entries())
+            .materialize()
+            .join(ctx.query_map(GetAllClients {}).entries().materialize())
             .map(flat!(|servers, clients| {
                 let server = servers.first().map(|(_, server)| server.clone());
 
@@ -97,7 +100,8 @@ impl ReportHandler for ServerStats {
                         .ok()
                         .map(|started| {
                             let now = chrono::Utc::now();
-                            (now - started.with_timezone(&chrono::Utc)).num_seconds()
+                            now.signed_duration_since(started.with_timezone(&chrono::Utc))
+                                .num_seconds()
                         })
                 });
 

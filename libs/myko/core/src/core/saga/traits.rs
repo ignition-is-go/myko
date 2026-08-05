@@ -20,6 +20,10 @@ pub type CommandStream = futures::stream::BoxStream<'static, Box<dyn SagaCommand
 
 /// Type-erased executable command produced by a saga.
 pub trait SagaCommand: Send + Sync + 'static {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn execute_boxed(self: Box<Self>, ctx: CommandContext) -> Result<(), CommandError>;
     fn command_name(&self) -> &'static str;
 }
@@ -105,7 +109,7 @@ impl<S: Saga> AnySaga for S {
         events: EventStream,
         ctx: Arc<super::context::SagaContext>,
     ) -> CommandStream {
-        Box::pin(S::build(events, ctx).map(|cmd| Box::new(cmd) as Box<dyn SagaCommand>))
+        Box::pin(S::build(events, ctx).map(|cmd| -> Box<dyn SagaCommand> { Box::new(cmd) }))
     }
 
     fn create_state(&self) -> Box<dyn std::any::Any + Send + Sync> {

@@ -25,9 +25,11 @@ fn make_ctx() -> MykoServerContext {
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(myko::search::SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
@@ -39,7 +41,7 @@ fn insert_bench_item(ctx: &MykoServerContext, id: &str, category: &str, value: i
         value,
     };
     let event = MEvent::from_item(&item, MEventType::SET, &format!("tx-{id}"));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
 fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestContext> {
@@ -52,10 +54,10 @@ fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestConte
 
 /// hyphae's scheduler tick queue is process-wide, so cache-count assertions
 /// across tests in this binary can perturb each other mid-flight — see the
-/// matching helper (and full rationale) in query_cache_leak_test.rs.
+/// matching helper (and full rationale) in `query_cache_leak_test.rs`.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]

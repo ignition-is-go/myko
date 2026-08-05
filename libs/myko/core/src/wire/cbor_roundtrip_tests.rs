@@ -1,7 +1,7 @@
 //! Round-trip regression tests for the wire protocol.
 //!
-//! These tests exist because rmp_serde was found to silently corrupt
-//! MykoMessage::ReportResponse on round-trip (see commit history). They
+//! These tests exist because `rmp_serde` was found to silently corrupt
+//! `MykoMessage::ReportResponse` on round-trip (see commit history). They
 //! must pass for ciborium and serve as the gate for the binary path.
 
 #[cfg(test)]
@@ -27,20 +27,29 @@ mod tests {
         })
     }
 
-    /// Gate test: ciborium must round-trip MykoMessage::ReportResponse cleanly.
+    /// Gate test: ciborium must round-trip `MykoMessage::ReportResponse` cleanly.
     /// If this fails, the CBOR migration halts and the spec is reopened.
     #[test]
     fn report_response_roundtrip_cbor() {
         let original = sample_report_response();
 
         let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&original, &mut bytes).expect("ciborium encode");
-
-        let roundtripped: MykoMessage =
-            ciborium::de::from_reader(bytes.as_slice()).expect("ciborium decode");
-
-        let original_json = serde_json::to_value(&original).unwrap();
-        let roundtripped_json = serde_json::to_value(&roundtripped).unwrap();
+        assert!(ciborium::ser::into_writer(&original, &mut bytes).is_ok());
+        let roundtripped = ciborium::de::from_reader::<MykoMessage, _>(bytes.as_slice());
+        assert!(roundtripped.is_ok(), "ciborium decode");
+        let Ok(roundtripped) = roundtripped else {
+            return;
+        };
+        let original_json = serde_json::to_value(&original);
+        assert!(original_json.is_ok(), "serialize original");
+        let Ok(original_json) = original_json else {
+            return;
+        };
+        let roundtripped_json = serde_json::to_value(&roundtripped);
+        assert!(roundtripped_json.is_ok(), "serialize round-tripped value");
+        let Ok(roundtripped_json) = roundtripped_json else {
+            return;
+        };
         assert_eq!(
             original_json, roundtripped_json,
             "ciborium roundtrip should preserve ReportResponse"
@@ -49,15 +58,28 @@ mod tests {
 
     fn assert_roundtrip(msg: MykoMessage) {
         let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&msg, &mut bytes).expect("ciborium encode");
-        let roundtripped: MykoMessage =
-            ciborium::de::from_reader(bytes.as_slice()).expect("ciborium decode");
+        assert!(ciborium::ser::into_writer(&msg, &mut bytes).is_ok());
+        let roundtripped = ciborium::de::from_reader::<MykoMessage, _>(bytes.as_slice());
+        assert!(roundtripped.is_ok(), "ciborium decode");
+        let Ok(roundtripped) = roundtripped else {
+            return;
+        };
+        let original_json = serde_json::to_value(&msg);
+        assert!(original_json.is_ok(), "serialize original");
+        let Ok(original_json) = original_json else {
+            return;
+        };
+        let roundtripped_json = serde_json::to_value(&roundtripped);
+        assert!(roundtripped_json.is_ok(), "serialize round-tripped value");
+        let Ok(roundtripped_json) = roundtripped_json else {
+            return;
+        };
         assert_eq!(
-            serde_json::to_value(&msg).unwrap(),
-            serde_json::to_value(&roundtripped).unwrap(),
-            "roundtrip mismatch for {:?}",
-            msg,
+            original_json,
+            roundtripped_json,
+            "roundtrip mismatch for {msg:?}",
         );
+        drop(msg);
     }
 
     #[test]

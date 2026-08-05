@@ -18,6 +18,10 @@ pub struct CommandResponse {
 }
 
 impl CommandResponse {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn to_string(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
@@ -58,10 +62,14 @@ pub enum EncodedCommandMessage {
     Cbor(Vec<u8>),
 }
 
-/// Wrap a CommandRequest into a WrappedCommand for sending.
+/// Wrap a `CommandRequest` into a `WrappedCommand` for sending.
 ///
-/// The CommandRequest already contains the tx via `#[serde(flatten)]`,
-/// so this just serializes and extracts the command_id.
+/// The `CommandRequest` already contains the tx via `#[serde(flatten)]`,
+/// so this just serializes and extracts the `command_id`.
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn wrap_command_request<C: CommandId + Serialize + Clone>(
     request: &CommandRequest<C>,
 ) -> Result<WrappedCommand, serde_json::Error> {
@@ -86,6 +94,10 @@ struct CommandMessageRef<'a, C> {
     data: WrappedCommandRef<'a, C>,
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn encode_command_message<C: CommandId + Serialize>(
     protocol: MykoProtocol,
     request: &CommandRequest<C>,

@@ -64,7 +64,7 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    /// Create a new RequestContext with explicit values.
+    /// Create a new `RequestContext` with explicit values.
     pub fn new(
         tx: Arc<str>,
         client_id: Option<Arc<str>>,
@@ -84,8 +84,9 @@ impl RequestContext {
 
     /// Create a context for a client-initiated request.
     ///
-    /// Sets lineage to `["client"]` and created_at to current time.
+    /// Sets lineage to `["client"]` and `created_at` to current time.
     /// Use `from_client_with_windback` to include windback state.
+    #[must_use]
     pub fn from_client(tx: Arc<str>, client_id: Arc<str>, host_id: Uuid) -> Self {
         Self {
             tx,
@@ -99,7 +100,8 @@ impl RequestContext {
 
     /// Create a context for a client-initiated request with windback state.
     ///
-    /// Sets lineage to `["client"]` and created_at to current time.
+    /// Sets lineage to `["client"]` and `created_at` to current time.
+    #[must_use]
     pub fn from_client_with_windback(
         tx: Arc<str>,
         client_id: Arc<str>,
@@ -119,6 +121,7 @@ impl RequestContext {
     /// Create a context for an internal operation (no client).
     ///
     /// Used for saga-initiated operations, startup tasks, etc.
+    #[must_use]
     pub fn internal(tx: Arc<str>, host_id: Uuid, origin: &str) -> Self {
         Self {
             tx,
@@ -151,6 +154,7 @@ impl RequestContext {
     /// assert_eq!(child.lineage[0].as_ref(), "client");
     /// assert_eq!(child.lineage[1].as_ref(), "CreateBinding");
     /// ```
+    #[must_use]
     pub fn child(&self, operation: &str) -> Self {
         let mut lineage = self.lineage.clone();
         lineage.push(Arc::from(operation));
@@ -165,21 +169,25 @@ impl RequestContext {
     }
 
     /// Check if this context is in windback mode.
-    pub fn is_windback(&self) -> bool {
+    #[must_use]
+    pub const fn is_windback(&self) -> bool {
         self.windback.is_some()
     }
 
     /// Get the windback timestamp if set.
+    #[must_use]
     pub fn windback(&self) -> Option<&str> {
         self.windback.as_deref()
     }
 
     /// Get the transaction ID as a string slice.
+    #[must_use]
     pub fn tx(&self) -> &str {
         &self.tx
     }
 
     /// Get the client ID if present.
+    #[must_use]
     pub fn client_id(&self) -> Option<&str> {
         self.client_id.as_deref()
     }
@@ -188,18 +196,19 @@ impl RequestContext {
     /// requests and MCP-stdio-over-WS, `"mcp"` for MCP HTTP/WS in-process,
     /// `"saga"` for saga-initiated operations). Used to tag dispatch metrics
     /// by transport/origin.
+    #[must_use]
     pub fn origin(&self) -> &str {
         self.lineage
             .first()
-            .map(|s| s.as_ref())
-            .unwrap_or("unknown")
+            .map_or("unknown", std::convert::AsRef::as_ref)
     }
 
     /// Get the lineage as a string for logging.
+    #[must_use]
     pub fn lineage_string(&self) -> String {
         self.lineage
             .iter()
-            .map(|s| s.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .collect::<Vec<_>>()
             .join(" → ")
     }

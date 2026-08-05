@@ -6,7 +6,7 @@
 //! dominate log I/O.
 //!
 //! The hot path increments a per-entity-type atomic counter (SET and DEL kept
-//! separate) via a DashMap entry lookup; a single dedicated thread emits one
+//! separate) via a `DashMap` entry lookup; a single dedicated thread emits one
 //! summary log line every `WINDOW_MS`. Quiet windows emit nothing.
 //!
 //! Mirrors the [`super::report_cache_stats`] pattern. To silence even the
@@ -37,7 +37,7 @@ fn counts() -> &'static DashMap<String, Counts> {
     C.get_or_init(DashMap::new)
 }
 
-/// Record a single entity `SET` for `entity_type`. Cheap: one DashMap lookup
+/// Record a single entity `SET` for `entity_type`. Cheap: one `DashMap` lookup
 /// plus a relaxed atomic increment.
 #[inline]
 pub fn record_set(entity_type: &str) {
@@ -72,7 +72,7 @@ pub fn start_periodic_logger() {
             tracing::warn!(
                 target: "myko::server::entity_set_stats",
                 "Failed to spawn entity_set_stats thread: {}", e
-            )
+            );
         });
 }
 
@@ -101,12 +101,12 @@ fn emit_window() {
         return;
     }
     // Highest combined volume first.
-    snap.sort_by_key(|b| std::cmp::Reverse(b.1 + b.2));
+    snap.sort_by_key(|bucket| std::cmp::Reverse(bucket.1.saturating_add(bucket.2)));
     let set_total: u64 = snap.iter().map(|s| s.1).sum();
     let del_total: u64 = snap.iter().map(|s| s.2).sum();
     let detail = snap
         .iter()
-        .map(|(et, s, d)| format!("{}=set:{} del:{}", et, s, d))
+        .map(|(et, s, d)| format!("{et}=set:{s} del:{d}"))
         .collect::<Vec<_>>()
         .join(", ");
     tracing::debug!(

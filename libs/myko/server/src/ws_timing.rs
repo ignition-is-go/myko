@@ -61,11 +61,13 @@ pub fn record_outbound(kind: &'static str) {
         .fetch_add(1, Ordering::Relaxed);
 }
 
-/// Same as [`record_inbound`], plus an OTLP counter tagged by `client_id` and
+/// Record inbound timing plus an OTLP counter.
+///
+/// This is the same as [`record_inbound`], tagged by `client_id` and
 /// `tag` (the specific command/query/report/view id, from [`message_tag`],
 /// when the message carries one) — the aggregate `DashMap` counters above
 /// are cheap enough for an unbounded number of message kinds, but tagging
-/// *those* by client_id/tag too would put an OTel series per (kind × client
+/// *those* by `client_id/tag` too would put an `OTel` series per (kind × client
 /// × tag) into the periodic in-process log line, which is the wrong place
 /// for this breakdown. This is that breakdown, exported as a proper metric
 /// instead (cardinality bounded by concurrent connections × distinct
@@ -98,12 +100,15 @@ pub fn record_outbound_for_client(kind: &'static str, client_id: &str, tag: Opti
     per_client_counter().add(1, &attrs);
 }
 
-/// The specific command/query/report/view id carried by a message, when the
+/// Return the operation id carried by a message.
+///
+/// This is the specific command/query/report/view id when the
 /// wire type carries one directly. `*Request` and `*Error` variants carry
 /// their id inline; `*Response`/`*Cancel`/`*Window` variants only carry
 /// `tx` (the id lives in a tx→id side table the caller already tracks per
 /// subscription) — those return `None` here rather than duplicating that
 /// lookup.
+#[must_use]
 pub fn message_tag(msg: &MykoMessage) -> Option<&str> {
     match msg {
         MykoMessage::Query(w) => Some(&w.query_id),
@@ -120,7 +125,8 @@ pub fn message_tag(msg: &MykoMessage) -> Option<&str> {
 
 /// Stable `'static` kind tag for a message. Must match what the TS client
 /// emits for symmetric cross-side correlation.
-pub fn message_kind(msg: &MykoMessage) -> &'static str {
+#[must_use]
+pub const fn message_kind(msg: &MykoMessage) -> &'static str {
     match msg {
         MykoMessage::Query(_) => "Query",
         MykoMessage::QueryResponse(_) => "QueryResponse",
@@ -161,7 +167,7 @@ pub fn start_periodic_logger() {
             tracing::warn!(
                 target: "myko_server::ws_timing",
                 "Failed to spawn ws_timing thread: {}", e
-            )
+            );
         });
 }
 
@@ -205,7 +211,7 @@ fn drain_counts(counts: &DashMap<&'static str, AtomicU64>) -> Vec<(&'static str,
 
 fn format_kinds(snap: &[(&'static str, u64)]) -> String {
     snap.iter()
-        .map(|(k, n)| format!("{}={}", k, n))
+        .map(|(k, n)| format!("{k}={n}"))
         .collect::<Vec<_>>()
         .join(", ")
 }

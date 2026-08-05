@@ -9,11 +9,11 @@ use crate::{
     core::item::{AnyItem, lookup_item_registration},
 };
 
-/// Wrapper that implements serde::Serialize by delegating through erased_serde.
+/// Wrapper that implements `serde::Serialize` by delegating through `erased_serde`.
 ///
 /// Since `dyn AnyItem` implements `serde::Serialize` via `erased_serde::serialize_trait_object!`,
 /// this wrapper enables serialization of type-erased items directly to any serde format
-/// without going through serde_json::Value.
+/// without going through `serde_json::Value`.
 pub struct SerializableItem<'a>(pub &'a dyn AnyItem);
 
 impl Serialize for SerializableItem<'_> {
@@ -23,7 +23,7 @@ impl Serialize for SerializableItem<'_> {
 }
 
 /// Wrapper for items in wire protocol responses.
-/// Holds a type-erased AnyItem and serializes it directly to the output format.
+/// Holds a type-erased `AnyItem` and serializes it directly to the output format.
 #[derive(Clone)]
 pub struct ErasedWrappedItem {
     pub item: Arc<dyn AnyItem>,
@@ -56,9 +56,11 @@ impl Serialize for ErasedWrappedItem {
         };
 
         let mut s = serializer.serialize_struct("WrappedItem", 2)?;
-        match json_raw {
-            Some(raw) => s.serialize_field("item", &raw)?,
-            None => s.serialize_field("item", &*self.item as &dyn erased_serde::Serialize)?,
+        if let Some(raw) = json_raw {
+            s.serialize_field("item", &raw)?;
+        } else {
+            let erased: &dyn erased_serde::Serialize = &*self.item;
+            s.serialize_field("item", erased)?;
         }
         s.serialize_field("itemType", &self.item_type)?;
         s.end()

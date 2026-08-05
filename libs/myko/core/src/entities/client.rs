@@ -10,6 +10,7 @@ use crate::{
 };
 
 #[myko_item]
+#[derive(Eq)]
 pub struct Client {
     #[belongs_to(Server)]
     pub server_id: ServerId,
@@ -28,6 +29,7 @@ pub struct Client {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[myko_report_output]
+#[derive(Eq)]
 pub struct ClientStatusOutput {
     pub online: bool,
 }
@@ -47,6 +49,7 @@ impl ReportHandler for ClientStatus {
         // Query all clients and check if one with our id exists
         ctx.query_map(GetAllClients {})
             .entries()
+            .materialize()
             .map(move |clients| {
                 let online = clients
                     .iter()
@@ -63,6 +66,7 @@ impl ReportHandler for ClientStatus {
 /// Report that returns the current windback time for the requesting client.
 /// Returns None if the client is not in windback mode.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct WindbackStatusOutput {
     /// ISO timestamp if in windback mode, None otherwise
     pub windback: Option<Arc<str>>,
@@ -82,6 +86,7 @@ impl ReportHandler for WindbackStatus {
         // Query all clients and find the requesting client's windback status
         ctx.query_map(GetAllClients {})
             .entries()
+            .materialize()
             .map(move |clients| {
                 let windback = client_id
                     .as_ref()
@@ -122,7 +127,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
                 CommandError::new(
                     ctx.tx(),
                     "SetClientWindbackTime",
-                    format!("Client {} not found", client_id),
+                    format!("Client {client_id} not found"),
                 )
             })?;
 
@@ -131,7 +136,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
             id: client.id.clone(),
             server_id: client.server_id.clone(),
             address: client.address.clone(),
-            windback: Some(self.windback.clone()),
+            windback: Some(self.windback),
         };
 
         ctx.emit_set(&updated_client)?;
@@ -167,7 +172,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
                 CommandError::new(
                     ctx.tx(),
                     "ClearClientWindbackTime",
-                    format!("Client {} not found", client_id),
+                    format!("Client {client_id} not found"),
                 )
             })?;
         // Update client to clear windback

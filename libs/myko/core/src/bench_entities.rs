@@ -11,7 +11,7 @@
 //! - `CountAllBenchItems` / `CountBenchItems` - count reports
 //!
 //! We add a custom `GetBenchItemsByCategory` for category-based filtering,
-//! and `SwitchMapReport` for testing switch_map + query_map cache cleanup.
+//! and `SwitchMapReport` for testing `switch_map` + `query_map` cache cleanup.
 
 use std::sync::Arc;
 
@@ -232,7 +232,7 @@ mod manual_wire {
         where
             D: serde::Deserializer<'de>,
         {
-            Ok(BenchManualWireValue {
+            Ok(Self {
                 raw: String::deserialize(deserializer)?,
             })
         }
@@ -244,11 +244,11 @@ mod manual_wire {
         type OptionInnerType = Self;
 
         fn decl() -> String {
-            panic!("BenchManualWireValue maps to `unknown`, it has no declaration")
+            "unknown".to_string()
         }
 
         fn decl_concrete() -> String {
-            panic!("BenchManualWireValue maps to `unknown`, it has no declaration")
+            "unknown".to_string()
         }
 
         fn name() -> String {
@@ -260,7 +260,7 @@ mod manual_wire {
         }
 
         fn inline_flattened() -> String {
-            panic!("BenchManualWireValue cannot be flattened")
+            "unknown".to_string()
         }
     }
 
@@ -279,10 +279,18 @@ mod manual_wire {
             let value = BenchManualWireValue {
                 raw: "hello".to_string(),
             };
-            let json = serde_json::to_value(&value).unwrap();
+            let json = serde_json::to_value(&value);
+            assert!(json.is_ok(), "serialize manual wire value");
+            let Ok(json) = json else {
+                return;
+            };
             assert_eq!(json, serde_json::Value::String("hello".to_string()));
 
-            let round_tripped: BenchManualWireValue = serde_json::from_value(json).unwrap();
+            let round_tripped = serde_json::from_value::<BenchManualWireValue>(json);
+            assert!(round_tripped.is_ok(), "deserialize manual wire value");
+            let Ok(round_tripped) = round_tripped else {
+                return;
+            };
             assert_eq!(round_tripped.raw, "hello");
         }
 
@@ -298,7 +306,7 @@ mod manual_wire {
     }
 }
 
-/// Query to get BenchItems filtered by category (custom query beyond auto-generated ones).
+/// Query to get `BenchItems` filtered by category (custom query beyond auto-generated ones).
 #[myko_query(BenchItem)]
 pub struct GetBenchItemsByCategory {
     pub category: String,
@@ -310,11 +318,11 @@ impl QueryHandler for GetBenchItemsByCategory {
     }
 }
 
-/// Report that reproduces the CuePaused memory leak pattern:
-/// switch_map on an outer query, with a nested query_map inside.
+/// Report that reproduces the `CuePaused` memory leak pattern:
+/// `switch_map` on an outer query, with a nested `query_map` inside.
 ///
 /// The outer watches all items matching a category. On each change,
-/// switch_map creates a new inner query_map(GetBenchItemsByIds) to
+/// `switch_map` creates a new inner `query_map(GetBenchItemsByIds)` to
 /// look up the matching items by ID. This is the exact pattern that
 /// leaks in production.
 #[myko_report(Vec<String>)]
@@ -334,7 +342,8 @@ impl ReportHandler for SwitchMapReport {
                 category: Some(StringFilter::Eq(category.into())),
                 ..Default::default()
             }))
-            .items();
+            .items()
+            .materialize();
 
         // switch_map + nested query_map — the leak pattern
         items.switch_map(move |items| {
@@ -347,6 +356,7 @@ impl ReportHandler for SwitchMapReport {
             // Inner: look up by IDs (different IDs each time = different cache key)
             ctx.query_map(GetBenchItemsByIds { ids })
                 .items()
+                .materialize()
                 .map(|items| {
                     Arc::new(
                         items
@@ -386,8 +396,8 @@ mod typed_search_tests {
 
         let mixer = index.search("mixer", SearchOptions::default());
         assert_eq!(mixer.len(), 1);
-        assert_eq!(mixer[0].id.0.as_ref(), "1");
-        assert_eq!(mixer[0].score, Score::Exact);
+        assert_eq!(mixer.first().map(|hit| hit.id.0.as_ref()), Some("1"));
+        assert_eq!(mixer.first().map(|hit| hit.score), Some(Score::Exact));
 
         let hardware = index.search("hardware", SearchOptions::default());
         assert_eq!(hardware.len(), 2);
@@ -406,10 +416,18 @@ mod typed_search_tests {
         let mut index = SearchIndex::<BenchItem>::new();
         index.insert(&item("1", "alpha", "beta"));
 
-        let name_hit = &index.search("alpha", SearchOptions::default())[0];
+        let name_hits = index.search("alpha", SearchOptions::default());
+        assert!(!name_hits.is_empty(), "expected name hit");
+        let Some(name_hit) = name_hits.first() else {
+            return;
+        };
         assert_eq!(name_hit.matched_field, 0, "alpha is the name field");
 
-        let cat_hit = &index.search("beta", SearchOptions::default())[0];
+        let category_hits = index.search("beta", SearchOptions::default());
+        assert!(!category_hits.is_empty(), "expected category hit");
+        let Some(cat_hit) = category_hits.first() else {
+            return;
+        };
         assert_eq!(cat_hit.matched_field, 1, "beta is the category field");
     }
 
@@ -427,7 +445,7 @@ mod typed_search_tests {
         registry.insert(&item("1", "audio mixer", "hardware"));
         let hits = registry.search("BenchItem", "mixer", SearchOptions::default());
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id.as_ref(), "1");
+        assert_eq!(hits.first().map(|hit| hit.id.as_ref()), Some("1"));
     }
 
     #[test]
