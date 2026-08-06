@@ -27,7 +27,7 @@
 //!    be an always-on dependency of `myko-server` without forcing every
 //!    server binary to pull in a full TS formatter.
 
-#[cfg(any(feature = "codegen", test))]
+#[cfg(feature = "codegen")]
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -181,7 +181,7 @@ pub(crate) fn split_outer_generic(s: &str) -> Option<(&str, &str)> {
     Some((outer, inner))
 }
 
-#[cfg(any(feature = "codegen", test))]
+#[cfg(feature = "codegen")]
 pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut depth = 0usize;
@@ -213,7 +213,7 @@ pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
 
 // Only consumed by `crate::codegen::generate_docs_json_from_bindings`, which
 // is gated behind the (non-default) `codegen` feature.
-#[cfg(any(feature = "codegen", test))]
+#[cfg(feature = "codegen")]
 pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBuf>, anyhow::Error> {
     let mut files = Vec::new();
     for entry in fs::read_dir(bindings_dir)? {
