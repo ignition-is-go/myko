@@ -629,41 +629,53 @@ fn belongs_to_source_index_for(
 /// to a table scan, so this only observes, never degrades.
 pub const UNION_KEYS_WARN_THRESHOLD: usize = 1000;
 
-/// Rewrite a source bucket's diff into a form safe to apply additively to a
-/// union of several such sources: `Initial { entries }` becomes a `Batch`
-/// of `Insert`s (a source's Initial is "here is MY full state," which would
-/// otherwise replace the union's contents rather than contribute to it —
-/// see [`build_belongs_to_union_source_map`]). Insert/Remove/Update are
-/// already scoped to one key and forward unchanged; a nested `Batch` is
-/// rewritten recursively (its own `Initial`s get the same treatment) since
-/// a source can legitimately emit one. Returns `None` for an empty
-/// resulting batch (nothing to apply) rather than an empty `Batch` diff.
-fn additive_union_diff(diff: &BucketDiff) -> Option<BucketDiff> {
+/// Rewrite one bucket's diffs into incremental changes safe to apply to the
+/// union of several buckets. An `Initial` is a replacement of this bucket's
+/// contribution, so the previous contribution must be retracted before the
+/// new snapshot is inserted. Treating it as inserts alone loses an
+/// `Initial { entries: [] }` clear when the last source row is deleted.
+fn additive_union_diff(
+    diff: &BucketDiff,
+    contribution: &mut HashMap<Arc<str>, AnyItemArc>,
+) -> Option<BucketDiff> {
     match diff {
         MapDiff::Initial { entries } => {
-            if entries.is_empty() {
-                return None;
+            let mut changes = Vec::with_capacity(contribution.len().saturating_add(entries.len()));
+            for (key, old_value) in contribution.drain() {
+                changes.push(MapDiff::Remove { key, old_value });
             }
-            Some(MapDiff::Batch {
-                changes: entries
-                    .iter()
-                    .map(|(key, value)| MapDiff::Insert {
-                        key: key.clone(),
-                        value: value.clone(),
-                    })
-                    .collect(),
-            })
+            for (key, value) in entries {
+                contribution.insert(key.clone(), value.clone());
+                changes.push(MapDiff::Insert {
+                    key: key.clone(),
+                    value: value.clone(),
+                });
+            }
+            (!changes.is_empty()).then_some(MapDiff::Batch { changes })
         }
         MapDiff::Batch { changes } => {
-            let rewritten: Vec<BucketDiff> =
-                changes.iter().filter_map(additive_union_diff).collect();
+            let rewritten: Vec<BucketDiff> = changes
+                .iter()
+                .filter_map(|change| additive_union_diff(change, contribution))
+                .collect();
             if rewritten.is_empty() {
                 None
             } else {
                 Some(MapDiff::Batch { changes: rewritten })
             }
         }
-        other => Some(other.clone()),
+        MapDiff::Insert { key, value } => {
+            contribution.insert(key.clone(), value.clone());
+            Some(diff.clone())
+        }
+        MapDiff::Remove { key, .. } => {
+            contribution.remove(key);
+            Some(diff.clone())
+        }
+        MapDiff::Update { key, new_value, .. } => {
+            contribution.insert(key.clone(), new_value.clone());
+            Some(diff.clone())
+        }
     }
 }
 
@@ -708,19 +720,23 @@ pub fn build_belongs_to_union_source_map(
     for key in keys {
         let bucket = index.bucket_for(key, extract_fk).lock();
         let result_weak = result.downgrade();
+        let contribution = Mutex::new(HashMap::new());
         let guard = bucket.subscribe_diffs(move |diff| {
             let Some(result) = result_weak.upgrade() else {
                 return;
             };
-            // Each source's `Initial` means "here is MY full current state"
-            // — applying it to `result` as-is would REPLACE result's
-            // contents, wiping out every other source's entries (an
-            // Initial is a resync, not an incremental add). `result` is a
-            // union of K independently-diffing sources, so a source's
-            // Initial must be additive here: rewrite it into plain Inserts
-            // before forwarding. Insert/Remove/Update/Batch are already
-            // incremental relative to a single key, so they forward as-is.
-            let additive = additive_union_diff(diff);
+            // Each source's `Initial` replaces only that bucket's current
+            // contribution. Applying it directly would wipe the other
+            // buckets, while treating it as inserts would fail to retract
+            // rows absent from the replacement. Track this bucket's prior
+            // contribution and rewrite the replacement into removals plus
+            // inserts before forwarding it to the shared union.
+            let additive = additive_union_diff(
+                diff,
+                &mut contribution
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
             if let Some(additive) = additive {
                 result.apply_diff_owned(additive);
             }
@@ -1440,6 +1456,7 @@ where
 mod belongs_to_source_index_tests {
     use std::any::Any;
 
+    use hyphae::{Gettable, Materialize};
     use serde::Serialize;
 
     use super::*;
@@ -1537,7 +1554,7 @@ mod belongs_to_source_index_tests {
 
         // Remove the only child — bucket goes empty, but `bucket` is still
         // held here, simulating a live subscriber.
-        store.remove(&id);
+        store.remove_many(vec![id]);
         assert_eq!(bucket.snapshot().len(), 0);
 
         // A new child arrives under the same parent — the still-held handle
@@ -1773,6 +1790,7 @@ mod belongs_to_source_index_tests {
         id: Arc<str>,
         node_id: Arc<str>,
         session_id: Arc<str>,
+        anchor_id: Arc<str>,
     }
 
     impl WithId for TestCursor {
@@ -1799,10 +1817,20 @@ mod belongs_to_source_index_tests {
     }
 
     fn cursor(id: &str, node: &str, session: &str) -> (Arc<str>, AnyItemArc) {
+        cursor_with_anchor(id, node, session, "anchor-default")
+    }
+
+    fn cursor_with_anchor(
+        id: &str,
+        node: &str,
+        session: &str,
+        anchor: &str,
+    ) -> (Arc<str>, AnyItemArc) {
         let item: AnyItemArc = Arc::new(TestCursor {
             id: Arc::from(id),
             node_id: Arc::from(node),
             session_id: Arc::from(session),
+            anchor_id: Arc::from(anchor),
         });
         (
             Arc::from(id),
@@ -1990,6 +2018,51 @@ mod belongs_to_source_index_tests {
             3,
             "writes to a non-unioned bucket must never appear in the union"
         );
+    }
+
+    #[test]
+    fn compound_union_with_residual_filter_propagates_batch_delete() {
+        let registry = Arc::new(crate::store::StoreRegistry::new());
+        let store = registry.get_or_create("TestCursor");
+        let (matched_id, matched) = cursor_with_anchor(
+            "cursor-match",
+            "node-A",
+            "session-PROD",
+            "anchor-match",
+        );
+        let (residual_miss_id, residual_miss) = cursor_with_anchor(
+            "cursor-residual-miss",
+            "node-A",
+            "session-PROD",
+            "anchor-other",
+        );
+        store.insert(matched_id.clone(), matched);
+        store.insert(residual_miss_id, residual_miss);
+
+        let source = build_belongs_to_union_source_map(
+            registry,
+            Uuid::new_v4(),
+            "TestCursor",
+            &["node_id", "session_id"],
+            extract_node_and_session_fk,
+            vec![smallvec::smallvec![
+                Arc::from("node-A"),
+                Arc::from("session-PROD")
+            ]],
+        );
+        let filtered = hyphae::MapQuery::materialize(source.select(|item| {
+            item.as_any()
+                .downcast_ref::<TestCursor>()
+                .is_some_and(|cursor| cursor.anchor_id.as_ref() == "anchor-match")
+        }));
+        let items = filtered.items().materialize();
+        assert_eq!(items.get().len(), 1);
+
+        // One row remains in the store, so remove_many emits Batch { Remove }
+        // rather than Initial { empty }. Both deletion shapes must propagate.
+        store.remove_many(vec![matched_id]);
+
+        assert_eq!(items.get().len(), 0);
     }
 
     #[test]

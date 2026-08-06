@@ -13,6 +13,7 @@ use myko::{
         client::{Client, ClientQuery, GetClientsByQuery},
         server::ServerId,
     },
+    hyphae::{Gettable, Materialize},
     prelude::AnyItem,
     query::IdFilter,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
@@ -45,6 +46,17 @@ fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
         windback: None,
     };
     let event = MEvent::from_item(&client, MEventType::SET, &format!("tx-{id}"));
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
+}
+
+fn delete_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
+    let client = Client {
+        id: id.into(),
+        server_id: ServerId::from(Arc::<str>::from(server_id)),
+        address: None,
+        windback: None,
+    };
+    let event = MEvent::from_item(&client, MEventType::DEL, &format!("tx-delete-{id}"));
     assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
@@ -126,6 +138,40 @@ fn eq_filter_on_belongs_to_field_still_works() {
     };
     let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
     assert_eq!(cell.snapshot().len(), 1);
+}
+
+#[test]
+fn retained_filtered_query_items_propagate_deletion() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+
+    let filter = ClientQuery {
+        server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
+        ..Default::default()
+    };
+    let live_request = request(&ctx, "tx-live-delete");
+    let untyped = ctx.query_map_untyped(
+        GetClientsByQuery(filter.clone()),
+        live_request.clone(),
+    );
+    let live = ctx.query_map(GetClientsByQuery(filter.clone()), live_request);
+    let items = live.items().materialize();
+    assert_eq!(items.get().len(), 1);
+
+    delete_client(&ctx, "c1", "server-A");
+
+    let snapshot = ctx.query_snapshot(
+        GetClientsByQuery(filter),
+        request(&ctx, "tx-snapshot-delete"),
+    );
+    assert_eq!(snapshot.len(), 0, "the store snapshot must observe the delete");
+    assert_eq!(untyped.snapshot().len(), 0, "the untyped live query must propagate the delete");
+    assert_eq!(
+        items.get().len(),
+        0,
+        "the retained filtered live query must propagate the delete"
+    );
 }
 
 /// Regression: an UPDATE to a non-FK field of an item already in a routed
