@@ -243,23 +243,23 @@ mod manual_wire {
         type WithoutGenerics = Self;
         type OptionInnerType = Self;
 
-        fn decl() -> String {
+        fn decl(_: &ts_rs::Config) -> String {
             "unknown".to_string()
         }
 
-        fn decl_concrete() -> String {
+        fn decl_concrete(_: &ts_rs::Config) -> String {
             "unknown".to_string()
         }
 
-        fn name() -> String {
+        fn name(_: &ts_rs::Config) -> String {
             "unknown".to_string()
         }
 
-        fn inline() -> String {
+        fn inline(_: &ts_rs::Config) -> String {
             "unknown".to_string()
         }
 
-        fn inline_flattened() -> String {
+        fn inline_flattened(_: &ts_rs::Config) -> String {
             "unknown".to_string()
         }
     }

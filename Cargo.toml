@@ -79,7 +79,7 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
 # Type generation
-ts-rs = "11.1"
+ts-rs = "12.0.1"
 
 # Misc utilities
 url = "2.5"

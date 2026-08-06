@@ -153,7 +153,9 @@ macro_rules! register_ts_export {
         $crate::inventory::submit! {
             $crate::codegen_types::TsExportRegistration {
                 type_name: stringify!($ty),
-                export_fn: || <$ty as $crate::ts_rs::TS>::export(),
+                export_fn: || {
+                    <$ty as $crate::ts_rs::TS>::export(&$crate::ts_rs::Config::default())
+                },
             }
         }
     };
