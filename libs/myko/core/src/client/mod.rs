@@ -1,12 +1,9 @@
-// AtomicBool is only used by the native command-cancellation path below.
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::AtomicBool;
 use std::{
     any::Any,
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -257,6 +254,7 @@ struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
     protocol: Arc<AtomicU8>,
     last_message: Cell<Option<Value>, CellMutable>,
+    capture_last_message: AtomicBool,
     ping_ms: Cell<Option<u64>, CellMutable>,
     peer_failover_enabled: bool,
     known_servers: Mutex<Vec<String>>,
@@ -506,6 +504,7 @@ impl MykoClient {
                 socket: transport.clone(),
                 protocol: protocol.clone(),
                 last_message,
+                capture_last_message: AtomicBool::new(true),
                 ping_ms,
                 peer_failover_enabled: options.peer_failover,
                 known_servers: Mutex::new(Vec::new()),
@@ -649,24 +648,33 @@ impl MykoClient {
 
     /// Handle an incoming WebSocket frame by dispatching to registered handlers.
     fn handle_frame(inner: &MykoClientInner, frame: &WsFrame) {
-        let Some(value) = Self::decode_message(frame) else {
+        let Some(mut value) = Self::decode_message(frame) else {
             return;
         };
-        inner.last_message.set(Some(value.clone()));
 
-        // Fast-path: extract event tag and data from the raw Value to avoid
-        // deserializing QueryResponse/ViewResponse through MykoMessage (which
-        // would require round-tripping Arc<dyn AnyItem> through serde).
-        let event_tag = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+        // NOTE(ts): Retaining the raw message requires a deep Value clone. High-rate
+        // clients that do not inspect `messages()` can disable it and let dispatch
+        // move the data payload instead.
+        if inner.capture_last_message.load(Ordering::Relaxed) {
+            inner.last_message.set(Some(value.clone()));
+        }
 
-        let data = || {
+        // Fast-path: extract the event tag and take data from the raw Value to avoid
+        // both a deep clone and deserializing QueryResponse/ViewResponse through
+        // MykoMessage (which would round-trip Arc<dyn AnyItem> through serde).
+        let event_tag = value
+            .get("event")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+
+        let mut data = || {
             value
-                .get("data")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null)
+                .get_mut("data")
+                .map_or(serde_json::Value::Null, std::mem::take)
         };
 
-        match event_tag {
+        match event_tag.as_str() {
             "ws:m:query-response" | "ws:m:view-response" => {
                 let data_val = data();
                 let tx_str = data_val.get("tx").and_then(|v| v.as_str()).unwrap_or("");
@@ -825,6 +833,27 @@ impl MykoClient {
     #[must_use]
     pub fn messages(&self) -> Cell<Option<Value>, CellImmutable> {
         self.inner.last_message.clone().lock()
+    }
+
+    /// Enable or disable retention of the latest raw incoming message.
+    ///
+    /// Retention is enabled by default for backwards compatibility. Disabling it
+    /// avoids a deep [`serde_json::Value`] clone for every received frame and clears
+    /// the previously retained message. Typed query, view, report, and command
+    /// dispatch is unaffected.
+    pub fn set_last_message_capture(&self, enabled: bool) {
+        self.inner
+            .capture_last_message
+            .store(enabled, Ordering::Relaxed);
+        if !enabled {
+            self.inner.last_message.set(None);
+        }
+    }
+
+    /// Whether the latest raw incoming message is retained.
+    #[must_use]
+    pub fn is_last_message_capture_enabled(&self) -> bool {
+        self.inner.capture_last_message.load(Ordering::Relaxed)
     }
 
     /// Get the current ping synchronously.
@@ -1042,31 +1071,23 @@ impl MykoClient {
                     state.clear();
                 }
 
-                let upserts: Vec<Arc<Q::Item>> = response
-                    .upserts
-                    .iter()
-                    .filter_map(
-                        |x| match serde_json::from_value::<Q::Item>(x.item.clone()) {
-                            Ok(item) => Some(Arc::new(item)),
-                            Err(e) => {
-                                error!(
-                                    "Failed to parse query '{}' upsert as {}: {}",
-                                    query_id_for_handler,
-                                    std::any::type_name::<Q::Item>(),
-                                    e
-                                );
-                                None
-                            }
-                        },
-                    )
-                    .collect();
-
-                for up in &upserts {
-                    state.insert(up.id().clone(), up.clone());
+                for upsert in response.upserts {
+                    match serde_json::from_value::<Q::Item>(upsert.item) {
+                        Ok(item) => {
+                            let item = Arc::new(item);
+                            state.insert(item.id().clone(), item);
+                        }
+                        Err(e) => error!(
+                            "Failed to parse query '{}' upsert as {}: {}",
+                            query_id_for_handler,
+                            std::any::type_name::<Q::Item>(),
+                            e
+                        ),
+                    }
                 }
 
-                for del in &response.deletes {
-                    state.remove(del);
+                for del in response.deletes {
+                    state.remove(&del);
                 }
 
                 cell_writer.set(state.values().cloned().collect());
@@ -1284,31 +1305,22 @@ impl MykoClient {
                     state.clear();
                 }
 
-                let upserts: Vec<V::Item> = response
-                    .upserts
-                    .iter()
-                    .filter_map(
-                        |x| match serde_json::from_value::<V::Item>(x.item.clone()) {
-                            Ok(item) => Some(item),
-                            Err(e) => {
-                                error!(
-                                    "Failed to parse view '{}' upsert as {}: {}",
-                                    view_id_for_handler,
-                                    std::any::type_name::<V::Item>(),
-                                    e
-                                );
-                                None
-                            }
-                        },
-                    )
-                    .collect();
-
-                for up in &upserts {
-                    state.insert(up.id().clone(), up.clone());
+                for upsert in response.upserts {
+                    match serde_json::from_value::<V::Item>(upsert.item) {
+                        Ok(item) => {
+                            state.insert(item.id().clone(), item);
+                        }
+                        Err(e) => error!(
+                            "Failed to parse view '{}' upsert as {}: {}",
+                            view_id_for_handler,
+                            std::any::type_name::<V::Item>(),
+                            e
+                        ),
+                    }
                 }
 
-                for del in &response.deletes {
-                    state.remove(del);
+                for del in response.deletes {
+                    state.remove(&del);
                 }
 
                 cell_writer.set(state.values().cloned().collect());
@@ -1755,6 +1767,50 @@ fn address_has_explicit_port(addr: &str) -> bool {
     authority
         .rsplit_once(':')
         .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+}
+
+#[cfg(test)]
+mod message_capture_tests {
+    use hyphae::Gettable;
+
+    use super::{MykoClient, WsFrame};
+    use crate::wire::{MykoMessage, PingData};
+
+    fn ping_frame(id: &str) -> Result<WsFrame, serde_json::Error> {
+        let message = MykoMessage::Ping(PingData {
+            id: id.to_owned(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+        });
+        serde_json::to_string(&message).map(WsFrame::Text)
+    }
+
+    #[test]
+    fn raw_message_capture_can_be_disabled_without_affecting_dispatch() {
+        let client = MykoClient::new_with_auto_reconnect(false);
+        assert!(client.is_last_message_capture_enabled());
+
+        let captured_frame = ping_frame("captured");
+        assert!(captured_frame.is_ok());
+        let Ok(captured_frame) = captured_frame else {
+            return;
+        };
+        MykoClient::handle_frame(&client.inner, &captured_frame);
+        assert!(client.messages().get().is_some());
+        assert!(client.ping_ms_sync().is_some());
+
+        client.set_last_message_capture(false);
+        assert!(!client.is_last_message_capture_enabled());
+        assert!(client.messages().get().is_none());
+
+        let uncaptured_frame = ping_frame("not-captured");
+        assert!(uncaptured_frame.is_ok());
+        let Ok(uncaptured_frame) = uncaptured_frame else {
+            return;
+        };
+        MykoClient::handle_frame(&client.inner, &uncaptured_frame);
+        assert!(client.messages().get().is_none());
+        assert!(client.ping_ms_sync().is_some());
+    }
 }
 
 #[cfg(test)]

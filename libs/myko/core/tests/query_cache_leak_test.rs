@@ -107,7 +107,7 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
                 }),
                 request,
             );
-            query_result.items()
+            query_result.items().materialize()
         })
         .materialize();
 
@@ -176,6 +176,7 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
                     request,
                 )
                 .items()
+                .materialize()
         })
         .materialize();
 
@@ -241,6 +242,7 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
                     request,
                 )
                 .items()
+                .materialize()
         })
         .materialize();
 
@@ -248,7 +250,7 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
 
     // Interleave switches with store mutations (simulating playback state changes
     // that trigger both the outer signal AND entity updates)
-    for round in 0..20 {
+    for round in 0usize..20 {
         // Switch to new category
         selector.set(round.saturating_add(1));
 
@@ -258,7 +260,7 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
             .and_then(|index| categories.get(index))
             .copied()
             .unwrap_or_default();
-        for i in 0..5 {
+        for i in 0usize..5 {
             insert_bench_item(
                 &ctx,
                 &format!("{}-{i}", cat.chars().next().unwrap_or('?')),

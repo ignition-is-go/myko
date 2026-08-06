@@ -45,16 +45,18 @@ fn test_saga_pairwise_operator() {
     ]);
 
     let pairs: Vec<_> = block_on(events.pairwise().collect());
+    let first_id = pairs
+        .first()
+        .and_then(|pair| pair.0.item_json().get("id").cloned())
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let second_id = pairs
+        .first()
+        .and_then(|pair| pair.1.item_json().get("id").cloned())
+        .and_then(|value| value.as_str().map(str::to_owned));
 
     assert_eq!(pairs.len(), 2);
-    assert_eq!(
-        pairs.first().and_then(|pair| pair.0.item_json().get("id")).and_then(|value| value.as_str()),
-        Some("id-1")
-    );
-    assert_eq!(
-        pairs.first().and_then(|pair| pair.1.item_json().get("id")).and_then(|value| value.as_str()),
-        Some("id-2")
-    );
+    assert_eq!(first_id.as_deref(), Some("id-1"));
+    assert_eq!(second_id.as_deref(), Some("id-2"));
 }
 
 #[test]

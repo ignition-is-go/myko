@@ -37,8 +37,9 @@ mod tree {
 
     use crate::prelude::*;
 
-    /// Tree-shaped entity for benchmarking cross-store-get + downcast patterns
-    /// like a filtered-tree view's lineage walk. The hot-path question is:
+    /// Tree-shaped entity for benchmarking cross-store-get + downcast patterns.
+    ///
+    /// This models a filtered-tree view's lineage walk. The hot-path question is:
     /// inside a project closure that does N parent-pointer hops per item, how much
     /// of the cost is the dyn-boundary downcast?
     #[myko_item]
@@ -160,7 +161,7 @@ mod subtypes {
         pub label: String,
     }
 
-    #[myko_subtype]
+    #[myko_subtype(derive(Eq))]
     pub struct BenchSubtypeUnordered {
         pub note: String,
     }
@@ -207,13 +208,13 @@ mod subtypes {
 // change) and a hand-written TS impl (maps to `unknown`, since ts-rs can't
 // express this structurally). manual(serde, ts) lets it join the subtype
 // system — Debug/Clone/PartialEq, the extra `Default` derive, and the
-// Filterable auto-impl (Unfilterable, since it derives neither Eq nor
-// Ord) — without myko_subtype forking its serde/TS story.
+// Filterable auto-impl (Unfilterable, since it has no total order) — without
+// myko_subtype forking its serde/TS story.
 pub use manual_wire::BenchManualWireValue;
 mod manual_wire {
     use crate::prelude::*;
 
-    #[myko_subtype(derive(Default), manual(serde, ts))]
+    #[myko_subtype(derive(Default, Eq), manual(serde, ts))]
     pub struct BenchManualWireValue {
         pub raw: String,
     }

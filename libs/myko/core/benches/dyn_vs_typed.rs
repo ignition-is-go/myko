@@ -164,8 +164,8 @@ fn bench_materialize(c: &mut Criterion) {
             |store| {
                 let result = MapQuery::materialize((store.lock()).clone().select(
                     |item_any: &Arc<dyn AnyItem>| {
-                        let item = downcast_any_item_arc::<BenchItem>(item_any, "bench");
-                        item.value > 50
+                        downcast_any_item_arc::<BenchItem>(item_any, "bench")
+                            .is_some_and(|item| item.value > 50)
                     },
                 ));
                 black_box(result.snapshot().len())
@@ -227,10 +227,11 @@ fn bench_serialize(c: &mut Criterion) {
     let typed = make_typed_arcs(1000);
     let dynd = make_dyn_arcs(1000);
 
-    let mut g = c.benchmark_group("serialize_to_json_bytes");
-    g.throughput(criterion::Throughput::Elements(1000));
+    {
+        let mut json_group = c.benchmark_group("serialize_to_json_bytes");
+        json_group.throughput(criterion::Throughput::Elements(1000));
 
-    g.bench_function("typed", |b| {
+    json_group.bench_function("typed", |b| {
         b.iter(|| {
             let mut total = 0usize;
             for (_, item) in &typed {
@@ -243,7 +244,7 @@ fn bench_serialize(c: &mut Criterion) {
         });
     });
 
-    g.bench_function("dyn_erased_serde", |b| {
+    json_group.bench_function("dyn_erased_serde", |b| {
         b.iter(|| {
             let mut total = 0usize;
             for (_, item_any) in &dynd {
@@ -257,16 +258,14 @@ fn bench_serialize(c: &mut Criterion) {
         });
     });
 
-    g.finish();
+        json_group.finish();
+    }
 
     // The actual wire emit path: ErasedWrappedItem holding `Arc<dyn AnyItem>`,
     // serialized inside a larger JSON struct. Pre-fix went through
     // `&dyn erased_serde::Serialize`; post-fix dispatches to the typed shim
     // emitted by `myko_item` for human-readable serializers, falling back to
     // erased_serde for unregistered types and non-human-readable formats.
-    let mut g = c.benchmark_group("wrapped_item_serialize");
-    g.throughput(criterion::Throughput::Elements(1000));
-
     let wrapped: Vec<ErasedWrappedItem> = dynd
         .iter()
         .map(|(_, item)| ErasedWrappedItem {
@@ -275,7 +274,11 @@ fn bench_serialize(c: &mut Criterion) {
         })
         .collect();
 
-    g.bench_function("json_via_typed_registration", |b| {
+    {
+        let mut wrapped_group = c.benchmark_group("wrapped_item_serialize");
+        wrapped_group.throughput(criterion::Throughput::Elements(1000));
+
+        wrapped_group.bench_function("json_via_typed_registration", |b| {
         b.iter(|| {
             black_box(serde_json::to_vec(&wrapped))
         });
@@ -293,23 +296,24 @@ fn bench_serialize(c: &mut Criterion) {
         })
         .collect();
 
-    g.bench_function("json_via_erased_serde_fallback", |b| {
+    wrapped_group.bench_function("json_via_erased_serde_fallback", |b| {
         b.iter(|| {
             black_box(serde_json::to_vec(&wrapped_unregistered))
         });
     });
 
-    g.finish();
+        wrapped_group.finish();
+    }
 
     // CBOR is the production wire format for downstream consumers — measure
     // the erased_serde tax on the path that actually matters. Today there's
     // no typed shim for CBOR (ciborium has no RawValue / raw-embed
     // mechanism), so all paths still go through erased_serde; the
     // typed_baseline shows the floor we'd be chasing if we add a CBOR fix.
-    let mut g = c.benchmark_group("cbor_serialize");
-    g.throughput(criterion::Throughput::Elements(1000));
+    let mut cbor_group = c.benchmark_group("cbor_serialize");
+    cbor_group.throughput(criterion::Throughput::Elements(1000));
 
-    g.bench_function("typed_baseline", |b| {
+    cbor_group.bench_function("typed_baseline", |b| {
         b.iter(|| {
             let mut buf = Vec::with_capacity(64 * 1000);
             for (_, item) in &typed {
@@ -321,7 +325,7 @@ fn bench_serialize(c: &mut Criterion) {
         });
     });
 
-    g.bench_function("dyn_via_erased_serde", |b| {
+    cbor_group.bench_function("dyn_via_erased_serde", |b| {
         b.iter(|| {
             let mut buf = Vec::with_capacity(64 * 1000);
             for (_, item_any) in &dynd {
@@ -333,16 +337,16 @@ fn bench_serialize(c: &mut Criterion) {
         });
     });
 
-    g.bench_function("wrapped_item_via_erased_serde", |b| {
+    cbor_group.bench_function("wrapped_item_via_erased_serde", |b| {
         b.iter(|| {
             let mut buf = Vec::with_capacity(128 * 1000);
             let result = ciborium::ser::into_writer(&wrapped, &mut buf);
-            black_box(result);
+            let _ = black_box(result);
             black_box(buf.len())
         });
     });
 
-    g.finish();
+    cbor_group.finish();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -482,15 +486,17 @@ fn bench_lineage_walk(c: &mut Criterion) {
                 };
                 let mut current_pid = item.parent_id.clone();
                 for _ in 0..LINEAGE_DEPTH {
-                    let Some(pid) = current_pid else { break };
-                    let Some(parent_any) = dyn_store.get_value(&pid) else {
+                    let Some(pid) = current_pid.as_ref() else {
+                        break;
+                    };
+                    let Some(parent_any) = dyn_store.get_value(pid) else {
                         break;
                     };
                     let Some(parent) = parent_any.as_any().downcast_ref::<BenchTreeItem>() else {
                         break;
                     };
                     acc = acc.saturating_add(parent.depth);
-                    current_pid = parent.parent_id.clone();
+                    current_pid.clone_from(&parent.parent_id);
                 }
             }
             black_box(acc)
@@ -553,14 +559,14 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
-                                let Some(pid) = current_pid.clone() else {
+                                let Some(pid) = current_pid.as_ref() else {
                                     break;
                                 };
-                                let Some(parent) = inner_for_proj.get_value(&pid) else {
+                                let Some(parent) = inner_for_proj.get_value(pid) else {
                                     break;
                                 };
                                 total = total.saturating_add(parent.depth);
-                                current_pid = parent.parent_id.clone();
+                                current_pid.clone_from(&parent.parent_id);
                             }
                             Some((k.clone(), total))
                         }),
@@ -594,17 +600,17 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
-                                let Some(pid) = current_pid.clone() else {
+                                let Some(pid) = current_pid.as_ref() else {
                                     break;
                                 };
-                                let Some(parent_any) = inner_for_proj.get_value(&pid) else {
+                                let Some(parent_any) = inner_for_proj.get_value(pid) else {
                                     break;
                                 };
                                 let Some(parent) = parent_any.as_any().downcast_ref::<BenchTreeItem>() else {
                                     break;
                                 };
                                 total = total.saturating_add(parent.depth);
-                                current_pid = parent.parent_id.clone();
+                                current_pid.clone_from(&parent.parent_id);
                             }
                             Some((k.clone(), total))
                         }),

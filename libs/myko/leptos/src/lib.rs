@@ -18,6 +18,9 @@ pub fn provide_myko(address: &str) {
     use myko::client::MykoClient;
     let client = MykoClient::new();
     client.set_protocol(myko::client::MykoProtocol::JSON);
+    // NOTE(ts): The Leptos bridge consumes typed cells, never the raw-message
+    // debug cell. Avoid a deep JSON/CBOR value clone for every incoming frame.
+    client.set_last_message_capture(false);
     client.set_address(Some(address.to_string()));
     provide_context(client);
 }

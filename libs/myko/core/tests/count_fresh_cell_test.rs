@@ -98,8 +98,7 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
         }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
-        let handles: Vec<_> = (0..8)
-            .map(|t| {
+        let handles: [std::thread::JoinHandle<usize>; 8] = std::array::from_fn(|t| {
                 let ctx = ctx.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
@@ -112,8 +111,7 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
                     let cell = ctx.report(CountAllBenchItems {}, request);
                     myko::hyphae::Gettable::get(&cell).count
                 })
-            })
-            .collect();
+            });
 
         for (t, h) in handles.into_iter().enumerate() {
             let count = h.join();
