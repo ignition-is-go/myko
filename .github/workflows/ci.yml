@@ -17,14 +17,12 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: oven-sh/setup-bun@v2
-      - uses: Swatinem/rust-cache@v2
+          clean: true
 
-      - run: bun install
-      - run: cargo install cargo-flux
+      - name: Common Setup
+        uses: ./.github/actions/common-setup
+        with:
+          rust-tools: cargo-flux
       - run: cargo flux run check
       - run: cargo flux run lint
       - run: cargo flux run test

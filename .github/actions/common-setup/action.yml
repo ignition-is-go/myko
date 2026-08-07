@@ -1,0 +1,199 @@
+name: 'Common Setup'
+description: 'Reusable setup steps for monorepo projects (bun, flux, cache, sync, install)'
+inputs:
+  private-git-token:
+    description: >-
+      Token with read access to the org's PRIVATE git dependencies. Composite
+      actions can't read `secrets`, so callers must pass it explicitly.
+    required: false
+    default: ''
+  rust-tools:
+    description: 'Space-separated cargo tools to install'
+    required: false
+    default: 'tauri-cli trunk cargo-sweep cargo-flux ast-grep'
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure Bun temp dir (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        mkdir -p "${GITHUB_WORKSPACE}/.bun-tmp"
+        echo "BUN_TMPDIR=${GITHUB_WORKSPACE}/.bun-tmp" >> "$GITHUB_ENV"
+
+    - name: Configure Bun temp dir (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Path "$env:GITHUB_WORKSPACE/.bun-tmp" -Force | Out-Null
+        "BUN_TMPDIR=$env:GITHUB_WORKSPACE/.bun-tmp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Ensure rustup installed (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        if ! command -v rustup >/dev/null 2>&1; then
+          echo "rustup not found on PATH; installing via rustup-init"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+        fi
+
+    - name: Ensure rustup installed (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+          Write-Host "rustup not found on PATH; installing via rustup-init"
+          Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+          ./rustup-init.exe -y --default-toolchain stable --profile minimal --no-modify-path
+          $cargoBin = if ($env:CARGO_HOME) { "$env:CARGO_HOME\bin" } else { "$env:USERPROFILE\.cargo\bin" }
+          $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+
+    - name: Update Rust Toolchain (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: rustup update
+
+    - name: Set Rust stable default (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: rustup default stable
+
+    - name: Install Rust nightly (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: rustup toolchain install nightly
+
+    - name: Update Rust Toolchain (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: rustup update
+
+    - name: Set Rust stable default (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: rustup default stable
+
+    - name: Install Rust nightly (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: rustup toolchain install nightly
+
+    - name: Add wasm32 target (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: rustup target add wasm32-unknown-unknown
+
+    # The heavy Rust test binaries (16 per crate × full entity stack, ~1.3 GB
+    # of debug artifacts each) are link-bound on stock ld. mold cuts each link
+    # substantially. Scoped to the NATIVE target triple via CARGO_TARGET_*
+    # env vars — a global RUSTFLAGS would leak -fuse-ld=mold into the wasm32
+    # builds and break them. No-op when mold/clang aren't installed (mold
+    # comes from the ubuntu-deps action; non-Ubuntu runners keep the default
+    # linker).
+    - name: Use mold linker for native builds (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        if command -v mold >/dev/null 2>&1 && command -v clang >/dev/null 2>&1; then
+          case "$(uname -m)" in
+            x86_64) triple="X86_64_UNKNOWN_LINUX_GNU" ;;
+            aarch64) triple="AARCH64_UNKNOWN_LINUX_GNU" ;;
+            *) echo "Unrecognized arch $(uname -m); keeping default linker"; exit 0 ;;
+          esac
+          echo "CARGO_TARGET_${triple}_LINKER=clang" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${triple}_RUSTFLAGS=-C link-arg=-fuse-ld=mold" >> "$GITHUB_ENV"
+          echo "mold enabled for ${triple}"
+        else
+          echo "mold and/or clang not installed; keeping default linker"
+        fi
+
+    - name: Add wasm32 target (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: rustup target add wasm32-unknown-unknown
+
+    # Cargo fetches git dependencies with libgit2, which does NOT pick up the
+    # ambient credentials the runner uses for checkout — so a PRIVATE git dep
+    # fails with "failed to authenticate when downloading repository" even
+    # though `git clone` would work. `git-fetch-with-cli` makes cargo shell out
+    # to git instead, and the GIT_CONFIG_* triple rewrites github.com URLs to
+    # carry the token.
+    #
+    # Passed through GITHUB_ENV rather than `git config --global`: these runners
+    # are SELF-HOSTED and persist between jobs, so writing a credential into the
+    # machine's git config would leave it there for everything that follows.
+    # Job-scoped env dies with the job.
+    #
+    # No-op when the token isn't supplied, so public-only checkouts are
+    # unaffected.
+    - name: Authenticate private git dependencies (Unix)
+      if: runner.os != 'Windows' && inputs.private-git-token != ''
+      shell: bash
+      run: |
+        {
+          echo "CARGO_NET_GIT_FETCH_WITH_CLI=true"
+          echo "GIT_CONFIG_COUNT=1"
+          echo "GIT_CONFIG_KEY_0=url.https://x-access-token:${{ inputs.private-git-token }}@github.com/.insteadOf"
+          echo "GIT_CONFIG_VALUE_0=https://github.com/"
+        } >> "$GITHUB_ENV"
+
+    - name: Authenticate private git dependencies (Windows)
+      if: runner.os == 'Windows' && inputs.private-git-token != ''
+      shell: powershell
+      run: |
+        "CARGO_NET_GIT_FETCH_WITH_CLI=true" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "GIT_CONFIG_COUNT=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "GIT_CONFIG_KEY_0=url.https://x-access-token:${{ inputs.private-git-token }}@github.com/.insteadOf" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "GIT_CONFIG_VALUE_0=https://github.com/" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Sync Submodules (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: git submodule update --init --recursive
+    - name: Sync Submodules (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: git submodule update --init --recursive
+
+    - name: Install Dependencies (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: bun install
+    - name: Install Dependencies (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: bun install
+
+    - name: Install Rust Tools (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: cargo install ${{ inputs.rust-tools }} --locked
+
+    - name: Install Rust Tools (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: cargo install ${{ inputs.rust-tools }} --locked
+
+    - name: Sweep cargo artifacts (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        if [ -d target ]; then
+          cargo sweep -r -t 7
+        else
+          echo "No target directory yet; skipping cargo sweep."
+        fi
+
+    - name: Sweep cargo artifacts (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        if (Test-Path target) {
+          cargo sweep -r -t 7
+        }
+        else {
+          Write-Host "No target directory yet; skipping cargo sweep."
+        }
