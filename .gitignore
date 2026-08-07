@@ -50,6 +50,7 @@ dump/
 # rust
 /.cargo/
 /target/
+/.bun-tmp/
 **/target/claude
 
 # logs
