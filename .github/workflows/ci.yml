@@ -6,12 +6,21 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  native:
+    name: Native quality gates
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,21 +28,42 @@ jobs:
           fetch-tags: true
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-native
+      - run: bun install --frozen-lockfile
+      - run: cargo install cargo-flux --locked
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Check Rust and generated TypeScript
+        run: cargo flux run check
+      - name: Run strict Clippy and frontend lint
+        run: cargo flux run lint
+      - name: Run Rust and frontend tests
+        run: cargo flux run test
+      - name: Test typegen renderer and macro defaults
+        run: cargo test -p myko --lib --features codegen codegen::typegen_typescript::tests && cargo test -p myko-macros --lib
+      - name: Check feature boundaries
+        run: |
+          cargo check --workspace --all-targets --no-default-features
+          cargo check -p myko --all-targets --no-default-features --features typegen
+          cargo check -p myko --all-targets --no-default-features --features typegen-typescript
+          cargo check -p myko --all-targets --no-default-features --features codegen
+          cargo check -p myko-server --all-targets --no-default-features
 
-      - run: bun install
-      - run: cargo install cargo-flux
-      - run: cargo flux run check
-      - run: cargo flux run lint
-      - run: cargo flux run test
-
-      # wasm32 coverage for myko/autosocket/myko-leptos — the crates that
-      # actually ship to a browser/wasm target (see each crate's
-      # `[package.metadata.flux]` tasks list). `check` alone only exercises
-      # the native target, so a break in `#[cfg(target_arch = "wasm32")]`
-      # code (e.g. a downstream Tauri/trunk-build pipeline that compiles the
-      # leptos UI to wasm32-unknown-unknown and pulls myko in transitively)
-      # would otherwise pass CI silently.
+  wasm:
+    name: WebAssembly check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-wasm
+      - run: cargo install cargo-flux --locked
       - run: cargo flux run check-wasm
