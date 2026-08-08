@@ -1350,6 +1350,7 @@ impl MykoClient {
         }
 
         cell.own(status_guard);
+        cell.own(view_cancel_guard(tx, self.inner.clone()));
 
         cell.lock()
     }
