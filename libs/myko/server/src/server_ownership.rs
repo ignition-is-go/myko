@@ -121,7 +121,9 @@ impl ServerOwnershipManager {
 
             let current_ids: HashSet<Arc<str>> = servers.iter().map(|s| s.id.0.clone()).collect();
 
-            let mut prev = prev_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut prev = prev_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let removed: Vec<Arc<str>> = prev.difference(&current_ids).cloned().collect();
             *prev = current_ids;
             drop(prev);

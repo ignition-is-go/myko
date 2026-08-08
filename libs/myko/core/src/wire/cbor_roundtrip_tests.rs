@@ -75,8 +75,7 @@ mod tests {
             return;
         };
         assert_eq!(
-            original_json,
-            roundtripped_json,
+            original_json, roundtripped_json,
             "roundtrip mismatch for {msg:?}",
         );
         drop(msg);

@@ -291,9 +291,7 @@ impl crate::report::ReportHandler for ExportEntityTree {
             match ctx.replay_store(as_of) {
                 Ok(r) => r,
                 Err(err) => {
-                    eprintln!(
-                        "[ExportEntityTree] replay_store FAILED: as_of={as_of} err={err}"
-                    );
+                    eprintln!("[ExportEntityTree] replay_store FAILED: as_of={as_of} err={err}");
                     return Cell::new(Arc::new(EntityTreeExport {
                         version: 1,
                         root_type: self.root_type.clone(),

@@ -295,13 +295,10 @@ impl MykoServer {
         init_client_registry();
 
         let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
-        let (postgres_producer_owner, postgres_producer, postgres_consumer) = config
-            .postgres
-            .as_ref()
-            .map_or_else(
+        let (postgres_producer_owner, postgres_producer, postgres_consumer) =
+            config.postgres.as_ref().map_or_else(
                 || (None, None, None),
-                |postgres_config| {
-                match PostgresProducer::new(postgres_config, host_id) {
+                |postgres_config| match PostgresProducer::new(postgres_config, host_id) {
                     Ok(producer) => {
                         let handle = producer.handle();
                         let consumer = match PostgresConsumer::start(
@@ -322,9 +319,8 @@ impl MykoServer {
                         tracing::error!("Failed to create Postgres producer: {}", e);
                         (None, None, None)
                     }
-                }
-            },
-        );
+                },
+            );
 
         // If no durable consumer, server is immediately ready
         let ready = Arc::new(AtomicBool::new(postgres_consumer.is_none()));

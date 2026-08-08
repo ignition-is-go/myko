@@ -195,7 +195,9 @@ impl<W: WsWriter> ClientSession<W> {
 
         // subscribe_diffs sends Initial first, then subsequent diffs
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = if let Ok(mut state) = state_for_diffs.lock() { state.apply_source_diff(diff, tx_clone.clone()) } else {
+            let response = if let Ok(mut state) = state_for_diffs.lock() {
+                state.apply_source_diff(diff, tx_clone.clone())
+            } else {
                 tracing::error!("Query subscription state poisoned for tx={}", tx_clone);
                 return;
             };
@@ -398,7 +400,9 @@ impl<W: WsWriter> ClientSession<W> {
             return;
         };
 
-        let response = if let Ok(mut state) = sub.state.lock() { state.apply_window_update(window, tx.clone()) } else {
+        let response = if let Ok(mut state) = sub.state.lock() {
+            state.apply_window_update(window, tx.clone())
+        } else {
             tracing::error!(
                 "Query subscription state poisoned on window update for tx={}",
                 tx
@@ -710,12 +714,7 @@ impl QuerySubscriptionState {
             );
         }
 
-        self.compute_bounded_window_response(
-            tx,
-            changed_ids,
-            previous_total_count,
-            force_emit,
-        )
+        self.compute_bounded_window_response(tx, changed_ids, previous_total_count, force_emit)
     }
 
     fn compute_unwindowed_response(
@@ -799,7 +798,6 @@ impl QuerySubscriptionState {
         previous_total_count: usize,
         force_emit: bool,
     ) -> Option<PendingQueryResponse> {
-
         let mut ordered_ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
         ordered_ids.sort_unstable();
 
@@ -924,21 +922,34 @@ mod tests {
         }
 
         fn message_count(&self) -> usize {
-            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
         }
 
         fn last_message(&self) -> Option<MykoMessage> {
-            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last().cloned()
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last()
+                .cloned()
         }
 
         fn messages(&self) -> Vec<MykoMessage> {
-            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
     }
 
     impl WsWriter for MockWriter {
         fn send(&self, msg: MykoMessage) {
-            self.messages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(msg);
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(msg);
         }
 
         fn send_serialized_command(

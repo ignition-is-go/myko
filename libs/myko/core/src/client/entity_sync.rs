@@ -98,9 +98,9 @@ where
         let mut events = Vec::new();
 
         for (id, local_item) in local {
-            let should_set = remote.get(id).is_none_or(|remote_item| {
-                !items_equal(local_item.as_ref(), remote_item.as_ref())
-            });
+            let should_set = remote
+                .get(id)
+                .is_none_or(|remote_item| !items_equal(local_item.as_ref(), remote_item.as_ref()));
             if should_set {
                 events.push(MEvent::from_item(local_item.as_ref(), MEventType::SET, ""));
             }

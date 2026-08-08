@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{
-    Cell, CellImmutable, DedupedExt, JoinExt, MapExt, Materialize, PairwiseExt, TapExt,
-};
+use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, Materialize, PairwiseExt, TapExt};
 use myko::{
     client::{ConnectionStatus, MykoClient},
     entities::server::{GetConnectedServer, Server},
@@ -66,9 +64,10 @@ impl PeerConnectionHandle {
             .deduped()
             .map(move |status| match status.as_ref() {
                 Some((_, ConnectionStatus::Connected(_))) => PeerConnectionCycle::Connected,
-                Some((ConnectionStatus::Connected(_) | ConnectionStatus::Connecting(_), ConnectionStatus::Disconnected)) => {
-                    PeerConnectionCycle::Failed
-                }
+                Some((
+                    ConnectionStatus::Connected(_) | ConnectionStatus::Connecting(_),
+                    ConnectionStatus::Disconnected,
+                )) => PeerConnectionCycle::Failed,
                 _ => PeerConnectionCycle::Pending,
             })
             .materialize();

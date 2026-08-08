@@ -146,9 +146,10 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
         }
     });
     if let Some(text) = &info.instructions
-        && let Value::Object(object) = &mut payload {
-            object.insert("instructions".to_string(), Value::String(text.clone()));
-        }
+        && let Value::Object(object) = &mut payload
+    {
+        object.insert("instructions".to_string(), Value::String(text.clone()));
+    }
     McpResponse::success(id, payload)
 }
 
@@ -429,38 +430,39 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
     };
 
     if let Some(path) = uri.strip_prefix("myko://schema/")
-        && let Some((schema_type, schema_id)) = path.split_once('/') {
-            let tool_name = format!("{schema_type}:{schema_id}");
-            if !filter.tool_visible(&tool_name) {
-                return McpResponse::error(
-                    id,
-                    McpError {
-                        code: McpError::INVALID_PARAMS,
-                        message: format!("Resource not accessible: {uri}"),
-                        data: None,
-                    },
-                );
-            }
-            let content = match schema_type {
-                "query" => get_query_schema(schema_id),
-                "view" => get_view_schema(schema_id),
-                "report" => get_report_schema(schema_id),
-                "command" => get_command_schema(schema_id),
-                _ => None,
-            };
-            if let Some(content) = content {
-                return McpResponse::success(
-                    id,
-                    json!({
-                        "contents": [{
-                            "uri": uri,
-                            "mimeType": "application/json",
-                            "text": content,
-                        }]
-                    }),
-                );
-            }
+        && let Some((schema_type, schema_id)) = path.split_once('/')
+    {
+        let tool_name = format!("{schema_type}:{schema_id}");
+        if !filter.tool_visible(&tool_name) {
+            return McpResponse::error(
+                id,
+                McpError {
+                    code: McpError::INVALID_PARAMS,
+                    message: format!("Resource not accessible: {uri}"),
+                    data: None,
+                },
+            );
         }
+        let content = match schema_type {
+            "query" => get_query_schema(schema_id),
+            "view" => get_view_schema(schema_id),
+            "report" => get_report_schema(schema_id),
+            "command" => get_command_schema(schema_id),
+            _ => None,
+        };
+        if let Some(content) = content {
+            return McpResponse::success(
+                id,
+                json!({
+                    "contents": [{
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": content,
+                    }]
+                }),
+            );
+        }
+    }
 
     McpResponse::error(
         id,
@@ -620,7 +622,10 @@ mod tests {
             "initialize must return a response"
         );
         let result = require_some!(resp.result, "initialize must succeed");
-        assert_eq!(result.pointer("/serverInfo/name"), Some(&json!("pulse-mcp")));
+        assert_eq!(
+            result.pointer("/serverInfo/name"),
+            Some(&json!("pulse-mcp"))
+        );
         assert_eq!(result.pointer("/serverInfo/version"), Some(&json!("0.2.0")));
         assert_eq!(result.get("instructions"), Some(&json!("teach me")));
     }
@@ -752,11 +757,20 @@ mod tests {
         .await;
         let resp = require_some!(resp, "response");
         let result = require_some!(resp.result, "ok");
-        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
-        let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON content");
+        let text = require_some!(
+            result.pointer("/content/0/text").and_then(Value::as_str),
+            "text"
+        );
+        let parsed = require_some!(
+            serde_json::from_str::<Value>(text).ok(),
+            "valid JSON content"
+        );
         let ops = require_some!(parsed.get("operations").and_then(Value::as_array), "array");
         assert_eq!(ops.len(), 1);
-        assert_eq!(ops.first().and_then(|op| op.get("id")), Some(&json!("DeleteServer")));
+        assert_eq!(
+            ops.first().and_then(|op| op.get("id")),
+            Some(&json!("DeleteServer"))
+        );
     }
 
     #[tokio::test]
@@ -776,9 +790,15 @@ mod tests {
         .await;
         let resp = require_some!(resp, "response");
         let result = require_some!(resp.result, "ok");
-        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let text = require_some!(
+            result.pointer("/content/0/text").and_then(Value::as_str),
+            "text"
+        );
         let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON");
-        let operations = require_some!(parsed.get("operations").and_then(Value::as_array), "operations");
+        let operations = require_some!(
+            parsed.get("operations").and_then(Value::as_array),
+            "operations"
+        );
         let ids: Vec<&str> = operations
             .iter()
             .filter_map(|operation| operation.get("id").and_then(Value::as_str))
@@ -802,7 +822,10 @@ mod tests {
         let resp = require_some!(resp, "response");
         let result = require_some!(resp.result, "ok");
         assert_ne!(result.get("isError"), Some(&json!(true)));
-        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let text = require_some!(
+            result.pointer("/content/0/text").and_then(Value::as_str),
+            "text"
+        );
         assert_eq!(text.trim(), "42");
     }
 
@@ -825,7 +848,10 @@ mod tests {
         .await;
         let resp = require_some!(resp, "response");
         let result = require_some!(resp.result, "ok");
-        let text = require_some!(result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let text = require_some!(
+            result.pointer("/content/0/text").and_then(Value::as_str),
+            "text"
+        );
         let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON");
         assert_eq!(parsed.get("name"), Some(&json!("pulse-ctx")));
         assert_eq!(parsed.get("version"), Some(&json!("1.2.3")));
@@ -887,10 +913,11 @@ mod tests {
             "response"
         );
         let list_result = require_some!(list_resp.result, "ok");
-        let tools: Vec<String> = require_some!(list_result.get("tools").and_then(Value::as_array), "array")
-            .iter()
-            .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
-            .collect();
+        let tools: Vec<String> =
+            require_some!(list_result.get("tools").and_then(Value::as_array), "array")
+                .iter()
+                .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+                .collect();
         assert!(
             tools.contains(&SEARCH_TOOL.to_string()) && tools.contains(&EXECUTE_TOOL.to_string()),
             "op-level allow list must not hide search/execute, got {tools:?}"
@@ -905,9 +932,17 @@ mod tests {
         .await;
         let search_resp = require_some!(search_resp, "response");
         let search_result = require_some!(search_resp.result, "ok");
-        let text = require_some!(search_result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let text = require_some!(
+            search_result
+                .pointer("/content/0/text")
+                .and_then(Value::as_str),
+            "text"
+        );
         let parsed = require_some!(serde_json::from_str::<Value>(text).ok(), "valid JSON");
-        let operations = require_some!(parsed.get("operations").and_then(Value::as_array), "operations");
+        let operations = require_some!(
+            parsed.get("operations").and_then(Value::as_array),
+            "operations"
+        );
         let ids: Vec<&str> = operations
             .iter()
             .filter_map(|operation| operation.get("id").and_then(Value::as_str))
@@ -933,7 +968,12 @@ mod tests {
         let execute_resp = require_some!(execute_resp, "response");
         let execute_result = require_some!(execute_resp.result, "ok");
         assert_ne!(execute_result.get("isError"), Some(&json!(true)));
-        let message = require_some!(execute_result.pointer("/content/0/text").and_then(Value::as_str), "text");
+        let message = require_some!(
+            execute_result
+                .pointer("/content/0/text")
+                .and_then(Value::as_str),
+            "text"
+        );
         // ...but the un-listed command it tries to call is still rejected
         // per-call inside the sandbox.
         assert_eq!(

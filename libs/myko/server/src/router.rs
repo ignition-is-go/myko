@@ -52,26 +52,23 @@ impl HttpRequestHead {
         let upgrade = self
             .header("Upgrade")
             .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
-        let connection_has_upgrade = self
-            .header("Connection")
-            .is_some_and(|v| {
-                v.split(',')
-                    .any(|p| p.trim().eq_ignore_ascii_case("upgrade"))
-            });
+        let connection_has_upgrade = self.header("Connection").is_some_and(|v| {
+            v.split(',')
+                .any(|p| p.trim().eq_ignore_ascii_case("upgrade"))
+        });
         upgrade && connection_has_upgrade
     }
 
     /// `true` if the client wants an SSE stream.
     #[must_use]
     pub fn wants_event_stream(&self) -> bool {
-        self.header("Accept")
-            .is_some_and(|v| {
-                v.split(',').any(|part| {
-                    // Strip media-type params like `;q=0.9`.
-                    let media = part.split(';').next().unwrap_or("").trim();
-                    media.eq_ignore_ascii_case("text/event-stream")
-                })
+        self.header("Accept").is_some_and(|v| {
+            v.split(',').any(|part| {
+                // Strip media-type params like `;q=0.9`.
+                let media = part.split(';').next().unwrap_or("").trim();
+                media.eq_ignore_ascii_case("text/event-stream")
             })
+        })
     }
 }
 

@@ -102,18 +102,20 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
             // Generate command name (with optional override)
             let (command_name, param_name) = if setter.is_rename {
                 // #[myko_rename] or #[myko_rename("CustomName")]
-                let cmd_name = setter
-                    .command_name_override
-                    .as_ref().map_or_else(|| format_ident!("Rename{}", entity_name), |s| format_ident!("{}", s));
+                let cmd_name = setter.command_name_override.as_ref().map_or_else(
+                    || format_ident!("Rename{}", entity_name),
+                    |s| format_ident!("{}", s),
+                );
                 (cmd_name, format_ident!("name"))
             } else {
                 // #[myko_setter] or #[myko_setter("CustomName")]
-                let cmd_name = setter
-                    .command_name_override
-                    .as_ref().map_or_else(|| {
+                let cmd_name = setter.command_name_override.as_ref().map_or_else(
+                    || {
                         let field_pascal = to_pascal_case(&field_name.to_string());
                         format_ident!("Set{}{}", entity_name, field_pascal)
-                    }, |s| format_ident!("{}", s));
+                    },
+                    |s| format_ident!("{}", s),
+                );
                 (cmd_name, field_name.clone())
             };
 

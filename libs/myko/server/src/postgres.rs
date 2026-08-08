@@ -547,7 +547,12 @@ fn insert_event_batch(
         params.push(Box::new(change_type.to_string()));
         params.push(Box::new(event.created_at.to_string()));
         params.push(Box::new(event.tx.to_string()));
-        params.push(Box::new(event.source_id.as_ref().map(std::string::ToString::to_string)));
+        params.push(Box::new(
+            event
+                .source_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
+        ));
         params.push(Box::new(event_json));
     }
 
@@ -590,7 +595,10 @@ impl CatchUpStatus {
 
     fn fail(&self, reason: impl Into<String>) {
         let reason = reason.into();
-        *self.failure_reason.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+        *self
+            .failure_reason
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
         self.failed.store(true, Ordering::SeqCst);
         self.caught_up.store(false, Ordering::SeqCst);
     }
@@ -650,13 +658,9 @@ impl PostgresConsumer {
         let host_id_string = host_id.to_string();
 
         let handle = std::thread::spawn(move || {
-            if let Err(err) = run_consumer_loop(
-                &cfg,
-                &host_id_string,
-                &handler_registry,
-                &registry,
-                &status,
-            ) {
+            if let Err(err) =
+                run_consumer_loop(&cfg, &host_id_string, &handler_registry, &registry, &status)
+            {
                 let reason = format!("Postgres consumer failed: {err}");
                 error!("{reason}");
                 status.fail(reason);
@@ -721,19 +725,11 @@ fn load_consumer_snapshot(
     let mut rows = reader
         .query_raw(&snapshot_sql, [high_water_param])
         .map_err(|error| {
-            format_pg_error(
-                "query(snapshot latest events)",
-                Some(&config.url),
-                &error,
-            )
+            format_pg_error("query(snapshot latest events)", Some(&config.url), &error)
         })?;
     let mut count = 0_usize;
     while let Some(row) = rows.next().map_err(|error| {
-        format_pg_error(
-            "stream(snapshot latest events)",
-            Some(&config.url),
-            &error,
-        )
+        format_pg_error("stream(snapshot latest events)", Some(&config.url), &error)
     })? {
         let id: i64 = row.get(0);
         let event_json: String = row.get(1);

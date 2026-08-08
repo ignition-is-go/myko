@@ -178,10 +178,7 @@ pub trait Querying: ServerScoped {
     }
 
     /// Subscribe to a query and get its incremental `MapDiff` stream.
-    fn query_diff<Q>(
-        &self,
-        query: Q,
-    ) -> QueryDiffCell<Q::Item>
+    fn query_diff<Q>(&self, query: Q) -> QueryDiffCell<Q::Item>
     where
         Q: crate::query::QueryFactory
             + crate::query::QueryHandler
@@ -278,9 +275,9 @@ pub trait EventPublishing: ServerScoped {
         &self,
         items: &[T],
     ) -> Result<(), CommandError> {
-        let anys = items.iter().map(|item| -> Arc<dyn crate::item::AnyItem> {
-            Arc::new(item.clone())
-        });
+        let anys = items
+            .iter()
+            .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
         self.__server_ctx()
             .set_batch_any(anys)
             .map_err(|e| self.__emit_err(e))

@@ -73,7 +73,9 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
     let server_ids: Vec<String> = (0..N).map(|i| format!("server-{i}")).collect();
 
     let mut g = c.benchmark_group("n_values_query_construction");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(N).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("n_separate_eq_cells", |b| {
         b.iter(|| {
@@ -131,7 +133,9 @@ fn bench_filter_change_cost(c: &mut Criterion) {
     let mut g = c.benchmark_group("filter_change_cost");
 
     for &existing in &[10usize, 50, 100, 200] {
-        g.throughput(criterion::Throughput::Elements(u64::try_from(existing).unwrap_or(u64::MAX)));
+        g.throughput(criterion::Throughput::Elements(
+            u64::try_from(existing).unwrap_or(u64::MAX),
+        ));
 
         g.bench_with_input(
             BenchmarkId::new("full_rebuild_like_switch_map", existing),

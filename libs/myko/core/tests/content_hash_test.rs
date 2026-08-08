@@ -56,5 +56,8 @@ fn id_is_wire_visible() {
     let Ok(json) = json else {
         return;
     };
-    assert_eq!(json.get("id").and_then(serde_json::Value::as_str), Some("item-1"));
+    assert_eq!(
+        json.get("id").and_then(serde_json::Value::as_str),
+        Some("item-1")
+    );
 }

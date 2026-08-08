@@ -88,9 +88,18 @@ async fn http_initialize_uses_threaded_server_info() {
     let Some(resp) = resp else {
         return;
     };
-    assert_eq!(resp.pointer("/result/serverInfo/name"), Some(&serde_json::json!("pulse-mcp")));
-    assert_eq!(resp.pointer("/result/serverInfo/version"), Some(&serde_json::json!("0.2.0")));
-    assert_eq!(resp.pointer("/result/instructions"), Some(&serde_json::json!("teach me")));
+    assert_eq!(
+        resp.pointer("/result/serverInfo/name"),
+        Some(&serde_json::json!("pulse-mcp"))
+    );
+    assert_eq!(
+        resp.pointer("/result/serverInfo/version"),
+        Some(&serde_json::json!("0.2.0"))
+    );
+    assert_eq!(
+        resp.pointer("/result/instructions"),
+        Some(&serde_json::json!("teach me"))
+    );
 
     handle.abort();
 }

@@ -181,7 +181,9 @@ fn collect_query_change(
                     item: item.clone(),
                     item_type: item.entity_type().into(),
                 };
-                changes.push(QueryChange::Upsert { item: wrapped.clone() });
+                changes.push(QueryChange::Upsert {
+                    item: wrapped.clone(),
+                });
                 upserts.push(wrapped);
             }
         }
@@ -190,7 +192,9 @@ fn collect_query_change(
                 item: value.clone(),
                 item_type: value.entity_type().into(),
             };
-            changes.push(QueryChange::Upsert { item: wrapped.clone() });
+            changes.push(QueryChange::Upsert {
+                item: wrapped.clone(),
+            });
             upserts.push(wrapped);
         }
         MapDiff::Update { new_value, .. } => {
@@ -198,7 +202,9 @@ fn collect_query_change(
                 item: new_value.clone(),
                 item_type: new_value.entity_type().into(),
             };
-            changes.push(QueryChange::Upsert { item: wrapped.clone() });
+            changes.push(QueryChange::Upsert {
+                item: wrapped.clone(),
+            });
             upserts.push(wrapped);
         }
         MapDiff::Remove { key, .. } => {

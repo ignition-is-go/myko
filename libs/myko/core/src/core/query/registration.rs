@@ -775,8 +775,7 @@ pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<CompoundKey> {
 // ─────────────────────────────────────────────────────────────────────────
 
 fn live_filter_matches<F: LiveFilterQuery>(filter: &F, item: &AnyItemArc) -> bool {
-    downcast_any_item_arc::<F::Item>(item, "query_live")
-        .is_some_and(|typed| filter.matches(&typed))
+    downcast_any_item_arc::<F::Item>(item, "query_live").is_some_and(|typed| filter.matches(&typed))
 }
 
 /// Re-test `candidates` — ONE bucket's `snapshot()`, nothing more — against
@@ -1047,7 +1046,9 @@ fn build_live_diff_callback<F: LiveFilterQuery>(
     let result = result.downgrade();
     let first = AtomicBool::new(true);
     move |diff| {
-        let Some(result) = result.upgrade() else { return };
+        let Some(result) = result.upgrade() else {
+            return;
+        };
         if first.swap(false, Ordering::Relaxed) {
             if let Some(filter) = current_live_filter(&filter_state, &synchronization) {
                 apply_live_diff(&result, diff, &filter, scope);
@@ -1119,9 +1120,8 @@ fn build_live_bucket_source<F: LiveFilterQuery>(
                 route_field_names,
                 extract_fk,
             );
-            let make: BucketSourceFn = Box::new(move |key: &CompoundKey| {
-                index.bucket_for(key.clone(), extract_fk).lock()
-            });
+            let make: BucketSourceFn =
+                Box::new(move |key: &CompoundKey| index.bucket_for(key.clone(), extract_fk).lock());
             make
         },
     )
@@ -1206,7 +1206,10 @@ fn reconcile_indexed_live_query<F: LiveFilterQuery>(
         clear_live_result(result);
     }
     reconcile_existing_buckets(result, state, new_filter, &new_keys, current_generation);
-    if new_keys.iter().any(|key| !state.bucket_guards.contains_key(key)) {
+    if new_keys
+        .iter()
+        .any(|key| !state.bucket_guards.contains_key(key))
+    {
         let make_source =
             build_live_bucket_source::<F>(registry, host_id, route_field_names, extract_fk);
         add_live_buckets(
@@ -1422,9 +1425,7 @@ where
             crate::common::downcast::downcast_request(any_ref, "query payload")?;
         let query: Arc<Q> = Arc::new(request.query);
 
-        let query_ctx = Arc::new(QueryContext {
-            req: request_ctx,
-        });
+        let query_ctx = Arc::new(QueryContext { req: request_ctx });
         let query_cell_ctx =
             QueryBuildContext::new(query_ctx.clone(), registry.clone(), server_ctx);
 
@@ -1501,10 +1502,7 @@ mod belongs_to_source_index_tests {
             id: Arc::from(id),
             parent_id: Arc::from(parent),
         });
-        (
-            Arc::from(id),
-            item,
-        )
+        (Arc::from(id), item)
     }
 
     fn new_store() -> Arc<crate::store::EntityStore> {
@@ -1635,7 +1633,10 @@ mod belongs_to_source_index_tests {
                 index.bucket_for(key, extract_parent_fk)
             }));
         }
-        let buckets: Vec<AnyItemMap> = handles.into_iter().filter_map(|handle| handle.join().ok()).collect();
+        let buckets: Vec<AnyItemMap> = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect();
         assert_eq!(buckets.len(), N, "all bucket threads must complete");
 
         assert_eq!(
@@ -1832,10 +1833,7 @@ mod belongs_to_source_index_tests {
             session_id: Arc::from(session),
             anchor_id: Arc::from(anchor),
         });
-        (
-            Arc::from(id),
-            item,
-        )
+        (Arc::from(id), item)
     }
 
     // Mirrors the macro-generated compound extractor for a query that pins
@@ -2024,12 +2022,8 @@ mod belongs_to_source_index_tests {
     fn compound_union_with_residual_filter_propagates_batch_delete() {
         let registry = Arc::new(crate::store::StoreRegistry::new());
         let store = registry.get_or_create("TestCursor");
-        let (matched_id, matched) = cursor_with_anchor(
-            "cursor-match",
-            "node-A",
-            "session-PROD",
-            "anchor-match",
-        );
+        let (matched_id, matched) =
+            cursor_with_anchor("cursor-match", "node-A", "session-PROD", "anchor-match");
         let (residual_miss_id, residual_miss) = cursor_with_anchor(
             "cursor-residual-miss",
             "node-A",

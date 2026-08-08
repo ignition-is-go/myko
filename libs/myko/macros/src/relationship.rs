@@ -497,10 +497,7 @@ fn generate_belongs_to_registrations(
     .collect()
 }
 
-fn generate_owns_many_registrations(
-    local_type: &str,
-    info: &RelationshipInfo,
-) -> Vec<TokenStream> {
+fn generate_owns_many_registrations(local_type: &str, info: &RelationshipInfo) -> Vec<TokenStream> {
     let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
     let krate = crate::myko_path();
     info.owns_many

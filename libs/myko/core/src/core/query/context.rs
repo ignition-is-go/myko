@@ -105,9 +105,7 @@ impl QueryBuildContext {
         report: R,
     ) -> Result<Cell<Arc<<R as ReportOutputType>::Output>, CellImmutable>, String>
     where
-        R: ReportFactory
-            + ReportHandler<Output = <R as ReportOutputType>::Output>
-            + Clone,
+        R: ReportFactory + ReportHandler<Output = <R as ReportOutputType>::Output> + Clone,
         <R as ReportOutputType>::Output:
             crate::common::to_value::ToValue + std::fmt::Debug + Send + Sync + 'static,
     {

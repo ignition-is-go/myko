@@ -209,7 +209,10 @@ mod tests {
         let Ok(decoded) = decoded else {
             return;
         };
-        assert_eq!(decoded.pointer("/data/upserts/0/item/id"), Some(&json!(id.to_string())));
+        assert_eq!(
+            decoded.pointer("/data/upserts/0/item/id"),
+            Some(&json!(id.to_string()))
+        );
         assert_eq!(
             decoded.pointer("/data/upserts/0/item/bytes"),
             Some(&json!([1, 2, 3]))

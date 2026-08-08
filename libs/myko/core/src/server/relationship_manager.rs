@@ -170,8 +170,14 @@ impl RelationshipTables {
             foreign_type,
             extract_fk,
         };
-        self.belongs_to_by_foreign.entry(foreign_type).or_default().push(lookup.clone());
-        self.belongs_to_by_local.entry(local_type).or_default().push(lookup);
+        self.belongs_to_by_foreign
+            .entry(foreign_type)
+            .or_default()
+            .push(lookup.clone());
+        self.belongs_to_by_local
+            .entry(local_type)
+            .or_default()
+            .push(lookup);
     }
 
     fn register_owns_many(
@@ -182,9 +188,20 @@ impl RelationshipTables {
         remove_id: ArrayRemover,
     ) {
         trace!("RelationshipManager: Registered OwnsMany {local_type} ->> {foreign_type}");
-        let lookup = OwnsManyLookup { local_type, foreign_type, extract_ids, remove_id };
-        self.owns_many_by_local.entry(local_type).or_default().push(lookup.clone());
-        self.owns_many_by_foreign.entry(foreign_type).or_default().push(lookup);
+        let lookup = OwnsManyLookup {
+            local_type,
+            foreign_type,
+            extract_ids,
+            remove_id,
+        };
+        self.owns_many_by_local
+            .entry(local_type)
+            .or_default()
+            .push(lookup.clone());
+        self.owns_many_by_foreign
+            .entry(foreign_type)
+            .or_default()
+            .push(lookup);
     }
 
     fn register_ensure_for(
@@ -196,7 +213,10 @@ impl RelationshipTables {
         trace!(
             "RelationshipManager: Registered EnsureFor {} for {:?}",
             local_type,
-            dependencies.iter().map(|dep| dep.foreign_type).collect::<Vec<_>>()
+            dependencies
+                .iter()
+                .map(|dep| dep.foreign_type)
+                .collect::<Vec<_>>()
         );
         let dependencies = dependencies.to_vec();
         for dependency in &dependencies {
@@ -518,8 +538,7 @@ impl RelationshipManager {
             .get()
             .into_iter()
             .filter(|(_, item)| {
-                (lookup.extract_fk)(item.as_any())
-                    .is_some_and(|fk| fk.as_ref() == parent_id)
+                (lookup.extract_fk)(item.as_any()).is_some_and(|fk| fk.as_ref() == parent_id)
             })
             .map(|(_, item)| item)
             .collect()
@@ -556,12 +575,13 @@ impl RelationshipManager {
         let Some(children_by_parent) = self.belongs_to_children_by_parent.get(&lookup.id) else {
             return;
         };
-        let should_remove_parent = children_by_parent
-            .get_mut(parent_id.as_ref())
-            .is_some_and(|mut child_ids| {
-                child_ids.remove(child_id);
-                child_ids.is_empty()
-            });
+        let should_remove_parent =
+            children_by_parent
+                .get_mut(parent_id.as_ref())
+                .is_some_and(|mut child_ids| {
+                    child_ids.remove(child_id);
+                    child_ids.is_empty()
+                });
 
         if should_remove_parent {
             children_by_parent.remove(parent_id.as_ref());
@@ -866,8 +886,7 @@ impl RelationshipManager {
             .get()
             .into_iter()
             .filter(|(_, item)| {
-                (dep.extract_fk)(item.as_any())
-                    .is_some_and(|fk| dep_ids.contains(&fk))
+                (dep.extract_fk)(item.as_any()).is_some_and(|fk| dep_ids.contains(&fk))
             })
             .map(|(_, item)| item)
             .collect()
@@ -1112,11 +1131,7 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Get an entity by ID
-    fn get_by_id(
-        ctx: &MykoServerContext,
-        entity_type: &str,
-        id: &str,
-    ) -> Option<Arc<dyn AnyItem>> {
+    fn get_by_id(ctx: &MykoServerContext, entity_type: &str, id: &str) -> Option<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(entity_type);
         store.get_value(&id.into())
     }
@@ -1189,8 +1204,7 @@ impl RelationshipManager {
                 .iter()
                 .zip(combo.iter())
                 .all(|(dep, expected_id)| {
-                    (dep.extract_fk)(item.as_any())
-                        .is_some_and(|fk| fk == *expected_id)
+                    (dep.extract_fk)(item.as_any()).is_some_and(|fk| fk == *expected_id)
                 });
 
             if all_match { Some(item.clone()) } else { None }
@@ -1430,11 +1444,16 @@ mod cascade_tests {
         let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_for_closure = seen.clone();
         let _guard = store.subscribe_diffs(move |diff| {
-            seen_for_closure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(format!("{diff:?}"));
+            seen_for_closure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("{diff:?}"));
         });
         // subscribe_diffs replays the current snapshot synchronously on
         // subscribe -- drop that so only diffs from the batch below count.
-        seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        seen.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
 
         // One wire batch: an unrelated standalone delete (island) alongside
         // root's delete, which cascades to branch then leaf -- three
@@ -1449,7 +1468,9 @@ mod cascade_tests {
         assert!(!exists(&registry, "leaf"), "grandchild deleted");
         assert!(!exists(&registry, "island"));
 
-        let seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seen = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             seen.len(),
             3,

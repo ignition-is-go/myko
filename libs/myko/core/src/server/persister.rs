@@ -78,7 +78,10 @@ impl PersistHealth {
         self.queued.fetch_sub(1, Ordering::Relaxed);
         self.total_persisted.fetch_add(1, Ordering::Relaxed);
         if self.consecutive_errors.swap(0, Ordering::Relaxed) > 0 {
-            *self.last_error.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            *self
+                .last_error
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
     }
 
@@ -87,7 +90,10 @@ impl PersistHealth {
         self.queued.fetch_sub(count, Ordering::Relaxed);
         self.total_persisted.fetch_add(count, Ordering::Relaxed);
         if self.consecutive_errors.swap(0, Ordering::Relaxed) > 0 {
-            *self.last_error.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            *self
+                .last_error
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
     }
 
@@ -95,20 +101,29 @@ impl PersistHealth {
         self.queued.fetch_sub(1, Ordering::Relaxed);
         self.total_errors.fetch_add(1, Ordering::Relaxed);
         self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
-        *self.last_error.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+        *self
+            .last_error
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
     }
 
     pub fn record_dropped(&self, msg: String) {
         self.total_errors.fetch_add(1, Ordering::Relaxed);
         self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
-        *self.last_error.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+        *self
+            .last_error
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
     }
 
     /// Record an error without decrementing queued (event will be retried).
     pub fn record_error_no_dequeue(&self, msg: String) {
         self.total_errors.fetch_add(1, Ordering::Relaxed);
         self.consecutive_errors.fetch_add(1, Ordering::Relaxed);
-        *self.last_error.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
+        *self
+            .last_error
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
     }
 
     /// Compute writes per second over a sliding window.
@@ -233,14 +248,16 @@ impl PersisterRouter {
     /// is configured.
     #[must_use]
     pub fn default_health(&self) -> Arc<PersistHealth> {
-        self.default
-            .as_ref().map_or_else(|| {
+        self.default.as_ref().map_or_else(
+            || {
                 static HEALTHY: std::sync::OnceLock<Arc<PersistHealth>> =
                     std::sync::OnceLock::new();
                 HEALTHY
                     .get_or_init(|| Arc::new(PersistHealth::default()))
                     .clone()
-            }, |p| p.health())
+            },
+            |p| p.health(),
+        )
     }
 
     /// Run startup healthchecks for all resolved persisters across known entity types.

@@ -30,7 +30,8 @@ use uuid::Uuid;
 /// against cross-test interference the same way.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {
@@ -99,19 +100,19 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
         let handles: [std::thread::JoinHandle<usize>; 8] = std::array::from_fn(|t| {
-                let ctx = ctx.clone();
-                let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    let request = Arc::new(myko::request::RequestContext::from_client(
-                        Arc::from(format!("tx-{round}-{t}")),
-                        Arc::from(format!("client-{round}-{t}")),
-                        ctx.host_id,
-                    ));
-                    barrier.wait();
-                    let cell = ctx.report(CountAllBenchItems {}, request);
-                    myko::hyphae::Gettable::get(&cell).count
-                })
-            });
+            let ctx = ctx.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let request = Arc::new(myko::request::RequestContext::from_client(
+                    Arc::from(format!("tx-{round}-{t}")),
+                    Arc::from(format!("client-{round}-{t}")),
+                    ctx.host_id,
+                ));
+                barrier.wait();
+                let cell = ctx.report(CountAllBenchItems {}, request);
+                myko::hyphae::Gettable::get(&cell).count
+            })
+        });
 
         for (t, h) in handles.into_iter().enumerate() {
             let count = h.join();

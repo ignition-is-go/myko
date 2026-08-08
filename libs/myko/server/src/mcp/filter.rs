@@ -107,7 +107,9 @@ impl Pattern {
         }
         match (s.starts_with('*'), s.ends_with('*')) {
             (true, true) if s.len() == 2 => Some(Self::Any),
-            (false, true) => s.get(..s.len().saturating_sub(1)).map(|value| Self::Prefix(value.to_string())),
+            (false, true) => s
+                .get(..s.len().saturating_sub(1))
+                .map(|value| Self::Prefix(value.to_string())),
             (true, false) => s.get(1..).map(|value| Self::Suffix(value.to_string())),
             _ => Some(Self::Exact(s)),
         }
@@ -308,13 +310,16 @@ fn parse_callability(raw: Option<&str>, label: &str) -> CallabilityMap {
 /// drop the `arguments` field when names contain `:`). The underscore form
 /// also matches the `OpenAI` tool-name regex `[a-zA-Z0-9_-]+`.
 fn normalize_tool_name(name: &str) -> String {
-    name.find(':').map_or_else(|| name.to_string(), |pos| {
-        let mut out = String::with_capacity(name.len());
-        out.push_str(name.get(..pos).unwrap_or_default());
-        out.push('_');
-        out.push_str(name.get(pos.saturating_add(1)..).unwrap_or_default());
-        out
-    })
+    name.find(':').map_or_else(
+        || name.to_string(),
+        |pos| {
+            let mut out = String::with_capacity(name.len());
+            out.push_str(name.get(..pos).unwrap_or_default());
+            out.push('_');
+            out.push_str(name.get(pos.saturating_add(1)..).unwrap_or_default());
+            out
+        },
+    )
 }
 
 #[cfg(test)]
@@ -413,10 +418,7 @@ mod tests {
     #[test]
     fn allow_list_rejects_non_matching_arg() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
-        let result = f.tool_callable(
-            "command:RunPlaybook",
-            &json!({"playbook_id": "danger"}),
-        );
+        let result = f.tool_callable("command:RunPlaybook", &json!({"playbook_id": "danger"}));
         assert!(result.is_err());
         let Err(err) = result else { return };
         assert!(err.contains("playbook_id"));
@@ -505,10 +507,7 @@ mod tests {
             f.tool_callable("command_RunPlaybook", &json!({"playbook_id": "site"}))
                 .is_ok()
         );
-        let result = f.tool_callable(
-            "command_RunPlaybook",
-            &json!({"playbook_id": "danger"}),
-        );
+        let result = f.tool_callable("command_RunPlaybook", &json!({"playbook_id": "danger"}));
         assert!(result.is_err());
         let Err(err) = result else { return };
         assert!(err.contains("allowlist"));

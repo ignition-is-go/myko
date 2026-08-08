@@ -119,20 +119,19 @@ fn install_myko_bindings(
     executor: Arc<Executor>,
     filter: ClientFilters,
 ) -> rquickjs::Result<()> {
-    let call =
-        Function::new(
-            ctx.clone(),
-            Async(
-                move |kind: std::string::String,
-                      id: std::string::String,
-                      args_json: Opt<std::string::String>| {
-                    let executor = executor.clone();
-                    let filter = filter.clone();
-                    async move { call_operation(&executor, &filter, &kind, &id, args_json.0).await }
-                },
-            ),
-        )?
-        .with_name("__myko_call")?;
+    let call = Function::new(
+        ctx.clone(),
+        Async(
+            move |kind: std::string::String,
+                  id: std::string::String,
+                  args_json: Opt<std::string::String>| {
+                let executor = executor.clone();
+                let filter = filter.clone();
+                async move { call_operation(&executor, &filter, &kind, &id, args_json.0).await }
+            },
+        ),
+    )?
+    .with_name("__myko_call")?;
     ctx.globals().set("__myko_call", call)?;
     ctx.eval::<(), _>(MYKO_SHIM)?;
     Ok(())
@@ -217,7 +216,10 @@ mod tests {
             ClientFilters::allow_all(),
         )
         .await;
-        assert!(result.is_ok(), "script should complete, errors are caught in JS");
+        assert!(
+            result.is_ok(),
+            "script should complete, errors are caught in JS"
+        );
         let Ok(result) = result else {
             return;
         };
@@ -226,9 +228,15 @@ mod tests {
             return;
         };
         assert_eq!(arr.len(), 2);
-        assert!(arr.first().and_then(serde_json::Value::as_str).is_some_and(|message| message.contains("Query not found")));
         assert!(
-            arr.get(1).and_then(serde_json::Value::as_str).is_some_and(|message| !message.is_empty()),
+            arr.first()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.contains("Query not found"))
+        );
+        assert!(
+            arr.get(1)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| !message.is_empty()),
             "second call should also report an error"
         );
     }

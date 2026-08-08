@@ -357,7 +357,8 @@ impl<T: Searchable> SearchIndex<T> {
                 if qlen.abs_diff(tlen) > u64::from(max_dist) {
                     continue;
                 }
-                let dist = u64::try_from(strsim::levenshtein(lower_query, token)).unwrap_or(u64::MAX);
+                let dist =
+                    u64::try_from(strsim::levenshtein(lower_query, token)).unwrap_or(u64::MAX);
                 if dist > u64::from(max_dist) {
                     continue;
                 }
@@ -673,7 +674,11 @@ mod tests {
         index.insert(&item("2", "matrix", "hardware"));
 
         let hits = index.search("mix", SearchOptions::default());
-        assert_eq!(hits.first().map(|hit| hit.id.as_ref()), Some("1"), "exact must outrank subsequence");
+        assert_eq!(
+            hits.first().map(|hit| hit.id.as_ref()),
+            Some("1"),
+            "exact must outrank subsequence"
+        );
         assert_eq!(hits.first().map(|hit| hit.score), Some(Score::Exact));
     }
 

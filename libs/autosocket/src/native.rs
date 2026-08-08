@@ -132,9 +132,7 @@ impl SocketTransport for AutoReconnectSocket {
     }
 
     fn send(&self, frame: WsFrame) -> Result<(), String> {
-        self.outgoing_tx
-            .send(frame)
-            .map_err(|e| e.to_string())
+        self.outgoing_tx.send(frame).map_err(|e| e.to_string())
     }
 
     fn read_rx(&self) -> flume::Receiver<WsFrame> {
@@ -197,9 +195,10 @@ impl AutoReconnectSocket {
 
     pub fn set_addr(&self, addr: Option<String>) {
         let current_status = self.actual_status.get();
-        let intended_status = addr
-            .clone()
-            .map_or(SocketConnectionStatus::Idle, SocketConnectionStatus::Connected);
+        let intended_status = addr.clone().map_or(
+            SocketConnectionStatus::Idle,
+            SocketConnectionStatus::Connected,
+        );
         self.intended_status.set(intended_status);
 
         // Cancel existing connection/reconnection loop
@@ -312,11 +311,8 @@ impl AutoReconnectSocket {
                     SocketConnectionStatus::Connected(addr.clone()),
                 );
 
-                let session = ConnectionSession::start(
-                    &socket,
-                    incoming_tx.clone(),
-                    outgoing_rx.clone(),
-                );
+                let session =
+                    ConnectionSession::start(&socket, incoming_tx.clone(), outgoing_rx.clone());
                 let disconnect_reason = session.wait_for_disconnect_reason(&worker_cancel);
                 session.shutdown();
 

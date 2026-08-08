@@ -235,10 +235,7 @@ impl ReportHandler for PeerAlive {
                 .ping_ms()
                 .clone()
                 .map(|ping_ms| {
-                    Arc::new(
-                        ping_ms
-                            .map_or(-1, |ms| i64::try_from(ms).unwrap_or(i64::MAX)),
-                    )
+                    Arc::new(ping_ms.map_or(-1, |ms| i64::try_from(ms).unwrap_or(i64::MAX)))
                 })
                 .materialize()
         })
@@ -312,9 +309,8 @@ impl crate::command::CommandHandler for ImportItems {
             Some(std::sync::Arc::from(ctx.req.host_id.to_string()));
         let created_at: std::sync::Arc<str> = std::sync::Arc::from(ctx.created_at());
 
-        let mut events = Vec::with_capacity(
-            self.items.len().saturating_add(self.delete_items.len()),
-        );
+        let mut events =
+            Vec::with_capacity(self.items.len().saturating_add(self.delete_items.len()));
 
         for wrapped in &self.items {
             events.push(MEvent {
@@ -385,7 +381,11 @@ impl ReportHandler for GetPersistHealth {
                 let total_persisted = health.total_persisted.load(Ordering::Relaxed);
                 let total_errors = health.total_errors.load(Ordering::Relaxed);
                 let consecutive_errors = health.consecutive_errors.load(Ordering::Relaxed);
-                let last_error = health.last_error.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                let last_error = health
+                    .last_error
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 let writes_per_second = health.writes_per_second();
                 Arc::new(PersistHealthStatus {
                     queued,

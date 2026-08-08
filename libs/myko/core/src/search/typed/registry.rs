@@ -286,12 +286,11 @@ mod tests {
         registry.insert(&item("1", "audio mixer", "hardware"));
 
         // Direct typed access — no dyn boundary on the search call.
-        let hits = registry
-            .with_typed::<BenchItem, _>("BenchItem", |lock| {
-                lock.read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .search("mixer", SearchOptions::default())
-            });
+        let hits = registry.with_typed::<BenchItem, _>("BenchItem", |lock| {
+            lock.read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .search("mixer", SearchOptions::default())
+        });
         assert!(hits.is_some(), "typed registry handle");
         let Some(hits) = hits else {
             return;

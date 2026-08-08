@@ -92,9 +92,7 @@ impl Persister for PeerPersister {
         }
 
         if error_count == peer_count {
-            let msg = format!(
-                "PeerPersister: broadcast failed for all {peer_count} peer(s)"
-            );
+            let msg = format!("PeerPersister: broadcast failed for all {peer_count} peer(s)");
             self.health.record_error(msg.clone());
             return Err(PersistError {
                 entity_type,

@@ -19,7 +19,8 @@ use uuid::Uuid;
 
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {
@@ -161,7 +162,10 @@ fn query_live_range_filter_change_reevaluates_correctly() {
         address: None,
         windback: Some(Arc::from("2026-01-01T00:00:00Z")),
     };
-    assert!(ctx.apply_event_batch(vec![MEvent::from_item(&client_a, MEventType::SET, "tx-1")]).is_ok());
+    assert!(
+        ctx.apply_event_batch(vec![MEvent::from_item(&client_a, MEventType::SET, "tx-1")])
+            .is_ok()
+    );
 
     let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(ClientQuery {
         windback: Some(myko::query::StringFilter::Eq(Arc::from(
@@ -257,10 +261,13 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
         address: None,
         windback: None,
     };
-    assert!(ctx.apply_event_batch(vec![
-        MEvent::from_item(&client_a, MEventType::SET, "tx-1"),
-        MEvent::from_item(&client_b, MEventType::SET, "tx-2"),
-    ]).is_ok());
+    assert!(
+        ctx.apply_event_batch(vec![
+            MEvent::from_item(&client_a, MEventType::SET, "tx-1"),
+            MEvent::from_item(&client_b, MEventType::SET, "tx-2"),
+        ])
+        .is_ok()
+    );
 
     // Start indexed (belongs_to field pinned).
     let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(eq_filter("server-A"));

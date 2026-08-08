@@ -86,6 +86,146 @@ fn spawn_test_server(addr: std::net::SocketAddr) -> tokio::task::JoinHandle<()> 
     })
 }
 
+async fn assert_tool_discovery(client: &reqwest::Client, url: &str) {
+    let list_resp = require_some!(
+        post_with_retry(
+            client,
+            url,
+            &serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+        )
+        .await,
+        "tools/list response"
+    );
+    let tools = require_some!(
+        list_resp
+            .pointer("/result/tools")
+            .and_then(serde_json::Value::as_array),
+        "tools array"
+    );
+    let tool_names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
+        .collect();
+    assert!(tool_names.contains(&"search"));
+    assert!(tool_names.contains(&"execute"));
+    assert_eq!(
+        tool_names.len(),
+        3,
+        "expected exactly search/execute/connection_status, got {tool_names:?}"
+    );
+
+    let search_resp = require_some!(
+        post_with_retry(
+            client,
+            url,
+            &tool_call(2, "search", serde_json::json!({ "query": "GetAllServers" })),
+        )
+        .await,
+        "search response"
+    );
+    let search_text = require_some!(
+        search_resp
+            .pointer("/result/content/0/text")
+            .and_then(serde_json::Value::as_str),
+        "text content"
+    );
+    let search_body = require_some!(
+        serde_json::from_str::<serde_json::Value>(search_text).ok(),
+        "valid JSON"
+    );
+    let ops = require_some!(
+        search_body
+            .get("operations")
+            .and_then(serde_json::Value::as_array),
+        "operations array"
+    );
+    assert!(
+        ops.iter().any(
+            |op| op.get("id") == Some(&serde_json::json!("GetAllServers"))
+                && op.get("kind") == Some(&serde_json::json!("query"))
+        ),
+        "expected GetAllServers in search results, got {ops:?}"
+    );
+}
+
+async fn assert_query_execution(client: &reqwest::Client, url: &str) {
+    let execute_resp = require_some!(post_with_retry(
+        client,
+        url,
+        &tool_call(
+            3,
+            "execute",
+            serde_json::json!({ "code": "const r = await myko.query('GetAllServers', {}); return r.count;" }),
+        ),
+    )
+    .await, "execute response");
+    let execute_result = require_some!(execute_resp.get("result"), "execute result");
+    assert_ne!(
+        execute_result.get("isError"),
+        Some(&serde_json::json!(true)),
+        "execute should succeed, got {execute_result:?}"
+    );
+    let count_text = require_some!(
+        execute_result
+            .pointer("/content/0/text")
+            .and_then(serde_json::Value::as_str),
+        "text content"
+    );
+    let count = require_some!(
+        count_text.trim().parse::<i64>().ok(),
+        "execute should return the query's item count"
+    );
+    assert!(count >= 0);
+}
+
+async fn assert_strict_commands(client: &reqwest::Client, url: &str) {
+    let strict_resp = require_some!(post_with_retry(
+        client,
+        url,
+        &tool_call(
+            4,
+            "execute",
+            serde_json::json!({ "code": "return await myko.command('StrictEcho', {value: 'ok'});" }),
+        ),
+    )
+    .await, "strict command response");
+    let strict_text = require_some!(
+        strict_resp
+            .pointer("/result/content/0/text")
+            .and_then(serde_json::Value::as_str),
+        "strict command text content"
+    );
+    let strict_body = require_some!(
+        serde_json::from_str::<serde_json::Value>(strict_text).ok(),
+        "strict command wrapper JSON"
+    );
+    assert_eq!(strict_body.get("success"), Some(&serde_json::json!(true)));
+    assert_eq!(strict_body.get("result"), Some(&serde_json::json!("ok")));
+
+    let unknown_resp = require_some!(post_with_retry(
+        client,
+        url,
+        &tool_call(
+            5,
+            "execute",
+            serde_json::json!({
+                "code": "try { await myko.command('StrictEcho', {value: 'ok', unexpected: true}); return 'accepted'; } catch (e) { return e.message; }"
+            }),
+        ),
+    )
+    .await, "unknown field response");
+    let unknown_text = require_some!(
+        unknown_resp
+            .pointer("/result/content/0/text")
+            .and_then(serde_json::Value::as_str),
+        "strict rejection text content"
+    );
+    assert!(
+        unknown_text.contains("unknown field `unexpected`"),
+        "strict command must keep rejecting user fields: {unknown_text}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_then_execute_round_trip_over_http() {
     let _strict_args_type_is_used = StrictEchoArgs {
@@ -109,92 +249,11 @@ async fn search_then_execute_round_trip_over_http() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/myko/mcp");
 
-    let list_resp = require_some!(post_with_retry(
-        &client,
-        &url,
-        &serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-    )
-    .await, "tools/list response");
-    let tools = require_some!(list_resp.pointer("/result/tools").and_then(serde_json::Value::as_array), "tools array");
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .filter_map(|tool| tool.get("name").and_then(serde_json::Value::as_str))
-        .collect();
-    assert!(tool_names.contains(&"search"));
-    assert!(tool_names.contains(&"execute"));
-    assert_eq!(
-        tool_names.len(),
-        3,
-        "expected exactly search/execute/connection_status, got {tool_names:?}"
-    );
+    assert_tool_discovery(&client, &url).await;
 
-    let search_resp = require_some!(post_with_retry(
-        &client,
-        &url,
-        &tool_call(2, "search", serde_json::json!({ "query": "GetAllServers" })),
-    )
-    .await, "search response");
-    let search_text = require_some!(search_resp.pointer("/result/content/0/text").and_then(serde_json::Value::as_str), "text content");
-    let search_body = require_some!(serde_json::from_str::<serde_json::Value>(search_text).ok(), "valid JSON");
-    let ops = require_some!(search_body.get("operations").and_then(serde_json::Value::as_array), "operations array");
-    assert!(
-        ops.iter()
-            .any(|op| op.get("id") == Some(&serde_json::json!("GetAllServers")) && op.get("kind") == Some(&serde_json::json!("query"))),
-        "expected GetAllServers in search results, got {ops:?}"
-    );
+    assert_query_execution(&client, &url).await;
 
-    let execute_resp = require_some!(post_with_retry(
-        &client,
-        &url,
-        &tool_call(
-            3,
-            "execute",
-            serde_json::json!({ "code": "const r = await myko.query('GetAllServers', {}); return r.count;" }),
-        ),
-    )
-    .await, "execute response");
-    let execute_result = require_some!(execute_resp.get("result"), "execute result");
-    assert_ne!(
-        execute_result.get("isError"),
-        Some(&serde_json::json!(true)),
-        "execute should succeed, got {execute_result:?}"
-    );
-    let count_text = require_some!(execute_result.pointer("/content/0/text").and_then(serde_json::Value::as_str), "text content");
-    let count = require_some!(count_text.trim().parse::<i64>().ok(), "execute should return the query's item count");
-    assert!(count >= 0);
-
-    let strict_resp = require_some!(post_with_retry(
-        &client,
-        &url,
-        &tool_call(
-            4,
-            "execute",
-            serde_json::json!({ "code": "return await myko.command('StrictEcho', {value: 'ok'});" }),
-        ),
-    )
-    .await, "strict command response");
-    let strict_text = require_some!(strict_resp.pointer("/result/content/0/text").and_then(serde_json::Value::as_str), "strict command text content");
-    let strict_body = require_some!(serde_json::from_str::<serde_json::Value>(strict_text).ok(), "strict command wrapper JSON");
-    assert_eq!(strict_body.get("success"), Some(&serde_json::json!(true)));
-    assert_eq!(strict_body.get("result"), Some(&serde_json::json!("ok")));
-
-    let unknown_resp = require_some!(post_with_retry(
-        &client,
-        &url,
-        &tool_call(
-            5,
-            "execute",
-            serde_json::json!({
-                "code": "try { await myko.command('StrictEcho', {value: 'ok', unexpected: true}); return 'accepted'; } catch (e) { return e.message; }"
-            }),
-        ),
-    )
-    .await, "unknown field response");
-    let unknown_text = require_some!(unknown_resp.pointer("/result/content/0/text").and_then(serde_json::Value::as_str), "strict rejection text content");
-    assert!(
-        unknown_text.contains("unknown field `unexpected`"),
-        "strict command must keep rejecting user fields: {unknown_text}"
-    );
+    assert_strict_commands(&client, &url).await;
 
     handle.abort();
 }

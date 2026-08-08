@@ -66,12 +66,8 @@ impl Executor {
     /// Returns an error when the report cannot be executed.
     pub async fn execute_report(&self, report_id: &str, args: Value) -> Result<Value, String> {
         match self {
-            Self::Client(client) => {
-                client_execute_report(client.clone(), report_id, args).await
-            }
-            Self::InProcess(ctx) => {
-                in_process_execute_report(ctx.clone(), report_id, args).await
-            }
+            Self::Client(client) => client_execute_report(client.clone(), report_id, args).await,
+            Self::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args).await,
         }
     }
 
@@ -92,9 +88,7 @@ impl Executor {
     /// Returns an error when the command cannot be executed.
     pub async fn execute_command(&self, command_id: &str, args: Value) -> Result<Value, String> {
         match self {
-            Self::Client(client) => {
-                client_execute_command(client.clone(), command_id, args).await
-            }
+            Self::Client(client) => client_execute_command(client.clone(), command_id, args).await,
             Self::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args),
         }
     }
@@ -447,8 +441,8 @@ fn in_process_execute_view(
         );
     }
 
-    let parsed = (view_data.parse)(view_json)
-        .map_err(|e| format!("Failed to parse view {view_id}: {e}"))?;
+    let parsed =
+        (view_data.parse)(view_json).map_err(|e| format!("Failed to parse view {view_id}: {e}"))?;
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 

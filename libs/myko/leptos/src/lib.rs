@@ -417,7 +417,10 @@ impl CommandSink {
 
         // Drop already-resolved keepalives first (safe: not inside a callback).
         {
-            let mut inflight = self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut inflight = self
+                .inflight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             inflight.retain(|(done, _)| !done.load(std::sync::atomic::Ordering::Acquire));
         }
 
@@ -436,7 +439,10 @@ impl CommandSink {
         });
         cell.own(guard);
 
-        self.inflight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((done, Box::new(cell)));
+        self.inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((done, Box::new(cell)));
     }
 }
 

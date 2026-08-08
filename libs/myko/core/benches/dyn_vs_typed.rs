@@ -74,7 +74,9 @@ fn bench_predicate(c: &mut Criterion) {
     let dynd = make_dyn_arcs(N_ITEMS);
 
     let mut g = c.benchmark_group("predicate_filter");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(N_ITEMS).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed", |b| {
         b.iter(|| {
@@ -131,7 +133,9 @@ fn bench_predicate(c: &mut Criterion) {
 
 fn bench_materialize(c: &mut Criterion) {
     let mut g = c.benchmark_group("materialize_select");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(N_ITEMS).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed_store_select_materialize", |b| {
         let entries = make_typed_arcs(N_ITEMS);
@@ -143,9 +147,7 @@ fn bench_materialize(c: &mut Criterion) {
             },
             |store| {
                 let result = MapQuery::materialize(
-                    (store.lock())
-
-                        .select(|item: &Arc<BenchItem>| item.value > 50),
+                    (store.lock()).select(|item: &Arc<BenchItem>| item.value > 50),
                 );
                 black_box(result.snapshot().len())
             },
@@ -184,7 +186,9 @@ fn bench_materialize(c: &mut Criterion) {
 
 fn bench_insert_many(c: &mut Criterion) {
     let mut g = c.benchmark_group("insert_many");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(N_ITEMS).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed", |b| {
         let entries = make_typed_arcs(N_ITEMS);
@@ -231,32 +235,32 @@ fn bench_serialize(c: &mut Criterion) {
         let mut json_group = c.benchmark_group("serialize_to_json_bytes");
         json_group.throughput(criterion::Throughput::Elements(1000));
 
-    json_group.bench_function("typed", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for (_, item) in &typed {
-                if let Ok(bytes) = serde_json::to_vec(item.as_ref()) {
-                    total = total.saturating_add(bytes.len());
-                    black_box(bytes);
+        json_group.bench_function("typed", |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for (_, item) in &typed {
+                    if let Ok(bytes) = serde_json::to_vec(item.as_ref()) {
+                        total = total.saturating_add(bytes.len());
+                        black_box(bytes);
+                    }
                 }
-            }
-            black_box(total)
+                black_box(total)
+            });
         });
-    });
 
-    json_group.bench_function("dyn_erased_serde", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for (_, item_any) in &dynd {
-                // serde::Serialize is implemented for `dyn AnyItem` via erased_serde.
-                if let Ok(bytes) = serde_json::to_vec(item_any.as_ref()) {
-                    total = total.saturating_add(bytes.len());
-                    black_box(bytes);
+        json_group.bench_function("dyn_erased_serde", |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for (_, item_any) in &dynd {
+                    // serde::Serialize is implemented for `dyn AnyItem` via erased_serde.
+                    if let Ok(bytes) = serde_json::to_vec(item_any.as_ref()) {
+                        total = total.saturating_add(bytes.len());
+                        black_box(bytes);
+                    }
                 }
-            }
-            black_box(total)
+                black_box(total)
+            });
         });
-    });
 
         json_group.finish();
     }
@@ -279,28 +283,24 @@ fn bench_serialize(c: &mut Criterion) {
         wrapped_group.throughput(criterion::Throughput::Elements(1000));
 
         wrapped_group.bench_function("json_via_typed_registration", |b| {
-        b.iter(|| {
-            black_box(serde_json::to_vec(&wrapped))
+            b.iter(|| black_box(serde_json::to_vec(&wrapped)));
         });
-    });
 
-    // Force the erased_serde fallback by giving the wrapper a bogus item_type
-    // so the registry lookup misses and `ErasedWrappedItem::serialize` falls
-    // through to the old `&dyn erased_serde::Serialize` path. Same items,
-    // same JSON output shape, only the code path differs.
-    let wrapped_unregistered: Vec<ErasedWrappedItem> = dynd
-        .iter()
-        .map(|(_, item)| ErasedWrappedItem {
-            item: item.clone(),
-            item_type: "_unregistered_".into(),
-        })
-        .collect();
+        // Force the erased_serde fallback by giving the wrapper a bogus item_type
+        // so the registry lookup misses and `ErasedWrappedItem::serialize` falls
+        // through to the old `&dyn erased_serde::Serialize` path. Same items,
+        // same JSON output shape, only the code path differs.
+        let wrapped_unregistered: Vec<ErasedWrappedItem> = dynd
+            .iter()
+            .map(|(_, item)| ErasedWrappedItem {
+                item: item.clone(),
+                item_type: "_unregistered_".into(),
+            })
+            .collect();
 
-    wrapped_group.bench_function("json_via_erased_serde_fallback", |b| {
-        b.iter(|| {
-            black_box(serde_json::to_vec(&wrapped_unregistered))
+        wrapped_group.bench_function("json_via_erased_serde_fallback", |b| {
+            b.iter(|| black_box(serde_json::to_vec(&wrapped_unregistered)));
         });
-    });
 
         wrapped_group.finish();
     }
@@ -413,11 +413,7 @@ fn make_tree() -> Vec<BenchTreeItem> {
                     .saturating_sub(TREE_PER_LEVEL)
                     .checked_rem(TREE_PER_LEVEL)
                     .unwrap_or_default()
-                    .saturating_add(
-                        level
-                            .saturating_sub(1)
-                            .saturating_mul(TREE_PER_LEVEL),
-                    );
+                    .saturating_add(level.saturating_sub(1).saturating_mul(TREE_PER_LEVEL));
                 Some(format!("tree-{parent_idx}").into())
             };
             BenchTreeItem {
@@ -454,7 +450,9 @@ fn bench_lineage_walk(c: &mut Criterion) {
     let dyn_store = dyn_store_mut.lock();
 
     let mut g = c.benchmark_group("lineage_walk");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed_store_get_value", |b| {
         b.iter(|| {
@@ -536,7 +534,9 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
         .collect();
 
     let mut g = c.benchmark_group("view_chain_fanout");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX),
+    ));
 
     // Post-refactor: outer typed + typed inner store.
     g.bench_function("typed_outer_typed_inner", |b| {
@@ -553,7 +553,6 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                 let result = MapQuery::materialize(
                     outer
                         .lock()
-
                         .select(|item: &Arc<BenchTreeItem>| item.depth >= 2)
                         .project(move |k, item| {
                             let mut total = item.depth;
@@ -594,7 +593,6 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                 let result = MapQuery::materialize(
                     outer
                         .lock()
-
                         .select(|item: &Arc<BenchTreeItem>| item.depth >= 2)
                         .project(move |k, item| {
                             let mut total = item.depth;
@@ -606,7 +604,9 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                                 let Some(parent_any) = inner_for_proj.get_value(pid) else {
                                     break;
                                 };
-                                let Some(parent) = parent_any.as_any().downcast_ref::<BenchTreeItem>() else {
+                                let Some(parent) =
+                                    parent_any.as_any().downcast_ref::<BenchTreeItem>()
+                                else {
                                     break;
                                 };
                                 total = total.saturating_add(parent.depth);
@@ -641,7 +641,9 @@ fn bench_hashmap_hasher(c: &mut Criterion) {
     // Build pre-populated maps so the bench measures lookup + insert mix on
     // realistic Arc<str> entity keys, not empty-map cost.
     let mut g = c.benchmark_group("hashmap_lookup");
-    g.throughput(criterion::Throughput::Elements(u64::try_from(N_ITEMS).unwrap_or(u64::MAX)));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("std_hashmap_default_siphash", |b| {
         let mut map: HashMap<Arc<str>, i64> = HashMap::new();
@@ -725,9 +727,7 @@ fn bench_parse_paths(c: &mut Criterion) {
     g.throughput(criterion::Throughput::Elements(1));
 
     g.bench_function("from_slice_to_typed_direct", |b| {
-        b.iter(|| {
-            black_box(serde_json::from_slice::<BenchItem>(&bytes))
-        });
+        b.iter(|| black_box(serde_json::from_slice::<BenchItem>(&bytes)));
     });
 
     g.bench_function("from_slice_to_value_then_from_value", |b| {
@@ -755,9 +755,7 @@ fn bench_parse_paths(c: &mut Criterion) {
     g.bench_function("from_value_no_clone", |b| {
         b.iter_batched(
             || serde_json::from_slice::<serde_json::Value>(&bytes),
-            |value| {
-                black_box(value.and_then(serde_json::from_value::<BenchItem>))
-            },
+            |value| black_box(value.and_then(serde_json::from_value::<BenchItem>)),
             BatchSize::SmallInput,
         );
     });

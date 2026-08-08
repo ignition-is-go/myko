@@ -74,7 +74,8 @@ fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestConte
 /// rationale) in `query_cache_leak_test.rs`.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]
@@ -151,10 +152,7 @@ fn retained_filtered_query_items_propagate_deletion() {
         ..Default::default()
     };
     let live_request = request(&ctx, "tx-live-delete");
-    let untyped = ctx.query_map_untyped(
-        GetClientsByQuery(filter.clone()),
-        live_request.clone(),
-    );
+    let untyped = ctx.query_map_untyped(GetClientsByQuery(filter.clone()), live_request.clone());
     let live = ctx.query_map(GetClientsByQuery(filter.clone()), live_request);
     let items = live.items().materialize();
     assert_eq!(items.get().len(), 1);
@@ -165,8 +163,16 @@ fn retained_filtered_query_items_propagate_deletion() {
         GetClientsByQuery(filter),
         request(&ctx, "tx-snapshot-delete"),
     );
-    assert_eq!(snapshot.len(), 0, "the store snapshot must observe the delete");
-    assert_eq!(untyped.snapshot().len(), 0, "the untyped live query must propagate the delete");
+    assert_eq!(
+        snapshot.len(),
+        0,
+        "the store snapshot must observe the delete"
+    );
+    assert_eq!(
+        untyped.snapshot().len(),
+        0,
+        "the untyped live query must propagate the delete"
+    );
     assert_eq!(
         items.get().len(),
         0,

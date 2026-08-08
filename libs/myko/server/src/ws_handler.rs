@@ -32,8 +32,8 @@ use myko::{
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, EncodedCommandMessage, MEvent,
-        MEventType, MykoMessage, QueryWindowUpdate, ViewError, ViewWindowUpdate,
-        WrappedQuery, WrappedView,
+        MEventType, MykoMessage, QueryWindowUpdate, ViewError, ViewWindowUpdate, WrappedQuery,
+        WrappedView,
     },
 };
 use tokio::{net::TcpStream, sync::mpsc, time::interval};
@@ -259,10 +259,7 @@ struct ReadLoopState {
 }
 
 struct WriterState {
-    write: futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<TcpStream>,
-        Message,
-    >,
+    write: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
     rx: mpsc::Receiver<OutboundMessage>,
     deferred_rx: mpsc::Receiver<DeferredOutbound>,
     priority_rx: mpsc::Receiver<MykoMessage>,
@@ -323,11 +320,7 @@ impl WsHandler {
         drop(client_id);
     }
 
-    fn publish_client(
-        ctx: &MykoServerContext,
-        client_id: Arc<str>,
-        addr: SocketAddr,
-    ) -> Client {
+    fn publish_client(ctx: &MykoServerContext, client_id: Arc<str>, addr: SocketAddr) -> Client {
         let client = Client {
             id: ClientId(client_id.clone()),
             server_id: ctx.host_id.to_string().into(),
@@ -341,7 +334,6 @@ impl WsHandler {
         drop(client_id);
         client
     }
-
 
     fn dispatch_incoming<W: WsWriter>(
         session: &mut ClientSession<W>,
@@ -418,9 +410,7 @@ impl WsHandler {
     }
 
     async fn run_read_loop<W: WsWriter>(
-        mut read: futures_util::stream::SplitStream<
-            tokio_tungstenite::WebSocketStream<TcpStream>,
-        >,
+        mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,
         mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionReady>,
         state: ReadLoopState,
@@ -483,7 +473,6 @@ impl WsHandler {
         }
     }
 
-
     async fn run_command_worker(
         mut command_rx: mpsc::UnboundedReceiver<CommandJob>,
         command_ctx: Arc<MykoServerContext>,
@@ -492,37 +481,35 @@ impl WsHandler {
         command_client_id: Arc<str>,
         command_started_cleanup: SharedTxTimes,
     ) {
-            while let Some(job) = command_rx.recv().await {
-                let command_ctx = command_ctx.clone();
-                let command_priority_tx = command_priority_tx.clone();
-                let command_drop_logger = command_drop_logger.clone();
-                let command_client_id = command_client_id.clone();
-                let tx_id = job.tx_id.clone();
-                let started_map = command_started_cleanup.clone();
-                match tokio::task::spawn_blocking(move || {
-                    Self::execute_command_job(
-                        command_ctx,
-                        &command_priority_tx,
-                        command_drop_logger.as_ref(),
-                        command_client_id,
-                        job,
-                    );
-                })
-                .await
-                {
-                    Ok(()) => {}
-                    Err(e) => {
-                        tracing::error!("Command worker panicked: {}", e);
-                    }
-                }
-                // NOTE(ts): Clean up timing entry after command completes (success or panic).
-                if let Ok(mut map) = started_map.lock() {
-                    map.remove(&tx_id);
+        while let Some(job) = command_rx.recv().await {
+            let command_ctx = command_ctx.clone();
+            let command_priority_tx = command_priority_tx.clone();
+            let command_drop_logger = command_drop_logger.clone();
+            let command_client_id = command_client_id.clone();
+            let tx_id = job.tx_id.clone();
+            let started_map = command_started_cleanup.clone();
+            match tokio::task::spawn_blocking(move || {
+                Self::execute_command_job(
+                    command_ctx,
+                    &command_priority_tx,
+                    command_drop_logger.as_ref(),
+                    command_client_id,
+                    job,
+                );
+            })
+            .await
+            {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!("Command worker panicked: {}", e);
                 }
             }
-
+            // NOTE(ts): Clean up timing entry after command completes (success or panic).
+            if let Ok(mut map) = started_map.lock() {
+                map.remove(&tx_id);
+            }
+        }
     }
-
 
     fn outbound_metadata(
         message: &OutboundMessage,
@@ -559,11 +546,9 @@ impl WsHandler {
                         Some(Arc::from(response.tx.clone())),
                         None,
                     ),
-                    MykoMessage::CommandError(error) => (
-                        "command_error",
-                        Some(Arc::from(error.tx.clone())),
-                        None,
-                    ),
+                    MykoMessage::CommandError(error) => {
+                        ("command_error", Some(Arc::from(error.tx.clone())), None)
+                    }
                     _ => ("other", None, None),
                 }
             }
@@ -673,80 +658,78 @@ impl WsHandler {
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
         } = state;
-            let mut normal_open = true;
-            let mut priority_open = true;
-            let mut deferred_open = true;
-            while normal_open || priority_open || deferred_open {
-                let msg = tokio::select! {
-                    biased;
-                    maybe = priority_rx.recv(), if priority_open => {
-                        if let Some(msg) = maybe { OutboundMessage::Message(msg) } else {
-                            priority_open = false;
-                            continue;
-                        }
+        let mut normal_open = true;
+        let mut priority_open = true;
+        let mut deferred_open = true;
+        while normal_open || priority_open || deferred_open {
+            let msg = tokio::select! {
+                biased;
+                maybe = priority_rx.recv(), if priority_open => {
+                    if let Some(msg) = maybe { OutboundMessage::Message(msg) } else {
+                        priority_open = false;
+                        continue;
                     }
-                    maybe = deferred_rx.recv(), if deferred_open => {
-                        match maybe {
-                            Some(DeferredOutbound::Report(tx, output)) => {
-                                OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
-                                    response: output.to_value(),
-                                    tx: tx.to_string(),
-                                }))
-                            }
-                            Some(DeferredOutbound::Query { response, is_view }) => {
-                                if is_view {
-                                    OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
-                                } else {
-                                    OutboundMessage::Message(MykoMessage::QueryResponse(response.into_wire()))
-                                }
-                            }
-                            None => {
-                                deferred_open = false;
-                                continue;
-                            }
-                        }
-                    }
-                    maybe = rx.recv(), if normal_open => {
-                        if let Some(msg) = maybe { msg } else {
-                            normal_open = false;
-                            continue;
-                        }
-                    }
-                };
-                if !Self::send_outbound(
-                    &mut write,
-                    msg,
-                    &write_client_id,
-                    write_addr,
-                    &outgoing_format_writer,
-                    &outbound_commands_by_tx_writer,
-                )
-                .await
-                {
-                    break;
                 }
+                maybe = deferred_rx.recv(), if deferred_open => {
+                    match maybe {
+                        Some(DeferredOutbound::Report(tx, output)) => {
+                            OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
+                                response: output.to_value(),
+                                tx: tx.to_string(),
+                            }))
+                        }
+                        Some(DeferredOutbound::Query { response, is_view }) => {
+                            if is_view {
+                                OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
+                            } else {
+                                OutboundMessage::Message(MykoMessage::QueryResponse(response.into_wire()))
+                            }
+                        }
+                        None => {
+                            deferred_open = false;
+                            continue;
+                        }
+                    }
+                }
+                maybe = rx.recv(), if normal_open => {
+                    if let Some(msg) = maybe { msg } else {
+                        normal_open = false;
+                        continue;
+                    }
+                }
+            };
+            if !Self::send_outbound(
+                &mut write,
+                msg,
+                &write_client_id,
+                write_addr,
+                &outgoing_format_writer,
+                &outbound_commands_by_tx_writer,
+            )
+            .await
+            {
+                break;
             }
-            // NOTE(ts): Unregister from client registry immediately so the node
-            // executor stops serializing commands into a dead channel.
-            if let Some(registry) = try_client_registry() {
-                registry.unregister(&write_client_id);
-                tracing::info!(
-                    "WebSocket writer unregistered client {} from {} (write task exiting)",
-                    write_client_id,
-                    write_addr,
-                );
-            }
-            tracing::warn!(
-                "WebSocket writer task exiting for client {} from {} normal_open={} priority_open={} deferred_open={}",
+        }
+        // NOTE(ts): Unregister from client registry immediately so the node
+        // executor stops serializing commands into a dead channel.
+        if let Some(registry) = try_client_registry() {
+            registry.unregister(&write_client_id);
+            tracing::info!(
+                "WebSocket writer unregistered client {} from {} (write task exiting)",
                 write_client_id,
                 write_addr,
-                normal_open,
-                priority_open,
-                deferred_open
             );
-
+        }
+        tracing::warn!(
+            "WebSocket writer task exiting for client {} from {} normal_open={} priority_open={} deferred_open={}",
+            write_client_id,
+            write_addr,
+            normal_open,
+            priority_open,
+            deferred_open
+        );
     }
-
 
     /// Handle a new WebSocket connection (performs the handshake).
     /// # Errors
@@ -1204,7 +1187,10 @@ impl WsHandler {
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
                 if let Err(error) = ctx.apply_event(event) {
-                    tracing::error!("Failed to apply event from client {}: {error}", session.client_id);
+                    tracing::error!(
+                        "Failed to apply event from client {}: {error}",
+                        session.client_id
+                    );
                 }
                 drop(ctx);
             }

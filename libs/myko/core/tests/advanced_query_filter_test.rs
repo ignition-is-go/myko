@@ -57,7 +57,8 @@ fn request(ctx: &MykoServerContext, tx: &str) -> Arc<myko::request::RequestConte
 /// matching helper (and full rationale) in `query_cache_leak_test.rs`.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]

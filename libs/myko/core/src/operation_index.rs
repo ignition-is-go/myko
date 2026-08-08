@@ -306,7 +306,10 @@ pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Optio
             continue;
         };
         let raw_name = segment.get(..colon_idx).unwrap_or_default().trim();
-        let raw_type = segment.get(colon_idx.saturating_add(1)..).unwrap_or_default().trim();
+        let raw_type = segment
+            .get(colon_idx.saturating_add(1)..)
+            .unwrap_or_default()
+            .trim();
 
         let prop_name = raw_name
             .trim_start_matches("readonly ")
@@ -395,7 +398,13 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
                 '<' => angle = angle.saturating_add(1),
                 '>' => angle = angle.saturating_sub(1),
                 ',' if brace == 0 && bracket == 0 && paren == 0 && angle == 0 => {
-                    out.push(chars.get(start..i).unwrap_or_default().iter().collect::<String>());
+                    out.push(
+                        chars
+                            .get(start..i)
+                            .unwrap_or_default()
+                            .iter()
+                            .collect::<String>(),
+                    );
                     start = i.saturating_add(1);
                 }
                 _ => {}
@@ -404,7 +413,13 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
         i = i.saturating_add(1);
     }
     if start < chars.len() {
-        out.push(chars.get(start..).unwrap_or_default().iter().collect::<String>());
+        out.push(
+            chars
+                .get(start..)
+                .unwrap_or_default()
+                .iter()
+                .collect::<String>(),
+        );
     }
     out
 }

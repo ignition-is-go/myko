@@ -367,17 +367,19 @@ impl MykoClient {
         {
             let cancelled = Arc::new(AtomicBool::new(false));
             let cancelled_for_thread = Arc::clone(&cancelled);
-            let handle = std::thread::spawn(move || loop {
-                if cancelled_for_thread.load(Ordering::SeqCst) {
-                    break;
-                }
-                match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok(frame) => {
-                        let Some(inner) = weak.upgrade() else { break };
-                        Self::handle_frame(&inner, &frame);
+            let handle = std::thread::spawn(move || {
+                loop {
+                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                        break;
                     }
-                    Err(flume::RecvTimeoutError::Timeout) => {}
-                    Err(flume::RecvTimeoutError::Disconnected) => break,
+                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(frame) => {
+                            let Some(inner) = weak.upgrade() else { break };
+                            Self::handle_frame(&inner, &frame);
+                        }
+                        Err(flume::RecvTimeoutError::Timeout) => {}
+                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                    }
                 }
             });
             CallbackGuard::new(move || {
@@ -407,19 +409,21 @@ impl MykoClient {
         {
             let cancelled = Arc::new(AtomicBool::new(false));
             let cancelled_for_thread = Arc::clone(&cancelled);
-            let handle = std::thread::spawn(move || loop {
-                if cancelled_for_thread.load(Ordering::SeqCst) {
-                    break;
-                }
-                match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                    Ok((tx, response)) => {
-                        let Some(inner) = weak.upgrade() else { break };
-                        if let Some(handler) = inner.report_handlers.get(&tx) {
-                            handler(response);
-                        }
+            let handle = std::thread::spawn(move || {
+                loop {
+                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                        break;
                     }
-                    Err(flume::RecvTimeoutError::Timeout) => {}
-                    Err(flume::RecvTimeoutError::Disconnected) => break,
+                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok((tx, response)) => {
+                            let Some(inner) = weak.upgrade() else { break };
+                            if let Some(handler) = inner.report_handlers.get(&tx) {
+                                handler(response);
+                            }
+                        }
+                        Err(flume::RecvTimeoutError::Timeout) => {}
+                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                    }
                 }
             });
             CallbackGuard::new(move || {
@@ -493,7 +497,10 @@ impl MykoClient {
 
                     // Flush pending sends on connect
                     if let ConnectionStatus::Connected(_) = conn_status {
-                        let mut pending = inner.pending_sends.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let mut pending = inner
+                            .pending_sends
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         for frame in pending.drain(..) {
                             let _ = inner.socket.send(frame);
                         }
@@ -551,7 +558,11 @@ impl MykoClient {
                     this.try_failover();
                 }
             });
-        *self.inner.peer_failover_status_guard.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status_guard);
+        *self
+            .inner
+            .peer_failover_status_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status_guard);
 
         let discovery = self.watch_query(GetPeerServers {});
         let this = self.clone();
@@ -560,14 +571,21 @@ impl MykoClient {
                 this.update_known_servers_from_peers(servers.as_ref());
             }
         });
-        *self.inner.peer_discovery_guard.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(discovery_guard);
+        *self
+            .inner
+            .peer_discovery_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(discovery_guard);
     }
 
     fn update_known_servers_from_peers(&self, peers: &[Arc<Server>]) {
-        let current = self.inner.current_address.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        let use_wss = current
-            .as_ref()
-            .is_some_and(|a| a.starts_with("wss://"));
+        let current = self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let use_wss = current.as_ref().is_some_and(|a| a.starts_with("wss://"));
 
         let mut next = Vec::new();
         if let Some(current) = current {
@@ -585,7 +603,11 @@ impl MykoClient {
             }
         }
 
-        *self.inner.known_servers.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+        *self
+            .inner
+            .known_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
     }
 
     fn try_failover(&self) {
@@ -593,8 +615,18 @@ impl MykoClient {
             return;
         }
 
-        let current = self.inner.current_address.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        let servers = self.inner.known_servers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let current = self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let servers = self
+            .inner
+            .known_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if servers.is_empty() {
             return;
         }
@@ -864,14 +896,23 @@ impl MykoClient {
 
     pub fn set_address(&self, addr: Option<String>) {
         let Some(addr) = addr else {
-            let current = self.inner.current_address.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            let current = self
+                .inner
+                .current_address
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             if current.is_none() {
                 debug!("set_address(None) ignored; already disconnected");
                 return;
             }
             debug!("Setting address to None, disconnecting socket");
             self.inner.socket.set_addr(None);
-            *self.inner.current_address.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            *self
+                .inner
+                .current_address
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             return;
         };
         let parsed_addr = match normalize_myko_address(&addr) {
@@ -882,7 +923,12 @@ impl MykoClient {
                 return;
             }
         };
-        let current = self.inner.current_address.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let current = self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if current.as_ref() == Some(&parsed_addr) {
             debug!("set_address({parsed_addr}) ignored; address unchanged");
             return;
@@ -890,9 +936,17 @@ impl MykoClient {
 
         info!("MykoClient connecting to {}", parsed_addr);
         self.inner.socket.set_addr(Some(parsed_addr.clone()));
-        *self.inner.current_address.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(parsed_addr.clone());
+        *self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(parsed_addr.clone());
         if self.inner.peer_failover_enabled {
-            let mut servers = self.inner.known_servers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut servers = self
+                .inner
+                .known_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(pos) = servers.iter().position(|s| s == &parsed_addr) {
                 servers.remove(pos);
             }
@@ -1064,7 +1118,9 @@ impl MykoClient {
                     return;
                 }
 
-                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                 if response.sequence == 0 {
                     trace!("Sequence reset: Clearing {} state", query_id_for_handler);
@@ -1298,7 +1354,9 @@ impl MykoClient {
                     return;
                 }
 
-                let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                 if response.sequence == 0 {
                     trace!("Sequence reset: Clearing {} state", view_id_for_handler);
@@ -1369,11 +1427,8 @@ impl MykoClient {
     {
         let cell = self.watch_report::<R, O>(report);
         // Map Option<O> -> O using the initial value as default
-        cell.map(move |opt| {
-            opt.as_ref()
-                .map_or_else(|| initial.clone(), Clone::clone)
-        })
-        .materialize()
+        cell.map(move |opt| opt.as_ref().map_or_else(|| initial.clone(), Clone::clone))
+            .materialize()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1414,7 +1469,11 @@ impl MykoClient {
 
         // Register one-shot handler
         {
-            let mut handlers = self.inner.command_response_handlers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut handlers = self
+                .inner
+                .command_response_handlers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
                 tx,
                 Box::new(move |result: Result<Value, String>| {
@@ -1702,13 +1761,18 @@ impl MykoClient {
         let tx = command
             .command
             .get("tx")
-            .and_then(|v| v.as_str()).map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
+            .and_then(|v| v.as_str())
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
 
         let cell = Cell::new(None).with_name(format!("cmd:{}", command.command_id).as_str());
         let cell_writer = cell.clone();
 
         {
-            let mut handlers = self.inner.command_response_handlers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut handlers = self
+                .inner
+                .command_response_handlers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
                 tx,
                 Box::new(move |result: Result<Value, String>| {
@@ -1821,11 +1885,15 @@ mod address_tests {
     #[test]
     fn preserves_explicit_websocket_default_ports() {
         assert_eq!(
-            normalize_myko_address("ws://agents.example:80/myko").ok().as_deref(),
+            normalize_myko_address("ws://agents.example:80/myko")
+                .ok()
+                .as_deref(),
             Some("ws://agents.example/myko")
         );
         assert_eq!(
-            normalize_myko_address("wss://agents.example:443/myko").ok().as_deref(),
+            normalize_myko_address("wss://agents.example:443/myko")
+                .ok()
+                .as_deref(),
             Some("wss://agents.example/myko")
         );
         assert_eq!(
@@ -1841,7 +1909,9 @@ mod address_tests {
             Some("ws://agents.example:5155/myko")
         );
         assert_eq!(
-            normalize_myko_address("ws://agents.example").ok().as_deref(),
+            normalize_myko_address("ws://agents.example")
+                .ok()
+                .as_deref(),
             Some("ws://agents.example:5155/myko")
         );
         assert_eq!(
@@ -1853,7 +1923,9 @@ mod address_tests {
     #[test]
     fn preserves_explicit_non_default_ports_and_normalizes_path() {
         assert_eq!(
-            normalize_myko_address("ws://127.0.0.1:5174/ignored").ok().as_deref(),
+            normalize_myko_address("ws://127.0.0.1:5174/ignored")
+                .ok()
+                .as_deref(),
             Some("ws://127.0.0.1:5174/myko")
         );
         assert_eq!(

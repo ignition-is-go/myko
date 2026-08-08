@@ -110,11 +110,7 @@ where
             crate::common::downcast::downcast_request(any_ref, "view payload")?;
         let view: Arc<V> = Arc::new(request.view);
 
-        let view_ctx = Arc::new(ViewContext::new(
-            request_ctx,
-            registry,
-            server_ctx,
-        ));
+        let view_ctx = Arc::new(ViewContext::new(request_ctx, registry, server_ctx));
         let view_cell_ctx = ViewBuildContext::new(view_ctx);
 
         let built = V::build_cell(ViewBuildArgs {

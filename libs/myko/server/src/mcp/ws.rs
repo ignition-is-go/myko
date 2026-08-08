@@ -44,12 +44,10 @@ pub async fn handle_mcp_ws_upgrade(
         head.header(CALLABLE_DENY_HEADER),
     );
 
-    let want_mcp_subprotocol = head
-        .header("Sec-WebSocket-Protocol")
-        .is_some_and(|v| {
-            v.split(',')
-                .any(|p| p.trim().eq_ignore_ascii_case(MCP_SUBPROTOCOL))
-        });
+    let want_mcp_subprotocol = head.header("Sec-WebSocket-Protocol").is_some_and(|v| {
+        v.split(',')
+            .any(|p| p.trim().eq_ignore_ascii_case(MCP_SUBPROTOCOL))
+    });
 
     let ws_stream = match perform_handshake(stream, &head, want_mcp_subprotocol).await {
         Ok(s) => s,

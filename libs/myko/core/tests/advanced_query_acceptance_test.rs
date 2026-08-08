@@ -29,7 +29,8 @@ use uuid::Uuid;
 /// tests in this binary the same way `query_cache_leak_test.rs` does.
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {

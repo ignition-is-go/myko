@@ -186,7 +186,10 @@ impl MapCacheEntry {
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
         let source = self.weak.upgrade()?.lock();
-        let mut typed = self.typed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut typed = self
+            .typed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Try to upgrade an existing weak ref
         if let Some(entry) = typed.get(&type_key) {
@@ -378,10 +381,7 @@ impl MykoServerContext {
         let store = self.registry.get_or_create(T::entity_name_static());
         let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
         let item = store.get_value(&map_key)?;
-        downcast_any_item_arc::<T>(
-            &item,
-            "MykoServerContext::entity_snapshot",
-        )
+        downcast_any_item_arc::<T>(&item, "MykoServerContext::entity_snapshot")
     }
 
     /// Number of entries in the query cache (includes dead weak refs).
@@ -1380,7 +1380,9 @@ impl MykoServerContext {
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after gate
         if let Some(cell) = Self::try_get_cached(cache, key) {
@@ -1462,9 +1464,7 @@ impl MykoServerContext {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
 
-        let query_context = Arc::new(QueryContext {
-            req: request,
-        });
+        let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
         store
@@ -1517,7 +1517,9 @@ impl MykoServerContext {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
@@ -1838,14 +1840,17 @@ mod tests {
         let _serial = scheduler_test_serial();
         let ctx = make_ctx();
 
-        assert!(ctx.apply_event_batch(vec![MEvent {
-            item: json!({ "id": "old-1", "value": 1 }),
-            change_type: MEventType::SET,
-            item_type: "ImmediateTestItem".into(),
-            created_at: "2026-03-12T00:00:00Z".into(),
-            tx: "tx-seed".into(),
-            source_id: Some("test".into()),
-        }]).is_ok());
+        assert!(
+            ctx.apply_event_batch(vec![MEvent {
+                item: json!({ "id": "old-1", "value": 1 }),
+                change_type: MEventType::SET,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-seed".into(),
+                source_id: Some("test".into()),
+            }])
+            .is_ok()
+        );
 
         let store = ctx.registry.get_or_create("ImmediateTestItem");
         let diffs_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1858,7 +1863,10 @@ mod tests {
         });
         // subscribe_diffs replays the current snapshot synchronously on
         // subscribe -- drop that so only diffs from the batch below count.
-        diffs_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        diffs_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
 
         let applied = ctx
             .apply_event_batch(vec![
@@ -1897,7 +1905,9 @@ mod tests {
                 .is_none()
         );
 
-        let seen = diffs_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seen = diffs_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             seen.len(),
             2,

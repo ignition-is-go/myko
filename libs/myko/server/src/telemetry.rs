@@ -155,10 +155,12 @@ fn build_tracer_provider(endpoint: &str, resource: Resource) -> Option<SdkTracer
         }
     };
 
-    Some(SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(resource)
-        .build())
+    Some(
+        SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(resource)
+            .build(),
+    )
 }
 
 /// Register an OTLP `ObservableGauge`.
@@ -384,8 +386,10 @@ fn build_meter_provider(endpoint: &str, resource: Resource) -> Option<SdkMeterPr
         .with_interval(Duration::from_secs(interval_secs))
         .build();
 
-    Some(SdkMeterProvider::builder()
-        .with_reader(reader)
-        .with_resource(resource)
-        .build())
+    Some(
+        SdkMeterProvider::builder()
+            .with_reader(reader)
+            .with_resource(resource)
+            .build(),
+    )
 }

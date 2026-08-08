@@ -32,7 +32,8 @@ use uuid::Uuid;
 /// them against each other; take the guard as the first line of every #[test].
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn make_ctx() -> MykoServerContext {
@@ -380,7 +381,12 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Now mutate items to trigger the outer query → switch_map → new inner query_map
     // Each mutation changes the item list, causing switch_map to recreate
     for round in 0..20 {
-        insert_bench_item(&ctx, &format!("new-{round}"), "alpha", 100 + i64::from(round));
+        insert_bench_item(
+            &ctx,
+            &format!("new-{round}"),
+            "alpha",
+            100 + i64::from(round),
+        );
     }
 
     // Report should reflect the new items

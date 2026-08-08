@@ -101,17 +101,9 @@ fn emit_window() {
         return;
     }
     snap.sort_by_key(|bucket| {
-        std::cmp::Reverse(
-            bucket
-                .1
-                .saturating_add(bucket.2)
-                .saturating_add(bucket.3),
-        )
+        std::cmp::Reverse(bucket.1.saturating_add(bucket.2).saturating_add(bucket.3))
     });
-    let total_hits: u64 = snap
-        .iter()
-        .map(|stat| stat.1.saturating_add(stat.2))
-        .sum();
+    let total_hits: u64 = snap.iter().map(|stat| stat.1.saturating_add(stat.2)).sum();
     let total_misses: u64 = snap.iter().map(|s| s.3).sum();
     let detail = snap
         .iter()

@@ -20,7 +20,8 @@ impl SearchableExtractor<'_> {
     /// before the value, then appends the value followed by the field
     /// separator. Call once per `#[searchable]` field, in declaration order.
     pub fn push_field(&mut self, value: &str) {
-        self.offsets.push(u32::try_from(self.text.len()).unwrap_or(u32::MAX));
+        self.offsets
+            .push(u32::try_from(self.text.len()).unwrap_or(u32::MAX));
         self.text.push_str(value);
         self.text.push(FIELD_SEP);
     }
