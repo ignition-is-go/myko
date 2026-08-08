@@ -190,7 +190,7 @@ fn canonical_in_values_partial<T: PartialOrd + PartialEq + Clone>(mut values: Ve
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
 // `bound` is required because `#[ts(type = …)]` on a generic drops the
 // auto-added `T: TS` bound but still emits it internally (ts-rs 11); it's a
-// no-op without the `ts-export` feature (myko's `TsNoop` claims the attr).
+// no-op without the `typegen-typescript` feature (myko's `TsNoop` claims the attr).
 #[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum IdFilter<T> {
     Eq(T),
@@ -544,7 +544,7 @@ impl<T> From<Vec<T>> for EqFilter<T> {
 ///
 /// `$ty` must already satisfy `Debug + Clone + PartialEq + Eq + Ord +
 /// Serialize + Deserialize + TS` (`ts_rs`'s `TS`, or `myko::TS`'s no-op form
-/// when the `ts-export` feature is off) — this macro only wires up the
+/// when the `typegen-typescript` feature is off) — this macro only wires up the
 /// `Filterable` impl, it doesn't derive anything on `$ty` itself.
 #[macro_export]
 macro_rules! impl_filterable_eq {
@@ -686,7 +686,7 @@ crate::register_ts_export!(
 mod wire_serde {
     use serde::{Deserializer, Serializer, ser::SerializeMap};
 
-    use super::{Deserialize, Serialize, IdFilter, EqFilter, StringFilter, Arc, NumericFilter};
+    use super::{Arc, Deserialize, EqFilter, IdFilter, NumericFilter, Serialize, StringFilter};
 
     fn serialize_op<S: Serializer, T: Serialize + ?Sized>(
         s: S,
@@ -1046,7 +1046,10 @@ mod tests {
     #[test]
     fn operators_serialize_as_sigilled_objects() {
         assert_eq!(
-            require_ok!(serde_json::to_value(IdFilter::In(vec![Arc::<str>::from("a"), Arc::from("b")]))),
+            require_ok!(serde_json::to_value(IdFilter::In(vec![
+                Arc::<str>::from("a"),
+                Arc::from("b")
+            ]))),
             serde_json::json!({ "$in": ["a", "b"] })
         );
         assert_eq!(
@@ -1054,7 +1057,9 @@ mod tests {
             serde_json::json!({ "$contains": "x" })
         );
         assert_eq!(
-            require_ok!(serde_json::to_value(StringFilter::StartsWith(Arc::from("p")))),
+            require_ok!(serde_json::to_value(StringFilter::StartsWith(Arc::from(
+                "p"
+            )))),
             serde_json::json!({ "$startsWith": "p" })
         );
         assert_eq!(

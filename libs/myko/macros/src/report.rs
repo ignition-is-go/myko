@@ -15,7 +15,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
     // `myko::reflection` and the matching comment in `query.rs`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
 
-    // Gate user-written `#[ts(...)]` attrs behind the ts-export feature.
+    // Gate user-written `#[ts(...)]` attrs behind the typegen-typescript feature.
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
 
@@ -23,7 +23,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
     let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
-    let ts_cfg_derive = quote!(#[derive(#krate::TS)]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")]);
 
     // Apply derives (add Default for empty structs)
     let derives = if is_empty {

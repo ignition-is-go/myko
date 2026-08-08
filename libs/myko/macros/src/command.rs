@@ -7,6 +7,24 @@ pub struct CommandOptions {
     pub custom_serialize: bool,
 }
 
+fn make_args_struct(
+    input: &ItemStruct,
+    name: &syn::Ident,
+    serde_path: &TokenStream,
+    krate: &syn::Path,
+    serde_rename_attr: &TokenStream,
+) -> ItemStruct {
+    let mut args = input.clone();
+    args.ident = name.clone();
+    args.attrs = vec![
+        syn::parse_quote!(#[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]),
+        syn::parse_quote!(#[derive(#krate::TS)]),
+        syn::parse_quote!(#[ts(crate = "myko::ts_rs")]),
+        syn::parse_quote!(#serde_rename_attr),
+    ];
+    args
+}
+
 /// Generates command trait implementations and registers the command handler.
 pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) -> TokenStream {
     let CommandOptions {
@@ -26,25 +44,20 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     // capturing from `input_struct.fields` covers both.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
 
-    // Gate user-written `#[ts(...)]` attrs behind the ts-export feature.
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
 
-    let ts_cfg_derive = quote!(#[derive(#krate::TS)]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")]);
 
-    // Create args struct (identical to main struct for backward compatibility)
-    // TODO(ts): Remove Args pattern once all call sites are updated to use CommandRequest
-    let mut args_struct = input_struct.clone();
-    args_struct.ident = args_struct_name.clone();
-    args_struct.attrs = vec![
-        syn::parse_quote!(#[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]),
-        syn::parse_quote!(#ts_cfg_derive),
-    ];
-    // Add serde rename attr
+    // Args remains field-identical for wire compatibility.
     let serde_rename_attr_clone = ctx.serde_attr(&quote!(rename_all = "camelCase"));
-    args_struct
-        .attrs
-        .push(syn::parse_quote!(#serde_rename_attr_clone));
+    let args_struct = make_args_struct(
+        &input_struct,
+        &args_struct_name,
+        serde_path,
+        krate,
+        &serde_rename_attr_clone,
+    );
 
     // Default to () if no result type specified
     let result_type_tokens = result_type

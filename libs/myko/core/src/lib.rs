@@ -76,6 +76,8 @@
 //!
 //! See `libs/myko/rs/OPTIMIZATION.md` for detailed performance guidelines.
 
+extern crate self as myko;
+
 // Main module structure
 pub mod cache;
 pub mod client;
@@ -89,6 +91,7 @@ pub mod operation_index;
 pub mod search;
 pub mod server;
 pub mod store;
+pub mod typegen_module;
 pub mod utils;
 pub mod wire;
 
@@ -113,14 +116,14 @@ pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko::submit! macro
 // `myko::TS` resolves to the real `ts_rs::TS` derive+trait when the
-// consuming crate has `ts-export` on, and to a noop derive that emits
+// consuming crate has `typegen-typescript` on, and to a noop derive that emits
 // nothing (but still claims the `#[ts(...)]` helper attrs so they don't
 // become orphan attributes) when off. Routing everything through
 // `myko::TS` lets entity crates opt out of the expensive derive without
 // touching their source — hand-written `#[derive(myko::TS)]` becomes
-// a no-op, and macro-emitted `#[cfg_attr(feature = "ts-export", derive(myko::TS))]`
+// a no-op, and macro-emitted `#[cfg_attr(feature = "typegen-typescript", derive(myko::TS))]`
 // doesn't run the derive at all.
-#[cfg(not(feature = "ts-export"))]
+#[cfg(not(feature = "typegen-typescript"))]
 pub use myko_macros::TsNoop as TS;
 // Re-export all attribute/derive macros so downstream crates can consume them
 // as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
@@ -130,23 +133,23 @@ pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
 pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas
 pub use ts_rs;
-#[cfg(feature = "ts-export")]
+#[cfg(feature = "typegen-typescript")]
 pub use ts_rs::TS;
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
 
 /// Register a type for ts-rs export.
 ///
-/// When the consuming crate has `ts-export` off, this expands to nothing —
+/// When the consuming crate has `typegen-typescript` off, this expands to nothing —
 /// the registered fn would require `$ty: ts_rs::TS` but we don't emit
 /// that impl in that configuration. Types that should be exported during
-/// typegen must pick up `ts-export` via their crate's feature forwarding.
-// Gated on *myko's own* `ts-export` feature (this macro is defined while
+/// typegen must pick up `typegen-typescript` via their crate's feature forwarding.
+// Gated on *myko's own* `typegen-typescript` feature (this macro is defined while
 // compiling myko core), not the consuming crate's. When typegen isn't
 // compiled in, the macro is a no-op — so full-Rust consumers never need to
-// declare a `ts-export` feature, and `<$ty as ts_rs::TS>` (which only exists
+// declare a `typegen-typescript` feature, and `<$ty as ts_rs::TS>` (which only exists
 // when `myko::TS` is the real derive) is never referenced.
-#[cfg(feature = "ts-export")]
+#[cfg(feature = "typegen-typescript")]
 #[macro_export]
 macro_rules! register_ts_export {
     ($ty:ty) => {
@@ -154,7 +157,7 @@ macro_rules! register_ts_export {
             $crate::codegen_types::TsExportRegistration {
                 type_name: stringify!($ty),
                 export_fn: || {
-                    <$ty as $crate::ts_rs::TS>::export(&$crate::ts_rs::Config::default())
+                    <$ty as $crate::ts_rs::TS>::export(&$crate::ts_rs::Config::from_env())
                 },
             }
         }
@@ -166,10 +169,44 @@ macro_rules! register_ts_export {
     };
 }
 
-#[cfg(not(feature = "ts-export"))]
+#[cfg(not(feature = "typegen-typescript"))]
 #[macro_export]
 macro_rules! register_ts_export {
     ($($ty:ty),+ $(,)?) => {};
+}
+
+/// Give a Rust type an opaque/custom TypeScript representation.
+///
+/// This is emitted by Myko-owned derives such as
+/// `#[myko_subtype(ts("unknown"))]`; downstream crates should not
+/// implement the underlying TypeScript trait directly.
+#[cfg(feature = "typegen-typescript")]
+#[macro_export]
+macro_rules! impl_ts_as {
+    ($ty:ty, $typescript:literal) => {
+        impl $crate::TS for $ty {
+            type WithoutGenerics = Self;
+            type OptionInnerType = Self;
+
+            fn name(_: &$crate::ts_rs::Config) -> String {
+                $typescript.to_owned()
+            }
+
+            fn inline(_: &$crate::ts_rs::Config) -> String {
+                $typescript.to_owned()
+            }
+
+            fn inline_flattened(_: &$crate::ts_rs::Config) -> String {
+                $typescript.to_owned()
+            }
+        }
+    };
+}
+
+#[cfg(not(feature = "typegen-typescript"))]
+#[macro_export]
+macro_rules! impl_ts_as {
+    ($ty:ty, $typescript:literal) => {};
 }
 
 /// Define a Rust constant and register it for TypeScript export.
@@ -237,6 +274,42 @@ macro_rules! ts_const {
     };
 }
 
+/// Define a Rust constant and register it for generated generated binding export.
+/// This is the language-neutral spelling of [`ts_const!`].
+#[macro_export]
+macro_rules! shared_const {
+    ($($tokens:tt)*) => {
+        $crate::ts_const!($($tokens)*);
+    };
+}
+
+/// Register a Rust type for generated generated binding export.
+/// This is the language-neutral spelling of [`register_ts_export!`].
+#[macro_export]
+macro_rules! register_typegen_type {
+    ($($ty:ty),+ $(,)?) => {
+        $crate::register_ts_export!($($ty),+);
+    };
+}
+
+/// Register a language-neutral generated typegen module.
+///
+/// `$build` is a function returning [`typegen_module::TypegenModule`]. TypeScript (or
+/// any other target-language source) belongs in Myko's renderer, not in that
+/// callback.
+#[macro_export]
+macro_rules! register_typegen_module {
+    ($id:ident, $build:path) => {
+        $crate::inventory::submit! {
+            $crate::codegen_types::TypegenModuleRegistration {
+                id: stringify!($id),
+                crate_name: module_path!(),
+                build: $build,
+            }
+        }
+    };
+}
+
 /// Helper macro for submitting message event registrations
 #[macro_export]
 macro_rules! submit_message_event {
@@ -264,6 +337,7 @@ pub(crate) mod test_util {
     //! process and doesn't need to share this lock).
     pub fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

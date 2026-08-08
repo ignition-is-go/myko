@@ -203,18 +203,13 @@ mod subtypes {
     }
 }
 
-// manual(serde, ts) fixture — mirrors rship's BindingValue: hand-written
-// Serialize/Deserialize (a custom plain-string wire format deriving would
-// change) and a hand-written TS impl (maps to `unknown`, since ts-rs can't
-// express this structurally). manual(serde, ts) lets it join the subtype
-// system — Debug/Clone/PartialEq, the extra `Default` derive, and the
-// Filterable auto-impl (Unfilterable, since it has no total order) — without
-// myko_subtype forking its serde/TS story.
+// Custom-wire fixture — mirrors rship's BindingValue. Myko owns the opaque
+// generated representation, so the subtype supplies no backend trait boilerplate.
 pub use manual_wire::BenchManualWireValue;
 mod manual_wire {
     use crate::prelude::*;
 
-    #[myko_subtype(derive(Default, Eq), manual(serde, ts))]
+    #[myko_subtype(derive(Default, Eq), manual(serde), export(as = "unknown"))]
     pub struct BenchManualWireValue {
         pub raw: String,
     }
@@ -236,32 +231,6 @@ mod manual_wire {
             Ok(Self {
                 raw: String::deserialize(deserializer)?,
             })
-        }
-    }
-
-    #[cfg(feature = "ts-export")]
-    impl ts_rs::TS for BenchManualWireValue {
-        type WithoutGenerics = Self;
-        type OptionInnerType = Self;
-
-        fn decl(_: &ts_rs::Config) -> String {
-            "unknown".to_string()
-        }
-
-        fn decl_concrete(_: &ts_rs::Config) -> String {
-            "unknown".to_string()
-        }
-
-        fn name(_: &ts_rs::Config) -> String {
-            "unknown".to_string()
-        }
-
-        fn inline(_: &ts_rs::Config) -> String {
-            "unknown".to_string()
-        }
-
-        fn inline_flattened(_: &ts_rs::Config) -> String {
-            "unknown".to_string()
         }
     }
 

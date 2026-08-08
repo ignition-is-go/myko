@@ -200,7 +200,6 @@ dependencies = [
  "send_wrapper",
  "serde",
  "tracing",
- "ts-rs",
  "tungstenite",
  "url",
  "wasm-bindgen",
@@ -2033,7 +2032,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "ts-rs",
  "tungstenite",
  "uuid",
 ]
@@ -4129,10 +4127,12 @@ version = "12.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
 dependencies = [
+ "chrono",
  "ordered-float",
  "serde_json",
  "thiserror 2.0.19",
  "ts-rs-macros",
+ "uuid",
 ]
 
 [[package]]

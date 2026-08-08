@@ -1,8 +1,9 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{
     Token,
+    ext::IdentExt,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
@@ -21,8 +22,7 @@ mod view;
 
 /// Returns whether we are compiling inside the myko crate itself.
 pub(crate) fn is_myko_crate() -> bool {
-    std::env::var("CARGO_PKG_NAME")
-        .is_ok_and(|name| name == "myko")
+    std::env::var("CARGO_PKG_NAME").is_ok_and(|name| name == "myko")
 }
 
 /// Returns the path to use for `myko` depending on the current crate.
@@ -44,6 +44,8 @@ pub(crate) struct DeriveCtx {
     pub serde_path: proc_macro2::TokenStream,
     /// String value for #[serde(crate = "...")] — None when inside myko
     pub serde_crate_attr: Option<String>,
+    /// String value for ts-rs's `crate` override.
+    pub ts_crate: String,
 }
 
 impl DeriveCtx {
@@ -54,6 +56,7 @@ impl DeriveCtx {
                 krate,
                 serde_path: quote!(serde),
                 serde_crate_attr: None,
+                ts_crate: "crate::ts_rs".to_string(),
             }
         } else {
             let serde_crate_str = "myko::serde".to_string();
@@ -61,6 +64,7 @@ impl DeriveCtx {
                 krate,
                 serde_path: quote!(myko::serde),
                 serde_crate_attr: Some(serde_crate_str),
+                ts_crate: "myko::ts_rs".to_string(),
             }
         }
     }
@@ -145,7 +149,7 @@ fn take_marker_attr(input_struct: &mut syn::ItemStruct, attr_name: &str) -> bool
 /// entity source doesn't error out when `ts_rs::TS` is absent.
 ///
 /// `myko::TS` routes to this derive when the consuming crate has
-/// `ts-export` off. When on, `myko::TS` resolves to `ts_rs::TS` instead
+/// `typegen-typescript` off. When on, `myko::TS` resolves to `ts_rs::TS` instead
 /// and full TS impls are generated.
 #[proc_macro_derive(TsNoop, attributes(ts))]
 pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
@@ -156,10 +160,82 @@ pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
 ///
 /// `#[myko_item]`/`#[myko_subtype]` now always emit `#[derive(myko::TS)]`
 /// (which resolves to the no-op `TsNoop` derive unless myko's own
-/// `ts-export` feature is on). Because that derive always claims the `ts`
+/// `typegen-typescript` feature is on). Because that derive always claims the `ts`
 /// helper-attribute namespace, user-written `#[ts(...)]` attrs are valid
 /// as-is and no longer need wrapping in a consumer-side `cfg_attr`.
-pub(crate) const fn gate_ts_attrs(_attrs: &mut [syn::Attribute]) {}
+pub(crate) fn gate_ts_attrs(attrs: &mut [syn::Attribute]) {
+    for attr in attrs.iter_mut() {
+        if !attr.path().is_ident("myko") {
+            continue;
+        }
+        let Ok(parsed) = attr.parse_args::<ExportOverride>() else {
+            continue;
+        };
+        let mut args = Vec::new();
+        if let Some(value) = parsed.type_override {
+            args.push(quote!(type = #value));
+        }
+        if let Some(rename) = parsed.rename {
+            args.push(quote!(rename = #rename));
+        }
+        if parsed.skip {
+            args.push(quote!(skip));
+        }
+        if parsed.nullable {
+            args.push(quote!(optional = nullable));
+        } else if parsed.optional {
+            args.push(quote!(optional));
+        }
+        *attr = syn::parse_quote!(#[ts(#(#args),*)]);
+    }
+}
+
+#[derive(Default)]
+struct ExportOverride {
+    type_override: Option<syn::LitStr>,
+    rename: Option<syn::LitStr>,
+    optional: bool,
+    nullable: bool,
+    skip: bool,
+}
+
+impl Parse for ExportOverride {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let export = syn::Ident::parse_any(input)?;
+        if export != "export" {
+            return Err(syn::Error::new_spanned(export, "expected `export(...)`"));
+        }
+        let content;
+        syn::parenthesized!(content in input);
+        let mut result = Self::default();
+        while !content.is_empty() {
+            let key = syn::Ident::parse_any(&content)?;
+            if key == "type" {
+                content.parse::<Token![=]>()?;
+                result.type_override = Some(content.parse()?);
+            } else if key == "rename" {
+                content.parse::<Token![=]>()?;
+                result.rename = Some(content.parse()?);
+            } else if key == "optional" {
+                result.optional = true;
+            } else if key == "nullable" {
+                result.nullable = true;
+            } else if key == "skip" {
+                result.skip = true;
+            } else {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "expected `type`, `rename`, `optional`, `nullable`, or `skip`",
+                ));
+            }
+            if content.is_empty() {
+                break;
+            }
+            content.parse::<Token![,]>()?;
+        }
+        Ok(result)
+    }
+}
 
 /// Extract a struct's doc comment (`/// ...` lines, which desugar to
 /// `#[doc = "..."]` attrs) as one joined string, or `None` if there isn't
@@ -236,7 +312,31 @@ pub(crate) fn operation_metadata_tokens(
 
 pub(crate) fn gate_field_ts_attrs(fields: &mut syn::Fields) {
     for field in fields {
-        gate_ts_attrs(&mut field.attrs);
+        prepare_typegen_field(field);
+    }
+}
+
+/// Apply language-backend metadata owned by Myko. Optional Rust fields are
+/// optional and nullable in generated bindings by default, so downstream
+/// entity definitions need no duplicate representation annotation.
+pub(crate) fn prepare_typegen_field(field: &mut syn::Field) {
+    gate_ts_attrs(&mut field.attrs);
+    if !is_option_type(&field.ty) {
+        return;
+    }
+
+    let has_explicit_policy = field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("ts"))
+        .any(|attr| {
+            let tokens = attr.meta.to_token_stream().to_string();
+            tokens.contains("optional") || tokens.contains("skip")
+        });
+    if !has_explicit_policy {
+        field
+            .attrs
+            .push(syn::parse_quote!(#[ts(optional = nullable)]));
     }
 }
 
@@ -687,7 +787,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 
     gate_ts_attrs(&mut input.attrs);
     for field in &mut input.fields {
-        gate_ts_attrs(&mut field.attrs);
+        prepare_typegen_field(field);
     }
     let equal_fields = input
         .fields
@@ -706,6 +806,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
         #[derive(Debug, Clone, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #serde_rename_attr
         #input
 
@@ -728,25 +829,18 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 /// boilerplate each.
 ///
 /// Default derives: `Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize`.
-/// Always added: `#[cfg_attr(feature = "ts-export", derive(myko::TS))]`,
-/// `#[cfg_attr(feature = "ts-export", ts(export))]`, and
+/// Always added: `#[cfg_attr(feature = "typegen-typescript", derive(myko::TS))]`,
+/// `#[cfg_attr(feature = "typegen-typescript", ts(export))]`, and
 /// `#[serde(rename_all = "camelCase")]`. Emits a `register_ts_export!`
 /// call after the item so typegen picks it up when the feature is on.
 ///
 /// Extra derives (e.g. `Default`, `Eq`, `Hash`, `Copy`) can be requested
 /// via `derive(...)` — they're appended to the default list.
 ///
-/// `manual(serde)` and/or `manual(ts)` opt a type OUT of the corresponding
-/// default derive (and the attrs/codegen that only make sense alongside
-/// it) for a type with its own hand-written impl — e.g. a custom
-/// non-derive wire format, or a `TS` mapping ts-rs can't express
-/// structurally (`unknown`, a hand-rolled union, etc.):
-/// - `manual(serde)` skips `Serialize`/`Deserialize` AND the default
-///   `#[serde(rename_all = "camelCase")]` (which would otherwise be an
-///   unrecognized attribute with no serde derive present to claim it).
-/// - `manual(ts)` skips `TS`, `#[ts(export)]`, and the
-///   `register_ts_export!` emission (same reasoning; the consumer's own
-///   impl is responsible for registering itself if it needs to).
+/// `manual(serde)` opts a type out of the default `Serialize`/`Deserialize`
+/// derives and camel-case attribute when it owns a custom wire format.
+/// Backend representation overrides remain Myko-owned through
+/// `export(as = "...")`; downstream crates never implement a generator trait.
 ///
 /// `Debug`/`Clone`/`PartialEq` and any `derive(...)` extras are
 /// unaffected by `manual(...)`.
@@ -781,10 +875,8 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 ///     pub user_id: Arc<str>,
 /// }
 ///
-/// // Hand-written Serialize/Deserialize (custom wire format) and a
-/// // hand-written TS impl (maps to `unknown`) — myko_subtype only adds
-/// // Debug/Clone/PartialEq, the extra derive, and the Filterable auto-impl.
-/// #[myko_subtype(derive(Default), manual(serde, ts))]
+/// // Hand-written Serialize/Deserialize with a Myko-owned opaque binding.
+/// #[myko_subtype(derive(Default), manual(serde), export(as = "unknown"))]
 /// pub struct BindingValue {
 ///     // ...
 /// }
@@ -805,12 +897,8 @@ struct SubtypeArgs {
     /// derive-macro helper attr — emitting it with no `#[derive(Serialize/
     /// Deserialize)]` present is a hard compile error, not a no-op).
     manual_serde: bool,
-    /// `manual(ts)` — the item has its own hand-written `TS` impl (e.g.
-    /// mapping to `unknown` for a type ts-rs can't express structurally);
-    /// skips the `TS` derive, the `#[ts(export)]` attr (same helper-attr
-    /// reasoning as above), and the `register_ts_export!` emission — the
-    /// consumer's own impl is responsible for registering itself if needed.
-    manual_ts: bool,
+    /// `export(as = "...")` — a Myko-owned opaque/custom wire mapping.
+    export_as: Option<syn::LitStr>,
     /// `manual(filterable)` — the item has its own hand-written
     /// `query::Filterable` impl (e.g. a custom filter type whose `matches`
     /// uses domain equivalence instead of derived `PartialEq`); skips the
@@ -822,10 +910,10 @@ impl syn::parse::Parse for SubtypeArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut extra_derives = Vec::new();
         let mut manual_serde = false;
-        let mut manual_ts = false;
+        let mut export_as = None;
         let mut manual_filterable = false;
 
-        // `derive(Foo, Bar)`, `manual(serde, ts)` — comma-separated, any order,
+        // `derive(Foo, Bar)`, `manual(serde, filterable)` — comma-separated.
         // either or both omitted.
         let metas: syn::punctuated::Punctuated<syn::Meta, syn::Token![,]> =
             syn::punctuated::Punctuated::parse_terminated(input)?;
@@ -834,34 +922,41 @@ impl syn::parse::Parse for SubtypeArgs {
             let syn::Meta::List(list) = &meta else {
                 return Err(syn::Error::new_spanned(
                     &meta,
-                    "expected `derive(...)` or `manual(...)`",
+                    "expected `derive(...)`, `manual(...)`, or `export(as = \"...\")`",
                 ));
             };
             if list.path.is_ident("derive") {
                 let punct: syn::punctuated::Punctuated<syn::Path, syn::Token![,]> =
                     list.parse_args_with(syn::punctuated::Punctuated::parse_terminated)?;
                 extra_derives.extend(punct);
+            } else if list.path.is_ident("export") {
+                export_as = Some(list.parse_args_with(|input: ParseStream| {
+                    let keyword = syn::Ident::parse_any(input)?;
+                    if keyword != "as" {
+                        return Err(syn::Error::new_spanned(keyword, "expected `as = \"...\"`"));
+                    }
+                    input.parse::<Token![=]>()?;
+                    input.parse::<syn::LitStr>()
+                })?);
             } else if list.path.is_ident("manual") {
                 let punct: syn::punctuated::Punctuated<syn::Ident, syn::Token![,]> =
                     list.parse_args_with(syn::punctuated::Punctuated::parse_terminated)?;
                 for ident in punct {
                     if ident == "serde" {
                         manual_serde = true;
-                    } else if ident == "ts" {
-                        manual_ts = true;
                     } else if ident == "filterable" {
                         manual_filterable = true;
                     } else {
                         return Err(syn::Error::new_spanned(
                             &ident,
-                            "expected `serde`, `ts`, or `filterable` inside `manual(...)`",
+                            "expected `serde` or `filterable` inside `manual(...)`",
                         ));
                     }
                 }
             } else {
                 return Err(syn::Error::new_spanned(
                     &list.path,
-                    "expected `derive(...)` or `manual(...)`",
+                    "expected `derive(...)`, `manual(...)`, or `export(as = \"...\")`",
                 ));
             }
         }
@@ -869,9 +964,21 @@ impl syn::parse::Parse for SubtypeArgs {
         Ok(Self {
             extra_derives,
             manual_serde,
-            manual_ts,
+            export_as,
             manual_filterable,
         })
+    }
+}
+
+fn subtype_registration(
+    krate: &syn::Path,
+    name: &syn::Ident,
+    has_export_override: bool,
+) -> proc_macro2::TokenStream {
+    if has_export_override {
+        quote!()
+    } else {
+        quote!(#krate::register_typegen_type!(#name);)
     }
 }
 
@@ -879,7 +986,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     let SubtypeArgs {
         extra_derives,
         manual_serde,
-        manual_ts,
+        export_as,
         manual_filterable,
     } = args;
     let ctx = DeriveCtx::new();
@@ -901,7 +1008,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
         syn::Item::Struct(s) => {
             gate_ts_attrs(&mut s.attrs);
             for field in &mut s.fields {
-                gate_ts_attrs(&mut field.attrs);
+                prepare_typegen_field(field);
             }
             (s.ident.clone(), attrs_have_serde_rename_all(&s.attrs), true)
         }
@@ -910,7 +1017,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
             for variant in &mut e.variants {
                 gate_ts_attrs(&mut variant.attrs);
                 for field in &mut variant.fields {
-                    gate_ts_attrs(&mut field.attrs);
+                    prepare_typegen_field(field);
                 }
             }
             (
@@ -944,29 +1051,30 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
         quote!()
     };
 
-    // `manual(serde)`/`manual(ts)` (see SubtypeArgs) — skip the corresponding
-    // derive(s) so a hand-written impl (e.g. a custom wire format, or a TS
-    // mapping ts-rs can't express structurally) isn't shadowed/duplicated.
+    // `manual(serde)` skips only the wire derives; generated binding metadata
+    // remains owned by Myko, including opaque backend representations.
     let serde_derive_tokens = if manual_serde {
         quote!()
     } else {
         quote!(, #serde_path::Serialize, #serde_path::Deserialize)
     };
-    let ts_derive_tokens = if manual_ts {
+    let has_export_override = export_as.is_some();
+    let ts_derive_tokens = if has_export_override {
         quote!()
     } else {
         quote!(, #krate::TS)
     };
-    let ts_export_attr = if manual_ts {
+    let ts_export_attr = if has_export_override {
         quote!()
     } else {
-        quote!(#[ts(export)])
+        let ts_crate = &ctx.ts_crate;
+        quote!(#[ts(crate = #ts_crate, export)])
     };
-    let register_export_call = if manual_ts {
-        quote!()
-    } else {
-        quote!(#krate::register_ts_export!(#name);)
-    };
+    let register_export_call = subtype_registration(krate, &name, has_export_override);
+    let export_override_impl = export_as.map_or_else(
+        || quote!(),
+        |wire_type| quote!(#krate::impl_ts_as!(#name, #wire_type);),
+    );
 
     // Every #[myko_subtype] auto-implements Filterable, so a type declared
     // this way is always usable as an entity field without a hand-written
@@ -996,17 +1104,17 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
         }
     };
 
-    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `ts-export`
+    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `typegen-typescript`
     // feature is on, so emit it (and the `ts(export)` attr it claims)
-    // unconditionally — no consumer-side feature gate, unless `manual(ts)`
-    // opted out. `register_ts_export!` is itself a no-op unless myko has
-    // ts-export on.
+    // unconditionally — no consumer-side feature gate. Concrete declarations
+    // register with the active backend; opaque inline mappings do not create files.
     quote! {
         #[derive(Debug, Clone, PartialEq #serde_derive_tokens #ts_derive_tokens #extra_derive_tokens)]
         #ts_export_attr
         #serde_rename_attr
         #item
 
+        #export_override_impl
         #register_export_call
 
         #filterable_impl
@@ -1021,4 +1129,74 @@ fn attrs_have_serde_rename_all(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path().is_ident("serde") && a.to_token_stream().to_string().contains("rename_all")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::ToTokens;
+
+    use super::*;
+
+    #[test]
+    fn translates_myko_export_field_overrides() {
+        let mut field: syn::Field = syn::parse_quote! {
+            #[myko(export(type = "any", optional, nullable, rename = "wireValue"))]
+            value: Option<serde_json::Value>
+        };
+
+        prepare_typegen_field(&mut field);
+        let rendered = field
+            .attrs
+            .iter()
+            .map(|attr| attr.to_token_stream().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(rendered.contains("type = \"any\""));
+        assert!(rendered.contains("optional = nullable"));
+        assert!(rendered.contains("rename = \"wireValue\""));
+    }
+
+    #[test]
+    fn optional_fields_default_to_optional_and_nullable_exports() {
+        let mut optional: syn::Field = syn::parse_quote!(value: Option<String>);
+        prepare_typegen_field(&mut optional);
+        let rendered = optional
+            .attrs
+            .iter()
+            .map(|attr| attr.to_token_stream().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(rendered.contains("optional = nullable"));
+
+        let mut required: syn::Field = syn::parse_quote!(value: String);
+        prepare_typegen_field(&mut required);
+        assert!(required.attrs.is_empty());
+    }
+
+    #[test]
+    fn subtype_routes_derive_through_myko_and_supports_opaque_export() {
+        let normal = myko_subtype_expand(
+            syn::parse_quote!(),
+            syn::parse_quote!(
+                pub struct Normal {
+                    value: uuid::Uuid,
+                }
+            ),
+        )
+        .to_string();
+        assert!(normal.contains("myko :: TS"));
+        assert!(normal.contains("crate = \"myko::ts_rs\""));
+
+        let opaque = myko_subtype_expand(
+            syn::parse_quote!(export(as = "unknown")),
+            syn::parse_quote!(
+                pub struct Opaque {
+                    value: Vec<u8>,
+                }
+            ),
+        )
+        .to_string();
+        assert!(opaque.contains("myko :: impl_ts_as ! (Opaque , \"unknown\")"));
+        assert!(!opaque.contains(", myko :: TS"));
+    }
 }

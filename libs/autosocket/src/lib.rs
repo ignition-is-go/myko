@@ -14,8 +14,7 @@ pub use wasm::WasmSocket;
 // Shared types
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type", content = "data")]
 pub enum SocketConnectionStatus {
     Idle,

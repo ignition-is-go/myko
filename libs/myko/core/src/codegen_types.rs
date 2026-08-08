@@ -31,3 +31,21 @@ pub struct TsExportRegistration {
 }
 
 inventory::collect!(TsExportRegistration);
+
+// Language-neutral public names for generated-typegen producers. The TypeScript
+// names remain available for compatibility with the current renderer.
+pub type TypegenConstValue = TsConstValue;
+pub type TypegenConstRegistration = TsConstRegistration;
+pub type TypegenTypeRegistration = TsExportRegistration;
+
+/// Registration for a language-neutral generated typegen module.
+pub struct TypegenModuleRegistration {
+    /// Stable registration identifier, used in diagnostics.
+    pub id: &'static str,
+    /// Registering crate/module path, used to select the current typegen crate.
+    pub crate_name: &'static str,
+    /// Build the module IR from the registering crate's inventories.
+    pub build: fn() -> crate::typegen_module::TypegenModule,
+}
+
+inventory::collect!(TypegenModuleRegistration);

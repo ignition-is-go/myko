@@ -132,10 +132,12 @@ fn generate_filter_struct(
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
-    let fields = filter_fields.iter().map(|(field_ident, field_ty)| quote! {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional = nullable)]
-        pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
+    let fields = filter_fields.iter().map(|(field_ident, field_ty)| {
+        quote! {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            #[ts(optional = nullable)]
+            pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
+        }
     });
     let matches = filter_fields.iter().map(|(field_ident, field_ty)| {
         if option_inner_type(field_ty).is_some() {
@@ -150,8 +152,10 @@ fn generate_filter_struct(
             }
         }
     }).reduce(|acc, term| quote! { (#acc) && (#term) }).unwrap_or_else(|| quote! { true });
-    let canonical_fields = filter_fields.iter().map(|(field_ident, _)| quote! {
-        #field_ident: self.#field_ident.map(#krate::query::CanonicalFilter::canonicalize)
+    let canonical_fields = filter_fields.iter().map(|(field_ident, _)| {
+        quote! {
+            #field_ident: self.#field_ident.map(#krate::query::CanonicalFilter::canonicalize)
+        }
     });
     let equal_fields = filter_fields
         .iter()
@@ -162,6 +166,7 @@ fn generate_filter_struct(
     quote! {
         #[derive(Clone, Default, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
         #[derive(#krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #serde_rename_attr
         pub struct #filter_ident { #(#fields),* }
 
@@ -192,40 +197,61 @@ fn generate_route_arms(
     };
     let mut masks: Vec<u32> = (1..mask_limit).collect();
     masks.sort_by(|a, b| b.count_ones().cmp(&a.count_ones()).then(a.cmp(b)));
-    masks.into_iter().map(|mask| {
-        let selected: Vec<_> = (0..count)
-            .filter(|index| mask & 1u32.checked_shl(u32::try_from(*index).unwrap_or(u32::MAX)).unwrap_or(0) != 0)
-            .filter_map(|index| belongs_to.get(index).copied())
-            .collect();
-        let field_idents: Vec<_> = selected.iter().map(|item| format_ident!("{}", item.field_name)).collect();
-        let field_names: Vec<_> = selected.iter().map(|item| item.field_name.clone()).collect();
-        let filters: Vec<_> = (0..selected.len()).map(|index| format_ident!("filter{index}")).collect();
-        let refs: Vec<_> = field_idents.iter().map(|field| quote! { self.#field.as_ref() }).collect();
-        let condition = if selected.len() == 1 {
-            filters.first().zip(refs.first()).map_or_else(
-                || quote! { if false },
-                |(filter, field)| quote! { if let Some(#filter) = #field },
-            )
-        } else {
-            quote! { if let (#(Some(#filters)),*) = (#(#refs),*) }
-        };
-        let extracted = field_idents.iter().map(|field| quote! { std::sync::Arc::<str>::from(e.#field.clone()) });
-        let values = filters.iter().map(|filter| quote! {
+    masks
+        .into_iter()
+        .map(|mask| {
+            let selected: Vec<_> = (0..count)
+                .filter(|index| {
+                    mask & 1u32
+                        .checked_shl(u32::try_from(*index).unwrap_or(u32::MAX))
+                        .unwrap_or(0)
+                        != 0
+                })
+                .filter_map(|index| belongs_to.get(index).copied())
+                .collect();
+            let field_idents: Vec<_> = selected
+                .iter()
+                .map(|item| format_ident!("{}", item.field_name))
+                .collect();
+            let field_names: Vec<_> = selected
+                .iter()
+                .map(|item| item.field_name.clone())
+                .collect();
+            let filters: Vec<_> = (0..selected.len())
+                .map(|index| format_ident!("filter{index}"))
+                .collect();
+            let refs: Vec<_> = field_idents
+                .iter()
+                .map(|field| quote! { self.#field.as_ref() })
+                .collect();
+            let condition = if selected.len() == 1 {
+                filters.first().zip(refs.first()).map_or_else(
+                    || quote! { if false },
+                    |(filter, field)| quote! { if let Some(#filter) = #field },
+                )
+            } else {
+                quote! { if let (#(Some(#filters)),*) = (#(#refs),*) }
+            };
+            let extracted = field_idents
+                .iter()
+                .map(|field| quote! { std::sync::Arc::<str>::from(e.#field.clone()) });
+            let values = filters.iter().map(|filter| quote! {
             #filter.key_values().into_iter().map(std::sync::Arc::<str>::from).collect::<Vec<_>>()
         });
-        quote! {
-            #condition {
-                let keys = #krate::query::cartesian_product(vec![#(#values),*]);
-                return Some(#krate::query::BelongsToRoute {
-                    field_names: &[#(#field_names),*], keys,
-                    extract_fk: |item: &dyn std::any::Any| {
-                        item.downcast_ref::<#name>()
-                            .map(|e| #krate::query::CompoundKey::from_iter([#(#extracted),*]))
-                    },
-                });
+            quote! {
+                #condition {
+                    let keys = #krate::query::cartesian_product(vec![#(#values),*]);
+                    return Some(#krate::query::BelongsToRoute {
+                        field_names: &[#(#field_names),*], keys,
+                        extract_fk: |item: &dyn std::any::Any| {
+                            item.downcast_ref::<#name>()
+                                .map(|e| #krate::query::CompoundKey::from_iter([#(#extracted),*]))
+                        },
+                    });
+                }
             }
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 fn generate_route_impl(
@@ -426,6 +452,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
     let get_many = input.get_by_ids_ident;
     quote! {
         #[derive(Clone, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #serde_attr
         pub struct #delete_result { pub deleted: bool }
         #krate::register_ts_export!(#delete_result);
@@ -444,6 +471,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         }
 
         #[derive(Clone, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #serde_attr
         pub struct #delete_many_result { pub deleted_count: usize }
         #krate::register_ts_export!(#delete_many_result);
@@ -494,26 +522,31 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
         }
     });
     crate::gate_ts_attrs(&mut input_struct.attrs);
-    let filter_fields = if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
-        for field in named.iter_mut() {
-            relationship::strip_relationship_attrs(field);
-            setter::strip_setter_attrs(field);
-            crate::gate_ts_attrs(&mut field.attrs);
-        }
-        let id_field: Field = syn::parse_quote! { pub id: #id_type_ident };
-        named.push(id_field);
-        named.iter().filter_map(|field| Some((field.ident.clone()?, field.ty.clone()))).collect()
-    } else {
-        Vec::new()
-    };
+    let filter_fields =
+        if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+            for field in named.iter_mut() {
+                relationship::strip_relationship_attrs(field);
+                setter::strip_setter_attrs(field);
+                crate::prepare_typegen_field(field);
+            }
+            let id_field: Field = syn::parse_quote! { pub id: #id_type_ident };
+            named.push(id_field);
+            named
+                .iter()
+                .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
+                .collect()
+        } else {
+            Vec::new()
+        };
     let serde_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
-    let deserialize = args.post_deserialize.as_ref().map_or_else(
-        || quote!(#serde_path::Deserialize,),
-        |_| quote!(),
-    );
+    let deserialize = args
+        .post_deserialize
+        .as_ref()
+        .map_or_else(|| quote!(#serde_path::Deserialize,), |_| quote!());
     let default = (!relationships.ensure_for_fields.is_empty()).then(|| quote!(Default,));
     let derives = quote! {
         #[derive(#default Clone, #serde_path::Serialize, #deserialize Debug, #krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #serde_attr
     };
     let equal_fields = input_struct
@@ -544,6 +577,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
         };
         quote! {
             #[derive(#serde_path::Deserialize, #krate::TS)]
+            #[ts(crate = "myko::ts_rs")]
             #serde_attr
             #helper_struct
             impl<'de> #serde_path::Deserialize<'de> for #name {
@@ -556,7 +590,20 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
             }
         }
     });
-    PreparedItem { input_struct, relationships, setters, name, name_str, id_type_ident, ctx, filter_fields, derives, partial_eq_impl, post_deserialize, ingest_registration }
+    PreparedItem {
+        input_struct,
+        relationships,
+        setters,
+        name,
+        name_str,
+        id_type_ident,
+        ctx,
+        filter_fields,
+        derives,
+        partial_eq_impl,
+        post_deserialize,
+        ingest_registration,
+    }
 }
 
 fn generate_foreign_key_impls(
@@ -566,28 +613,41 @@ fn generate_foreign_key_impls(
     krate: &syn::Path,
 ) -> Vec<TokenStream> {
     let field_types = match &input_struct.fields {
-        syn::Fields::Named(FieldsNamed { named, .. }) => named.iter().filter_map(|field| {
-            Some((field.ident.as_ref()?.to_string(), field.ty.clone()))
-        }).collect::<HashMap<_, _>>(),
+        syn::Fields::Named(FieldsNamed { named, .. }) => named
+            .iter()
+            .filter_map(|field| Some((field.ident.as_ref()?.to_string(), field.ty.clone())))
+            .collect::<HashMap<_, _>>(),
         _ => HashMap::new(),
     };
-    let fields = relationships.belongs_to.iter().map(|item| (&item.field_name, &item.foreign_type))
-        .chain(relationships.ensure_for_fields.iter().map(|item| (&item.field_name, &item.foreign_type)));
+    let fields = relationships
+        .belongs_to
+        .iter()
+        .map(|item| (&item.field_name, &item.foreign_type))
+        .chain(
+            relationships
+                .ensure_for_fields
+                .iter()
+                .map(|item| (&item.field_name, &item.foreign_type)),
+        );
     let mut parents = BTreeSet::new();
-    fields.filter_map(|(field_name, foreign_type)| {
-        let field_ty = field_types.get(field_name)?;
-        if !parents.insert(foreign_type.clone()) { return None; }
-        let field_ident = format_ident!("{field_name}");
-        let foreign_ident = format_ident!("{foreign_type}");
-        Some(quote! {
-            impl #krate::hyphae::HasForeignKey<#foreign_ident> for #name
-            where #field_ty: #krate::hyphae::IdFor<#foreign_ident>,
-            {
-                type ForeignKey = #field_ty;
-                fn fk(&self) -> Self::ForeignKey { self.#field_ident.clone() }
+    fields
+        .filter_map(|(field_name, foreign_type)| {
+            let field_ty = field_types.get(field_name)?;
+            if !parents.insert(foreign_type.clone()) {
+                return None;
             }
+            let field_ident = format_ident!("{field_name}");
+            let foreign_ident = format_ident!("{foreign_type}");
+            Some(quote! {
+                impl #krate::hyphae::HasForeignKey<#foreign_ident> for #name
+                where #field_ty: #krate::hyphae::IdFor<#foreign_ident>,
+                {
+                    type ForeignKey = #field_ty;
+                    fn fk(&self) -> Self::ForeignKey { self.#field_ident.clone() }
+                }
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> TokenStream {
@@ -595,6 +655,7 @@ fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> Toke
     let serde_path = &ctx.serde_path;
     quote! {
         #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #[ts(type = "string")]
         pub struct #id(pub std::sync::Arc<str>);
         impl std::ops::Deref for #id { type Target = str; fn deref(&self) -> &str { self.0.as_ref() } }
@@ -684,11 +745,7 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
     }
 }
 
-fn generate_item_registration(
-    name: &syn::Ident,
-    name_str: &str,
-    krate: &syn::Path,
-) -> TokenStream {
+fn generate_item_registration(name: &syn::Ident, name_str: &str, krate: &syn::Path) -> TokenStream {
     quote! {
         #krate::prelude::ItemRegistration {
             entity_type: #name_str,
@@ -727,8 +784,14 @@ fn generate_server_owned_impls(
     })
 }
 
-fn required_belongs_to(rel_info: &relationship::RelationshipInfo) -> Vec<&relationship::BelongsToInfo> {
-    rel_info.belongs_to.iter().filter(|item| !item.is_optional).collect()
+fn required_belongs_to(
+    rel_info: &relationship::RelationshipInfo,
+) -> Vec<&relationship::BelongsToInfo> {
+    rel_info
+        .belongs_to
+        .iter()
+        .filter(|item| !item.is_optional)
+        .collect()
 }
 
 pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream {

@@ -16,7 +16,6 @@ tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 tracing.workspace = true
 url.workspace = true
 serde.workspace = true
-ts-rs = { workspace = true, features = ["serde-json-impl"] }
 hyphae.workspace = true
 flume.workspace = true
 
