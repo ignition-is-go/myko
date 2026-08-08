@@ -52,9 +52,18 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Per-entity membership predicate.
     ///
     /// Return `true` when an item should be included in the query result.
+    #[cfg(not(target_arch = "wasm32"))]
     fn test_entity(ctx: QueryTestContext<Self>) -> bool
     where
         Self: Send + Sync + 'static;
+
+    #[cfg(target_arch = "wasm32")]
+    fn test_entity(_ctx: QueryTestContext<Self>) -> bool
+    where
+        Self: Send + Sync + 'static,
+    {
+        unreachable!("query handlers execute on the server")
+    }
 
     /// Optional set-wise reactive builder for complex many-to-many joins.
     ///

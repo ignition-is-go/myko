@@ -43,9 +43,19 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// intermediate `CellMap`s. The framework materializes once at the
     /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
     /// still satisfy the bound via the blanket impl on `ReactiveMap`.
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_cell(ctx: ViewBuildArgs<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
     where
         Self: Send + Sync + 'static;
+
+    #[cfg(target_arch = "wasm32")]
+    fn build_cell(_ctx: ViewBuildArgs<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
+    where
+        Self: Send + Sync + 'static,
+    {
+        unreachable!("view handlers execute on the server")
+            as super::cell::TypedViewCellMap<Self::Item>
+    }
 }
 
 pub trait AnyView: WithTransaction + ViewId + std::fmt::Debug + Send + Sync + 'static {

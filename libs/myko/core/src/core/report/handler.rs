@@ -155,5 +155,12 @@ pub trait ReportHandler: Sized {
     /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
     /// `deduped`, etc. already implement `Materialize<U, Definite>`, so
     /// returning them directly is fine.
+    #[cfg(not(target_arch = "wasm32"))]
     fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite>;
+
+    #[cfg(target_arch = "wasm32")]
+    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        unreachable!("report handlers execute on the server")
+            as hyphae::Cell<Arc<Self::Output>, hyphae::CellImmutable>
+    }
 }

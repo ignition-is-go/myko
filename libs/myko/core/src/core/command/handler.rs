@@ -178,7 +178,13 @@ pub trait CommandHandler: crate::command::CommandParams {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
+    #[cfg(not(target_arch = "wasm32"))]
     fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError>;
+
+    #[cfg(target_arch = "wasm32")]
+    fn execute(self, _ctx: CommandContext) -> Result<Self::Result, CommandError> {
+        unreachable!("command handlers execute on the server")
+    }
 }
 
 /// Type-erased command executor for dynamic dispatch.
