@@ -1282,7 +1282,7 @@ impl MykoClient {
         let view_id_for_handler = view_id.clone();
 
         self.inner.query_handlers.insert(
-            tx,
+            tx.clone(),
             Box::new(move |response_value: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     return;
