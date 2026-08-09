@@ -20,7 +20,7 @@ use myko::{common::with_id::WithTypedId, hyphae::IdFor};
 pub fn provide_myko(address: &str) {
     use myko::client::MykoClient;
     let client = MykoClient::new();
-    client.set_protocol(myko::client::MykoProtocol::JSON);
+    client.set_protocol(myko::client::MykoProtocol::CBOR);
     // NOTE(ts): The Leptos bridge consumes typed cells, never the raw-message
     // debug cell. Avoid a deep JSON/CBOR value clone for every incoming frame.
     client.set_last_message_capture(false);
