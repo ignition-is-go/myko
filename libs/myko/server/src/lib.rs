@@ -40,6 +40,8 @@ pub use peer_persister::PeerPersister;
 pub use server_ownership::ServerOwnershipManager;
 use uuid::Uuid;
 
+const CACHE_SWEEP_INTERVAL: Duration = Duration::from_mins(1);
+
 struct SagaChannel {
     tx: flume::Sender<MEvent>,
     entity_type: &'static str,
@@ -752,9 +754,23 @@ impl MykoServer {
         listener: tokio::net::TcpListener,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ready = self.ready.clone();
+        let sweep_ctx = self.ctx();
+        // Bound tombstone retention even while the listener is otherwise idle.
+        let mut cache_sweep = tokio::time::interval(CACHE_SWEEP_INTERVAL);
+        cache_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            let (stream, addr) = listener.accept().await?;
+            let accepted = tokio::select! {
+                accepted = listener.accept() => Some(accepted),
+                _ = cache_sweep.tick() => {
+                    sweep_ctx.sweep_dead_cache_entries();
+                    None
+                }
+            };
+            let Some(accepted) = accepted else {
+                continue;
+            };
+            let (stream, addr) = accepted?;
 
             // Disable Nagle (unless configured off): our writes are small,
             // frequent, latency-sensitive messages (e.g. ~60Hz pulses). With
