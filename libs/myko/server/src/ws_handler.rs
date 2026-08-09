@@ -36,7 +36,11 @@ use myko::{
         WrappedView,
     },
 };
-use tokio::{net::TcpStream, sync::mpsc, time::interval};
+use tokio::{
+    net::TcpStream,
+    sync::{mpsc, watch},
+    time::interval,
+};
 use tokio_tungstenite::{
     accept_async_with_config,
     tungstenite::{Message, protocol::WebSocketConfig},
@@ -157,14 +161,16 @@ struct DropLogger {
     client_id: Arc<str>,
     dropped: std::sync::atomic::AtomicU64,
     last_log_ms: std::sync::atomic::AtomicU64,
+    overload_tx: watch::Sender<bool>,
 }
 
 impl DropLogger {
-    const fn new(client_id: Arc<str>) -> Self {
+    const fn new(client_id: Arc<str>, overload_tx: watch::Sender<bool>) -> Self {
         Self {
             client_id,
             dropped: std::sync::atomic::AtomicU64::new(0),
             last_log_ms: std::sync::atomic::AtomicU64::new(0),
+            overload_tx,
         }
     }
 
@@ -172,6 +178,14 @@ impl DropLogger {
         use std::sync::atomic::Ordering;
 
         self.dropped.fetch_add(1, Ordering::Relaxed);
+
+        // A dropped sequenced diff cannot be repaired while keeping this
+        // session alive: every later sequence would be based on state the
+        // client never received. Wake the read loop so it tears down the
+        // connection; reconnecting clients then resubscribe and receive a
+        // fresh sequence-0 snapshot. `send_replace` is synchronous, so this
+        // remains safe to call from reactive callbacks.
+        self.overload_tx.send_replace(true);
 
         // Log at most once per second per connection.
         let now_ms = std::time::SystemTime::now()
@@ -256,6 +270,7 @@ struct ReadLoopState {
     outbound_commands_by_tx: SharedOutboundCommands,
     command_tx: mpsc::UnboundedSender<CommandJob>,
     subscribe_tx: mpsc::UnboundedSender<SubscriptionReady>,
+    overload_rx: watch::Receiver<bool>,
 }
 
 struct WriterState {
@@ -268,6 +283,7 @@ struct WriterState {
     addr: SocketAddr,
     outgoing_format: Arc<AtomicU8>,
     outbound_commands: SharedOutboundCommands,
+    outbound_failure_tx: watch::Sender<bool>,
 }
 
 enum OutboundMessage {
@@ -417,8 +433,18 @@ impl WsHandler {
     ) {
         let mut outbound_ttl_interval = interval(Duration::from_secs(10));
         outbound_ttl_interval.tick().await; // NOTE(ts): consume the immediate first tick
+        let mut overload_rx = state.overload_rx.clone();
         loop {
             tokio::select! {
+                changed = overload_rx.changed() => {
+                    if changed.is_err() || *overload_rx.borrow() {
+                        tracing::warn!(
+                            "Disconnecting WebSocket client {} after outbound delivery failure to force a clean resnapshot",
+                            state.client_id
+                        );
+                        break;
+                    }
+                }
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
                     let tx_id = match &ready {
@@ -622,7 +648,9 @@ impl WsHandler {
         let (kind, tx, sequence) = Self::outbound_metadata(&message, client_id);
         Self::track_outbound_command(&message, commands);
         let Some(message) = Self::serialize_outbound(&message, outgoing_format) else {
-            return true;
+            // A serialization failure is just as lossy as a full queue. Stop
+            // this session rather than allowing later sequenced diffs through.
+            return false;
         };
         let payload_bytes = match &message {
             Message::Binary(bytes) => bytes.len(),
@@ -657,6 +685,7 @@ impl WsHandler {
             addr: write_addr,
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
+            outbound_failure_tx,
         } = state;
         let mut normal_open = true;
         let mut priority_open = true;
@@ -708,6 +737,9 @@ impl WsHandler {
             )
             .await
             {
+                // Wake the read half so connection cleanup drops both halves.
+                // Reconnecting clients will resubscribe from a fresh snapshot.
+                outbound_failure_tx.send_replace(true);
                 break;
             }
         }
@@ -770,6 +802,7 @@ impl WsHandler {
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
+        let (overload_tx, overload_rx) = watch::channel(false);
 
         // Outgoing format for this session: defaults to JSON, sticky-promotes
         // to CBOR on the first received binary frame. Never demotes.
@@ -777,7 +810,7 @@ impl WsHandler {
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
-        let drop_logger = Arc::new(DropLogger::new(client_id.clone()));
+        let drop_logger = Arc::new(DropLogger::new(client_id.clone(), overload_tx));
         let writer = ChannelWriter {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
@@ -832,6 +865,7 @@ impl WsHandler {
             addr: write_addr,
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
+            outbound_failure_tx: drop_logger.overload_tx.clone(),
         }));
 
         let command_task = tokio::spawn(Self::run_command_worker(
@@ -860,6 +894,7 @@ impl WsHandler {
                 outbound_commands_by_tx: outbound_commands_by_tx.clone(),
                 command_tx: command_tx.clone(),
                 subscribe_tx: subscribe_tx.clone(),
+                overload_rx,
             },
         )
         .await;
@@ -1511,7 +1546,8 @@ mod tests {
     fn test_channel_writer() {
         let (tx, mut rx) = mpsc::channel(10);
         let (deferred_tx, _deferred_rx) = mpsc::channel(10);
-        let drop_logger = Arc::new(DropLogger::new("test-client".into()));
+        let (overload_tx, _overload_rx) = watch::channel(false);
+        let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
         let writer = ChannelWriter {
             tx,
             deferred_tx,
@@ -1533,6 +1569,46 @@ mod tests {
         assert!(matches!(
             received,
             OutboundMessage::Message(MykoMessage::Ping(_))
+        ));
+    }
+
+    #[test]
+    fn full_deferred_queue_marks_connection_for_resnapshot() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (deferred_tx, mut deferred_rx) = mpsc::channel(1);
+        let (overload_tx, overload_rx) = watch::channel(false);
+        let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
+        let writer = ChannelWriter {
+            tx,
+            deferred_tx,
+            drop_logger,
+            outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),
+        };
+        let response = |sequence| PendingQueryResponse {
+            tx: "query-tx".into(),
+            sequence,
+            upsert_items: Vec::new(),
+            deletes: Vec::new(),
+            total_count: 0,
+            window: None,
+            window_order_ids: None,
+        };
+
+        writer.send_query_response(response(0), false);
+        assert!(!*overload_rx.borrow());
+        writer.send_query_response(response(1), false);
+
+        assert!(
+            *overload_rx.borrow(),
+            "dropping a sequenced response must force reconnect/resnapshot"
+        );
+        let queued = deferred_rx.try_recv().expect("initial response queued");
+        assert!(matches!(
+            queued,
+            DeferredOutbound::Query {
+                response: PendingQueryResponse { sequence: 0, .. },
+                is_view: false,
+            }
         ));
     }
 
