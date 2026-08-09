@@ -1162,11 +1162,11 @@ impl MykoClient {
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
         let send_query_id = query_id;
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
+                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     },
@@ -1176,11 +1176,6 @@ impl MykoClient {
                 }
             }
         });
-
-        // Send immediately if connected
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
@@ -1269,22 +1264,17 @@ impl MykoClient {
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
         let send_report_id = report_id;
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                match socket.send(frame_clone.clone()) {
+                match socket.send(frame_to_send.clone()) {
                     Ok(()) => debug!("Watching report {send_report_id}"),
                     Err(e) => error!("Could not send report: {e:?}"),
                 }
             }
         });
-
-        // Send immediately if connected
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(report_cancel_guard(tx, self.inner.clone()));
@@ -1388,11 +1378,11 @@ impl MykoClient {
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
         let send_view_id = view_id;
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
+                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching view {send_view_id}"),
                         Err(e) => error!("Could not send view: {e:?}"),
                     },
@@ -1402,10 +1392,6 @@ impl MykoClient {
                 }
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(view_cancel_guard(tx, self.inner.clone()));
@@ -1594,18 +1580,14 @@ impl MykoClient {
 
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                let _ = socket.send(frame_clone.clone());
+                let _ = socket.send(frame_to_send.clone());
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
@@ -1681,18 +1663,14 @@ impl MykoClient {
 
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                let _ = socket.send(frame_clone.clone());
+                let _ = socket.send(frame_to_send.clone());
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(view_cancel_guard(tx, self.inner.clone()));
@@ -1734,18 +1712,14 @@ impl MykoClient {
 
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                let _ = socket.send(frame_clone.clone());
+                let _ = socket.send(frame_to_send.clone());
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(report_cancel_guard(tx, self.inner.clone()));

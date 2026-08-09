@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap, Gettable, Watchable};
+use hyphae::{CellImmutable, CellMap, Watchable};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tracing::{debug, error, trace};
@@ -122,12 +122,12 @@ impl MykoClient {
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let send_query_id = query_id.clone();
-        let frame_clone = frame.clone();
+        let send_query_id = query_id;
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
+                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query map {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     },
@@ -137,14 +137,6 @@ impl MykoClient {
                 }
             }
         });
-
-        // Send immediately if connected
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            match self.inner.socket.send(frame) {
-                Ok(()) => debug!("Watching query map {query_id}"),
-                Err(e) => error!("Could not send query map: {e:?}"),
-            }
-        }
 
         // Own the subscription guard so it lives as long as the map
         map.own(status_guard);
