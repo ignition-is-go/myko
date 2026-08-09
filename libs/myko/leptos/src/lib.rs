@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 // Re-export the hyphae→Leptos bridge primitives so consumers get them from a
 // single place (`myko_leptos`) without depending on `hyphae-leptos` directly.
@@ -80,11 +83,12 @@ where
 
 /// Like [`live_query`] but also returns a `loaded` flag.
 ///
-/// `loaded` starts as `false`.  Each time the reactive query closure re-runs
-/// (parameter change / re-subscribe) it resets to `false`.  It flips to `true`
-/// on the **first emission** from the server — even if the returned vec is empty.
-/// This lets callers distinguish "still waiting for a response" from "server
-/// replied with zero items".
+/// `loaded` starts as `false`. Each time the reactive query closure re-runs or
+/// the client connection changes, it resets to `false`. It flips to `true` on
+/// the **first response** from the server — even if the returned vec is empty.
+/// The cell's local empty seed is deliberately ignored, so callers can reliably
+/// distinguish "still waiting for a response" from "server replied with zero
+/// items", including after reconnecting to a different server.
 ///
 /// ```ignore
 /// let (projects, loaded) = live_query_loaded(|| GetAllProjects {});
@@ -128,14 +132,30 @@ where
         // A new subscription is starting — mark as not-yet-loaded.
         set_loaded.set(false);
         let cell = client.watch_query(q);
+
+        // Hyphae subscriptions immediately emit the cell's current value. Query
+        // cells are seeded locally with an empty vec, so that first notification
+        // is not evidence that the server has replied.
+        let skip_local_seed = Arc::new(AtomicBool::new(true));
         let guard = cell.subscribe(move |signal| {
+            if skip_local_seed.swap(false, Ordering::AcqRel) {
+                return;
+            }
             if let Signal::Value(items) = signal {
                 write.set((**items).clone());
-                // First emission (even an empty vec) means the query returned.
+                // A post-seed emission (even an empty vec) is a server response.
                 set_loaded.set(true);
             }
         });
         cell.own(guard);
+
+        // A retained result belongs to the previous connection until the newly
+        // connected server answers the re-subscribed query.
+        let status_guard = client.connection_status().subscribe(move |_| {
+            set_loaded.set(false);
+        });
+        cell.own(status_guard);
+
         // Drop the previous cell (unsubscribes) and hold the new one.
         prev_cell.set_value(Some(cell));
     });
