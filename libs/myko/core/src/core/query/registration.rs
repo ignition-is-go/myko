@@ -1330,13 +1330,13 @@ pub fn filter_query_over_source<Q>(
     source: FilteredCellMap,
     query: Arc<Q>,
     query_context: Arc<QueryContext>,
-) -> FilteredCellMap
+) -> impl hyphae::MapQuery<Key = Arc<str>, Value = AnyItemArc>
 where
     Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
     Q::Item:
         DeserializeOwned + Eventable + WithId + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
-    hyphae::MapQuery::materialize(source.select(move |item_any: &AnyItemArc| {
+    source.select(move |item_any: &AnyItemArc| {
         downcast_any_item_arc::<Q::Item>(item_any, "filter_query_over_source").is_some_and(|item| {
             Q::test_entity(QueryTestContext {
                 item,
@@ -1344,7 +1344,7 @@ where
                 query_context: query_context.clone(),
             })
         })
-    }))
+    })
 }
 
 /// Registration entry for a query type.

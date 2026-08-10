@@ -134,7 +134,6 @@ where
         let local_cell = local_ctx
             .query_map_by_str(local_query, local_ctx.new_server_transaction())
             .entries()
-            .materialize()
             .map(|entries: &Vec<(Arc<str>, Arc<T>)>| {
                 entries
                     .iter()

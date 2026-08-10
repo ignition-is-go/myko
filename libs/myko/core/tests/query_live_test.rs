@@ -216,7 +216,6 @@ fn query_live_downstream_state_survives_a_filter_change() {
     let build_count_for_map = build_count.clone();
     let downstream = result
         .entries()
-        .materialize()
         .map(move |_entries| {
             build_count_for_map.fetch_add(1, Ordering::SeqCst);
             build_count_for_map.load(Ordering::SeqCst)

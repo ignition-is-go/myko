@@ -102,14 +102,11 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
     }
     fn build_view(
         ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl hyphae::MapQuery<Arc<str>, Arc<dyn AnyItem>>> {
-        // Materialize at the wrapper boundary so the outer `Option<impl MapQuery>`
-        // has a concrete type the borrow checker can infer through.
+    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>> {
         Q::build_view(QueryBuildArgs {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
         })
-        .map(hyphae::MapQuery::materialize)
     }
 }
 

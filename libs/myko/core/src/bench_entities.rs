@@ -312,8 +312,7 @@ impl ReportHandler for SwitchMapReport {
                 category: Some(StringFilter::Eq(category.into())),
                 ..Default::default()
             }))
-            .items()
-            .materialize();
+            .items();
 
         // switch_map + nested query_map — the leak pattern
         items.switch_map(move |items| {
@@ -326,7 +325,6 @@ impl ReportHandler for SwitchMapReport {
             // Inner: look up by IDs (different IDs each time = different cache key)
             ctx.query_map(GetBenchItemsByIds { ids })
                 .items()
-                .materialize()
                 .map(|items| {
                     Arc::new(
                         items

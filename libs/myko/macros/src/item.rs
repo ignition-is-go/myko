@@ -54,6 +54,18 @@ impl Parse for ItemArgs {
 /// either way), but `matches` needs the inner type specifically to compare
 /// against, since a `None` field must never satisfy any filter regardless
 /// of what the filter says (spec §1: "a `None` field matches no filter").
+fn to_pascal_case(value: &str) -> String {
+    value
+        .split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        })
+        .collect()
+}
+
 fn option_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
     let syn::Type::Path(type_path) = ty else {
         return None;
@@ -84,6 +96,28 @@ fn generate_get_all_query(
             fn test_entity(_ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 true
             }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            fn build_view(
+                ctx: #krate::prelude::QueryBuildArgs<Self>,
+            ) -> Option<impl #krate::prelude::MapQuery<
+                Key = std::sync::Arc<str>,
+                Value = std::sync::Arc<dyn #krate::prelude::AnyItem>,
+            >>
+            where
+                Self: std::marker::Send + std::marker::Sync + 'static,
+            {
+                // Registry stores are already partitioned by entity type, so returning
+                // the raw map avoids installing a no-op `select(|_| true)` runtime.
+                Some(
+                    ctx.query_context
+                        .registry()
+                        .get_or_create(<#name as #krate::prelude::Eventable>::ENTITY_NAME_STATIC)
+                        .as_ref()
+                        .clone()
+                        .lock(),
+                )
+            }
         }
     }
 }
@@ -109,7 +143,10 @@ fn generate_get_by_ids_query(
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::prelude::QueryBuildArgs<Self>,
-            ) -> Option<#krate::prelude::FilteredCellMap>
+            ) -> Option<impl #krate::prelude::MapQuery<
+                Key = std::sync::Arc<str>,
+                Value = std::sync::Arc<dyn #krate::prelude::AnyItem>,
+            >>
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
@@ -314,7 +351,11 @@ fn generate_filter_query(
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            fn build_view(ctx: #krate::prelude::QueryBuildArgs<Self>) -> Option<#krate::prelude::FilteredCellMap>
+            fn build_view(ctx: #krate::prelude::QueryBuildArgs<Self>)
+                -> Option<impl #krate::prelude::MapQuery<
+                    Key = std::sync::Arc<str>,
+                    Value = std::sync::Arc<dyn #krate::prelude::AnyItem>,
+                >>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
                 let source = match ctx.query.0.query_route()? {
@@ -360,7 +401,6 @@ fn generate_count_all_report(
                 let query = #query_ident {};
                 let source = ctx.query_map_by_str(query);
                 source.size().map(move |count| {
-                    let _keepalive = &source;
                     std::sync::Arc::new(#result_ident { count: *count })
                 })
             }
@@ -395,7 +435,6 @@ fn generate_count_report(
                 use #krate::prelude::MapExt;
                 let source = ctx.query_map_by_str(#query_ident(self.0.clone()));
                 source.size().map(move |count| {
-                    let _keepalive = &source;
                     std::sync::Arc::new(#result_ident { count: *count })
                 })
             }
@@ -418,10 +457,10 @@ fn generate_get_by_id_report(
             fn compute(&self, ctx: #krate::prelude::ReportContext)
                 -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
             {
-                use #krate::prelude::{Eventable, MapExt, Materialize};
+                use #krate::prelude::{Eventable, MapExt};
                 let id: std::sync::Arc<str> = self.id.clone().into();
                 let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
-                store.get(&id).materialize().map(move |item| std::sync::Arc::new(
+                store.get(&id).map(move |item| std::sync::Arc::new(
                     item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
                         .map(|typed| std::sync::Arc::new(typed.clone()))
                 ))
@@ -629,21 +668,34 @@ fn generate_foreign_key_impls(
                 .iter()
                 .map(|item| (&item.field_name, &item.foreign_type)),
         );
-    let mut parents = BTreeSet::new();
+    let mut relations = BTreeSet::new();
     fields
         .filter_map(|(field_name, foreign_type)| {
-            let field_ty = field_types.get(field_name)?;
-            if !parents.insert(foreign_type.clone()) {
+            if !relations.insert((field_name.clone(), foreign_type.clone())) {
                 return None;
             }
+            let field_ty = field_types.get(field_name)?;
             let field_ident = format_ident!("{field_name}");
             let foreign_ident = format_ident!("{foreign_type}");
+            let field_pascal = to_pascal_case(field_name);
+            let relation_ident = format_ident!("{name}{field_pascal}Relation");
+            let (foreign_key_ty, foreign_key) = option_inner_type(field_ty).map_or_else(
+                || (field_ty, quote! { Some(child.#field_ident.clone()) }),
+                |inner| (inner, quote! { child.#field_ident.clone() }),
+            );
             Some(quote! {
-                impl #krate::hyphae::HasForeignKey<#foreign_ident> for #name
-                where #field_ty: #krate::hyphae::IdFor<#foreign_ident>,
+                pub struct #relation_ident;
+
+                impl #krate::hyphae::ForeignKeyRelation for #relation_ident
+                where #foreign_key_ty: #krate::hyphae::IdFor<#foreign_ident>,
                 {
-                    type ForeignKey = #field_ty;
-                    fn fk(&self) -> Self::ForeignKey { self.#field_ident.clone() }
+                    type Parent = #foreign_ident;
+                    type Child = std::sync::Arc<#name>;
+                    type ForeignKey = #foreign_key_ty;
+
+                    fn foreign_key(child: &Self::Child) -> Option<Self::ForeignKey> {
+                        #foreign_key
+                    }
                 }
             })
         })

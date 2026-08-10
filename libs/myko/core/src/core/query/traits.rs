@@ -70,13 +70,15 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// When implemented, this is preferred by the runtime over per-item
     /// `test_entity` evaluation and should return a reactive map plan that
     /// the runtime materializes once at the registration boundary. Returning
-    /// `impl MapQuery<...>` lets impls compose `inner_join`, `project_map`,
+    /// `impl MapQuery<...>` lets impls compose `inner_join`, `filter_map_entries`,
     /// `select_cell`, etc. without forcing intermediate `CellMap` allocations.
     /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
     /// via the blanket impl on `ReactiveMap`, so simple impls returning a
     /// pre-built map continue to work unchanged.
     #[must_use]
-    fn build_view(_ctx: QueryBuildArgs<Self>) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
+    fn build_view(
+        _ctx: QueryBuildArgs<Self>,
+    ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>
     where
         Self: Send + Sync + 'static,
     {

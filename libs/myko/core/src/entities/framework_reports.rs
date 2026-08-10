@@ -397,7 +397,6 @@ impl ReportHandler for GetPersistHealth {
                     writes_per_second,
                 })
             })
-            .materialize()
             .deduped()
     }
 }

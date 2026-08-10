@@ -38,18 +38,22 @@ pub struct ViewBuildArgs<TView: ViewItemType> {
 pub trait ViewHandler: ViewItemType + Sized {
     /// Build a reactive map plan for this view.
     ///
-    /// Returns `impl MapQuery<Arc<str>, Arc<Self::Item>>` so impls can chain
-    /// `inner_join`, `project_map`, `select_cell`, etc. without materializing
+    /// Returns `impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>` so impls can chain
+    /// `inner_join`, `filter_map_entries`, `select_cell`, etc. without materializing
     /// intermediate `CellMap`s. The framework materializes once at the
     /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
     /// still satisfy the bound via the blanket impl on `ReactiveMap`.
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
     where
         Self: Send + Sync + 'static;
 
     #[cfg(target_arch = "wasm32")]
-    fn build_cell(_ctx: ViewBuildArgs<Self>) -> impl MapQuery<Arc<str>, Arc<Self::Item>>
+    fn build_cell(
+        _ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
     where
         Self: Send + Sync + 'static,
     {

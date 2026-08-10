@@ -17,7 +17,7 @@
 use std::{hint::black_box, sync::Arc};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use hyphae::{CellMap, MapQuery, ProjectMapExt, SelectExt};
+use hyphae::{CellMap, MapEntriesExt, MapQuery, SelectExt};
 use myko::{
     bench_entities::{BenchItem, BenchTreeItem},
     core::item::{AnyItem, downcast_any_item_arc},
@@ -554,7 +554,7 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                     outer
                         .lock()
                         .select(|item: &Arc<BenchTreeItem>| item.depth >= 2)
-                        .project(move |k, item| {
+                        .filter_map_entries(move |k, item| {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
@@ -594,7 +594,7 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                     outer
                         .lock()
                         .select(|item: &Arc<BenchTreeItem>| item.depth >= 2)
-                        .project(move |k, item| {
+                        .filter_map_entries(move |k, item| {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {

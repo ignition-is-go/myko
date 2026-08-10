@@ -192,7 +192,6 @@ pub trait Querying: ServerScoped {
         use hyphae::{MapExt, Materialize};
         self.query_map_untyped(query)
             .diffs()
-            .materialize()
             .map(|diff| crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff"))
             .materialize()
     }
