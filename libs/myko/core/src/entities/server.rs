@@ -130,29 +130,28 @@ impl ReportHandler for ServerStats {
         let stats_by_server = ctx
             .query_map_by_str(GetConnectedServer {})
             .left_join_fk::<ClientServerIdRelation, _>(ctx.query_map_by_str(GetAllClients {}))
-            .map_joined_values(|_server_id, server, clients| {
-                let uptime_seconds = chrono::DateTime::parse_from_rfc3339(&server.started_at)
-                    .ok()
-                    .map(|started| {
-                        let now = chrono::Utc::now();
-                        now.signed_duration_since(started.with_timezone(&chrono::Utc))
-                            .num_seconds()
-                    });
-                Arc::new(ServerStatsOutput {
-                    server: Some(server.clone()),
-                    client_count: clients.len(),
-                    uptime_seconds,
-                })
-            })
+            .map_joined_values(|_server_id, server, clients| (server.clone(), clients.len()))
             .materialize();
 
         stats_by_server.get(&host_id).map(|stats| {
-            stats.clone().unwrap_or_else(|| {
-                Arc::new(ServerStatsOutput {
+            let Some((server, client_count)) = stats else {
+                return Arc::new(ServerStatsOutput {
                     server: None,
                     client_count: 0,
                     uptime_seconds: None,
-                })
+                });
+            };
+            let uptime_seconds = chrono::DateTime::parse_from_rfc3339(&server.started_at)
+                .ok()
+                .map(|started| {
+                    let now = chrono::Utc::now();
+                    now.signed_duration_since(started.with_timezone(&chrono::Utc))
+                        .num_seconds()
+                });
+            Arc::new(ServerStatsOutput {
+                server: Some(server.clone()),
+                client_count: *client_count,
+                uptime_seconds,
             })
         })
     }

@@ -78,7 +78,7 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    output.apply_batch(vec![diff.clone()]);
+    output.apply_diff_owned(diff.clone());
 }
 
 #[must_use]
@@ -134,7 +134,13 @@ where
         };
         let mut changes: Vec<MapDiff<<T as WithTypedId>::Id, Arc<T>>> = Vec::new();
         remap_diff_to_typed_id(&typed_diff, &mut changes);
-        typed.apply_batch(changes);
+        if changes.len() == 1 {
+            if let Some(change) = changes.pop() {
+                typed.apply_diff_owned(change);
+            }
+        } else {
+            typed.apply_batch(changes);
+        }
     });
     typed.own_guard(guard);
     drop(source);

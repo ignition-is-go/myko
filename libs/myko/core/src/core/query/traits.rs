@@ -52,6 +52,10 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Per-entity membership predicate.
     ///
     /// Return `true` when an item should be included in the query result.
+    /// Hyphae executes this predicate as a `MapQuery` closure, so it must be
+    /// deterministic, externally side-effect-free, and nonblocking. The
+    /// runtime may repeat or concurrently invoke it; invocation order, count,
+    /// and worker thread are not stable contracts.
     #[cfg(not(target_arch = "wasm32"))]
     fn test_entity(ctx: QueryTestContext<Self>) -> bool
     where
@@ -75,6 +79,14 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
     /// via the blanket impl on `ReactiveMap`, so simple impls returning a
     /// pre-built map continue to work unchanged.
+    ///
+    /// Keep recognized join/projection chains unmaterialized through this
+    /// boundary. Hyphae specializes one- and two-join chains and can promote
+    /// longer fluent chains to an adaptively parallel join region; rekeying,
+    /// unsupported algebra, or intermediate materialization ends that region.
+    /// Every closure captured by the returned plan must be deterministic,
+    /// externally side-effect-free, and nonblocking because Hyphae may invoke
+    /// it repeatedly or concurrently.
     #[must_use]
     fn build_view(
         _ctx: QueryBuildArgs<Self>,

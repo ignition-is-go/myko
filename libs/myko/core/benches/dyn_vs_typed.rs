@@ -14,7 +14,7 @@
 //!                     typed `serde_json`.
 //!   `arc_clone_*`   — Arc<dyn>.`clone()` vs. Arc<T>.`clone()` (vtable carry).
 
-use std::{hint::black_box, sync::Arc};
+use std::{collections::HashMap, hint::black_box, sync::Arc};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use hyphae::{CellMap, MapEntriesExt, MapQuery, SelectExt};
@@ -506,15 +506,16 @@ fn bench_lineage_walk(c: &mut Criterion) {
 
 // ──────────────────────────────────────────────────────────────────────────
 // View chain fanout: a filtered-tree view's shape. The outer pipeline
-// is typed (operating on Arc<BenchTreeItem>); the variable is whether the
-// inner cross-store lookup is typed or dyn. This isolates the question
-// "if `registry.typed::<T>()` were available inside project transforms,
-// how much faster does fanout get?"
+// is typed (operating on Arc<BenchTreeItem>); the variable is whether an
+// immutable lineage snapshot is typed or dyn. Query closures cannot read a
+// separately mutable reactive map: Hyphae may repeat or concurrently invoke
+// them, and that map would not itself drive recomputation. Capturing a snapshot
+// keeps this benchmark's lookup/downcast comparison within MapQuery's contract.
 //
 // Stages:
 //   source: CellMap<Arc<str>, Arc<BenchTreeItem>>  (the "view's source")
 //   .select(depth >= 2)                            (typed predicate)
-//   .project(walk LINEAGE_DEPTH hops via inner)    (variable: typed or dyn)
+//   .filter_map_entries(walk immutable lineage)   (variable: typed or dyn)
 //
 // Materialize per iter to capture the full subscribe-and-fan-in cost.
 // ──────────────────────────────────────────────────────────────────────────
@@ -538,18 +539,16 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
         u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX),
     ));
 
-    // Post-refactor: outer typed + typed inner store.
+    // Post-refactor: outer typed + typed lineage snapshot.
     g.bench_function("typed_outer_typed_inner", |b| {
         b.iter_batched(
             || {
                 let outer = CellMap::<Arc<str>, Arc<BenchTreeItem>>::new();
                 outer.insert_many(typed_entries.clone());
-                let inner = CellMap::<Arc<str>, Arc<BenchTreeItem>>::new();
-                inner.insert_many(typed_entries.clone());
+                let inner = typed_entries.iter().cloned().collect::<HashMap<_, _>>();
                 (outer, inner)
             },
-            |(outer, inner)| {
-                let inner_for_proj = inner;
+            |(outer, inner_for_proj)| {
                 let result = MapQuery::materialize(
                     outer
                         .lock()
@@ -561,7 +560,7 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                                 let Some(pid) = current_pid.as_ref() else {
                                     break;
                                 };
-                                let Some(parent) = inner_for_proj.get_value(pid) else {
+                                let Some(parent) = inner_for_proj.get(pid) else {
                                     break;
                                 };
                                 total = total.saturating_add(parent.depth);
@@ -576,20 +575,17 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
         );
     });
 
-    // Current world: outer typed + dyn inner store. The filtered-tree view
-    // shape — `target_store.get(&pid)` returns `Arc<dyn AnyItem>` and project
-    // downcasts on every hop.
+    // Current world: outer typed + dyn lineage snapshot. The filtered-tree
+    // shape still downcasts an `Arc<dyn AnyItem>` on every hop.
     g.bench_function("typed_outer_dyn_inner", |b| {
         b.iter_batched(
             || {
                 let outer = CellMap::<Arc<str>, Arc<BenchTreeItem>>::new();
                 outer.insert_many(typed_entries.clone());
-                let inner = CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
-                inner.insert_many(dyn_entries.clone());
+                let inner = dyn_entries.iter().cloned().collect::<HashMap<_, _>>();
                 (outer, inner)
             },
-            |(outer, inner)| {
-                let inner_for_proj = inner.clone();
+            |(outer, inner_for_proj)| {
                 let result = MapQuery::materialize(
                     outer
                         .lock()
@@ -601,7 +597,7 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                                 let Some(pid) = current_pid.as_ref() else {
                                     break;
                                 };
-                                let Some(parent_any) = inner_for_proj.get_value(pid) else {
+                                let Some(parent_any) = inner_for_proj.get(pid) else {
                                     break;
                                 };
                                 let Some(parent) =
@@ -632,8 +628,6 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
 // ──────────────────────────────────────────────────────────────────────────
 
 fn bench_hashmap_hasher(c: &mut Criterion) {
-    use std::collections::HashMap;
-
     use dashmap::DashMap;
 
     let keys: Vec<Arc<str>> = (0..N_ITEMS).map(|i| format!("entity-{i}").into()).collect();

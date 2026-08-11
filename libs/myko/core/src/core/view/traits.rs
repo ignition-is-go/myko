@@ -43,6 +43,12 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// intermediate `CellMap`s. The framework materializes once at the
     /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
     /// still satisfy the bound via the blanket impl on `ReactiveMap`.
+    ///
+    /// Keep recognized join/projection chains unmaterialized through this
+    /// boundary so Hyphae can retain its specialized and adaptive join-region
+    /// runtimes. Closures in the returned plan must be deterministic,
+    /// externally side-effect-free, and nonblocking; Hyphae may invoke them
+    /// repeatedly or concurrently, with no stable order, count, or thread.
     #[cfg(not(target_arch = "wasm32"))]
     fn build_cell(
         ctx: ViewBuildArgs<Self>,

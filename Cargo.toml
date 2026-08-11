@@ -162,14 +162,24 @@ ahash = "0.8"
 # the per-cell trace registry and the in-process inspector server. myko named
 # `trace`/`inspector` only as forwarding aliases, so the migration was
 # manifest-only — no source changed.
-hyphae = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "20e9679b22720ced0ccde00e058b0b44dfedf7fb", version = "^2.0", features = ["scheduler"] }
+#
+# e40a9d0 is the finalized operator-pipelines checkout. It adds concurrent
+# readers for shared typed relationship indexes, atomic two-join propagation,
+# globally ordered root publication, and adaptive deterministic sharding for
+# eligible three-or-more-join regions. The scheduler feature below activates
+# the native shared worker pool; it defaults to available parallelism capped at
+# four. `HYPHAE_WORKER_THREADS` can override it (zero disables parallel work),
+# with `HYPHAE_WAVE_THREADS` retained by Hyphae as a compatibility fallback.
+# Query closures may now run repeatedly or concurrently and therefore must stay
+# deterministic, side-effect-free, and nonblocking.
+hyphae = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "e40a9d0fd5e0368163d1afffcef7d0605388d72d", version = "^2.0", features = ["scheduler"] }
 # MUST move in lockstep with `hyphae` above: hyphae-leptos pins an exact-major
 # `hyphae` and re-exports extension traits on its `Cell`/`CellMap`. Bumping one
 # without the other resolves BOTH majors into the graph, and the failure is
 # unrecognizable — myko-leptos fails with "no method named `to_leptos_signal`
 # found for Cell<T, M>", because the trait is implemented for a *different*
 # crate version's Cell, with nothing in the message naming the duplication.
-hyphae-leptos = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "20e9679b22720ced0ccde00e058b0b44dfedf7fb", version = "^2.0" }
+hyphae-leptos = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "e40a9d0fd5e0368163d1afffcef7d0605388d72d", version = "^2.0" }
 
 # Internal crates
 autosocket = { version = "5.0.7", path = "libs/autosocket" }

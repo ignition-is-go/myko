@@ -56,11 +56,7 @@ where
     let weak = output.downgrade();
     let guard = typed.subscribe_diffs(move |diff| {
         let Some(output) = weak.upgrade() else { return };
-        let mapped = map_any_diff(diff);
-        match mapped {
-            MapDiff::Batch { changes } => output.apply_batch(changes),
-            other => output.apply_batch(vec![other]),
-        }
+        output.apply_diff_owned(map_any_diff(diff));
     });
     output.own_guard(guard);
     drop(typed);
