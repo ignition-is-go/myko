@@ -1441,7 +1441,7 @@ dependencies = [
 [[package]]
 name = "hyphae"
 version = "2.0.1"
-source = "git+https://github.com/ignition-is-go/hyphae.git?rev=e40a9d0fd5e0368163d1afffcef7d0605388d72d#e40a9d0fd5e0368163d1afffcef7d0605388d72d"
+source = "git+https://github.com/ignition-is-go/hyphae.git?rev=eb8b0bcf367d18998404fb8d0cfe4f10c7c20633#eb8b0bcf367d18998404fb8d0cfe4f10c7c20633"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1463,7 +1463,7 @@ dependencies = [
 [[package]]
 name = "hyphae-leptos"
 version = "2.0.1"
-source = "git+https://github.com/ignition-is-go/hyphae.git?rev=e40a9d0fd5e0368163d1afffcef7d0605388d72d#e40a9d0fd5e0368163d1afffcef7d0605388d72d"
+source = "git+https://github.com/ignition-is-go/hyphae.git?rev=eb8b0bcf367d18998404fb8d0cfe4f10c7c20633#eb8b0bcf367d18998404fb8d0cfe4f10c7c20633"
 dependencies = [
  "hyphae",
  "leptos",
