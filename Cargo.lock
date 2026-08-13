@@ -1440,8 +1440,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "2.0.1"
-source = "git+https://github.com/ignition-is-go/hyphae.git?rev=eb8b0bcf367d18998404fb8d0cfe4f10c7c20633#eb8b0bcf367d18998404fb8d0cfe4f10c7c20633"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3477f323b37b05be38ff6315aef25b7d43a30332d08200f4ad36a3743821db04"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1462,8 +1463,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "2.0.1"
-source = "git+https://github.com/ignition-is-go/hyphae.git?rev=eb8b0bcf367d18998404fb8d0cfe4f10c7c20633#eb8b0bcf367d18998404fb8d0cfe4f10c7c20633"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "457e3cc563bf1cb84061655bc10badf12a073c2b07883324199b7d41fac0ca1b"
 dependencies = [
  "hyphae",
  "leptos",
