@@ -138,23 +138,24 @@ pub use ts_rs::TS;
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
 
-/// Register a type for ts-rs export.
+/// Register a Rust type for generated-language export.
 ///
-/// When the consuming crate has `typegen-typescript` off, this expands to nothing —
-/// the registered fn would require `$ty: ts_rs::TS` but we don't emit
-/// that impl in that configuration. Types that should be exported during
-/// typegen must pick up `typegen-typescript` via their crate's feature forwarding.
-// Gated on *myko's own* `typegen-typescript` feature (this macro is defined while
-// compiling myko core), not the consuming crate's. When typegen isn't
-// compiled in, the macro is a no-op — so full-Rust consumers never need to
-// declare a `typegen-typescript` feature, and `<$ty as ts_rs::TS>` (which only exists
-// when `myko::TS` is the real derive) is never referenced.
+/// The neutral registration is always emitted. When the TypeScript backend is
+/// enabled, a separate adapter carries the `ts-rs` export callback.
 #[cfg(feature = "typegen-typescript")]
 #[macro_export]
-macro_rules! register_ts_export {
+macro_rules! register_typegen_type {
     ($ty:ty) => {
         $crate::inventory::submit! {
-            $crate::codegen_types::TsExportRegistration {
+            $crate::codegen_types::TypegenTypeRegistration {
+                id: concat!(module_path!(), "::", stringify!($ty)),
+                type_name: stringify!($ty),
+                crate_name: module_path!(),
+            }
+        }
+        $crate::inventory::submit! {
+            $crate::codegen_types::TypeScriptTypeExportRegistration {
+                type_id: concat!(module_path!(), "::", stringify!($ty)),
                 type_name: stringify!($ty),
                 export_fn: || {
                     <$ty as $crate::ts_rs::TS>::export(&$crate::ts_rs::Config::from_env())
@@ -164,15 +165,36 @@ macro_rules! register_ts_export {
     };
     ($($ty:ty),+ $(,)?) => {
         $(
-            $crate::register_ts_export!($ty);
+            $crate::register_typegen_type!($ty);
         )+
     };
 }
 
 #[cfg(not(feature = "typegen-typescript"))]
 #[macro_export]
+macro_rules! register_typegen_type {
+    ($ty:ty) => {
+        $crate::inventory::submit! {
+            $crate::codegen_types::TypegenTypeRegistration {
+                id: concat!(module_path!(), "::", stringify!($ty)),
+                type_name: stringify!($ty),
+                crate_name: module_path!(),
+            }
+        }
+    };
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            $crate::register_typegen_type!($ty);
+        )+
+    };
+}
+
+/// Compatibility wrapper for the original TypeScript-specific spelling.
+#[macro_export]
 macro_rules! register_ts_export {
-    ($($ty:ty),+ $(,)?) => {};
+    ($($ty:ty),+ $(,)?) => {
+        $crate::register_typegen_type!($($ty),+);
+    };
 }
 
 /// Give a Rust type an opaque/custom TypeScript representation.
@@ -209,15 +231,15 @@ macro_rules! impl_ts_as {
     ($ty:ty, $typescript:literal) => {};
 }
 
-/// Define a Rust constant and register it for TypeScript export.
+/// Define a Rust constant and register it for generated-language export.
 #[macro_export]
-macro_rules! ts_const {
+macro_rules! shared_const {
     (pub $name:ident : &str = $value:expr) => {
         pub const $name: &str = $value;
         $crate::inventory::submit! {
-            $crate::codegen_types::TsConstRegistration {
+            $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
-                value: $crate::codegen_types::TsConstValue::Str($value),
+                value: $crate::codegen_types::TypegenConstValue::Str($value),
                 crate_name: module_path!(),
             }
         }
@@ -225,9 +247,9 @@ macro_rules! ts_const {
     ($name:ident : &str = $value:expr) => {
         const $name: &str = $value;
         $crate::inventory::submit! {
-            $crate::codegen_types::TsConstRegistration {
+            $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
-                value: $crate::codegen_types::TsConstValue::Str($value),
+                value: $crate::codegen_types::TypegenConstValue::Str($value),
                 crate_name: module_path!(),
             }
         }
@@ -235,9 +257,9 @@ macro_rules! ts_const {
     (pub $name:ident : i64 = $value:expr) => {
         pub const $name: i64 = $value;
         $crate::inventory::submit! {
-            $crate::codegen_types::TsConstRegistration {
+            $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
-                value: $crate::codegen_types::TsConstValue::Int($value),
+                value: $crate::codegen_types::TypegenConstValue::Int($value),
                 crate_name: module_path!(),
             }
         }
@@ -245,9 +267,9 @@ macro_rules! ts_const {
     ($name:ident : i64 = $value:expr) => {
         const $name: i64 = $value;
         $crate::inventory::submit! {
-            $crate::codegen_types::TsConstRegistration {
+            $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
-                value: $crate::codegen_types::TsConstValue::Int($value),
+                value: $crate::codegen_types::TypegenConstValue::Int($value),
                 crate_name: module_path!(),
             }
         }
@@ -255,9 +277,9 @@ macro_rules! ts_const {
     (pub $name:ident : bool = $value:expr) => {
         pub const $name: bool = $value;
         $crate::inventory::submit! {
-            $crate::codegen_types::TsConstRegistration {
+            $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
-                value: $crate::codegen_types::TsConstValue::Bool($value),
+                value: $crate::codegen_types::TypegenConstValue::Bool($value),
                 crate_name: module_path!(),
             }
         }
@@ -265,30 +287,20 @@ macro_rules! ts_const {
     ($name:ident : bool = $value:expr) => {
         const $name: bool = $value;
         $crate::inventory::submit! {
-            $crate::codegen_types::TsConstRegistration {
+            $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
-                value: $crate::codegen_types::TsConstValue::Bool($value),
+                value: $crate::codegen_types::TypegenConstValue::Bool($value),
                 crate_name: module_path!(),
             }
         }
     };
 }
 
-/// Define a Rust constant and register it for generated generated binding export.
-/// This is the language-neutral spelling of [`ts_const!`].
+/// Compatibility wrapper for the original TypeScript-specific spelling.
 #[macro_export]
-macro_rules! shared_const {
+macro_rules! ts_const {
     ($($tokens:tt)*) => {
-        $crate::ts_const!($($tokens)*);
-    };
-}
-
-/// Register a Rust type for generated generated binding export.
-/// This is the language-neutral spelling of [`register_ts_export!`].
-#[macro_export]
-macro_rules! register_typegen_type {
-    ($($ty:ty),+ $(,)?) => {
-        $crate::register_ts_export!($($ty),+);
+        $crate::shared_const!($($tokens)*);
     };
 }
 

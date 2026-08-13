@@ -1,42 +1,41 @@
-//! Registration types for TypeScript codegen macros.
-//!
-//! These live outside the gated `codegen` module so the macros work on all platforms.
-//! The actual codegen functions that consume these registrations remain in `codegen/mod.rs`.
+//! Backend-agnostic registrations consumed by generated-code renderers.
 
-/// Value types for TypeScript constant generation.
+use std::collections::HashSet;
+
+use crate::{
+    command::CommandRegistration, core::item::ItemRegistration, query::QueryRegistration,
+    report::ReportRegistration, view::ViewRegistration,
+};
+
+/// A literal constant value that renderers can express in their target language.
 #[derive(Debug, PartialEq)]
-pub enum TsConstValue {
+pub enum TypegenConstValue {
     Str(&'static str),
     Int(i64),
     Float(f64),
     Bool(bool),
 }
 
-/// Registration for a Rust constant to be exported as a TypeScript constant.
-pub struct TsConstRegistration {
+/// A constant owned by the crate where the registration macro was invoked.
+pub struct TypegenConstRegistration {
     pub name: &'static str,
-    pub value: TsConstValue,
+    pub value: TypegenConstValue,
     pub crate_name: &'static str,
 }
 
-inventory::collect!(TsConstRegistration);
+inventory::collect!(TypegenConstRegistration);
 
-/// Registration for ts-rs type exports.
-/// Allows types with `#[derive(TS)]` to be exported without running cargo test.
-pub struct TsExportRegistration {
-    /// Name of the type being exported (for logging)
+/// A Rust type selected for generated-language export.
+///
+/// This describes ownership only. Rendering callbacks belong to backend adapter
+/// registrations such as [`TypeScriptTypeExportRegistration`].
+pub struct TypegenTypeRegistration {
+    pub id: &'static str,
     pub type_name: &'static str,
-    /// Function that calls `T::export()` for the registered type
-    pub export_fn: fn() -> Result<(), ts_rs::ExportError>,
+    pub crate_name: &'static str,
 }
 
-inventory::collect!(TsExportRegistration);
-
-// Language-neutral public names for generated-typegen producers. The TypeScript
-// names remain available for compatibility with the current renderer.
-pub type TypegenConstValue = TsConstValue;
-pub type TypegenConstRegistration = TsConstRegistration;
-pub type TypegenTypeRegistration = TsExportRegistration;
+inventory::collect!(TypegenTypeRegistration);
 
 /// Registration for a language-neutral generated typegen module.
 pub struct TypegenModuleRegistration {
@@ -49,3 +48,131 @@ pub struct TypegenModuleRegistration {
 }
 
 inventory::collect!(TypegenModuleRegistration);
+
+/// The registrations owned by one crate, ready for any language renderer.
+pub struct TypegenCatalog {
+    pub types: Vec<&'static TypegenTypeRegistration>,
+    pub constants: Vec<&'static TypegenConstRegistration>,
+    pub modules: Vec<&'static TypegenModuleRegistration>,
+    pub items: Vec<&'static ItemRegistration>,
+    pub queries: Vec<&'static QueryRegistration>,
+    pub views: Vec<&'static ViewRegistration>,
+    pub reports: Vec<&'static ReportRegistration>,
+    pub commands: Vec<&'static CommandRegistration>,
+}
+
+impl TypegenCatalog {
+    #[must_use]
+    pub fn collect(crate_name: &str) -> Self {
+        Self {
+            types: inventory::iter::<TypegenTypeRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            constants: inventory::iter::<TypegenConstRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            modules: inventory::iter::<TypegenModuleRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            items: inventory::iter::<ItemRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            queries: inventory::iter::<QueryRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            views: inventory::iter::<ViewRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            reports: inventory::iter::<ReportRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+            commands: inventory::iter::<CommandRegistration>
+                .into_iter()
+                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn type_ids(&self) -> HashSet<&'static str> {
+        self.types
+            .iter()
+            .map(|registration| registration.id)
+            .collect()
+    }
+}
+
+/// Whether a `module_path!()` registration belongs to `crate_name`.
+///
+/// Cargo package names are normalized from hyphens to underscores by the
+/// typegen entry point before this comparison.
+#[must_use]
+pub fn registration_belongs_to_crate(registration_path: &str, crate_name: &str) -> bool {
+    registration_path.split("::").next() == Some(crate_name)
+}
+
+/// TypeScript-specific rendering adapter for a neutral type registration.
+#[cfg(feature = "typegen-typescript")]
+pub struct TypeScriptTypeExportRegistration {
+    pub type_id: &'static str,
+    pub type_name: &'static str,
+    pub export_fn: fn() -> Result<(), ts_rs::ExportError>,
+}
+
+#[cfg(feature = "typegen-typescript")]
+inventory::collect!(TypeScriptTypeExportRegistration);
+
+// Compatibility spellings. Canonical registrations above remain backend-neutral.
+pub type TsConstValue = TypegenConstValue;
+pub type TsConstRegistration = TypegenConstRegistration;
+#[cfg(feature = "typegen-typescript")]
+pub type TsExportRegistration = TypeScriptTypeExportRegistration;
+
+#[cfg(feature = "typegen-typescript")]
+pub use ts_rs::TS;
+
+#[cfg(test)]
+mod tests {
+    use super::{TypegenCatalog, TypegenTypeRegistration, registration_belongs_to_crate};
+
+    inventory::submit! {
+        TypegenTypeRegistration {
+            id: "rship::Own",
+            type_name: "Own",
+            crate_name: "rship::nested",
+        }
+    }
+
+    inventory::submit! {
+        TypegenTypeRegistration {
+            id: "rship_core::Foreign",
+            type_name: "Foreign",
+            crate_name: "rship_core",
+        }
+    }
+
+    #[test]
+    fn catalog_excludes_a_sibling_crate_with_a_shared_name_prefix() {
+        let catalog = TypegenCatalog::collect("rship");
+        let ids = catalog.type_ids();
+
+        assert!(ids.contains("rship::Own"));
+        assert!(!ids.contains("rship_core::Foreign"));
+    }
+
+    #[test]
+    fn crate_ownership_compares_the_module_path_root() {
+        assert!(registration_belongs_to_crate("rship", "rship"));
+        assert!(registration_belongs_to_crate("rship::nested", "rship"));
+        assert!(!registration_belongs_to_crate("rship_core", "rship"));
+        assert!(!registration_belongs_to_crate("my_rship::nested", "rship"));
+        assert!(!registration_belongs_to_crate("rshipper", "rship"));
+    }
+}

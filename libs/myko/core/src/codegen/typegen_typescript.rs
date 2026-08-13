@@ -321,11 +321,11 @@ fn format(path: &Path, text: String) -> anyhow::Result<String> {
 
 pub(super) fn export_registered_typegen_modules(
     directory: &Path,
-    crate_name: &str,
+    registrations: &[&TypegenModuleRegistration],
 ) -> anyhow::Result<()> {
-    let mut modules = inventory::iter::<TypegenModuleRegistration>()
-        .filter(|r| super::registration_belongs_to_crate(r.crate_name, crate_name))
-        .map(|r| (r.id, (r.build)()))
+    let mut modules = registrations
+        .iter()
+        .map(|registration| (registration.id, (registration.build)()))
         .collect::<Vec<_>>();
     modules.sort_by(|a, b| a.1.path.cmp(&b.1.path).then(a.0.cmp(b.0)));
 
