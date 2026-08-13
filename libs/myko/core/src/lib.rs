@@ -81,7 +81,7 @@ extern crate self as myko;
 // Main module structure
 pub mod cache;
 pub mod client;
-#[cfg(all(not(target_arch = "wasm32"), feature = "codegen"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "codegen-ts"))]
 pub mod codegen;
 pub mod codegen_types;
 pub mod core;
@@ -92,7 +92,7 @@ pub mod search;
 pub mod server;
 pub mod store;
 pub mod typegen_module;
-#[cfg(feature = "typegen-typescript")]
+#[cfg(feature = "codegen-ts")]
 pub mod typegen_typescript;
 pub mod utils;
 pub mod wire;
@@ -117,15 +117,11 @@ pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko::submit! macro
-// `myko::TS` resolves to the real `ts_rs::TS` derive+trait when the
-// consuming crate has `typegen-typescript` on, and to a noop derive that emits
-// nothing (but still claims the `#[ts(...)]` helper attrs so they don't
-// become orphan attributes) when off. Routing everything through
-// `myko::TS` lets entity crates opt out of the expensive derive without
-// touching their source — hand-written `#[derive(myko::TS)]` becomes
-// a no-op, and macro-emitted `#[cfg_attr(feature = "typegen-typescript", derive(myko::TS))]`
-// doesn't run the derive at all.
-#[cfg(not(feature = "typegen-typescript"))]
+// `myko::TS` resolves to the TypeScript adapter's derive+trait when
+// `codegen-ts` is enabled on Myko, and to a no-op helper derive otherwise.
+// Macro expansion can therefore keep a stable path without requiring entity
+// crates to depend directly on ts-rs.
+#[cfg(not(feature = "codegen-ts"))]
 pub use myko_macros::TsNoop as TS;
 // Re-export all attribute/derive macros so downstream crates can consume them
 // as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
@@ -134,9 +130,8 @@ pub use myko_macros::*;
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
 pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas
-pub use ts_rs;
-#[cfg(feature = "typegen-typescript")]
-pub use ts_rs::TS;
+#[cfg(feature = "codegen-ts")]
+pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
 
@@ -144,7 +139,7 @@ pub use wire::event; // For #[derive(myko::TS)]
 ///
 /// The neutral registration is always emitted. When the TypeScript backend is
 /// enabled, a separate adapter carries the `ts-rs` export callback.
-#[cfg(feature = "typegen-typescript")]
+#[cfg(feature = "codegen-ts")]
 #[macro_export]
 macro_rules! register_typegen_type {
     ($ty:ty) => {
@@ -175,7 +170,7 @@ macro_rules! register_typegen_type {
     };
 }
 
-#[cfg(not(feature = "typegen-typescript"))]
+#[cfg(not(feature = "codegen-ts"))]
 #[macro_export]
 macro_rules! register_typegen_type {
     ($ty:ty) => {
@@ -199,7 +194,7 @@ macro_rules! register_typegen_type {
 /// This is emitted by Myko-owned derives such as
 /// `#[myko_subtype(ts("unknown"))]`; downstream crates should not
 /// implement the underlying TypeScript trait directly.
-#[cfg(feature = "typegen-typescript")]
+#[cfg(feature = "codegen-ts")]
 #[macro_export]
 macro_rules! impl_ts_as {
     ($ty:ty, $typescript:literal) => {
@@ -222,7 +217,7 @@ macro_rules! impl_ts_as {
     };
 }
 
-#[cfg(not(feature = "typegen-typescript"))]
+#[cfg(not(feature = "codegen-ts"))]
 #[macro_export]
 macro_rules! impl_ts_as {
     ($ty:ty, $typescript:literal) => {};

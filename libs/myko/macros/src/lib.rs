@@ -149,7 +149,7 @@ fn take_marker_attr(input_struct: &mut syn::ItemStruct, attr_name: &str) -> bool
 /// entity source doesn't error out when `ts_rs::TS` is absent.
 ///
 /// `myko::TS` routes to this derive when the consuming crate has
-/// `typegen-typescript` off. When on, `myko::TS` resolves to `ts_rs::TS` instead
+/// `codegen-ts` off. When on, `myko::TS` resolves to `ts_rs::TS` instead
 /// and full TS impls are generated.
 #[proc_macro_derive(TsNoop, attributes(ts))]
 pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
@@ -160,7 +160,7 @@ pub fn ts_noop_derive(_input: TokenStream) -> TokenStream {
 ///
 /// `#[myko_item]`/`#[myko_subtype]` now always emit `#[derive(myko::TS)]`
 /// (which resolves to the no-op `TsNoop` derive unless myko's own
-/// `typegen-typescript` feature is on). Because that derive always claims the `ts`
+/// `codegen-ts` feature is on). Because that derive always claims the `ts`
 /// helper-attribute namespace, user-written `#[ts(...)]` attrs are valid
 /// as-is and no longer need wrapping in a consumer-side `cfg_attr`.
 pub(crate) fn gate_ts_attrs(attrs: &mut [syn::Attribute]) {
@@ -829,8 +829,8 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 /// boilerplate each.
 ///
 /// Default derives: `Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize`.
-/// Always added: `#[cfg_attr(feature = "typegen-typescript", derive(myko::TS))]`,
-/// `#[cfg_attr(feature = "typegen-typescript", ts(export))]`, and
+/// Always added: `#[cfg_attr(feature = "codegen-ts", derive(myko::TS))]`,
+/// `#[cfg_attr(feature = "codegen-ts", ts(export))]`, and
 /// `#[serde(rename_all = "camelCase")]`. Emits a `register_typegen_type!`
 /// call after the item so typegen picks it up when the feature is on.
 ///
@@ -1104,7 +1104,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
         }
     };
 
-    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `typegen-typescript`
+    // `myko::TS` is the no-op `TsNoop` derive unless myko's own `codegen-ts`
     // feature is on, so emit it (and the `ts(export)` attr it claims)
     // unconditionally — no consumer-side feature gate. Concrete declarations
     // register with the active backend; opaque inline mappings do not create files.

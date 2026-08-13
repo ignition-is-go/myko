@@ -38,12 +38,10 @@ anyhow.workspace = true
 # concern (RUST_LOG / an OTLP exporter), not a build-time one.
 tracing.workspace = true
 autosocket.workspace = true
-ts-rs.workspace = true
+ts-rs = { workspace = true, optional = true }
 # Numeric newtype for foreign entity fields that need real ordering over
-# floats (e.g. a downstream Keyframe's `position: OrderedFloat<f64>`) —
-# optional since most consumers never touch it. See the `ordered-float`
-# feature below, which forwards to ts-rs's own `ordered-float-impl` feature
-# so `#[derive(TS)]` on a field of this type works when typegen-typescript is on too.
+# floats (e.g. a downstream Keyframe's `position: OrderedFloat<f64>`).
+# TypeScript support is activated only by the TypeScript codegen feature.
 ordered-float = { version = "5", features = ["serde"], optional = true }
 inventory = "0.3.24"
 flume.workspace = true
@@ -98,31 +96,29 @@ required-features = ["bench"]
 default = []
 bench = []
 doc-gen = []
-# TypeScript codegen (dprint-plugin-typescript + swc). Required only by the
-# typegen/docgen binaries. Enabling this pulls ~8s of compile time onto the
-# critical path via the swc parser tree.
-codegen = ["dep:dprint-plugin-typescript", "typegen-typescript"]
 # Full-text entity search. Used to gate the tantivy backend; with tantivy
 # replaced by the typed in-memory index, the feature now activates the real
 # `SearchIndex` over the no-op stub. Kept as a feature so downstream crates
 # (myko-server) opt in explicitly and so non-search builds — entity-only
 # crates that just want types — continue to compile against the stub.
 search = []
-# Language-neutral type registration and module IR. Backends depend on this
-# without forcing support for any particular output language.
+# Language-neutral type registration and module IR.
 typegen = []
-# TypeScript typegen backend. Additional language backends can add sibling
-# features (for example `typegen-python`) without leaking their implementation
-# dependencies into the framework-level `typegen` feature.
-# `bytes-impl` is intentionally absent: Myko exports no `bytes::Bytes` field.
-typegen-typescript = [
+# Compile-time TypeScript adapter: derive support, export callbacks, renderer,
+# formatter, and typegen/docgen binaries. Runtime/default Myko builds do not
+# compile or link ts-rs or dprint.
+codegen-ts = [
   "typegen",
+  "dep:ts-rs",
+  "dep:dprint-plugin-typescript",
   "ts-rs/serde-compat",
   "ts-rs/serde-json-impl",
   "ts-rs/chrono-impl",
   "ts-rs/uuid-impl",
   "ts-rs/no-serde-warnings",
+  "ts-rs/ordered-float-impl",
 ]
+
 # Instrument the reactive hot path for EXTERNAL profilers: hyphae's
 # `#[inline(never)]` propagation boundaries (so samplers resolve
 # notify/write_value/fanout as distinct frames instead of one folded symbol)
@@ -137,23 +133,21 @@ typegen-typescript = [
 # always-on and NOT gated by this feature, so external tooling can follow the
 # work without turning anything on.
 profiling = ["hyphae/profiling"]
-# Filterable + TS support for ordered_float::OrderedFloat<f32>/<f64> entity
-# fields. Optional because most consumers never have a float field that
-# needs total ordering — a plain f32/f64 field already gets NumericFilter
-# via the built-in impl_numeric_filterable! instantiations above.
-ordered-float = ["dep:ordered-float", "ts-rs/ordered-float-impl"]
+# Filterable support for ordered_float::OrderedFloat<f32>/<f64> entity fields.
+# The TypeScript adapter is enabled by `codegen-ts`, not this feature.
+ordered-float = ["dep:ordered-float"]
 
 # Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
 # behavior worth exercising, *except* `bench` — bench_entities/criterion are
 # for local profiling, not routine CI (see flux.toml's `test` task).
-ci = ["codegen", "search", "typegen-typescript", "profiling", "doc-gen", "ordered-float"]
+ci = ["codegen-ts", "search", "profiling", "doc-gen", "ordered-float"]
 
-# Typegen/docgen bins need the codegen feature — declared explicitly so
+# Typegen/docgen bins need the TypeScript adapter — declared explicitly so
 # `cargo build -p myko` doesn't try to compile them without the feature.
 [[bin]]
 name = "typegen"
-required-features = ["codegen"]
+required-features = ["codegen-ts"]
 
 [[bin]]
 name = "docgen"
-required-features = ["codegen"]
+required-features = ["codegen-ts"]

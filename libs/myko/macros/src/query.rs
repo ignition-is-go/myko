@@ -27,7 +27,7 @@ pub fn myko_query_impl(query_item_type: &Path, mut input_struct: ItemStruct) -> 
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
     // TS derive wrapped in cfg_attr — only active when the consuming crate
-    // has `typegen-typescript` on.
+    // has `codegen-ts` on.
     let ts_cfg_derive = quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")]);
 
     // Apply derives (add Default for empty structs)

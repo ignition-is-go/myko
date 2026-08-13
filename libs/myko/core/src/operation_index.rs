@@ -27,7 +27,7 @@
 //!    be an always-on dependency of `myko-server` without forcing every
 //!    server binary to pull in a full TS formatter.
 
-#[cfg(feature = "codegen")]
+#[cfg(feature = "codegen-ts")]
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -181,7 +181,7 @@ pub(crate) fn split_outer_generic(s: &str) -> Option<(&str, &str)> {
     Some((outer, inner))
 }
 
-#[cfg(feature = "codegen")]
+#[cfg(feature = "codegen-ts")]
 pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut depth = 0usize;
@@ -213,7 +213,7 @@ pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
 
 // Only consumed by `crate::codegen::typescript::generate_docs_json_from_bindings`, which
 // is gated behind the (non-default) `codegen` feature.
-#[cfg(feature = "codegen")]
+#[cfg(feature = "codegen-ts")]
 pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBuf>, anyhow::Error> {
     let mut files = Vec::new();
     for entry in fs::read_dir(bindings_dir)? {
@@ -234,7 +234,7 @@ pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBu
     Ok(files)
 }
 
-#[cfg(any(feature = "codegen", test))]
+#[cfg(any(feature = "codegen-ts", test))]
 pub(crate) fn extract_exported_object_type_body(content: &str, type_name: &str) -> Option<String> {
     let marker = format!("export type {type_name} =");
     let start = content.find(&marker)?;
@@ -269,7 +269,7 @@ pub(crate) fn extract_exported_object_type_body(content: &str, type_name: &str) 
 
 /// Returns `(field_name, ts_type, doc_comment, optional)` for each field of
 /// a parsed ts-rs object type body.
-#[cfg(any(feature = "codegen", test))]
+#[cfg(any(feature = "codegen-ts", test))]
 pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Option<String>, bool)> {
     let mut fields = Vec::new();
     let mut pending_doc: Option<String> = None;
@@ -339,7 +339,7 @@ pub(crate) fn parse_object_type_fields(body: &str) -> Vec<(String, String, Optio
     fields
 }
 
-#[cfg(any(feature = "codegen", test))]
+#[cfg(any(feature = "codegen-ts", test))]
 fn split_top_level_commas(input: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut start = 0usize;
@@ -424,7 +424,7 @@ fn split_top_level_commas(input: &str) -> Vec<String> {
     out
 }
 
-#[cfg(any(feature = "codegen", test))]
+#[cfg(any(feature = "codegen-ts", test))]
 fn find_top_level_colon(input: &str) -> Option<usize> {
     let chars: Vec<char> = input.chars().collect();
     let mut brace = 0usize;
@@ -462,7 +462,7 @@ fn find_top_level_colon(input: &str) -> Option<usize> {
     None
 }
 
-#[cfg(any(feature = "codegen", test))]
+#[cfg(any(feature = "codegen-ts", test))]
 fn normalize_jsdoc(block: &str) -> String {
     block
         .replace("/**", "")

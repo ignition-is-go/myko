@@ -15,7 +15,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
     // `myko::reflection` and the matching comment in `query.rs`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
 
-    // Gate user-written `#[ts(...)]` attrs behind the typegen-typescript feature.
+    // Gate user-written `#[ts(...)]` attrs behind the codegen-ts feature.
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
 
