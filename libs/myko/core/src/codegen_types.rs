@@ -1,6 +1,6 @@
 //! Backend-agnostic registrations consumed by generated-code renderers.
 
-use std::collections::HashSet;
+use std::{any::TypeId, collections::HashSet};
 
 use crate::{
     command::CommandRegistration, core::item::ItemRegistration, query::QueryRegistration,
@@ -43,6 +43,21 @@ pub struct FrameworkTypegenRegistration {
 }
 
 inventory::collect!(FrameworkTypegenRegistration);
+
+/// Marker implemented by types registered for generated-language export.
+pub trait RegisteredType: 'static {}
+impl<T: 'static> RegisteredType for T {}
+
+/// Marker for an explicit cross-crate typegen group.
+pub trait TypegenGroup: 'static {}
+
+/// Associates every registration owned by one crate with a typed group.
+pub struct TypegenGroupMemberRegistration {
+    pub group_type_id: fn() -> TypeId,
+    pub crate_path: &'static str,
+}
+
+inventory::collect!(TypegenGroupMemberRegistration);
 
 /// Registration for a language-neutral generated typegen module.
 pub struct TypegenModuleRegistration {
@@ -122,6 +137,21 @@ impl TypegenCatalog {
             reports: Vec::new(),
             commands: Vec::new(),
         }
+    }
+
+    /// Collect registrations from crates explicitly enrolled in a typed group.
+    #[must_use]
+    pub fn collect_group<G: TypegenGroup>() -> Self {
+        let crate_names = inventory::iter::<TypegenGroupMemberRegistration>
+            .into_iter()
+            .filter(|entry| (entry.group_type_id)() == TypeId::of::<G>())
+            .filter_map(|entry| entry.crate_path.split("::").next())
+            .collect::<HashSet<_>>();
+        Self::collect_matching(|path| {
+            path.split("::")
+                .next()
+                .is_some_and(|name| crate_names.contains(name))
+        })
     }
 
     /// Collect registrations from a delimiter-safe crate family.
@@ -235,6 +265,16 @@ mod tests {
         registration_belongs_to_crate_family,
     };
 
+    struct AggregateGroup;
+    impl super::TypegenGroup for AggregateGroup {}
+
+    inventory::submit! {
+        super::TypegenGroupMemberRegistration {
+            group_type_id: || std::any::TypeId::of::<AggregateGroup>(),
+            crate_path: "rship_core::provider",
+        }
+    }
+
     inventory::submit! {
         TypegenTypeRegistration {
             id: "rship::Own",
@@ -267,6 +307,13 @@ mod tests {
 
         assert!(!ids.contains("rship::Own"));
         assert!(ids.contains("rship_core::Foreign"));
+    }
+
+    #[test]
+    fn typed_group_collects_only_enrolled_crates() {
+        let ids = TypegenCatalog::collect_group::<AggregateGroup>().type_ids();
+        assert!(ids.contains("rship_core::Foreign"));
+        assert!(!ids.contains("rship::Own"));
     }
 
     #[test]

@@ -699,9 +699,24 @@ mod tests {
 
     #[allow(dead_code)]
     #[derive(crate::TS)]
+    struct SchemaRef(String);
+
+    #[allow(dead_code)]
+    #[derive(crate::TS)]
+    struct ServerId(String);
+
+    #[allow(dead_code)]
+    #[derive(crate::TS)]
+    struct MEventType(String);
+
+    #[allow(dead_code)]
+    #[derive(crate::TS)]
     struct AggregateDownstreamQuery {
         id: Option<IdFilter<Arc<str>>>,
         name: Option<StringFilter>,
+        schema: SchemaRef,
+        server_id: ServerId,
+        event_type: MEventType,
     }
 
     const AGGREGATE_QUERY_TYPE_ID: &str = "downstream_entities::AggregateDownstreamQuery";
@@ -718,7 +733,10 @@ mod tests {
         crate::typegen_typescript::TypeExportRegistration {
             type_id: AGGREGATE_QUERY_TYPE_ID,
             type_name: "AggregateDownstreamQuery",
-            export_fn: || <AggregateDownstreamQuery as crate::TS>::export(
+            rust_type_id: || std::any::TypeId::of::<AggregateDownstreamQuery>(),
+            generated_name: |config| <AggregateDownstreamQuery as crate::TS>::ident(config),
+            output_path: || <AggregateDownstreamQuery as crate::TS>::output_path(),
+            export_fn: || <AggregateDownstreamQuery as crate::TS>::export_all(
                 &crate::ts_rs::Config::from_env()
             ),
         }
@@ -740,11 +758,17 @@ mod tests {
         static OWN_ADAPTER: TypeExportRegistration = TypeExportRegistration {
             type_id: "rship::Own",
             type_name: "Own",
+            rust_type_id: || std::any::TypeId::of::<u8>(),
+            generated_name: |_| "Own".into(),
+            output_path: || Some("Own.ts".into()),
             export_fn: adapter_export_ok,
         };
         static FOREIGN_ADAPTER: TypeExportRegistration = TypeExportRegistration {
             type_id: "rship_core::Foreign",
             type_name: "Foreign",
+            rust_type_id: || std::any::TypeId::of::<u16>(),
+            generated_name: |_| "Foreign".into(),
+            output_path: || Some("Foreign.ts".into()),
             export_fn: adapter_export_ok,
         };
 
@@ -796,17 +820,33 @@ mod tests {
         let Some(dir_str) = dir.to_str() else {
             panic!("temp dir path is valid UTF-8");
         };
-        let catalog = TypegenCatalog::collect_crate_family("downstream_entities")
-            .merge(TypegenCatalog::collect_framework_types());
+        let catalog = TypegenCatalog::collect_crate_family("downstream_entities");
 
         assert!(generate_item_types_for_catalog(dir_str, &catalog).is_ok());
         assert!(dir.join("AggregateDownstreamQuery.ts").exists());
         assert!(dir.join("IdFilter.ts").exists());
         assert!(dir.join("StringFilter.ts").exists());
+        assert!(dir.join("SchemaRef.ts").exists());
+        assert!(dir.join("ServerId.ts").exists());
+        assert!(dir.join("MEventType.ts").exists());
         let query = fs::read_to_string(dir.join("AggregateDownstreamQuery.ts"))
             .expect("aggregate query binding should be readable");
         assert!(query.contains("./IdFilter"));
         assert!(query.contains("./StringFilter"));
+        assert!(query.contains("./SchemaRef"));
+        assert!(query.contains("./ServerId"));
+        assert!(query.contains("./MEventType"));
+        let index =
+            fs::read_to_string(dir.join("index.ts")).expect("aggregate index should be readable");
+        for dependency in [
+            "SchemaRef",
+            "ServerId",
+            "MEventType",
+            "IdFilter",
+            "StringFilter",
+        ] {
+            assert!(index.contains(dependency), "index omitted {dependency}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

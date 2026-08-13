@@ -4,6 +4,15 @@
 //! target-language renderer lives in Myko, so downstream code never has to
 //! assemble (or escape) TypeScript source text.
 
+use std::any::TypeId;
+
+use crate::codegen_types::RegisteredType;
+
+/// A typed owner for a generated module output path.
+pub trait TypegenModulePath {
+    const PATH: &'static str;
+}
+
 /// A generated typegen module.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypegenModule {
@@ -14,16 +23,35 @@ pub struct TypegenModule {
     pub declarations: Vec<Declaration>,
     /// Whether index modules should be generated for parent directories.
     pub barrels: bool,
+    /// Registered types re-exported from this module.
+    pub registered_reexports: Vec<TypeId>,
 }
 
 impl TypegenModule {
+    /// Create an empty module at the path owned by a typed marker.
+    #[must_use]
+    pub fn new_typed<M: TypegenModulePath>() -> Self {
+        Self::new(M::PATH)
+    }
+
     /// Create an empty module. Parent-directory barrels are enabled by default.
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             declarations: Vec::new(),
             barrels: true,
+            registered_reexports: Vec::new(),
         }
+    }
+
+    /// Re-export a registered generated type from this module.
+    #[must_use]
+    pub fn reexport_type<T: RegisteredType>(mut self) -> Self {
+        let type_id = TypeId::of::<T>();
+        if !self.registered_reexports.contains(&type_id) {
+            self.registered_reexports.push(type_id);
+        }
+        self
     }
 
     /// Append a declaration.
@@ -52,6 +80,7 @@ impl TypegenModule {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegistryEntry {
     pub name: String,
+    pub key: Option<Value>,
     pub value: Value,
 }
 
@@ -59,8 +88,43 @@ impl RegistryEntry {
     pub fn new(name: impl Into<String>, value: Value) -> Self {
         Self {
             name: name.into(),
+            key: None,
             value,
         }
+    }
+
+    pub fn keyed(name: impl Into<String>, key: impl Into<Value>, value: Value) -> Self {
+        Self {
+            name: name.into(),
+            key: Some(key.into()),
+            value,
+        }
+    }
+}
+
+/// Centralized public symbol names for a generated registry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistryNames {
+    pub all: String,
+    pub index: String,
+    pub find: String,
+    pub parameter: String,
+}
+
+impl RegistryNames {
+    pub fn new(all: impl Into<String>, index: impl Into<String>, find: impl Into<String>) -> Self {
+        Self {
+            all: all.into(),
+            index: index.into(),
+            find: find.into(),
+            parameter: "key".into(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_parameter(mut self, parameter: impl Into<String>) -> Self {
+        self.parameter = parameter.into();
+        self
     }
 }
 
@@ -79,6 +143,20 @@ pub struct Registry {
 }
 
 impl Registry {
+    #[must_use]
+    pub fn for_registered<T: RegisteredType>(names: RegistryNames) -> Self {
+        Self {
+            entries: Vec::new(),
+            value_type: Type::registered::<T>(),
+            key_field: String::new(),
+            all_name: names.all,
+            index_name: names.index,
+            find_name: names.find,
+            parameter: names.parameter,
+            key_type: Type::String,
+        }
+    }
+
     pub fn new(
         value_type: Type,
         key_field: impl Into<String>,
@@ -133,17 +211,30 @@ impl Registry {
             Type::array(self.value_type.clone()),
             Value::Array(
                 self.entries
-                    .into_iter()
-                    .map(|entry| Value::reference(entry.name))
+                    .iter()
+                    .map(|entry| Value::reference(entry.name.clone()))
                     .collect(),
             ),
         ));
-        declarations.push(Declaration::Index {
-            name: self.index_name.clone(),
-            source: self.all_name,
-            key_field: self.key_field,
-            value_type: self.value_type.clone(),
-        });
+        let keyed_entries = self
+            .entries
+            .iter()
+            .map(|entry| entry.key.clone().map(|key| (key, entry.name.clone())))
+            .collect::<Option<Vec<_>>>();
+        if let Some(entries) = keyed_entries {
+            declarations.push(Declaration::KeyedIndex {
+                name: self.index_name.clone(),
+                entries,
+                value_type: self.value_type.clone(),
+            });
+        } else {
+            declarations.push(Declaration::Index {
+                name: self.index_name.clone(),
+                source: self.all_name,
+                key_field: self.key_field,
+                value_type: self.value_type.clone(),
+            });
+        }
         declarations.push(Declaration::Find {
             name: self.find_name,
             index: self.index_name,
@@ -158,6 +249,7 @@ impl Registry {
 /// A type in the portable SDK-module IR.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
+    Registered(TypeId),
     String,
     Boolean,
     Number,
@@ -170,6 +262,11 @@ pub enum Type {
 }
 
 impl Type {
+    #[must_use]
+    pub const fn registered<T: RegisteredType>() -> Self {
+        Self::Registered(TypeId::of::<T>())
+    }
+
     pub fn named(name: impl Into<String>) -> Self {
         Self::Named(name.into())
     }
@@ -361,6 +458,11 @@ pub enum Declaration {
         key_field: String,
         value_type: Type,
     },
+    KeyedIndex {
+        name: String,
+        entries: Vec<(Value, String)>,
+        value_type: Type,
+    },
     Find {
         name: String,
         index: String,
@@ -468,7 +570,7 @@ impl Declaration {
 mod tests {
     use serde::Serialize;
 
-    use super::{Declaration, Registry, RegistryEntry, Type, TypegenModule, Value};
+    use super::{Declaration, Registry, RegistryEntry, RegistryNames, TypegenModule, Value};
 
     #[derive(Serialize)]
     struct Example<'a> {
@@ -499,25 +601,24 @@ mod tests {
     #[test]
     fn registry_appends_constants_array_index_and_finder() {
         let module = TypegenModule::new("registry").declare_registry(
-            Registry::new(
-                Type::named("Entry"),
-                "key",
+            Registry::for_registered::<String>(RegistryNames::new(
                 "allEntries",
                 "entriesByKey",
                 "findEntry",
-            )
-            .entry(RegistryEntry::new(
-                "FIRST",
-                Value::object([("key", "first".into())]),
             ))
-            .with_parameter("key"),
+            .entry(RegistryEntry::keyed(
+                "FIRST",
+                "first",
+                Value::object([("value", "example".into())]),
+            )),
         );
 
         assert_eq!(module.declarations.len(), 4);
         assert!(matches!(
             &module.declarations[2],
-            Declaration::Index { name, source, .. }
-                if name == "entriesByKey" && source == "allEntries"
+            Declaration::KeyedIndex { name, entries, .. }
+                if name == "entriesByKey"
+                    && entries == &vec![(Value::string("first"), "FIRST".into())]
         ));
         assert!(matches!(
             &module.declarations[3],

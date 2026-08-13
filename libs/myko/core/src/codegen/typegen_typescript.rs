@@ -1,4 +1,5 @@
 use std::{
+    any::TypeId,
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
@@ -33,8 +34,31 @@ fn property(value: &str) -> anyhow::Result<String> {
     identifier(value).map_or_else(|_| string(value), |value| Ok(value.to_owned()))
 }
 
+fn registered_adapter(
+    type_id: TypeId,
+) -> anyhow::Result<&'static crate::typegen_typescript::TypeExportRegistration> {
+    let mut adapters = inventory::iter::<crate::typegen_typescript::TypeExportRegistration>
+        .into_iter()
+        .filter(|adapter| (adapter.rust_type_id)() == type_id);
+    let first = adapters
+        .next()
+        .context("registered type has no TypeScript adapter")?;
+    let config = crate::ts_rs::Config::from_env();
+    for duplicate in adapters {
+        anyhow::ensure!(
+            (duplicate.generated_name)(&config) == (first.generated_name)(&config)
+                && (duplicate.output_path)() == (first.output_path)(),
+            "registered Rust type has conflicting TypeScript identities"
+        );
+    }
+    Ok(first)
+}
+
 fn render_type(ty: &Type) -> anyhow::Result<String> {
     Ok(match ty {
+        Type::Registered(type_id) => {
+            (registered_adapter(*type_id)?.generated_name)(&crate::ts_rs::Config::from_env())
+        }
         Type::String => "string".into(),
         Type::Boolean => "boolean".into(),
         Type::Number => "number".into(),
@@ -261,6 +285,25 @@ fn render_declaration(out: &mut String, declaration: &Declaration) -> anyhow::Re
                 render_type(value_type)?
             )?;
         }
+        Declaration::KeyedIndex {
+            name,
+            entries,
+            value_type,
+        } => {
+            let entries = entries
+                .iter()
+                .map(|(key, value)| {
+                    identifier(value)?;
+                    Ok(format!("[{}, {value}]", render_value(key, 2)?))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            writeln!(
+                out,
+                "export const {name}: Record<string, {}> = Object.fromEntries([{}])\n",
+                render_type(value_type)?,
+                entries.join(", ")
+            )?;
+        }
         Declaration::Find {
             name,
             index,
@@ -300,9 +343,117 @@ fn render_declaration(out: &mut String, declaration: &Declaration) -> anyhow::Re
     Ok(())
 }
 
+fn collect_registered_types(ty: &Type, target: &mut BTreeSet<TypeId>) {
+    match ty {
+        Type::Registered(type_id) => {
+            target.insert(*type_id);
+        }
+        Type::Array(inner) | Type::Optional(inner) => collect_registered_types(inner, target),
+        Type::Object(fields) => {
+            for field in fields {
+                collect_registered_types(&field.ty, target);
+            }
+        }
+        Type::Record(key, value) => {
+            collect_registered_types(key, target);
+            collect_registered_types(value, target);
+        }
+        Type::String | Type::Boolean | Type::Number | Type::Named(_) | Type::StringUnion(_) => {}
+    }
+}
+
+fn declaration_registered_types(declaration: &Declaration, target: &mut BTreeSet<TypeId>) {
+    match declaration {
+        Declaration::TypeAlias { ty, .. } => collect_registered_types(ty, target),
+        Declaration::Const { ty, satisfies, .. } => {
+            if let Some(ty) = ty {
+                collect_registered_types(ty, target);
+            }
+            if let Some(ty) = satisfies {
+                collect_registered_types(ty, target);
+            }
+        }
+        Declaration::Index { value_type, .. } | Declaration::KeyedIndex { value_type, .. } => {
+            collect_registered_types(value_type, target);
+        }
+        Declaration::Find {
+            key_type,
+            value_type,
+            ..
+        }
+        | Declaration::LookupOr {
+            key_type,
+            value_type,
+            ..
+        } => {
+            collect_registered_types(key_type, target);
+            collect_registered_types(value_type, target);
+        }
+        Declaration::Import { .. } | Declaration::FilteredArray { .. } => {}
+    }
+}
+
+fn registered_module_spec(module_path: &str, target_path: &Path) -> anyhow::Result<String> {
+    let source = module_relative_path(module_path)?;
+    let source_parent = source.parent().unwrap_or_else(|| Path::new(""));
+    let target = target_path.with_extension("");
+    anyhow::ensure!(
+        !target.is_absolute(),
+        "registered type output path must be relative"
+    );
+    anyhow::ensure!(
+        target
+            .components()
+            .all(|component| matches!(component, Component::Normal(_))),
+        "registered type output path may not traverse directories"
+    );
+    let source_parts = source_parent.components().collect::<Vec<_>>();
+    let target_parts = target.components().collect::<Vec<_>>();
+    let common = source_parts
+        .iter()
+        .zip(&target_parts)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut spec = "../".repeat(source_parts.len().saturating_sub(common));
+    let remaining_target = target_parts
+        .get(common..)
+        .context("registered type relative path overflow")?;
+    spec.push_str(
+        &remaining_target
+            .iter()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+    );
+    if !spec.starts_with('.') {
+        spec.insert_str(0, "./");
+    }
+    Ok(spec)
+}
+
 /// Render a language-neutral typegen module as TypeScript.
 fn render_typegen_module(module: &TypegenModule) -> anyhow::Result<String> {
     let mut out = String::from("// Auto-generated by typegen - do not edit manually\n\n");
+    let mut registered_types = module
+        .registered_reexports
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    for declaration in &module.declarations {
+        declaration_registered_types(declaration, &mut registered_types);
+    }
+    let config = crate::ts_rs::Config::from_env();
+    for type_id in registered_types {
+        let adapter = registered_adapter(type_id)?;
+        let name = (adapter.generated_name)(&config);
+        let output_path =
+            (adapter.output_path)().context("registered type has no generated output path")?;
+        let spec = registered_module_spec(&module.path, &output_path)?;
+        writeln!(out, "import type {{ {name} }} from {}", string(&spec)?)?;
+        if module.registered_reexports.contains(&type_id) {
+            writeln!(out, "export type {{ {name} }}\n")?;
+        }
+    }
     let mut names = BTreeSet::new();
     for declaration in &module.declarations {
         let declared_names: Vec<&String> = match declaration {
@@ -311,6 +462,7 @@ fn render_typegen_module(module: &TypegenModule) -> anyhow::Result<String> {
             | Declaration::Const { name, .. }
             | Declaration::FilteredArray { name, .. }
             | Declaration::Index { name, .. }
+            | Declaration::KeyedIndex { name, .. }
             | Declaration::Find { name, .. }
             | Declaration::LookupOr { name, .. } => vec![name],
         };
@@ -415,16 +567,23 @@ pub(super) fn export_registered_typegen_modules(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typegen_module::{Field, Operand, Predicate};
+    use crate::typegen_module::{
+        Field, Operand, Predicate, Registry, RegistryEntry, RegistryNames,
+    };
+
+    #[allow(dead_code)]
+    #[derive(crate::TS)]
+    struct CanonicalNode {
+        type_id: String,
+    }
+
+    crate::register_typegen_type!(CanonicalNode);
 
     #[test]
     fn renders_catalog_deterministically_and_escapes_data() {
-        let node = Type::named("NodeDef");
+        let node = Type::registered::<CanonicalNode>();
         let module = TypegenModule::new("bindingNode/nodes/types")
-            .declare(Declaration::import_type(
-                ["CanonicalNode"],
-                "../CanonicalNode",
-            ))
+            .reexport_type::<CanonicalNode>()
             .declare(Declaration::type_alias(
                 "NodeCategory",
                 Type::StringUnion(vec!["scene-control".into(), "quote'\\\n".into()]),
@@ -476,11 +635,43 @@ mod tests {
             return;
         };
         assert_eq!(first, second);
-        assert!(first.contains(r#"import type { CanonicalNode } from "../CanonicalNode""#));
+        assert!(first.contains(r#"import type { CanonicalNode } from "../../CanonicalNode""#));
+        assert!(first.contains("export type { CanonicalNode }"));
         assert!(first.contains(r#""scene-control""#));
         assert!(first.contains("quote'"));
         assert!(first.contains("Object.fromEntries"));
         assert!(first.contains("return nodeDefsByType[typeId]"));
+    }
+
+    #[test]
+    fn keyed_registry_index_never_reads_a_serialized_field() {
+        let module = TypegenModule::new("bindingNode/nodes/types").declare_registry(
+            Registry::for_registered::<CanonicalNode>(RegistryNames::new(
+                "allNodeDefs",
+                "nodeDefsByType",
+                "findNodeDef",
+            ))
+            .entry(RegistryEntry::keyed(
+                "SceneNode",
+                "scene",
+                Value::object([("typeId", "different-serialized-value".into())]),
+            )),
+        );
+        let rendered = render_typegen_module(&module).expect("registry should render");
+        assert!(rendered.contains(r#"["scene", SceneNode]"#));
+        assert!(!rendered.contains("entry.typeId"));
+    }
+
+    #[test]
+    fn rejects_a_registered_reference_without_an_adapter() {
+        let module = TypegenModule::new("invalid").declare(Declaration::type_alias(
+            "Missing",
+            Type::registered::<u32>(),
+        ));
+        assert!(matches!(
+            render_typegen_module(&module),
+            Err(error) if error.to_string().contains("no TypeScript adapter")
+        ));
     }
 
     #[test]

@@ -159,8 +159,11 @@ macro_rules! register_typegen_type {
             $crate::typegen_typescript::TypeExportRegistration {
                 type_id: concat!(module_path!(), "::", stringify!($ty)),
                 type_name: stringify!($ty),
+                rust_type_id: || ::std::any::TypeId::of::<$ty>(),
+                generated_name: |config| <$ty as $crate::ts_rs::TS>::ident(config),
+                output_path: || <$ty as $crate::ts_rs::TS>::output_path(),
                 export_fn: || {
-                    <$ty as $crate::ts_rs::TS>::export(&$crate::ts_rs::Config::from_env())
+                    <$ty as $crate::ts_rs::TS>::export_all(&$crate::ts_rs::Config::from_env())
                 },
             }
         }
@@ -284,6 +287,28 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Bool($value),
+                crate_path: module_path!(),
+            }
+        }
+    };
+}
+
+/// Define a typed marker for an explicit cross-crate typegen group.
+#[macro_export]
+macro_rules! typegen_group {
+    ($vis:vis $name:ident) => {
+        $vis struct $name;
+        impl $crate::codegen_types::TypegenGroup for $name {}
+    };
+}
+
+/// Enroll all registrations owned by this crate in a typed typegen group.
+#[macro_export]
+macro_rules! register_typegen_group_member {
+    ($group:ty) => {
+        $crate::inventory::submit! {
+            $crate::codegen_types::TypegenGroupMemberRegistration {
+                group_type_id: || ::std::any::TypeId::of::<$group>(),
                 crate_path: module_path!(),
             }
         }
