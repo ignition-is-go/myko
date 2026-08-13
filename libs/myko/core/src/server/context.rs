@@ -497,7 +497,7 @@ impl MykoServerContext {
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
         self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin, false)
     }
 
     /// Delete an entity (DEL) with default options.
@@ -520,7 +520,7 @@ impl MykoServerContext {
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
         self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin, false)
     }
 
     /// Publish a batch of entities (SET) with default options.
@@ -610,7 +610,8 @@ impl MykoServerContext {
         origin: Origin,
     ) -> Result<(), PersistError> {
         self.reduce_one(&item, MEventType::SET);
-        let result = self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin);
+        let result =
+            self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin, false);
         drop(item);
         result
     }
@@ -649,7 +650,8 @@ impl MykoServerContext {
         origin: Origin,
     ) -> Result<(), PersistError> {
         self.reduce_one(&item, MEventType::DEL);
-        let result = self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin);
+        let result =
+            self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin, false);
         drop(item);
         result
     }
@@ -1028,6 +1030,22 @@ impl MykoServerContext {
                 .push(item.clone());
         }
 
+        // Enqueue durable events before opening the reactive batch. A large
+        // import can spend substantial time draining downstream query work; if
+        // the process is restarted during that drain, the already-reduced state
+        // must still be replayable. The saga sink remains post-reduce so sagas
+        // never observe an event before its item is visible in the registry.
+        if origin.should_produce() {
+            for group in by_type.values() {
+                for item in group {
+                    match change {
+                        MEventType::SET => self.persist_set_dyn(item)?,
+                        MEventType::DEL => self.persist_del_dyn(item)?,
+                    }
+                }
+            }
+        }
+
         // Reduce: one store diff per type, across all groups, before any cascade
         // (so the store is fully settled — load-bearing for transitive cascade).
         //
@@ -1073,7 +1091,7 @@ impl MykoServerContext {
 
         // Effects: search + cascade + produce, per same-type group.
         for group in by_type.values() {
-            self.apply_effects(group, change, origin)?;
+            self.apply_effects(group, change, origin, true)?;
         }
         Ok(())
     }
@@ -1091,6 +1109,7 @@ impl MykoServerContext {
         items: &[Arc<dyn AnyItem>],
         change: MEventType,
         origin: Origin,
+        persister_already_enqueued: bool,
     ) -> Result<(), PersistError> {
         // Separate from `myko.reduce` so the relationship-cascade/persist
         // tail is distinguishable from the direct state-cell write in a
@@ -1122,25 +1141,32 @@ impl MykoServerContext {
         if origin.should_cascade(change) {
             match change {
                 MEventType::SET => {
-                    for item in items {
-                        self.relationship_manager.forward_set(item.clone(), self)?;
-                    }
+                    self.relationship_manager.forward_set_batch(items, self)?;
                 }
                 MEventType::DEL => self.relationship_manager.forward_del_batch(items, self)?,
             }
         }
 
-        // Persist: produce to persisters + sink unless this origin must not.
+        // Produce after reduce/cascade. Batch paths enqueue the durable side
+        // before their reactive drain, so only the saga sink remains here.
         if origin.should_produce() {
             match change {
                 MEventType::SET => {
                     for item in items {
-                        self.produce_set_dyn(item)?;
+                        if persister_already_enqueued {
+                            self.send_set_to_sink(item);
+                        } else {
+                            self.produce_set_dyn(item)?;
+                        }
                     }
                 }
                 MEventType::DEL => {
                     for item in items {
-                        self.produce_del_dyn(item)?;
+                        if persister_already_enqueued {
+                            self.send_del_to_sink(item);
+                        } else {
+                            self.produce_del_dyn(item)?;
+                        }
                     }
                 }
             }
@@ -1180,6 +1206,43 @@ impl MykoServerContext {
             }
         }
         Ok(())
+    }
+
+    fn persist_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        build: impl FnOnce() -> MEvent,
+    ) -> Result<(), PersistError> {
+        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
+            persister.persist(build())?;
+        }
+        Ok(())
+    }
+
+    fn send_dyn_to_sink(&self, build: impl FnOnce() -> MEvent) {
+        if let Some(sink) = &self.event_sink {
+            let _ = sink.send(build());
+        }
+    }
+
+    fn persist_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.persist_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
+    }
+
+    fn persist_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.persist_dyn(item, || {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        })
+    }
+
+    fn send_del_to_sink(&self, item: &Arc<dyn AnyItem>) {
+        self.send_dyn_to_sink(|| MEvent::del_from_any(item, &self.host_id_str));
+    }
+
+    fn send_set_to_sink(&self, item: &Arc<dyn AnyItem>) {
+        self.send_dyn_to_sink(|| {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        });
     }
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
@@ -1624,7 +1687,10 @@ impl std::fmt::Debug for MykoServerContext {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use serde::{Deserialize, Serialize};
     use serde_json::json;
@@ -1638,7 +1704,10 @@ mod tests {
         },
         hyphae::{Gettable, Materialize},
         search::SearchIndex,
-        server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{
+            HandlerRegistry, PersistError, Persister, RelationshipManager,
+            persister::PersisterRouter,
+        },
         store::StoreRegistry,
         test_util::scheduler_test_serial,
         wire::{MEvent, MEventType},
@@ -1761,6 +1830,72 @@ mod tests {
                 history_replay: None,
             },
         )
+    }
+
+    struct PreReducePersister {
+        registry: Arc<StoreRegistry>,
+        calls: AtomicUsize,
+        all_before_reduce: AtomicBool,
+    }
+
+    impl Persister for PreReducePersister {
+        fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if self
+                .registry
+                .get("ImmediateTestItem")
+                .is_some_and(|store| !store.snapshot().is_empty())
+            {
+                self.all_before_reduce.store(false, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn batch_persistence_is_enqueued_before_reactive_reduce() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let persister = Arc::new(PreReducePersister {
+            registry: registry.clone(),
+            calls: AtomicUsize::new(0),
+            all_before_reduce: AtomicBool::new(true),
+        });
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(persister.clone()));
+        let ctx = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+        let items = [
+            ImmediateTestItem {
+                id: "pre-reduce-1".into(),
+                value: 1,
+            },
+            ImmediateTestItem {
+                id: "pre-reduce-2".into(),
+                value: 2,
+            },
+        ];
+
+        assert!(ctx.batch_set(&items).is_ok());
+        assert_eq!(persister.calls.load(Ordering::Relaxed), items.len());
+        assert!(persister.all_before_reduce.load(Ordering::Relaxed));
+        assert_eq!(
+            registry
+                .get("ImmediateTestItem")
+                .map_or(0, |store| store.snapshot().len()),
+            items.len()
+        );
     }
 
     #[test]

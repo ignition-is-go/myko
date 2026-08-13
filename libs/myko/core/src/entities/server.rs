@@ -28,6 +28,7 @@ impl QueryHandler for GetConnectedServer {
         item_id == host_id
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
         ctx: QueryBuildArgs<Self>,
     ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>
@@ -59,6 +60,7 @@ impl QueryHandler for GetPeerServers {
         item_id != host_id
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
         ctx: QueryBuildArgs<Self>,
     ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>

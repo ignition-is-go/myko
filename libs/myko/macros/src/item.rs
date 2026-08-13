@@ -323,6 +323,18 @@ fn generate_route_impl(
             fn matches(&self, item: &Self::Item) -> bool { #filter_ident::matches(self, item) }
             fn query_route(&self) -> Option<#krate::query::QueryRoute> { #filter_ident::query_route(self) }
         }
+
+        #[cfg(target_arch = "wasm32")]
+        impl #krate::query::LiveFilterQuery for #filter_ident {
+            type Item = #name;
+            fn entity_type() -> &'static str { #name_str }
+            fn matches(&self, _item: &Self::Item) -> bool {
+                unreachable!("live queries execute on the server")
+            }
+            fn query_route(&self) -> Option<#krate::query::QueryRoute> {
+                unreachable!("live queries execute on the server")
+            }
+        }
     }
 }
 
