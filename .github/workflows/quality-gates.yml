@@ -59,7 +59,9 @@ jobs:
       - name: Run Rust and frontend tests
         run: cargo flux run test
       - name: Test typegen renderer and macro defaults
-        run: cargo test -p myko --lib --features codegen-ts codegen::typescript:: && cargo test -p myko-macros --lib
+        run: |
+          cargo test -p myko --lib --features codegen-ts codegen::typescript::
+          cargo test -p myko-macros --lib
       - name: Check feature boundaries
         run: |
           cargo check --workspace --all-targets --no-default-features
