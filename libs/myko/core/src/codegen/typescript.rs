@@ -626,6 +626,7 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[allow(clippy::unnecessary_wraps)]
     fn adapter_export_ok() -> Result<(), ts_rs::ExportError> {
         Ok(())
     }
@@ -662,7 +663,7 @@ mod tests {
         let selected = typescript_adapters_for_catalog(&catalog, [&OWN_ADAPTER, &FOREIGN_ADAPTER]);
 
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].type_name, "Own");
+        assert_eq!(selected.first().map(|adapter| adapter.type_name), Some("Own"));
     }
 
     /// A process- and call-unique scratch directory under the system temp
