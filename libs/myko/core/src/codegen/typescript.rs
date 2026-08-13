@@ -14,7 +14,7 @@ use dprint_plugin_typescript::{
 mod typegen_typescript;
 
 use crate::{
-    codegen_types::{TypegenCatalog, TypegenConstValue, registration_belongs_to_crate},
+    codegen_types::{TypegenCatalog, TypegenConstValue},
     operation_index::{
         collect_ts_binding_files, extract_exported_object_type_body, parse_object_type_fields,
     },
@@ -151,11 +151,65 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
     types
 }
 
+fn registration_crate_root(path: &str) -> Option<&str> {
+    path.split("::").next()
+}
+
+fn catalog_crate_roots(catalog: &TypegenCatalog) -> HashSet<&str> {
+    catalog
+        .types
+        .iter()
+        .filter_map(|entry| registration_crate_root(entry.crate_path))
+        .chain(
+            catalog
+                .constants
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_path)),
+        )
+        .chain(
+            catalog
+                .modules
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_path)),
+        )
+        .chain(
+            catalog
+                .items
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_name)),
+        )
+        .chain(
+            catalog
+                .queries
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_name)),
+        )
+        .chain(
+            catalog
+                .views
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_name)),
+        )
+        .chain(
+            catalog
+                .reports
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_name)),
+        )
+        .chain(
+            catalog
+                .commands
+                .iter()
+                .filter_map(|entry| registration_crate_root(entry.crate_name)),
+        )
+        .collect()
+}
+
 fn generate_import_sections(
     directory_path: &str,
-    crate_name: &str,
     catalog: &TypegenCatalog,
 ) -> (String, String, String, String) {
+    let selected_crates = catalog_crate_roots(catalog);
     let class_type_names: HashSet<&str> = catalog
         .queries
         .iter()
@@ -192,15 +246,15 @@ fn generate_import_sections(
                 .map(|view| view.view_item_type.to_string()),
         )
         .collect();
-    for report in catalog
-        .reports
-        .iter()
-        .filter(|report| registration_belongs_to_crate(report.output_type_crate, crate_name))
-    {
+    for report in catalog.reports.iter().filter(|report| {
+        registration_crate_root(report.output_type_crate)
+            .is_some_and(|name| selected_crates.contains(name))
+    }) {
         entity_types.extend(extract_importable_types(report.output_type));
     }
     for command in catalog.commands.iter().filter(|command| {
-        registration_belongs_to_crate(command.result_type_crate, crate_name)
+        registration_crate_root(command.result_type_crate)
+            .is_some_and(|name| selected_crates.contains(name))
             && command.result_type != "()"
     }) {
         entity_types.extend(extract_importable_types(command.result_type));
@@ -322,11 +376,31 @@ export type MykoEventType = typeof MykoEvent[keyof typeof MykoEvent];"
     )
 }
 
+/// Generate TypeScript bindings for registrations owned by the current crate.
 ///
 /// # Errors
 ///
-/// Returns an error when the requested operation cannot be completed.
+/// Returns an error when the crate name is unavailable or generation fails.
 pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
+    let crate_name = std::env::var("CARGO_PKG_NAME")
+        .context("CARGO_PKG_NAME environment variable not found")?
+        .replace('-', "_");
+    println!("The current crate name is: {crate_name}");
+    generate_item_types_for_catalog(directory_path, &TypegenCatalog::collect(&crate_name))
+}
+
+/// Generate TypeScript bindings for an explicitly collected catalog.
+///
+/// Aggregate typegen binaries can build the catalog with
+/// [`TypegenCatalog::collect_crates`] or [`TypegenCatalog::collect_crate_family`].
+///
+/// # Errors
+///
+/// Returns an error when bindings cannot be generated or written.
+pub fn generate_item_types_for_catalog(
+    directory_path: &str,
+    catalog: &TypegenCatalog,
+) -> Result<(), anyhow::Error> {
     let file_name = "index.ts";
 
     // Wipe before regenerating: collect_binding_types/collect_subdir_types
@@ -350,14 +424,8 @@ pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
     // SAFETY: this function is invoked by the single-threaded typegen binary.
     unsafe { std::env::set_var("TS_RS_EXPORT_DIR", directory_path) };
 
-    let crate_name = std::env::var("CARGO_PKG_NAME")
-        .context("CARGO_PKG_NAME environment variable not found")?
-        .replace('-', "_");
-    println!("The current crate name is: {crate_name}");
-    let catalog = TypegenCatalog::collect(&crate_name);
-
     println!("Exporting registered generated binding types...");
-    export_registered_ts_types_for_catalog(&catalog)?;
+    export_registered_ts_types_for_catalog(catalog)?;
 
     // Additional typegen modules are rendered before scanning bindings so their
     // generated barrels participate in the root index.
@@ -367,15 +435,15 @@ pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
     )?;
 
     let (binding_exports, subdir_exports, entity_imports, aliased_imports) =
-        generate_import_sections(directory_path, &crate_name, &catalog);
+        generate_import_sections(directory_path, catalog);
     let [
         query_classes,
         view_classes,
         report_classes,
         command_classes,
         item_ctor_obj,
-    ] = generate_class_sections(&catalog);
-    let const_exports = generate_const_exports(&catalog)?;
+    ] = generate_class_sections(catalog);
+    let const_exports = generate_const_exports(catalog)?;
     let message_events = generate_message_events();
 
     let code = [
@@ -693,7 +761,8 @@ mod tests {
         let Some(dir_str) = dir_str else {
             return;
         };
-        assert!(generate_item_types(dir_str).is_ok());
+        let catalog = TypegenCatalog::collect(env!("CARGO_CRATE_NAME"));
+        assert!(generate_item_types_for_catalog(dir_str, &catalog).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 
