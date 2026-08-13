@@ -585,8 +585,11 @@ mod tests {
             name: "example",
             optional: None,
             count: u64::MAX,
-        })
-        .expect("example should serialize");
+        });
+        assert!(value.is_ok(), "example should serialize");
+        let Ok(value) = value else {
+            return;
+        };
 
         assert_eq!(
             value,
@@ -615,14 +618,14 @@ mod tests {
 
         assert_eq!(module.declarations.len(), 4);
         assert!(matches!(
-            &module.declarations[2],
-            Declaration::KeyedIndex { name, entries, .. }
+            module.declarations.get(2),
+            Some(Declaration::KeyedIndex { name, entries, .. })
                 if name == "entriesByKey"
                     && entries == &vec![(Value::string("first"), "FIRST".into())]
         ));
         assert!(matches!(
-            &module.declarations[3],
-            Declaration::Find { name, index, .. }
+            module.declarations.get(3),
+            Some(Declaration::Find { name, index, .. })
                 if name == "findEntry" && index == "entriesByKey"
         ));
     }

@@ -817,27 +817,35 @@ mod tests {
     fn aggregate_catalog_exports_framework_filter_dependencies() {
         let _serial = typegen_test_serial();
         let dir = unique_bindings_dir("aggregate-framework-types");
-        let Some(dir_str) = dir.to_str() else {
-            panic!("temp dir path is valid UTF-8");
-        };
+        let dir_string = dir.to_string_lossy();
         let catalog = TypegenCatalog::collect_crate_family("downstream_entities");
 
-        assert!(generate_item_types_for_catalog(dir_str, &catalog).is_ok());
+        let generated = generate_item_types_for_catalog(&dir_string, &catalog);
+        assert!(generated.is_ok(), "aggregate catalog should render");
+        let Ok(()) = generated else {
+            return;
+        };
         assert!(dir.join("AggregateDownstreamQuery.ts").exists());
         assert!(dir.join("IdFilter.ts").exists());
         assert!(dir.join("StringFilter.ts").exists());
         assert!(dir.join("SchemaRef.ts").exists());
         assert!(dir.join("ServerId.ts").exists());
         assert!(dir.join("MEventType.ts").exists());
-        let query = fs::read_to_string(dir.join("AggregateDownstreamQuery.ts"))
-            .expect("aggregate query binding should be readable");
+        let query = fs::read_to_string(dir.join("AggregateDownstreamQuery.ts"));
+        assert!(query.is_ok(), "aggregate query binding should be readable");
+        let Ok(query) = query else {
+            return;
+        };
         assert!(query.contains("./IdFilter"));
         assert!(query.contains("./StringFilter"));
         assert!(query.contains("./SchemaRef"));
         assert!(query.contains("./ServerId"));
         assert!(query.contains("./MEventType"));
-        let index =
-            fs::read_to_string(dir.join("index.ts")).expect("aggregate index should be readable");
+        let index = fs::read_to_string(dir.join("index.ts"));
+        assert!(index.is_ok(), "aggregate index should be readable");
+        let Ok(index) = index else {
+            return;
+        };
         for dependency in [
             "SchemaRef",
             "ServerId",

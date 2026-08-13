@@ -657,7 +657,11 @@ mod tests {
                 Value::object([("typeId", "different-serialized-value".into())]),
             )),
         );
-        let rendered = render_typegen_module(&module).expect("registry should render");
+        let rendered = render_typegen_module(&module);
+        assert!(rendered.is_ok(), "registry should render");
+        let Ok(rendered) = rendered else {
+            return;
+        };
         assert!(rendered.contains(r#"["scene", SceneNode]"#));
         assert!(!rendered.contains("entry.typeId"));
     }
