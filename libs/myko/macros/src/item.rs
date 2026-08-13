@@ -219,7 +219,7 @@ fn generate_filter_struct(
             }
         }
 
-        #krate::register_ts_export!(#filter_ident);
+        #krate::register_typegen_type!(#filter_ident);
     }
 }
 
@@ -506,7 +506,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         #[ts(crate = "myko::ts_rs")]
         #serde_attr
         pub struct #delete_result { pub deleted: bool }
-        #krate::register_ts_export!(#delete_result);
+        #krate::register_typegen_type!(#delete_result);
 
         #[#krate::myko_command(#delete_result)]
         pub struct #delete_ident { pub id: #id }
@@ -525,7 +525,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         #[ts(crate = "myko::ts_rs")]
         #serde_attr
         pub struct #delete_many_result { pub deleted_count: usize }
-        #krate::register_ts_export!(#delete_many_result);
+        #krate::register_typegen_type!(#delete_many_result);
 
         #[#krate::myko_command(#delete_many_result)]
         pub struct #delete_many_ident { pub ids: Vec<#id> }
@@ -782,7 +782,7 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
         #input_struct
         #partial_eq_impl
         #post_deserialize
-        #krate::register_ts_export!(#id_type_ident, #name);
+        #krate::register_typegen_type!(#id_type_ident, #name);
         #krate::submit! { #item_registration }
         #ingest_registration
 

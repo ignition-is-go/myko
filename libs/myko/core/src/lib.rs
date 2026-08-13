@@ -92,6 +92,8 @@ pub mod search;
 pub mod server;
 pub mod store;
 pub mod typegen_module;
+#[cfg(feature = "typegen-typescript")]
+pub mod typegen_typescript;
 pub mod utils;
 pub mod wire;
 
@@ -150,11 +152,11 @@ macro_rules! register_typegen_type {
             $crate::codegen_types::TypegenTypeRegistration {
                 id: concat!(module_path!(), "::", stringify!($ty)),
                 type_name: stringify!($ty),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
         $crate::inventory::submit! {
-            $crate::codegen_types::TypeScriptTypeExportRegistration {
+            $crate::typegen_typescript::TypeExportRegistration {
                 type_id: concat!(module_path!(), "::", stringify!($ty)),
                 type_name: stringify!($ty),
                 export_fn: || {
@@ -178,7 +180,7 @@ macro_rules! register_typegen_type {
             $crate::codegen_types::TypegenTypeRegistration {
                 id: concat!(module_path!(), "::", stringify!($ty)),
                 type_name: stringify!($ty),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
     };
@@ -186,14 +188,6 @@ macro_rules! register_typegen_type {
         $(
             $crate::register_typegen_type!($ty);
         )+
-    };
-}
-
-/// Compatibility wrapper for the original TypeScript-specific spelling.
-#[macro_export]
-macro_rules! register_ts_export {
-    ($($ty:ty),+ $(,)?) => {
-        $crate::register_typegen_type!($($ty),+);
     };
 }
 
@@ -240,7 +234,7 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Str($value),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
     };
@@ -250,7 +244,7 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Str($value),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
     };
@@ -260,7 +254,7 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Int($value),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
     };
@@ -270,7 +264,7 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Int($value),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
     };
@@ -280,7 +274,7 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Bool($value),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
     };
@@ -290,17 +284,9 @@ macro_rules! shared_const {
             $crate::codegen_types::TypegenConstRegistration {
                 name: stringify!($name),
                 value: $crate::codegen_types::TypegenConstValue::Bool($value),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
             }
         }
-    };
-}
-
-/// Compatibility wrapper for the original TypeScript-specific spelling.
-#[macro_export]
-macro_rules! ts_const {
-    ($($tokens:tt)*) => {
-        $crate::shared_const!($($tokens)*);
     };
 }
 
@@ -315,7 +301,7 @@ macro_rules! register_typegen_module {
         $crate::inventory::submit! {
             $crate::codegen_types::TypegenModuleRegistration {
                 id: stringify!($id),
-                crate_name: module_path!(),
+                crate_path: module_path!(),
                 build: $build,
             }
         }

@@ -232,7 +232,7 @@ internals and adds only the per-field diff + incremental bucket subscription lay
 ### 6. Codegen / TS / wasm
 
 - Generate TS types for `XFilter`, each filter type (`IdFilter`, `NumericFilter`,
-  `StringFilter`, `EqFilter`), and the query class; register via the normal `register_ts_export`
+  `StringFilter`, `EqFilter`), and the query class; register via the normal `register_typegen_type`
   path. Never hand-written (rship rule). The per-type filters give TS callers honest unions —
   an id field's filter type simply has no `contains`/`range` arm to misuse.
 - Wire: new types, so no back-compat constraint on their own shape — but pick the serde

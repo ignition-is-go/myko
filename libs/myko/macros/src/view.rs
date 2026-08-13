@@ -38,7 +38,7 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
             #registration
         }
 
-        #krate::register_ts_export!(#struct_name);
+        #krate::register_typegen_type!(#struct_name);
 
         impl #krate::prelude::ViewId for #struct_name {
             fn view_id(&self) -> std::sync::Arc<str> {
@@ -99,7 +99,7 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #serde_rename_attr
         #input_struct
 
-        #krate::register_ts_export!(#name);
+        #krate::register_typegen_type!(#name);
 
         impl #krate::prelude::WithId for #name {
             fn id(&self) -> std::sync::Arc<str> {

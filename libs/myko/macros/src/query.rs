@@ -103,7 +103,7 @@ pub fn myko_query_impl(query_item_type: &Path, mut input_struct: ItemStruct) -> 
         }
 
         // Register for ts-rs export (just the params type now)
-        #krate::register_ts_export!(#struct_name);
+        #krate::register_typegen_type!(#struct_name);
 
         // Impl QueryId
         impl #krate::prelude::QueryId for #struct_name {

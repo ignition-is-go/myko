@@ -663,7 +663,7 @@ impl<A, B, C, D> Filterable for (A, B, C, D) {
 // derive bounds (Clone/PartialEq/Eq/Serialize/Deserialize/TS). `bool`
 // (bare equality's own filter type) needs no registration: it maps
 // directly to the TS `boolean` primitive, not a named type declaration.
-crate::register_ts_export!(
+crate::register_typegen_type!(
     IdFilter<Arc<str>>,
     NumericFilter<i64>,
     StringFilter,

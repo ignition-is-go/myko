@@ -151,7 +151,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         #krate::register_command_handler!(#struct_name);
 
         // Register for ts-rs export
-        #krate::register_ts_export!(#struct_name, #args_struct_name);
+        #krate::register_typegen_type!(#struct_name, #args_struct_name);
     };
 
     expanded

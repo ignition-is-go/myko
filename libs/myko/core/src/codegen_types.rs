@@ -20,19 +20,19 @@ pub enum TypegenConstValue {
 pub struct TypegenConstRegistration {
     pub name: &'static str,
     pub value: TypegenConstValue,
-    pub crate_name: &'static str,
+    pub crate_path: &'static str,
 }
 
 inventory::collect!(TypegenConstRegistration);
 
 /// A Rust type selected for generated-language export.
 ///
-/// This describes ownership only. Rendering callbacks belong to backend adapter
-/// registrations such as [`TypeScriptTypeExportRegistration`].
+/// This describes ownership only. Rendering callbacks belong to
+/// backend-specific adapter registrations.
 pub struct TypegenTypeRegistration {
     pub id: &'static str,
     pub type_name: &'static str,
-    pub crate_name: &'static str,
+    pub crate_path: &'static str,
 }
 
 inventory::collect!(TypegenTypeRegistration);
@@ -42,7 +42,7 @@ pub struct TypegenModuleRegistration {
     /// Stable registration identifier, used in diagnostics.
     pub id: &'static str,
     /// Registering crate/module path, used to select the current typegen crate.
-    pub crate_name: &'static str,
+    pub crate_path: &'static str,
     /// Build the module IR from the registering crate's inventories.
     pub build: fn() -> crate::typegen_module::TypegenModule,
 }
@@ -67,15 +67,15 @@ impl TypegenCatalog {
         Self {
             types: inventory::iter::<TypegenTypeRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| registration_belongs_to_crate(entry.crate_path, crate_name))
                 .collect(),
             constants: inventory::iter::<TypegenConstRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| registration_belongs_to_crate(entry.crate_path, crate_name))
                 .collect(),
             modules: inventory::iter::<TypegenModuleRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| registration_belongs_to_crate(entry.crate_path, crate_name))
                 .collect(),
             items: inventory::iter::<ItemRegistration>
                 .into_iter()
@@ -118,26 +118,6 @@ pub fn registration_belongs_to_crate(registration_path: &str, crate_name: &str) 
     registration_path.split("::").next() == Some(crate_name)
 }
 
-/// TypeScript-specific rendering adapter for a neutral type registration.
-#[cfg(feature = "typegen-typescript")]
-pub struct TypeScriptTypeExportRegistration {
-    pub type_id: &'static str,
-    pub type_name: &'static str,
-    pub export_fn: fn() -> Result<(), ts_rs::ExportError>,
-}
-
-#[cfg(feature = "typegen-typescript")]
-inventory::collect!(TypeScriptTypeExportRegistration);
-
-// Compatibility spellings. Canonical registrations above remain backend-neutral.
-pub type TsConstValue = TypegenConstValue;
-pub type TsConstRegistration = TypegenConstRegistration;
-#[cfg(feature = "typegen-typescript")]
-pub type TsExportRegistration = TypeScriptTypeExportRegistration;
-
-#[cfg(feature = "typegen-typescript")]
-pub use ts_rs::TS;
-
 #[cfg(test)]
 mod tests {
     use super::{TypegenCatalog, TypegenTypeRegistration, registration_belongs_to_crate};
@@ -146,7 +126,7 @@ mod tests {
         TypegenTypeRegistration {
             id: "rship::Own",
             type_name: "Own",
-            crate_name: "rship::nested",
+            crate_path: "rship::nested",
         }
     }
 
@@ -154,7 +134,7 @@ mod tests {
         TypegenTypeRegistration {
             id: "rship_core::Foreign",
             type_name: "Foreign",
-            crate_name: "rship_core",
+            crate_path: "rship_core",
         }
     }
 

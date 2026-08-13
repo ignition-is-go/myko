@@ -99,7 +99,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
         }
 
         // Register for ts-rs export (just the params type now)
-        #krate::register_ts_export!(#struct_name);
+        #krate::register_typegen_type!(#struct_name);
 
         // Impl ReportId
         impl #krate::prelude::ReportId for #struct_name {

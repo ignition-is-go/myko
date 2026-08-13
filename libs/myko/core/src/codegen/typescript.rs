@@ -14,13 +14,11 @@ use dprint_plugin_typescript::{
 mod typegen_typescript;
 
 use crate::{
-    codegen_types::{
-        TypeScriptTypeExportRegistration, TypegenCatalog, TypegenConstValue,
-        registration_belongs_to_crate,
-    },
+    codegen_types::{TypegenCatalog, TypegenConstValue, registration_belongs_to_crate},
     operation_index::{
         collect_ts_binding_files, extract_exported_object_type_body, parse_object_type_fields,
     },
+    typegen_typescript::TypeExportRegistration,
     wire::MessageEventRegistration,
 };
 
@@ -39,8 +37,8 @@ struct DocEntry {
 
 fn typescript_adapters_for_catalog<'a>(
     catalog: &TypegenCatalog,
-    adapters: impl IntoIterator<Item = &'a TypeScriptTypeExportRegistration>,
-) -> Vec<&'a TypeScriptTypeExportRegistration> {
+    adapters: impl IntoIterator<Item = &'a TypeExportRegistration>,
+) -> Vec<&'a TypeExportRegistration> {
     let type_ids = catalog.type_ids();
     adapters
         .into_iter()
@@ -57,10 +55,9 @@ fn export_registered_ts_types_for_catalog(catalog: &TypegenCatalog) -> Result<()
     let mut success_count = 0_u64;
     let mut error_count = 0_u64;
 
-    for registration in typescript_adapters_for_catalog(
-        catalog,
-        inventory::iter::<TypeScriptTypeExportRegistration>,
-    ) {
+    for registration in
+        typescript_adapters_for_catalog(catalog, inventory::iter::<TypeExportRegistration>)
+    {
         match (registration.export_fn)() {
             Ok(()) => {
                 println!("  Exported: {}", registration.type_name);
@@ -639,19 +636,18 @@ mod tests {
             crate::codegen_types::TypegenTypeRegistration {
                 id: "rship::Own",
                 type_name: "Own",
-                crate_name: "rship",
+                crate_path: "rship",
             };
-        static OWN_ADAPTER: TypeScriptTypeExportRegistration = TypeScriptTypeExportRegistration {
+        static OWN_ADAPTER: TypeExportRegistration = TypeExportRegistration {
             type_id: "rship::Own",
             type_name: "Own",
             export_fn: adapter_export_ok,
         };
-        static FOREIGN_ADAPTER: TypeScriptTypeExportRegistration =
-            TypeScriptTypeExportRegistration {
-                type_id: "rship_core::Foreign",
-                type_name: "Foreign",
-                export_fn: adapter_export_ok,
-            };
+        static FOREIGN_ADAPTER: TypeExportRegistration = TypeExportRegistration {
+            type_id: "rship_core::Foreign",
+            type_name: "Foreign",
+            export_fn: adapter_export_ok,
+        };
 
         let catalog = TypegenCatalog {
             types: vec![&OWN_TYPE],

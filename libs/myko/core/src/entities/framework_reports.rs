@@ -424,7 +424,7 @@ impl ReportHandler for GetPersistHealth {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Register output types for ts-rs export
-crate::register_ts_export!(
+crate::register_typegen_type!(
     ItemStub,
     EntitySnapshotDifferenceData,
     LogLevel,

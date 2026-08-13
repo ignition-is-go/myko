@@ -774,7 +774,7 @@ pub fn myko_saga(attr: TokenStream, input: TokenStream) -> TokenStream {
 /// #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, myko::TS)]
 /// #[serde(rename_all = "camelCase")]
 /// pub struct ServerStatsOutput { ... }
-/// myko::register_ts_export!(ServerStatsOutput);
+/// myko::register_typegen_type!(ServerStatsOutput);
 /// ```
 #[proc_macro_attribute]
 pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream {
@@ -814,7 +814,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
             fn eq(&self, other: &Self) -> bool { #equal_fields }
         }
 
-        #krate::register_ts_export!(#name);
+        #krate::register_typegen_type!(#name);
     };
 
     expanded.into()
@@ -825,13 +825,13 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 ///
 /// Bundles the
 /// standard derives + serde camelCase rename + conditional TS export +
-/// `register_ts_export!` so subtype definitions don't repeat 3–4 lines of
+/// `register_typegen_type!` so subtype definitions don't repeat 3–4 lines of
 /// boilerplate each.
 ///
 /// Default derives: `Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize`.
 /// Always added: `#[cfg_attr(feature = "typegen-typescript", derive(myko::TS))]`,
 /// `#[cfg_attr(feature = "typegen-typescript", ts(export))]`, and
-/// `#[serde(rename_all = "camelCase")]`. Emits a `register_ts_export!`
+/// `#[serde(rename_all = "camelCase")]`. Emits a `register_typegen_type!`
 /// call after the item so typegen picks it up when the feature is on.
 ///
 /// Extra derives (e.g. `Default`, `Eq`, `Hash`, `Copy`) can be requested
@@ -994,7 +994,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     let serde_path = &ctx.serde_path;
 
     // Common setup: gate user-written `#[ts(...)]` attrs, extract name for
-    // the `register_ts_export!` call. Also normalize visibility expectations
+    // the `register_typegen_type!` call. Also normalize visibility expectations
     // to either struct or enum — other shapes aren't meaningful as subtypes.
     //
     // `is_struct` controls whether we default to `#[serde(rename_all = "camelCase")]`.

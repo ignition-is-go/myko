@@ -33,7 +33,7 @@ pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
 pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view};
 
 // Ensure core wire types are exported to TS bindings for downstream packages.
-crate::register_ts_export!(
+crate::register_typegen_type!(
     event::MEventType,
     event::MEvent,
     message::CancelSubscription,

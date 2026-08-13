@@ -81,7 +81,7 @@ impl XQuery {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn belongs_to_route(&self) -> Option<BelongsToRoute> { /* unchanged */ }
 }
-register_ts_export!(XQuery);
+register_typegen_type!(XQuery);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl query::LiveFilterQuery for XQuery {

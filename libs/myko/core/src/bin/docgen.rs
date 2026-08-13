@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
         let output = std::env::var("MYKO_DOCGEN_OUTPUT")
             .unwrap_or_else(|_| "libs/myko/rs/docs/myko.json".to_string());
 
-        myko::codegen::generate_docs_json_from_bindings(&bindings_dir, &output)?;
+        myko::codegen::typescript::generate_docs_json_from_bindings(&bindings_dir, &output)?;
         Ok(())
     }
 

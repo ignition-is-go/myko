@@ -19,11 +19,11 @@
 //!
 //! 2. **Lightweight ts-rs `.ts` binding text parsing**, shared with the
 //!    (heavy, `codegen`-feature-gated) TS codegen tooling in
-//!    `crate::codegen` for its *doc generation* pass
+//!    `crate::codegen::typescript` for its *doc generation* pass
 //!    (`generate_docs_json_from_bindings`) — a genuinely separate, still
 //!    file-based feature for producing the TS SDK's prose docs, unrelated
 //!    to MCP. This module intentionally does not depend on
-//!    `dprint-plugin-typescript` itself (unlike `crate::codegen`), so it can
+//!    `dprint-plugin-typescript` itself (unlike `crate::codegen::typescript`), so it can
 //!    be an always-on dependency of `myko-server` without forcing every
 //!    server binary to pull in a full TS formatter.
 
@@ -208,10 +208,10 @@ pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ts-rs `.ts` binding text parsing — shared with `crate::codegen`'s docgen.
+// ts-rs `.ts` binding text parsing — shared with `crate::codegen::typescript`'s docgen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Only consumed by `crate::codegen::generate_docs_json_from_bindings`, which
+// Only consumed by `crate::codegen::typescript::generate_docs_json_from_bindings`, which
 // is gated behind the (non-default) `codegen` feature.
 #[cfg(feature = "codegen")]
 pub(crate) fn collect_ts_binding_files(bindings_dir: &Path) -> Result<Vec<PathBuf>, anyhow::Error> {
