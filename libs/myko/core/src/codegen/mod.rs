@@ -134,6 +134,10 @@ fn collect_subdir_types(directory_path: &str) -> Vec<(String, String)> {
     types
 }
 
+fn registration_belongs_to_crate(module_path: &str, crate_name: &str) -> bool {
+    module_path.split("::").next() == Some(crate_name)
+}
+
 struct TypeRegistrations {
     items: Vec<&'static ItemRegistration>,
     queries: Vec<&'static QueryRegistration>,
@@ -145,19 +149,19 @@ struct TypeRegistrations {
 
 fn collect_type_registrations(crate_name: &str) -> TypeRegistrations {
     let items = inventory::iter::<ItemRegistration>()
-        .filter(|entry| entry.crate_name.contains(crate_name))
+        .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
         .collect();
     let queries: Vec<_> = inventory::iter::<QueryRegistration>()
-        .filter(|entry| entry.crate_name.contains(crate_name))
+        .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
         .collect();
     let views: Vec<_> = inventory::iter::<ViewRegistration>()
-        .filter(|entry| entry.crate_name.contains(crate_name))
+        .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
         .collect();
     let reports: Vec<_> = inventory::iter::<ReportRegistration>()
-        .filter(|entry| entry.crate_name.contains(crate_name))
+        .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
         .collect();
     let commands: Vec<_> = inventory::iter::<CommandRegistration>()
-        .filter(|entry| entry.crate_name.contains(crate_name))
+        .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
         .collect();
     let class_type_names = queries
         .iter()
@@ -212,12 +216,13 @@ fn generate_import_sections(
     for report in registrations
         .reports
         .iter()
-        .filter(|report| report.output_type_crate.contains(crate_name))
+        .filter(|report| registration_belongs_to_crate(report.output_type_crate, crate_name))
     {
         entity_types.extend(extract_importable_types(report.output_type));
     }
     for command in registrations.commands.iter().filter(|command| {
-        command.result_type_crate.contains(crate_name) && command.result_type != "()"
+        registration_belongs_to_crate(command.result_type_crate, crate_name)
+            && command.result_type != "()"
     }) {
         entity_types.extend(extract_importable_types(command.result_type));
     }
@@ -292,7 +297,7 @@ fn generate_const_exports(crate_name: &str) -> Result<String, anyhow::Error> {
     let mut seen: HashMap<&str, &TsConstValue> = HashMap::new();
     let mut registrations = Vec::new();
     for registration in inventory::iter::<TsConstRegistration>()
-        .filter(|entry| entry.crate_name.contains(crate_name))
+        .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
     {
         if let Some(existing) = seen.get(registration.name) {
             if !registration.value.eq(existing) {
@@ -641,6 +646,15 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_filter_matches_only_the_module_path_crate_segment() {
+        assert!(registration_belongs_to_crate("rship", "rship"));
+        assert!(registration_belongs_to_crate("rship::nested", "rship"));
+        assert!(!registration_belongs_to_crate("rship_core", "rship"));
+        assert!(!registration_belongs_to_crate("my_rship", "rship"));
+        assert!(!registration_belongs_to_crate("rshipper", "rship"));
+    }
 
     /// A process- and call-unique scratch directory under the system temp
     /// dir. Each codegen test gets its own, so `generate_item_types`' wipe +

@@ -324,7 +324,7 @@ pub(super) fn export_registered_typegen_modules(
     crate_name: &str,
 ) -> anyhow::Result<()> {
     let mut modules = inventory::iter::<TypegenModuleRegistration>()
-        .filter(|r| r.crate_name.contains(crate_name))
+        .filter(|r| super::registration_belongs_to_crate(r.crate_name, crate_name))
         .map(|r| (r.id, (r.build)()))
         .collect::<Vec<_>>();
     modules.sort_by(|a, b| a.1.path.cmp(&b.1.path).then(a.0.cmp(b.0)));
