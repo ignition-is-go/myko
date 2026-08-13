@@ -49,14 +49,8 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// runtimes. Closures in the returned plan must be deterministic,
     /// externally side-effect-free, and nonblocking; Hyphae may invoke them
     /// repeatedly or concurrently, with no stable order, count, or thread.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn build_cell(
-        ctx: ViewBuildArgs<Self>,
-    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
-    where
-        Self: Send + Sync + 'static;
-
-    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    #[allow(clippy::as_conversions, clippy::unreachable)]
     fn build_cell(
         _ctx: ViewBuildArgs<Self>,
     ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>

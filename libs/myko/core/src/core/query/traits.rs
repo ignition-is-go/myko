@@ -56,12 +56,8 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// deterministic, externally side-effect-free, and nonblocking. The
     /// runtime may repeat or concurrently invoke it; invocation order, count,
     /// and worker thread are not stable contracts.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn test_entity(ctx: QueryTestContext<Self>) -> bool
-    where
-        Self: Send + Sync + 'static;
-
-    #[cfg(target_arch = "wasm32")]
+    #[must_use]
+    #[allow(clippy::unreachable)]
     fn test_entity(_ctx: QueryTestContext<Self>) -> bool
     where
         Self: Send + Sync + 'static,
