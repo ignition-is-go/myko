@@ -1188,10 +1188,7 @@ consistency boundary.
 
 ## 16. Type generation
 
-### 16.1 Neutral schema
-
-Do not add mandatory public fields to `TypegenCatalog`; downstream code may
-construct that public struct. Graph schema uses a separate neutral catalog:
+Graph schema is represented in backend-neutral catalogs:
 
 ```rust
 pub struct GraphSchemaCatalog {
@@ -1201,48 +1198,19 @@ pub struct GraphSchemaCatalog {
 }
 ```
 
-The typegen entry point collects `TypegenCatalog` and `GraphSchemaCatalog` for
-the same crate family and passes both to a renderer context. This preserves the
-existing catalog shape while keeping graph records backend-neutral.
+Renderers consume end requirements, A/B positions, `Directed`/`Undirected`
+shape, qualifier types, pair policy, and available projections. No
+renderer-specific callback belongs in these neutral records.
 
-Renderers consume endpoint requirements, A/B positions, qualifier types,
-edge shape, pair policy, and available projections. No TypeScript callback
-belongs in these neutral records.
+The stable erased cross-language shape is `EntityRef { entity_type, id }`. An
+aggregate application catalog may additionally generate a closed convenience
+union for the category members known to that aggregate. The open `EntityRef`
+remains canonical because independently built crates can add category
+memberships.
 
-### 16.2 Open-world erased references
-
-The stable cross-language form is:
-
-```ts
-export interface EntityRef {
-  entityType: string
-  id: string
-}
-```
-
-A complete aggregate application catalog generates a closed convenience union:
-
-```ts
-export type TagTargetRef =
-  | { entityType: 'Article'; id: ArticleId }
-  | { entityType: 'Image'; id: ImageId }
-```
-
-The open `EntityRef` remains canonical because separately built downstream
-crates can add category memberships.
-
-### 16.3 Existing exports remain
-
-An edge continues to appear in the normal item constructor/query exports. Graph
-metadata and helpers are additive:
-
-```ts
-items.TagAssignment
-edges.TagAssignment.from(...)
-edges.TagAssignment.to(...)
-```
-
-Adopting edge metadata must not remove or rename existing item APIs.
+An edge continues to appear in ordinary generated item/query exports. Graph
+metadata and helpers are additive and do not remove or rename existing item
+APIs.
 
 ## 17. Observability
 
@@ -1520,9 +1488,7 @@ backs their implementation.
 - open `EntityRef` generation;
 - aggregate closed category union where supported;
 - typed qualifier address generation;
-- existing item/query exports remain present;
-- at least two renderer fixtures consume the neutral model before claiming the
-  schema is backend-independent.
+- existing item/query exports remain present.
 
 ## 21. Benchmark plan
 
@@ -1644,8 +1610,8 @@ The graph-edge feature is acceptable when:
    version/lag information that consumers never mistake a partial rebuild for a
    complete graph.
 8. Edge and entity-category schema is emitted from the neutral aggregate
-   catalog and consumed by the active language renderer without embedding
-   renderer callbacks in neutral registrations.
+   catalog and consumed by the active renderer without embedding renderer
+   callbacks in neutral registrations.
 9. Demand-driven adjacency is the default. An application selects eager
    adjacency only when benchmarks against the fully routed item baseline show a
    workload benefit within its retained-bytes-per-edge budget.
@@ -1655,12 +1621,12 @@ The graph-edge feature is acceptable when:
 
 ## 24. Decision
 
-Proceed with an additive design in which an edge is an ordinary event-sourced
-Myko item plus separate graph metadata. Entity categories are downstream-defined
-and registered; Myko provides only the generic mechanism. Polymorphic endpoints use
-stable `EntityRef` values and category validation. Non-entity endpoint
-addresses are modeled as explicitly indexed qualifiers.
+An edge is an ordinary event-sourced Myko item plus separate graph metadata.
+Entity categories are downstream-defined and many-to-many. Erased ends use
+stable `EntityRef` values and category validation. Non-entity addresses are
+typed, indexed qualifiers. `Directed<A, B>` and `Undirected<A, B>` encode the
+edge shape, and either end may independently be concrete or erased.
 
-Do not introduce a second storage/event/persistence system. The default adjacency policy is demand-driven. Eager adjacency is opt-in and is
-benchmarked against the fully indexed item baseline. Index consolidation
+No second storage, event, or persistence system is introduced. Demand-driven
+adjacency is the default; eager adjacency is opt-in. Index consolidation
 requires equivalence and performance evidence.
