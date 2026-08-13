@@ -663,7 +663,10 @@ mod tests {
         let selected = typescript_adapters_for_catalog(&catalog, [&OWN_ADAPTER, &FOREIGN_ADAPTER]);
 
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected.first().map(|adapter| adapter.type_name), Some("Own"));
+        assert_eq!(
+            selected.first().map(|adapter| adapter.type_name),
+            Some("Own")
+        );
     }
 
     /// A process- and call-unique scratch directory under the system temp
