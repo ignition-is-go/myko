@@ -137,9 +137,14 @@ pub use wire::event; // For #[derive(myko::TS)]
 
 /// Register a Rust type for generated-language export.
 ///
-/// The neutral registration is always emitted. When the TypeScript backend is
-/// enabled, a separate adapter carries the `ts-rs` export callback.
-#[cfg(feature = "codegen-ts")]
+/// Registration is emitted only for native typegen builds. Runtime builds,
+/// especially WebAssembly clients, must not pay for inventory constructors.
+/// When the TypeScript backend is enabled, a separate adapter carries the
+/// `ts-rs` export callback.
+#[cfg(all(
+    feature = "codegen-ts",
+    not(target_arch = "wasm32")
+))]
 #[macro_export]
 macro_rules! register_typegen_type {
     ($ty:ty) => {
@@ -170,7 +175,11 @@ macro_rules! register_typegen_type {
     };
 }
 
-#[cfg(not(feature = "codegen-ts"))]
+#[cfg(all(
+    feature = "typegen",
+    not(feature = "codegen-ts"),
+    not(target_arch = "wasm32")
+))]
 #[macro_export]
 macro_rules! register_typegen_type {
     ($ty:ty) => {
@@ -189,12 +198,18 @@ macro_rules! register_typegen_type {
     };
 }
 
+#[cfg(any(not(feature = "typegen"), target_arch = "wasm32"))]
+#[macro_export]
+macro_rules! register_typegen_type {
+    ($($ty:ty),+ $(,)?) => {};
+}
+
 /// Give a Rust type an opaque/custom TypeScript representation.
 ///
 /// This is emitted by Myko-owned derives such as
 /// `#[myko_subtype(ts("unknown"))]`; downstream crates should not
 /// implement the underlying TypeScript trait directly.
-#[cfg(feature = "codegen-ts")]
+#[cfg(all(feature = "codegen-ts", not(target_arch = "wasm32")))]
 #[macro_export]
 macro_rules! impl_ts_as {
     ($ty:ty, $typescript:literal) => {
@@ -217,74 +232,62 @@ macro_rules! impl_ts_as {
     };
 }
 
-#[cfg(not(feature = "codegen-ts"))]
+#[cfg(any(not(feature = "codegen-ts"), target_arch = "wasm32"))]
 #[macro_export]
 macro_rules! impl_ts_as {
     ($ty:ty, $typescript:literal) => {};
 }
 
-/// Define a Rust constant and register it for generated-language export.
+/// Register a constant in the native language-neutral typegen catalog.
+#[doc(hidden)]
+#[cfg(all(feature = "typegen", not(target_arch = "wasm32")))]
+#[macro_export]
+macro_rules! register_typegen_const {
+    ($name:ident, $variant:ident, $value:expr) => {
+        $crate::inventory::submit! {
+            $crate::codegen_types::TypegenConstRegistration {
+                name: stringify!($name),
+                value: $crate::codegen_types::TypegenConstValue::$variant($value),
+                crate_path: module_path!(),
+            }
+        }
+    };
+}
+
+#[doc(hidden)]
+#[cfg(any(not(feature = "typegen"), target_arch = "wasm32"))]
+#[macro_export]
+macro_rules! register_typegen_const {
+    ($name:ident, $variant:ident, $value:expr) => {};
+}
+
+/// Define a Rust constant and register it for generated-language export in
+/// native typegen builds.
 #[macro_export]
 macro_rules! shared_const {
     (pub $name:ident : &str = $value:expr) => {
         pub const $name: &str = $value;
-        $crate::inventory::submit! {
-            $crate::codegen_types::TypegenConstRegistration {
-                name: stringify!($name),
-                value: $crate::codegen_types::TypegenConstValue::Str($value),
-                crate_path: module_path!(),
-            }
-        }
+        $crate::register_typegen_const!($name, Str, $value);
     };
     ($name:ident : &str = $value:expr) => {
         const $name: &str = $value;
-        $crate::inventory::submit! {
-            $crate::codegen_types::TypegenConstRegistration {
-                name: stringify!($name),
-                value: $crate::codegen_types::TypegenConstValue::Str($value),
-                crate_path: module_path!(),
-            }
-        }
+        $crate::register_typegen_const!($name, Str, $value);
     };
     (pub $name:ident : i64 = $value:expr) => {
         pub const $name: i64 = $value;
-        $crate::inventory::submit! {
-            $crate::codegen_types::TypegenConstRegistration {
-                name: stringify!($name),
-                value: $crate::codegen_types::TypegenConstValue::Int($value),
-                crate_path: module_path!(),
-            }
-        }
+        $crate::register_typegen_const!($name, Int, $value);
     };
     ($name:ident : i64 = $value:expr) => {
         const $name: i64 = $value;
-        $crate::inventory::submit! {
-            $crate::codegen_types::TypegenConstRegistration {
-                name: stringify!($name),
-                value: $crate::codegen_types::TypegenConstValue::Int($value),
-                crate_path: module_path!(),
-            }
-        }
+        $crate::register_typegen_const!($name, Int, $value);
     };
     (pub $name:ident : bool = $value:expr) => {
         pub const $name: bool = $value;
-        $crate::inventory::submit! {
-            $crate::codegen_types::TypegenConstRegistration {
-                name: stringify!($name),
-                value: $crate::codegen_types::TypegenConstValue::Bool($value),
-                crate_path: module_path!(),
-            }
-        }
+        $crate::register_typegen_const!($name, Bool, $value);
     };
     ($name:ident : bool = $value:expr) => {
         const $name: bool = $value;
-        $crate::inventory::submit! {
-            $crate::codegen_types::TypegenConstRegistration {
-                name: stringify!($name),
-                value: $crate::codegen_types::TypegenConstValue::Bool($value),
-                crate_path: module_path!(),
-            }
-        }
+        $crate::register_typegen_const!($name, Bool, $value);
     };
 }
 
@@ -298,6 +301,7 @@ macro_rules! typegen_group {
 }
 
 /// Enroll all registrations owned by this crate in a typed typegen group.
+#[cfg(all(feature = "typegen", not(target_arch = "wasm32")))]
 #[macro_export]
 macro_rules! register_typegen_group_member {
     ($group:ty) => {
@@ -310,7 +314,14 @@ macro_rules! register_typegen_group_member {
     };
 }
 
+#[cfg(any(not(feature = "typegen"), target_arch = "wasm32"))]
+#[macro_export]
+macro_rules! register_typegen_group_member {
+    ($group:ty) => {};
+}
+
 /// Mark already-registered types as framework dependencies needed by downstream typegen.
+#[cfg(all(feature = "typegen", not(target_arch = "wasm32")))]
 #[macro_export]
 macro_rules! mark_framework_typegen_type {
     ($($ty:ty),+ $(,)?) => {
@@ -324,11 +335,18 @@ macro_rules! mark_framework_typegen_type {
     };
 }
 
+#[cfg(any(not(feature = "typegen"), target_arch = "wasm32"))]
+#[macro_export]
+macro_rules! mark_framework_typegen_type {
+    ($($ty:ty),+ $(,)?) => {};
+}
+
 /// Register a language-neutral generated typegen module.
 ///
 /// `$build` is a function returning [`typegen_module::TypegenModule`]. TypeScript (or
 /// any other target-language source) belongs in Myko's renderer, not in that
 /// callback.
+#[cfg(all(feature = "typegen", not(target_arch = "wasm32")))]
 #[macro_export]
 macro_rules! register_typegen_module {
     ($id:ident, $build:path) => {
@@ -340,6 +358,12 @@ macro_rules! register_typegen_module {
             }
         }
     };
+}
+
+#[cfg(any(not(feature = "typegen"), target_arch = "wasm32"))]
+#[macro_export]
+macro_rules! register_typegen_module {
+    ($id:ident, $build:path) => {};
 }
 
 /// Helper macro for submitting message event registrations
