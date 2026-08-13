@@ -37,6 +37,13 @@ pub struct TypegenTypeRegistration {
 
 inventory::collect!(TypegenTypeRegistration);
 
+/// Marks a Myko-owned DTO as a dependency of downstream generated bindings.
+pub struct FrameworkTypegenRegistration {
+    pub type_id: &'static str,
+}
+
+inventory::collect!(FrameworkTypegenRegistration);
+
 /// Registration for a language-neutral generated typegen module.
 pub struct TypegenModuleRegistration {
     /// Stable registration identifier, used in diagnostics.
@@ -89,6 +96,34 @@ impl TypegenCatalog {
         })
     }
 
+    /// Collect Myko-owned shared DTO types without selecting framework
+    /// items, queries, views, reports, commands, constants, or modules.
+    ///
+    /// Merge this catalog into a downstream aggregate when its generated DTOs
+    /// refer to framework support types such as filters or `ClientId`.
+    #[must_use]
+    pub fn collect_framework_types() -> Self {
+        Self {
+            types: {
+                let framework_ids = inventory::iter::<FrameworkTypegenRegistration>
+                    .into_iter()
+                    .map(|entry| entry.type_id)
+                    .collect::<HashSet<_>>();
+                inventory::iter::<TypegenTypeRegistration>
+                    .into_iter()
+                    .filter(|entry| framework_ids.contains(entry.id))
+                    .collect()
+            },
+            constants: Vec::new(),
+            modules: Vec::new(),
+            items: Vec::new(),
+            queries: Vec::new(),
+            views: Vec::new(),
+            reports: Vec::new(),
+            commands: Vec::new(),
+        }
+    }
+
     /// Collect registrations from a delimiter-safe crate family.
     ///
     /// A family `acme_entities` selects that exact crate and crates whose
@@ -136,6 +171,20 @@ impl TypegenCatalog {
         }
     }
 
+    /// Merge another catalog, retaining each inventory registration once.
+    #[must_use]
+    pub fn merge(mut self, other: Self) -> Self {
+        extend_unique(&mut self.types, other.types);
+        extend_unique(&mut self.constants, other.constants);
+        extend_unique(&mut self.modules, other.modules);
+        extend_unique(&mut self.items, other.items);
+        extend_unique(&mut self.queries, other.queries);
+        extend_unique(&mut self.views, other.views);
+        extend_unique(&mut self.reports, other.reports);
+        extend_unique(&mut self.commands, other.commands);
+        self
+    }
+
     #[must_use]
     pub fn type_ids(&self) -> HashSet<&'static str> {
         self.types
@@ -143,6 +192,18 @@ impl TypegenCatalog {
             .map(|registration| registration.id)
             .collect()
     }
+}
+
+fn extend_unique<T: 'static>(target: &mut Vec<&'static T>, source: Vec<&'static T>) {
+    let mut seen = target
+        .iter()
+        .map(|entry| std::ptr::from_ref(*entry))
+        .collect::<HashSet<_>>();
+    target.extend(
+        source
+            .into_iter()
+            .filter(|entry| seen.insert(std::ptr::from_ref(*entry))),
+    );
 }
 
 /// Whether a `module_path!()` registration belongs to `crate_name`.
@@ -167,6 +228,8 @@ pub fn registration_belongs_to_crate_family(registration_path: &str, family: &st
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{
         TypegenCatalog, TypegenTypeRegistration, registration_belongs_to_crate,
         registration_belongs_to_crate_family,
@@ -232,5 +295,27 @@ mod tests {
             "other_rship_entities::nested",
             "rship_entities"
         ));
+    }
+
+    #[test]
+    fn framework_types_compose_without_framework_operations_or_duplicates() {
+        let framework = TypegenCatalog::collect_framework_types();
+        let type_names = framework
+            .types
+            .iter()
+            .map(|entry| entry.type_name)
+            .collect::<HashSet<_>>();
+
+        assert!(type_names.contains("IdFilter<Arc<str>>"));
+        assert!(type_names.contains("StringFilter"));
+        assert!(type_names.contains("ClientId"));
+        assert_eq!(type_names.len(), 6);
+        assert!(framework.items.is_empty());
+        assert!(framework.queries.is_empty());
+        assert!(framework.commands.is_empty());
+
+        let type_count = framework.types.len();
+        let merged = framework.merge(TypegenCatalog::collect_framework_types());
+        assert_eq!(merged.types.len(), type_count);
     }
 }

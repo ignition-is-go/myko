@@ -692,7 +692,37 @@ fn extract_importable_types(rust_type: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::query::{IdFilter, StringFilter};
+
+    #[allow(dead_code)]
+    #[derive(crate::TS)]
+    struct AggregateDownstreamQuery {
+        id: Option<IdFilter<Arc<str>>>,
+        name: Option<StringFilter>,
+    }
+
+    const AGGREGATE_QUERY_TYPE_ID: &str = "downstream_entities::AggregateDownstreamQuery";
+
+    inventory::submit! {
+        crate::codegen_types::TypegenTypeRegistration {
+            id: AGGREGATE_QUERY_TYPE_ID,
+            type_name: "AggregateDownstreamQuery",
+            crate_path: "downstream_entities::query",
+        }
+    }
+
+    inventory::submit! {
+        crate::typegen_typescript::TypeExportRegistration {
+            type_id: AGGREGATE_QUERY_TYPE_ID,
+            type_name: "AggregateDownstreamQuery",
+            export_fn: || <AggregateDownstreamQuery as crate::TS>::export(
+                &crate::ts_rs::Config::from_env()
+            ),
+        }
+    }
 
     #[allow(clippy::unnecessary_wraps)]
     fn adapter_export_ok() -> Result<(), ts_rs::ExportError> {
@@ -743,6 +773,12 @@ mod tests {
     /// process. The tests used to share a fixed `./bindings` path, which
     /// raced across processes under `cargo flux run test` and failed with
     /// `ENOTEMPTY` ("Directory not empty") mid-wipe.
+    fn typegen_test_serial() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn unique_bindings_dir(label: &str) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -754,7 +790,29 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_catalog_exports_framework_filter_dependencies() {
+        let _serial = typegen_test_serial();
+        let dir = unique_bindings_dir("aggregate-framework-types");
+        let Some(dir_str) = dir.to_str() else {
+            panic!("temp dir path is valid UTF-8");
+        };
+        let catalog = TypegenCatalog::collect_crate_family("downstream_entities")
+            .merge(TypegenCatalog::collect_framework_types());
+
+        assert!(generate_item_types_for_catalog(dir_str, &catalog).is_ok());
+        assert!(dir.join("AggregateDownstreamQuery.ts").exists());
+        assert!(dir.join("IdFilter.ts").exists());
+        assert!(dir.join("StringFilter.ts").exists());
+        let query = fs::read_to_string(dir.join("AggregateDownstreamQuery.ts"))
+            .expect("aggregate query binding should be readable");
+        assert!(query.contains("./IdFilter"));
+        assert!(query.contains("./StringFilter"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn generate_index() {
+        let _serial = typegen_test_serial();
         let dir = unique_bindings_dir("generate_index");
         let dir_str = dir.to_str();
         assert!(dir_str.is_some(), "temp dir path is valid UTF-8");
@@ -773,6 +831,7 @@ mod tests {
     /// index.ts forever, since nothing ever cleared the directory first.
     #[test]
     fn generate_item_types_removes_stale_files_from_a_previous_run() {
+        let _serial = typegen_test_serial();
         let dir = unique_bindings_dir("stale_files");
         let dir_str = dir.to_str();
         assert!(dir_str.is_some(), "temp dir path is valid UTF-8");

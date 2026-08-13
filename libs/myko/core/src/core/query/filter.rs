@@ -670,6 +670,13 @@ crate::register_typegen_type!(
     EqFilter<Arc<str>>,
     Unfilterable
 );
+crate::mark_framework_typegen_type!(
+    IdFilter<Arc<str>>,
+    NumericFilter<i64>,
+    StringFilter,
+    EqFilter<Arc<str>>,
+    Unfilterable
+);
 
 // ─────────────────────────────────────────────────────────────────────────
 // Wire format. `Eq` serializes as the bare value — byte-identical to the

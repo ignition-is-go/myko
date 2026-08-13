@@ -23,6 +23,7 @@ pub struct Client {
     /// as of this timestamp instead of live state.
     pub windback: Option<Arc<str>>,
 }
+crate::mark_framework_typegen_type!(ClientId);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom Reports

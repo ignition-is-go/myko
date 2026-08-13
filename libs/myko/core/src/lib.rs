@@ -290,6 +290,20 @@ macro_rules! shared_const {
     };
 }
 
+/// Mark already-registered types as framework dependencies needed by downstream typegen.
+#[macro_export]
+macro_rules! mark_framework_typegen_type {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            $crate::inventory::submit! {
+                $crate::codegen_types::FrameworkTypegenRegistration {
+                    type_id: concat!(module_path!(), "::", stringify!($ty)),
+                }
+            }
+        )+
+    };
+}
+
 /// Register a language-neutral generated typegen module.
 ///
 /// `$build` is a function returning [`typegen_module::TypegenModule`]. TypeScript (or
