@@ -79,7 +79,7 @@
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use dashmap::DashMap;
@@ -94,6 +94,8 @@ use crate::{
         iter_relations,
     },
 };
+
+type EnsureForReservation = (&'static str, Vec<Arc<str>>);
 
 /// Lookup info for `BelongsTo` cascades
 #[derive(Clone)]
@@ -154,6 +156,55 @@ impl RelationshipTables {
                 ..
             } => self.register_ensure_for(local_type, dependencies, *make_entity),
         }
+    }
+
+    fn ensure_for_cycle(&self) -> Option<Vec<&'static str>> {
+        fn visit(
+            node: &'static str,
+            graph: &HashMap<&'static str, Vec<&'static str>>,
+            states: &mut HashMap<&'static str, u8>,
+            stack: &mut Vec<&'static str>,
+        ) -> Option<Vec<&'static str>> {
+            match states.get(node).copied() {
+                Some(1) => {
+                    let start = stack.iter().position(|entry| *entry == node).unwrap_or(0);
+                    let mut cycle = stack.get(start..).unwrap_or_default().to_vec();
+                    cycle.push(node);
+                    return Some(cycle);
+                }
+                Some(2) => return None,
+                _ => {}
+            }
+            states.insert(node, 1);
+            stack.push(node);
+            if let Some(next) = graph.get(node) {
+                for dependent in next {
+                    if let Some(cycle) = visit(dependent, graph, states, stack) {
+                        return Some(cycle);
+                    }
+                }
+            }
+            stack.pop();
+            states.insert(node, 2);
+            None
+        }
+
+        let mut graph: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
+        for (dependency, lookups) in &self.ensure_for_by_dependency {
+            for lookup in lookups {
+                let dependents = graph.entry(*dependency).or_default();
+                if !dependents.contains(&lookup.local_type) {
+                    dependents.push(lookup.local_type);
+                }
+            }
+        }
+        let mut states = HashMap::new();
+        for node in graph.keys() {
+            if let Some(cycle) = visit(node, &graph, &mut states, &mut Vec::new()) {
+                return Some(cycle);
+            }
+        }
+        None
     }
 
     fn register_belongs_to(
@@ -219,7 +270,11 @@ impl RelationshipTables {
                 .collect::<Vec<_>>()
         );
         let dependencies = dependencies.to_vec();
+        let mut indexed_types = HashSet::new();
         for dependency in &dependencies {
+            if !indexed_types.insert(dependency.foreign_type) {
+                continue;
+            }
             self.ensure_for_by_dependency
                 .entry(dependency.foreign_type)
                 .or_default()
@@ -267,6 +322,10 @@ pub struct RelationshipManager {
 
     /// Reverse `belongs_to` index: `lookup_id` -> `child_id` -> `parent_id`
     belongs_to_parent_by_child: DashMap<u64, DashMap<Arc<str>, Arc<str>>>,
+
+    /// Combination reservations make ensure-for check-and-create atomic without
+    /// holding a lock across recursive cascade publication.
+    ensure_for_in_flight: Mutex<HashSet<EnsureForReservation>>,
 }
 
 impl RelationshipManager {
@@ -276,6 +335,15 @@ impl RelationshipManager {
         let mut tables = RelationshipTables::default();
         for registration in iter_relations() {
             tables.register(&registration.relation);
+        }
+        if let Some(cycle) = tables.ensure_for_cycle() {
+            // A recursive creation cycle cannot reach a fixed point because
+            // ensured entities receive fresh IDs. Reject the schema up front.
+            #[allow(clippy::panic)]
+            std::panic::panic_any(format!(
+                "cyclic ensure_for relationship graph: {}",
+                cycle.join(" -> ")
+            ));
         }
 
         let relation_count = tables
@@ -296,6 +364,7 @@ impl RelationshipManager {
             ensure_for_by_dependency: tables.ensure_for_by_dependency,
             belongs_to_children_by_parent: DashMap::new(),
             belongs_to_parent_by_child: DashMap::new(),
+            ensure_for_in_flight: Mutex::new(HashSet::new()),
         }
     }
 
@@ -312,20 +381,42 @@ impl RelationshipManager {
         item: Arc<dyn AnyItem>,
         ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
-        let item_type = item.entity_type();
+        let result = self.forward_set_batch(std::slice::from_ref(&item), ctx);
+        drop(item);
+        result
+    }
+
+    /// Forward a same-type batch of SET events for relationship processing.
+    ///
+    /// `ensure_for` operates on the fully-settled dependency stores, so running
+    /// it once per item repeats the same Cartesian-product reconciliation for
+    /// every member of a large import. Reconcile once for the affected type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an ensured relationship mutation cannot be persisted.
+    pub fn forward_set_batch(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        ctx: &MykoServerContext,
+    ) -> Result<(), PersistError> {
+        let Some(first) = items.first() else {
+            return Ok(());
+        };
+        let item_type = first.entity_type();
 
         if let Some(lookups) = self.belongs_to_by_local.get(item_type) {
-            for lookup in lookups {
-                self.index_belongs_to_child(lookup, &item);
+            for item in items {
+                for lookup in lookups {
+                    self.index_belongs_to_child(lookup, item);
+                }
             }
         }
 
-        // Handle EnsureFor (dependency created → ensure derived entities exist)
         if self.ensure_for_by_dependency.contains_key(item_type) {
-            self.handle_ensure_for(&item, ctx)?;
+            self.handle_ensure_for_type(item_type, ctx)?;
         }
 
-        drop(item);
         Ok(())
     }
 
@@ -739,7 +830,7 @@ impl RelationshipManager {
             }
 
             if !updates.is_empty() {
-                Self::publish_set_cascade_batch(ctx, &updates)?;
+                Self::publish_relationship_fixup_batch(ctx, &updates)?;
             }
         }
 
@@ -766,46 +857,85 @@ impl RelationshipManager {
             .collect()
     }
 
-    /// Handle `EnsureFor`: when dependency created, ensure derived entities exist
-    fn handle_ensure_for(
+    /// Handle `EnsureFor` once after a dependency type's store has settled.
+    fn handle_ensure_for_type(
         &self,
-        item: &Arc<dyn AnyItem>,
+        item_type: &str,
         ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
-        let item_type = item.entity_type();
         let Some(lookups) = self.ensure_for_by_dependency.get(item_type) else {
             return Ok(());
         };
 
         for lookup in lookups {
-            // Get all combinations of dependency entities
             let combinations = Self::get_dependency_combinations(ctx, &lookup.dependencies);
-
-            // Snapshot the store once outside the combo loop to avoid
-            // re-materializing entries() for every combination
             let store = ctx.registry.get_or_create(lookup.local_type);
             let existing_items = store.snapshot();
+            let mut existing_combinations: HashSet<Vec<Arc<str>>> = existing_items
+                .iter()
+                .filter_map(|(_, item)| {
+                    lookup
+                        .dependencies
+                        .iter()
+                        .map(|dependency| (dependency.extract_fk)(item.as_any()))
+                        .collect()
+                })
+                .collect();
 
             for combo in combinations {
-                // Check if derived entity already exists
-                let existing =
-                    Self::find_ensure_for_entity_in(&existing_items, &lookup.dependencies, &combo);
-
-                if existing.is_none() {
-                    // Create the derived entity using the factory
-                    let entity = (lookup.make_entity)(&combo);
-
-                    trace!(
-                        "RelationshipManager: Creating ensured {} for {:?}",
-                        lookup.local_type, combo
-                    );
-
-                    Self::publish_set_cascade(ctx, lookup.local_type, entity)?;
+                if !existing_combinations.contains(&combo)
+                    && self.ensure_combination(lookup, &combo, ctx)?
+                {
+                    existing_combinations.insert(combo);
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Atomically reserve and create one missing dependency combination.
+    /// Publication is synchronous, but the reservation lock is released first
+    /// so relationships on the created entity can propagate recursively.
+    fn ensure_combination(
+        &self,
+        lookup: &EnsureForLookup,
+        combo: &[Arc<str>],
+        ctx: &MykoServerContext,
+    ) -> Result<bool, PersistError> {
+        let reservation = (lookup.local_type, combo.to_vec());
+        {
+            let mut in_flight = self
+                .ensure_for_in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !in_flight.insert(reservation.clone()) {
+                return Ok(false);
+            }
+        }
+
+        // Recheck after reserving: another publisher may have completed between
+        // the caller's snapshot and this reservation.
+        let store = ctx.registry.get_or_create(lookup.local_type);
+        let exists =
+            Self::find_ensure_for_entity_in(&store.snapshot(), &lookup.dependencies, combo)
+                .is_some();
+        let result = if exists {
+            Ok(false)
+        } else {
+            let entity = (lookup.make_entity)(combo);
+            trace!(
+                "RelationshipManager: Creating ensured {} for {:?}",
+                lookup.local_type, combo
+            );
+            Self::publish_set_cascade(ctx, lookup.local_type, entity).map(|()| true)
+        };
+
+        self.ensure_for_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&reservation);
+        result
     }
 
     /// Handle `EnsureFor`: when a dependency entity is deleted, delete the
@@ -837,18 +967,24 @@ impl RelationshipManager {
         let dep_ids: HashSet<Arc<str>> = items.iter().map(|item| item.id()).collect();
 
         for lookup in lookups {
-            // A lookup can depend on several types (Cartesian-product
-            // ensure_for); only the dependency matching the deleted type's
-            // extractor is relevant here.
-            let Some(dep) = lookup
+            // A lookup can contain several fields targeting the same entity
+            // type. Every matching extractor participates: deleting a dependency
+            // must remove a Cartesian product when that ID appears on any axis.
+            let dependencies: Vec<_> = lookup
                 .dependencies
                 .iter()
-                .find(|dep| dep.foreign_type == item_type)
-            else {
+                .filter(|dep| dep.foreign_type == item_type)
+                .collect();
+            if dependencies.is_empty() {
                 continue;
-            };
+            }
 
-            let orphaned = Self::find_ensure_for_children_by_dependency(ctx, lookup, dep, &dep_ids);
+            let orphaned = Self::find_ensure_for_children_by_dependencies(
+                ctx,
+                lookup,
+                &dependencies,
+                &dep_ids,
+            );
             if orphaned.is_empty() {
                 continue;
             }
@@ -873,10 +1009,10 @@ impl RelationshipManager {
     /// `handle_ensure_for`), not derivable from the dependency id, so a
     /// full-store scan is the only option here (same as `belongs_to`'s own
     /// fallback path when its index isn't loaded yet).
-    fn find_ensure_for_children_by_dependency(
+    fn find_ensure_for_children_by_dependencies(
         ctx: &MykoServerContext,
         lookup: &EnsureForLookup,
-        dep: &EnsureForDependency,
+        dependencies: &[&EnsureForDependency],
         dep_ids: &HashSet<Arc<str>>,
     ) -> Vec<Arc<dyn AnyItem>> {
         let store = ctx.registry.get_or_create(lookup.local_type);
@@ -886,7 +1022,9 @@ impl RelationshipManager {
             .get()
             .into_iter()
             .filter(|(_, item)| {
-                (dep.extract_fk)(item.as_any()).is_some_and(|fk| dep_ids.contains(&fk))
+                dependencies.iter().any(|dep| {
+                    (dep.extract_fk)(item.as_any()).is_some_and(|fk| dep_ids.contains(&fk))
+                })
             })
             .map(|(_, item)| item)
             .collect()
@@ -1106,10 +1244,7 @@ impl RelationshipManager {
                         &combo,
                     );
 
-                    if existing.is_none() {
-                        // Create the derived entity using the factory
-                        let entity = (lookup.make_entity)(&combo);
-                        Self::publish_set_cascade(ctx, lookup.local_type, entity)?;
+                    if existing.is_none() && self.ensure_combination(lookup, &combo, ctx)? {
                         created_count = created_count.saturating_add(1);
                     }
                 }
@@ -1215,9 +1350,8 @@ impl RelationshipManager {
     // Publishing helpers (using MykoServerContext)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /// Publish a SET for cascade operations.
-    ///
-    /// Sets `prevent_relationship_updates` to avoid infinite loops.
+    /// Publish a structural SET and continue enforcing relationships on the
+    /// created entity. This is required for transitive `ensure_for` chains.
     fn publish_set_cascade(
         ctx: &MykoServerContext,
         _entity_type: &str,
@@ -1234,16 +1368,14 @@ impl RelationshipManager {
         ctx.set_dyn_with_origin(item, super::Origin::Cascade)
     }
 
-    fn publish_set_cascade_batch(
+    fn publish_relationship_fixup_batch(
         ctx: &MykoServerContext,
         items: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
-        ctx.batch_set_dyn_with_origin(items, super::Origin::Cascade)
+        ctx.batch_set_dyn_with_origin(items, super::Origin::RelationshipFixup)
     }
 
-    /// Publish a DEL for cascade operations.
-    ///
-    /// Sets `prevent_relationship_updates` to avoid infinite loops.
+    /// Publish a structural DEL and continue enforcing delete cascades.
     fn publish_del_cascade(
         ctx: &MykoServerContext,
         entity_type: &str,
@@ -1288,6 +1420,38 @@ impl Default for RelationshipManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unused_entity_factory(_: &[Arc<str>]) -> Arc<dyn AnyItem> {
+        std::process::abort()
+    }
+
+    #[test]
+    fn cyclic_ensure_for_graph_is_rejected() {
+        let mut tables = RelationshipTables::default();
+        tables
+            .ensure_for_by_dependency
+            .entry("CycleA")
+            .or_default()
+            .push(EnsureForLookup {
+                local_type: "CycleB",
+                dependencies: Vec::new(),
+                make_entity: unused_entity_factory,
+            });
+        tables
+            .ensure_for_by_dependency
+            .entry("CycleB")
+            .or_default()
+            .push(EnsureForLookup {
+                local_type: "CycleA",
+                dependencies: Vec::new(),
+                make_entity: unused_entity_factory,
+            });
+
+        let cycle = tables.ensure_for_cycle().unwrap_or_default();
+        assert_eq!(cycle.first(), cycle.last());
+        assert!(cycle.contains(&"CycleA"));
+        assert!(cycle.contains(&"CycleB"));
+    }
 
     #[test]
     fn test_relationship_manager_creation() {
@@ -1512,11 +1676,11 @@ mod ensure_for_cascade_tests {
     //! (4,762 orphaned `BindingNodePosition`s accumulated on the rack, 516
     //! on sandbox, before this fix).
 
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
 
     use uuid::Uuid;
 
-    use self::fixtures::{EnsuredStatus, Parent};
+    use self::fixtures::{EnsuredDetail, EnsuredStatus, Node, NodePair, Parent};
     use crate::{
         core::item::AnyItem,
         search::SearchIndex,
@@ -1541,7 +1705,7 @@ mod ensure_for_cascade_tests {
             }
         }
 
-        pub use ensured_status::EnsuredStatus;
+        pub use ensured_status::{EnsuredStatus, EnsuredStatusId};
         mod ensured_status {
             use super::{Parent, ParentId};
             use crate::prelude::*;
@@ -1550,6 +1714,42 @@ mod ensure_for_cascade_tests {
             pub struct EnsuredStatus {
                 #[ensure_for(Parent)]
                 pub parent_id: ParentId,
+            }
+        }
+
+        pub use ensured_detail::EnsuredDetail;
+        mod ensured_detail {
+            use super::{EnsuredStatus, EnsuredStatusId};
+            use crate::prelude::*;
+
+            #[myko_item]
+            pub struct EnsuredDetail {
+                #[ensure_for(EnsuredStatus)]
+                pub status_id: EnsuredStatusId,
+            }
+        }
+
+        pub use node::{Node, NodeId};
+        mod node {
+            use crate::prelude::*;
+
+            #[myko_item]
+            pub struct Node {
+                pub name: String,
+            }
+        }
+
+        pub use node_pair::NodePair;
+        mod node_pair {
+            use super::{Node, NodeId};
+            use crate::prelude::*;
+
+            #[myko_item]
+            pub struct NodePair {
+                #[ensure_for(Node)]
+                pub left_id: NodeId,
+                #[ensure_for(Node)]
+                pub right_id: NodeId,
             }
         }
     }
@@ -1598,6 +1798,119 @@ mod ensure_for_cascade_tests {
             })
             .map(|(id, _)| id)
             .collect()
+    }
+
+    fn ensured_details_for(registry: &StoreRegistry, status_id: &str) -> Vec<Arc<str>> {
+        let Some(store) = registry.get("EnsuredDetail") else {
+            return Vec::new();
+        };
+        store
+            .snapshot()
+            .into_iter()
+            .filter(|(_, item)| {
+                item.as_any()
+                    .downcast_ref::<EnsuredDetail>()
+                    .is_some_and(|detail| detail.status_id.as_ref() == status_id)
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    fn node_pairs(registry: &StoreRegistry) -> Vec<Arc<NodePair>> {
+        registry
+            .get("NodePair")
+            .map(|store| {
+                store
+                    .snapshot()
+                    .into_iter()
+                    .filter_map(|(_, item)| item.as_any().downcast_ref::<NodePair>().cloned())
+                    .map(Arc::new)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn startup_initialization_enforces_recursive_ensure_chain() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+        let parent: Arc<dyn AnyItem> = Arc::new(make_parent("p1"));
+        registry.get_or_create("Parent").insert("p1".into(), parent);
+
+        assert!(RelationshipManager::new().establish_relations(&ctx).is_ok());
+        let statuses = ensured_statuses_for(&registry, "p1");
+        assert_eq!(statuses.len(), 1);
+        let status_id = statuses.first().cloned().unwrap_or_default();
+        assert_eq!(ensured_details_for(&registry, &status_id).len(), 1);
+    }
+
+    #[test]
+    fn concurrent_dependency_sets_create_one_recursive_ensure_chain() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+        let barrier = Arc::new(Barrier::new(8));
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let barrier = barrier.clone();
+                let ctx = &ctx;
+                scope.spawn(move || {
+                    barrier.wait();
+                    assert!(ctx.set(&make_parent("p1")).is_ok());
+                });
+            }
+        });
+
+        let statuses = ensured_statuses_for(&registry, "p1");
+        assert_eq!(statuses.len(), 1);
+        let status_id = statuses.first().cloned().unwrap_or_default();
+        assert_eq!(ensured_details_for(&registry, &status_id).len(), 1);
+    }
+
+    #[test]
+    fn repeated_dependency_type_enforces_every_cartesian_axis() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+        let node = |id: &str| Node {
+            id: id.into(),
+            name: id.to_owned(),
+        };
+
+        assert!(ctx.set(&node("n1")).is_ok());
+        assert!(ctx.set(&node("n2")).is_ok());
+        assert_eq!(node_pairs(&registry).len(), 4);
+
+        assert!(ctx.del(&node("n2")).is_ok());
+        let remaining = node_pairs(&registry);
+        assert_eq!(remaining.len(), 1);
+        assert!(
+            remaining
+                .iter()
+                .all(|pair| { pair.left_id.as_ref() == "n1" && pair.right_id.as_ref() == "n1" })
+        );
+    }
+
+    #[test]
+    fn ensure_for_relationships_are_enforced_transitively() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+
+        assert!(ctx.set(&make_parent("p1")).is_ok());
+        let statuses = ensured_statuses_for(&registry, "p1");
+        assert_eq!(statuses.len(), 1, "first ensure_for level must exist");
+        let status_id = statuses.first().cloned().unwrap_or_default();
+        assert_eq!(
+            ensured_details_for(&registry, &status_id).len(),
+            1,
+            "an ensured entity must trigger ensure_for relationships that depend on it"
+        );
+
+        assert!(ctx.del(&make_parent("p1")).is_ok());
+        assert!(ensured_statuses_for(&registry, "p1").is_empty());
+        assert!(
+            ensured_details_for(&registry, &status_id).is_empty(),
+            "recursive enforcement must also remove entities ensured for a cascade-deleted dependency"
+        );
     }
 
     #[test]

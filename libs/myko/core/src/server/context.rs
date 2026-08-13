@@ -60,29 +60,33 @@ pub enum Origin {
     /// A command handler / server module emitting a new mutation here (also a
     /// client event ingested over the WebSocket). Cascades and produces.
     Local,
-    /// A relationship cascade product — a consequence of another mutation here.
+    /// A structural relationship product — a consequence of another mutation
+    /// that must itself enforce relationships transitively.
     Cascade,
+    /// An in-place relationship bookkeeping update, such as removing a deleted
+    /// child ID from an `owns_many` parent. It must not start another structural
+    /// cascade, or the fixup can feed back into the relation that produced it.
+    RelationshipFixup,
 }
 
 impl Origin {
     /// Whether this origin's mutations should run relationship cascades.
     ///
     /// - `Local` mutations always cascade.
-    /// - `Cascade` products are gated on the change type: a **DEL** product
-    ///   keeps cascading, so a deleted parent's children, grandchildren, … are
-    ///   all removed at runtime (not just one level, and not deferred to the
-    ///   boot-time orphan sweep). The `owns_many` array-fixup **SET** product must
-    ///   not descend structurally.
+    /// - Structural `Cascade` products keep cascading for both SET and DEL, so
+    ///   `ensure_for` creation and deletion are enforced transitively.
+    /// - `RelationshipFixup` is only an in-place bookkeeping SET and does not
+    ///   descend structurally.
     ///
     /// Transitive DEL cascade terminates without a depth counter or visited set:
     /// reduce runs before cascade, so each node is removed from the store before
     /// its own cascade runs. The store is therefore a monotonically shrinking
     /// visited-set — a cyclic schema (A→B→A) finds nothing the second time, and
     /// a cascade-deleted child cannot resurrect its already-removed parent.
-    fn should_cascade(self, change: MEventType) -> bool {
+    const fn should_cascade(self, _change: MEventType) -> bool {
         match self {
-            Self::Local => true,
-            Self::Cascade => change == MEventType::DEL,
+            Self::Local | Self::Cascade => true,
+            Self::RelationshipFixup => false,
         }
     }
 
