@@ -62,40 +62,76 @@ pub struct TypegenCatalog {
 }
 
 impl TypegenCatalog {
+    /// Collect registrations owned by one crate.
     #[must_use]
     pub fn collect(crate_name: &str) -> Self {
+        Self::collect_crates([crate_name])
+    }
+
+    /// Collect registrations owned by an explicit set of crates.
+    ///
+    /// Each name is matched against the exact `module_path!()` root; shared
+    /// prefixes do not opt a crate in.
+    #[must_use]
+    pub fn collect_crates<I, S>(crate_names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let crate_names = crate_names
+            .into_iter()
+            .map(|name| name.as_ref().to_owned())
+            .collect::<HashSet<_>>();
+        Self::collect_matching(|path| {
+            path.split("::")
+                .next()
+                .is_some_and(|name| crate_names.contains(name))
+        })
+    }
+
+    /// Collect registrations from a delimiter-safe crate family.
+    ///
+    /// A family `acme_entities` selects that exact crate and crates whose
+    /// names begin with `acme_entities_`. It does not select similarly named
+    /// crates such as `acme_entities2`.
+    #[must_use]
+    pub fn collect_crate_family(family: &str) -> Self {
+        Self::collect_matching(|path| registration_belongs_to_crate_family(path, family))
+    }
+
+    fn collect_matching(selected: impl Fn(&str) -> bool) -> Self {
         Self {
             types: inventory::iter::<TypegenTypeRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_path, crate_name))
+                .filter(|entry| selected(entry.crate_path))
                 .collect(),
             constants: inventory::iter::<TypegenConstRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_path, crate_name))
+                .filter(|entry| selected(entry.crate_path))
                 .collect(),
             modules: inventory::iter::<TypegenModuleRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_path, crate_name))
+                .filter(|entry| selected(entry.crate_path))
                 .collect(),
             items: inventory::iter::<ItemRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| selected(entry.crate_name))
                 .collect(),
             queries: inventory::iter::<QueryRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| selected(entry.crate_name))
                 .collect(),
             views: inventory::iter::<ViewRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| selected(entry.crate_name))
                 .collect(),
             reports: inventory::iter::<ReportRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| selected(entry.crate_name))
                 .collect(),
             commands: inventory::iter::<CommandRegistration>
                 .into_iter()
-                .filter(|entry| registration_belongs_to_crate(entry.crate_name, crate_name))
+                .filter(|entry| selected(entry.crate_name))
                 .collect(),
         }
     }
@@ -118,9 +154,23 @@ pub fn registration_belongs_to_crate(registration_path: &str, crate_name: &str) 
     registration_path.split("::").next() == Some(crate_name)
 }
 
+/// Whether a registration belongs to a delimiter-safe crate family.
+#[must_use]
+pub fn registration_belongs_to_crate_family(registration_path: &str, family: &str) -> bool {
+    registration_path.split("::").next().is_some_and(|root| {
+        root == family
+            || root
+                .strip_prefix(family)
+                .is_some_and(|suffix| suffix.starts_with('_'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{TypegenCatalog, TypegenTypeRegistration, registration_belongs_to_crate};
+    use super::{
+        TypegenCatalog, TypegenTypeRegistration, registration_belongs_to_crate,
+        registration_belongs_to_crate_family,
+    };
 
     inventory::submit! {
         TypegenTypeRegistration {
@@ -148,11 +198,39 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_catalog_collects_only_explicit_crates() {
+        let catalog = TypegenCatalog::collect_crates(["rship_core", "unregistered_crate"]);
+        let ids = catalog.type_ids();
+
+        assert!(!ids.contains("rship::Own"));
+        assert!(ids.contains("rship_core::Foreign"));
+    }
+
+    #[test]
     fn crate_ownership_compares_the_module_path_root() {
         assert!(registration_belongs_to_crate("rship", "rship"));
         assert!(registration_belongs_to_crate("rship::nested", "rship"));
         assert!(!registration_belongs_to_crate("rship_core", "rship"));
         assert!(!registration_belongs_to_crate("my_rship::nested", "rship"));
         assert!(!registration_belongs_to_crate("rshipper", "rship"));
+    }
+    #[test]
+    fn crate_family_requires_an_underscore_delimiter() {
+        assert!(registration_belongs_to_crate_family(
+            "rship_entities::nested",
+            "rship_entities"
+        ));
+        assert!(registration_belongs_to_crate_family(
+            "rship_entities_nodes::nested",
+            "rship_entities"
+        ));
+        assert!(!registration_belongs_to_crate_family(
+            "rship_entities2::nested",
+            "rship_entities"
+        ));
+        assert!(!registration_belongs_to_crate_family(
+            "other_rship_entities::nested",
+            "rship_entities"
+        ));
     }
 }
