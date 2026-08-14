@@ -1,6 +1,8 @@
 use std::{fmt::Debug, sync::Arc};
 
-use gpui::{AnyElement, App, AppContext as _, Context, Entity, Render, Subscription, Task, Window};
+use gpui::{
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, Render, Subscription, Window,
+};
 use hyphae_gpui::{CellEntity, CellEntityStatus, ToGpuiEntity as _};
 use myko::hyphae::{Cell, CellImmutable, CellValue};
 use serde::de::DeserializeOwned;
@@ -20,9 +22,23 @@ pub enum CommandState<R> {
     Failed(Arc<str>),
 }
 
-enum CommandEvent<R> {
+/// The single semantic terminal transition emitted by a [`Command`].
+///
+/// Subscribe to this event for side effects. Observe the command entity only
+/// when rendering its current [`CommandState`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandEvent<R> {
     Success(Arc<R>),
     Failed(Arc<str>),
+}
+
+impl<R> CommandEvent<R> {
+    fn state(&self) -> CommandState<R> {
+        match self {
+            Self::Success(value) => CommandState::Success(value.clone()),
+            Self::Failed(error) => CommandState::Failed(error.clone()),
+        }
+    }
 }
 
 /// GPUI-owned lifecycle for one command.
@@ -34,8 +50,9 @@ pub struct Command<R: CellValue> {
     state: CommandState<R>,
     _observation: Subscription,
     _source: Entity<CellEntity<Option<Result<R, String>>>>,
-    _initial_driver: Option<Task<()>>,
 }
+
+impl<R: CellValue> EventEmitter<CommandEvent<R>> for Command<R> {}
 
 impl<R: CellValue> Command<R> {
     #[must_use]
@@ -48,15 +65,13 @@ impl<R: CellValue> Command<R> {
         matches!(self.state, CommandState::Pending)
     }
 
-    fn apply(&mut self, event: CommandEvent<R>) -> bool {
+    fn apply(&mut self, event: CommandEvent<R>, cx: &mut Context<Self>) {
         if !matches!(self.state, CommandState::Pending) {
-            return false;
+            return;
         }
-        self.state = match event {
-            CommandEvent::Success(value) => CommandState::Success(value),
-            CommandEvent::Failed(error) => CommandState::Failed(error),
-        };
-        true
+        self.state = event.state();
+        cx.emit(event);
+        cx.notify();
     }
 }
 
@@ -89,34 +104,27 @@ where
     let source = cell.to_gpui_entity(cx);
     cx.new(move |cx| {
         let observation = cx.observe(&source, |command: &mut Command<R>, source, cx| {
-            let event = source.read_with(cx, |source, _| source_event(source));
-            if event.is_some_and(|event| command.apply(event)) {
-                cx.notify();
+            if let Some(event) = source.read_with(cx, |source, _| source_event(source)) {
+                command.apply(event, cx);
             }
         });
 
         // A serialization/encoding failure is a synchronous seed in the Myko
-        // cell. Drive it through a foreground task so this entity is always
-        // observably Pending for the complete synchronous construction call.
-        let initial = source_event(source.read(cx));
-        let initial_driver = initial.map(|event| {
-            cx.spawn(async move |command, cx| {
-                // Crossing the background executor creates an event boundary
-                // rather than applying the seed during entity construction.
-                cx.background_executor().spawn(async {}).await;
+        // cell. GPUI deferral preserves an observable Pending construction
+        // boundary without an empty background task or scheduler round trip.
+        if let Some(event) = source_event(source.read(cx)) {
+            let command = cx.weak_entity();
+            cx.defer(move |cx| {
                 let _ = command.update(cx, |command, cx| {
-                    if command.apply(event) {
-                        cx.notify();
-                    }
+                    command.apply(event, cx);
                 });
-            })
-        });
+            });
+        }
 
         Command {
             state: CommandState::Pending,
             _observation: observation,
             _source: source,
-            _initial_driver: initial_driver,
         }
     })
 }
@@ -198,7 +206,9 @@ impl<R: CellValue> CommandSlot<R> {
         if self.is_pending(cx) {
             return false;
         }
-        self.observation = Some(cx.observe(&command, |_owner, _command, cx| cx.notify()));
+        self.observation = Some(cx.subscribe(&command, |_owner, _command, _event, cx| {
+            cx.notify();
+        }));
         self.command = Some(command);
         cx.notify();
         true
@@ -232,7 +242,7 @@ where
     Owner: 'static,
     R: CellValue,
 {
-    cx.observe(command, |_owner, _command, cx| cx.notify())
+    cx.subscribe(command, |_owner, _command, _event, cx| cx.notify())
 }
 
 /// Run an owner-aware callback when a command's state changes.
@@ -250,13 +260,8 @@ where
     Owner: 'static,
     R: CellValue,
 {
-    let mut previous = command.read(cx).state().clone();
-    cx.observe(command, move |owner, command, cx| {
-        let state = command.read_with(cx, |command, _| command.state().clone());
-        if state != previous {
-            previous = state.clone();
-            callback(owner, state, cx);
-        }
+    cx.subscribe(command, move |owner, _command, event, cx| {
+        callback(owner, event.state(), cx);
     })
 }
 
@@ -287,14 +292,13 @@ where
     Owner: 'static,
     R: CellValue,
 {
-    let mut previous = command.read(cx).state().clone();
-    cx.observe_in(command, window, move |owner, command, window, cx| {
-        let state = command.read_with(cx, |command, _| command.state().clone());
-        if state != previous {
-            previous = state.clone();
-            callback(owner, state, window, cx);
-        }
-    })
+    cx.subscribe_in(
+        command,
+        window,
+        move |owner, _command, event, window, cx| {
+            callback(owner, event.state(), window, cx);
+        },
+    )
 }
 
 type PendingHook = dyn FnMut(&mut App) + 'static;
@@ -345,15 +349,14 @@ impl<R> CommandHooks<R> {
         }
     }
 
-    fn transition(&mut self, state: &CommandState<R>, cx: &mut App) {
-        match state {
-            CommandState::Pending => {}
-            CommandState::Success(value) => {
+    fn transition(&mut self, event: &CommandEvent<R>, cx: &mut App) {
+        match event {
+            CommandEvent::Success(value) => {
                 if let Some(mut hook) = self.success.take() {
                     hook(value, cx);
                 }
             }
-            CommandState::Failed(error) => {
+            CommandEvent::Failed(error) => {
                 if let Some(mut hook) = self.failed.take() {
                     hook(error, cx);
                 }
@@ -394,11 +397,10 @@ where
 {
     cx.new(move |cx| {
         hooks.pending(cx);
-        let observation = cx.observe(
+        let observation = cx.subscribe(
             &command,
-            |boundary: &mut CommandBoundary<R>, command, cx| {
-                let state = command.read_with(cx, |command, _| command.state().clone());
-                boundary.hooks.transition(&state, cx);
+            |boundary: &mut CommandBoundary<R>, _command, event, cx| {
+                boundary.hooks.transition(event, cx);
                 cx.notify();
             },
         );
@@ -442,7 +444,10 @@ mod tests {
     use gpui::{AppContext as _, IntoElement as _, TestAppContext};
     use myko::hyphae::{Cell, Mutable as _};
 
-    use super::{CommandHooks, CommandSlot, CommandState, boundary_for_command, command_from_cell};
+    use super::{
+        CommandEvent, CommandHooks, CommandSlot, CommandState, boundary_for_command,
+        command_from_cell,
+    };
 
     struct SlotOwner {
         slot: CommandSlot<u32>,
@@ -475,6 +480,45 @@ mod tests {
             command.read_with(cx, |command, _| command.state().clone()),
             CommandState::Success(value) if *value == 7
         ));
+    }
+
+    #[gpui::test]
+    fn terminal_transition_is_emitted_once_as_a_typed_event(cx: &mut TestAppContext) {
+        let writer = Cell::new(None::<Result<u32, String>>);
+        let cell = writer.clone().lock();
+        let command = cx.update(|cx| command_from_cell(&cell, cx));
+        let events = Arc::new(Mutex::new(Vec::<CommandEvent<u32>>::new()));
+        let probe = cx.new({
+            let command = command.clone();
+            let events = events.clone();
+            move |cx| Probe {
+                _observation: cx.subscribe(&command, move |_probe, _command, event, _cx| {
+                    events
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(event.clone());
+                }),
+            }
+        });
+
+        cx.run_until_parked();
+        writer.set(Some(Ok(7)));
+        cx.run_until_parked();
+        cx.run_until_parked();
+        writer.set(Some(Err("late".into())));
+        cx.run_until_parked();
+        cx.run_until_parked();
+        probe.read_with(cx, |_probe, _cx| ());
+        assert!(command.read_with(cx, |command, _| {
+            matches!(command.state(), CommandState::Success(value) if **value == 7)
+        }));
+
+        assert_eq!(
+            *events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [CommandEvent::Success(Arc::new(7))],
+        );
     }
 
     #[gpui::test]
@@ -644,13 +688,13 @@ mod tests {
     }
 
     #[gpui::test]
-    fn seeded_failure_still_exposes_pending_first(cx: &mut TestAppContext) {
+    fn seeded_failure_is_deferred_until_after_construction(cx: &mut TestAppContext) {
         let cell = Cell::new(Some(Err::<u32, _>("encode".to_string()))).lock();
-        let command = cx.update(|cx| command_from_cell(&cell, cx));
-        assert!(matches!(
-            command.read_with(cx, |command, _| command.state().clone()),
-            CommandState::Pending
-        ));
+        let command = cx.update(|cx| {
+            let command = command_from_cell(&cell, cx);
+            assert!(matches!(command.read(cx).state(), CommandState::Pending));
+            command
+        });
         cx.run_until_parked();
         assert!(matches!(
             command.read_with(cx, |command, _| command.state().clone()),
