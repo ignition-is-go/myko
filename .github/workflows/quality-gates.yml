@@ -33,6 +33,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-native
+      - name: Install GPUI Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
       - run: bun install --frozen-lockfile
       - name: Check for cargo-binstall
         id: cargo-binstall
@@ -97,4 +101,7 @@ jobs:
           version: "1.21.1"
       - name: Install or update cargo-flux
         run: cargo binstall cargo-flux --no-confirm --force
-      - run: cargo flux run check-wasm
+      - name: Check WebAssembly targets
+        run: cargo flux run check-wasm
+        env:
+          RUSTC_BOOTSTRAP: "1"

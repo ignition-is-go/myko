@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use hyphae::{Cell, CellImmutable};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,6 +32,10 @@ pub enum WsFrame {
     Text(String),
     Binary(Vec<u8>),
 }
+
+/// Callback invoked for each incoming frame by transports that can dispatch
+/// directly from their platform event loop.
+pub type FrameCallback = Arc<dyn Fn(WsFrame) + Send + Sync>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CallbackGuard — RAII guard for callback subscriptions
@@ -95,4 +101,12 @@ pub trait SocketTransport: Send + Sync + 'static {
 
     /// Read stream of incoming websocket frames.
     fn read_rx(&self) -> flume::Receiver<WsFrame>;
+
+    /// Install a direct incoming-frame callback when supported.
+    ///
+    /// Native transports use [`Self::read_rx`]; the browser transport overrides
+    /// this so WebSocket events do not cross a shared-memory channel first.
+    fn set_frame_callback(&self, _callback: FrameCallback) -> Option<CallbackGuard> {
+        None
+    }
 }

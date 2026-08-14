@@ -5,11 +5,12 @@ members = [
   "libs/myko/macros",
   "libs/myko/server",
   "libs/myko/leptos",
+  "libs/myko/gpui",
   "libs/autosocket",
 ]
 
 [workspace.package]
-version = "5.0.7"
+version = "6.0.0"
 edition = "2024"
 authors = ["Trevor"]
 license = "MIT OR Apache-2.0"
@@ -88,102 +89,26 @@ flume = "0.11"
 dashmap = "6.1.0"
 ahash = "0.8"
 
-# `scheduler` is effectively required: myko's store-diff apply opens a hyphae
-# `batch()` boundary, and downstream event-semantic subgraphs rely on the
-# `no_coalesce` opt-out it provides.
-#
-# No observability features here, deliberately. Cargo features are additive
-# and unify across the graph, so anything listed is forced on every consumer's
-# release build with no way to opt out. `profiling` used to be listed, which
-# is how it reached production rship — every release build paid a per-cell
-# trace registry (0.63GB at a 21GB plateau, ~1.6M live cells) that nothing
-# read. Consumers opt in through myko's own `profiling` feature instead; see
-# libs/myko/core/Cargo.toml.
-#
-# hyphae 2.0 deleted that registry along with the `trace`/`metrics` features
-# that gated it, so the surviving `profiling` feature is now measured
-# indistinguishable from baseline (~48ns single-cell, ~300ns chain-20). It
-# carries only `#[inline(never)]` propagation boundaries and per-fanout spans
-# — instrumentation for EXTERNAL profilers, which is the only kind myko
-# ships. Do not read the absence of features here as a cost judgement about
-# `profiling`; it is a judgement about forcing anything on every consumer.
-#
-# (rship lv-1a3f)
-#
-# 1.2.0 is the first published release with `scheduler`/`profiling` (feat/
-# scheduler merged to main, released via hyphae's own CI). Back to a version
-# dependency now that it's out.
-#
-# 1.3.0 moves the scheduler's tick queue from per-thread to process-wide with
-# rayon-backed wave-parallel draining for wide same-height fan-out (feat/
-# scheduler-wave-parallel, hyphae PR #12) — see the query_cache_leak_test.rs
-# serialization fix landed alongside this bump for why that mattered here.
-#
-# 1.3.1 fixes a SubscriberRegistry::remove bug (hyphae PR #13): unsubscribe
-# left the just-removed subscriber pinned in the cached notify snapshot until
-# the next notify rebuilt it, so a cell that's superseded and never notified
-# again (e.g. a switch_map inner's diffs_cell) leaked everything the pinned
-# closure held alive. That's what caused query_cache_leak_test's two
-# remaining failures — myko's query cache itself was clean.
-#
-# 1.3.3 carries hyphae's own scheduler wins (whole-server output freeze fix
-# via localized height-cache invalidation, idle-CPU fix, timer co-due
-# ordering fix) — myko's own consumers benefit directly, so floor is bumped
-# to it deliberately rather than trailing behind.
-#
-# CountAll*/Count* reports returning 0 (or freezing at a stale count) traced
-# to hyphae's CellMap::size(): unlike entries()/items()/subscribe_diffs, it
-# returns a bare clone of the map's internal len_cell without capturing the
-# parent CellMapInner's keepalive, so a caller that doesn't separately hold
-# the source map — exactly myko's generated CountAll compute, previously —
-# gets a `len_cell` whose upstream store subscription can drop out from
-# under it once the local chain inside compute() goes out of scope. Fixed
-# on myko's side (see `libs/myko/macros/src/item.rs`) by capturing the
-# source map in the count cell's own closure. Confirmed pre-existing back
-# to 1.3.1, not something the 1.3.3 bump introduced.
-#
-# 1.3.4 makes size() self-retaining hyphae-side too (defense-in-depth on
-# top of myko's own fix) — floor bumped to pick it up.
-#
-# 1.4.0 publicizes CellMap::apply_diff_owned (single-diff apply, no Batch
-# wrap — myko's bucket router emits one diff per routed store event, and
-# apply_batch(vec![diff]) allocated a 1-element Vec each time) and adds
-# CellMap::for_each (borrowing iteration; snapshot() clones every entry
-# into a Vec even for read-only visits). myko's query routing calls both —
-# subsumed by the ^2.0 floor below, which includes them.
-#
-# 2.0.0 fixes the production leak (Cell::add_height_dependent pushed a Weak
-# without dedup, so every switch_map re-knit onto a myko-CACHED report/query
-# cell re-registered the same live pair forever — 16.001 -> 0.000 B/call;
-# myko's report memoization is exactly what made rship hit it), plus an
-# Arc-cycle fix the pair of which measured 17,303 -> 0.1 B/cell. Breaking
-# because the observability surface collapsed to one `profiling` feature:
-# `metrics`, `trace` and `inspector` are gone as feature names, along with
-# the per-cell trace registry and the in-process inspector server. myko named
-# `trace`/`inspector` only as forwarding aliases, so the migration was
-# manifest-only — no source changed.
-#
-# Hyphae 3.0 releases the finalized operator pipelines: concurrent readers for
-# shared typed relationship indexes, atomic two-join propagation, globally
-# ordered root publication, and adaptive deterministic sharding for eligible
-# three-or-more-join regions. The scheduler feature below activates the native
-# shared worker pool; it defaults to available parallelism capped at four.
-# `HYPHAE_WORKER_THREADS` can override it (zero disables parallel work), with
-# `HYPHAE_WAVE_THREADS` retained by Hyphae as a compatibility fallback. Query
-# closures may now run repeatedly or concurrently and therefore must stay
-# deterministic, side-effect-free, and nonblocking.
+# The scheduler is required by Myko's batched store propagation. Keep the
+# Leptos adapter on the same Hyphae major so its extension traits share types.
 hyphae = { version = "^3.0", features = ["scheduler"] }
-# MUST move in lockstep with `hyphae` above: hyphae-leptos pins an exact-major
-# `hyphae` and re-exports extension traits on its `Cell`/`CellMap`. Bumping one
-# without the other resolves BOTH majors into the graph, and the failure is
-# unrecognizable — myko-leptos fails with "no method named `to_leptos_signal`
-# found for Cell<T, M>", because the trait is implemented for a *different*
-# crate version's Cell, with nothing in the message naming the duplication.
 hyphae-leptos = { version = "^3.0" }
+# GPUI adapters are Git-distributed; their core dependencies remain registry-backed.
+hyphae-gpui = { git = "https://github.com/ignition-is-go/hyphae.git" }
+
+# GPUI native/web stack. Both dependencies intentionally track Zed main.
+gpui = { git = "https://github.com/zed-industries/zed.git" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git" }
 
 # Internal crates
 autosocket = { version = "6.0.0", path = "libs/autosocket" }
+myko-gpui = { version = "6.0.0", path = "libs/myko/gpui" }
 myko-leptos = { version = "6.0.0", path = "libs/myko/leptos" }
 myko-macros = { version = "6.0.0", path = "libs/myko/macros" }
 myko = { version = "6.0.0", path = "libs/myko/core" }
 myko-server = { version = "6.0.0", path = "libs/myko/server" }
+
+[patch.crates-io]
+# Test the Git-distributed GPUI bridge against this workspace's Myko core.
+# Downstream consumers ignore dependency-owned patches and use crates.io.
+myko = { path = "libs/myko/core" }

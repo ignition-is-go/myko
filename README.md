@@ -199,23 +199,23 @@ All endpoints share a single TCP listener; the front-door router peeks at the HT
 
 ```bash
 # Fast check during edits (preferred over cargo build)
-cargo check --target-dir target/claude
+cargo check
 
 # Tests
-cargo test -p myko-server --target-dir target/claude
+cargo test -p myko-server
 
 # Single test
-cargo test -p myko my_test_name --target-dir target/claude -- --exact --nocapture
+cargo test -p myko my_test_name -- --exact --nocapture
 
 # Lint as CI would (strict)
-cargo clippy --all-targets --all-features --target-dir target/claude -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 
 # Format
 cargo fmt --all          # Rust
 bun run format:all       # JS/TS via Prettier
 ```
 
-**Always pass `--target-dir target/claude`** (or `target/agent` when scripted) so cargo's lockfile doesn't fight whatever IDE / bacon / agent loop is running. `cargo flux` uses `target/claude` by default.
+Respect the checkout’s configured Cargo target directory. Managed workspaces isolate build output without per-agent overrides.
 
 ### Bacon (background type checker)
 
@@ -371,7 +371,7 @@ This repo is set up for AI-assisted development with both [Claude Code](https://
 ### The short version for agents
 
 1. **Rust first.** New logic goes in Rust unless you're explicitly working on a legacy TS path. Generate bindings; never duplicate types by hand.
-2. **`cargo check`, not `cargo build`.** Use `--target-dir target/claude` (or `target/agent`) always.
+2. **`cargo check`, not `cargo build`.** Respect the checkout’s configured target directory.
 3. **Check `.bacon-locations`** before running clippy/check. Fix errors in order.
 4. **Don't run `cargo flux run gen` or start dev servers yourself** — assume the user has hot reload running.
 5. **No hardcoded field/type name strings.** Use macros and type constructors.

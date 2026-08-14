@@ -27,13 +27,11 @@ pub use crate::core::capability::{
 pub use crate::core::capability::{PeerAccess, Replaying, Viewing};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::FilteredCellMap;
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::query::QueryBuildArgs;
 pub use crate::{
     cache::{
         CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key,
     },
-    client::MykoClient,
+    client::{MykoClient, QueryMapWatch},
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,
@@ -51,9 +49,9 @@ pub use crate::{
         },
     },
     query::{
-        AnyQuery, EqFilter, Filter, Filterable, IdFilter, NumericFilter, Query, QueryHandler,
-        QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext, StringFilter,
-        Unfilterable, in_matches,
+        AnyQuery, EqFilter, Filter, Filterable, IdFilter, NumericFilter, Query, QueryBuildArgs,
+        QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestContext,
+        StringFilter, Unfilterable, in_matches,
     },
     report::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,

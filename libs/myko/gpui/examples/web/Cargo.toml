@@ -1,0 +1,22 @@
+[workspace]
+
+[package]
+name = "myko-gpui-web-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "myko-gpui-web-demo"
+path = "main.rs"
+
+[dependencies]
+myko-gpui = { path = "../.." }
+myko = { path = "../../../core", features = ["demo"] }
+gpui = { git = "https://github.com/zed-industries/zed.git" }
+gpui_platform = { git = "https://github.com/zed-industries/zed.git" }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "debuginfo"
