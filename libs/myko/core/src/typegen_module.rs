@@ -380,12 +380,14 @@ impl TryFrom<serde_json::Value> for Value {
                     .map(Self::try_from)
                     .collect::<Result<_, _>>()?,
             ),
-            serde_json::Value::Object(entries) => Self::Object(
-                entries
+            serde_json::Value::Object(entries) => {
+                let mut entries = entries
                     .into_iter()
                     .map(|(key, value)| Ok((key, Self::try_from(value)?)))
-                    .collect::<Result<_, serde_json::Error>>()?,
-            ),
+                    .collect::<Result<Vec<_>, serde_json::Error>>()?;
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                Self::Object(entries)
+            }
         })
     }
 }
