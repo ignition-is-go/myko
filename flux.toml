@@ -5,7 +5,7 @@ dev = { channel = "canary", prerelease = true }
 [tasks.check]
 workspace_batchable = true
 depends_on = ["gen"]
-cargo = ["cargo", "check", "--target-dir", "target/claude"]
+cargo = ["cargo", "check"]
 bun = ["bun", "run", "check"]
 
 [tasks.build]
@@ -33,7 +33,7 @@ bun = ["bun", "run", "lint"]
 # `check` alone doesn't exercise `#[cfg(target_arch = "wasm32")]` code paths,
 # so a break there passes native CI silently without this.
 workspace_batchable = true
-cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown", "--target-dir", "target/claude"]
+cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
 
 [tasks.gen]
 default = ["cargo", "run", "-p", "myko", "--features", "codegen-ts", "--bin", "typegen", "--", "src/generated"]

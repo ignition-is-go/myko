@@ -29,7 +29,7 @@ cargo flux run gen
 
 ## Cargo
 
-Always use `--target-dir target/claude` for all cargo commands (check, clippy, build, test, etc.) to avoid lock contention with other tools.
+Respect the checkout’s configured Cargo target directory. Do not add agent-specific `--target-dir` overrides; managed workspaces already provide isolated build output.
 
 Always assume user is running code and type generation in hot reload mode - never run apps or type generation yourself.
 
