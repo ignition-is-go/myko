@@ -14,8 +14,8 @@ mod render;
 
 pub use client::{Myko, disconnect_myko, myko, provide_myko};
 pub use command::{
-    Command, CommandBoundary, CommandHooks, CommandSlot, CommandState, command, command_boundary,
-    observe_command, observe_command_in, on_command_change,
+    Command, CommandBoundary, CommandEvent, CommandHooks, CommandSlot, CommandState, command,
+    command_boundary, observe_command, observe_command_in, on_command_change,
 };
 pub use components::{
     FineQueryList, RemoteBoundary, fine_query_list, fine_query_list_from_store_with_key,
