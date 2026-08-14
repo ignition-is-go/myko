@@ -146,3 +146,7 @@ required-features = ["codegen"]
 [[bin]]
 name = "docgen"
 required-features = ["codegen"]
+
+[[example]]
+name = "amplification"
+required-features = ["bench"]
