@@ -243,6 +243,16 @@ pub fn connection_status(cx: &mut App) -> Entity<Remote<ConnectionStatus>> {
     )
 }
 
+/// Live Myko round-trip time in milliseconds.
+///
+/// The remote returns to loading when the transport disconnects rather than
+/// presenting the last successful ping as current.
+pub fn ping_ms(cx: &mut App) -> Entity<Remote<u64>> {
+    let client = myko(cx).client().clone();
+    let ping = client.ping_ms().clone().lock();
+    bridge_cell(&ping, &client, false, true, |ping| *ping, cx)
+}
+
 pub fn live_query<Q>(query: Q, cx: &mut App) -> Entity<Remote<Vec<Arc<Q::Item>>>>
 where
     Q: QueryParams + Clone + Send + Sync + 'static,

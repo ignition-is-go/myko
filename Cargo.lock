@@ -3412,7 +3412,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.0.0"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "864b64cc6e50132fe6e5bb29d9823ac41acb0466a308ebb90aafe010e41cf3db"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3433,7 +3435,8 @@ dependencies = [
 
 [[package]]
 name = "hyphae-gpui"
-version = "3.0.0"
+version = "3.1.1"
+source = "git+https://github.com/ignition-is-go/hyphae.git#f237822c771461726b519e87e596ec206085a5df"
 dependencies = [
  "flume 0.11.1",
  "gpui",
@@ -3442,7 +3445,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "3.0.0"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce6773efa2daa6545dfc9c2ee9f3472bc3e97220a78f2181018e92612cd9377"
 dependencies = [
  "hyphae",
  "leptos",
@@ -9994,3 +9999,11 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "gpui-command-palette"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "gpui-mullion"
+version = "0.1.0"

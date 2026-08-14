@@ -25,9 +25,10 @@ pub use crud::{CrudCommands, CrudController, CrudRowActions};
 // facade pinned with this crate instead of introducing a second Zed revision.
 pub use gpui_platform;
 pub use hyphae_gpui::MapEntry;
+pub use myko::client::ConnectionStatus;
 pub use remote::{
     LoadState, QueryStore, Remote, connection_status, live_query, live_query_store, live_report,
-    live_view, live_view_store, observe_crud_store, observe_query_store, observe_remote,
+    live_view, live_view_store, observe_crud_store, observe_query_store, observe_remote, ping_ms,
     send_command,
 };
 pub use render::{RemoteRender, render_remote, render_remote_list};

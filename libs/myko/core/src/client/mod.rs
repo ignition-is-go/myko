@@ -579,7 +579,6 @@ impl MykoClient {
 
         let client = Self { inner };
 
-        #[cfg(not(target_arch = "wasm32"))]
         if options.app_ping {
             Self::spawn_ping_loop(Arc::downgrade(&client.inner));
         }
@@ -720,6 +719,32 @@ impl MykoClient {
                 }
 
                 std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_ping_loop(inner: std::sync::Weak<MykoClientInner>) {
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                let Some(inner) = inner.upgrade() else {
+                    break;
+                };
+
+                if matches!(
+                    inner.socket.actual_connection_state().get(),
+                    ConnectionStatus::Connected(_)
+                ) {
+                    let msg = MykoMessage::Ping(PingData {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    });
+                    if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
+                        let _ = inner.socket.send(frame);
+                    }
+                }
+
+                gloo_timers::future::TimeoutFuture::new(1_000).await;
             }
         });
     }
