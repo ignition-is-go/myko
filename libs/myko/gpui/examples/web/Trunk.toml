@@ -3,6 +3,6 @@ watch = ["../../src", "../server_status.rs", "../../Cargo.toml", "../../../core/
 
 [serve]
 addresses = ["127.0.0.1"]
-port = 8080
+port = 8083
 open = true
 headers = { "Cross-Origin-Embedder-Policy" = "require-corp", "Cross-Origin-Opener-Policy" = "same-origin" }
