@@ -490,68 +490,9 @@ impl QuerySubscriptionState {
         }
 
         let previous_total_count = self.all_items.len();
-        let mut changed_ids: HashSet<Arc<str>> = HashSet::new();
-        let mut removed_ids: HashSet<Arc<str>> = HashSet::new();
+        let mut affected_ids = HashSet::new();
         let mut is_initial = false;
-
-        match diff {
-            hyphae::MapDiff::Initial { entries } => {
-                is_initial = true;
-                self.all_items.clear();
-                for (id, item) in entries {
-                    self.all_items.insert(id.clone(), item.clone());
-                    changed_ids.insert(id.clone());
-                }
-            }
-            hyphae::MapDiff::Insert { key, value } => {
-                self.all_items.insert(key.clone(), value.clone());
-                changed_ids.insert(key.clone());
-            }
-            hyphae::MapDiff::Update { key, new_value, .. } => {
-                self.all_items.insert(key.clone(), new_value.clone());
-                changed_ids.insert(key.clone());
-            }
-            hyphae::MapDiff::Remove { key, .. } => {
-                self.all_items.remove(key);
-                removed_ids.insert(key.clone());
-            }
-            hyphae::MapDiff::Batch { changes } => {
-                let batch_size = changes.len();
-                for change in changes {
-                    match change {
-                        hyphae::MapDiff::Initial { entries } => {
-                            is_initial = true;
-                            self.all_items.clear();
-                            for (id, item) in entries {
-                                self.all_items.insert(id.clone(), item.clone());
-                                changed_ids.insert(id.clone());
-                            }
-                        }
-                        hyphae::MapDiff::Insert { key, value } => {
-                            self.all_items.insert(key.clone(), value.clone());
-                            changed_ids.insert(key.clone());
-                        }
-                        hyphae::MapDiff::Update { key, new_value, .. } => {
-                            self.all_items.insert(key.clone(), new_value.clone());
-                            changed_ids.insert(key.clone());
-                        }
-                        hyphae::MapDiff::Remove { key, .. } => {
-                            self.all_items.remove(key);
-                            removed_ids.insert(key.clone());
-                        }
-                        hyphae::MapDiff::Batch { .. } => {}
-                    }
-                }
-                if batch_size >= 64 {
-                    tracing::trace!(
-                        "ClientSession tx={} apply_source_diff batch_size={} all_items={}",
-                        tx,
-                        batch_size,
-                        self.all_items.len()
-                    );
-                }
-            }
-        }
+        self.apply_source_changes(diff, &mut affected_ids, &mut is_initial);
 
         // NOTE(ts): MapDiff::Initial = full state replacement — reset sequence
         // so the client performs replace_all instead of incremental update.
@@ -559,7 +500,49 @@ impl QuerySubscriptionState {
             self.sequence = 0;
         }
 
-        self.compute_windowed_response(tx, &changed_ids, &removed_ids, previous_total_count, false)
+        self.compute_windowed_response(
+            tx,
+            &affected_ids,
+            &affected_ids,
+            previous_total_count,
+            false,
+        )
+    }
+
+    fn apply_source_changes(
+        &mut self,
+        diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        affected_ids: &mut HashSet<Arc<str>>,
+        is_initial: &mut bool,
+    ) {
+        match diff {
+            hyphae::MapDiff::Initial { entries } => {
+                *is_initial = true;
+                affected_ids.extend(self.all_items.keys().cloned());
+                self.all_items.clear();
+                for (id, item) in entries {
+                    affected_ids.insert(id.clone());
+                    self.all_items.insert(id.clone(), item.clone());
+                }
+            }
+            hyphae::MapDiff::Insert { key, value } => {
+                affected_ids.insert(key.clone());
+                self.all_items.insert(key.clone(), value.clone());
+            }
+            hyphae::MapDiff::Update { key, new_value, .. } => {
+                affected_ids.insert(key.clone());
+                self.all_items.insert(key.clone(), new_value.clone());
+            }
+            hyphae::MapDiff::Remove { key, .. } => {
+                affected_ids.insert(key.clone());
+                self.all_items.remove(key);
+            }
+            hyphae::MapDiff::Batch { changes } => {
+                for change in changes {
+                    self.apply_source_changes(change, affected_ids, is_initial);
+                }
+            }
+        }
     }
 
     fn apply_source_diff_unwindowed(
@@ -568,70 +551,31 @@ impl QuerySubscriptionState {
         tx: Arc<str>,
     ) -> Option<PendingQueryResponse> {
         let previous_total_count = self.all_items.len();
-        let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-        let mut deletes: Vec<Arc<str>> = Vec::new();
+        let mut affected_ids = HashSet::new();
+        let mut is_initial = false;
+        self.apply_source_changes(diff, &mut affected_ids, &mut is_initial);
 
         // NOTE(ts): MapDiff::Initial means "here is the complete new state" —
         // reset sequence to 0 so the client performs a full replace_all instead
-        // of an incremental update. Without this, a full-clear Initial (empty
-        // entries) sends an empty diff that the client ignores, leaving stale
-        // items in the UI.
-        let mut is_initial = false;
-
-        match diff {
-            hyphae::MapDiff::Initial { entries } => {
-                is_initial = true;
-                self.all_items.clear();
-                for (id, item) in entries {
-                    self.all_items.insert(id.clone(), item.clone());
-                    upsert_items.push(item.clone());
-                }
-            }
-            hyphae::MapDiff::Insert { key, value } => {
-                self.all_items.insert(key.clone(), value.clone());
-                upsert_items.push(value.clone());
-            }
-            hyphae::MapDiff::Update { key, new_value, .. } => {
-                self.all_items.insert(key.clone(), new_value.clone());
-                upsert_items.push(new_value.clone());
-            }
-            hyphae::MapDiff::Remove { key, .. } => {
-                if self.all_items.remove(key).is_some() {
-                    deletes.push(key.clone());
-                }
-            }
-            hyphae::MapDiff::Batch { changes } => {
-                for change in changes {
-                    match change {
-                        hyphae::MapDiff::Initial { entries } => {
-                            is_initial = true;
-                            self.all_items.clear();
-                            for (id, item) in entries {
-                                self.all_items.insert(id.clone(), item.clone());
-                                upsert_items.push(item.clone());
-                            }
-                        }
-                        hyphae::MapDiff::Insert { key, value } => {
-                            self.all_items.insert(key.clone(), value.clone());
-                            upsert_items.push(value.clone());
-                        }
-                        hyphae::MapDiff::Update { key, new_value, .. } => {
-                            self.all_items.insert(key.clone(), new_value.clone());
-                            upsert_items.push(new_value.clone());
-                        }
-                        hyphae::MapDiff::Remove { key, .. } => {
-                            if self.all_items.remove(key).is_some() {
-                                deletes.push(key.clone());
-                            }
-                        }
-                        hyphae::MapDiff::Batch { .. } => {}
-                    }
-                }
-            }
-        }
-
+        // of an incremental update.
         if is_initial {
             self.sequence = 0;
+        }
+
+        let mut response_ids: Vec<_> = if is_initial {
+            self.all_items.keys().cloned().collect()
+        } else {
+            affected_ids.into_iter().collect()
+        };
+        response_ids.sort_unstable();
+        let mut upsert_items = Vec::new();
+        let mut deletes = Vec::new();
+        for id in response_ids {
+            if let Some(item) = self.all_items.get(id.as_ref()) {
+                upsert_items.push(item.clone());
+            } else {
+                deletes.push(id);
+            }
         }
 
         let total_count = self.all_items.len();
@@ -643,7 +587,7 @@ impl QuerySubscriptionState {
             "ClientSession tx={} window_decision force_emit=false seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed=false total_count_changed={} should_emit={} total_count={} window=None",
             tx,
             self.sequence,
-            upsert_items.len(),
+            upsert_items.len().saturating_add(deletes.len()),
             upsert_items.len(),
             deletes.len(),
             visible_changed,
@@ -686,13 +630,24 @@ impl QuerySubscriptionState {
             return None;
         }
 
+        let was_windowed = self.window.is_some();
         self.window = window;
+
+        // Leaving windowed mode must replace the client's partial page with
+        // the complete source state. Sequence zero gives every client the
+        // same full-snapshot semantics as an Initial diff.
+        if was_windowed && self.window.is_none() {
+            self.sequence = 0;
+        }
+
+        // A changed window is observable even when it happens to select the
+        // same IDs (for example, increasing a limit beyond the row count).
         self.compute_windowed_response(
             tx,
             &HashSet::new(),
             &HashSet::new(),
             self.all_items.len(),
-            false,
+            true,
         )
     }
 
@@ -1026,6 +981,287 @@ mod tests {
             id: id.into(),
             name: name.to_string(),
         })
+    }
+
+    #[test]
+    fn unwindowed_batch_remove_then_insert_same_key_emits_only_final_upsert() {
+        let old_item = make_entity("task-1", "Old");
+        let new_item = make_entity("task-1", "New");
+        let expected_item = new_item.clone();
+        let mut state = QuerySubscriptionState {
+            sequence: 1,
+            all_items: HashMap::from([("task-1".into(), old_item.clone())]),
+            ..Default::default()
+        };
+        let diff = hyphae::MapDiff::Batch {
+            changes: vec![
+                hyphae::MapDiff::Remove {
+                    key: "task-1".into(),
+                    old_value: old_item,
+                },
+                hyphae::MapDiff::Insert {
+                    key: "task-1".into(),
+                    value: new_item,
+                },
+            ],
+        };
+
+        let response = state.apply_source_diff_unwindowed(&diff, "tx".into());
+        assert!(response.is_some(), "expected a response");
+        let Some(response) = response else {
+            return;
+        };
+        assert!(response.deletes.is_empty());
+        assert_eq!(response.upsert_items.len(), 1);
+        assert!(
+            response
+                .upsert_items
+                .first()
+                .is_some_and(|item| Arc::ptr_eq(item, &expected_item)),
+            "the final inserted item should be upserted"
+        );
+    }
+
+    #[test]
+    fn unwindowed_batch_insert_then_remove_same_key_emits_only_final_delete() {
+        let item = make_entity("task-1", "Transient");
+        let mut state = QuerySubscriptionState {
+            sequence: 1,
+            ..Default::default()
+        };
+        let diff = hyphae::MapDiff::Batch {
+            changes: vec![
+                hyphae::MapDiff::Insert {
+                    key: "task-1".into(),
+                    value: item.clone(),
+                },
+                hyphae::MapDiff::Remove {
+                    key: "task-1".into(),
+                    old_value: item,
+                },
+            ],
+        };
+
+        let response = state.apply_source_diff_unwindowed(&diff, "tx".into());
+        assert!(response.is_some(), "expected a response");
+        let Some(response) = response else {
+            return;
+        };
+        assert!(response.upsert_items.is_empty());
+        assert_eq!(response.deletes, vec![Arc::<str>::from("task-1")]);
+    }
+
+    #[test]
+    fn nested_batch_initial_resets_sequence_and_coalesces_to_full_snapshot() {
+        let stale_item = make_entity("stale", "Stale");
+        let transient = make_entity("transient", "Transient");
+        let fresh = make_entity("fresh", "Fresh");
+        let later = make_entity("later", "Later");
+        let mut state = QuerySubscriptionState {
+            sequence: 7,
+            all_items: HashMap::from([("stale".into(), stale_item)]),
+            ..Default::default()
+        };
+        let diff = hyphae::MapDiff::Batch {
+            changes: vec![
+                hyphae::MapDiff::Insert {
+                    key: "transient".into(),
+                    value: transient,
+                },
+                hyphae::MapDiff::Batch {
+                    changes: vec![
+                        hyphae::MapDiff::Initial {
+                            entries: vec![("fresh".into(), fresh)],
+                        },
+                        hyphae::MapDiff::Insert {
+                            key: "later".into(),
+                            value: later,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let response = state.apply_source_diff(&diff, "tx".into());
+        assert!(response.is_some(), "nested Initial should emit a snapshot");
+        let Some(response) = response else {
+            return;
+        };
+        let mut ids: Vec<_> = response.upsert_items.iter().map(|item| item.id()).collect();
+        ids.sort_unstable();
+
+        assert_eq!(response.sequence, 0);
+        assert_eq!(
+            ids,
+            vec![Arc::<str>::from("fresh"), Arc::<str>::from("later")]
+        );
+        assert!(response.deletes.is_empty());
+        assert_eq!(response.total_count, 2);
+    }
+
+    #[test]
+    fn bounded_to_unwindowed_emits_full_sequence_zero_snapshot() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-1".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(
+            tx.clone(),
+            "query-1".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1,
+            }),
+        );
+        let before = mock.message_count();
+
+        session.update_query_window(&tx, None);
+
+        assert_eq!(mock.message_count(), before + 1);
+        let last_message = mock.last_message();
+        assert!(
+            matches!(last_message, Some(MykoMessage::QueryResponse(_))),
+            "expected QueryResponse"
+        );
+        let Some(MykoMessage::QueryResponse(response)) = last_message else {
+            return;
+        };
+        let mut ids: Vec<_> = response.upserts.iter().map(|item| item.item.id()).collect();
+        ids.sort_unstable();
+        assert_eq!(response.sequence, 0);
+        assert_eq!(
+            ids,
+            vec![
+                Arc::<str>::from("a"),
+                Arc::<str>::from("b"),
+                Arc::<str>::from("c")
+            ]
+        );
+        assert!(response.deletes.is_empty());
+        assert!(response.window.is_none());
+        assert!(response.changes.is_empty());
+        assert_eq!(response.total_count, Some(3));
+    }
+
+    #[test]
+    fn unwindowed_to_bounded_updates_visible_page() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-1".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(tx.clone(), "query-1".into(), cellmap, None);
+
+        session.update_query_window(
+            &tx,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1,
+            }),
+        );
+
+        let last_message = mock.last_message();
+        assert!(
+            matches!(last_message, Some(MykoMessage::QueryResponse(_))),
+            "expected QueryResponse"
+        );
+        let Some(MykoMessage::QueryResponse(response)) = last_message else {
+            return;
+        };
+        assert_eq!(response.sequence, 1);
+        assert_eq!(response.upserts.len(), 1);
+        assert!(
+            response
+                .upserts
+                .first()
+                .is_some_and(|item| item.item.id().as_ref() == "b")
+        );
+        assert!(response.deletes.is_empty());
+        assert!(matches!(
+            response.window,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1
+            })
+        ));
+        assert!(matches!(
+            response.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("b")]
+        ));
+    }
+
+    #[test]
+    fn bounded_window_change_emits_even_when_selected_ids_are_unchanged() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-1".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(
+            tx.clone(),
+            "query-1".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 2,
+            }),
+        );
+        let before = mock.message_count();
+
+        session.update_query_window(
+            &tx,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 20,
+            }),
+        );
+
+        assert_eq!(mock.message_count(), before + 1);
+        let last_message = mock.last_message();
+        assert!(
+            matches!(last_message, Some(MykoMessage::QueryResponse(_))),
+            "expected QueryResponse"
+        );
+        let Some(MykoMessage::QueryResponse(response)) = last_message else {
+            return;
+        };
+        assert_eq!(response.sequence, 1);
+        assert!(response.upserts.is_empty());
+        assert!(response.deletes.is_empty());
+        assert!(matches!(
+            response.window,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 20
+            })
+        ));
+        assert!(matches!(
+            response.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }]
+                if ids == &[Arc::<str>::from("a"), Arc::<str>::from("b")]
+        ));
     }
 
     #[test]

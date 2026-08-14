@@ -10,7 +10,9 @@ use std::{
 mod cbor_json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
+mod map_response;
 mod query_map;
+mod view_map;
 
 pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
@@ -19,10 +21,12 @@ use hyphae::{
     Cell, CellImmutable, CellMutable, Gettable, MapExt, Materialize, Mutable, SubscriptionGuard,
     Watchable,
 };
+pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
+pub use view_map::ViewMapWatch;
 
 use crate::{
     command::{CommandId, CommandRequest, WrappedCommand},
@@ -127,6 +131,10 @@ fn encode_protocol(protocol: &AtomicU8, msg: &MykoMessage) -> Option<WsFrame> {
             Some(WsFrame::Binary(bytes))
         }
     }
+}
+
+fn next_subscription_tx() -> Arc<str> {
+    uuid::Uuid::new_v4().to_string().into()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,6 +309,16 @@ impl Default for MykoClient {
 }
 
 impl MykoClient {
+    fn try_register_query_handler(&self, tx: Arc<str>, handler: QueryHandler) -> bool {
+        match self.inner.query_handlers.entry(tx) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(handler);
+                true
+            }
+            dashmap::mapref::entry::Entry::Occupied(_) => false,
+        }
+    }
+
     /// Create a new `MykoClient` with the platform-default transport.
     ///
     /// On native: uses `AutoReconnectSocket` (tokio-tungstenite).
@@ -389,13 +407,35 @@ impl MykoClient {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            let weak_for_callback = weak.clone();
+            if let Some(guard) = transport.set_frame_callback(Arc::new(move |frame| {
+                let Some(inner) = weak_for_callback.upgrade() else {
+                    return;
+                };
+                Self::handle_frame(&inner, &frame);
+            })) {
+                return guard;
+            }
+
+            // Custom transports may only implement the channel API. Keep
+            // draining it on WASM rather than silently dropping every frame.
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled_for_task = Arc::clone(&cancelled);
             wasm_bindgen_futures::spawn_local(async move {
-                while let Ok(frame) = rx.recv_async().await {
-                    let Some(inner) = weak.upgrade() else { break };
-                    Self::handle_frame(&inner, &frame);
+                loop {
+                    while let Ok(frame) = rx.try_recv() {
+                        let Some(inner) = weak.upgrade() else {
+                            return;
+                        };
+                        Self::handle_frame(&inner, &frame);
+                    }
+                    if cancelled_for_task.load(Ordering::SeqCst) || rx.is_disconnected() {
+                        break;
+                    }
+                    gloo_timers::future::TimeoutFuture::new(8).await;
                 }
             });
-            CallbackGuard::noop()
+            CallbackGuard::new(move || cancelled.store(true, Ordering::SeqCst))
         }
     }
 
@@ -434,11 +474,17 @@ impl MykoClient {
         #[cfg(target_arch = "wasm32")]
         {
             wasm_bindgen_futures::spawn_local(async move {
-                while let Ok((tx, response)) = rx.recv_async().await {
-                    let Some(inner) = weak.upgrade() else { break };
-                    if let Some(handler) = inner.report_handlers.get(&tx) {
-                        handler(response);
+                loop {
+                    while let Ok((tx, response)) = rx.try_recv() {
+                        let Some(inner) = weak.upgrade() else { return };
+                        if let Some(handler) = inner.report_handlers.get(&tx) {
+                            handler(response);
+                        }
                     }
+                    if rx.is_disconnected() {
+                        break;
+                    }
+                    gloo_timers::future::TimeoutFuture::new(8).await;
                 }
             });
             CallbackGuard::noop()
@@ -1070,7 +1116,8 @@ impl MykoClient {
         Q: QueryParams + Clone,
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
-        let query: QueryRequest<Q> = query.into();
+        let supplied: QueryRequest<Q> = query.into();
+        let query = QueryRequest::with_tx(supplied.query, next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
         let query_id = query.query.query_id();
         let query_item_type = Q::query_item_type_static();
@@ -1306,7 +1353,8 @@ impl MykoClient {
         V: ViewParams + Clone,
         V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
-        let view: ViewRequest<V> = view.into();
+        let supplied: ViewRequest<V> = view.into();
+        let view = ViewRequest::with_tx(supplied.view, next_subscription_tx());
         let tx: Arc<str> = view.tx.clone();
         let view_id = view.view.view_id();
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
@@ -1520,13 +1568,13 @@ impl MykoClient {
 
     /// Dynamic/raw query watch for runtimes that only know wrapped query data.
     #[must_use]
-    pub fn watch_query_raw(&self, query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
-        let tx: Arc<str> = query
-            .query
-            .get("tx")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .into();
+    pub fn watch_query_raw(&self, mut query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
+        let tx = next_subscription_tx();
+        let Some(request) = query.query.as_object_mut() else {
+            error!("Could not assign transaction ID to raw query request");
+            return Cell::new(Vec::<Value>::new()).lock();
+        };
+        request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
@@ -1603,13 +1651,13 @@ impl MykoClient {
     /// path as queries on the wire, so the same `query_handlers` slot
     /// stores the dispatch closure.
     #[must_use]
-    pub fn watch_view_raw(&self, view: WrappedView) -> Cell<Vec<Value>, CellImmutable> {
-        let tx: Arc<str> = view
-            .view
-            .get("tx")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .into();
+    pub fn watch_view_raw(&self, mut view: WrappedView) -> Cell<Vec<Value>, CellImmutable> {
+        let tx = next_subscription_tx();
+        let Some(request) = view.view.as_object_mut() else {
+            error!("Could not assign transaction ID to raw view request");
+            return Cell::new(Vec::<Value>::new()).lock();
+        };
+        request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(view.view_id.as_ref());

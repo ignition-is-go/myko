@@ -1,0 +1,35 @@
+[package]
+name = "myko-gpui"
+version = "6.0.0"
+description = "Myko client bridge for GPUI, native and web"
+license = "AGPL-3.0-or-later"
+edition.workspace = true
+authors.workspace = true
+autoexamples = false
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
+[dependencies]
+serde.workspace = true
+myko.workspace = true
+gpui.workspace = true
+hyphae-gpui.workspace = true
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+
+[dev-dependencies]
+myko = { workspace = true, features = ["demo"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[features]
+default = []
+ci = []
+
+[lints]
+workspace = true
+
+[[example]]
+name = "server_status"
+path = "examples/server_status.rs"

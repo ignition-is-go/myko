@@ -71,6 +71,7 @@ rayon = "1.10"
 # WASM-only deps (minimal tokio for sync primitives, spawn/sleep helpers)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window"] }
 # uuid needs js feature for WASM RNG support
@@ -94,6 +95,10 @@ required-features = ["bench"]
 
 [features]
 default = []
+# Canonical domain used only by integration demos and examples. Keeping it
+# opt-in prevents application-specific entities from entering Myko inventories
+# or generated API surfaces in normal framework builds.
+demo = []
 bench = []
 doc-gen = []
 # Full-text entity search. Used to gate the tantivy backend; with tantivy
