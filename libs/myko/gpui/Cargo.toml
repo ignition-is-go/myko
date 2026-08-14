@@ -9,7 +9,7 @@ authors.workspace = true
 autoexamples = false
 
 [package.metadata.flux]
-tasks = ["check", "build", "test", "lint"]
+tasks = ["check", "check-wasm", "build", "test", "lint"]
 
 [dependencies]
 serde.workspace = true
