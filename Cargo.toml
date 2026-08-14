@@ -182,8 +182,8 @@ hyphae = { version = "^3.0", features = ["scheduler"] }
 hyphae-leptos = { version = "^3.0" }
 
 # Internal crates
-autosocket = { version = "5.0.7", path = "libs/autosocket" }
-myko-leptos = { version = "5.0.7", path = "libs/myko/leptos" }
-myko-macros = { version = "5.0.7", path = "libs/myko/macros" }
-myko = { version = "5.0.7", path = "libs/myko/core" }
-myko-server = { version = "5.0.7", path = "libs/myko/server" }
+autosocket = { version = "6.0.0", path = "libs/autosocket" }
+myko-leptos = { version = "6.0.0", path = "libs/myko/leptos" }
+myko-macros = { version = "6.0.0", path = "libs/myko/macros" }
+myko = { version = "6.0.0", path = "libs/myko/core" }
+myko-server = { version = "6.0.0", path = "libs/myko/server" }
