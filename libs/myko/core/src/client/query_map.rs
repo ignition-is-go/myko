@@ -1,16 +1,62 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap, Watchable};
+use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Mutable, Watchable};
+
+pub(super) fn apply_incremental_map_update<T: hyphae::CellValue>(
+    map: &CellMap<Arc<str>, Arc<T>, CellMutable>,
+    deletes: Vec<Arc<str>>,
+    upserts: Vec<(Arc<str>, Arc<T>)>,
+) {
+    // A joined row can be removed and reinserted under the same stable ID in
+    // one server batch. Upserts describe the resulting value, so they must win
+    // when an ID appears in both legacy wire collections.
+    if !deletes.is_empty() {
+        map.remove_many(deletes);
+    }
+    if !upserts.is_empty() {
+        map.insert_many(upserts);
+    }
+}
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tracing::{debug, error, trace};
 
-use super::{ConnectionStatus, MykoClient, QueryRequest};
+use super::{
+    ConnectionStatus, MykoClient, QueryRequest,
+    map_response::{MapSequence, decode_map_upserts},
+};
 use crate::{
     common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, query::QueryParams},
     wire::{message::MykoMessage, query::WrappedQuery},
 };
+
+/// Fine-grained query data together with explicit initial-response readiness.
+///
+/// A newly-created [`CellMap`] immediately publishes an empty snapshot, so its
+/// emptiness cannot distinguish "not answered yet" from a successful empty
+/// query. `ready` becomes true only after a valid sequence-zero server response.
+pub struct QueryMapWatch<T: hyphae::CellValue> {
+    map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
+    ready: Cell<bool, CellImmutable>,
+}
+
+impl<T: hyphae::CellValue> QueryMapWatch<T> {
+    #[must_use]
+    pub const fn map(&self) -> &CellMap<Arc<str>, Arc<T>, CellImmutable> {
+        &self.map
+    }
+
+    #[must_use]
+    pub const fn ready(&self) -> &Cell<bool, CellImmutable> {
+        &self.ready
+    }
+
+    #[must_use]
+    pub fn into_map(self) -> CellMap<Arc<str>, Arc<T>, CellImmutable> {
+        self.map
+    }
+}
 
 impl MykoClient {
     /// Watch a query with per-entity reactive granularity.
@@ -30,7 +76,22 @@ impl MykoClient {
         Q::Item: Eventable + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
         <Q::Item as WithTypedId>::Id: hyphae::IdFor<Q::Item, MapKey = Arc<str>>,
     {
-        let query: QueryRequest<Q> = query.into();
+        self.watch_query_map_state(query).into_map()
+    }
+
+    /// Watch a query map and retain an explicit initial-response signal.
+    #[allow(clippy::too_many_lines)]
+    pub fn watch_query_map_state<Q>(
+        &self,
+        query: impl Into<QueryRequest<Q>>,
+    ) -> QueryMapWatch<Q::Item>
+    where
+        Q: QueryParams + Clone,
+        Q::Item: Eventable + WithTypedId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+        <Q::Item as WithTypedId>::Id: hyphae::IdFor<Q::Item, MapKey = Arc<str>>,
+    {
+        let supplied: QueryRequest<Q> = query.into();
+        let query = QueryRequest::with_tx(supplied.query, super::next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
         let query_id = query.query.query_id();
         let query_item_type = Q::query_item_type_static();
@@ -38,10 +99,17 @@ impl MykoClient {
         let map: CellMap<Arc<str>, Arc<Q::Item>> =
             CellMap::new().with_name(format!("query_map:{query_id}"));
         let map_weak = map.downgrade();
+        let ready =
+            Cell::<bool, CellMutable>::new(false).with_name(format!("query_map_ready:{query_id}"));
+        let ready_weak = ready.downgrade();
+        let ready_read = ready.clone().lock();
 
         let Ok(query_value) = serde_json::to_value(&query) else {
             error!("Could not serialize query map request for {query_id}");
-            return map.lock();
+            return QueryMapWatch {
+                map: map.lock(),
+                ready: ready_read,
+            };
         };
 
         let wrapped = WrappedQuery {
@@ -53,87 +121,106 @@ impl MykoClient {
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
+        let sequences = Arc::new(MapSequence::new());
+        let sequences_for_handler = Arc::clone(&sequences);
 
-        // Register handler for query responses matching this tx
-        self.inner.query_handlers.insert(
-            tx.clone(),
-            Box::new(move |response_value: Value| {
-                let Some(map_writer) = map_weak.upgrade() else {
-                    return;
+        // Duplicate explicit transaction IDs must not replace another watch;
+        // otherwise dropping the older watch could remove the newer handler.
+        let handler: super::QueryHandler = Box::new(move |response_value: Value| {
+            let Some(map_writer) = map_weak.upgrade() else {
+                return;
+            };
+
+            let response =
+                match serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        error!(
+                            "Rejected query '{}' malformed response: {}",
+                            query_id_for_handler, error
+                        );
+                        return;
+                    }
                 };
 
-                let Ok(response) =
-                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
-                else {
-                    return;
-                };
+            if response.tx != tx_for_handler {
+                return;
+            }
 
-                if response.tx != tx_for_handler {
+            // Decode the complete response before advancing its sequence or
+            // mutating the map. One malformed row invalidates the whole batch.
+            let upserts = match decode_map_upserts::<Q::Item, _>(response.upserts, |item| item.id())
+            {
+                Ok(upserts) => upserts,
+                Err(error) => {
+                    error!(
+                        "Rejected query '{}' response: invalid {} upsert: {}",
+                        query_id_for_handler,
+                        std::any::type_name::<Q::Item>(),
+                        error
+                    );
                     return;
                 }
+            };
 
-                // Parse upserts
-                let upserts: Vec<_> = response
-                    .upserts
-                    .into_iter()
-                    .filter_map(|item_value| {
-                        match serde_json::from_value::<Q::Item>(item_value.item) {
-                            Ok(item) => {
-                                let item = Arc::new(item);
-                                let id = item.id();
-                                Some((id, item))
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to parse query '{}' upsert as {}: {}",
-                                    query_id_for_handler,
-                                    std::any::type_name::<Q::Item>(),
-                                    e
-                                );
-                                None
-                            }
-                        }
-                    })
-                    .collect();
+            if !sequences_for_handler.accept(response.sequence) {
+                error!(
+                    "Rejected query '{}' out-of-order sequence {}",
+                    query_id_for_handler, response.sequence
+                );
+                return;
+            }
 
-                if response.sequence == 0 {
-                    // Server reset — full state replacement as single Batch diff
-                    trace!("Sequence reset: replacing {} map", query_id_for_handler);
-                    map_writer.replace_all(upserts);
-                } else {
-                    // Incremental update
-                    if !upserts.is_empty() {
-                        map_writer.insert_many(upserts);
-                    }
-                    if !response.deletes.is_empty() {
-                        map_writer.remove_many(response.deletes);
-                    }
-                }
-            }),
-        );
+            let is_initial_response = response.sequence == 0;
+            if is_initial_response {
+                trace!("Sequence reset: replacing {} map", query_id_for_handler);
+                map_writer.replace_all(upserts);
+            } else {
+                apply_incremental_map_update(&map_writer, response.deletes, upserts);
+            }
+
+            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
+                ready_writer.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate query map transaction {tx}");
+            return QueryMapWatch {
+                map: map.lock(),
+                ready: ready_read,
+            };
+        }
 
         // Build the frame to send (and re-send on reconnect)
         let msg = MykoMessage::Query(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode query map request for {query_id}");
-            return map.lock();
+            return QueryMapWatch {
+                map: map.lock(),
+                ready: ready_read,
+            };
         };
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
+        let ready_for_status = ready.downgrade();
+        let sequences_for_status = sequences;
         let status_cell = self.connection_status();
         let send_query_id = query_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
-                match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query map {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
-                    },
-                    _ => {
-                        debug!("Query map {send_query_id} disconnected");
                     }
+                } else {
+                    sequences_for_status.reset_epoch();
+                    if let Some(ready_writer) = ready_for_status.upgrade() {
+                        ready_writer.set(false);
+                    }
+                    debug!("Query map {send_query_id} disconnected");
                 }
             }
         });
@@ -142,6 +229,294 @@ impl MykoClient {
         map.own(status_guard);
         map.own(super::query_cancel_guard(tx, self.inner.clone()));
 
-        map.lock()
+        QueryMapWatch {
+            map: map.lock(),
+            ready: ready_read,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use autosocket::{SocketConnectionStatus, SocketTransport, WsFrame};
+    use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable};
+
+    use super::apply_incremental_map_update;
+    use crate::{client::MykoClient, entities::client::GetAllClients};
+
+    struct MockTransport {
+        status: Cell<SocketConnectionStatus, CellMutable>,
+        sent: Mutex<Vec<WsFrame>>,
+        incoming_rx: flume::Receiver<WsFrame>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            let (_incoming_tx, incoming_rx) = flume::unbounded();
+            Self {
+                status: Cell::new(SocketConnectionStatus::Idle),
+                sent: Mutex::new(Vec::new()),
+                incoming_rx,
+            }
+        }
+
+        fn set_status(&self, status: SocketConnectionStatus) {
+            self.status.set(status);
+        }
+
+        fn sent_frames(&self) -> Vec<WsFrame> {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl SocketTransport for MockTransport {
+        fn set_addr(&self, _addr: Option<String>) {}
+
+        fn close(&self) {
+            self.status.set(SocketConnectionStatus::Idle);
+        }
+
+        fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+
+        fn actual_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+
+        fn send(&self, frame: WsFrame) -> Result<(), String> {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame);
+            Ok(())
+        }
+
+        fn read_rx(&self) -> flume::Receiver<WsFrame> {
+            self.incoming_rx.clone()
+        }
+    }
+
+    #[test]
+    fn overlapping_delete_and_upsert_keeps_upserted_value() {
+        let map = CellMap::<Arc<str>, Arc<String>>::new();
+        map.insert("task-1".into(), Arc::new("old".to_owned()));
+
+        apply_incremental_map_update(
+            &map,
+            vec!["task-1".into()],
+            vec![("task-1".into(), Arc::new("new".to_owned()))],
+        );
+
+        assert_eq!(
+            map.get_value(&Arc::<str>::from("task-1"))
+                .as_deref()
+                .map(String::as_str),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn reconnect_resends_same_query_and_restores_ready_snapshot() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_map_state(GetAllClients {});
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let first_frames = transport
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")))
+            .collect::<Vec<_>>();
+        assert_eq!(first_frames.len(), 1);
+        let Some(WsFrame::Text(first_frame)) = first_frames.first() else {
+            return;
+        };
+        let parsed_request = serde_json::from_str::<serde_json::Value>(first_frame);
+        assert!(parsed_request.is_ok());
+        let Ok(request) = parsed_request else {
+            return;
+        };
+        let request_tx = request
+            .get("data")
+            .and_then(|data| data.get("query"))
+            .and_then(|query| query.get("tx"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert!(request_tx.is_some());
+        let Some(tx) = request_tx else {
+            return;
+        };
+
+        let initial = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "client-1",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert!(watch.ready().get());
+        assert_eq!(watch.map().snapshot().len(), 1);
+
+        transport.set_status(SocketConnectionStatus::Disconnected);
+        assert!(!watch.ready().get());
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+
+        let reconnected_frames = transport
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")))
+            .collect::<Vec<_>>();
+        assert_eq!(reconnected_frames.len(), 2);
+        assert!(matches!(
+            reconnected_frames.as_slice(),
+            [WsFrame::Text(first), WsFrame::Text(second)] if first == second
+        ));
+
+        let restored = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "client-2",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+
+        assert!(watch.ready().get());
+        let snapshot = watch.map().snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            snapshot.first().map(|(id, _)| id.as_ref()),
+            Some("client-2")
+        );
+    }
+    #[test]
+    fn malformed_initial_snapshot_is_atomic_and_does_not_become_ready() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_map_state(GetAllClients {});
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = transport.sent_frames();
+        assert!(matches!(frames.first(), Some(WsFrame::Text(_))));
+        let Some(WsFrame::Text(frame)) = frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        let tx = request
+            .pointer("/data/query/tx")
+            .and_then(serde_json::Value::as_str);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+
+        let malformed = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [
+                    {"item": {"id": "client-1", "serverId": "server-1", "address": null, "windback": null}, "itemType": "client"},
+                    {"item": {"malformed": true}, "itemType": "client"}
+                ]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(malformed.to_string()));
+        assert!(!watch.ready().get());
+        assert!(watch.map().snapshot().is_empty());
+
+        let valid = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{"item": {"id": "client-2", "serverId": "server-1", "address": null, "windback": null}, "itemType": "client"}]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(valid.to_string()));
+        assert!(watch.ready().get());
+        assert_eq!(watch.map().snapshot().len(), 1);
+    }
+
+    #[test]
+    fn cloned_request_gets_unique_subscription_tx_and_old_drop_keeps_new_watch() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let supplied = crate::query::QueryRequest::with_tx(
+            GetAllClients {},
+            Arc::<str>::from("caller-supplied-duplicate"),
+        );
+        let old = client.watch_query_map_state(&supplied);
+        let new = client.watch_query_map_state(&supplied);
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+
+        let frames = transport.sent_frames();
+        let txs = frames
+            .iter()
+            .filter_map(|frame| match frame {
+                WsFrame::Text(frame) => serde_json::from_str::<serde_json::Value>(frame).ok(),
+                WsFrame::Binary(_) => None,
+            })
+            .filter_map(|request| {
+                request
+                    .pointer("/data/query/tx")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(txs.len(), 2);
+        let [first_tx, second_tx] = txs.as_slice() else {
+            return;
+        };
+        assert_ne!(first_tx, second_tx);
+        assert!(!txs.iter().any(|tx| tx == "caller-supplied-duplicate"));
+
+        drop(old);
+        for tx in txs {
+            let initial = serde_json::json!({
+                "event": "ws:m:query-response",
+                "data": {
+                    "tx": tx,
+                    "sequence": 0,
+                    "deletes": [],
+                    "upserts": [{"item": {"id": "client-2", "serverId": "server-1", "address": null, "windback": null}, "itemType": "client"}]
+                }
+            });
+            MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        }
+        assert!(new.ready().get());
+        assert_eq!(new.map().snapshot().len(), 1);
     }
 }
