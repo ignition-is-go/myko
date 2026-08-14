@@ -1,14 +1,19 @@
-use std::{any::Any, collections::HashMap, fmt::Debug, sync::Arc};
-
-use gpui::{App, AppContext as _, Context, Entity, Subscription};
-use hyphae_gpui::{
-    CellEntity, CellEntityStatus, CellMapEntity, MapEntry, ToGpuiEntity as _, ToGpuiMapEntity as _,
+use std::{
+    any::Any,
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    sync::{Arc, Mutex},
 };
+
+use gpui::{App, AppContext as _, Context, Entity, Subscription, Task};
+use hyphae_gpui::{CellEntity, CellEntityStatus, ToGpuiEntity as _};
 use myko::{
     client::{ConnectionStatus, MykoClient},
     common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, view::ViewParams},
-    hyphae::{Cell, CellImmutable, CellValue},
+    hyphae::{
+        Cell, CellImmutable, CellMap, CellValue, MapDiff, Signal, SubscriptionGuard, Watchable as _,
+    },
     query::QueryParams,
     report::{ReportIdStatic, ReportParams},
 };
@@ -269,25 +274,56 @@ where
     )
 }
 
+/// Fine-grained GPUI state for one current or previously present query row.
+///
+/// Existing observers see `None` when a row is removed. Reusing the same key
+/// later reuses this entity, so keyed UI state remains stable across snapshots.
+pub struct MapEntry<V: CellValue> {
+    value: Option<V>,
+}
+
+impl<V: CellValue> MapEntry<V> {
+    /// Current value, or `None` after removal.
+    #[must_use]
+    pub const fn value(&self) -> Option<&V> {
+        self.value.as_ref()
+    }
+}
+
+enum QueryStoreEvent<T: CellValue> {
+    Map(MapDiff<Arc<str>, Arc<T>>),
+    Ready {
+        ready: bool,
+        snapshot: Vec<(Arc<str>, Arc<T>)>,
+    },
+    Status {
+        status: ConnectionStatus,
+        snapshot: Vec<(Arc<str>, Arc<T>)>,
+    },
+    ReadyError(Arc<str>),
+    StatusError(Arc<str>),
+}
+
 /// GPUI query collection with stable, independently observable row entities.
 ///
+/// Unlike the general-purpose Hyphae map adapter, this projection owns Myko's
+/// response-readiness and connection semantics. A ready response is reconciled
+/// from one authoritative map snapshot before the collection becomes ready.
 /// This entity notifies only when membership or readiness changes. Observe a
 /// [`MapEntry`] returned by [`entry`](Self::entry) to redraw for one item's
 /// value updates without notifying the collection owner.
-pub struct QueryStore<T: myko::hyphae::CellValue> {
+pub struct QueryStore<T: CellValue> {
     state: LoadState<()>,
     ready: bool,
-    pending_ready: bool,
+    response_ready: bool,
+    connection: Option<ConnectionStatus>,
     keys: Vec<Arc<str>>,
     entries: HashMap<Arc<str>, Entity<MapEntry<Arc<T>>>>,
-    _observations: Vec<Subscription>,
-    pending_observations: Vec<Subscription>,
-    _map: Entity<CellMapEntity<Arc<str>, Arc<T>>>,
-    _ready: Entity<CellEntity<bool>>,
-    _status: Entity<CellEntity<ConnectionStatus>>,
+    _subscriptions: Vec<SubscriptionGuard>,
+    _driver: Task<()>,
 }
 
-impl<T: myko::hyphae::CellValue> QueryStore<T> {
+impl<T: CellValue> QueryStore<T> {
     /// Loading, ready, or connection-error state for the collection.
     #[must_use]
     pub const fn state(&self) -> &LoadState<()> {
@@ -309,59 +345,178 @@ impl<T: myko::hyphae::CellValue> QueryStore<T> {
     /// Stable fine-grained entity for a current row.
     #[must_use]
     pub fn entry(&self, key: &Arc<str>) -> Option<Entity<MapEntry<Arc<T>>>> {
-        self.entries.get(key).cloned()
+        self.keys
+            .contains(key)
+            .then(|| self.entries.get(key).cloned())
+            .flatten()
     }
 
-    fn sync_membership(&mut self, map: &CellMapEntity<Arc<str>, Arc<T>>) {
-        self.keys = map.keys().to_vec();
-        self.entries = self
-            .keys
-            .iter()
-            .filter_map(|key| map.entry(key).map(|entry| (key.clone(), entry)))
-            .collect();
-    }
+    fn update_entry(&mut self, key: Arc<str>, value: Arc<T>, cx: &mut Context<Self>) -> bool {
+        if let Some(entry) = self.entries.get(&key) {
+            entry.update(cx, |entry, cx| {
+                entry.value = Some(value);
+                cx.notify();
+            });
+        } else {
+            let entry = cx.new(|_| MapEntry { value: Some(value) });
+            self.entries.insert(key.clone(), entry);
+        }
 
-    fn sync_status(&mut self, status: &CellEntity<ConnectionStatus>) {
-        match status.status() {
-            CellEntityStatus::Active => self.sync_state(status.value()),
-            CellEntityStatus::Error(error) => {
-                self.state = LoadState::Error {
-                    message: error.clone().into(),
-                    stale: self.state.value().cloned(),
-                };
-            }
-            CellEntityStatus::Complete => {}
+        if self.keys.contains(&key) {
+            false
+        } else {
+            self.keys.push(key);
+            true
         }
     }
 
-    fn sync_state(&mut self, status: Option<&ConnectionStatus>) {
-        self.state = match status {
-            Some(ConnectionStatus::Disconnected) => {
-                self.ready = false;
-                self.pending_ready = false;
-                LoadState::Error {
-                    message: "Myko connection disconnected".into(),
-                    stale: self.state.value().cloned(),
-                }
+    fn remove_entry(&mut self, key: &Arc<str>, cx: &mut Context<Self>) -> bool {
+        let previous_len = self.keys.len();
+        self.keys.retain(|candidate| candidate != key);
+        if let Some(entry) = self.entries.get(key) {
+            entry.update(cx, |entry, cx| {
+                entry.value = None;
+                cx.notify();
+            });
+        }
+        self.keys.len() != previous_len
+    }
+
+    fn reconcile_snapshot(
+        &mut self,
+        snapshot: Vec<(Arc<str>, Arc<T>)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let next_keys = snapshot
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let next_members = next_keys.iter().cloned().collect::<HashSet<_>>();
+        let removed = self
+            .keys
+            .iter()
+            .filter(|key| !next_members.contains(*key))
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in removed {
+            if let Some(entry) = self.entries.get(&key) {
+                entry.update(cx, |entry, cx| {
+                    entry.value = None;
+                    cx.notify();
+                });
             }
+        }
+
+        let membership_changed = self.keys != next_keys;
+        for (key, value) in snapshot {
+            if let Some(entry) = self.entries.get(&key) {
+                entry.update(cx, |entry, cx| {
+                    entry.value = Some(value);
+                    cx.notify();
+                });
+            } else {
+                let entry = cx.new(|_| MapEntry { value: Some(value) });
+                self.entries.insert(key, entry);
+            }
+        }
+        self.keys = next_keys;
+        membership_changed
+    }
+
+    fn apply_map_diff(&mut self, diff: MapDiff<Arc<str>, Arc<T>>, cx: &mut Context<Self>) -> bool {
+        match diff {
+            MapDiff::Initial { entries } => self.reconcile_snapshot(entries, cx),
+            MapDiff::Insert { key, value } => self.update_entry(key, value, cx),
+            MapDiff::Update { key, new_value, .. } => self.update_entry(key, new_value, cx),
+            MapDiff::Remove { key, .. } => self.remove_entry(&key, cx),
+            MapDiff::Batch { changes } => {
+                let mut changed = false;
+                for diff in changes {
+                    changed |= self.apply_map_diff(diff, cx);
+                }
+                changed
+            }
+        }
+    }
+
+    fn sync_not_ready_state(&mut self) {
+        self.ready = false;
+        self.state = match self.connection.as_ref() {
+            Some(ConnectionStatus::Disconnected) => LoadState::Error {
+                message: "Myko connection disconnected".into(),
+                stale: self.state.value().cloned(),
+            },
             Some(
                 ConnectionStatus::Idle
                 | ConnectionStatus::Connecting(_)
-                | ConnectionStatus::Reconnecting(_),
-            ) => {
-                self.ready = false;
-                self.pending_ready = false;
-                LoadState::Loading {
-                    stale: self.state.value().cloned(),
-                }
-            }
-            Some(ConnectionStatus::Connected(_)) | None if self.ready => {
-                LoadState::Ready(Arc::new(()))
-            }
-            Some(ConnectionStatus::Connected(_)) | None => LoadState::Loading {
+                | ConnectionStatus::Reconnecting(_)
+                | ConnectionStatus::Connected(_),
+            )
+            | None => LoadState::Loading {
                 stale: self.state.value().cloned(),
             },
         };
+    }
+
+    fn publish_snapshot(&mut self, snapshot: Vec<(Arc<str>, Arc<T>)>, cx: &mut Context<Self>) {
+        self.reconcile_snapshot(snapshot, cx);
+        self.ready = true;
+        self.state = LoadState::Ready(Arc::new(()));
+        cx.notify();
+    }
+
+    fn apply(&mut self, event: QueryStoreEvent<T>, cx: &mut Context<Self>) {
+        match event {
+            QueryStoreEvent::Map(diff) => {
+                if self.ready && self.apply_map_diff(diff, cx) {
+                    cx.notify();
+                }
+            }
+            QueryStoreEvent::Ready { ready, snapshot } => {
+                self.response_ready = ready;
+                if ready && matches!(self.connection, Some(ConnectionStatus::Connected(_))) {
+                    self.publish_snapshot(snapshot, cx);
+                } else {
+                    self.sync_not_ready_state();
+                    cx.notify();
+                }
+            }
+            QueryStoreEvent::Status { status, snapshot } => {
+                let connected = matches!(status, ConnectionStatus::Connected(_));
+                if !connected {
+                    // A later Connected status cannot bless rows from the
+                    // previous response generation. Myko must publish a new
+                    // ready boundary after reconnecting.
+                    self.response_ready = false;
+                }
+                self.connection = Some(status);
+                if self.response_ready && connected {
+                    self.publish_snapshot(snapshot, cx);
+                } else {
+                    self.sync_not_ready_state();
+                    cx.notify();
+                }
+            }
+            QueryStoreEvent::ReadyError(message) => {
+                self.ready = false;
+                self.response_ready = false;
+                self.state = LoadState::Error {
+                    message,
+                    stale: self.state.value().cloned(),
+                };
+                cx.notify();
+            }
+            QueryStoreEvent::StatusError(message) => {
+                self.ready = false;
+                self.response_ready = false;
+                self.connection = None;
+                self.state = LoadState::Error {
+                    message,
+                    stale: self.state.value().cloned(),
+                };
+                cx.notify();
+            }
+        }
     }
 }
 
@@ -433,170 +588,124 @@ where
     build_store(watch.map(), watch.ready(), cx)
 }
 
-fn map_matches_source<T>(
-    map: &CellMapEntity<Arc<str>, Arc<T>>,
-    source: &myko::hyphae::CellMap<Arc<str>, Arc<T>, myko::hyphae::CellImmutable>,
-    cx: &App,
-) -> bool
-where
-    T: myko::hyphae::CellValue,
-{
-    let snapshot = source.snapshot();
-    snapshot.len() == map.keys().len()
-        && snapshot.iter().all(|(key, expected)| {
-            map.entry(key).is_some_and(|entry| {
-                entry
-                    .read(cx)
-                    .value()
-                    .is_some_and(|actual| actual == expected)
-            })
-        })
-}
-
-fn observe_pending_entries<T>(
-    store: &mut QueryStore<T>,
-    map: &Entity<CellMapEntity<Arc<str>, Arc<T>>>,
-    source: &myko::hyphae::CellMap<Arc<str>, Arc<T>, myko::hyphae::CellImmutable>,
-    status: &Entity<CellEntity<ConnectionStatus>>,
-    cx: &mut Context<QueryStore<T>>,
-) where
-    T: myko::hyphae::CellValue,
-{
-    store.pending_observations.clear();
-    let entries = map.read_with(cx, |map, _| {
-        map.keys()
-            .iter()
-            .filter_map(|key| map.entry(key))
-            .collect::<Vec<_>>()
-    });
-    for entry in entries {
-        let map = map.clone();
-        let source = source.clone();
-        let status = status.clone();
-        store.pending_observations.push(cx.observe(
-            &entry,
-            move |store: &mut QueryStore<T>, _entry, cx| {
-                if store.pending_ready && map_matches_source(map.read(cx), &source, cx) {
-                    store.sync_membership(map.read(cx));
-                    store.pending_ready = false;
-                    store.ready = true;
-                    store.sync_status(status.read(cx));
-                    cx.notify();
-                }
-            },
-        ));
-    }
-}
-
 fn build_store<T>(
-    source_map: &myko::hyphae::CellMap<Arc<str>, Arc<T>, myko::hyphae::CellImmutable>,
-    source_ready: &myko::hyphae::Cell<bool, myko::hyphae::CellImmutable>,
+    source_map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
+    source_ready: &Cell<bool, CellImmutable>,
     cx: &mut App,
 ) -> Entity<QueryStore<T>>
 where
-    T: myko::hyphae::CellValue,
+    T: CellValue,
 {
     let status = myko(cx).client().connection_status();
     build_store_with_status(source_map, source_ready, &status, cx)
 }
 
 fn build_store_with_status<T>(
-    source_map: &myko::hyphae::CellMap<Arc<str>, Arc<T>, myko::hyphae::CellImmutable>,
-    source_ready: &myko::hyphae::Cell<bool, myko::hyphae::CellImmutable>,
-    source_status: &myko::hyphae::Cell<ConnectionStatus, myko::hyphae::CellImmutable>,
+    source_map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
+    source_ready: &Cell<bool, CellImmutable>,
+    source_status: &Cell<ConnectionStatus, CellImmutable>,
     cx: &mut App,
 ) -> Entity<QueryStore<T>>
 where
-    T: myko::hyphae::CellValue,
+    T: CellValue,
 {
-    let map = source_map.to_gpui_map_entity(cx);
-    let ready = source_ready.to_gpui_entity(cx);
-    let status = source_status.to_gpui_entity(cx);
+    let (sender, receiver) = flume::unbounded();
+    // Hyphae callbacks may arrive on different producer threads. Serialize
+    // callback snapshot capture and sends so their GPUI delivery cannot be
+    // reordered. Myko's response handler completes `replace_all` and its
+    // synchronous diff fanout before setting ready; this lock does not turn an
+    // arbitrary concurrently-mutated CellMap snapshot into a transaction.
+    let ingress = Arc::new(Mutex::new(()));
 
-    let source_for_map = source_map.clone();
-    let source_for_ready = source_map.clone();
+    let map_sender = sender.clone();
+    let map_ingress = ingress.clone();
+    let map_subscription = source_map.subscribe_diffs(move |diff| {
+        let _serial = map_ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = map_sender.send(QueryStoreEvent::Map(diff.clone()));
+    });
+
+    let ready_sender = sender.clone();
+    let ready_ingress = ingress.clone();
+    let ready_map = source_map.clone();
+    let ready_subscription = source_ready.subscribe(move |signal| {
+        let _serial = ready_ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match signal {
+            Signal::Value(value) => {
+                let ready = **value;
+                let snapshot = if ready {
+                    ready_map.snapshot()
+                } else {
+                    Vec::new()
+                };
+                let _ = ready_sender.send(QueryStoreEvent::Ready { ready, snapshot });
+            }
+            Signal::Error(error) => {
+                let _ = ready_sender.send(QueryStoreEvent::ReadyError(error.to_string().into()));
+            }
+            Signal::Complete => {}
+        }
+    });
+
+    let status_sender = sender;
+    let status_ingress = ingress;
+    let status_map = source_map.clone();
+    let status_subscription = source_status.subscribe(move |signal| {
+        let _serial = status_ingress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match signal {
+            Signal::Value(value) => {
+                let status = (**value).clone();
+                let snapshot = if matches!(status, ConnectionStatus::Connected(_)) {
+                    status_map.snapshot()
+                } else {
+                    Vec::new()
+                };
+                let _ = status_sender.send(QueryStoreEvent::Status { status, snapshot });
+            }
+            Signal::Error(error) => {
+                let _ = status_sender.send(QueryStoreEvent::StatusError(error.to_string().into()));
+            }
+            Signal::Complete => {}
+        }
+    });
+
     cx.new(move |cx| {
-        let status_for_map = status.clone();
-        let map_observation = cx.observe(&map, move |store: &mut QueryStore<T>, map, cx| {
-            if store.pending_ready && map_matches_source(map.read(cx), &source_for_map, cx) {
-                store.sync_membership(map.read(cx));
-                store.pending_ready = false;
-                store.ready = true;
-                store.sync_status(status_for_map.read(cx));
-                cx.notify();
-            } else if store.pending_ready {
-                observe_pending_entries(store, &map, &source_for_map, &status_for_map, cx);
-            } else if store.ready {
-                store.sync_membership(map.read(cx));
-                cx.notify();
-            }
-        });
-
-        let status_for_ready = status.clone();
-        let map_for_ready = map.clone();
-        let ready_observation = cx.observe(&ready, move |store: &mut QueryStore<T>, ready, cx| {
-            let next = ready.read(cx).value().copied().unwrap_or(false);
-            if !next {
-                let changed = store.ready || store.pending_ready;
-                store.ready = false;
-                store.pending_ready = false;
-                store.pending_observations.clear();
-                store.sync_status(status_for_ready.read(cx));
-                if changed {
-                    cx.notify();
+        let driver = cx.spawn(async move |entity, cx| {
+            loop {
+                // The background-completion hop is required for the same
+                // native/Wasm wake behavior as the pure Hyphae GPUI adapters.
+                let receive = receiver.clone();
+                let event = cx
+                    .background_executor()
+                    .spawn(async move { receive.recv_async().await })
+                    .await;
+                let Ok(event) = event else {
+                    break;
+                };
+                if entity
+                    .update(cx, |store: &mut QueryStore<T>, cx| store.apply(event, cx))
+                    .is_err()
+                {
+                    break;
                 }
-                return;
-            }
-
-            let map = map_for_ready.read(cx);
-            if map_matches_source(map, &source_for_ready, cx) {
-                store.sync_membership(map);
-                store.pending_ready = false;
-                store.ready = true;
-                store.sync_status(status_for_ready.read(cx));
-                cx.notify();
-            } else {
-                // The source publishes readiness after replace_all, but the
-                // independent GPUI map driver may still be behind. The next
-                // map notification completes this hand-off without polling.
-                store.ready = false;
-                store.pending_ready = true;
-                store.sync_status(status_for_ready.read(cx));
-                observe_pending_entries(
-                    store,
-                    &map_for_ready,
-                    &source_for_ready,
-                    &status_for_ready,
-                    cx,
-                );
             }
         });
-        let status_observation = cx.observe(&status, |store: &mut QueryStore<T>, status, cx| {
-            store.sync_status(status.read(cx));
-            cx.notify();
-        });
 
-        let map_is_current = map_matches_source(map.read(cx), source_map, cx);
-        let source_is_ready = ready.read(cx).value().copied().unwrap_or(false);
-        let mut store = QueryStore {
+        QueryStore {
             state: LoadState::Loading { stale: None },
-            ready: source_is_ready && map_is_current,
-            pending_ready: source_is_ready && !map_is_current,
+            ready: false,
+            response_ready: false,
+            connection: None,
             keys: Vec::new(),
             entries: HashMap::new(),
-            _observations: vec![map_observation, ready_observation, status_observation],
-            pending_observations: Vec::new(),
-            _map: map.clone(),
-            _ready: ready.clone(),
-            _status: status.clone(),
-        };
-        if store.ready {
-            store.sync_membership(map.read(cx));
-        } else if store.pending_ready {
-            observe_pending_entries(&mut store, &map, source_map, &status, cx);
+            _subscriptions: vec![map_subscription, ready_subscription, status_subscription],
+            _driver: driver,
         }
-        store.sync_status(status.read(cx));
-        store
     })
 }
 
@@ -872,5 +981,152 @@ mod tests {
             .clone();
         assert!(!ready_values.is_empty());
         assert!(ready_values.iter().all(|values| values == &[2]));
+    }
+
+    #[gpui::test]
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn empty_response_is_ready_after_the_authoritative_snapshot(cx: &mut TestAppContext) {
+        let source = CellMap::<Arc<str>, Arc<u32>>::new();
+        let source_read = source.lock();
+        let ready = Cell::new(true).lock();
+        let status = Cell::new(ConnectionStatus::Connected("test".into())).lock();
+        let store = cx.update(|cx| {
+            crate::provide_myko("ws://127.0.0.1:1", cx);
+            build_store_with_status(&source_read, &ready, &status, cx)
+        });
+
+        assert!(!store.read_with(cx, |store, _| store.is_ready()));
+        cx.run_until_parked();
+        assert!(store.read_with(cx, |store, _| store.is_ready()));
+        assert!(store.read_with(cx, |store, _| store.keys().is_empty()));
+    }
+
+    #[gpui::test]
+    fn row_updates_do_not_notify_the_collection_or_sibling_rows(cx: &mut TestAppContext) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let source = CellMap::new();
+        let one = Arc::<str>::from("one");
+        let two = Arc::<str>::from("two");
+        source.insert(one.clone(), Arc::new(1_u32));
+        source.insert(two.clone(), Arc::new(2_u32));
+        let source_read = source.clone().lock();
+        let ready = Cell::new(true).lock();
+        let status = Cell::new(ConnectionStatus::Connected("test".into())).lock();
+        let store = cx.update(|cx| {
+            crate::provide_myko("ws://127.0.0.1:1", cx);
+            build_store_with_status(&source_read, &ready, &status, cx)
+        });
+        cx.run_until_parked();
+
+        let row_entries = store.read_with(cx, |store, _| {
+            [store.entry(&one), store.entry(&two)]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        });
+        let [one_entry, two_entry] = row_entries.as_slice() else {
+            assert_eq!(row_entries.len(), 2);
+            return;
+        };
+        let one_entry = one_entry.clone();
+        let two_entry = two_entry.clone();
+        let one_id = one_entry.entity_id();
+        let store_notifications = Arc::new(AtomicUsize::new(0));
+        let one_notifications = Arc::new(AtomicUsize::new(0));
+        let two_notifications = Arc::new(AtomicUsize::new(0));
+
+        let _store_probe = cx.new({
+            let notifications = store_notifications.clone();
+            let store = store.clone();
+            move |cx| Probe {
+                _observation: cx.observe(&store, move |_probe, _store, _cx| {
+                    notifications.fetch_add(1, Ordering::SeqCst);
+                }),
+            }
+        });
+        let _one_probe = cx.new({
+            let notifications = one_notifications.clone();
+            let entry = one_entry;
+            move |cx| Probe {
+                _observation: cx.observe(&entry, move |_probe, _entry, _cx| {
+                    notifications.fetch_add(1, Ordering::SeqCst);
+                }),
+            }
+        });
+        let _two_probe = cx.new({
+            let notifications = two_notifications.clone();
+            let entry = two_entry;
+            move |cx| Probe {
+                _observation: cx.observe(&entry, move |_probe, _entry, _cx| {
+                    notifications.fetch_add(1, Ordering::SeqCst);
+                }),
+            }
+        });
+
+        source.insert(one.clone(), Arc::new(11));
+        cx.run_until_parked();
+
+        assert_eq!(store_notifications.load(Ordering::SeqCst), 0);
+        assert_eq!(one_notifications.load(Ordering::SeqCst), 1);
+        assert_eq!(two_notifications.load(Ordering::SeqCst), 0);
+        let current = store
+            .read_with(cx, |store, _| store.entry(&one))
+            .into_iter()
+            .collect::<Vec<_>>();
+        let [current] = current.as_slice() else {
+            assert_eq!(current.len(), 1);
+            return;
+        };
+        assert_eq!(current.entity_id(), one_id);
+        assert_eq!(
+            current.read_with(cx, |entry, _| entry.value().cloned()),
+            Some(Arc::new(11)),
+        );
+    }
+
+    #[gpui::test]
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn reconnect_requires_a_new_response_after_connected(cx: &mut TestAppContext) {
+        let source = CellMap::new();
+        let key = Arc::<str>::from("task");
+        source.insert(key.clone(), Arc::new(1_u32));
+        let source_read = source.clone().lock();
+        let ready = Cell::new(true);
+        let ready_read = ready.clone().lock();
+        let status = Cell::new(ConnectionStatus::Connected("test".into()));
+        let status_read = status.clone().lock();
+        let store = cx.update(|cx| {
+            crate::provide_myko("ws://127.0.0.1:1", cx);
+            build_store_with_status(&source_read, &ready_read, &status_read, cx)
+        });
+        cx.run_until_parked();
+        assert!(store.read_with(cx, |store, _| store.is_ready()));
+
+        status.set(ConnectionStatus::Reconnecting("test".into()));
+        ready.set(false);
+        source.replace_all(vec![(key.clone(), Arc::new(2))]);
+        cx.run_until_parked();
+        assert!(!store.read_with(cx, |store, _| store.is_ready()));
+
+        status.set(ConnectionStatus::Connected("test".into()));
+        cx.run_until_parked();
+        assert!(!store.read_with(cx, |store, _| store.is_ready()));
+        assert_eq!(
+            store
+                .read_with(cx, |store, _| store.entry(&key))
+                .and_then(|entry| entry.read_with(cx, |entry, _| entry.value().cloned())),
+            Some(Arc::new(1)),
+        );
+
+        ready.set(true);
+        cx.run_until_parked();
+        assert!(store.read_with(cx, |store, _| store.is_ready()));
+        assert_eq!(
+            store
+                .read_with(cx, |store, _| store.entry(&key))
+                .and_then(|entry| entry.read_with(cx, |entry, _| entry.value().cloned())),
+            Some(Arc::new(2)),
+        );
     }
 }

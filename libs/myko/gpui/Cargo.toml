@@ -13,6 +13,7 @@ tasks = ["check", "check-wasm", "build", "test", "lint"]
 
 [dependencies]
 serde.workspace = true
+flume.workspace = true
 myko = "6.0.0"
 gpui.workspace = true
 hyphae-gpui.workspace = true

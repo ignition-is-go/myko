@@ -1,7 +1,7 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
+use crate::remote::MapEntry;
 use gpui::{AnyElement, App, AppContext as _, Context, Entity, Render, Subscription};
-use hyphae_gpui::MapEntry;
 use myko::{
     common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, view::ViewParams},

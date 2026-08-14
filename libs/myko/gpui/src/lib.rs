@@ -1,8 +1,9 @@
 //! GPUI bridge for Myko's live client cells.
 //!
-//! Hyphae notifications are bridged by `hyphae-gpui` onto GPUI's foreground
-//! executor. This crate layers Myko-specific loading, connection, and error
-//! semantics over those event-driven entities.
+//! Scalar Hyphae notifications use the general `hyphae-gpui` foreground
+//! bridge. Query and view maps use a Myko-owned projection so response
+//! readiness, reconnect generations, and stable row entities cross into GPUI
+//! through one response-generation boundary.
 
 mod client;
 mod command;
@@ -24,11 +25,10 @@ pub use crud::{CrudCommands, CrudController, CrudRowActions};
 // Consumers that own application startup can use the same native/web platform
 // facade pinned with this crate instead of introducing a second Zed revision.
 pub use gpui_platform;
-pub use hyphae_gpui::MapEntry;
 pub use myko::client::ConnectionStatus;
 pub use remote::{
-    LoadState, QueryStore, Remote, connection_status, live_query, live_query_store, live_report,
-    live_view, live_view_store, observe_crud_store, observe_query_store, observe_remote, ping_ms,
-    send_command,
+    LoadState, MapEntry, QueryStore, Remote, connection_status, live_query, live_query_store,
+    live_report, live_view, live_view_store, observe_crud_store, observe_query_store,
+    observe_remote, ping_ms, send_command,
 };
 pub use render::{RemoteRender, render_remote, render_remote_list};

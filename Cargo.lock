@@ -4424,6 +4424,7 @@ dependencies = [
 name = "myko-gpui"
 version = "6.0.0"
 dependencies = [
+ "flume 0.11.1",
  "gpui",
  "gpui_platform",
  "hyphae-gpui",
@@ -10001,9 +10002,9 @@ dependencies = [
 ]
 
 [[patch.unused]]
-name = "gpui-command-palette"
+name = "gpui-mullion"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "gpui-mullion"
+name = "gpui-command-palette"
 version = "0.1.0"
