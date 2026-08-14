@@ -1,19 +1,20 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::marker::PhantomData;
+use std::{cell::RefCell, collections::HashMap, marker::PhantomData};
 
 use nucleo_matcher::{Config, Matcher, Utf32Str};
+use num_traits::ToPrimitive;
 use roaring::RoaringBitmap;
 use smallvec::SmallVec;
 use thread_local::ThreadLocal;
 
-use super::searchable::{FIELD_SEP, SearchableExtractor};
-use super::{Hit, IdInterner, Score, Searchable};
+use super::{
+    Hit, IdInterner, Score, Searchable,
+    searchable::{FIELD_SEP, SearchableExtractor},
+};
 
 /// Tokens are split on whitespace, the field separator, and a small set of
 /// identifier-shaped punctuation. Mirrors how users tend to type fragments of
 /// names ("scene/cue", "audio.mixer", "kebab-case-tag").
-fn is_token_boundary(c: char) -> bool {
+const fn is_token_boundary(c: char) -> bool {
     c.is_whitespace() || matches!(c, FIELD_SEP | '/' | ':' | '.' | '-' | '_')
 }
 
@@ -56,7 +57,7 @@ impl EntityRecord {
     /// fill `Hit::matched_field` when we know *where* a match landed.
     fn field_of_position(&self, byte_pos: usize) -> usize {
         self.field_offsets
-            .partition_point(|&off| (off as usize) <= byte_pos)
+            .partition_point(|&off| usize::try_from(off).unwrap_or(usize::MAX) <= byte_pos)
             .saturating_sub(1)
     }
 }
@@ -84,13 +85,13 @@ impl MatcherSlot {
 /// no `dyn` on the typed hot path.
 pub struct SearchIndex<T: Searchable> {
     interner: IdInterner<T::Id>,
-    /// Bit set if the corresponding internal_id is live. Posting lists in
+    /// Bit set if the corresponding `internal_id` is live. Posting lists in
     /// `exact` retain dead ids until compaction; queries AND-mask with `live`.
     live: RoaringBitmap,
 
-    /// Dense, indexed by internal_id. Compaction renumbers in place.
+    /// Dense, indexed by `internal_id`. Compaction renumbers in place.
     entities: Vec<Option<EntityRecord>>,
-    /// Token → set of internal_ids that contain it.
+    /// Token → set of `internal_ids` that contain it.
     exact: HashMap<Box<str>, RoaringBitmap>,
 
     /// Reusable buffers for the extractor, cleared between inserts.
@@ -107,10 +108,12 @@ pub struct SearchIndex<T: Searchable> {
 }
 
 impl<T: Searchable> SearchIndex<T> {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_capacity(0)
     }
 
+    #[must_use]
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             interner: IdInterner::with_capacity(cap),
@@ -127,7 +130,7 @@ impl<T: Searchable> SearchIndex<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.live.len() as usize
+        usize::try_from(self.live.len()).unwrap_or(usize::MAX)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -160,11 +163,13 @@ impl<T: Searchable> SearchIndex<T> {
             field_offsets: self.scratch_offsets.clone(),
         };
 
-        let slot = internal_id as usize;
+        let slot = usize::try_from(internal_id).unwrap_or(usize::MAX);
         if slot >= self.entities.len() {
-            self.entities.resize_with(slot + 1, || None);
+            self.entities.resize_with(slot.saturating_add(1), || None);
         }
-        self.entities[slot] = Some(record);
+        if let Some(entity_slot) = self.entities.get_mut(slot) {
+            *entity_slot = Some(record);
+        }
 
         for token in tokenize(&self.scratch_text) {
             self.exact
@@ -186,7 +191,7 @@ impl<T: Searchable> SearchIndex<T> {
         if let Some(internal_id) = self.interner.lookup(id)
             && self.live.remove(internal_id)
         {
-            self.dead_count += 1;
+            self.dead_count = self.dead_count.saturating_add(1);
             if self.should_compact() {
                 self.compact();
             }
@@ -270,12 +275,14 @@ impl<T: Searchable> SearchIndex<T> {
         live_hits
             .iter()
             .filter_map(|internal_id| {
-                let record = self.entities.get(internal_id as usize)?.as_ref()?;
+                let record = self
+                    .entities
+                    .get(usize::try_from(internal_id).ok()?)?
+                    .as_ref()?;
                 let matched_field = record
                     .searchable_text
                     .find(lower_query)
-                    .map(|pos| record.field_of_position(pos))
-                    .unwrap_or(0);
+                    .map_or(0, |pos| record.field_of_position(pos));
                 Some((internal_id, Score::Exact, matched_field))
             })
             .collect()
@@ -312,8 +319,7 @@ impl<T: Searchable> SearchIndex<T> {
             let first_char = lower_query.chars().next();
             let matched_field = first_char
                 .and_then(|c| record.searchable_text.find(c))
-                .map(|pos| record.field_of_position(pos))
-                .unwrap_or(0);
+                .map_or(0, |pos| record.field_of_position(pos));
 
             Some((record.internal_id, Score::Subsequence(score), matched_field))
         };
@@ -335,8 +341,7 @@ impl<T: Searchable> SearchIndex<T> {
         if max_dist == 0 {
             return Vec::new();
         }
-        let qlen = lower_query.chars().count() as i64;
-        let max = max_dist as i64;
+        let qlen = i64::try_from(lower_query.chars().count()).unwrap_or(i64::MAX);
 
         let candidates: Vec<&EntityRecord> = self
             .entities
@@ -348,12 +353,13 @@ impl<T: Searchable> SearchIndex<T> {
         let f = |record: &&EntityRecord| -> Option<(u32, Score, usize)> {
             let mut best: Option<(u8, usize)> = None;
             for token in tokenize(&record.searchable_text) {
-                let tlen = token.chars().count() as i64;
-                if (qlen - tlen).unsigned_abs() > max as u64 {
+                let tlen = i64::try_from(token.chars().count()).unwrap_or(i64::MAX);
+                if qlen.abs_diff(tlen) > u64::from(max_dist) {
                     continue;
                 }
-                let dist = strsim::levenshtein(lower_query, token) as u64;
-                if dist > max_dist as u64 {
+                let dist =
+                    u64::try_from(strsim::levenshtein(lower_query, token)).unwrap_or(u64::MAX);
+                if dist > u64::from(max_dist) {
                     continue;
                 }
                 // Ignore distance-0 matches — they're handled by the exact
@@ -361,12 +367,11 @@ impl<T: Searchable> SearchIndex<T> {
                 if dist == 0 {
                     continue;
                 }
-                let dist_u8 = dist as u8;
+                let dist_u8 = u8::try_from(dist).unwrap_or(u8::MAX);
                 let token_byte_pos = record
                     .searchable_text
                     .find(token)
-                    .map(|p| record.field_of_position(p))
-                    .unwrap_or(0);
+                    .map_or(0, |p| record.field_of_position(p));
                 match best {
                     None => best = Some((dist_u8, token_byte_pos)),
                     Some((cur, _)) if dist_u8 < cur => best = Some((dist_u8, token_byte_pos)),
@@ -393,9 +398,15 @@ impl<T: Searchable> SearchIndex<T> {
         let mut new_entities: Vec<Option<EntityRecord>> = Vec::with_capacity(live_ids.len());
 
         for (new_id, &old_id) in live_ids.iter().enumerate() {
-            let new_id = new_id as u32;
+            let Ok(new_id) = u32::try_from(new_id) else {
+                break;
+            };
             id_remap.insert(old_id, new_id);
-            if let Some(mut record) = self.entities[old_id as usize].take() {
+            if let Some(mut record) = usize::try_from(old_id)
+                .ok()
+                .and_then(|index| self.entities.get_mut(index))
+                .and_then(Option::take)
+            {
                 record.internal_id = new_id;
                 new_entities.push(Some(record));
             }
@@ -419,17 +430,23 @@ impl<T: Searchable> SearchIndex<T> {
         self.interner = new_interner;
 
         self.entities = new_entities;
-        self.live = (0..live_ids.len() as u32).collect();
+        self.live = (0..u32::try_from(live_ids.len()).unwrap_or(u32::MAX)).collect();
         self.dead_count = 0;
     }
 
     fn should_compact(&self) -> bool {
         let total = self.entities.len();
-        total > 1000 && (self.dead_count as f32 / total as f32) > self.compaction_threshold
+        total > 1000
+            && (self.dead_count.to_f32().unwrap_or(0.0) / total.to_f32().unwrap_or(1.0))
+                > self.compaction_threshold
     }
 
     fn purge_tokens(&mut self, slot: u32) {
-        let Some(record) = self.entities.get(slot as usize).and_then(|r| r.as_ref()) else {
+        let Some(record) = usize::try_from(slot)
+            .ok()
+            .and_then(|index| self.entities.get(index))
+            .and_then(Option::as_ref)
+        else {
             return;
         };
         let tokens: Vec<Box<str>> = tokenize(&record.searchable_text)
@@ -528,8 +545,8 @@ mod tests {
 
         let hits = index.search("mixer", opts_exact_only());
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id.as_ref(), "1");
-        assert_eq!(hits[0].score, Score::Exact);
+        assert_eq!(hits.first().map(|hit| hit.id.as_ref()), Some("1"));
+        assert_eq!(hits.first().map(|hit| hit.score), Some(Score::Exact));
     }
 
     #[test]
@@ -546,10 +563,10 @@ mod tests {
         index.insert(&item("1", "alpha beta", "hardware"));
 
         let name_hit = index.search("alpha", opts_exact_only());
-        assert_eq!(name_hit[0].matched_field, 0);
+        assert_eq!(name_hit.first().map(|hit| hit.matched_field), Some(0));
 
         let cat_hit = index.search("hardware", opts_exact_only());
-        assert_eq!(cat_hit[0].matched_field, 1);
+        assert_eq!(cat_hit.first().map(|hit| hit.matched_field), Some(1));
     }
 
     #[test]
@@ -645,7 +662,7 @@ mod tests {
         index.insert(&item("2", "Star Wars", "movie"));
 
         let hits = index.search("fma", SearchOptions::default());
-        assert_eq!(hits[0].id.as_ref(), "1");
+        assert_eq!(hits.first().map(|hit| hit.id.as_ref()), Some("1"));
     }
 
     #[test]
@@ -657,8 +674,12 @@ mod tests {
         index.insert(&item("2", "matrix", "hardware"));
 
         let hits = index.search("mix", SearchOptions::default());
-        assert_eq!(hits[0].id.as_ref(), "1", "exact must outrank subsequence");
-        assert_eq!(hits[0].score, Score::Exact);
+        assert_eq!(
+            hits.first().map(|hit| hit.id.as_ref()),
+            Some("1"),
+            "exact must outrank subsequence"
+        );
+        assert_eq!(hits.first().map(|hit| hit.score), Some(Score::Exact));
     }
 
     #[test]
@@ -694,7 +715,11 @@ mod tests {
             hits.iter().any(|h| h.id.as_ref() == "1"),
             "expected typo (distance 1) match"
         );
-        let hit = hits.iter().find(|h| h.id.as_ref() == "1").unwrap();
+        let hit = hits.iter().find(|hit| hit.id.as_ref() == "1");
+        assert!(hit.is_some(), "expected matching hit");
+        let Some(hit) = hit else {
+            return;
+        };
         assert!(matches!(hit.score, Score::Typo(_)));
     }
 

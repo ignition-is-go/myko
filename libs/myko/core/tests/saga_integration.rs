@@ -22,16 +22,16 @@ fn make_bench_item_event(id: &str, name: &str) -> MEvent {
         value: 42,
     };
 
-    MEvent::from_item(&item, MEventType::SET, &format!("tx-{}", id))
+    MEvent::from_item(&item, MEventType::SET, &format!("tx-{id}"))
 }
 
 fn make_other_event(item_type: &str, change_type: MEventType) -> MEvent {
     MEvent {
-        tx: "test-tx".to_string(),
-        item_type: item_type.to_string(),
+        tx: "test-tx".into(),
+        item_type: item_type.into(),
         item: serde_json::json!({"id": "other-1", "hash": "h"}),
         change_type,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Utc::now().to_rfc3339().into(),
         source_id: None,
     }
 }
@@ -45,16 +45,18 @@ fn test_saga_pairwise_operator() {
     ]);
 
     let pairs: Vec<_> = block_on(events.pairwise().collect());
+    let first_id = pairs
+        .first()
+        .and_then(|pair| pair.0.item_json().get("id").cloned())
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let second_id = pairs
+        .first()
+        .and_then(|pair| pair.1.item_json().get("id").cloned())
+        .and_then(|value| value.as_str().map(str::to_owned));
 
     assert_eq!(pairs.len(), 2);
-    assert_eq!(
-        pairs[0].0.item_json().get("id").and_then(|v| v.as_str()),
-        Some("id-1")
-    );
-    assert_eq!(
-        pairs[0].1.item_json().get("id").and_then(|v| v.as_str()),
-        Some("id-2")
-    );
+    assert_eq!(first_id.as_deref(), Some("id-1"));
+    assert_eq!(second_id.as_deref(), Some("id-2"));
 }
 
 #[test]
@@ -65,7 +67,11 @@ fn test_saga_scan_operator() {
         make_bench_item_event("id-3", "Third"),
     ]);
 
-    let counts: Vec<_> = block_on(events.accumulate(0, |count, _| *count + 1).collect());
+    let counts: Vec<_> = block_on(
+        events
+            .accumulate(0_u32, |count, _| count.saturating_add(1))
+            .collect(),
+    );
 
     assert_eq!(counts, vec![1, 2, 3]);
 }

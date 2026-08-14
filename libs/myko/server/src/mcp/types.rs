@@ -26,6 +26,7 @@ pub struct McpResponse {
 
 impl McpResponse {
     /// Create a success response.
+    #[must_use]
     pub fn success(id: Value, result: Value) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -36,6 +37,7 @@ impl McpResponse {
     }
 
     /// Create an error response.
+    #[must_use]
     pub fn error(id: Value, error: McpError) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -71,10 +73,11 @@ impl McpError {
         }
     }
 
+    #[must_use]
     pub fn method_not_found(method: &str) -> Self {
         Self {
             code: Self::METHOD_NOT_FOUND,
-            message: format!("Method not found: {}", method),
+            message: format!("Method not found: {method}"),
             data: None,
         }
     }

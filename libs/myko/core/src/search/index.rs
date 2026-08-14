@@ -9,8 +9,7 @@
 //! `remove_entity` is new — tantivy could delete by id alone, but the typed
 //! registry needs the type to find the right `SearchIndex<T>` shim.
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use super::{build_typed_registry, search_stats, typed};
 use crate::core::item::AnyItem;
@@ -54,11 +53,12 @@ impl SearchIndex {
     /// No-op preserved for call-site compatibility. The typed registry's
     /// writes are visible to readers immediately — there is no commit phase
     /// like the tantivy backend had.
-    pub fn commit(&self) {}
+    pub const fn commit(&self) {}
 
     /// Search for entities of `entity_type` matching `query`. Returns ids
     /// (still as `Arc<str>` to match the `EntitySearchResult` wire format).
     /// Honors the full three-tier ranking; legacy callers pass `limit` only.
+    #[must_use]
     pub fn search(&self, entity_type: &str, query: &str, limit: usize) -> Vec<Arc<str>> {
         let opts = typed::SearchOptions {
             limit,
@@ -76,6 +76,7 @@ impl SearchIndex {
     }
 
     /// True if a `SearchIndex<T>` is registered for this entity type.
+    #[must_use]
     pub fn is_searchable(&self, entity_type: &str) -> bool {
         self.registry.entity_types().any(|t| t == entity_type)
     }
@@ -83,9 +84,9 @@ impl SearchIndex {
     /// Build the initial index from all entities currently in the store
     /// registry. Call after durable backend catch-up.
     pub fn build_from_registry(&self, registry: &crate::store::StoreRegistry) {
-        use hyphae::Gettable;
+        use hyphae::{Gettable, Materialize};
 
-        let mut count = 0;
+        let mut count = 0_u64;
         // Snapshot the registered entity types so we don't hold any registry
         // borrows while iterating each store.
         let entity_types: Vec<&'static str> = self.registry.entity_types().collect();
@@ -94,10 +95,10 @@ impl SearchIndex {
             let Some(store) = registry.get(entity_type) else {
                 continue;
             };
-            let entries = store.entries().get();
-            for (_, item) in entries.iter() {
+            let entries = store.entries().materialize().get();
+            for (_, item) in &entries {
                 self.registry.insert(item.as_ref());
-                count += 1;
+                count = count.saturating_add(1);
             }
         }
         tracing::info!("SearchIndex: built initial index with {} entities", count);

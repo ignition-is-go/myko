@@ -101,7 +101,7 @@ Auto-generated for every `myko_item`:
 | `CountAllTargets`   | Report — count                         |
 | `DeleteTarget`      | Command — delete one                   |
 | `DeleteTargets`     | Command — delete many                  |
-| `PartialTarget`     | Patch type for partial updates         |
+| `TargetQuery`       | Filter type for query parameters       |
 
 ### Relationship attributes
 
@@ -130,13 +130,13 @@ pub struct BindingNode {
 ## Running a server
 
 ```rust
-use myko_server::{CellServer, postgres::PostgresConfig};
+use myko_server::{MykoServer, postgres::PostgresConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _telemetry = myko_server::telemetry::init_from_env();
 
-    let server = CellServer::builder()
+    let server = MykoServer::builder()
         .with_bind_addr("0.0.0.0:5155".parse()?)
         .with_postgres(PostgresConfig::from_env()?)   // durable event log + LISTEN/NOTIFY
         .build();

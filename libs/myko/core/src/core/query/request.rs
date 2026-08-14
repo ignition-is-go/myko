@@ -1,4 +1,4 @@
-//! QueryRequest wrapper type.
+//! `QueryRequest` wrapper type.
 
 use std::sync::Arc;
 
@@ -6,14 +6,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[cfg(not(target_arch = "wasm32"))]
-use super::traits::QueryBuildCellCtx;
 use super::traits::{
-    AnyQuery, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams, QueryTestCtx,
+    AnyQuery, QueryBuildArgs, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
+    QueryTestContext,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::item::AnyItem;
-use crate::{TS, common::with_transaction::WithTransaction};
+use crate::{TS, common::with_transaction::WithTransaction, core::item::AnyItem};
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -59,8 +56,8 @@ impl<Q: QueryParams> From<Q> for QueryRequest<Q> {
     }
 }
 
-impl<Q: Clone> From<&QueryRequest<Q>> for QueryRequest<Q> {
-    fn from(request: &QueryRequest<Q>) -> Self {
+impl<Q: Clone> From<&Self> for QueryRequest<Q> {
+    fn from(request: &Self) -> Self {
         request.clone()
     }
 }
@@ -96,25 +93,20 @@ impl<Q: QueryItemType> QueryItemType for QueryRequest<Q> {
 }
 
 impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequest<Q> {
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool {
-        Q::test_entity(QueryTestCtx {
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool {
+        Q::test_entity(QueryTestContext {
             item: ctx.item,
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
         })
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
-        ctx: QueryBuildCellCtx<Self>,
-    ) -> Option<impl hyphae::MapQuery<Arc<str>, Arc<dyn AnyItem>>> {
-        // Materialize at the wrapper boundary so the outer `Option<impl MapQuery>`
-        // has a concrete type the borrow checker can infer through.
-        Q::build_view(QueryBuildCellCtx {
+        ctx: QueryBuildArgs<Self>,
+    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>> {
+        Q::build_view(QueryBuildArgs {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
         })
-        .map(hyphae::MapQuery::materialize)
     }
 }
 
@@ -126,6 +118,6 @@ impl<Q: QueryId + QueryItemType + Serialize + std::fmt::Debug + Send + Sync + 's
     }
 
     fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).expect("QueryRequest should serialize to JSON")
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 }

@@ -16,8 +16,8 @@ pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, MaterializeDefinite, Mutable,
-    SubscriptionGuard, Watchable,
+    Cell, CellImmutable, CellMutable, Gettable, MapExt, Materialize, Mutable, SubscriptionGuard,
+    Watchable,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -50,8 +50,17 @@ pub enum MykoProtocol {
 impl From<u8> for MykoProtocol {
     fn from(v: u8) -> Self {
         match v {
-            0 => MykoProtocol::JSON,
-            _ => MykoProtocol::CBOR,
+            0 => Self::JSON,
+            _ => Self::CBOR,
+        }
+    }
+}
+
+impl From<MykoProtocol> for u8 {
+    fn from(protocol: MykoProtocol) -> Self {
+        match protocol {
+            MykoProtocol::JSON => 0,
+            MykoProtocol::CBOR => 1,
         }
     }
 }
@@ -64,6 +73,8 @@ type QueryHandler = Box<dyn Fn(Value) + Send + Sync>;
 
 /// Handler for incoming report responses.
 type ReportHandler = Box<dyn Fn(Value) + Send + Sync>;
+
+type QueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
 
 /// Handler for incoming command requests (from server).
 type CommandRequestHandler = Box<dyn Fn(Value, CommandResponder) + Send + Sync>;
@@ -95,11 +106,11 @@ impl CommandResponder {
 
     /// Send an error response.
     pub fn respond_err(&self, message: String) {
-        let err = crate::command::CommandError {
-            tx: self.tx.clone(),
-            command_id: self.command_id.to_string(),
+        let err = crate::command::CommandError::new(
+            self.tx.clone(),
+            self.command_id.to_string(),
             message,
-        };
+        );
         let msg = MykoMessage::CommandError(err);
         if let Some(frame) = encode_protocol(&self.protocol, &msg) {
             let _ = self.socket.send(frame);
@@ -132,7 +143,7 @@ fn query_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscription
         let msg = MykoMessage::QueryCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
         if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
             match inner.socket.send(frame) {
-                Ok(_) => debug!("query_cancel_guard: sent QueryCancel tx={}", tx),
+                Ok(()) => debug!("query_cancel_guard: sent QueryCancel tx={}", tx),
                 Err(e) => warn!(
                     "query_cancel_guard: failed to send QueryCancel tx={}: {}",
                     tx, e
@@ -154,7 +165,7 @@ fn view_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> SubscriptionG
         let msg = MykoMessage::ViewCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
         if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
             match inner.socket.send(frame) {
-                Ok(_) => debug!("view_cancel_guard: sent ViewCancel tx={}", tx),
+                Ok(()) => debug!("view_cancel_guard: sent ViewCancel tx={}", tx),
                 Err(e) => warn!(
                     "view_cancel_guard: failed to send ViewCancel tx={}: {}",
                     tx, e
@@ -173,7 +184,7 @@ fn report_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscriptio
         let msg = MykoMessage::ReportCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
         if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
             match inner.socket.send(frame) {
-                Ok(_) => debug!("report_cancel_guard: sent ReportCancel tx={}", tx),
+                Ok(()) => debug!("report_cancel_guard: sent ReportCancel tx={}", tx),
                 Err(e) => warn!(
                     "report_cancel_guard: failed to send ReportCancel tx={}: {}",
                     tx, e
@@ -248,8 +259,8 @@ struct MykoClientInner {
     peer_failover_enabled: bool,
     known_servers: Mutex<Vec<String>>,
     current_address: Mutex<Option<String>>,
-    _peer_failover_status_guard: Mutex<Option<SubscriptionGuard>>,
-    _peer_discovery_guard: Mutex<Option<SubscriptionGuard>>,
+    peer_failover_status_guard: Mutex<Option<SubscriptionGuard>>,
+    peer_discovery_guard: Mutex<Option<SubscriptionGuard>>,
 
     // Dispatch maps keyed by tx
     query_handlers: DashMap<Arc<str>, QueryHandler>,
@@ -290,16 +301,18 @@ impl Default for MykoClient {
 }
 
 impl MykoClient {
-    /// Create a new MykoClient with the platform-default transport.
+    /// Create a new `MykoClient` with the platform-default transport.
     ///
     /// On native: uses `AutoReconnectSocket` (tokio-tungstenite).
     /// On WASM: uses `WasmSocket` (web-sys WebSocket).
-    pub fn new() -> MykoClient {
+    #[must_use]
+    pub fn new() -> Self {
         Self::with_options(MykoClientOptions::default())
     }
 
     /// Create a client with peer failover enabled.
-    pub fn with_failover() -> MykoClient {
+    #[must_use]
+    pub fn with_failover() -> Self {
         Self::with_options(MykoClientOptions {
             auto_reconnect: true,
             peer_failover: true,
@@ -307,8 +320,9 @@ impl MykoClient {
         })
     }
 
-    /// Create a new MykoClient with configurable transport auto-reconnect behavior.
-    pub fn new_with_auto_reconnect(auto_reconnect: bool) -> MykoClient {
+    /// Create a new `MykoClient` with configurable transport auto-reconnect behavior.
+    #[must_use]
+    pub fn new_with_auto_reconnect(auto_reconnect: bool) -> Self {
         Self::with_options(MykoClientOptions {
             auto_reconnect,
             peer_failover: false,
@@ -316,8 +330,9 @@ impl MykoClient {
         })
     }
 
-    /// Create a new MykoClient with explicit options.
-    pub fn with_options(options: MykoClientOptions) -> MykoClient {
+    /// Create a new `MykoClient` with explicit options.
+    #[must_use]
+    pub fn with_options(options: MykoClientOptions) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let socket: Arc<dyn SocketTransport> = Arc::new(
             autosocket::AutoReconnectSocket::with_auto_reconnect_and_limits(
@@ -332,19 +347,109 @@ impl MykoClient {
             autosocket::WasmSocket::with_auto_reconnect(options.auto_reconnect),
         );
 
-        Self::with_transport_and_options(socket, options)
+        Self::with_transport_and_options(&socket, options)
     }
 
-    /// Create a MykoClient with a custom transport implementation.
-    pub fn with_transport(transport: Arc<dyn SocketTransport>) -> MykoClient {
-        Self::with_transport_and_options(transport, MykoClientOptions::default())
+    /// Create a `MykoClient` with a custom transport implementation.
+    pub fn with_transport(transport: Arc<dyn SocketTransport>) -> Self {
+        let client = Self::with_transport_and_options(&transport, MykoClientOptions::default());
+        drop(transport);
+        client
+    }
+
+    fn build_read_guard(
+        weak: &std::sync::Weak<MykoClientInner>,
+        transport: &Arc<dyn SocketTransport>,
+    ) -> CallbackGuard {
+        let weak = weak.clone();
+        let rx = transport.read_rx();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled_for_thread = Arc::clone(&cancelled);
+            let handle = std::thread::spawn(move || {
+                loop {
+                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok(frame) => {
+                            let Some(inner) = weak.upgrade() else { break };
+                            Self::handle_frame(&inner, &frame);
+                        }
+                        Err(flume::RecvTimeoutError::Timeout) => {}
+                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            });
+            CallbackGuard::new(move || {
+                cancelled.store(true, Ordering::SeqCst);
+                let _ = handle.join();
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                while let Ok(frame) = rx.recv_async().await {
+                    let Some(inner) = weak.upgrade() else { break };
+                    Self::handle_frame(&inner, &frame);
+                }
+            });
+            CallbackGuard::noop()
+        }
+    }
+
+    fn build_report_dispatch_guard(
+        weak: &std::sync::Weak<MykoClientInner>,
+        receiver: &flume::Receiver<(Arc<str>, serde_json::Value)>,
+    ) -> CallbackGuard {
+        let weak = weak.clone();
+        let rx = receiver.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled_for_thread = Arc::clone(&cancelled);
+            let handle = std::thread::spawn(move || {
+                loop {
+                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        Ok((tx, response)) => {
+                            let Some(inner) = weak.upgrade() else { break };
+                            if let Some(handler) = inner.report_handlers.get(&tx) {
+                                handler(response);
+                            }
+                        }
+                        Err(flume::RecvTimeoutError::Timeout) => {}
+                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            });
+            CallbackGuard::new(move || {
+                cancelled.store(true, Ordering::SeqCst);
+                let _ = handle.join();
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            wasm_bindgen_futures::spawn_local(async move {
+                while let Ok((tx, response)) = rx.recv_async().await {
+                    let Some(inner) = weak.upgrade() else { break };
+                    if let Some(handler) = inner.report_handlers.get(&tx) {
+                        handler(response);
+                    }
+                }
+            });
+            CallbackGuard::noop()
+        }
     }
 
     fn with_transport_and_options(
-        transport: Arc<dyn SocketTransport>,
+        transport: &Arc<dyn SocketTransport>,
         options: MykoClientOptions,
-    ) -> MykoClient {
-        let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON as u8));
+    ) -> Self {
+        let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON.into()));
         let last_message = Cell::new(None).with_name("last_message");
         let ping_ms = Cell::new(None).with_name("ping_ms");
 
@@ -364,101 +469,15 @@ impl MykoClient {
         // We need to set up the callbacks, but they reference the inner struct.
         // Use a two-step initialization: create with noop guards, then replace.
         let inner = Arc::new_cyclic(|weak| {
-            let read_guard = {
-                let weak_for_msg = weak.clone();
-                let rx = transport.read_rx();
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let cancelled = Arc::new(AtomicBool::new(false));
-                    let cancelled_for_thread = Arc::clone(&cancelled);
-                    let handle = std::thread::spawn(move || {
-                        loop {
-                            if cancelled_for_thread.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                                Ok(frame) => {
-                                    let Some(inner) = weak_for_msg.upgrade() else {
-                                        break;
-                                    };
-                                    Self::handle_frame(&inner, &frame);
-                                }
-                                Err(flume::RecvTimeoutError::Timeout) => {}
-                                Err(flume::RecvTimeoutError::Disconnected) => break,
-                            }
-                        }
-                    });
-                    CallbackGuard::new(move || {
-                        cancelled.store(true, Ordering::SeqCst);
-                        let _ = handle.join();
-                    })
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    wasm_bindgen_futures::spawn_local(async move {
-                        while let Ok(frame) = rx.recv_async().await {
-                            let Some(inner) = weak_for_msg.upgrade() else {
-                                break;
-                            };
-                            Self::handle_frame(&inner, &frame);
-                        }
-                    });
-                    CallbackGuard::noop()
-                }
-            };
+            let read_guard = Self::build_read_guard(weak, transport);
 
             // Dedicated worker for report-response payloads. Drains the
             // channel FIFO and calls each registered handler synchronously
             // — so the order of handler invocations is identical to the
             // order of incoming frames. The WS read thread enqueues and
             // returns immediately.
-            let report_dispatch_guard = {
-                let weak_for_dispatch = weak.clone();
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let cancelled = Arc::new(AtomicBool::new(false));
-                    let cancelled_for_thread = Arc::clone(&cancelled);
-                    let rx = report_dispatch_rx.clone();
-                    let handle = std::thread::spawn(move || {
-                        loop {
-                            if cancelled_for_thread.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                                Ok((tx, response)) => {
-                                    let Some(inner) = weak_for_dispatch.upgrade() else {
-                                        break;
-                                    };
-                                    if let Some(handler) = inner.report_handlers.get(&tx) {
-                                        handler(response);
-                                    }
-                                }
-                                Err(flume::RecvTimeoutError::Timeout) => {}
-                                Err(flume::RecvTimeoutError::Disconnected) => break,
-                            }
-                        }
-                    });
-                    CallbackGuard::new(move || {
-                        cancelled.store(true, Ordering::SeqCst);
-                        let _ = handle.join();
-                    })
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let rx = report_dispatch_rx.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        while let Ok((tx, response)) = rx.recv_async().await {
-                            let Some(inner) = weak_for_dispatch.upgrade() else {
-                                break;
-                            };
-                            if let Some(handler) = inner.report_handlers.get(&tx) {
-                                handler(response);
-                            }
-                        }
-                    });
-                    CallbackGuard::noop()
-                }
-            };
+            let report_dispatch_guard =
+                Self::build_report_dispatch_guard(weak, &report_dispatch_rx);
 
             let weak_for_status = weak.clone();
             let status_guard = transport
@@ -478,7 +497,10 @@ impl MykoClient {
 
                     // Flush pending sends on connect
                     if let ConnectionStatus::Connected(_) = conn_status {
-                        let mut pending = inner.pending_sends.lock().unwrap();
+                        let mut pending = inner
+                            .pending_sends
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         for frame in pending.drain(..) {
                             let _ = inner.socket.send(frame);
                         }
@@ -494,8 +516,8 @@ impl MykoClient {
                 peer_failover_enabled: options.peer_failover,
                 known_servers: Mutex::new(Vec::new()),
                 current_address: Mutex::new(None),
-                _peer_failover_status_guard: Mutex::new(None),
-                _peer_discovery_guard: Mutex::new(None),
+                peer_failover_status_guard: Mutex::new(None),
+                peer_discovery_guard: Mutex::new(None),
                 query_handlers,
                 report_handlers,
                 command_response_handlers,
@@ -509,7 +531,7 @@ impl MykoClient {
             }
         });
 
-        let client = MykoClient { inner };
+        let client = Self { inner };
 
         #[cfg(not(target_arch = "wasm32"))]
         if options.app_ping {
@@ -536,7 +558,11 @@ impl MykoClient {
                     this.try_failover();
                 }
             });
-        *self.inner._peer_failover_status_guard.lock().unwrap() = Some(status_guard);
+        *self
+            .inner
+            .peer_failover_status_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(status_guard);
 
         let discovery = self.watch_query(GetPeerServers {});
         let this = self.clone();
@@ -545,15 +571,21 @@ impl MykoClient {
                 this.update_known_servers_from_peers(servers.as_ref());
             }
         });
-        *self.inner._peer_discovery_guard.lock().unwrap() = Some(discovery_guard);
+        *self
+            .inner
+            .peer_discovery_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(discovery_guard);
     }
 
     fn update_known_servers_from_peers(&self, peers: &[Arc<Server>]) {
-        let current = self.inner.current_address.lock().unwrap().clone();
-        let use_wss = current
-            .as_ref()
-            .map(|a| a.starts_with("wss://"))
-            .unwrap_or(false);
+        let current = self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let use_wss = current.as_ref().is_some_and(|a| a.starts_with("wss://"));
 
         let mut next = Vec::new();
         if let Some(current) = current {
@@ -571,7 +603,11 @@ impl MykoClient {
             }
         }
 
-        *self.inner.known_servers.lock().unwrap() = next;
+        *self
+            .inner
+            .known_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
     }
 
     fn try_failover(&self) {
@@ -579,8 +615,18 @@ impl MykoClient {
             return;
         }
 
-        let current = self.inner.current_address.lock().unwrap().clone();
-        let servers = self.inner.known_servers.lock().unwrap().clone();
+        let current = self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let servers = self
+            .inner
+            .known_servers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if servers.is_empty() {
             return;
         }
@@ -590,9 +636,13 @@ impl MykoClient {
             .and_then(|c| servers.iter().position(|s| s == c))
             .unwrap_or(0);
 
-        for offset in 1..=servers.len() {
-            let idx = (start_idx + offset) % servers.len();
-            let candidate = servers[idx].clone();
+        for candidate in servers
+            .iter()
+            .cycle()
+            .skip(start_idx.saturating_add(1))
+            .take(servers.len())
+            .cloned()
+        {
             if current.as_ref() == Some(&candidate) {
                 continue;
             }
@@ -653,8 +703,7 @@ impl MykoClient {
         let mut data = || {
             value
                 .get_mut("data")
-                .map(std::mem::take)
-                .unwrap_or(serde_json::Value::Null)
+                .map_or(serde_json::Value::Null, std::mem::take)
         };
 
         match event_tag.as_str() {
@@ -691,7 +740,7 @@ impl MykoClient {
                     let handler = inner
                         .command_response_handlers
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .remove(&response.tx);
                     if let Some(handler) = handler {
                         handler(Ok(response.response));
@@ -705,7 +754,7 @@ impl MykoClient {
                     let handler = inner
                         .command_response_handlers
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .remove(&err.tx);
                     if let Some(handler) = handler {
                         handler(Err(err.message));
@@ -738,7 +787,7 @@ impl MykoClient {
             "ws:m:ping" => {
                 if let Ok(ping) = serde_json::from_value::<PingData>(data()) {
                     let now_ms = chrono::Utc::now().timestamp_millis();
-                    let ping_ms = now_ms.saturating_sub(ping.timestamp) as u64;
+                    let ping_ms = u64::try_from(now_ms.saturating_sub(ping.timestamp)).unwrap_or(0);
                     inner.ping_ms.set(Some(ping_ms));
                 }
             }
@@ -752,17 +801,18 @@ impl MykoClient {
 
     /// Set the wire protocol (JSON or CBOR). Default is JSON.
     pub fn set_protocol(&self, protocol: MykoProtocol) {
-        self.inner.protocol.store(protocol as u8, Ordering::SeqCst);
+        self.inner.protocol.store(protocol.into(), Ordering::SeqCst);
     }
 
     /// Get the current wire protocol.
-    pub fn get_protocol(&self) -> MykoProtocol {
+    #[must_use]
+    pub fn protocol(&self) -> MykoProtocol {
         MykoProtocol::from(self.inner.protocol.load(Ordering::SeqCst))
     }
 
     /// Encode a message according to the current protocol.
     fn encode_message<T: Serialize>(&self, msg: &T) -> Result<WsFrame, String> {
-        match self.get_protocol() {
+        match self.protocol() {
             MykoProtocol::JSON => {
                 let json = serde_json::to_string(msg).map_err(|e| e.to_string())?;
                 Ok(WsFrame::Text(json))
@@ -794,21 +844,25 @@ impl MykoClient {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Get a reactive cell of the connection status.
+    #[must_use]
     pub fn connection_status(&self) -> Cell<ConnectionStatus, CellImmutable> {
         self.inner.socket.actual_connection_state()
     }
 
     /// Get the current connection status synchronously.
-    pub fn get_connection_status_sync(&self) -> ConnectionStatus {
+    #[must_use]
+    pub fn connection_status_sync(&self) -> ConnectionStatus {
         self.inner.socket.actual_connection_state().get()
     }
 
     /// Get a reactive cell of live ping in milliseconds (None when unavailable).
+    #[must_use]
     pub fn ping_ms(&self) -> &Cell<Option<u64>, CellMutable> {
         &self.inner.ping_ms
     }
 
     /// Get the latest raw incoming message.
+    #[must_use]
     pub fn messages(&self) -> Cell<Option<Value>, CellImmutable> {
         self.inner.last_message.clone().lock()
     }
@@ -829,29 +883,38 @@ impl MykoClient {
     }
 
     /// Whether the latest raw incoming message is retained.
+    #[must_use]
     pub fn is_last_message_capture_enabled(&self) -> bool {
         self.inner.capture_last_message.load(Ordering::Relaxed)
     }
 
     /// Get the current ping synchronously.
-    pub fn get_ping_ms_sync(&self) -> Option<u64> {
+    #[must_use]
+    pub fn ping_ms_sync(&self) -> Option<u64> {
         self.inner.ping_ms.get()
     }
 
     pub fn set_address(&self, addr: Option<String>) {
-        if addr.is_none() {
-            let current = self.inner.current_address.lock().unwrap().clone();
+        let Some(addr) = addr else {
+            let current = self
+                .inner
+                .current_address
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             if current.is_none() {
                 debug!("set_address(None) ignored; already disconnected");
                 return;
             }
             debug!("Setting address to None, disconnecting socket");
             self.inner.socket.set_addr(None);
-            *self.inner.current_address.lock().unwrap() = None;
+            *self
+                .inner
+                .current_address
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
             return;
-        }
-
-        let addr = addr.unwrap();
+        };
         let parsed_addr = match normalize_myko_address(&addr) {
             Ok(address) => address,
             Err(error) => {
@@ -860,7 +923,12 @@ impl MykoClient {
                 return;
             }
         };
-        let current = self.inner.current_address.lock().unwrap().clone();
+        let current = self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if current.as_ref() == Some(&parsed_addr) {
             debug!("set_address({parsed_addr}) ignored; address unchanged");
             return;
@@ -868,9 +936,17 @@ impl MykoClient {
 
         info!("MykoClient connecting to {}", parsed_addr);
         self.inner.socket.set_addr(Some(parsed_addr.clone()));
-        *self.inner.current_address.lock().unwrap() = Some(parsed_addr.clone());
+        *self
+            .inner
+            .current_address
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(parsed_addr.clone());
         if self.inner.peer_failover_enabled {
-            let mut servers = self.inner.known_servers.lock().unwrap();
+            let mut servers = self
+                .inner
+                .known_servers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(pos) = servers.iter().position(|s| s == &parsed_addr) {
                 servers.remove(pos);
             }
@@ -899,9 +975,15 @@ impl MykoClient {
         if let ConnectionStatus::Connected(_) = self.inner.socket.actual_connection_state().get() {
             let _ = self.inner.socket.send(frame);
         } else {
-            let mut pending = self.inner.pending_sends.lock().unwrap();
-            pending.push(frame);
-            let len = pending.len();
+            let len = {
+                let mut pending = self
+                    .inner
+                    .pending_sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.push(frame);
+                pending.len()
+            };
             if len == 1 || len.is_multiple_of(10_000) {
                 warn!(
                     "MykoClient queued frame while disconnected; pending_sends={}",
@@ -911,6 +993,10 @@ impl MykoClient {
         }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn send_event(&self, event: MEvent) -> Result<(), String> {
         let myko_msg = MykoMessage::Event(event);
         let frame = self.encode_message(&myko_msg)?;
@@ -918,6 +1004,10 @@ impl MykoClient {
         Ok(())
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn send_event_batch(&self, events: Vec<MEvent>) -> Result<(), String> {
         if events.is_empty() {
             return Ok(());
@@ -928,6 +1018,10 @@ impl MykoClient {
         Ok(())
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
         let myko_msg = MykoMessage::Query(query);
         let frame = self.encode_message(&myko_msg)?;
@@ -936,6 +1030,10 @@ impl MykoClient {
     }
 
     /// Send a raw wrapped command (for federation forwarding)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
         let frame = self.encode_message(&myko_msg)?;
@@ -944,6 +1042,10 @@ impl MykoClient {
     }
 
     /// Send a raw wrapped report (for federation forwarding)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
         let myko_msg = MykoMessage::Report(report);
         let frame = self.encode_message(&myko_msg)?;
@@ -973,7 +1075,13 @@ impl MykoClient {
         let query_id = query.query.query_id();
         let query_item_type = Q::query_item_type_static();
 
-        let query_value = serde_json::to_value(&query).expect("Query should serialize");
+        let cell = Cell::new(vec![]).with_name(query_id.as_ref());
+        let cell_weak = cell.downgrade();
+
+        let Ok(query_value) = serde_json::to_value(&query) else {
+            error!("Could not serialize query request for {query_id}");
+            return cell.lock();
+        };
 
         let wrapped = WrappedQuery {
             query: query_value,
@@ -982,12 +1090,8 @@ impl MykoClient {
             window: None,
         };
 
-        let cell = Cell::new(vec![]).with_name(query_id.as_ref());
-        let cell_weak = cell.downgrade();
-
         // State for accumulating query diffs
-        #[allow(clippy::type_complexity)]
-        let state: Arc<Mutex<HashMap<Arc<str>, Arc<Q::Item>>>> = Arc::default();
+        let state: QueryState<Q::Item> = Arc::default();
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
@@ -1014,7 +1118,9 @@ impl MykoClient {
                     return;
                 }
 
-                let mut state = state.lock().unwrap();
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                 if response.sequence == 0 {
                     trace!("Sequence reset: Clearing {} state", query_id_for_handler);
@@ -1046,20 +1152,22 @@ impl MykoClient {
 
         // Build the frame to send (and re-send on reconnect)
         let msg = MykoMessage::Query(wrapped);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode query request for {query_id}");
+            self.inner.query_handlers.remove(&tx);
+            return cell.lock();
+        };
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let send_query_id = query_id.clone();
-        let frame_clone = frame.clone();
+        let send_query_id = query_id;
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
-                        Ok(_) => debug!("Watching query {send_query_id}"),
+                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                        Ok(()) => debug!("Watching query {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     },
                     _ => {
@@ -1068,11 +1176,6 @@ impl MykoClient {
                 }
             }
         });
-
-        // Send immediately if connected
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
@@ -1119,15 +1222,23 @@ impl MykoClient {
         }
 
         let tx: Arc<str> = report.tx.clone();
+        let cell = Cell::new(None).with_name(report_id.as_ref());
+        let cell_weak = cell.downgrade();
 
-        let report_value = serde_json::to_value(&report).expect("Report should serialize");
+        let Ok(report_value) = serde_json::to_value(&report) else {
+            error!("Could not serialize report request for {report_id}");
+            return cell.lock();
+        };
         let wrapped = WrappedReport {
             report: report_value,
             report_id: report_id.to_string(),
         };
 
-        let cell = Cell::new(None).with_name(report_id.as_ref());
-        let cell_weak = cell.downgrade();
+        let msg = MykoMessage::Report(wrapped);
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode report request for {report_id}");
+            return cell.lock();
+        };
 
         // Register handler for report responses matching this tx
         let report_id_for_handler = report_id.clone();
@@ -1149,32 +1260,21 @@ impl MykoClient {
             }),
         );
 
-        // Build the frame to send
-        let msg = MykoMessage::Report(wrapped);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
-
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let send_report_id = report_id.clone();
-        let frame_clone = frame.clone();
+        let send_report_id = report_id;
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                match socket.send(frame_clone.clone()) {
-                    Ok(_) => debug!("Watching report {send_report_id}"),
+                match socket.send(frame_to_send.clone()) {
+                    Ok(()) => debug!("Watching report {send_report_id}"),
                     Err(e) => error!("Could not send report: {e:?}"),
                 }
             }
         });
-
-        // Send immediately if connected
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(report_cancel_guard(tx, self.inner.clone()));
@@ -1209,11 +1309,19 @@ impl MykoClient {
         let view: ViewRequest<V> = view.into();
         let tx: Arc<str> = view.tx.clone();
         let view_id = view.view.view_id();
-
-        let wrapped = wrap_view(tx.clone(), &view.view).expect("View should serialize");
-
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
         let cell_weak = cell.downgrade();
+
+        let Ok(wrapped) = wrap_view(tx.clone(), &view.view) else {
+            error!("Could not serialize view request for {view_id}");
+            return cell.lock();
+        };
+
+        let msg = MykoMessage::View(wrapped);
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode view request for {view_id}");
+            return cell.lock();
+        };
 
         let state: Arc<Mutex<HashMap<Arc<str>, V::Item>>> = Arc::default();
         let tx_for_handler = tx.clone();
@@ -1236,7 +1344,9 @@ impl MykoClient {
                     return;
                 }
 
-                let mut state = state.lock().unwrap();
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                 if response.sequence == 0 {
                     trace!("Sequence reset: Clearing {} state", view_id_for_handler);
@@ -1265,20 +1375,15 @@ impl MykoClient {
             }),
         );
 
-        let msg = MykoMessage::View(wrapped);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
-
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let send_view_id = view_id.clone();
-        let frame_clone = frame.clone();
+        let send_view_id = view_id;
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
-                        Ok(_) => debug!("Watching view {send_view_id}"),
+                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                        Ok(()) => debug!("Watching view {send_view_id}"),
                         Err(e) => error!("Could not send view: {e:?}"),
                     },
                     _ => {
@@ -1287,10 +1392,6 @@ impl MykoClient {
                 }
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(view_cancel_guard(tx, self.inner.clone()));
@@ -1312,11 +1413,8 @@ impl MykoClient {
     {
         let cell = self.watch_report::<R, O>(report);
         // Map Option<O> -> O using the initial value as default
-        cell.map(move |opt| match opt {
-            Some(val) => val.clone(),
-            None => initial.clone(),
-        })
-        .materialize()
+        cell.map(move |opt| opt.as_ref().map_or_else(|| initial.clone(), Clone::clone))
+            .materialize()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1357,9 +1455,13 @@ impl MykoClient {
 
         // Register one-shot handler
         {
-            let mut handlers = self.inner.command_response_handlers.lock().unwrap();
+            let mut handlers = self
+                .inner
+                .command_response_handlers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
-                tx.clone(),
+                tx,
                 Box::new(move |result: Result<Value, String>| {
                     let mapped = result.and_then(|value| {
                         serde_json::from_value::<R>(value).map_err(|e| e.to_string())
@@ -1417,6 +1519,7 @@ impl MykoClient {
     // =========================================================================
 
     /// Dynamic/raw query watch for runtimes that only know wrapped query data.
+    #[must_use]
     pub fn watch_query_raw(&self, query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
         let tx: Arc<str> = query
             .query
@@ -1428,8 +1531,14 @@ impl MykoClient {
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
         let cell_weak = cell.downgrade();
-        let state_clone = state.clone();
+        let state_clone = state;
         let tx_clone = tx.clone();
+
+        let msg = MykoMessage::Query(query);
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode raw query request");
+            return cell.lock();
+        };
 
         self.inner.query_handlers.insert(
             tx.clone(),
@@ -1448,47 +1557,37 @@ impl MykoClient {
                     return;
                 }
 
-                let mut state = state_clone.lock().unwrap();
-
-                if response.sequence == 0 {
-                    state.clear();
-                }
-
-                for wrapped_item in response.upserts {
-                    if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
-                        state.insert(id.into(), wrapped_item.item);
+                let items = {
+                    let mut state = state_clone
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if response.sequence == 0 {
+                        state.clear();
                     }
-                }
-
-                for id in response.deletes {
-                    state.remove(&id);
-                }
-
-                let items: Vec<Value> = state.values().cloned().collect();
+                    for wrapped_item in response.upserts {
+                        if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
+                            state.insert(id.into(), wrapped_item.item);
+                        }
+                    }
+                    for id in response.deletes {
+                        state.remove(&id);
+                    }
+                    state.values().cloned().collect::<Vec<Value>>()
+                };
                 cell_writer.set(items);
             }),
         );
 
-        // Build frame and set up reconnection
-        let msg = MykoMessage::Query(query);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
-
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                let _ = socket.send(frame_clone.clone());
+                let _ = socket.send(frame_to_send.clone());
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
@@ -1503,6 +1602,7 @@ impl MykoClient {
     /// responses share the same `ws:m:view-response` event tag handling
     /// path as queries on the wire, so the same `query_handlers` slot
     /// stores the dispatch closure.
+    #[must_use]
     pub fn watch_view_raw(&self, view: WrappedView) -> Cell<Vec<Value>, CellImmutable> {
         let tx: Arc<str> = view
             .view
@@ -1514,8 +1614,14 @@ impl MykoClient {
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(view.view_id.as_ref());
         let cell_weak = cell.downgrade();
-        let state_clone = state.clone();
+        let state_clone = state;
         let tx_clone = tx.clone();
+
+        let msg = MykoMessage::View(view);
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode raw view request");
+            return cell.lock();
+        };
 
         self.inner.query_handlers.insert(
             tx.clone(),
@@ -1534,46 +1640,37 @@ impl MykoClient {
                     return;
                 }
 
-                let mut state = state_clone.lock().unwrap();
-
-                if response.sequence == 0 {
-                    state.clear();
-                }
-
-                for wrapped_item in response.upserts {
-                    if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
-                        state.insert(id.into(), wrapped_item.item);
+                let items = {
+                    let mut state = state_clone
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if response.sequence == 0 {
+                        state.clear();
                     }
-                }
-
-                for id in response.deletes {
-                    state.remove(&id);
-                }
-
-                let items: Vec<Value> = state.values().cloned().collect();
+                    for wrapped_item in response.upserts {
+                        if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
+                            state.insert(id.into(), wrapped_item.item);
+                        }
+                    }
+                    for id in response.deletes {
+                        state.remove(&id);
+                    }
+                    state.values().cloned().collect::<Vec<Value>>()
+                };
                 cell_writer.set(items);
             }),
         );
 
-        let msg = MykoMessage::View(view);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
-
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                let _ = socket.send(frame_clone.clone());
+                let _ = socket.send(frame_to_send.clone());
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(view_cancel_guard(tx, self.inner.clone()));
@@ -1582,6 +1679,7 @@ impl MykoClient {
     }
 
     /// Dynamic/raw report watch for runtimes that only know wrapped report data.
+    #[must_use]
     pub fn watch_report_raw(
         &self,
         report: crate::report::WrappedReport,
@@ -1596,6 +1694,12 @@ impl MykoClient {
         let cell = Cell::new(None).with_name(report.report_id.as_str());
         let cell_weak = cell.downgrade();
 
+        let msg = MykoMessage::Report(report);
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode raw report request");
+            return cell.lock();
+        };
+
         self.inner.report_handlers.insert(
             tx.clone(),
             Box::new(move |response: Value| {
@@ -1606,25 +1710,16 @@ impl MykoClient {
             }),
         );
 
-        let msg = MykoMessage::Report(report);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize report");
-
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_clone = frame.clone();
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
             {
-                let _ = socket.send(frame_clone.clone());
+                let _ = socket.send(frame_to_send.clone());
             }
         });
-
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            let _ = self.inner.socket.send(frame);
-        }
 
         cell.own(status_guard);
         cell.own(report_cancel_guard(tx, self.inner.clone()));
@@ -1641,16 +1736,19 @@ impl MykoClient {
             .command
             .get("tx")
             .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
 
         let cell = Cell::new(None).with_name(format!("cmd:{}", command.command_id).as_str());
         let cell_writer = cell.clone();
 
         {
-            let mut handlers = self.inner.command_response_handlers.lock().unwrap();
+            let mut handlers = self
+                .inner
+                .command_response_handlers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
-                tx.clone(),
+                tx,
                 Box::new(move |result: Result<Value, String>| {
                     cell_writer.set(Some(result));
                 }),
@@ -1717,12 +1815,12 @@ mod message_capture_tests {
     use super::{MykoClient, WsFrame};
     use crate::wire::{MykoMessage, PingData};
 
-    fn ping_frame(id: &str) -> WsFrame {
+    fn ping_frame(id: &str) -> Result<WsFrame, serde_json::Error> {
         let message = MykoMessage::Ping(PingData {
             id: id.to_owned(),
             timestamp: chrono::Utc::now().timestamp_millis(),
         });
-        WsFrame::Text(serde_json::to_string(&message).unwrap())
+        serde_json::to_string(&message).map(WsFrame::Text)
     }
 
     #[test]
@@ -1730,17 +1828,27 @@ mod message_capture_tests {
         let client = MykoClient::new_with_auto_reconnect(false);
         assert!(client.is_last_message_capture_enabled());
 
-        MykoClient::handle_frame(&client.inner, &ping_frame("captured"));
+        let captured_frame = ping_frame("captured");
+        assert!(captured_frame.is_ok());
+        let Ok(captured_frame) = captured_frame else {
+            return;
+        };
+        MykoClient::handle_frame(&client.inner, &captured_frame);
         assert!(client.messages().get().is_some());
-        assert!(client.get_ping_ms_sync().is_some());
+        assert!(client.ping_ms_sync().is_some());
 
         client.set_last_message_capture(false);
         assert!(!client.is_last_message_capture_enabled());
         assert!(client.messages().get().is_none());
 
-        MykoClient::handle_frame(&client.inner, &ping_frame("not-captured"));
+        let uncaptured_frame = ping_frame("not-captured");
+        assert!(uncaptured_frame.is_ok());
+        let Ok(uncaptured_frame) = uncaptured_frame else {
+            return;
+        };
+        MykoClient::handle_frame(&client.inner, &uncaptured_frame);
         assert!(client.messages().get().is_none());
-        assert!(client.get_ping_ms_sync().is_some());
+        assert!(client.ping_ms_sync().is_some());
     }
 }
 
@@ -1751,44 +1859,52 @@ mod address_tests {
     #[test]
     fn preserves_explicit_websocket_default_ports() {
         assert_eq!(
-            normalize_myko_address("ws://agents.example:80/myko").unwrap(),
-            "ws://agents.example/myko"
+            normalize_myko_address("ws://agents.example:80/myko")
+                .ok()
+                .as_deref(),
+            Some("ws://agents.example/myko")
         );
         assert_eq!(
-            normalize_myko_address("wss://agents.example:443/myko").unwrap(),
-            "wss://agents.example/myko"
+            normalize_myko_address("wss://agents.example:443/myko")
+                .ok()
+                .as_deref(),
+            Some("wss://agents.example/myko")
         );
         assert_eq!(
-            normalize_myko_address("[::1]:80").unwrap(),
-            "ws://[::1]/myko"
+            normalize_myko_address("[::1]:80").ok().as_deref(),
+            Some("ws://[::1]/myko")
         );
     }
 
     #[test]
     fn retains_legacy_default_when_port_is_omitted() {
         assert_eq!(
-            normalize_myko_address("agents.example").unwrap(),
-            "ws://agents.example:5155/myko"
+            normalize_myko_address("agents.example").ok().as_deref(),
+            Some("ws://agents.example:5155/myko")
         );
         assert_eq!(
-            normalize_myko_address("ws://agents.example").unwrap(),
-            "ws://agents.example:5155/myko"
+            normalize_myko_address("ws://agents.example")
+                .ok()
+                .as_deref(),
+            Some("ws://agents.example:5155/myko")
         );
         assert_eq!(
-            normalize_myko_address("[::1]").unwrap(),
-            "ws://[::1]:5155/myko"
+            normalize_myko_address("[::1]").ok().as_deref(),
+            Some("ws://[::1]:5155/myko")
         );
     }
 
     #[test]
     fn preserves_explicit_non_default_ports_and_normalizes_path() {
         assert_eq!(
-            normalize_myko_address("ws://127.0.0.1:5174/ignored").unwrap(),
-            "ws://127.0.0.1:5174/myko"
+            normalize_myko_address("ws://127.0.0.1:5174/ignored")
+                .ok()
+                .as_deref(),
+            Some("ws://127.0.0.1:5174/myko")
         );
         assert_eq!(
-            normalize_myko_address("agents.example:80").unwrap(),
-            "ws://agents.example/myko"
+            normalize_myko_address("agents.example:80").ok().as_deref(),
+            Some("ws://agents.example/myko")
         );
     }
 }

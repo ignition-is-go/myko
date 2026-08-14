@@ -1,6 +1,6 @@
-//! StoreRegistry - Central registry for all entity stores
+//! `StoreRegistry` - Central registry for all entity stores
 //!
-//! Manages one EntityStore per entity type, providing a unified
+//! Manages one `EntityStore` per entity type, providing a unified
 //! interface for event processing.
 
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use super::EntityStore;
 
 /// Central registry holding all entity stores.
 ///
-/// Thread-safe via DashMap. Automatically creates stores on first access.
+/// Thread-safe via `DashMap`. Automatically creates stores on first access.
 ///
 /// # Example
 /// ```text
@@ -35,6 +35,7 @@ pub struct StoreRegistry {
 
 impl StoreRegistry {
     /// Create a new empty registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             stores: DashMap::with_hasher(ahash::RandomState::new()),
@@ -44,31 +45,36 @@ impl StoreRegistry {
     /// Get or create an entity store for the given type.
     ///
     /// Creates a new store if one doesn't exist for this type.
+    #[must_use]
     pub fn get_or_create(&self, entity_type: &str) -> Arc<EntityStore> {
         let key: Arc<str> = entity_type.into();
 
         self.stores
             .entry(key.clone())
-            .or_insert_with(|| Arc::new(EntityStore::new().with_name(format!("store:{}", key))))
+            .or_insert_with(|| Arc::new(EntityStore::new().with_name(format!("store:{key}"))))
             .clone()
     }
 
     /// Get an entity store if it exists.
+    #[must_use]
     pub fn get(&self, entity_type: &str) -> Option<Arc<EntityStore>> {
         self.stores.get(entity_type).map(|r| r.clone())
     }
 
     /// List all registered entity types.
+    #[must_use]
     pub fn entity_types(&self) -> Vec<Arc<str>> {
         self.stores.iter().map(|r| r.key().clone()).collect()
     }
 
     /// Get the number of registered entity types.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.stores.len()
     }
 
     /// Check if the registry is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.stores.is_empty()
     }
@@ -110,7 +116,7 @@ mod tests {
         assert!(registry.get("Target").is_none());
 
         // After creation, returns Some
-        registry.get_or_create("Target");
+        drop(registry.get_or_create("Target"));
         assert!(registry.get("Target").is_some());
     }
 
@@ -118,9 +124,9 @@ mod tests {
     fn test_registry_entity_types() {
         let registry = StoreRegistry::new();
 
-        registry.get_or_create("Target");
-        registry.get_or_create("Scene");
-        registry.get_or_create("Binding");
+        drop(registry.get_or_create("Target"));
+        drop(registry.get_or_create("Scene"));
+        drop(registry.get_or_create("Binding"));
 
         let types = registry.entity_types();
         assert_eq!(types.len(), 3);

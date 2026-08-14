@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use myko::server::CellServerCtx;
+use myko::server::MykoServerContext;
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -28,9 +28,12 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// Handle `POST /myko/mcp`.
+/// # Errors
+///
+/// Returns an error when the HTTP request cannot be read or its response cannot be written.
 pub async fn handle_post(
     mut stream: TcpStream,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -62,10 +65,9 @@ pub async fn handle_post(
         Ok(req) => {
             // Notifications (no id, no response expected) get an empty 204
             // body anyway — MCP HTTP keeps the request/response shape.
-            match dispatch::handle_request(req, &filter, &executor, &server_info).await {
-                Some(r) => r,
-                None => McpResponse::success(Value::Null, Value::Null),
-            }
+            dispatch::handle_request(req, &filter, &executor, &server_info)
+                .await
+                .unwrap_or_else(|| McpResponse::success(Value::Null, Value::Null))
         }
         Err(e) => McpResponse::error(Value::Null, McpError::parse_error(e.to_string())),
     };
@@ -89,9 +91,12 @@ pub async fn handle_post(
 /// v1: writes the SSE response head and emits a keepalive comment every
 /// 15 s. No notifications are pushed yet — reactive query → MCP
 /// notification wiring is future work.
+/// # Errors
+///
+/// Returns an error when the SSE response cannot be written.
 pub async fn handle_sse(
     mut stream: TcpStream,
-    _ctx: Arc<CellServerCtx>,
+    _ctx: Arc<MykoServerContext>,
     _head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = "HTTP/1.1 200 OK\r\n\
@@ -117,6 +122,7 @@ pub async fn handle_sse(
 }
 
 /// Build a `ClientFilters` from the request headers.
+#[must_use]
 pub fn filter_from_head(head: &HttpRequestHead) -> ClientFilters {
     ClientFilters::from_strings(
         head.header(VISIBILITY_ALLOW_HEADER),
@@ -137,21 +143,24 @@ async fn read_body(
         return Ok(body);
     }
 
-    let remaining = content_length - body.len();
+    let remaining = content_length.saturating_sub(body.len());
     body.reserve(remaining);
     let mut buf = vec![0u8; 4096.min(remaining)];
     let mut needed = remaining;
     while needed > 0 {
         let take = needed.min(buf.len());
-        let n = stream.read(&mut buf[..take]).await?;
+        let Some(read_buffer) = buf.get_mut(..take) else {
+            break;
+        };
+        let n = stream.read(read_buffer).await?;
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "short body",
             ));
         }
-        body.extend_from_slice(&buf[..n]);
-        needed -= n;
+        body.extend_from_slice(buf.get(..n).unwrap_or(&buf));
+        needed = needed.saturating_sub(n);
     }
     Ok(body)
 }

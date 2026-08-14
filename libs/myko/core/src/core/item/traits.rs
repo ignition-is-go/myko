@@ -65,10 +65,11 @@ pub type ItemParseFn = fn(Value) -> Result<Arc<dyn AnyItem>, anyhow::Error>;
 
 /// Type alias for direct-from-bytes parse. Skips the `serde_json::Value`
 /// round-trip when raw bytes are available — bench: ~2.27× faster than
-/// the bytes → Value → from_value path.
+/// the bytes → Value → `from_value` path.
 pub type ItemParseBytesFn = fn(&[u8]) -> Result<Arc<dyn AnyItem>, anyhow::Error>;
 
 /// Type alias for typed JSON serialize function. Each registered entity emits
+///
 /// a monomorphized shim that downcasts to the concrete type and calls the
 /// typed `serde_json` serializer, producing a `RawValue` that the outer
 /// serializer embeds without going through `erased_serde`.
@@ -78,7 +79,7 @@ pub type ItemSerializeJsonFn = fn(&dyn AnyItem) -> Result<Box<RawValue>, serde_j
 /// Collected via inventory for automatic discovery.
 pub struct ItemRegistration {
     pub entity_type: &'static str,
-    /// Crate where this entity is defined (for type_gen filtering)
+    /// Crate where this entity is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
     /// Parse function that deserializes JSON into the typed item
     pub parse: ItemParseFn,
@@ -90,11 +91,11 @@ pub struct ItemRegistration {
     /// Typed JSON serialize shim. The macro emits `|any| {
     /// let typed = any.as_any().downcast_ref::<T>()?; serde_json::value::to_raw_value(typed) }`.
     /// Wire emit (`ErasedWrappedItem::serialize`) dispatches through this for
-    /// human-readable serializers, sidestepping erased_serde's vtable overhead.
+    /// human-readable serializers, sidestepping `erased_serde`'s vtable overhead.
     pub serialize_json: ItemSerializeJsonFn,
 }
 
-/// O(1) entity_type → registration index, lazily built from the inventory.
+/// O(1) `entity_type` → registration index, lazily built from the inventory.
 fn item_registry_index() -> &'static AMap<&'static str, &'static ItemRegistration> {
     static INDEX: OnceLock<AMap<&'static str, &'static ItemRegistration>> = OnceLock::new();
     INDEX.get_or_init(|| {
@@ -105,9 +106,10 @@ fn item_registry_index() -> &'static AMap<&'static str, &'static ItemRegistratio
     })
 }
 
-/// Look up the typed JSON serialize shim for an entity_type.
+/// Look up the typed JSON serialize shim for an `entity_type`.
 /// Returns `None` for unregistered types (e.g. the client-side `ValueItem`
 /// wrapper), in which case callers should fall back to `erased_serde`.
+#[must_use]
 pub fn lookup_item_registration(entity_type: &str) -> Option<&'static ItemRegistration> {
     item_registry_index().get(entity_type).copied()
 }
@@ -141,16 +143,22 @@ pub trait Eventable:
     const ENTITY_NAME_STATIC: &'static str;
 
     /// Back-compat helper for generic call sites that still expect a function.
+    #[must_use]
     fn entity_name_static() -> &'static str {
         Self::ENTITY_NAME_STATIC
     }
 
     /// Opt-in ingest buffering policy for this entity type.
+    #[must_use]
     fn ingest_buffer_policy() -> IngestBufferPolicy {
         IngestBufferPolicy::None
     }
 
     /// Parse JSON into this item type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn parse(value: Value) -> Result<Arc<dyn AnyItem>, anyhow::Error> {
         let item = serde_json::from_value::<Self>(value)?;
         Ok(Arc::new(item))
@@ -159,6 +167,10 @@ pub trait Eventable:
     /// Parse JSON bytes into this item type. Skips the `Value` round-trip
     /// when callers can hand off raw bytes (~2.27× faster than the
     /// `Value → from_value` path on a typical entity payload).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn parse_bytes(bytes: &[u8]) -> Result<Arc<dyn AnyItem>, anyhow::Error> {
         let item = serde_json::from_slice::<Self>(bytes)?;
         Ok(Arc::new(item))

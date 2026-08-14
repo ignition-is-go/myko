@@ -19,21 +19,25 @@ impl PartialOrd for Score {
 
 impl Ord for Score {
     fn cmp(&self, other: &Self) -> Ordering {
-        use Score::*;
+        use Score::{Exact, Prefix, Subsequence, Typo};
+        const fn tier(score: Score) -> u8 {
+            match score {
+                Exact => 3,
+                Prefix => 2,
+                Subsequence(_) => 1,
+                Typo(_) => 0,
+            }
+        }
+
+        let tier_order = tier(*self).cmp(&tier(*other));
+        if tier_order != Ordering::Equal {
+            return tier_order;
+        }
+
         match (self, other) {
-            (Exact, Exact) => Ordering::Equal,
-            (Exact, _) => Ordering::Greater,
-            (_, Exact) => Ordering::Less,
-
-            (Prefix, Prefix) => Ordering::Equal,
-            (Prefix, _) => Ordering::Greater,
-            (_, Prefix) => Ordering::Less,
-
             (Subsequence(a), Subsequence(b)) => a.cmp(b),
-            (Subsequence(_), Typo(_)) => Ordering::Greater,
-            (Typo(_), Subsequence(_)) => Ordering::Less,
-
             (Typo(a), Typo(b)) => b.cmp(a),
+            _ => Ordering::Equal,
         }
     }
 }

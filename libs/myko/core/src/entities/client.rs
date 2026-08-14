@@ -10,6 +10,7 @@ use crate::{
 };
 
 #[myko_item]
+#[derive(Eq)]
 pub struct Client {
     #[belongs_to(Server)]
     pub server_id: ServerId,
@@ -22,12 +23,14 @@ pub struct Client {
     /// as of this timestamp instead of live state.
     pub windback: Option<Arc<str>>,
 }
+crate::mark_framework_typegen_type!(ClientId);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom Reports
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[myko_report_output]
+#[derive(Eq)]
 pub struct ClientStatusOutput {
     pub online: bool,
 }
@@ -41,18 +44,15 @@ pub struct ClientStatus {
 impl ReportHandler for ClientStatus {
     type Output = ClientStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
-        let client_id = self.client_id.clone();
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        let client_id: Arc<str> = self.client_id.clone().into();
+        let store = ctx.registry().get_or_create(Client::ENTITY_NAME_STATIC);
 
-        // Query all clients and check if one with our id exists
-        ctx.query_map(GetAllClients {})
-            .entries()
-            .map(move |clients| {
-                let online = clients
-                    .iter()
-                    .any(|(_, c)| c.id.as_ref() == client_id.as_ref());
-                Arc::new(ClientStatusOutput { online })
+        store.get(&client_id).map(|client| {
+            Arc::new(ClientStatusOutput {
+                online: client.is_some(),
             })
+        })
     }
 }
 
@@ -63,6 +63,7 @@ impl ReportHandler for ClientStatus {
 /// Report that returns the current windback time for the requesting client.
 /// Returns None if the client is not in windback mode.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct WindbackStatusOutput {
     /// ISO timestamp if in windback mode, None otherwise
     pub windback: Option<Arc<str>>,
@@ -74,21 +75,17 @@ pub struct WindbackStatus {}
 impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl MaterializeDefinite<Arc<Self::Output>> {
-        let client_id = ctx
-            .client_id()
-            .map(|id| ClientId::from(Arc::<str>::from(id)));
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        let client_id = ctx.client_id().map_or_else(Arc::<str>::default, Arc::from);
+        let store = ctx.registry().get_or_create(Client::ENTITY_NAME_STATIC);
 
-        // Query all clients and find the requesting client's windback status
-        ctx.query_map(GetAllClients {})
-            .entries()
-            .map(move |clients| {
-                let windback = client_id
-                    .as_ref()
-                    .and_then(|cid| clients.iter().find(|(_, c)| c.id.as_ref() == cid.as_ref()))
-                    .and_then(|(_, c)| c.windback.clone());
-                Arc::new(WindbackStatusOutput { windback })
-            })
+        store.get(&client_id).map(|client| {
+            let windback = client
+                .as_ref()
+                .and_then(|client| client.as_any().downcast_ref::<Client>())
+                .and_then(|client| client.windback.clone());
+            Arc::new(WindbackStatusOutput { windback })
+        })
     }
 }
 
@@ -105,24 +102,25 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
         self,
         ctx: crate::command::CommandContext,
     ) -> Result<bool, crate::command::CommandError> {
-        let client_id = ctx
-            .client_id()
-            .ok_or_else(|| crate::command::CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "SetClientWindbackTime".to_string(),
-                message: "No client_id in context - windback requires a WebSocket connection"
-                    .to_string(),
-            })?;
+        let client_id = ctx.client_id().ok_or_else(|| {
+            crate::command::CommandError::new(
+                ctx.tx(),
+                "SetClientWindbackTime",
+                "No client_id in context - windback requires a WebSocket connection",
+            )
+        })?;
 
         // Find the client entity
         let client = ctx
             .exec_report(GetClientById {
-                id: ClientId::from(Arc::<str>::from(client_id.clone())),
+                id: ClientId::from(Arc::<str>::from(client_id)),
             })?
-            .ok_or_else(|| CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "SetClientWindbackTime".to_string(),
-                message: format!("Client {} not found", client_id),
+            .ok_or_else(|| {
+                CommandError::new(
+                    ctx.tx(),
+                    "SetClientWindbackTime",
+                    format!("Client {client_id} not found"),
+                )
             })?;
 
         // Update client with new windback time
@@ -130,7 +128,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
             id: client.id.clone(),
             server_id: client.server_id.clone(),
             address: client.address.clone(),
-            windback: Some(self.windback.clone()),
+            windback: Some(self.windback),
         };
 
         ctx.emit_set(&updated_client)?;
@@ -149,24 +147,25 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         self,
         ctx: crate::command::CommandContext,
     ) -> Result<bool, crate::command::CommandError> {
-        let client_id = ctx
-            .client_id()
-            .ok_or_else(|| crate::command::CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "ClearClientWindbackTime".to_string(),
-                message: "No client_id in context - windback requires a WebSocket connection"
-                    .to_string(),
-            })?;
+        let client_id = ctx.client_id().ok_or_else(|| {
+            crate::command::CommandError::new(
+                ctx.tx(),
+                "ClearClientWindbackTime",
+                "No client_id in context - windback requires a WebSocket connection",
+            )
+        })?;
 
         // Find the client entity
         let client = ctx
             .exec_report(GetClientById {
-                id: ClientId::from(Arc::<str>::from(client_id.clone())),
+                id: ClientId::from(Arc::<str>::from(client_id)),
             })?
-            .ok_or_else(|| CommandError {
-                tx: ctx.tx().to_string(),
-                command_id: "SetClientWindbackTime".to_string(),
-                message: format!("Client {} not found", client_id),
+            .ok_or_else(|| {
+                CommandError::new(
+                    ctx.tx(),
+                    "ClearClientWindbackTime",
+                    format!("Client {client_id} not found"),
+                )
             })?;
         // Update client to clear windback
         let updated_client = Client {
@@ -179,5 +178,76 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
         ctx.emit_set(&updated_client)?;
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod indexed_join_tests {
+    use hyphae::{CellMap, LeftJoinExt, MapQuery};
+
+    use super::*;
+
+    #[test]
+    #[allow(clippy::similar_names)]
+    fn generated_relation_indexes_arc_backed_query_rows() {
+        let servers = CellMap::<Arc<str>, Arc<Server>>::new();
+        let clients = CellMap::<Arc<str>, Arc<Client>>::new();
+        let joined = servers
+            .clone()
+            .left_join_fk::<ClientServerIdRelation, _>(clients.clone())
+            .materialize();
+
+        let server_a_id: Arc<str> = "server-a".into();
+        let server_b_id: Arc<str> = "server-b".into();
+        servers.insert(
+            server_a_id.clone(),
+            Arc::new(Server {
+                id: ServerId::from(server_a_id.clone()),
+                version: "test".to_string(),
+                address: "127.0.0.1".to_string(),
+                port: 1,
+                started_at: "1970-01-01T00:00:00Z".to_string(),
+            }),
+        );
+        servers.insert(
+            server_b_id.clone(),
+            Arc::new(Server {
+                id: ServerId::from(server_b_id.clone()),
+                version: "test".to_string(),
+                address: "127.0.0.1".to_string(),
+                port: 2,
+                started_at: "1970-01-01T00:00:00Z".to_string(),
+            }),
+        );
+
+        let client_id: Arc<str> = "client".into();
+        let client = |server_id: Arc<str>| {
+            Arc::new(Client {
+                id: ClientId::from(client_id.clone()),
+                server_id: ServerId::from(server_id),
+                address: None,
+                windback: None,
+            })
+        };
+        clients.insert(client_id.clone(), client(server_a_id.clone()));
+
+        assert!(matches!(
+            joined.get_value(&server_a_id),
+            Some((_, rows)) if rows.len() == 1
+        ));
+        assert!(matches!(
+            joined.get_value(&server_b_id),
+            Some((_, rows)) if rows.is_empty()
+        ));
+
+        clients.insert(client_id.clone(), client(server_b_id.clone()));
+        assert!(matches!(
+            joined.get_value(&server_a_id),
+            Some((_, rows)) if rows.is_empty()
+        ));
+        assert!(matches!(
+            joined.get_value(&server_b_id),
+            Some((_, rows)) if rows.len() == 1
+        ));
     }
 }

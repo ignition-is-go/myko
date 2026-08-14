@@ -1,6 +1,6 @@
 //! Sandboxed JS execution for the MCP "Code Mode" `execute()` tool.
 //!
-//! Runs LLM-submitted JavaScript in an embedded QuickJS engine (via
+//! Runs LLM-submitted JavaScript in an embedded `QuickJS` engine (via
 //! `rquickjs`), bound to a small `myko.*` API surface that calls back into
 //! the same [`Executor`] methods the old per-operation `tools/call` path
 //! used. Every individual `myko.*` call re-checks [`ClientFilters`] exactly
@@ -13,7 +13,7 @@
 //!   covering native async hops (query/report/command round trips) — which
 //!   already have their own per-op timeouts in `exec.rs`, so this is a
 //!   safety net.
-//! - [`SCRIPT_DEADLINE`] drives a QuickJS interrupt handler, which the VM
+//! - [`SCRIPT_DEADLINE`] drives a `QuickJS` interrupt handler, which the VM
 //!   polls periodically *during* synchronous bytecode execution. This is
 //!   the one that actually stops a pure `while (true) {}` loop: such a loop
 //!   never yields back to the tokio executor, so `tokio::time::timeout`
@@ -34,24 +34,32 @@ use super::{exec::Executor, filter::ClientFilters};
 
 /// Wall-clock budget for one `execute()` call, including native async hops.
 const EXECUTE_TIMEOUT: Duration = Duration::from_secs(30);
-/// QuickJS interrupt-handler deadline, bounding pure synchronous JS compute.
+/// `QuickJS` interrupt-handler deadline, bounding pure synchronous JS compute.
 const SCRIPT_DEADLINE: Duration = Duration::from_secs(10);
 /// Sandbox heap ceiling. Generous enough for JSON-shaped query results,
 /// tight enough to bound a runaway allocation loop.
 const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 const MYKO_SHIM: &str = r#"
+const __mykoInvoke = async (kind, id, args) => {
+  const response = JSON.parse(await __myko_call(kind, id, JSON.stringify(args ?? {})));
+  if (response.error !== undefined) throw new Error(response.error);
+  return response.value;
+};
 globalThis.myko = {
-  query: async (id, args) => JSON.parse(await __myko_call("query", id, JSON.stringify(args ?? {}))),
-  view: async (id, args) => JSON.parse(await __myko_call("view", id, JSON.stringify(args ?? {}))),
-  report: async (id, args) => JSON.parse(await __myko_call("report", id, JSON.stringify(args ?? {}))),
-  command: async (id, args) => JSON.parse(await __myko_call("command", id, JSON.stringify(args ?? {}))),
+  query: async (id, args) => __mykoInvoke("query", id, args),
+  view: async (id, args) => __mykoInvoke("view", id, args),
+  report: async (id, args) => __mykoInvoke("report", id, args),
+  command: async (id, args) => __mykoInvoke("command", id, args),
 };
 "#;
 
 /// Run `code` — a JS function body that may `return` a JSON-serializable
 /// value — against `executor`, enforcing `filter` on every `myko.*` call
 /// the script makes.
+/// # Errors
+///
+/// Returns an error when the script cannot be evaluated or an operation fails.
 pub async fn execute(
     code: &str,
     executor: Arc<Executor>,
@@ -59,7 +67,8 @@ pub async fn execute(
 ) -> Result<Value, String> {
     let rt = AsyncRuntime::new().map_err(|e| format!("Failed to start sandbox: {e}"))?;
     rt.set_memory_limit(MEMORY_LIMIT_BYTES).await;
-    let deadline = Instant::now() + SCRIPT_DEADLINE;
+    let now = Instant::now();
+    let deadline = now.checked_add(SCRIPT_DEADLINE).unwrap_or(now);
     rt.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)))
         .await;
 
@@ -105,55 +114,50 @@ pub async fn execute(
     }
 }
 
-fn install_myko_bindings<'js>(
-    ctx: &Ctx<'js>,
+fn install_myko_bindings(
+    ctx: &Ctx<'_>,
     executor: Arc<Executor>,
     filter: ClientFilters,
 ) -> rquickjs::Result<()> {
-    let call =
-        Function::new(
-            ctx.clone(),
-            Async(
-                move |ctx: Ctx<'js>,
-                      kind: std::string::String,
-                      id: std::string::String,
-                      args_json: Opt<std::string::String>| {
-                    let executor = executor.clone();
-                    let filter = filter.clone();
-                    async move {
-                        call_operation(&ctx, &executor, &filter, &kind, &id, args_json.0).await
-                    }
-                },
-            ),
-        )?
-        .with_name("__myko_call")?;
+    let call = Function::new(
+        ctx.clone(),
+        Async(
+            move |kind: std::string::String,
+                  id: std::string::String,
+                  args_json: Opt<std::string::String>| {
+                let executor = executor.clone();
+                let filter = filter.clone();
+                async move { call_operation(&executor, &filter, &kind, &id, args_json.0).await }
+            },
+        ),
+    )?
+    .with_name("__myko_call")?;
     ctx.globals().set("__myko_call", call)?;
     ctx.eval::<(), _>(MYKO_SHIM)?;
     Ok(())
 }
 
-async fn call_operation<'js>(
-    ctx: &Ctx<'js>,
+async fn call_operation(
     executor: &Executor,
     filter: &ClientFilters,
     kind: &str,
     id: &str,
     args_json: Option<std::string::String>,
-) -> rquickjs::Result<std::string::String> {
+) -> std::string::String {
     let name = format!("{kind}_{id}");
 
     if !filter.tool_visible(&name) {
-        return Err(js_throw(ctx, format!("Unknown operation: {name}")));
+        return json_error(format!("Unknown operation: {name}"));
     }
 
     let args_text = args_json.unwrap_or_else(|| "{}".to_string());
     let args: Value = match serde_json::from_str(&args_text) {
         Ok(v) => v,
-        Err(e) => return Err(js_throw(ctx, format!("Invalid arguments for {name}: {e}"))),
+        Err(e) => return json_error(format!("Invalid arguments for {name}: {e}")),
     };
 
     if let Err(message) = filter.tool_callable(&name, &args) {
-        return Err(js_throw(ctx, message));
+        return json_error(message);
     }
 
     let result = match kind {
@@ -164,17 +168,13 @@ async fn call_operation<'js>(
         _ => Err(format!("Unknown operation kind: {kind}")),
     };
 
-    match result {
-        Ok(value) => Ok(serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string())),
-        Err(message) => Err(js_throw(ctx, message)),
-    }
+    result.map_or_else(json_error, |value| {
+        serde_json::json!({ "value": value }).to_string()
+    })
 }
 
-/// Convert a plain error message into a thrown JS `Error` (not a bare
-/// string) so script-side `try`/`catch` sees a normal `e.message`, matching
-/// how any other thrown-from-native-code error behaves in JS.
-fn js_throw<'js>(ctx: &Ctx<'js>, message: impl Into<std::string::String>) -> rquickjs::Error {
-    rquickjs::Exception::throw_message(ctx, &message.into())
+fn json_error(message: impl Into<std::string::String>) -> std::string::String {
+    serde_json::json!({ "error": message.into() }).to_string()
 }
 
 #[cfg(test)]
@@ -215,13 +215,28 @@ mod tests {
             dummy_executor(),
             ClientFilters::allow_all(),
         )
-        .await
-        .expect("script should complete, errors are caught in JS");
-        let arr = result.as_array().expect("array result");
-        assert_eq!(arr.len(), 2);
-        assert!(arr[0].as_str().unwrap().contains("Query not found"));
+        .await;
         assert!(
-            !arr[1].as_str().unwrap().is_empty(),
+            result.is_ok(),
+            "script should complete, errors are caught in JS"
+        );
+        let Ok(result) = result else {
+            return;
+        };
+        assert!(result.is_array(), "array result");
+        let Some(arr) = result.as_array() else {
+            return;
+        };
+        assert_eq!(arr.len(), 2);
+        assert!(
+            arr.first()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.contains("Query not found"))
+        );
+        assert!(
+            arr.get(1)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| !message.is_empty()),
             "second call should also report an error"
         );
     }
@@ -235,8 +250,11 @@ mod tests {
             dummy_executor(),
             filter,
         )
-        .await
-        .expect("script should complete, error caught in JS");
+        .await;
+        assert!(result.is_ok(), "script should complete, error caught in JS");
+        let Ok(result) = result else {
+            return;
+        };
         assert_eq!(
             result,
             serde_json::json!("Unknown operation: query_GetAllServers")
@@ -273,8 +291,11 @@ mod tests {
             dummy_executor(),
             ClientFilters::allow_all(),
         )
-        .await
-        .unwrap();
+        .await;
+        assert!(result.is_ok(), "object result should round-trip");
+        let Ok(result) = result else {
+            return;
+        };
         assert_eq!(
             result,
             serde_json::json!({ "ok": true, "values": [1, "two", null] })

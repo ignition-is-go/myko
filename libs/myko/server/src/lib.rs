@@ -1,13 +1,13 @@
 //! Myko server runtime — WebSocket, durable event backends, peer federation.
 //!
 //! This crate contains the tokio-dependent parts of the Myko server:
-//! - `CellServer` — server lifecycle (durable catch-up init, WS accept loop)
-//! - `postgres` — PostgreSQL producer/consumer (event-table + LISTEN/NOTIFY)
+//! - `MykoServer` — server lifecycle (durable catch-up init, WS accept loop)
+//! - `postgres` — `PostgreSQL` producer/consumer (event-table + LISTEN/NOTIFY)
 //! - `ws_handler` — WebSocket connection handling
 //! - `peer_registry` — federation with other servers
 //! - `mcp` — Model Context Protocol server
 //!
-//! Tokio-free server types (CellServerCtx, HandlerRegistry, etc.) live in `myko::server`.
+//! Tokio-free server types (`MykoServerContext`, `HandlerRegistry`, etc.) live in `myko::server`.
 
 pub mod mcp;
 pub mod peer_persister;
@@ -40,14 +40,22 @@ pub use peer_persister::PeerPersister;
 pub use server_ownership::ServerOwnershipManager;
 use uuid::Uuid;
 
+const CACHE_SWEEP_INTERVAL: Duration = Duration::from_mins(1);
+
+struct SagaChannel {
+    tx: flume::Sender<MEvent>,
+    entity_type: &'static str,
+    change_type: myko::event::MEventType,
+}
+
 use crate::postgres::{
-    CellPostgresConsumer, CellPostgresProducer, PostgresConfig, PostgresHistoryReplayProvider,
-    PostgresHistoryStore, PostgresProducerHandle,
+    PostgresConfig, PostgresConsumer, PostgresHistoryReplayProvider, PostgresHistoryStore,
+    PostgresProducer, PostgresProducerHandle,
 };
 
 /// Cell-based Myko server configuration.
 #[derive(Clone)]
-pub struct CellServerConfig {
+pub struct MykoServerConfig {
     /// Address to bind the WebSocket server
     pub bind_addr: SocketAddr,
     /// Disable Nagle's algorithm (set `TCP_NODELAY`) on accepted connections.
@@ -72,9 +80,9 @@ pub struct CellServerConfig {
     pub peer_clients: Option<Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>>,
 }
 
-/// Builder for creating a CellServer.
+/// Builder for creating a `MykoServer`.
 #[derive(Default)]
-pub struct CellServerBuilder {
+pub struct MykoServerBuilder {
     bind_addr: Option<SocketAddr>,
     tcp_nodelay: Option<bool>,
     host_id: Option<Uuid>,
@@ -93,16 +101,18 @@ pub struct CellServerBuilder {
     server_info: Option<mcp::dispatch::ServerInfo>,
 }
 
-type AfterInitCallback = Box<dyn FnOnce(&CellServer) + Send>;
+type AfterInitCallback = Box<dyn FnOnce(&MykoServer) + Send>;
 
-impl CellServerBuilder {
+impl MykoServerBuilder {
     /// Create a new server builder.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the WebSocket bind address.
-    pub fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
+    #[must_use]
+    pub const fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
         self.bind_addr = Some(addr);
         self
     }
@@ -111,36 +121,42 @@ impl CellServerBuilder {
     /// connections. Defaults to `true` (Nagle off) — recommended for myko's
     /// small, frequent, latency-sensitive messages so an even send cadence
     /// isn't delivered as coalesced bursts.
-    pub fn with_tcp_nodelay(mut self, enabled: bool) -> Self {
+    #[must_use]
+    pub const fn with_tcp_nodelay(mut self, enabled: bool) -> Self {
         self.tcp_nodelay = Some(enabled);
         self
     }
 
     /// Set the server host ID (auto-generated if not set).
-    pub fn with_host_id(mut self, id: Uuid) -> Self {
+    #[must_use]
+    pub const fn with_host_id(mut self, id: Uuid) -> Self {
         self.host_id = Some(id);
         self
     }
 
     /// Configure Postgres for event persistence/distribution.
+    #[must_use]
     pub fn with_postgres(mut self, config: PostgresConfig) -> Self {
         self.postgres = Some(config);
         self
     }
 
     /// Configure peer registry for federation.
+    #[must_use]
     pub fn with_peer_registry(mut self, config: peer_registry::PeerRegistryConfig) -> Self {
         self.peer_registry = Some(config);
         self
     }
 
     /// Set the default persister used for all entity types without explicit overrides.
+    #[must_use]
     pub fn with_default_persister(mut self, persister: Arc<dyn Persister>) -> Self {
         self.default_persister = Some(persister);
         self
     }
 
     /// Override persister for a specific entity type (e.g. "Pulse").
+    #[must_use]
     pub fn with_persister_override(
         mut self,
         entity_type: impl Into<String>,
@@ -156,6 +172,7 @@ impl CellServerBuilder {
     /// into `PeerPersister::new(...)` when you register a
     /// `with_persister_override(..., PeerPersister)` so the persister
     /// shares the live map.
+    #[must_use]
     pub fn with_peer_clients(
         mut self,
         peer_clients: Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>,
@@ -167,7 +184,8 @@ impl CellServerBuilder {
     /// Register a callback to run after initialization and relation establishment,
     /// but before the WebSocket accept loop starts. Use this for starting subsystems
     /// that need entity data (e.g., scene engine).
-    pub fn after_init(mut self, f: impl FnOnce(&CellServer) + Send + 'static) -> Self {
+    #[must_use]
+    pub fn after_init(mut self, f: impl FnOnce(&MykoServer) + Send + 'static) -> Self {
         self.after_init = Some(Box::new(f));
         self
     }
@@ -175,20 +193,22 @@ impl CellServerBuilder {
     /// Set the MCP `ServerInfo` advertised on the `/myko/mcp` `initialize`
     /// response. Defaults to `ServerInfo::default()` (`myko-mcp` /
     /// `CARGO_PKG_VERSION` / no instructions).
+    #[must_use]
     pub fn with_server_info(mut self, info: mcp::dispatch::ServerInfo) -> Self {
         self.server_info = Some(info);
         self
     }
 
     /// Build the server.
-    pub fn build(self) -> CellServer {
+    #[must_use]
+    pub fn build(self) -> MykoServer {
         let bind_addr = self
             .bind_addr
-            .unwrap_or_else(|| "127.0.0.1:5155".parse().unwrap());
+            .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], 5155)));
 
         let server_info = Arc::new(self.server_info.unwrap_or_default());
 
-        let mut server = CellServer::new(CellServerConfig {
+        let mut server = MykoServer::new(MykoServerConfig {
             bind_addr,
             tcp_nodelay: self.tcp_nodelay.unwrap_or(true),
             postgres: self.postgres,
@@ -207,7 +227,7 @@ impl CellServerBuilder {
 /// Cell-based Myko server.
 ///
 /// Uses hyphae cells for reactive queries and reports instead of actors.
-pub struct CellServer {
+pub struct MykoServer {
     /// Central entity store registry
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for items, queries, and reports
@@ -223,11 +243,11 @@ pub struct CellServer {
     /// Server host ID
     pub host_id: Uuid,
     /// Server configuration
-    config: CellServerConfig,
+    config: MykoServerConfig,
     /// Postgres producer (kept alive)
-    _postgres_producer_owner: Option<CellPostgresProducer>,
+    _postgres_producer_owner: Option<PostgresProducer>,
     /// Postgres consumer (kept alive)
-    postgres_consumer: Option<CellPostgresConsumer>,
+    postgres_consumer: Option<PostgresConsumer>,
     /// Whether the server is ready to accept connections
     ready: Arc<AtomicBool>,
     /// Peer registry for federation (initialized after catch-up)
@@ -237,7 +257,7 @@ pub struct CellServer {
     /// Callback to run after init (catch-up + relations) but before WS loop
     after_init: std::sync::Mutex<Option<AfterInitCallback>>,
     /// MCP `ServerInfo` advertised on the `/myko/mcp` `initialize` response.
-    /// Set via [`CellServerBuilder::with_server_info`]; defaults to
+    /// Set via [`MykoServerBuilder::with_server_info`]; defaults to
     /// `ServerInfo::default()`.
     server_info: Arc<mcp::dispatch::ServerInfo>,
     /// Sender for local+replicated event fan-out to saga runtime.
@@ -247,26 +267,27 @@ pub struct CellServer {
     /// Saga tasks kept alive for server lifetime.
     saga_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Server ownership death-watch guard (kept alive for server lifetime).
-    _server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
+    server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
     /// Memoized server context. Built once on first `ctx()` and shared by
     /// every caller — the caches (`query_cache`/`view_cache`/`report_cache`/
     /// `compute_gates`/`ingest_buffers`) and the `peer_clients_tick` cell are
     /// then genuinely process-wide, so N connections subscribing to the same
     /// query share one reactive cell graph instead of N copies, cache sweeps
     /// actually reach live entries, and every peer-death watcher observes the
-    /// same tick. Every `CellServerCtx` field is an `Arc`/`Cell`/`Uuid`, so a
+    /// same tick. Every `MykoServerContext` field is an `Arc`/`Cell`/`Uuid`, so a
     /// clone is a handful of refcount bumps that share the underlying state.
-    ctx_cache: std::sync::OnceLock<CellServerCtx>,
+    ctx_cache: std::sync::OnceLock<MykoServerContext>,
 }
 
-impl CellServer {
+impl MykoServer {
     /// Create a new server builder.
-    pub fn builder() -> CellServerBuilder {
-        CellServerBuilder::new()
+    #[must_use]
+    pub fn builder() -> MykoServerBuilder {
+        MykoServerBuilder::new()
     }
 
     /// Create a new cell-based server.
-    pub fn new(config: CellServerConfig) -> Self {
+    pub fn new(config: MykoServerConfig) -> Self {
         let host_id = config.host_id.unwrap_or_else(Uuid::new_v4);
         let registry = Arc::new(StoreRegistry::new());
         let handler_registry = Arc::new(HandlerRegistry::new());
@@ -277,11 +298,12 @@ impl CellServer {
 
         let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
         let (postgres_producer_owner, postgres_producer, postgres_consumer) =
-            if let Some(ref postgres_config) = config.postgres {
-                match CellPostgresProducer::new(postgres_config, host_id) {
+            config.postgres.as_ref().map_or_else(
+                || (None, None, None),
+                |postgres_config| match PostgresProducer::new(postgres_config, host_id) {
                     Ok(producer) => {
                         let handle = producer.handle();
-                        let consumer = match CellPostgresConsumer::start(
+                        let consumer = match PostgresConsumer::start(
                             postgres_config,
                             host_id,
                             handler_registry.clone(),
@@ -299,10 +321,8 @@ impl CellServer {
                         tracing::error!("Failed to create Postgres producer: {}", e);
                         (None, None, None)
                     }
-                }
-            } else {
-                (None, None, None)
-            };
+                },
+            );
 
         // If no durable consumer, server is immediately ready
         let ready = Arc::new(AtomicBool::new(postgres_consumer.is_none()));
@@ -318,7 +338,8 @@ impl CellServer {
         if let Some(default_persister) = config.default_persister.clone() {
             persister_router.set_default(Some(default_persister));
         } else if let Some(handle) = postgres_producer.clone() {
-            persister_router.set_default(Some(Arc::new(handle) as Arc<dyn Persister>));
+            let persister: Arc<dyn Persister> = Arc::new(handle);
+            persister_router.set_default(Some(persister));
         }
         for (entity_type, persister) in &config.persister_overrides {
             persister_router.set_override(entity_type.clone(), persister.clone());
@@ -349,7 +370,7 @@ impl CellServer {
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
-            _server_ownership_guard: std::sync::Mutex::new(None),
+            server_ownership_guard: std::sync::Mutex::new(None),
             ctx_cache: std::sync::OnceLock::new(),
         }
     }
@@ -361,13 +382,19 @@ impl CellServer {
         if let Some(peer_config) = peer_config {
             tracing::info!("Starting peer registry");
             let pr = peer_registry::PeerRegistry::new(self.ctx(), peer_config);
-            *self.peer_registry_instance.write().unwrap() = Some(pr);
+            *self
+                .peer_registry_instance
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pr);
         }
     }
 
     /// Check if peer registry is running.
     pub fn has_peer_registry(&self) -> bool {
-        self.peer_registry_instance.read().unwrap().is_some()
+        self.peer_registry_instance
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// Get the store registry.
@@ -388,31 +415,34 @@ impl CellServer {
 
     /// Get a server context for module use.
     ///
-    /// Returns a clone of the one memoized [`CellServerCtx`] (see `ctx_cache`)
+    /// Returns a clone of the one memoized [`MykoServerContext`] (see `ctx_cache`)
     /// so all callers share the same caches and peer-tick cell. Building a
     /// fresh context per call — the old behavior — gave every connection its
     /// own caches: no cross-client cache sharing (an N× reactive-graph
     /// memory multiplier), sweeps that never reached connection caches, and a
     /// `peer_clients_tick` that register/unregister bumped on one context
     /// while a watcher built on another never observed.
-    pub fn ctx(&self) -> CellServerCtx {
+    pub fn ctx(&self) -> MykoServerContext {
         self.ctx_cache
             .get_or_init(|| {
                 let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
                     self.config.postgres.as_ref().map(|pg| {
-                        Arc::new(PostgresHistoryReplayProvider::new(pg.clone()))
-                            as Arc<dyn myko::server::HistoryReplayProvider>
+                        let provider: Arc<dyn myko::server::HistoryReplayProvider> =
+                            Arc::new(PostgresHistoryReplayProvider::new(pg.clone()));
+                        provider
                     });
-                CellServerCtx::new(
+                MykoServerContext::new(
                     self.host_id,
                     self.registry.clone(),
                     self.handler_registry.clone(),
                     self.relationship_manager.clone(),
                     self.persisters.clone(),
                     self.search_index.clone(),
-                    self.peer_clients.clone(),
-                    Some(self.saga_event_tx.clone()),
-                    history_replay,
+                    myko::server::MykoServerRuntime {
+                        peer_clients: self.peer_clients.clone(),
+                        event_sink: Some(self.saga_event_tx.clone()),
+                        history_replay,
+                    },
                 )
             })
             .clone()
@@ -426,7 +456,7 @@ impl CellServer {
         let Some(rx) = self
             .saga_event_rx
             .lock()
-            .expect("saga_event_rx mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         else {
             return;
@@ -436,11 +466,6 @@ impl CellServer {
 
         // NOTE(ts): One unbounded flume channel per saga, with dispatch-side filtering
         // so sagas only receive events matching their entity type and change type.
-        struct SagaChannel {
-            tx: flume::Sender<MEvent>,
-            entity_type: &'static str,
-            change_type: myko::event::MEventType,
-        }
         let mut saga_channels: Vec<SagaChannel> = Vec::new();
 
         for registration in registrations {
@@ -463,10 +488,9 @@ impl CellServer {
                 },
             ));
 
-            let saga_ctx = Arc::new(myko::saga::SagaContext::with_event_sink(
+            let saga_ctx = Arc::new(myko::saga::SagaContext::new(
                 self.host_id,
                 self.registry.clone(),
-                self.saga_event_tx.clone(),
             ));
             let mut command_stream = saga.build_boxed(events, saga_ctx);
 
@@ -492,16 +516,18 @@ impl CellServer {
                     let cmd_ctx = CommandContext::new(
                         Arc::from(command_name),
                         req,
-                        Arc::new(CellServerCtx::new(
+                        Arc::new(MykoServerContext::new(
                             host_id,
                             registry.clone(),
                             handler_registry.clone(),
                             relationship_manager.clone(),
                             persisters.clone(),
                             search_index.clone(),
-                            peer_clients.clone(),
-                            Some(saga_event_tx.clone()),
-                            None,
+                            myko::server::MykoServerRuntime {
+                                peer_clients: peer_clients.clone(),
+                                event_sink: Some(saga_event_tx.clone()),
+                                history_replay: None,
+                            },
                         )),
                     );
 
@@ -518,7 +544,7 @@ impl CellServer {
 
             self.saga_tasks
                 .lock()
-                .expect("saga_tasks mutex poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(handle);
         }
 
@@ -527,7 +553,7 @@ impl CellServer {
         let dispatcher = tokio::spawn(async move {
             while let Ok(event) = rx.recv_async().await {
                 for ch in &saga_channels {
-                    if event.item_type == ch.entity_type && event.change_type == ch.change_type {
+                    if &*event.item_type == ch.entity_type && event.change_type == ch.change_type {
                         let _ = ch.tx.send(event.clone());
                     }
                 }
@@ -535,11 +561,14 @@ impl CellServer {
         });
         self.saga_tasks
             .lock()
-            .expect("saga_tasks mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(dispatcher);
     }
 
     /// Create a Postgres-backed history store for replay/windback operations.
+    /// # Errors
+    ///
+    /// Returns an error when the `PostgreSQL` history store cannot be opened.
     pub fn postgres_history_store(&self) -> Result<Option<PostgresHistoryStore>, String> {
         self.config
             .postgres
@@ -549,6 +578,9 @@ impl CellServer {
     }
 
     /// Initialize Postgres replay/listener and wait for catch-up.
+    /// # Errors
+    ///
+    /// Returns an error when `PostgreSQL` initialization fails or times out.
     pub fn init_postgres_and_wait(&self, timeout: Duration) -> Result<(), String> {
         if self.config.postgres.is_some() && self.postgres_consumer.is_none() {
             return Err(
@@ -583,6 +615,9 @@ impl CellServer {
     }
 
     /// Run the server with full initialization.
+    /// # Errors
+    ///
+    /// Returns an error when the server cannot initialize or accept connections.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
@@ -590,7 +625,7 @@ impl CellServer {
         let entity_types: Vec<&str> = self
             .handler_registry
             .entity_types()
-            .map(|t| t.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .collect();
         self.persisters
             .startup_healthcheck(&entity_types)
@@ -603,7 +638,7 @@ impl CellServer {
         // Wait for Postgres catch-up if configured
         if self.postgres_consumer.is_some() {
             tracing::info!("Waiting for Postgres event consumer to catch up...");
-            let timeout = std::time::Duration::from_secs(300);
+            let timeout = std::time::Duration::from_mins(5);
             self.init_postgres_and_wait(timeout)
                 .map_err(|reason| format!("Postgres startup catch-up failed: {reason}"))?;
             tracing::info!("Postgres caught up, ready to accept connections");
@@ -624,9 +659,9 @@ impl CellServer {
         }
         let ownership_guard = ServerOwnershipManager::watch_peer_deaths(&self.ctx());
         *self
-            ._server_ownership_guard
+            .server_ownership_guard
             .lock()
-            .expect("server_ownership_guard mutex poisoned") = Some(ownership_guard);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ownership_guard);
 
         // Run after_init hook (e.g., scene engine startup) BEFORE binding the
         // listener. This hook runs synchronously and can be slow (e.g.
@@ -640,12 +675,12 @@ impl CellServer {
         // ever arrives) — stuck rather than cleanly failing. Binding late
         // means a connection attempt during startup gets a prompt
         // ECONNREFUSED instead, which every client/proxy already retries.
-        if let Some(hook) = self
+        let hook = self
             .after_init
             .lock()
-            .expect("after_init mutex poisoned")
-            .take()
-        {
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
             hook(self);
         }
 
@@ -683,7 +718,7 @@ impl CellServer {
         // once the gateway is actually available to serve requests, not just
         // listening.
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
-        tracing::info!("CellServer listening on {}", self.config.bind_addr);
+        tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
             "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
@@ -699,11 +734,14 @@ impl CellServer {
     }
 
     /// Run just the accept loop (no Postgres / relations / saga startup).
+    /// # Errors
+    ///
+    /// Returns an error when the WebSocket listener cannot accept connections.
     pub async fn run_ws_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
-        tracing::info!("CellServer listening on {}", self.config.bind_addr);
+        tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
             "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
@@ -716,9 +754,23 @@ impl CellServer {
         listener: tokio::net::TcpListener,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ready = self.ready.clone();
+        let sweep_ctx = self.ctx();
+        // Bound tombstone retention even while the listener is otherwise idle.
+        let mut cache_sweep = tokio::time::interval(CACHE_SWEEP_INTERVAL);
+        cache_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            let (stream, addr) = listener.accept().await?;
+            let accepted = tokio::select! {
+                accepted = listener.accept() => Some(accepted),
+                _ = cache_sweep.tick() => {
+                    sweep_ctx.sweep_dead_cache_entries();
+                    None
+                }
+            };
+            let Some(accepted) = accepted else {
+                continue;
+            };
+            let (stream, addr) = accepted?;
 
             // Disable Nagle (unless configured off): our writes are small,
             // frequent, latency-sensitive messages (e.g. ~60Hz pulses). With
@@ -768,8 +820,8 @@ mod tests {
 
     #[test]
     fn test_server_creation() {
-        let config = CellServerConfig {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
+        let config = MykoServerConfig {
+            bind_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
             tcp_nodelay: true,
             postgres: None,
             host_id: None,
@@ -778,15 +830,15 @@ mod tests {
             persister_overrides: HashMap::new(),
             peer_clients: None,
         };
-        let server = CellServer::new(config);
+        let server = MykoServer::new(config);
         assert!(Arc::strong_count(&server.registry) >= 1);
     }
 
     #[test]
     fn test_server_with_host_id() {
         let host_id = Uuid::new_v4();
-        let config = CellServerConfig {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
+        let config = MykoServerConfig {
+            bind_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
             tcp_nodelay: true,
             postgres: None,
             host_id: Some(host_id),
@@ -795,7 +847,7 @@ mod tests {
             persister_overrides: HashMap::new(),
             peer_clients: None,
         };
-        let server = CellServer::new(config);
+        let server = MykoServer::new(config);
         assert_eq!(server.host_id, host_id);
     }
 
@@ -806,8 +858,8 @@ mod tests {
         // next. Before the fix, each `ctx()` allocated its own caches, so a
         // second call reported an empty query cache (and per-connection
         // caches leaked, never swept).
-        let config = CellServerConfig {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
+        let config = MykoServerConfig {
+            bind_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
             tcp_nodelay: true,
             postgres: None,
             host_id: None,
@@ -816,7 +868,7 @@ mod tests {
             persister_overrides: HashMap::new(),
             peer_clients: None,
         };
-        let server = CellServer::new(config);
+        let server = MykoServer::new(config);
         let ctx1 = server.ctx();
         let ctx2 = server.ctx();
 

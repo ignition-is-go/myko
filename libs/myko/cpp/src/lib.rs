@@ -7,9 +7,8 @@ use once_cell::sync::Lazy;
 use std::sync::Arc;
 
 // Global tokio runtime for async operations
-static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
-    tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime")
-});
+static RUNTIME: Lazy<std::io::Result<tokio::runtime::Runtime>> =
+    Lazy::new(tokio::runtime::Runtime::new);
 
 /// Wrapper around MykoClient for C++ interop
 pub struct MykoClientWrapper {
@@ -37,18 +36,24 @@ impl MykoClientWrapper {
     }
 
     fn is_connected(&self) -> bool {
+        let Ok(runtime) = &*RUNTIME else {
+            return false;
+        };
         let inner = self.inner.clone();
-        RUNTIME.block_on(async {
+        runtime.block_on(async {
             let status = inner.get_connection_status().await;
             matches!(status, myko::client::ConnectionStatus::Connected(_))
         })
     }
 
     fn send_event_json(&self, event_json: &str) -> String {
+        let Ok(runtime) = &*RUNTIME else {
+            return "failed to create Tokio runtime".to_string();
+        };
         let inner = self.inner.clone();
         let json = event_json.to_string();
 
-        RUNTIME.block_on(async {
+        runtime.block_on(async {
             match serde_json::from_str::<myko::event::MEvent>(&json) {
                 Ok(event) => {
                     match inner.send_event(event) {

@@ -36,7 +36,7 @@ workspace_batchable = true
 cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown", "--target-dir", "target/claude"]
 
 [tasks.gen]
-default = ["cargo", "run", "-p", "myko", "--features", "codegen", "--bin", "typegen", "--", "src/generated"]
+default = ["cargo", "run", "-p", "myko", "--features", "codegen-ts", "--bin", "typegen", "--", "src/generated"]
 
 [tasks.publish]
 cascade = "all"

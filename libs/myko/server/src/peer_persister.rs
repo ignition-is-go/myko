@@ -19,7 +19,7 @@
 //! entities this is intended for.
 //!
 //! Echo suppression: `MEvent::source_id` is populated with the origin
-//! server's host id when the event is produced (see `CellServerCtx::produce_*`).
+//! server's host id when the event is produced (see `MykoServerContext::produce_*`).
 //! Receivers skip events they themselves originated (see
 //! `normalize_incoming_event` + `apply_event_batch_immediate` filtering).
 
@@ -42,8 +42,9 @@ pub struct PeerPersister {
 impl PeerPersister {
     /// Create a new `PeerPersister` that broadcasts through the given peer-client map.
     ///
-    /// The map is shared with `CellServerCtx::peer_clients` so entries added by
+    /// The map is shared with `MykoServerContext::peer_clients` so entries added by
     /// `PeerRegistry::register_peer_client` become visible here automatically.
+    #[must_use]
     pub fn new(peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>) -> Self {
         Self {
             peer_clients,
@@ -52,6 +53,7 @@ impl PeerPersister {
     }
 
     /// Peer client count — mostly for diagnostics and health reporting.
+    #[must_use]
     pub fn peer_count(&self) -> usize {
         self.peer_clients.len()
     }
@@ -85,15 +87,12 @@ impl Persister for PeerPersister {
                     entry.key(),
                     e
                 );
-                error_count += 1;
+                error_count = error_count.saturating_add(1);
             }
         }
 
         if error_count == peer_count {
-            let msg = format!(
-                "PeerPersister: broadcast failed for all {} peer(s)",
-                peer_count
-            );
+            let msg = format!("PeerPersister: broadcast failed for all {peer_count} peer(s)");
             self.health.record_error(msg.clone());
             return Err(PersistError {
                 entity_type,

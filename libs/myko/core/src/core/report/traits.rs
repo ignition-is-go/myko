@@ -51,7 +51,7 @@ pub trait AnyReport: WithTransaction + ReportId + Debug + Send + Sync + 'static 
 // Conversion from Arc<dyn AnyReport> to WrappedReport
 impl From<&dyn AnyReport> for WrappedReport {
     fn from(report: &dyn AnyReport) -> Self {
-        WrappedReport {
+        Self {
             report: report.to_value(),
             report_id: report.report_id().to_string(),
         }
@@ -60,13 +60,13 @@ impl From<&dyn AnyReport> for WrappedReport {
 
 impl From<Arc<dyn AnyReport>> for WrappedReport {
     fn from(report: Arc<dyn AnyReport>) -> Self {
-        WrappedReport::from(report.as_ref())
+        Self::from(report.as_ref())
     }
 }
 
 impl From<&Arc<dyn AnyReport>> for WrappedReport {
     fn from(report: &Arc<dyn AnyReport>) -> Self {
-        WrappedReport::from(report.as_ref())
+        Self::from(report.as_ref())
     }
 }
 
@@ -160,7 +160,7 @@ impl<R: ReportParams> Report for ReportRequest<R> {
 
 /// Wrapper struct for count report outputs.
 /// Using a struct instead of a primitive ensures consistent TypeScript type generation via ts-rs.
-#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct CountResult {

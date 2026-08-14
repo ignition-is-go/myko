@@ -1,10 +1,10 @@
-//! Tests for query_map cache cleanup when used inside switch_map.
+//! Tests for `query_map` cache cleanup when used inside `switch_map`.
 //!
-//! Validates that the myko query cache and hyphae switch_map correctly
+//! Validates that the myko query cache and hyphae `switch_map` correctly
 //! clean up cell factories and subscriptions. These tests were written
 //! while investigating a 47 GB memory leak in a downstream server triggered
-//! by CuePlayback state changes. The tests prove the cache layer is clean —
-//! the actual leak is in the O(n^2) reactive fan-out of the CueEngine
+//! by `CuePlayback` state changes. The tests prove the cache layer is clean —
+//! the actual leak is in the O(n^2) reactive fan-out of the `CueEngine`
 //! blanket watcher, not in cache accumulation.
 
 #![cfg(feature = "bench")]
@@ -12,10 +12,11 @@
 use std::sync::Arc;
 
 use myko::{
-    bench_entities::{BenchItem, GetBenchItemsByQuery, PartialBenchItem, SwitchMapReport},
-    hyphae::{Cell, Gettable, Mutable, SwitchMapExt},
+    bench_entities::{BenchItem, BenchItemQuery, GetBenchItemsByQuery, SwitchMapReport},
+    hyphae::{Cell, Gettable, Materialize, Mutable, SwitchMapExt},
+    query::StringFilter,
     search::SearchIndex,
-    server::{CellServerCtx, HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+    server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
     wire::{MEvent, MEventType},
 };
@@ -31,38 +32,41 @@ use uuid::Uuid;
 /// them against each other; take the guard as the first line of every #[test].
 fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn make_ctx() -> CellServerCtx {
-    CellServerCtx::new(
+fn make_ctx() -> MykoServerContext {
+    MykoServerContext::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
         Arc::new(RelationshipManager::new()),
         Arc::new(PersisterRouter::default()),
         Arc::new(SearchIndex::new()),
-        Arc::new(dashmap::DashMap::new()),
-        None,
-        None,
+        myko::server::MykoServerRuntime {
+            peer_clients: Arc::new(dashmap::DashMap::new()),
+            event_sink: None,
+            history_replay: None,
+        },
     )
 }
 
-fn insert_bench_item(ctx: &CellServerCtx, id: &str, category: &str, value: i64) {
+fn insert_bench_item(ctx: &MykoServerContext, id: &str, category: &str, value: i64) {
     let item = BenchItem {
         id: id.into(),
-        name: format!("item-{}", id),
+        name: format!("item-{id}"),
         category: category.to_string(),
         value,
     };
-    let event = MEvent::from_item(&item, MEventType::SET, &format!("tx-{}", id));
-    ctx.apply_event_batch(vec![event]).unwrap();
+    let event = MEvent::from_item(&item, MEventType::SET, &format!("tx-{id}"));
+    assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
-/// Verify that query_map results created inside switch_map are reclaimable
-/// after the switch_map moves to a new inner chain.
+/// Verify that `query_map` results created inside `switch_map` are reclaimable
+/// after the `switch_map` moves to a new inner chain.
 ///
-/// This reproduces the CuePaused pattern:
+/// This reproduces the `CuePaused` pattern:
 /// ```rust,ignore
 /// playbacks.switch_map(|playbacks| {
 ///     ctx.query_map(GetCuesByIds { ids: cue_ids }, req).items().map(...)
@@ -75,9 +79,9 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
 
     // Seed items in different categories
     for i in 0..10 {
-        insert_bench_item(&ctx, &format!("a-{}", i), "alpha", i);
-        insert_bench_item(&ctx, &format!("b-{}", i), "beta", i);
-        insert_bench_item(&ctx, &format!("g-{}", i), "gamma", i);
+        insert_bench_item(&ctx, &format!("a-{i}"), "alpha", i);
+        insert_bench_item(&ctx, &format!("b-{i}"), "beta", i);
+        insert_bench_item(&ctx, &format!("g-{i}"), "gamma", i);
     }
 
     let categories = ["alpha", "beta", "gamma"];
@@ -86,19 +90,27 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     let selector = Cell::new(0usize);
     let ctx_clone = ctx.clone();
 
-    let switched = selector.switch_map(move |idx| {
-        let category = categories[*idx % categories.len()].to_string();
-        let request = ctx_clone.new_server_transaction();
-        // Each different category produces a different cache key (different payload_hash)
-        let query_result = ctx_clone.query_map(
-            GetBenchItemsByQuery(PartialBenchItem {
-                category: Some(category),
-                ..Default::default()
-            }),
-            request,
-        );
-        query_result.items()
-    });
+    let switched = selector
+        .clone()
+        .switch_map(move |idx| {
+            let category = idx
+                .checked_rem(categories.len())
+                .and_then(|index| categories.get(index))
+                .copied()
+                .unwrap_or_default()
+                .to_string();
+            let request = ctx_clone.new_server_transaction();
+            // Each different category produces a different cache key (different payload_hash)
+            let query_result = ctx_clone.query_map(
+                GetBenchItemsByQuery(BenchItemQuery {
+                    category: Some(StringFilter::Eq(category.into())),
+                    ..Default::default()
+                }),
+                request,
+            );
+            query_result.items().materialize()
+        })
+        .materialize();
 
     // Initial: should see alpha items
     assert_eq!(switched.get().len(), 10);
@@ -133,14 +145,11 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     assert!(
         cache_final < cache_after,
         "sweep should have removed dead query cache entries \
-         (cache before={}, after switch={}, final={})",
-        cache_before,
-        cache_after,
-        cache_final,
+         (cache before={cache_before}, after switch={cache_after}, final={cache_final})",
     );
 }
 
-/// Verify that repeated query_map calls with the SAME params inside switch_map
+/// Verify that repeated `query_map` calls with the SAME params inside `switch_map`
 /// reuse the cache entry (cache hit) rather than creating new factories.
 #[test]
 fn query_map_same_params_inside_switch_map_reuses_cache() {
@@ -148,25 +157,29 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
     let ctx = make_ctx();
 
     for i in 0..5 {
-        insert_bench_item(&ctx, &format!("item-{}", i), "tools", i);
+        insert_bench_item(&ctx, &format!("item-{i}"), "tools", i);
     }
 
     let trigger = Cell::new(0u64);
     let ctx_clone = ctx.clone();
 
     // Every switch creates query_map with SAME params — should cache-hit
-    let switched = trigger.switch_map(move |_| {
-        let request = ctx_clone.new_server_transaction();
-        ctx_clone
-            .query_map(
-                GetBenchItemsByQuery(PartialBenchItem {
-                    category: Some("tools".to_string()),
-                    ..Default::default()
-                }),
-                request,
-            )
-            .items()
-    });
+    let switched = trigger
+        .clone()
+        .switch_map(move |_| {
+            let request = ctx_clone.new_server_transaction();
+            ctx_clone
+                .query_map(
+                    GetBenchItemsByQuery(BenchItemQuery {
+                        category: Some(StringFilter::Eq("tools".into())),
+                        ..Default::default()
+                    }),
+                    request,
+                )
+                .items()
+                .materialize()
+        })
+        .materialize();
 
     assert_eq!(switched.get().len(), 5);
     let cache_after_init = ctx.query_cache_len();
@@ -185,18 +198,16 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
     // Allow some growth due to weak refs dying between switches,
     // but it should NOT be 50 new entries
     assert!(
-        cache_after_switches <= cache_after_init + 5,
-        "cache grew from {} to {} after 50 same-param switches — \
+        cache_after_switches <= cache_after_init.saturating_add(5),
+        "cache grew from {cache_after_init} to {cache_after_switches} after 50 same-param switches — \
          expected cache reuse, got accumulation",
-        cache_after_init,
-        cache_after_switches,
     );
 }
 
-/// Reproduce the production leak: switch_map creates query_map().items()
+/// Reproduce the production leak: `switch_map` creates `query_map().items()`
 /// while the underlying store is actively receiving updates. Store mutations
-/// cause the CellMap's internal subscriptions to fire, which may keep the
-/// CellMap alive (via map_keepalive in items()) even after switch_map replaces
+/// cause the `CellMap`'s internal subscriptions to fire, which may keep the
+/// `CellMap` alive (via `map_keepalive` in `items()`) even after `switch_map` replaces
 /// the inner chain.
 #[test]
 fn query_map_inside_switch_map_with_active_store_mutations() {
@@ -205,44 +216,57 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
 
     // Seed initial items
     for i in 0..10 {
-        insert_bench_item(&ctx, &format!("a-{}", i), "alpha", i);
-        insert_bench_item(&ctx, &format!("b-{}", i), "beta", i);
+        insert_bench_item(&ctx, &format!("a-{i}"), "alpha", i);
+        insert_bench_item(&ctx, &format!("b-{i}"), "beta", i);
     }
 
     let categories = ["alpha", "beta"];
     let selector = Cell::new(0usize);
     let ctx_clone = ctx.clone();
 
-    let switched = selector.switch_map(move |idx| {
-        let category = categories[*idx % categories.len()].to_string();
-        let request = ctx_clone.new_server_transaction();
-        ctx_clone
-            .query_map(
-                GetBenchItemsByQuery(PartialBenchItem {
-                    category: Some(category),
-                    ..Default::default()
-                }),
-                request,
-            )
-            .items()
-    });
+    let switched = selector
+        .clone()
+        .switch_map(move |idx| {
+            let category = idx
+                .checked_rem(categories.len())
+                .and_then(|index| categories.get(index))
+                .copied()
+                .unwrap_or_default()
+                .to_string();
+            let request = ctx_clone.new_server_transaction();
+            ctx_clone
+                .query_map(
+                    GetBenchItemsByQuery(BenchItemQuery {
+                        category: Some(StringFilter::Eq(category.into())),
+                        ..Default::default()
+                    }),
+                    request,
+                )
+                .items()
+                .materialize()
+        })
+        .materialize();
 
     assert_eq!(switched.get().len(), 10);
 
     // Interleave switches with store mutations (simulating playback state changes
     // that trigger both the outer signal AND entity updates)
-    for round in 0..20 {
+    for round in 0usize..20 {
         // Switch to new category
-        selector.set(round + 1);
+        selector.set(round.saturating_add(1));
 
         // Mutate items in the store (simulates CuePlayback state changes)
-        let cat = categories[round % categories.len()];
-        for i in 0..5 {
+        let cat = round
+            .checked_rem(categories.len())
+            .and_then(|index| categories.get(index))
+            .copied()
+            .unwrap_or_default();
+        for i in 0usize..5 {
             insert_bench_item(
                 &ctx,
-                &format!("{}-{}", cat.chars().next().unwrap(), i),
+                &format!("{}-{i}", cat.chars().next().unwrap_or('?')),
                 cat,
-                (round * 10 + i) as i64,
+                i64::try_from(round.saturating_mul(10).saturating_add(i)).unwrap_or(i64::MAX),
             );
         }
     }
@@ -261,20 +285,19 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
     // All query cache entries should be reclaimable after dropping the switch_map
     assert_eq!(
         live_after, 0,
-        "expected 0 live cache entries after dropping switch_map, found {} \
-         (total before drop={}, live before drop={})",
-        live_after, total_before_drop, live_before_drop,
+        "expected 0 live cache entries after dropping switch_map, found {live_after} \
+         (total before drop={total_before_drop}, live before drop={live_before_drop})",
     );
 }
 
-/// Verify the query_cache_live_count accurately reflects reachable entries.
+/// Verify the `query_cache_live_count` accurately reflects reachable entries.
 #[test]
 fn query_cache_live_count_tracks_reachable_entries() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
     for i in 0..3 {
-        insert_bench_item(&ctx, &format!("item-{}", i), "test", i);
+        insert_bench_item(&ctx, &format!("item-{i}"), "test", i);
     }
 
     assert_eq!(ctx.query_cache_live_count(), 0);
@@ -282,8 +305,8 @@ fn query_cache_live_count_tracks_reachable_entries() {
     // Create a query_map and hold onto it
     let request = ctx.new_server_transaction();
     let map = ctx.query_map(
-        GetBenchItemsByQuery(PartialBenchItem {
-            category: Some("test".to_string()),
+        GetBenchItemsByQuery(BenchItemQuery {
+            category: Some(StringFilter::Eq("test".into())),
             ..Default::default()
         }),
         request,
@@ -294,8 +317,8 @@ fn query_cache_live_count_tracks_reachable_entries() {
     // Create another with different params
     let request2 = ctx.new_server_transaction();
     let map2 = ctx.query_map(
-        GetBenchItemsByQuery(PartialBenchItem {
-            category: Some("other".to_string()),
+        GetBenchItemsByQuery(BenchItemQuery {
+            category: Some(StringFilter::Eq("other".into())),
             ..Default::default()
         }),
         request2,
@@ -318,9 +341,9 @@ fn query_cache_live_count_tracks_reachable_entries() {
 // Report-level tests: ctx.report() with switch_map + nested query_map
 // =============================================================================
 
-/// Core reproduction of the CuePaused leak: a report whose compute() uses
-/// switch_map with a nested query_map. Store mutations trigger the outer
-/// query, switch_map recreates the inner query_map, and old cache entries
+/// Core reproduction of the `CuePaused` leak: a report whose `compute()` uses
+/// `switch_map` with a nested `query_map`. Store mutations trigger the outer
+/// query, `switch_map` recreates the inner `query_map`, and old cache entries
 /// must be reclaimable.
 #[test]
 fn report_with_switch_map_query_map_cleans_up_cache() {
@@ -329,7 +352,7 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
 
     // Seed items
     for i in 0..10 {
-        insert_bench_item(&ctx, &format!("item-{}", i), "alpha", i);
+        insert_bench_item(&ctx, &format!("item-{i}"), "alpha", i);
     }
 
     let cache_before = ctx.query_cache_len();
@@ -358,7 +381,12 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Now mutate items to trigger the outer query → switch_map → new inner query_map
     // Each mutation changes the item list, causing switch_map to recreate
     for round in 0..20 {
-        insert_bench_item(&ctx, &format!("new-{}", round), "alpha", 100 + round as i64);
+        insert_bench_item(
+            &ctx,
+            &format!("new-{round}"),
+            "alpha",
+            100 + i64::from(round),
+        );
     }
 
     // Report should reflect the new items
@@ -375,14 +403,12 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
 
     assert_eq!(
         cache_final, 0,
-        "expected 0 live query cache entries after dropping report, found {} \
-         (cache grew to {} during mutations)",
-        cache_final, cache_during,
+        "expected 0 live query cache entries after dropping report, found {cache_final} \
+         (cache grew to {cache_during} during mutations)",
     );
     assert_eq!(
         report_cache_final, 0,
-        "expected 0 live report cache entries after dropping report, found {}",
-        report_cache_final,
+        "expected 0 live report cache entries after dropping report, found {report_cache_final}",
     );
 }
 
@@ -394,7 +420,7 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
     let ctx = make_ctx();
 
     for i in 0..5 {
-        insert_bench_item(&ctx, &format!("item-{}", i), "beta", i);
+        insert_bench_item(&ctx, &format!("item-{i}"), "beta", i);
     }
 
     let request = ctx.new_server_transaction();
@@ -412,9 +438,9 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
     for round in 0..100 {
         insert_bench_item(
             &ctx,
-            &format!("stress-{}", round),
+            &format!("stress-{round}"),
             "beta",
-            1000 + round as i64,
+            1000_i64.saturating_add(i64::from(round)),
         );
     }
 
@@ -431,10 +457,8 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
     // With the outer query + inner query, we expect a small number of live entries.
     assert!(
         live_count <= 10,
-        "live query cache entries ({}) should be bounded during active use, \
-         but found {} total cache entries — old entries are being kept alive",
-        live_count,
-        total_count,
+        "live query cache entries ({live_count}) should be bounded during active use, \
+         but found {total_count} total cache entries — old entries are being kept alive",
     );
 
     drop(report_cell);

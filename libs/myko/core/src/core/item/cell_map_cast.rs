@@ -5,68 +5,71 @@ use hyphae::{CellImmutable, CellMap, CellMutable, MapDiff, traits::CellValue};
 use super::AnyItem;
 use crate::common::with_id::WithTypedId;
 
+#[must_use]
 pub fn downcast_any_item_map_diff<T: Clone + 'static>(
     diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
     context: &'static str,
-) -> MapDiff<Arc<str>, T> {
+) -> Option<MapDiff<Arc<str>, T>> {
     match diff {
-        MapDiff::Initial { entries } => MapDiff::Initial {
+        MapDiff::Initial { entries } => Some(MapDiff::Initial {
             entries: entries
                 .iter()
-                .map(|(k, v)| {
-                    let typed = v
-                        .as_any()
-                        .downcast_ref::<T>()
-                        .unwrap_or_else(|| panic!("{context} type mismatch in Initial"));
-                    (k.clone(), typed.clone())
+                .filter_map(|(k, v)| {
+                    v.as_any().downcast_ref::<T>().map_or_else(
+                        || {
+                            tracing::error!("{context} type mismatch in Initial");
+                            None
+                        },
+                        |typed| Some((k.clone(), typed.clone())),
+                    )
                 })
                 .collect(),
-        },
+        }),
         MapDiff::Insert { key, value } => {
-            let typed = value
-                .as_any()
-                .downcast_ref::<T>()
-                .unwrap_or_else(|| panic!("{context} type mismatch in Insert"));
-            MapDiff::Insert {
+            let Some(typed) = value.as_any().downcast_ref::<T>() else {
+                tracing::error!("{context} type mismatch in Insert");
+                return None;
+            };
+            Some(MapDiff::Insert {
                 key: key.clone(),
                 value: typed.clone(),
-            }
+            })
         }
         MapDiff::Remove { key, old_value } => {
-            let typed = old_value
-                .as_any()
-                .downcast_ref::<T>()
-                .unwrap_or_else(|| panic!("{context} type mismatch in Remove"));
-            MapDiff::Remove {
+            let Some(typed) = old_value.as_any().downcast_ref::<T>() else {
+                tracing::error!("{context} type mismatch in Remove");
+                return None;
+            };
+            Some(MapDiff::Remove {
                 key: key.clone(),
                 old_value: typed.clone(),
-            }
+            })
         }
         MapDiff::Update {
             key,
             old_value,
             new_value,
         } => {
-            let old_typed = old_value
-                .as_any()
-                .downcast_ref::<T>()
-                .unwrap_or_else(|| panic!("{context} type mismatch in Update old_value"));
-            let new_typed = new_value
-                .as_any()
-                .downcast_ref::<T>()
-                .unwrap_or_else(|| panic!("{context} type mismatch in Update new_value"));
-            MapDiff::Update {
+            let Some(old_typed) = old_value.as_any().downcast_ref::<T>() else {
+                tracing::error!("{context} type mismatch in Update old_value");
+                return None;
+            };
+            let Some(new_typed) = new_value.as_any().downcast_ref::<T>() else {
+                tracing::error!("{context} type mismatch in Update new_value");
+                return None;
+            };
+            Some(MapDiff::Update {
                 key: key.clone(),
                 old_value: old_typed.clone(),
                 new_value: new_typed.clone(),
-            }
+            })
         }
-        MapDiff::Batch { changes } => MapDiff::Batch {
+        MapDiff::Batch { changes } => Some(MapDiff::Batch {
             changes: changes
                 .iter()
-                .map(|change| downcast_any_item_map_diff::<T>(change, context))
+                .filter_map(|change| downcast_any_item_map_diff::<T>(change, context))
                 .collect(),
-        },
+        }),
     }
 }
 
@@ -75,9 +78,10 @@ where
     K: Hash + Eq + CellValue,
     V: CellValue,
 {
-    output.apply_batch(vec![diff.clone()]);
+    output.apply_diff_owned(diff.clone());
 }
 
+#[must_use]
 pub fn typed_map_from_any_item<T: CellValue + 'static>(
     source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
     context: &'static str,
@@ -86,13 +90,16 @@ pub fn typed_map_from_any_item<T: CellValue + 'static>(
     let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
         let Some(typed) = weak.upgrade() else { return };
-        let typed_diff = downcast_any_item_map_diff::<T>(diff, context);
-        apply_map_diff(&typed, &typed_diff);
+        if let Some(typed_diff) = downcast_any_item_map_diff::<T>(diff, context) {
+            apply_map_diff(&typed, &typed_diff);
+        }
     });
     typed.own_guard(guard);
+    drop(source);
     typed.lock()
 }
 
+#[must_use]
 pub fn typed_map_arc_from_any_item<T: std::fmt::Debug + PartialEq + Send + Sync + 'static>(
     source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
     context: &'static str,
@@ -101,13 +108,16 @@ pub fn typed_map_arc_from_any_item<T: std::fmt::Debug + PartialEq + Send + Sync 
     let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
         let Some(typed) = weak.upgrade() else { return };
-        let typed_diff = downcast_any_item_map_diff_arc::<T>(diff, context);
-        apply_map_diff(&typed, &typed_diff);
+        if let Some(typed_diff) = downcast_any_item_map_diff_arc::<T>(diff, context) {
+            apply_map_diff(&typed, &typed_diff);
+        }
     });
     typed.own_guard(guard);
+    drop(source);
     typed.lock()
 }
 
+#[must_use]
 pub fn typed_map_from_any_item_with_typed_id<T>(
     source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
     context: &'static str,
@@ -119,59 +129,74 @@ where
     let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
         let Some(typed) = weak.upgrade() else { return };
-        let typed_diff = downcast_any_item_map_diff_arc::<T>(diff, context);
+        let Some(typed_diff) = downcast_any_item_map_diff_arc::<T>(diff, context) else {
+            return;
+        };
         let mut changes: Vec<MapDiff<<T as WithTypedId>::Id, Arc<T>>> = Vec::new();
         remap_diff_to_typed_id(&typed_diff, &mut changes);
-        typed.apply_batch(changes);
+        if changes.len() == 1 {
+            if let Some(change) = changes.pop() {
+                typed.apply_diff_owned(change);
+            }
+        } else {
+            typed.apply_batch(changes);
+        }
     });
     typed.own_guard(guard);
+    drop(source);
     typed.lock()
 }
 
 pub fn downcast_any_item_arc<T: Send + Sync + 'static>(
     value: &Arc<dyn AnyItem>,
     context: &'static str,
-) -> Arc<T> {
+) -> Option<Arc<T>> {
     let any_arc: Arc<dyn std::any::Any + Send + Sync> = value.clone();
-    any_arc
-        .downcast::<T>()
-        .unwrap_or_else(|_| panic!("{context} type mismatch while downcasting Arc<dyn AnyItem>"))
+    any_arc.downcast::<T>().map_or_else(
+        |_| {
+            tracing::error!("{context} type mismatch while downcasting Arc<dyn AnyItem>");
+            None
+        },
+        Some,
+    )
 }
 
 pub fn downcast_any_item_map_diff_arc<T: Send + Sync + 'static>(
     diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
     context: &'static str,
-) -> MapDiff<Arc<str>, Arc<T>> {
+) -> Option<MapDiff<Arc<str>, Arc<T>>> {
     match diff {
-        MapDiff::Initial { entries } => MapDiff::Initial {
+        MapDiff::Initial { entries } => Some(MapDiff::Initial {
             entries: entries
                 .iter()
-                .map(|(k, v)| (k.clone(), downcast_any_item_arc::<T>(v, context)))
+                .filter_map(|(k, v)| {
+                    downcast_any_item_arc::<T>(v, context).map(|typed| (k.clone(), typed))
+                })
                 .collect(),
-        },
-        MapDiff::Insert { key, value } => MapDiff::Insert {
+        }),
+        MapDiff::Insert { key, value } => Some(MapDiff::Insert {
             key: key.clone(),
-            value: downcast_any_item_arc::<T>(value, context),
-        },
-        MapDiff::Remove { key, old_value } => MapDiff::Remove {
+            value: downcast_any_item_arc::<T>(value, context)?,
+        }),
+        MapDiff::Remove { key, old_value } => Some(MapDiff::Remove {
             key: key.clone(),
-            old_value: downcast_any_item_arc::<T>(old_value, context),
-        },
+            old_value: downcast_any_item_arc::<T>(old_value, context)?,
+        }),
         MapDiff::Update {
             key,
             old_value,
             new_value,
-        } => MapDiff::Update {
+        } => Some(MapDiff::Update {
             key: key.clone(),
-            old_value: downcast_any_item_arc::<T>(old_value, context),
-            new_value: downcast_any_item_arc::<T>(new_value, context),
-        },
-        MapDiff::Batch { changes } => MapDiff::Batch {
+            old_value: downcast_any_item_arc::<T>(old_value, context)?,
+            new_value: downcast_any_item_arc::<T>(new_value, context)?,
+        }),
+        MapDiff::Batch { changes } => Some(MapDiff::Batch {
             changes: changes
                 .iter()
-                .map(|change| downcast_any_item_map_diff_arc::<T>(change, context))
+                .filter_map(|change| downcast_any_item_map_diff_arc::<T>(change, context))
                 .collect(),
-        },
+        }),
     }
 }
 

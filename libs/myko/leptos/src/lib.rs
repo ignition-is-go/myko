@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 // Re-export the hyphae→Leptos bridge primitives so consumers get them from a
 // single place (`myko_leptos`) without depending on `hyphae-leptos` directly.
@@ -17,7 +20,7 @@ use myko::{common::with_id::WithTypedId, hyphae::IdFor};
 pub fn provide_myko(address: &str) {
     use myko::client::MykoClient;
     let client = MykoClient::new();
-    client.set_protocol(myko::client::MykoProtocol::JSON);
+    client.set_protocol(myko::client::MykoProtocol::CBOR);
     // NOTE(ts): The Leptos bridge consumes typed cells, never the raw-message
     // debug cell. Avoid a deep JSON/CBOR value clone for every incoming frame.
     client.set_last_message_capture(false);
@@ -35,6 +38,7 @@ pub fn disconnect_myko() {
 ///
 /// The status cell is bridged to a Leptos signal via `hyphae-leptos`
 /// ([`ToLeptosSignal`]) and projected to a `bool` (connected or not).
+#[must_use]
 pub fn use_connection_status() -> ReadSignal<bool> {
     use myko::client::{ConnectionStatus, MykoClient};
 
@@ -52,8 +56,8 @@ pub fn use_connection_status() -> ReadSignal<bool> {
 /// This lets callers pass filtered queries whose parameters come from signals:
 ///
 /// ```ignore
-/// let items = live_query(move || GetItemsByQuery(PartialItem {
-///     owner_id: user_id.get(),
+/// let items = live_query(move || GetItemsByQuery(ItemQuery {
+///     owner_id: Some(user_id.get().into()),
 ///     ..Default::default()
 /// }));
 /// ```
@@ -79,11 +83,12 @@ where
 
 /// Like [`live_query`] but also returns a `loaded` flag.
 ///
-/// `loaded` starts as `false`.  Each time the reactive query closure re-runs
-/// (parameter change / re-subscribe) it resets to `false`.  It flips to `true`
-/// on the **first emission** from the server — even if the returned vec is empty.
-/// This lets callers distinguish "still waiting for a response" from "server
-/// replied with zero items".
+/// `loaded` starts as `false`. Each time the reactive query closure re-runs or
+/// the client connection changes, it resets to `false`. It flips to `true` on
+/// the **first response** from the server — even if the returned vec is empty.
+/// The cell's local empty seed is deliberately ignored, so callers can reliably
+/// distinguish "still waiting for a response" from "server replied with zero
+/// items", including after reconnecting to a different server.
 ///
 /// ```ignore
 /// let (projects, loaded) = live_query_loaded(|| GetAllProjects {});
@@ -91,10 +96,12 @@ where
 /// // loaded.get() == true && projects.get().is_empty()  →  "No items"
 /// // loaded.get() == true && !projects.get().is_empty() →  render list
 /// ```
-#[allow(clippy::type_complexity)]
+pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
+type QueryResultCell<T> = myko::hyphae::Cell<Vec<Arc<T>>, myko::hyphae::CellImmutable>;
+
 pub fn live_query_loaded<Q>(
     query: impl Fn() -> Q + Send + Sync + 'static,
-) -> (ReadSignal<Vec<Arc<Q::Item>>>, ReadSignal<bool>)
+) -> LiveQuerySignals<Q::Item>
 where
     Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
     Q::Item: myko::core::item::Eventable
@@ -118,23 +125,37 @@ where
 
     // `prev_cell` holds the previous Cell so it drops (and unsubscribes) on
     // each re-run of the effect, before the new subscription is created.
-    let prev_cell: StoredValue<
-        Option<myko::hyphae::Cell<Vec<Arc<Q::Item>>, myko::hyphae::CellImmutable>>,
-    > = StoredValue::new(None);
+    let prev_cell: StoredValue<Option<QueryResultCell<Q::Item>>> = StoredValue::new(None);
 
     Effect::new(move || {
         let q = query(); // tracks signals read inside the closure
         // A new subscription is starting — mark as not-yet-loaded.
         set_loaded.set(false);
         let cell = client.watch_query(q);
+
+        // Hyphae subscriptions immediately emit the cell's current value. Query
+        // cells are seeded locally with an empty vec, so that first notification
+        // is not evidence that the server has replied.
+        let skip_local_seed = Arc::new(AtomicBool::new(true));
         let guard = cell.subscribe(move |signal| {
+            if skip_local_seed.swap(false, Ordering::AcqRel) {
+                return;
+            }
             if let Signal::Value(items) = signal {
-                write.set((**items).to_vec());
-                // First emission (even an empty vec) means the query returned.
+                write.set((**items).clone());
+                // A post-seed emission (even an empty vec) is a server response.
                 set_loaded.set(true);
             }
         });
         cell.own(guard);
+
+        // A retained result belongs to the previous connection until the newly
+        // connected server answers the re-subscribed query.
+        let status_guard = client.connection_status().subscribe(move |_| {
+            set_loaded.set(false);
+        });
+        cell.own(status_guard);
+
         // Drop the previous cell (unsubscribes) and hold the new one.
         prev_cell.set_value(Some(cell));
     });
@@ -203,7 +224,7 @@ where
         let cell = client.watch_view(v);
         let guard = cell.subscribe(move |signal| {
             if let Signal::Value(items) = signal {
-                write.set((**items).to_vec());
+                write.set((**items).clone());
                 set_loaded.set(true);
             }
         });
@@ -214,10 +235,11 @@ where
     (read, loaded)
 }
 
-/// Returns a reactive signal of a report's value that updates live whenever the
-/// server pushes a recomputed response — online status, computed values, scene
-/// state, etc. Starts as `None` and resolves to `Some(value)` on the first
-/// response; the same persistent subscription then delivers every later change.
+/// Returns a reactive signal of a report's value that updates live.
+///
+/// The server pushes recomputed responses for online status, computed values,
+/// scene state, and similar data. The signal starts as `None`, resolves to
+/// `Some(value)` on the first response, and then delivers every later change.
 ///
 /// `report` is a reactive closure — it re-subscribes whenever a Leptos signal it
 /// reads changes (e.g. a selected entity id):
@@ -302,87 +324,6 @@ where
     client.watch_query_map(query).to_leptos_store()
 }
 
-/// Fine-grained reactive query, returning a [`LiveQueryMap`] handle.
-///
-/// **Deprecated** in favor of [`live_query_store`], which returns the
-/// hyphae-leptos [`CellMapStore`] directly. Migration: `.get(id)` → `.value(&id)`,
-/// `.ids` → `.keys()`.
-#[deprecated(
-    note = "use `live_query_store`, which returns a `CellMapStore`: `.get(id)` → `.value(&id)`, `.ids` → `.keys()`"
-)]
-#[allow(deprecated)]
-pub fn live_query_map<Q>(query: Q) -> LiveQueryMap<Q::Item>
-where
-    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
-    Q::Item: myko::core::item::Eventable
-        + WithTypedId
-        + serde::de::DeserializeOwned
-        + Clone
-        + std::fmt::Debug
-        + PartialEq
-        + Send
-        + Sync
-        + 'static,
-    <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
-{
-    let store = live_query_store(query);
-
-    // Mirror the store's reactive key list into a `ReadSignal` for the
-    // backwards-compatible `ids` field.
-    let (ids, set_ids) = signal(Vec::<Arc<str>>::new());
-    Effect::new(move || set_ids.set(store.keys().get()));
-
-    LiveQueryMap { store, ids }
-}
-
-/// Handle for a fine-grained reactive query — a thin facade over
-/// hyphae-leptos's [`CellMapStore`].
-///
-/// **Deprecated** in favor of [`CellMapStore`] (via [`live_query_store`]). Use the
-/// store directly: `.get(id)` → [`value(&id)`](CellMapStore::value), `.ids` →
-/// [`keys()`](CellMapStore::keys).
-#[deprecated(
-    note = "use `CellMapStore` from `live_query_store`: `.get(id)` → `.value(&id)`, `.ids` → `.keys()`"
-)]
-pub struct LiveQueryMap<T>
-where
-    T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
-{
-    store: CellMapStore<Arc<str>, Arc<T>>,
-    /// Reactive list of entity IDs (for `<For>` iteration).
-    pub ids: ReadSignal<Vec<Arc<str>>>,
-}
-
-// Hand-typed Clone/Copy: both fields are `Copy` arena handles regardless of `T`,
-// so the handle is `Copy` even when `T` is not (a derive would wrongly add
-// `T: Copy`).
-#[allow(deprecated)]
-impl<T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> Clone for LiveQueryMap<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-#[allow(deprecated)]
-impl<T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> Copy for LiveQueryMap<T> {}
-
-#[allow(deprecated)]
-impl<T: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static> LiveQueryMap<T> {
-    /// Get a reactive signal for a specific entity by ID.
-    ///
-    /// Returns `ReadSignal<Option<Arc<T>>>` — `None` until the entity arrives
-    /// (subscribe-before-data, provided by the underlying `CellMapStore`).
-    pub fn get(&self, id: &str) -> ReadSignal<Option<Arc<T>>> {
-        let key: Arc<str> = id.into();
-        self.store.value(&key)
-    }
-
-    /// The underlying hyphae-leptos [`CellMapStore`] for its richer API
-    /// (`keys()`, `value()`, `len()`, `contains_key()`, …).
-    pub fn as_store(&self) -> CellMapStore<Arc<str>, Arc<T>> {
-        self.store
-    }
-}
-
 /// Send a command to the Myko server and return a reactive signal with the result.
 ///
 /// The returned signal starts as `None` and resolves to `Some(Ok(response))` or
@@ -399,7 +340,9 @@ where
     // until the response lands; `to_leptos_signal` seeds it (`None`) and ties
     // the subscription to the reactive owner (released on unmount). It returns a
     // read-only signal — the response flows one way, server → UI.
-    client.send_command::<C, R>(&cmd).to_leptos_signal()
+    let signal = client.send_command::<C, R>(&cmd).to_leptos_signal();
+    drop(cmd);
+    signal
 }
 
 /// An owner-independent command sender that still observes command responses.
@@ -433,21 +376,20 @@ pub struct CommandSink {
     // In-flight result cells kept alive until their response lands. Each entry's
     // flag flips to `true` once observed; resolved entries are pruned on the next
     // send (outside any subscription callback, so guards drop safely).
-    #[allow(clippy::type_complexity)]
-    inflight: std::sync::Arc<
-        std::sync::Mutex<
-            Vec<(
-                std::sync::Arc<std::sync::atomic::AtomicBool>,
-                Box<dyn std::any::Any + Send>,
-            )>,
-        >,
-    >,
+    inflight: InflightCommands,
 }
+
+type InflightCommand = (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Box<dyn std::any::Any + Send>,
+);
+type InflightCommands = std::sync::Arc<std::sync::Mutex<Vec<InflightCommand>>>;
 
 /// Capture a [`CommandSink`] from the current reactive owner context.
 ///
 /// Must be called where `provide_myko` is in scope (a component body / reactive
 /// owner). The returned sink can then be used from deferred callbacks.
+#[must_use]
 pub fn use_command_sink() -> CommandSink {
     CommandSink {
         client: expect_context::<myko::client::MykoClient>(),
@@ -495,7 +437,10 @@ impl CommandSink {
 
         // Drop already-resolved keepalives first (safe: not inside a callback).
         {
-            let mut inflight = self.inflight.lock().unwrap();
+            let mut inflight = self
+                .inflight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             inflight.retain(|(done, _)| !done.load(std::sync::atomic::Ordering::Acquire));
         }
 
@@ -503,6 +448,7 @@ impl CommandSink {
         let done_cb = done.clone();
 
         let cell = self.client.send_command::<C, R>(&cmd);
+        drop(cmd);
         let guard = cell.subscribe(move |signal| {
             if let Signal::Value(value) = signal
                 && let Some(result) = &**value
@@ -513,16 +459,19 @@ impl CommandSink {
         });
         cell.own(guard);
 
-        self.inflight.lock().unwrap().push((done, Box::new(cell)));
+        self.inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((done, Box::new(cell)));
     }
 }
 
 // ── Server-mirrored local value ────────────────────────────────────────────
 
-/// A locally-writable mirror of a live server value, with an explicit
-/// commit/cancel lifecycle — the recurring "edit a server-backed value locally,
-/// persist on drop/blur/save" shape (drag a node, type in a field, drag a split
-/// handle, …).
+/// A locally-writable mirror of a live server value.
+///
+/// It provides an explicit commit/cancel lifecycle for editing a server-backed
+/// value locally and persisting on drop, blur, or save.
 ///
 /// [`value`](Self::value) is a writable signal you bind to inputs or hand to a
 /// widget that mutates it. It re-seeds from `server` whenever the server value
@@ -617,10 +566,10 @@ impl<T: Clone + PartialEq + Send + Sync + 'static> ServerMirror<T> {
 
 // ── Optimistic committer ────────────────────────────────────────────────────
 
-/// A server-backed value with optimistic local commits and rollback — the
-/// recurring "click a button / pick an option that writes a value: show it
-/// immediately, but snap back if the server rejects it" shape (the same
-/// optimistic feel as a dragged node position, but for discrete writes).
+/// A server-backed value with optimistic local commits and rollback.
+///
+/// It shows a discrete write immediately, then rolls back if the server rejects
+/// it.
 ///
 /// [`value`](Self::value) shows the optimistic override while a commit is
 /// pending, otherwise the live `server` value. [`commit`](Self::commit)

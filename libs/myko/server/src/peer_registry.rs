@@ -12,12 +12,10 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use hyphae::{
-    Cell, CellImmutable, MaterializeDefinite, Signal, SubscriptionGuard, TapExt, Watchable,
-};
+use hyphae::{Cell, CellImmutable, Materialize, Signal, SubscriptionGuard, TapExt, Watchable};
 use myko::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
-    server::CellServerCtx,
+    server::MykoServerContext,
 };
 use tracing::info;
 
@@ -61,13 +59,14 @@ impl PeerRegistry {
     }
 
     fn spawn_self_advertise_guard(
-        ctx: CellServerCtx,
+        ctx: MykoServerContext,
         local_server: Server,
         self_host_id: ServerId,
     ) -> SubscriptionGuard {
         let all_servers = ctx
             .query_map(GetAllServers {}, ctx.new_server_transaction())
-            .items();
+            .items()
+            .materialize();
         all_servers.subscribe(move |signal| {
             if let Signal::Value(servers) = signal {
                 let has_self = servers.iter().any(|s| s.id == self_host_id);
@@ -89,7 +88,7 @@ impl PeerRegistry {
         host_id: &ServerId,
         local_address: &str,
         local_port: u16,
-        ctx: &CellServerCtx,
+        ctx: &MykoServerContext,
         connections: &Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: &Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) where
@@ -167,7 +166,7 @@ impl PeerRegistry {
         host_id: ServerId,
         local_address: String,
         local_port: u16,
-        ctx: CellServerCtx,
+        ctx: MykoServerContext,
         connections: Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) -> SubscriptionGuard {
@@ -187,12 +186,15 @@ impl PeerRegistry {
             .subscribe(|_| {})
     }
 
-    pub fn new(ctx: CellServerCtx, config: PeerRegistryConfig) -> Self {
+    pub fn new(ctx: MykoServerContext, config: PeerRegistryConfig) -> Self {
         let server_req = ctx.new_server_transaction();
 
         let connections = Arc::new(DashMap::new());
         let remove_guards = Arc::new(DashMap::new());
-        let peer_servers = ctx.query_map(GetPeerServers {}, server_req).items();
+        let peer_servers = ctx
+            .query_map(GetPeerServers {}, server_req)
+            .items()
+            .materialize();
         let host_id = ServerId(ctx.host_id.to_string().into());
         let server = Self::build_local_server(&config, &host_id);
 
@@ -201,7 +203,7 @@ impl PeerRegistry {
 
         let peer_sub = Self::spawn_peer_reconcile_guard(
             peer_servers,
-            host_id.clone(),
+            host_id,
             config.address.clone(),
             config.port,
             ctx.clone(),
@@ -218,6 +220,8 @@ impl PeerRegistry {
         if let Err(e) = ctx.set(&server) {
             tracing::error!("Failed to publish local server bootstrap advert: {e}");
         }
+        drop(ctx);
+        drop(config);
 
         Self {
             _peers_guard: peer_sub,

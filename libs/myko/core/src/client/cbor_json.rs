@@ -183,7 +183,11 @@ mod tests {
 
     #[test]
     fn query_response_uuid_bytes_decode_as_json_strings() {
-        let id = Uuid::parse_str("b6e72873-9b84-4be5-a84b-a5707883c346").unwrap();
+        let id = Uuid::parse_str("b6e72873-9b84-4be5-a84b-a5707883c346");
+        assert!(id.is_ok(), "valid UUID fixture");
+        let Ok(id) = id else {
+            return;
+        };
         let message = Message::QueryResponse(QueryResponse {
             tx: "tx-1",
             sequence: 0,
@@ -198,13 +202,20 @@ mod tests {
         });
 
         let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&message, &mut bytes).unwrap();
+        assert!(ciborium::ser::into_writer(&message, &mut bytes).is_ok());
 
-        let decoded = from_slice(&bytes).expect("CBOR query response should decode");
-        assert_eq!(decoded["data"]["upserts"][0]["item"]["id"], id.to_string());
+        let decoded = from_slice(&bytes);
+        assert!(decoded.is_ok(), "CBOR query response should decode");
+        let Ok(decoded) = decoded else {
+            return;
+        };
         assert_eq!(
-            decoded["data"]["upserts"][0]["item"]["bytes"],
-            json!([1, 2, 3])
+            decoded.pointer("/data/upserts/0/item/id"),
+            Some(&json!(id.to_string()))
+        );
+        assert_eq!(
+            decoded.pointer("/data/upserts/0/item/bytes"),
+            Some(&json!([1, 2, 3]))
         );
     }
 
@@ -212,8 +223,8 @@ mod tests {
     fn non_uuid_byte_strings_decode_as_json_byte_arrays() {
         let value = ciborium::value::Value::Bytes(vec![1, 2, 3]);
         let mut bytes = Vec::new();
-        ciborium::ser::into_writer(&value, &mut bytes).unwrap();
+        assert!(ciborium::ser::into_writer(&value, &mut bytes).is_ok());
 
-        assert_eq!(from_slice(&bytes).unwrap(), json!([1, 2, 3]));
+        assert_eq!(from_slice(&bytes).ok(), Some(json!([1, 2, 3])));
     }
 }

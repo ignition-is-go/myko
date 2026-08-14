@@ -1,6 +1,6 @@
-//! EntityStore - Type alias for reactive entity storage
+//! `EntityStore` - Type alias for reactive entity storage
 //!
-//! A CellMap storing entities by ID with automatic change propagation.
+//! A `CellMap` storing entities by ID with automatic change propagation.
 
 use std::sync::Arc;
 
@@ -14,9 +14,9 @@ pub type EntityDiffCell = Cell<MapDiff<Arc<str>, Arc<dyn AnyItem>>, CellImmutabl
 /// Type alias for entity entries cell.
 pub type EntityEntriesCell = Cell<Vec<(Arc<str>, Arc<dyn AnyItem>)>, CellImmutable>;
 
-/// A reactive entity store backed by hyphae's CellMap.
+/// A reactive entity store backed by hyphae's `CellMap`.
 ///
-/// Thread-safe via DashMap internally. Changes propagate automatically
+/// Thread-safe via `DashMap` internally. Changes propagate automatically
 /// to all cell subscribers.
 ///
 /// # Example

@@ -1,6 +1,6 @@
 //! Global client registry for sending messages to connected WebSocket clients.
 //!
-//! Provides a thread-safe mapping from client_id to WsWriter,
+//! Provides a thread-safe mapping from `client_id` to `WsWriter`,
 //! enabling any part of the server to send messages to specific clients.
 
 use std::sync::{Arc, OnceLock};
@@ -39,13 +39,12 @@ impl ClientRegistry {
     /// Send a message to a specific client.
     ///
     /// Returns `true` if the client was found and the message was sent.
+    #[must_use]
     pub fn send_to(&self, client_id: &str, msg: MykoMessage) -> bool {
-        if let Some(writer) = self.writers.get(client_id) {
+        self.writers.get(client_id).is_some_and(|writer| {
             writer.send(msg);
             true
-        } else {
-            false
-        }
+        })
     }
 
     pub fn send_command_request_to<C>(&self, client_id: &str, request: &CommandRequest<C>) -> bool
@@ -77,11 +76,13 @@ impl ClientRegistry {
     }
 
     /// Number of currently connected clients.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.writers.len()
     }
 
     /// Returns true when there are no connected clients.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.writers.is_empty()
     }
@@ -101,13 +102,9 @@ pub fn init_client_registry() {
 }
 
 /// Get the global client registry.
-///
-/// # Panics
-/// Panics if `init_client_registry()` has not been called.
 pub fn client_registry() -> Arc<ClientRegistry> {
     CLIENT_REGISTRY
-        .get()
-        .expect("Client registry not initialized - call init_client_registry() first")
+        .get_or_init(|| Arc::new(ClientRegistry::new()))
         .clone()
 }
 

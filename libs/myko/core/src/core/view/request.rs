@@ -1,4 +1,4 @@
-//! ViewRequest wrapper type.
+//! `ViewRequest` wrapper type.
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::traits::{
-    AnyView, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
+    AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
 };
 use crate::{TS, common::with_transaction::WithTransaction};
 
@@ -55,8 +55,8 @@ impl<V: ViewParams> From<V> for ViewRequest<V> {
     }
 }
 
-impl<V: Clone> From<&ViewRequest<V>> for ViewRequest<V> {
-    fn from(request: &ViewRequest<V>) -> Self {
+impl<V: Clone> From<&Self> for ViewRequest<V> {
+    fn from(request: &Self) -> Self {
         request.clone()
     }
 }
@@ -92,13 +92,13 @@ impl<V: ViewItemType> ViewItemType for ViewRequest<V> {
 }
 
 impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest<V> {
-    fn build_cell(ctx: ViewBuildCellCtx<Self>) -> impl hyphae::MapQuery<Arc<str>, Arc<Self::Item>> {
-        // Materialize at the wrapper so the impl-trait return type infers
-        // through the inner build_cell call uniformly.
-        hyphae::MapQuery::materialize(V::build_cell(ViewBuildCellCtx {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        V::build_cell(ViewBuildArgs {
             view: Arc::new(ctx.view.view.clone()),
             view_context: ctx.view_context,
-        }))
+        })
     }
 }
 
@@ -110,6 +110,6 @@ impl<V: ViewId + ViewItemType + Serialize + std::fmt::Debug + Send + Sync + 'sta
     }
 
     fn to_value(&self) -> serde_json::Value {
-        serde_json::to_value(self).expect("ViewRequest should serialize to JSON")
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 }

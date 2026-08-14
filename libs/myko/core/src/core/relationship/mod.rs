@@ -73,8 +73,8 @@
 //!
 //! On server startup, the [`RelationshipManager`](crate::actors::relationship::RelationshipManager)
 //! performs orphan cleanup:
-//! - **BelongsTo**: Delete children whose FK points to a non-existent parent
-//! - **OwnsMany**: Delete children not referenced in any parent's array
+//! - **`BelongsTo`**: Delete children whose FK points to a non-existent parent
+//! - **`OwnsMany`**: Delete children not referenced in any parent's array
 
 use std::sync::Arc;
 
@@ -89,7 +89,7 @@ pub type ArrayExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
 /// Type alias for a function that removes an ID from a parent's array and returns the updated entity
 pub type ArrayRemover = fn(&dyn std::any::Any, &str) -> Option<Arc<dyn AnyItem>>;
 
-/// Type alias for a function that creates an EnsureFor entity with dependency IDs populated
+/// Type alias for a function that creates an `EnsureFor` entity with dependency IDs populated
 pub type EntityFactory = fn(&[Arc<str>]) -> Arc<dyn AnyItem>;
 
 /// Represents the different types of entity relationships
@@ -99,7 +99,7 @@ pub enum Relation {
     /// When parent is DEL'd -> cascade delete all children with matching FK.
     ///
     /// Example: `Binding.scope_id` belongs to `Scene.id`
-    /// When Scene is deleted, all Bindings with that scope_id are deleted.
+    /// When Scene is deleted, all Bindings with that `scope_id` are deleted.
     BelongsTo {
         /// Entity type that has the foreign key (child)
         local_type: &'static str,
@@ -119,8 +119,8 @@ pub enum Relation {
     /// When child DEL'd -> remove child ID from parent's array, recalculate hash.
     ///
     /// Example: `Scene.node_ids` owns `BindingNode` entities
-    /// When Scene is deleted, all BindingNodes in node_ids are deleted.
-    /// When a BindingNode is deleted, it's removed from the owning Scene's node_ids.
+    /// When Scene is deleted, all `BindingNodes` in `node_ids` are deleted.
+    /// When a `BindingNode` is deleted, it's removed from the owning Scene's `node_ids`.
     OwnsMany {
         /// Entity type that owns the array (parent)
         local_type: &'static str,
@@ -138,7 +138,7 @@ pub enum Relation {
     /// When any dependency is SET -> ensure local entity exists for all combinations.
     ///
     /// Example: `BundleStatus` ensure-for `(Session, Bundle)`
-    /// Creates one BundleStatus per Session×Bundle combination.
+    /// Creates one `BundleStatus` per Session×Bundle combination.
     EnsureFor {
         /// Entity type to auto-create
         local_type: &'static str,
@@ -156,7 +156,7 @@ pub enum Relation {
 impl std::fmt::Debug for Relation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Relation::BelongsTo {
+            Self::BelongsTo {
                 local_type,
                 foreign_type,
                 ..
@@ -165,7 +165,7 @@ impl std::fmt::Debug for Relation {
                 .field("local_type", local_type)
                 .field("foreign_type", foreign_type)
                 .finish(),
-            Relation::OwnsMany {
+            Self::OwnsMany {
                 local_type,
                 foreign_type,
                 ..
@@ -174,7 +174,7 @@ impl std::fmt::Debug for Relation {
                 .field("local_type", local_type)
                 .field("foreign_type", foreign_type)
                 .finish(),
-            Relation::EnsureFor {
+            Self::EnsureFor {
                 local_type,
                 dependencies,
                 ..
@@ -187,7 +187,7 @@ impl std::fmt::Debug for Relation {
     }
 }
 
-/// A dependency for EnsureFor relationships
+/// A dependency for `EnsureFor` relationships
 #[derive(Clone, Copy)]
 pub struct EnsureForDependency {
     /// Entity type of the dependency
@@ -200,7 +200,7 @@ impl std::fmt::Debug for EnsureForDependency {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EnsureForDependency")
             .field("foreign_type", &self.foreign_type)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -217,8 +217,8 @@ pub fn iter_relations() -> impl Iterator<Item = &'static RelationRegistration> {
     inventory::iter::<RelationRegistration>()
 }
 
-/// Registration for entities that have a client_id field.
-/// When present, the server will auto-populate this field with the client_id
+/// Registration for entities that have a `client_id` field.
+/// When present, the server will auto-populate this field with the `client_id`
 /// of the WebSocket connection that sent the event.
 ///
 /// # Example
@@ -233,7 +233,7 @@ pub fn iter_relations() -> impl Iterator<Item = &'static RelationRegistration> {
 /// }
 /// ```
 pub struct ClientIdRegistration {
-    /// Entity type that has the client_id field
+    /// Entity type that has the `client_id` field
     pub entity_type: &'static str,
     /// Field name in JSON (camelCase)
     pub field_name_json: &'static str,
@@ -242,16 +242,16 @@ pub struct ClientIdRegistration {
 // Collect all client_id registrations at compile time
 inventory::collect!(ClientIdRegistration);
 
-/// Iterator over all registered client_id fields
+/// Iterator over all registered `client_id` fields
 pub fn iter_client_id_registrations() -> impl Iterator<Item = &'static ClientIdRegistration> {
     inventory::iter::<ClientIdRegistration>()
 }
 
 /// Registration for fields decorated with `#[server_owned]`.
-/// The framework auto-populates these with a valid ServerId and
+/// The framework auto-populates these with a valid `ServerId` and
 /// redistributes when servers join/leave the cluster.
 pub struct ServerOwnedRegistration {
-    /// Entity type that has the server_owned field
+    /// Entity type that has the `server_owned` field
     pub entity_type: &'static str,
     /// Field name in JSON (camelCase)
     pub field_name_json: &'static str,
@@ -260,7 +260,7 @@ pub struct ServerOwnedRegistration {
 // Collect all server_owned registrations at compile time
 inventory::collect!(ServerOwnedRegistration);
 
-/// Iterator over all registered server_owned fields
+/// Iterator over all registered `server_owned` fields
 pub fn iter_server_owned_registrations() -> impl Iterator<Item = &'static ServerOwnedRegistration> {
     inventory::iter::<ServerOwnedRegistration>()
 }
@@ -291,7 +291,7 @@ pub struct FallbackToIdRegistration {
 // Collect all fallback_to_id registrations at compile time
 inventory::collect!(FallbackToIdRegistration);
 
-/// Iterator over all registered fallback_to_id fields
+/// Iterator over all registered `fallback_to_id` fields
 pub fn iter_fallback_to_id_registrations() -> impl Iterator<Item = &'static FallbackToIdRegistration>
 {
     inventory::iter::<FallbackToIdRegistration>()
@@ -332,19 +332,19 @@ mod tests {
             exclude_from_tree: false,
         };
 
-        // Verify we can match on variants
-        match belongs_to {
-            Relation::BelongsTo { foreign_type, .. } => {
-                assert_eq!(foreign_type, "Scene");
+        assert!(matches!(
+            belongs_to,
+            Relation::BelongsTo {
+                foreign_type: "Scene",
+                ..
             }
-            _ => panic!("Expected BelongsTo"),
-        }
-
-        match owns_many {
-            Relation::OwnsMany { foreign_type, .. } => {
-                assert_eq!(foreign_type, "BindingNode");
+        ));
+        assert!(matches!(
+            owns_many,
+            Relation::OwnsMany {
+                foreign_type: "BindingNode",
+                ..
             }
-            _ => panic!("Expected OwnsMany"),
-        }
+        ));
     }
 }

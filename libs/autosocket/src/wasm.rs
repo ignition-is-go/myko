@@ -152,7 +152,10 @@ impl WasmSocket {
             let inner = Rc::clone(&inner_close);
             let addr = addr_close.clone();
 
-            let window = web_sys::window().expect("no window");
+            let Some(window) = web_sys::window() else {
+                error!("WasmSocket: browser window unavailable during reconnect");
+                return;
+            };
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &Closure::once_into_js(move || {
                     reconnect(&addr, &actual_status, incoming_tx, inner, auto_reconnect);
@@ -276,7 +279,10 @@ fn reconnect(
             let status = status.clone();
             let incoming_tx = incoming_tx.clone();
             let addr = addr.to_string();
-            let window = web_sys::window().expect("no window");
+            let Some(window) = web_sys::window() else {
+                error!("WasmSocket: browser window unavailable during reconnect");
+                return;
+            };
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &Closure::once_into_js(move || {
                     reconnect(&addr, &status, incoming_tx, inner, auto_reconnect);
@@ -332,7 +338,10 @@ fn reconnect(
         let inner = Rc::clone(&inner_close);
         let addr = addr_close.clone();
 
-        let window = web_sys::window().expect("no window");
+        let Some(window) = web_sys::window() else {
+            error!("WasmSocket: browser window unavailable during reconnect");
+            return;
+        };
         let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
             &Closure::once_into_js(move || {
                 reconnect(&addr, &status, incoming_tx, inner, auto_reconnect);

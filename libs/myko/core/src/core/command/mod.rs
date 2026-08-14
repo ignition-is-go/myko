@@ -1,7 +1,6 @@
 //! Command types and registration.
 
 mod handler;
-#[cfg(not(target_arch = "wasm32"))]
 mod registration;
 mod request;
 mod traits;
@@ -11,7 +10,6 @@ pub use handler::{
     CommandContext, CommandExecutorAdapter, CommandExecutorFactory, CommandHandler,
     CommandHandlerRegistration, DynCommandExecutor,
 };
-#[cfg(not(target_arch = "wasm32"))]
 // Re-export registration types (server-only)
 pub use registration::CommandRegistration;
 // Re-export request type

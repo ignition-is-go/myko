@@ -8,14 +8,14 @@ use std::{
     sync::Arc,
 };
 
-// Used only by the native-gated compute body below.
-#[cfg(not(target_arch = "wasm32"))]
 use chrono::Utc;
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::{Cell, MaterializeDefinite};
+use hyphae::{Cell, Definite, Materialize};
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
 
+use crate::core::capability::{RegistryScoped, Replaying};
+// The BFS traversal + report handler are server-only (they pull in hyphae and
+// the store registry); their imports are gated alongside them below.
 use crate::{
     common::to_value::ToValue,
     relationship::{Relation, iter_relations},
@@ -28,6 +28,7 @@ use crate::{
 
 /// A single exported entity within the tree.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct ExportedEntity {
     /// The entity type name (e.g., "Scene", "Binding").
     pub entity_type: Arc<str>,
@@ -37,6 +38,7 @@ pub struct ExportedEntity {
 
 /// The complete tree export containing all entities reachable from the root.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct EntityTreeExport {
     /// Export format version.
     pub version: u32,
@@ -84,17 +86,16 @@ pub struct ChildRelation {
     /// How to discover child IDs from the parent.
     pub kind: ChildKind,
 }
-
 pub enum ChildKind {
-    /// BelongsTo: scan the child store for entities whose FK matches the parent ID.
+    /// `BelongsTo`: scan the child store for entities whose FK matches the parent ID.
     BelongsTo {
         extract_fk: crate::relationship::FkExtractor,
     },
-    /// OwnsMany: extract child IDs directly from the parent entity.
+    /// `OwnsMany`: extract child IDs directly from the parent entity.
     OwnsMany {
         extract_ids: crate::relationship::ArrayExtractor,
     },
-    /// EnsureFor: scan the local (ensured) store for entities whose FK matches the parent ID.
+    /// `EnsureFor`: scan the local (ensured) store for entities whose FK matches the parent ID.
     EnsureFor {
         extract_fk: crate::relationship::FkExtractor,
     },
@@ -104,6 +105,7 @@ pub enum ChildKind {
 ///
 /// This processes all registered relationships once and inverts them into
 /// a lookup table suitable for BFS traversal.
+#[must_use]
 pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
     let mut map: HashMap<&'static str, Vec<ChildRelation>> = HashMap::new();
 
@@ -180,12 +182,16 @@ pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
 /// Walk the entity tree via BFS starting from `(root_type, root_id)`.
 ///
 /// Returns all reachable entities (including the root) as `ExportedEntity` values.
-pub fn walk_tree(
+#[must_use]
+pub fn walk_tree<S>(
     root_type: &str,
     root_id: &str,
     registry: &StoreRegistry,
-    adjacency: &HashMap<&'static str, Vec<ChildRelation>>,
-) -> Vec<ExportedEntity> {
+    adjacency: &HashMap<&'static str, Vec<ChildRelation>, S>,
+) -> Vec<ExportedEntity>
+where
+    S: std::hash::BuildHasher,
+{
     let mut result = Vec::new();
     let mut visited: HashSet<(Arc<str>, Arc<str>)> = HashSet::new();
     let mut queue: VecDeque<(Arc<str>, Arc<str>)> = VecDeque::new();
@@ -272,25 +278,20 @@ pub fn walk_tree(
 // ReportHandler impl
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Handlers compile on every target so downstream entity crates do not need to
+// duplicate target gates. Report computation still runs server-side in practice.
 impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
 
-    // The impl exists on wasm so clients can name the report and call
-    // live_report; only the server-side computation is gated (the wasm
-    // no-op default on ReportHandler::compute applies there).
-    #[cfg(not(target_arch = "wasm32"))]
     fn compute(
         &self,
         ctx: crate::report::ReportContext,
-    ) -> impl MaterializeDefinite<Arc<Self::Output>> {
+    ) -> impl Materialize<Arc<Self::Output>, Definite> {
         let registry = if let Some(as_of) = &self.as_of {
             match ctx.replay_store(as_of) {
                 Ok(r) => r,
                 Err(err) => {
-                    eprintln!(
-                        "[ExportEntityTree] replay_store FAILED: as_of={} err={}",
-                        as_of, err
-                    );
+                    eprintln!("[ExportEntityTree] replay_store FAILED: as_of={as_of} err={err}");
                     return Cell::new(Arc::new(EntityTreeExport {
                         version: 1,
                         root_type: self.root_type.clone(),

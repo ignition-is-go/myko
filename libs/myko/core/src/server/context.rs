@@ -1,9 +1,9 @@
 //! Server context for the cell-based server.
 //!
-//! Provides modules (like PeerRegistry) with the ability to:
-//! - Run reactive queries (like GetPeerServers)
+//! Provides modules (like `PeerRegistry`) with the ability to:
+//! - Run reactive queries (like `GetPeerServers`)
 //! - Publish entities (Reduce → Relationships → Persist)
-//! - Access server identity (host_id)
+//! - Access server identity (`host_id`)
 
 use std::{
     any::Any,
@@ -15,7 +15,7 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MaterializeDefinite, Mutable,
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, Materialize, Mutable, Watchable,
     WeakCellMap,
 };
 use serde::de::DeserializeOwned;
@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     cache::CacheKey,
-    client::{ConnectionStatus, MykoClient},
+    client::MykoClient,
     common::{
         to_value::ToValue,
         with_id::{WithId, WithTypedId},
@@ -37,15 +37,15 @@ use crate::{
         typed_map_from_any_item_with_typed_id,
     },
     query::{
-        FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
-        QueryTestCtx,
+        FilteredCellMap, LiveFilterQuery, QueryContext, QueryFactory, QueryHandler, QueryParams,
+        QueryRequest, QueryTestContext,
     },
     report::{ReportContext, ReportHandler, ReportId},
     request::RequestContext,
     search::SearchIndex,
     store::StoreRegistry,
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
-    wire::{EventOptions, MEvent, MEventType},
+    wire::{MEvent, MEventType},
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
@@ -54,69 +54,49 @@ type AnyItemArc = Arc<dyn AnyItem>;
 /// pipeline's loop-safety: it determines whether a mutation should run
 /// relationship cascades. (Both origins produce.)
 ///
-/// It replaces the scattered per-call loop-guard flag checks; `from_options`
-/// bridges the legacy `EventOptions::prevent_relationship_updates` flag to an
-/// `Origin` for the deprecated `*_with_options` methods.
+/// It replaces the scattered per-call loop-guard flag checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Origin {
+pub enum Origin {
     /// A command handler / server module emitting a new mutation here (also a
     /// client event ingested over the WebSocket). Cascades and produces.
     Local,
-    /// A relationship cascade product — a consequence of another mutation here.
+    /// A structural relationship product — a consequence of another mutation
+    /// that must itself enforce relationships transitively.
     Cascade,
-    /// An event replicated from a peer server: already durable and already
-    /// cascaded at its origin. Applied to the store + search index only — it must
-    /// not cascade (the origin already replicated its cascade products) and must
-    /// not produce (which would echo it back around the peer mesh).
-    ///
-    /// Reserved: nothing constructs this right now (peer-origin tracking has been
-    /// moved off the wire). The wiring is kept for when that mechanism returns.
-    #[allow(dead_code)]
-    Remote,
+    /// An in-place relationship bookkeeping update, such as removing a deleted
+    /// child ID from an `owns_many` parent. It must not start another structural
+    /// cascade, or the fixup can feed back into the relation that produced it.
+    RelationshipFixup,
 }
 
 impl Origin {
-    /// Bridge the legacy `EventOptions::prevent_relationship_updates` flag to an
-    /// `Origin`: cascade products set it (→ `Cascade`); everything else `Local`.
-    pub(crate) fn from_options(options: &EventOptions) -> Origin {
-        if options.prevent_relationship_updates {
-            Origin::Cascade
-        } else {
-            Origin::Local
-        }
-    }
-
     /// Whether this origin's mutations should run relationship cascades.
     ///
     /// - `Local` mutations always cascade.
-    /// - `Cascade` products are gated on the change type: a **DEL** product
-    ///   keeps cascading, so a deleted parent's children, grandchildren, … are
-    ///   all removed at runtime (not just one level, and not deferred to the
-    ///   boot-time orphan sweep). The owns_many array-fixup **SET** product must
-    ///   not descend structurally.
-    /// - `Remote` never cascades (the origin already replicated its products).
+    /// - Structural `Cascade` products keep cascading for both SET and DEL, so
+    ///   `ensure_for` creation and deletion are enforced transitively.
+    /// - `RelationshipFixup` is only an in-place bookkeeping SET and does not
+    ///   descend structurally.
     ///
     /// Transitive DEL cascade terminates without a depth counter or visited set:
     /// reduce runs before cascade, so each node is removed from the store before
     /// its own cascade runs. The store is therefore a monotonically shrinking
     /// visited-set — a cyclic schema (A→B→A) finds nothing the second time, and
     /// a cascade-deleted child cannot resurrect its already-removed parent.
-    fn should_cascade(self, change: MEventType) -> bool {
+    const fn should_cascade(self, _change: MEventType) -> bool {
         match self {
-            Origin::Local => true,
-            Origin::Cascade => change == MEventType::DEL,
-            Origin::Remote => false,
+            Self::Local | Self::Cascade => true,
+            Self::RelationshipFixup => false,
         }
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
     ///
-    /// `Remote` events are already durable and already cascaded at their origin,
-    /// so re-producing them would echo them back around the peer mesh. Everything
-    /// else produces; per-type durability is the persister router's job
+    /// Both origins produce; per-type durability is the persister router's job
     /// (`BlackholePersister`), not a per-event flag.
-    fn should_produce(self) -> bool {
-        self != Origin::Remote
+    const fn should_produce(self) -> bool {
+        let _ = self;
+        true
     }
 }
 
@@ -195,7 +175,7 @@ impl MapCacheEntry {
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
-        self.weak.upgrade().map(|map| map.lock())
+        self.weak.upgrade().map(hyphae::CellMap::lock)
     }
 
     /// Get or create a typed projection of this untyped map.
@@ -209,7 +189,11 @@ impl MapCacheEntry {
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
-        let mut typed = self.typed.lock().unwrap();
+        let source = self.weak.upgrade()?.lock();
+        let mut typed = self
+            .typed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Try to upgrade an existing weak ref
         if let Some(entry) = typed.get(&type_key) {
@@ -223,23 +207,26 @@ impl MapCacheEntry {
         }
 
         // Create from the untyped source
-        let source = self.weak.upgrade()?.lock();
         let built = create(source);
         typed.insert(type_key, Box::new(built.downgrade()));
+        drop(typed);
         Some(built)
     }
 }
 
 /// Context providing capabilities to server modules.
 ///
-/// This is the cell-based equivalent of `MykoServerCtx`, providing:
+/// This is the cell-based equivalent of `MykoServerContext`, providing:
 /// - Entity store access (read-only, via queries)
 /// - Event publishing (Reduce → Relationships → Persist)
 /// - Server identity
 #[derive(Clone)]
-pub struct CellServerCtx {
+pub struct MykoServerContext {
     /// Unique identifier for this server instance
     pub host_id: Uuid,
+    /// `host_id` pre-rendered once — the durable-backend producers stamp it
+    /// on every event, and `Uuid::to_string` per event is pure churn.
+    host_id_str: Arc<str>,
     /// Store registry for entity access
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for item parsers
@@ -274,9 +261,15 @@ pub struct CellServerCtx {
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
 }
 
-impl CellServerCtx {
+pub struct MykoServerRuntime {
+    pub peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
+    pub event_sink: Option<flume::Sender<MEvent>>,
+    pub history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+}
+
+impl MykoServerContext {
     /// Create a new server context.
-    #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         host_id: Uuid,
         registry: Arc<StoreRegistry>,
@@ -284,12 +277,16 @@ impl CellServerCtx {
         relationship_manager: Arc<RelationshipManager>,
         persisters: Arc<PersisterRouter>,
         search_index: Arc<SearchIndex>,
-        peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
-        event_sink: Option<flume::Sender<MEvent>>,
-        history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+        runtime: MykoServerRuntime,
     ) -> Self {
+        let MykoServerRuntime {
+            peer_clients,
+            event_sink,
+            history_replay,
+        } = runtime;
         Self {
             host_id,
+            host_id_str: Arc::from(host_id.to_string()),
             registry,
             handler_registry,
             relationship_manager,
@@ -308,7 +305,6 @@ impl CellServerCtx {
     }
 
     fn cache_key<T: CacheKey>(
-        &self,
         kind: &str,
         id: &str,
         params: &T,
@@ -319,11 +315,13 @@ impl CellServerCtx {
     }
 
     /// Get the search index.
-    pub fn search_index(&self) -> &Arc<SearchIndex> {
+    #[must_use]
+    pub const fn search_index(&self) -> &Arc<SearchIndex> {
         &self.search_index
     }
 
     /// Get the history replay provider, if configured.
+    #[must_use]
     pub fn history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>> {
         self.history_replay.as_ref()
     }
@@ -345,49 +343,65 @@ impl CellServerCtx {
     }
 
     /// Get a live peer client by server id, if present.
+    #[must_use]
     pub fn peer_client(&self, peer_id: &str) -> Option<Arc<MykoClient>> {
         self.peer_clients
             .get(peer_id)
             .map(|entry| entry.value().clone())
     }
 
-    /// Get a peer's current connection status if the client is present.
-    pub fn peer_connection_status(&self, peer_id: &str) -> Option<ConnectionStatus> {
-        self.peer_client(peer_id)
-            .map(|client| client.get_connection_status_sync())
-    }
-
     /// Reactive tick that updates whenever peer client membership changes.
+    #[must_use]
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.peer_clients_tick.clone().lock()
     }
 
     /// Number of currently tracked peer clients.
+    ///
+    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
+    /// sync heartbeat gates its anchor re-emit on this (skip the re-emit when
+    /// no peers are connected, since nobody would catch up from it).
+    #[must_use]
     pub fn peer_client_count(&self) -> usize {
         self.peer_clients.len()
     }
 
     /// Get the live persist health counters from the default persister.
+    #[must_use]
     pub fn persist_health(&self) -> Arc<PersistHealth> {
         self.persisters.default_health()
     }
 
+    /// Get a one-shot typed entity snapshot by id.
+    ///
+    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
+    /// multi-action executor resolves a single Action this way, deliberately
+    /// avoiding a reactive subscription for a point lookup.
+    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
+    where
+        T: Eventable + WithTypedId + Send + Sync + 'static,
+        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
+    {
+        let store = self.registry.get_or_create(T::entity_name_static());
+        let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
+        let item = store.get_value(&map_key)?;
+        downcast_any_item_arc::<T>(&item, "MykoServerContext::entity_snapshot")
+    }
+
     /// Number of entries in the query cache (includes dead weak refs).
+    #[must_use]
     pub fn query_cache_len(&self) -> usize {
         self.query_cache.len()
     }
 
-    /// Number of entries in the view cache (includes dead weak refs).
-    pub fn view_cache_len(&self) -> usize {
-        self.view_cache.len()
-    }
-
     /// Number of entries in the report cache (includes dead weak refs).
+    #[must_use]
     pub fn report_cache_len(&self) -> usize {
         self.report_cache.len()
     }
 
     /// Count live (upgradeable) entries in the report cache.
+    #[must_use]
     pub fn report_cache_live_count(&self) -> usize {
         self.report_cache
             .iter()
@@ -396,6 +410,7 @@ impl CellServerCtx {
     }
 
     /// Count live (upgradeable) entries in the query cache.
+    #[must_use]
     pub fn query_cache_live_count(&self) -> usize {
         self.query_cache
             .iter()
@@ -403,7 +418,18 @@ impl CellServerCtx {
             .count()
     }
 
+    // NOTE(ts): the view_cache_* pair was dropped by f8c71afd as zero-caller,
+    // but it completes the query/view/report cache-diagnostics triple that
+    // rship_server's periodic health log reports — restored for symmetry.
+
+    /// Number of entries in the view cache (includes dead weak refs).
+    #[must_use]
+    pub fn view_cache_len(&self) -> usize {
+        self.view_cache.len()
+    }
+
     /// Count live (upgradeable) entries in the view cache.
+    #[must_use]
     pub fn view_cache_live_count(&self) -> usize {
         self.view_cache
             .iter()
@@ -412,7 +438,7 @@ impl CellServerCtx {
     }
 
     /// Remove dead weak-ref entries from all caches, including belongs-to
-    /// source index buckets (process-global, not per-`CellServerCtx`, but
+    /// source index buckets (process-global, not per-`MykoServerContext`, but
     /// swept from here for hosting apps that already call this
     /// periodically). Bucket entries are also reaped lazily on next access
     /// regardless — this is a backstop for foreign ids that go dead and are
@@ -431,16 +457,17 @@ impl CellServerCtx {
     /// Takes the `Value` by ownership so we don't pay a deep-clone of the
     /// nested-enum tree on every applied event. Bench `from_value_with_clone`
     /// shows the clone is ~136 ns/event on a typical entity payload — small
-    /// per event, but multiplied by the apply_event_batch hot path it's the
+    /// per event, but multiplied by the `apply_event_batch` hot path it's the
     /// cheapest non-breaking win on the ingest path.
     ///
     /// Returns None if the entity type is not registered or parsing fails.
+    #[must_use]
     pub fn parse_item(
         &self,
         entity_type: &str,
         json: serde_json::Value,
     ) -> Option<Arc<dyn AnyItem>> {
-        let parse = self.handler_registry.get_item_parser(entity_type)?;
+        let parse = self.handler_registry.item_parser(entity_type)?;
         parse(json).ok()
     }
 
@@ -451,28 +478,15 @@ impl CellServerCtx {
     /// Publish an entity (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
         self.set_with_origin(entity, Origin::Local)
-    }
-
-    /// Publish an entity (SET) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal loop-guard plumbing (cascade
-    /// and peer-replication markers) and must not be set by callers — use
-    /// [`set`](Self::set) instead.
-    #[deprecated(note = "EventOptions is internal plumbing; use `set` instead")]
-    pub fn set_with_options<T>(
-        &self,
-        entity: &T,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + 'static,
-    {
-        self.set_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
     }
 
     /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
@@ -483,32 +497,21 @@ impl CellServerCtx {
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
         self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin, false)
     }
 
     /// Delete an entity (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
         self.del_with_origin(entity, Origin::Local)
-    }
-
-    /// Delete an entity (DEL) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del`](Self::del).
-    #[deprecated(note = "EventOptions is internal plumbing; use `del` instead")]
-    pub fn del_with_options<T>(
-        &self,
-        entity: &T,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + Clone + 'static,
-    {
-        self.del_with_origin(entity, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn del_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
@@ -517,32 +520,21 @@ impl CellServerCtx {
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
         self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin, false)
     }
 
     /// Publish a batch of entities (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_set<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
         self.batch_set_with_origin(entities, Origin::Local)
-    }
-
-    /// Publish a batch of entities (SET) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set`](Self::batch_set).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set` instead")]
-    pub fn batch_set_with_options<T>(
-        &self,
-        entities: &[T],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + Clone + 'static,
-    {
-        self.batch_set_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
     }
 
     /// Publish a batch of entities (SET) with one grouped store insert.
@@ -559,7 +551,7 @@ impl CellServerCtx {
         }
         let items: Vec<Arc<dyn AnyItem>> = entities
             .iter()
-            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
             .collect();
         self.emit_grouped(&items, MEventType::SET, origin)
     }
@@ -567,26 +559,15 @@ impl CellServerCtx {
     /// Delete a batch of entities (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_del<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
         self.batch_del_with_origin(entities, Origin::Local)
-    }
-
-    /// Delete a batch of entities (DEL) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del`](Self::batch_del).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del` instead")]
-    pub fn batch_del_with_options<T>(
-        &self,
-        entities: &[T],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
-    where
-        T: Eventable + Clone + 'static,
-    {
-        self.batch_del_with_origin(entities, Origin::from_options(&options.unwrap_or_default()))
     }
 
     /// Delete a batch of entities (DEL) with one grouped store remove.
@@ -603,7 +584,7 @@ impl CellServerCtx {
         }
         let items: Vec<Arc<dyn AnyItem>> = entities
             .iter()
-            .map(|e| Arc::new(e.clone()) as Arc<dyn AnyItem>)
+            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
             .collect();
         self.emit_grouped(&items, MEventType::DEL, origin)
     }
@@ -615,20 +596,12 @@ impl CellServerCtx {
     /// Publish a dynamic item (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
         self.set_dyn_with_origin(item, Origin::Local)
-    }
-
-    /// Publish a dynamic item (SET) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`set_dyn`](Self::set_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `set_dyn` instead")]
-    pub fn set_dyn_with_options(
-        &self,
-        item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.set_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn set_dyn_with_origin(
@@ -637,24 +610,19 @@ impl CellServerCtx {
         origin: Origin,
     ) -> Result<(), PersistError> {
         self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin)
+        let result =
+            self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin, false);
+        drop(item);
+        result
     }
 
     /// Publish a batch of dynamic items (SET).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_set_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         self.batch_set_dyn_with_origin(items, Origin::Local)
-    }
-
-    /// Publish a batch of dynamic items (SET) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_set_dyn`](Self::batch_set_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_set_dyn` instead")]
-    pub fn batch_set_dyn_with_options(
-        &self,
-        items: &[Arc<dyn AnyItem>],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.batch_set_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn batch_set_dyn_with_origin(
@@ -668,20 +636,12 @@ impl CellServerCtx {
     /// Delete a dynamic item (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
         self.del_dyn_with_origin(item, Origin::Local)
-    }
-
-    /// Delete a dynamic item (DEL) with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_dyn`](Self::del_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `del_dyn` instead")]
-    pub fn del_dyn_with_options(
-        &self,
-        item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.del_dyn_with_origin(item, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn del_dyn_with_origin(
@@ -690,24 +650,19 @@ impl CellServerCtx {
         origin: Origin,
     ) -> Result<(), PersistError> {
         self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin)
+        let result =
+            self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin, false);
+        drop(item);
+        result
     }
 
     /// Publish a batch of dynamic items (DEL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_del_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
         self.batch_del_dyn_with_origin(items, Origin::Local)
-    }
-
-    /// Publish a batch of dynamic items (DEL) with shared options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`batch_del_dyn`](Self::batch_del_dyn).
-    #[deprecated(note = "EventOptions is internal plumbing; use `batch_del_dyn` instead")]
-    pub fn batch_del_dyn_with_options(
-        &self,
-        items: &[Arc<dyn AnyItem>],
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.batch_del_dyn_with_origin(items, Origin::from_options(&options.unwrap_or_default()))
     }
 
     pub(crate) fn batch_del_dyn_with_origin(
@@ -724,25 +679,12 @@ impl CellServerCtx {
     /// where we must ensure a DEL event is produced to durable backend.
     ///
     /// Note: relationship cascades require the full item and are therefore skipped here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
         self.del_by_id_with_origin(entity_type, id, Origin::Local)
-    }
-
-    /// Delete an entity by type/id with options.
-    ///
-    /// **Deprecated.** `EventOptions` are internal plumbing; use [`del_by_id`](Self::del_by_id).
-    #[deprecated(note = "EventOptions is internal plumbing; use `del_by_id` instead")]
-    pub fn del_by_id_with_options(
-        &self,
-        entity_type: &str,
-        id: &str,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError> {
-        self.del_by_id_with_origin(
-            entity_type,
-            id,
-            Origin::from_options(&options.unwrap_or_default()),
-        )
     }
 
     pub(crate) fn del_by_id_with_origin(
@@ -756,7 +698,7 @@ impl CellServerCtx {
         let existing = self
             .registry
             .get(entity_type)
-            .and_then(|store| store.get(&id_arc).get());
+            .and_then(|store| store.get(&id_arc).materialize().get());
 
         crate::server::entity_set_stats::record_del(entity_type);
 
@@ -786,6 +728,10 @@ impl CellServerCtx {
     /// Apply a single wire event (parse -> reduce -> relationships -> persist).
     ///
     /// Returns `true` when the event was parsed and applied, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event(&self, event: MEvent) -> Result<bool, PersistError> {
         Ok(self.apply_event_batch(vec![event])? == 1)
     }
@@ -794,6 +740,55 @@ impl CellServerCtx {
     ///
     /// This reduces overhead versus calling `set_dyn`/`del_dyn` for each event individually.
     /// Returns the number of successfully parsed/applied events.
+    /// Emit a batch of typed SET events, applied immediately.
+    ///
+    /// Reduces + runs the cascade/produce tail via the shared typed path
+    /// ([`emit_grouped`](Self::emit_grouped)). Unlike
+    /// [`apply_event_batch`](Self::apply_event_batch), this never routes through
+    /// the WS-ingest time-window buffer — that buffer is for wire ingest only.
+    /// Command emit batches land here so everything a command emits is a typed,
+    /// immediately-applied event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn set_batch_any(
+        &self,
+        items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
+        self.emit_grouped(&items, MEventType::SET, Origin::Local)
+    }
+
+    /// Emit a batch of typed DEL events, applied immediately. DEL counterpart of
+    /// [`set_batch_any`](Self::set_batch_any).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn del_batch_any(
+        &self,
+        items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
+        self.emit_grouped(&items, MEventType::DEL, Origin::Local)
+    }
+
+    /// Apply pre-built raw events immediately (type-erased import path),
+    /// bypassing the WS-ingest time-window buffer: each event is parsed to its
+    /// typed item, then reduced + cascaded. Returns the number applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn apply_events_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_event_batch_immediate(events)
+    }
+
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
@@ -804,13 +799,10 @@ impl CellServerCtx {
         let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
 
         for event in events {
-            match self
-                .handler_registry
-                .get_item_buffer_policy(&event.item_type)
-            {
+            match self.handler_registry.item_buffer_policy(&event.item_type) {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
-                    let entity_type: Arc<str> = event.item_type.clone().into();
+                    let entity_type: Arc<str> = event.item_type.clone();
                     buffered_by_type
                         .entry(entity_type)
                         .or_insert_with(|| (window_ms, Vec::new()))
@@ -821,11 +813,11 @@ impl CellServerCtx {
         }
 
         if !immediate_events.is_empty() {
-            accepted += self.apply_event_batch_immediate(immediate_events)?;
+            accepted = accepted.saturating_add(self.apply_event_batch_immediate(immediate_events)?);
         }
 
         for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
-            accepted += buffered_events.len();
+            accepted = accepted.saturating_add(buffered_events.len());
             self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
         }
 
@@ -855,7 +847,7 @@ impl CellServerCtx {
             }
         }
 
-        let applied = set_items.len() + del_items.len();
+        let applied = set_items.len().saturating_add(del_items.len());
         if applied == 0 {
             return Ok(0);
         }
@@ -1038,24 +1030,25 @@ impl CellServerCtx {
                 .push(item.clone());
         }
 
+        // Enqueue durable events before opening the reactive batch. A large
+        // import can spend substantial time draining downstream query work; if
+        // the process is restarted during that drain, the already-reduced state
+        // must still be replayable. The saga sink remains post-reduce so sagas
+        // never observe an event before its item is visible in the registry.
+        if origin.should_produce() {
+            for group in by_type.values() {
+                for item in group {
+                    match change {
+                        MEventType::SET => self.persist_set_dyn(item)?,
+                        MEventType::DEL => self.persist_del_dyn(item)?,
+                    }
+                }
+            }
+        }
+
         // Reduce: one store diff per type, across all groups, before any cascade
         // (so the store is fully settled — load-bearing for transitive cascade).
         //
-        // Wrapped in `hyphae::batch` so N distinct types' stores settle in one
-        // glitch-free drain instead of firing eagerly per type — but scoped to
-        // *only* this loop, not the `apply_effects` tail below. `by_type`
-        // guarantees each type's `diffs_cell` is set at most once in this loop,
-        // which is the invariant `batch`'s last-write-wins coalescing needs
-        // (`diffs_cell` carries diff *events*, not latest-value state, and
-        // isn't `no_coalesce`-stamped — two sets to the same one in one window
-        // silently drops the first). `apply_effects` runs after this batch has
-        // already drained, specifically because cascades recurse back into
-        // `emit_grouped` (e.g. `handle_belongs_to_cascade_batch` ->
-        // `publish_del_cascade_batch` -> `batch_del_dyn_with_origin` ->
-        // `emit_grouped`) and could touch a type already reduced in this same
-        // window — running effects outside the batch means that recursive call
-        // opens its own fresh window instead of joining (and colliding with)
-        // this one.
         // Wrapped in `hyphae::batch` so N distinct types' stores settle in one
         // glitch-free drain instead of firing eagerly per type — but scoped to
         // *only* this loop, not the `apply_effects` tail below. `by_type`
@@ -1098,7 +1091,7 @@ impl CellServerCtx {
 
         // Effects: search + cascade + produce, per same-type group.
         for group in by_type.values() {
-            self.apply_effects(group, change, origin)?;
+            self.apply_effects(group, change, origin, true)?;
         }
         Ok(())
     }
@@ -1116,6 +1109,7 @@ impl CellServerCtx {
         items: &[Arc<dyn AnyItem>],
         change: MEventType,
         origin: Origin,
+        persister_already_enqueued: bool,
     ) -> Result<(), PersistError> {
         // Separate from `myko.reduce` so the relationship-cascade/persist
         // tail is distinguishable from the direct state-cell write in a
@@ -1123,7 +1117,7 @@ impl CellServerCtx {
         // the time it reaches here (see the doc comment above).
         let _span = tracing::trace_span!(
             "myko.apply_effects",
-            ty = items.first().map(|i| i.entity_type()).unwrap_or("empty"),
+            ty = items.first().map_or("empty", |i| i.entity_type()),
             op = ?change,
         )
         .entered();
@@ -1147,25 +1141,32 @@ impl CellServerCtx {
         if origin.should_cascade(change) {
             match change {
                 MEventType::SET => {
-                    for item in items {
-                        self.relationship_manager.forward_set(item.clone(), self)?;
-                    }
+                    self.relationship_manager.forward_set_batch(items, self)?;
                 }
                 MEventType::DEL => self.relationship_manager.forward_del_batch(items, self)?,
             }
         }
 
-        // Persist: produce to persisters + sink unless this origin must not.
+        // Produce after reduce/cascade. Batch paths enqueue the durable side
+        // before their reactive drain, so only the saga sink remains here.
         if origin.should_produce() {
             match change {
                 MEventType::SET => {
                     for item in items {
-                        self.produce_set_dyn(item)?;
+                        if persister_already_enqueued {
+                            self.send_set_to_sink(item);
+                        } else {
+                            self.produce_set_dyn(item)?;
+                        }
                     }
                 }
                 MEventType::DEL => {
                     for item in items {
-                        self.produce_del_dyn(item)?;
+                        if persister_already_enqueued {
+                            self.send_del_to_sink(item);
+                        } else {
+                            self.produce_del_dyn(item)?;
+                        }
                     }
                 }
             }
@@ -1178,36 +1179,80 @@ impl CellServerCtx {
     // durable backend production (private)
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            let _ = sink.send(event);
+    /// Fan one produced event out to the durable persister and/or the saga
+    /// event sink. `build` is the change-type-specific event constructor
+    /// (SET vs DEL); it is invoked ONCE per call — event construction
+    /// serializes the whole item into a JSON tree, so the persister/sink pair
+    /// shares a single build and clones the cheaper `MEvent` for the sink.
+    fn produce_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        build: impl Fn() -> MEvent,
+    ) -> Result<(), PersistError> {
+        match (
+            self.persisters.resolve(item.entity_type()),
+            &self.event_sink,
+        ) {
+            (None, None) => {}
+            (Some(persister), None) => persister.persist(build())?,
+            (None, Some(sink)) => {
+                let _ = sink.send(build());
+            }
+            (Some(persister), Some(sink)) => {
+                let event = build();
+                let for_sink = event.clone();
+                persister.persist(event)?;
+                let _ = sink.send(for_sink);
+            }
         }
         Ok(())
     }
 
-    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+    fn persist_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        build: impl FnOnce() -> MEvent,
+    ) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            let _ = sink.send(event);
+            persister.persist(build())?;
         }
         Ok(())
+    }
+
+    fn send_dyn_to_sink(&self, build: impl FnOnce() -> MEvent) {
+        if let Some(sink) = &self.event_sink {
+            let _ = sink.send(build());
+        }
+    }
+
+    fn persist_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.persist_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
+    }
+
+    fn persist_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.persist_dyn(item, || {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        })
+    }
+
+    fn send_del_to_sink(&self, item: &Arc<dyn AnyItem>) {
+        self.send_dyn_to_sink(|| MEvent::del_from_any(item, &self.host_id_str));
+    }
+
+    fn send_set_to_sink(&self, item: &Arc<dyn AnyItem>) {
+        self.send_dyn_to_sink(|| {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        });
+    }
+
+    fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.produce_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
+    }
+
+    fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.produce_dyn(item, || {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        })
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1235,26 +1280,35 @@ impl CellServerCtx {
             + Sync
             + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
-            })
-        {
-            return typed;
-        }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&untyped));
-        let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
-            })
-            .expect("typed projection from freshly inserted entry")
+        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+        })
+    }
+
+    /// Reactive filter parameters: `filter_cell` replaces a value-based
+    /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
+    /// cells no longer needs a `switch_map` wrapper — see
+    /// `query::query_live` for the mechanics
+    /// (incremental bucket-diffing on `In`/`Eq` field changes, scoped
+    /// rescan on `Range`/`Contains` changes, never a graph teardown).
+    ///
+    /// Deliberately uncached, unlike `query_map`'s typed-projection cache:
+    /// a `Cell` is object identity, not a value, so there's no meaningful
+    /// key to share a projection under — each call site gets its own
+    /// independent graph node (spec §5: "no value-identity cache sharing").
+    pub fn query_live<F>(
+        &self,
+        filter_cell: impl Watchable<F>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
+        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -1270,25 +1324,11 @@ impl CellServerCtx {
         Q::Item:
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
-            })
-        {
-            return typed;
-        }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&untyped));
-        let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
-            })
-            .expect("typed projection from freshly inserted entry")
+        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+        })
     }
 
     /// Run a reactive query.
@@ -1302,9 +1342,9 @@ impl CellServerCtx {
     /// use std::sync::Arc;
     /// use myko::entities::server::GetPeerServers;
     /// use myko::request::RequestContext;
-    /// use myko::server::CellServerCtx;
+    /// use myko::server::MykoServerContext;
     ///
-    /// fn demo(ctx: &CellServerCtx, req: Arc<RequestContext>) {
+    /// fn demo(ctx: &MykoServerContext, req: Arc<RequestContext>) {
     ///     let _peer_servers = ctx.query_map_untyped(GetPeerServers {}, req);
     ///     // _peer_servers is CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>
     /// }
@@ -1314,57 +1354,119 @@ impl CellServerCtx {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        self.compute_or_cache(&key, &self.query_cache, || {
+            let query_req = QueryRequest::with_tx(query, request.tx.clone());
+            let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
+            Q::cell_factory(
+                any_query,
+                self.registry.clone(),
+                request,
+                Some(Arc::new(self.clone())),
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    query_id = %Q::query_id_static(),
+                    %error,
+                    "typed query factory failed; returning an empty query"
+                );
+                CellMap::new().lock()
+            })
+        })
+    }
 
+    /// Fast-path lookup shared by the query and view untyped-map caches:
+    /// return the live shared map if the weak ref still upgrades, otherwise
+    /// evict the dead entry and report a miss.
+    fn try_get_cached(
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        key: &str,
+    ) -> Option<FilteredCellMap> {
+        let existing = cache.get(key)?;
+        if let Some(shared) = existing.value().get() {
+            return Some(shared);
+        }
+        drop(existing);
+        cache.remove(key);
+        None
+    }
+
+    /// Shared typed-projection retrieval for `query_map` and `query_map_by_str`.
+    ///
+    /// Returns the cached typed projection under `key`; if a concurrent cache
+    /// sweep evicted the untyped entry between computing `untyped` and this
+    /// lookup, re-inserts it from `untyped` and retries. `project` builds the
+    /// typed map from the untyped source and is the only per-caller difference.
+    fn typed_projection<K, V>(
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        key: &str,
+        untyped: &FilteredCellMap,
+        project: impl Fn(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
+        V: hyphae::traits::CellValue + 'static,
+    {
+        if let Some(entry) = cache.get(key)
+            && let Some(typed) = entry.value().get_or_create_typed(&project)
+        {
+            return typed;
+        }
+        // Concurrent cache sweep may have evicted the entry — re-insert and retry
+        cache.insert(key.to_owned(), MapCacheEntry::new(untyped));
+        if let Some(entry) = cache.get(key)
+            && let Some(typed) = entry.value().get_or_create_typed(&project)
+        {
+            return typed;
+        }
+        tracing::error!(%key, "typed projection cache entry disappeared after insertion");
+        project(untyped.clone())
+    }
+
+    /// Compute-gate + double-checked caching shared by `query_map_untyped` and
+    /// `view_map_untyped`. Returns the cached untyped map on a fast-path or
+    /// post-gate hit; otherwise runs `build` exactly once under the per-key
+    /// compute gate, caches the result, and releases the gate.
+    ///
+    /// `build` is the only per-caller difference — each caller keeps its exact
+    /// request-wrap and `cell_factory` invocation (queries pass
+    /// `Some(server_ctx)`, views pass `server_ctx`) inside the closure.
+    fn compute_or_cache(
+        &self,
+        key: &str,
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        compute: impl FnOnce() -> FilteredCellMap,
+    ) -> FilteredCellMap {
         // Fast path
-        if let Some(cell) = self.try_get_cached_query(&key) {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
 
         let gate = self
             .compute_gates
-            .entry(key.clone())
+            .entry(key.to_string())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap();
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after gate
-        if let Some(cell) = self.try_get_cached_query(&key) {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
 
-        let query_req = QueryRequest::with_tx(query, request.tx.clone());
-        let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
-
-        let built = Q::cell_factory(
-            any_query,
-            self.registry.clone(),
-            request,
-            Some(Arc::new(self.clone())),
-        )
-        .expect("query cell factory should not fail for typed query");
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&built));
+        let computed = compute();
+        cache.insert(key.to_string(), MapCacheEntry::new(&computed));
         // The gate's only job was deduping concurrent first-computation; once
-        // the cache entry above is visible, any racing caller's re-check
-        // (line ~1268 above) will hit it directly, gate or no gate. Removing
-        // it here — rather than never, which is a compute_gates memory leak
-        // that grows with every distinct query/param combination ever
-        // computed — is safe regardless of ordering relative to `_lock`'s
-        // drop, since a fresh gate + a cache hit on re-check behaves
-        // identically to blocking on the old gate.
-        self.compute_gates.remove(&key);
-        built
-    }
-
-    fn try_get_cached_query(&self, key: &str) -> Option<FilteredCellMap> {
-        let existing = self.query_cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        self.query_cache.remove(key);
-        None
+        // the cache entry above is visible, any racing caller's re-check will
+        // hit it directly, gate or no gate. Removing it here — rather than
+        // never, which is a compute_gates memory leak that grows with every
+        // distinct query/param combination ever computed — is safe regardless
+        // of ordering relative to `_lock`'s drop, since a fresh gate + a cache
+        // hit on re-check behaves identically to blocking on the old gate.
+        self.compute_gates.remove(key);
+        computed
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
@@ -1373,61 +1475,25 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-
-        // Fast path
-        if let Some(cell) = self.try_get_cached_view(&key) {
-            return cell;
-        }
-
-        let gate = self
-            .compute_gates
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-            .clone();
-        let _lock = gate.lock().unwrap();
-
-        // Re-check after gate
-        if let Some(cell) = self.try_get_cached_view(&key) {
-            return cell;
-        }
-
-        let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
-        let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
-
-        let built = V::cell_factory(
-            any_view,
-            self.registry.clone(),
-            request,
-            Arc::new(self.clone()),
-        )
-        .expect("view cell factory should not fail for typed view");
-        self.view_cache
-            .insert(key.clone(), MapCacheEntry::new(&built));
-        // See the matching comment in `query_map_untyped` — the gate is only
-        // needed to dedupe concurrent first-computation, not after the cache
-        // entry above is visible.
-        self.compute_gates.remove(&key);
-        built
-    }
-
-    fn try_get_cached_view(&self, key: &str) -> Option<FilteredViewCellMap> {
-        let existing = self.view_cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        self.view_cache.remove(key);
-        None
-    }
-
-    /// Back-compat alias for type-erased view map.
-    pub fn view_map<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
-    where
-        V: ViewFactory + Clone + Send + Sync + 'static,
-        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
-    {
-        self.view_map_untyped(view, request)
+        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        self.compute_or_cache(&key, &self.view_cache, || {
+            let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
+            let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
+            V::cell_factory(
+                any_view,
+                self.registry.clone(),
+                request,
+                Arc::new(self.clone()),
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    view_id = %V::view_id_static(),
+                    %error,
+                    "typed view factory failed; returning an empty view"
+                );
+                CellMap::new().lock()
+            })
+        })
     }
 
     /// Build a typed reactive view cell map.
@@ -1436,59 +1502,20 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        let _untyped = self.view_map_untyped(view, request);
+        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        let untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::view")
+                typed_map_arc_from_any_item(source, "MykoServerContext::view")
             })
         {
             return typed;
         }
-        unreachable!("view_map_untyped just populated the cache")
-    }
-
-    /// Get a one-shot typed entity snapshot by id.
-    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        let store = self.registry.get_or_create(T::entity_name_static());
-        let map_key = id.map_key();
-        let item = store.get_value(&map_key)?;
-        Some(downcast_any_item_arc::<T>(
-            &item,
-            "CellServerCtx::entity_snapshot",
-        ))
-    }
-
-    /// Get one-shot typed entity snapshots for an item type.
-    pub fn entity_snapshots<T>(&self) -> Vec<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        let store = self.registry.get_or_create(T::entity_name_static());
-        store
-            .snapshot()
-            .into_iter()
-            .map(|(_, item)| downcast_any_item_arc::<T>(&item, "CellServerCtx::entity_snapshots"))
-            .collect()
-    }
-
-    /// Get one-shot typed entity snapshots for the provided ids.
-    pub fn entity_snapshots_by_id<T>(
-        &self,
-        ids: impl IntoIterator<Item = <T as WithTypedId>::Id>,
-    ) -> Vec<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        ids.into_iter()
-            .filter_map(|id| self.entity_snapshot::<T>(&id))
-            .collect()
+        tracing::error!(
+            view_id = %V::view_id_static(),
+            "view cache entry disappeared after construction; using an uncached projection"
+        );
+        typed_map_arc_from_any_item(untyped, "MykoServerContext::view fallback")
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -1504,9 +1531,7 @@ impl CellServerCtx {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
 
-        let query_context = Arc::new(QueryContext {
-            req: request.clone(),
-        });
+        let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
         store
@@ -1514,8 +1539,8 @@ impl CellServerCtx {
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item =
-                    downcast_any_item_arc::<Q::Item>(&item, "CellServerCtx::query_snapshot");
-                let ctx = QueryTestCtx {
+                    downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot")?;
+                let ctx = QueryTestContext {
                     item: typed_item.clone(),
                     query: query.clone(),
                     query_context: query_context.clone(),
@@ -1537,7 +1562,7 @@ impl CellServerCtx {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
+        let key = Self::cache_key("report", report.report_id().as_ref(), &report, &request);
         let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
@@ -1559,7 +1584,9 @@ impl CellServerCtx {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap();
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
@@ -1598,6 +1625,7 @@ impl CellServerCtx {
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
         let built = report.compute(nested_ctx).materialize();
+        drop(report);
         // Named by report id (bounded cardinality — one name per report
         // *type*, not per invocation) so hyphae's `hyphae.fanout` span
         // (under the `profiling` feature) surfaces `cell.name` instead of
@@ -1638,6 +1666,7 @@ impl CellServerCtx {
         None
     }
 
+    #[must_use]
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {
         Arc::new(RequestContext {
             tx: Arc::<str>::from(Uuid::new_v4().to_string()),
@@ -1650,29 +1679,35 @@ impl CellServerCtx {
     }
 }
 
-impl std::fmt::Debug for CellServerCtx {
+impl std::fmt::Debug for MykoServerContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CellServerCtx").finish()
+        f.debug_struct("MykoServerContext").finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::CellServerCtx;
+    use super::{MykoServerContext, MykoServerRuntime};
     use crate::{
         common::with_id::WithId,
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::Gettable,
+        hyphae::{Gettable, Materialize},
         search::SearchIndex,
-        server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{
+            HandlerRegistry, PersistError, Persister, RelationshipManager,
+            persister::PersisterRouter,
+        },
         store::StoreRegistry,
         test_util::scheduler_test_serial,
         wire::{MEvent, MEventType},
@@ -1703,8 +1738,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -1719,7 +1753,9 @@ mod tests {
             parse: BufferedTestItem::parse,
             parse_bytes: BufferedTestItem::parse_bytes,
             serialize_json: |any| {
-                let typed = any.as_any().downcast_ref::<BufferedTestItem>().unwrap();
+                let typed = any.as_any().downcast_ref::<BufferedTestItem>().ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("BufferedTestItem type mismatch"))
+                })?;
                 ::serde_json::value::to_raw_value(typed)
             },
         }
@@ -1757,8 +1793,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -1773,24 +1808,94 @@ mod tests {
             parse: ImmediateTestItem::parse,
             parse_bytes: ImmediateTestItem::parse_bytes,
             serialize_json: |any| {
-                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().unwrap();
+                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("ImmediateTestItem type mismatch"))
+                })?;
                 ::serde_json::value::to_raw_value(typed)
             },
         }
     }
 
-    fn make_ctx() -> CellServerCtx {
-        CellServerCtx::new(
+    fn make_ctx() -> MykoServerContext {
+        MykoServerContext::new(
             Uuid::new_v4(),
             Arc::new(StoreRegistry::new()),
             Arc::new(HandlerRegistry::new()),
             Arc::new(RelationshipManager::new()),
             Arc::new(PersisterRouter::default()),
             Arc::new(SearchIndex::new()),
-            Arc::new(dashmap::DashMap::new()),
-            None,
-            None,
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
         )
+    }
+
+    struct PreReducePersister {
+        registry: Arc<StoreRegistry>,
+        calls: AtomicUsize,
+        all_before_reduce: AtomicBool,
+    }
+
+    impl Persister for PreReducePersister {
+        fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if self
+                .registry
+                .get("ImmediateTestItem")
+                .is_some_and(|store| !store.snapshot().is_empty())
+            {
+                self.all_before_reduce.store(false, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn batch_persistence_is_enqueued_before_reactive_reduce() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let persister = Arc::new(PreReducePersister {
+            registry: registry.clone(),
+            calls: AtomicUsize::new(0),
+            all_before_reduce: AtomicBool::new(true),
+        });
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(persister.clone()));
+        let ctx = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+        let items = [
+            ImmediateTestItem {
+                id: "pre-reduce-1".into(),
+                value: 1,
+            },
+            ImmediateTestItem {
+                id: "pre-reduce-2".into(),
+                value: 2,
+            },
+        ];
+
+        assert!(ctx.batch_set(&items).is_ok());
+        assert_eq!(persister.calls.load(Ordering::Relaxed), items.len());
+        assert!(persister.all_before_reduce.load(Ordering::Relaxed));
+        assert_eq!(
+            registry
+                .get("ImmediateTestItem")
+                .map_or(0, |store| store.snapshot().len()),
+            items.len()
+        );
     }
 
     #[test]
@@ -1804,16 +1909,22 @@ mod tests {
                     "value": 7,
                 }),
                 change_type: MEventType::SET,
-                item_type: "ImmediateTestItem".to_string(),
-                created_at: "2026-03-12T00:00:00Z".to_string(),
-                tx: "tx-immediate".to_string(),
-                source_id: Some("test".to_string()),
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-immediate".into(),
+                source_id: Some("test".into()),
             }])
-            .expect("apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 1);
+        assert_eq!(applied, Some(1));
         let store = ctx.registry.get_or_create("ImmediateTestItem");
-        assert!(store.get(&Arc::<str>::from("immediate-1")).get().is_some());
+        assert!(
+            store
+                .get(&Arc::<str>::from("immediate-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1827,20 +1938,32 @@ mod tests {
                     "value": 42,
                 }),
                 change_type: MEventType::SET,
-                item_type: "BufferedTestItem".to_string(),
-                created_at: "2026-03-12T00:00:00Z".to_string(),
-                tx: "tx-buffered".to_string(),
-                source_id: Some("test".to_string()),
+                item_type: "BufferedTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-buffered".into(),
+                source_id: Some("test".into()),
             }])
-            .expect("apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 1);
+        assert_eq!(applied, Some(1));
         let store = ctx.registry.get_or_create("BufferedTestItem");
-        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_none());
+        assert!(
+            store
+                .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_none()
+        );
 
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
-        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
+        assert!(
+            store
+                .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1856,15 +1979,17 @@ mod tests {
         let _serial = scheduler_test_serial();
         let ctx = make_ctx();
 
-        ctx.apply_event_batch(vec![MEvent {
-            item: json!({ "id": "old-1", "value": 1 }),
-            change_type: MEventType::SET,
-            item_type: "ImmediateTestItem".to_string(),
-            created_at: "2026-03-12T00:00:00Z".to_string(),
-            tx: "tx-seed".to_string(),
-            source_id: Some("test".to_string()),
-        }])
-        .expect("seed apply_event_batch should succeed");
+        assert!(
+            ctx.apply_event_batch(vec![MEvent {
+                item: json!({ "id": "old-1", "value": 1 }),
+                change_type: MEventType::SET,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-seed".into(),
+                source_id: Some("test".into()),
+            }])
+            .is_ok()
+        );
 
         let store = ctx.registry.get_or_create("ImmediateTestItem");
         let diffs_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1872,45 +1997,63 @@ mod tests {
         let _guard = store.subscribe_diffs(move |diff| {
             diffs_seen_for_closure
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(format!("{diff:?}"));
         });
         // subscribe_diffs replays the current snapshot synchronously on
         // subscribe -- drop that so only diffs from the batch below count.
-        diffs_seen.lock().unwrap().clear();
+        diffs_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
 
         let applied = ctx
             .apply_event_batch(vec![
                 MEvent {
                     item: json!({ "id": "new-1", "value": 2 }),
                     change_type: MEventType::SET,
-                    item_type: "ImmediateTestItem".to_string(),
-                    created_at: "2026-03-12T00:00:01Z".to_string(),
-                    tx: "tx-mixed".to_string(),
-                    source_id: Some("test".to_string()),
+                    item_type: "ImmediateTestItem".into(),
+                    created_at: "2026-03-12T00:00:01Z".into(),
+                    tx: "tx-mixed".into(),
+                    source_id: Some("test".into()),
                 },
                 MEvent {
                     item: json!({ "id": "old-1", "value": 1 }),
                     change_type: MEventType::DEL,
-                    item_type: "ImmediateTestItem".to_string(),
-                    created_at: "2026-03-12T00:00:01Z".to_string(),
-                    tx: "tx-mixed".to_string(),
-                    source_id: Some("test".to_string()),
+                    item_type: "ImmediateTestItem".into(),
+                    created_at: "2026-03-12T00:00:01Z".into(),
+                    tx: "tx-mixed".into(),
+                    source_id: Some("test".into()),
                 },
             ])
-            .expect("mixed apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 2);
-        assert!(store.get(&Arc::<str>::from("new-1")).get().is_some());
-        assert!(store.get(&Arc::<str>::from("old-1")).get().is_none());
+        assert_eq!(applied, Some(2));
+        assert!(
+            store
+                .get(&Arc::<str>::from("new-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&Arc::<str>::from("old-1"))
+                .materialize()
+                .get()
+                .is_none()
+        );
 
-        let seen = diffs_seen.lock().unwrap();
+        let seen = diffs_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
             seen.len(),
             2,
             "both the SET and DEL diffs must reach subscribers, not just the last one: {:?}",
             *seen
         );
+        drop(seen);
     }
 
     #[test]

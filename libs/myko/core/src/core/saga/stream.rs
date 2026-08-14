@@ -18,7 +18,7 @@ use crate::event::{MEvent, MEventType};
 
 /// Extension trait for event streams with saga-specific operators.
 ///
-/// These operators mirror the RxJS patterns used in the TypeScript codebase,
+/// These operators mirror the `RxJS` patterns used in the TypeScript codebase,
 /// making it easy to translate saga logic between languages.
 pub trait SagaStreamExt: Stream<Item = MEvent> + Sized {
     /// Filter events by item type name.
@@ -80,7 +80,7 @@ pub trait SagaStreamExt: Stream<Item = MEvent> + Sized {
 
     /// Accumulate state across events using a fold-like operation.
     ///
-    /// Similar to RxJS `scan` - emits the accumulated state after each event.
+    /// Similar to `RxJS` `scan` - emits the accumulated state after each event.
     /// Named `accumulate` to avoid conflict with `futures::StreamExt::scan`.
     ///
     /// # Example
@@ -208,11 +208,10 @@ impl<S: Stream<Item = MEvent>> Stream for Pairwise<S> {
                     if let Some(prev) = this.previous.take() {
                         *this.previous = Some(event.clone());
                         return Poll::Ready(Some((prev, event)));
-                    } else {
-                        // First event, buffer it
-                        *this.previous = Some(event);
-                        // Continue to wait for next event
                     }
+                    // First event, buffer it
+                    *this.previous = Some(event);
+                    // Continue to wait for next event
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
@@ -281,11 +280,11 @@ mod tests {
 
     fn make_event(item_type: &str, change_type: MEventType) -> MEvent {
         MEvent {
-            tx: "test-tx".to_string(),
-            item_type: item_type.to_string(),
+            tx: "test-tx".into(),
+            item_type: item_type.into(),
             item: json!({"id": "test-id", "hash": "test-hash"}),
             change_type,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Utc::now().to_rfc3339().into(),
             source_id: None,
         }
     }
@@ -340,7 +339,11 @@ mod tests {
             make_event("Target", MEventType::SET),
         ]);
 
-        let counts: Vec<_> = block_on(events.accumulate(0, |count, _| *count + 1).collect());
+        let counts: Vec<_> = block_on(
+            events
+                .accumulate(0_u32, |count, _| count.saturating_add(1))
+                .collect(),
+        );
         assert_eq!(counts, vec![1, 2, 3]);
     }
 

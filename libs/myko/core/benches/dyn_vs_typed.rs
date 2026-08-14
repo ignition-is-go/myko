@@ -9,15 +9,15 @@
 //!   `materialize_*` — full hyphae select + materialize over a populated
 //!                     store, dyn vs. typed.
 //!   `insert_many_*` — write throughput at the store boundary
-//!                     (the apply_event_batch hot path on `CellMap::insert_many`).
-//!   `serialize_*`   — single-item serialize via erased_serde (dyn) vs.
-//!                     typed serde_json.
-//!   `arc_clone_*`   — Arc<dyn>.clone() vs. Arc<T>.clone() (vtable carry).
+//!                     (the `apply_event_batch` hot path on `CellMap::insert_many`).
+//!   `serialize_*`   — single-item serialize via `erased_serde` (dyn) vs.
+//!                     typed `serde_json`.
+//!   `arc_clone_*`   — Arc<dyn>.`clone()` vs. Arc<T>.`clone()` (vtable carry).
 
-use std::{hint::black_box, sync::Arc};
+use std::{collections::HashMap, hint::black_box, sync::Arc};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use hyphae::{CellMap, MapQuery, ProjectMapExt, SelectExt};
+use hyphae::{CellMap, MapEntriesExt, MapQuery, SelectExt};
 use myko::{
     bench_entities::{BenchItem, BenchTreeItem},
     core::item::{AnyItem, downcast_any_item_arc},
@@ -33,12 +33,12 @@ fn make_items(n: usize) -> Vec<(Arc<str>, BenchItem)> {
             let item = BenchItem {
                 id: id.clone().into(),
                 name: format!("name-{i}"),
-                category: if i % 4 == 0 {
+                category: if i.is_multiple_of(4) {
                     "hot".into()
                 } else {
                     "cold".into()
                 },
-                value: (i as i64) % 100,
+                value: i64::try_from(i).unwrap_or(i64::MAX).rem_euclid(100),
             };
             (id, item)
         })
@@ -74,32 +74,36 @@ fn bench_predicate(c: &mut Criterion) {
     let dynd = make_dyn_arcs(N_ITEMS);
 
     let mut g = c.benchmark_group("predicate_filter");
-    g.throughput(criterion::Throughput::Elements(N_ITEMS as u64));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed", |b| {
         b.iter(|| {
             let mut hits = 0usize;
-            for (_, item) in typed.iter() {
+            for (_, item) in &typed {
                 if black_box(item.value) > 50 {
-                    hits += 1;
+                    hits = hits.saturating_add(1);
                 }
             }
             black_box(hits)
-        })
+        });
     });
 
     g.bench_function("dyn_with_downcast", |b| {
         b.iter(|| {
             let mut hits = 0usize;
-            for (_, item_any) in dynd.iter() {
-                let item = downcast_any_item_arc::<BenchItem>(item_any, "bench");
+            for (_, item_any) in &dynd {
+                let Some(item) = downcast_any_item_arc::<BenchItem>(item_any, "bench") else {
+                    continue;
+                };
                 if black_box(item.value) > 50 {
-                    hits += 1;
+                    hits = hits.saturating_add(1);
                 }
                 black_box(item);
             }
             black_box(hits)
-        })
+        });
     });
 
     // Variant: skip the Arc clone in the downcast path — pure as_any().downcast_ref::<T>().
@@ -107,17 +111,16 @@ fn bench_predicate(c: &mut Criterion) {
     g.bench_function("dyn_downcast_ref_only", |b| {
         b.iter(|| {
             let mut hits = 0usize;
-            for (_, item_any) in dynd.iter() {
-                let item = item_any
-                    .as_any()
-                    .downcast_ref::<BenchItem>()
-                    .expect("typed");
+            for (_, item_any) in &dynd {
+                let Some(item) = item_any.as_any().downcast_ref::<BenchItem>() else {
+                    continue;
+                };
                 if black_box(item.value) > 50 {
-                    hits += 1;
+                    hits = hits.saturating_add(1);
                 }
             }
             black_box(hits)
-        })
+        });
     });
 
     g.finish();
@@ -130,7 +133,9 @@ fn bench_predicate(c: &mut Criterion) {
 
 fn bench_materialize(c: &mut Criterion) {
     let mut g = c.benchmark_group("materialize_select");
-    g.throughput(criterion::Throughput::Elements(N_ITEMS as u64));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed_store_select_materialize", |b| {
         let entries = make_typed_arcs(N_ITEMS);
@@ -142,14 +147,12 @@ fn bench_materialize(c: &mut Criterion) {
             },
             |store| {
                 let result = MapQuery::materialize(
-                    (store.lock())
-                        .clone()
-                        .select(|item: &Arc<BenchItem>| item.value > 50),
+                    (store.lock()).select(|item: &Arc<BenchItem>| item.value > 50),
                 );
                 black_box(result.snapshot().len())
             },
             BatchSize::SmallInput,
-        )
+        );
     });
 
     g.bench_function("dyn_store_select_materialize", |b| {
@@ -163,14 +166,14 @@ fn bench_materialize(c: &mut Criterion) {
             |store| {
                 let result = MapQuery::materialize((store.lock()).clone().select(
                     |item_any: &Arc<dyn AnyItem>| {
-                        let item = downcast_any_item_arc::<BenchItem>(item_any, "bench");
-                        item.value > 50
+                        downcast_any_item_arc::<BenchItem>(item_any, "bench")
+                            .is_some_and(|item| item.value > 50)
                     },
                 ));
                 black_box(result.snapshot().len())
             },
             BatchSize::SmallInput,
-        )
+        );
     });
 
     g.finish();
@@ -183,7 +186,9 @@ fn bench_materialize(c: &mut Criterion) {
 
 fn bench_insert_many(c: &mut Criterion) {
     let mut g = c.benchmark_group("insert_many");
-    g.throughput(criterion::Throughput::Elements(N_ITEMS as u64));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed", |b| {
         let entries = make_typed_arcs(N_ITEMS);
@@ -194,7 +199,7 @@ fn bench_insert_many(c: &mut Criterion) {
                 black_box(m.snapshot().len())
             },
             BatchSize::SmallInput,
-        )
+        );
     });
 
     g.bench_function("dyn", |b| {
@@ -211,7 +216,7 @@ fn bench_insert_many(c: &mut Criterion) {
                 black_box(m.snapshot().len())
             },
             BatchSize::SmallInput,
-        )
+        );
     });
 
     g.finish();
@@ -226,44 +231,45 @@ fn bench_serialize(c: &mut Criterion) {
     let typed = make_typed_arcs(1000);
     let dynd = make_dyn_arcs(1000);
 
-    let mut g = c.benchmark_group("serialize_to_json_bytes");
-    g.throughput(criterion::Throughput::Elements(1000));
+    {
+        let mut json_group = c.benchmark_group("serialize_to_json_bytes");
+        json_group.throughput(criterion::Throughput::Elements(1000));
 
-    g.bench_function("typed", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for (_, item) in typed.iter() {
-                let bytes = serde_json::to_vec(item.as_ref()).unwrap();
-                total += bytes.len();
-                black_box(bytes);
-            }
-            black_box(total)
-        })
-    });
+        json_group.bench_function("typed", |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for (_, item) in &typed {
+                    if let Ok(bytes) = serde_json::to_vec(item.as_ref()) {
+                        total = total.saturating_add(bytes.len());
+                        black_box(bytes);
+                    }
+                }
+                black_box(total)
+            });
+        });
 
-    g.bench_function("dyn_erased_serde", |b| {
-        b.iter(|| {
-            let mut total = 0usize;
-            for (_, item_any) in dynd.iter() {
-                // serde::Serialize is implemented for `dyn AnyItem` via erased_serde.
-                let bytes = serde_json::to_vec(item_any.as_ref()).unwrap();
-                total += bytes.len();
-                black_box(bytes);
-            }
-            black_box(total)
-        })
-    });
+        json_group.bench_function("dyn_erased_serde", |b| {
+            b.iter(|| {
+                let mut total = 0usize;
+                for (_, item_any) in &dynd {
+                    // serde::Serialize is implemented for `dyn AnyItem` via erased_serde.
+                    if let Ok(bytes) = serde_json::to_vec(item_any.as_ref()) {
+                        total = total.saturating_add(bytes.len());
+                        black_box(bytes);
+                    }
+                }
+                black_box(total)
+            });
+        });
 
-    g.finish();
+        json_group.finish();
+    }
 
     // The actual wire emit path: ErasedWrappedItem holding `Arc<dyn AnyItem>`,
     // serialized inside a larger JSON struct. Pre-fix went through
     // `&dyn erased_serde::Serialize`; post-fix dispatches to the typed shim
     // emitted by `myko_item` for human-readable serializers, falling back to
     // erased_serde for unregistered types and non-human-readable formats.
-    let mut g = c.benchmark_group("wrapped_item_serialize");
-    g.throughput(criterion::Throughput::Elements(1000));
-
     let wrapped: Vec<ErasedWrappedItem> = dynd
         .iter()
         .map(|(_, item)| ErasedWrappedItem {
@@ -272,71 +278,75 @@ fn bench_serialize(c: &mut Criterion) {
         })
         .collect();
 
-    g.bench_function("json_via_typed_registration", |b| {
-        b.iter(|| {
-            let bytes = serde_json::to_vec(&wrapped).unwrap();
-            black_box(bytes.len())
-        })
-    });
+    {
+        let mut wrapped_group = c.benchmark_group("wrapped_item_serialize");
+        wrapped_group.throughput(criterion::Throughput::Elements(1000));
 
-    // Force the erased_serde fallback by giving the wrapper a bogus item_type
-    // so the registry lookup misses and `ErasedWrappedItem::serialize` falls
-    // through to the old `&dyn erased_serde::Serialize` path. Same items,
-    // same JSON output shape, only the code path differs.
-    let wrapped_unregistered: Vec<ErasedWrappedItem> = dynd
-        .iter()
-        .map(|(_, item)| ErasedWrappedItem {
-            item: item.clone(),
-            item_type: "_unregistered_".into(),
-        })
-        .collect();
+        wrapped_group.bench_function("json_via_typed_registration", |b| {
+            b.iter(|| black_box(serde_json::to_vec(&wrapped)));
+        });
 
-    g.bench_function("json_via_erased_serde_fallback", |b| {
-        b.iter(|| {
-            let bytes = serde_json::to_vec(&wrapped_unregistered).unwrap();
-            black_box(bytes.len())
-        })
-    });
+        // Force the erased_serde fallback by giving the wrapper a bogus item_type
+        // so the registry lookup misses and `ErasedWrappedItem::serialize` falls
+        // through to the old `&dyn erased_serde::Serialize` path. Same items,
+        // same JSON output shape, only the code path differs.
+        let wrapped_unregistered: Vec<ErasedWrappedItem> = dynd
+            .iter()
+            .map(|(_, item)| ErasedWrappedItem {
+                item: item.clone(),
+                item_type: "_unregistered_".into(),
+            })
+            .collect();
 
-    g.finish();
+        wrapped_group.bench_function("json_via_erased_serde_fallback", |b| {
+            b.iter(|| black_box(serde_json::to_vec(&wrapped_unregistered)));
+        });
+
+        wrapped_group.finish();
+    }
 
     // CBOR is the production wire format for downstream consumers — measure
     // the erased_serde tax on the path that actually matters. Today there's
     // no typed shim for CBOR (ciborium has no RawValue / raw-embed
     // mechanism), so all paths still go through erased_serde; the
     // typed_baseline shows the floor we'd be chasing if we add a CBOR fix.
-    let mut g = c.benchmark_group("cbor_serialize");
-    g.throughput(criterion::Throughput::Elements(1000));
+    let mut cbor_group = c.benchmark_group("cbor_serialize");
+    cbor_group.throughput(criterion::Throughput::Elements(1000));
 
-    g.bench_function("typed_baseline", |b| {
+    cbor_group.bench_function("typed_baseline", |b| {
         b.iter(|| {
             let mut buf = Vec::with_capacity(64 * 1000);
-            for (_, item) in typed.iter() {
-                ciborium::ser::into_writer(item.as_ref(), &mut buf).unwrap();
+            for (_, item) in &typed {
+                if ciborium::ser::into_writer(item.as_ref(), &mut buf).is_err() {
+                    break;
+                }
             }
             black_box(buf.len())
-        })
+        });
     });
 
-    g.bench_function("dyn_via_erased_serde", |b| {
+    cbor_group.bench_function("dyn_via_erased_serde", |b| {
         b.iter(|| {
             let mut buf = Vec::with_capacity(64 * 1000);
-            for (_, item_any) in dynd.iter() {
-                ciborium::ser::into_writer(item_any.as_ref(), &mut buf).unwrap();
+            for (_, item_any) in &dynd {
+                if ciborium::ser::into_writer(item_any.as_ref(), &mut buf).is_err() {
+                    break;
+                }
             }
             black_box(buf.len())
-        })
+        });
     });
 
-    g.bench_function("wrapped_item_via_erased_serde", |b| {
+    cbor_group.bench_function("wrapped_item_via_erased_serde", |b| {
         b.iter(|| {
             let mut buf = Vec::with_capacity(128 * 1000);
-            ciborium::ser::into_writer(&wrapped, &mut buf).unwrap();
+            let result = ciborium::ser::into_writer(&wrapped, &mut buf);
+            let _ = black_box(result);
             black_box(buf.len())
-        })
+        });
     });
 
-    g.finish();
+    cbor_group.finish();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -362,7 +372,7 @@ fn bench_arc_clone(c: &mut Criterion) {
                 v.push(typed.clone());
             }
             black_box(v)
-        })
+        });
     });
 
     g.bench_function("dyn_arc_clone_x1000", |b| {
@@ -372,7 +382,7 @@ fn bench_arc_clone(c: &mut Criterion) {
                 v.push(dynd.clone());
             }
             black_box(v)
-        })
+        });
     });
 
     g.finish();
@@ -395,19 +405,22 @@ const LINEAGE_DEPTH: usize = 3;
 fn make_tree() -> Vec<BenchTreeItem> {
     (0..TREE_TOTAL)
         .map(|i| {
-            let level = i / TREE_PER_LEVEL;
+            let level = i.checked_div(TREE_PER_LEVEL).unwrap_or_default();
             let parent_id = if level == 0 {
                 None
             } else {
-                let parent_idx =
-                    (i - TREE_PER_LEVEL) % TREE_PER_LEVEL + (level - 1) * TREE_PER_LEVEL;
+                let parent_idx = i
+                    .saturating_sub(TREE_PER_LEVEL)
+                    .checked_rem(TREE_PER_LEVEL)
+                    .unwrap_or_default()
+                    .saturating_add(level.saturating_sub(1).saturating_mul(TREE_PER_LEVEL));
                 Some(format!("tree-{parent_idx}").into())
             };
             BenchTreeItem {
                 id: format!("tree-{i}").into(),
                 name: format!("node-{i}"),
                 parent_id,
-                depth: level as i64,
+                depth: i64::try_from(level).unwrap_or(i64::MAX),
             }
         })
         .collect()
@@ -437,7 +450,9 @@ fn bench_lineage_walk(c: &mut Criterion) {
     let dyn_store = dyn_store_mut.lock();
 
     let mut g = c.benchmark_group("lineage_walk");
-    g.throughput(criterion::Throughput::Elements(TREE_TOTAL as u64));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("typed_store_get_value", |b| {
         b.iter(|| {
@@ -451,12 +466,12 @@ fn bench_lineage_walk(c: &mut Criterion) {
                     let Some(parent) = typed_store.get_value(&pid) else {
                         break;
                     };
-                    acc += parent.depth;
+                    acc = acc.saturating_add(parent.depth);
                     current = parent;
                 }
             }
             black_box(acc)
-        })
+        });
     });
 
     g.bench_function("dyn_store_get_value_with_downcast", |b| {
@@ -464,27 +479,26 @@ fn bench_lineage_walk(c: &mut Criterion) {
             let mut acc = 0i64;
             for entry in dyn_store.snapshot() {
                 let (_, item_any) = entry;
-                let mut current_pid = item_any
-                    .as_any()
-                    .downcast_ref::<BenchTreeItem>()
-                    .expect("typed")
-                    .parent_id
-                    .clone();
+                let Some(item) = item_any.as_any().downcast_ref::<BenchTreeItem>() else {
+                    continue;
+                };
+                let mut current_pid = item.parent_id.clone();
                 for _ in 0..LINEAGE_DEPTH {
-                    let Some(pid) = current_pid else { break };
-                    let Some(parent_any) = dyn_store.get_value(&pid) else {
+                    let Some(pid) = current_pid.as_ref() else {
                         break;
                     };
-                    let parent = parent_any
-                        .as_any()
-                        .downcast_ref::<BenchTreeItem>()
-                        .expect("typed");
-                    acc += parent.depth;
-                    current_pid = parent.parent_id.clone();
+                    let Some(parent_any) = dyn_store.get_value(pid) else {
+                        break;
+                    };
+                    let Some(parent) = parent_any.as_any().downcast_ref::<BenchTreeItem>() else {
+                        break;
+                    };
+                    acc = acc.saturating_add(parent.depth);
+                    current_pid.clone_from(&parent.parent_id);
                 }
             }
             black_box(acc)
-        })
+        });
     });
 
     g.finish();
@@ -492,15 +506,16 @@ fn bench_lineage_walk(c: &mut Criterion) {
 
 // ──────────────────────────────────────────────────────────────────────────
 // View chain fanout: a filtered-tree view's shape. The outer pipeline
-// is typed (operating on Arc<BenchTreeItem>); the variable is whether the
-// inner cross-store lookup is typed or dyn. This isolates the question
-// "if `registry.typed::<T>()` were available inside project transforms,
-// how much faster does fanout get?"
+// is typed (operating on Arc<BenchTreeItem>); the variable is whether an
+// immutable lineage snapshot is typed or dyn. Query closures cannot read a
+// separately mutable reactive map: Hyphae may repeat or concurrently invoke
+// them, and that map would not itself drive recomputation. Capturing a snapshot
+// keeps this benchmark's lookup/downcast comparison within MapQuery's contract.
 //
 // Stages:
 //   source: CellMap<Arc<str>, Arc<BenchTreeItem>>  (the "view's source")
 //   .select(depth >= 2)                            (typed predicate)
-//   .project(walk LINEAGE_DEPTH hops via inner)    (variable: typed or dyn)
+//   .filter_map_entries(walk immutable lineage)   (variable: typed or dyn)
 //
 // Materialize per iter to capture the full subscribe-and-fan-in cost.
 // ──────────────────────────────────────────────────────────────────────────
@@ -520,37 +535,36 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
         .collect();
 
     let mut g = c.benchmark_group("view_chain_fanout");
-    g.throughput(criterion::Throughput::Elements(TREE_TOTAL as u64));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(TREE_TOTAL).unwrap_or(u64::MAX),
+    ));
 
-    // Post-refactor: outer typed + typed inner store.
+    // Post-refactor: outer typed + typed lineage snapshot.
     g.bench_function("typed_outer_typed_inner", |b| {
         b.iter_batched(
             || {
                 let outer = CellMap::<Arc<str>, Arc<BenchTreeItem>>::new();
                 outer.insert_many(typed_entries.clone());
-                let inner = CellMap::<Arc<str>, Arc<BenchTreeItem>>::new();
-                inner.insert_many(typed_entries.clone());
+                let inner = typed_entries.iter().cloned().collect::<HashMap<_, _>>();
                 (outer, inner)
             },
-            |(outer, inner)| {
-                let inner_for_proj = inner.clone();
+            |(outer, inner_for_proj)| {
                 let result = MapQuery::materialize(
                     outer
                         .lock()
-                        .clone()
                         .select(|item: &Arc<BenchTreeItem>| item.depth >= 2)
-                        .project(move |k, item| {
+                        .filter_map_entries(move |k, item| {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
-                                let Some(pid) = current_pid.clone() else {
+                                let Some(pid) = current_pid.as_ref() else {
                                     break;
                                 };
-                                let Some(parent) = inner_for_proj.get_value(&pid) else {
+                                let Some(parent) = inner_for_proj.get(pid) else {
                                     break;
                                 };
-                                total += parent.depth;
-                                current_pid = parent.parent_id.clone();
+                                total = total.saturating_add(parent.depth);
+                                current_pid.clone_from(&parent.parent_id);
                             }
                             Some((k.clone(), total))
                         }),
@@ -558,44 +572,41 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                 black_box(result.snapshot().len())
             },
             BatchSize::SmallInput,
-        )
+        );
     });
 
-    // Current world: outer typed + dyn inner store. The filtered-tree view
-    // shape — `target_store.get(&pid)` returns `Arc<dyn AnyItem>` and project
-    // downcasts on every hop.
+    // Current world: outer typed + dyn lineage snapshot. The filtered-tree
+    // shape still downcasts an `Arc<dyn AnyItem>` on every hop.
     g.bench_function("typed_outer_dyn_inner", |b| {
         b.iter_batched(
             || {
                 let outer = CellMap::<Arc<str>, Arc<BenchTreeItem>>::new();
                 outer.insert_many(typed_entries.clone());
-                let inner = CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
-                inner.insert_many(dyn_entries.clone());
+                let inner = dyn_entries.iter().cloned().collect::<HashMap<_, _>>();
                 (outer, inner)
             },
-            |(outer, inner)| {
-                let inner_for_proj = inner.clone();
+            |(outer, inner_for_proj)| {
                 let result = MapQuery::materialize(
                     outer
                         .lock()
-                        .clone()
                         .select(|item: &Arc<BenchTreeItem>| item.depth >= 2)
-                        .project(move |k, item| {
+                        .filter_map_entries(move |k, item| {
                             let mut total = item.depth;
                             let mut current_pid = item.parent_id.clone();
                             for _ in 0..LINEAGE_DEPTH {
-                                let Some(pid) = current_pid.clone() else {
+                                let Some(pid) = current_pid.as_ref() else {
                                     break;
                                 };
-                                let Some(parent_any) = inner_for_proj.get_value(&pid) else {
+                                let Some(parent_any) = inner_for_proj.get(pid) else {
                                     break;
                                 };
-                                let parent = parent_any
-                                    .as_any()
-                                    .downcast_ref::<BenchTreeItem>()
-                                    .expect("typed");
-                                total += parent.depth;
-                                current_pid = parent.parent_id.clone();
+                                let Some(parent) =
+                                    parent_any.as_any().downcast_ref::<BenchTreeItem>()
+                                else {
+                                    break;
+                                };
+                                total = total.saturating_add(parent.depth);
+                                current_pid.clone_from(&parent.parent_id);
                             }
                             Some((k.clone(), total))
                         }),
@@ -603,7 +614,7 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
                 black_box(result.snapshot().len())
             },
             BatchSize::SmallInput,
-        )
+        );
     });
 
     g.finish();
@@ -617,8 +628,6 @@ fn bench_view_chain_fanout(c: &mut Criterion) {
 // ──────────────────────────────────────────────────────────────────────────
 
 fn bench_hashmap_hasher(c: &mut Criterion) {
-    use std::collections::HashMap;
-
     use dashmap::DashMap;
 
     let keys: Vec<Arc<str>> = (0..N_ITEMS).map(|i| format!("entity-{i}").into()).collect();
@@ -626,64 +635,66 @@ fn bench_hashmap_hasher(c: &mut Criterion) {
     // Build pre-populated maps so the bench measures lookup + insert mix on
     // realistic Arc<str> entity keys, not empty-map cost.
     let mut g = c.benchmark_group("hashmap_lookup");
-    g.throughput(criterion::Throughput::Elements(N_ITEMS as u64));
+    g.throughput(criterion::Throughput::Elements(
+        u64::try_from(N_ITEMS).unwrap_or(u64::MAX),
+    ));
 
     g.bench_function("std_hashmap_default_siphash", |b| {
         let mut map: HashMap<Arc<str>, i64> = HashMap::new();
         for (i, k) in keys.iter().enumerate() {
-            map.insert(k.clone(), i as i64);
+            map.insert(k.clone(), i64::try_from(i).unwrap_or(i64::MAX));
         }
         b.iter(|| {
             let mut acc = 0i64;
-            for k in keys.iter() {
-                acc += map.get(k).copied().unwrap_or(0);
+            for k in &keys {
+                acc = acc.saturating_add(map.get(k).copied().unwrap_or(0));
             }
             black_box(acc)
-        })
+        });
     });
 
     g.bench_function("std_hashmap_ahash", |b| {
         let mut map: HashMap<Arc<str>, i64, ahash::RandomState> =
             HashMap::with_hasher(ahash::RandomState::new());
         for (i, k) in keys.iter().enumerate() {
-            map.insert(k.clone(), i as i64);
+            map.insert(k.clone(), i64::try_from(i).unwrap_or(i64::MAX));
         }
         b.iter(|| {
             let mut acc = 0i64;
-            for k in keys.iter() {
-                acc += map.get(k).copied().unwrap_or(0);
+            for k in &keys {
+                acc = acc.saturating_add(map.get(k).copied().unwrap_or(0));
             }
             black_box(acc)
-        })
+        });
     });
 
     g.bench_function("dashmap_default_siphash", |b| {
         let map: DashMap<Arc<str>, i64> = DashMap::new();
         for (i, k) in keys.iter().enumerate() {
-            map.insert(k.clone(), i as i64);
+            map.insert(k.clone(), i64::try_from(i).unwrap_or(i64::MAX));
         }
         b.iter(|| {
             let mut acc = 0i64;
-            for k in keys.iter() {
-                acc += map.get(k).map(|r| *r.value()).unwrap_or(0);
+            for k in &keys {
+                acc = acc.saturating_add(map.get(k).map_or(0, |r| *r.value()));
             }
             black_box(acc)
-        })
+        });
     });
 
     g.bench_function("dashmap_ahash", |b| {
         let map: DashMap<Arc<str>, i64, ahash::RandomState> =
             DashMap::with_hasher(ahash::RandomState::new());
         for (i, k) in keys.iter().enumerate() {
-            map.insert(k.clone(), i as i64);
+            map.insert(k.clone(), i64::try_from(i).unwrap_or(i64::MAX));
         }
         b.iter(|| {
             let mut acc = 0i64;
-            for k in keys.iter() {
-                acc += map.get(k).map(|r| *r.value()).unwrap_or(0);
+            for k in &keys {
+                acc = acc.saturating_add(map.get(k).map_or(0, |r| *r.value()));
             }
             black_box(acc)
-        })
+        });
     });
 
     g.finish();
@@ -702,35 +713,34 @@ fn bench_parse_paths(c: &mut Criterion) {
         category: "category-with-some-content".into(),
         value: 12345,
     };
-    let bytes = serde_json::to_vec(&item).unwrap();
+    let Ok(bytes) = serde_json::to_vec(&item) else {
+        return;
+    };
 
     let mut g = c.benchmark_group("parse_item");
     g.throughput(criterion::Throughput::Elements(1));
 
     g.bench_function("from_slice_to_typed_direct", |b| {
-        b.iter(|| {
-            let parsed: BenchItem = serde_json::from_slice(&bytes).unwrap();
-            black_box(parsed)
-        })
+        b.iter(|| black_box(serde_json::from_slice::<BenchItem>(&bytes)));
     });
 
     g.bench_function("from_slice_to_value_then_from_value", |b| {
         b.iter(|| {
-            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            let parsed: BenchItem = serde_json::from_value(value).unwrap();
-            black_box(parsed)
-        })
+            let value = serde_json::from_slice::<serde_json::Value>(&bytes);
+            black_box(value.and_then(serde_json::from_value::<BenchItem>))
+        });
     });
 
     // Today's path includes a Value::clone before from_value (`parse_item`
     // at server/context.rs:361 does `parse(json.clone())`).
     g.bench_function("from_value_with_clone", |b| {
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return;
+        };
         b.iter(|| {
             let cloned = value.clone();
-            let parsed: BenchItem = serde_json::from_value(cloned).unwrap();
-            black_box(parsed)
-        })
+            black_box(serde_json::from_value::<BenchItem>(cloned))
+        });
     });
 
     // Post-fix path: parse_item now takes owned Value, so the clone is gone.
@@ -738,13 +748,10 @@ fn bench_parse_paths(c: &mut Criterion) {
     // where each event is moved; the bench measures `from_value` alone.
     g.bench_function("from_value_no_clone", |b| {
         b.iter_batched(
-            || serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
-            |value| {
-                let parsed: BenchItem = serde_json::from_value(value).unwrap();
-                black_box(parsed)
-            },
+            || serde_json::from_slice::<serde_json::Value>(&bytes),
+            |value| black_box(value.and_then(serde_json::from_value::<BenchItem>)),
             BatchSize::SmallInput,
-        )
+        );
     });
 
     g.finish();

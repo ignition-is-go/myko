@@ -1,10 +1,9 @@
-//! Asserts that a `ServerInfo` set on `CellServerBuilder` reaches
+//! Asserts that a `ServerInfo` set on `MykoServerBuilder` reaches
 //! `handle_initialize` over HTTP — the wire shape pulse-mcp depends on.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use myko_server::{CellServer, mcp::dispatch::ServerInfo};
+use myko_server::{MykoServer, mcp::dispatch::ServerInfo};
 
 /// POST the `initialize` payload, retrying transient connect errors for up
 /// to ~2 seconds while the listener is still coming up. Avoids the flake
@@ -13,8 +12,9 @@ async fn post_initialize_with_retry(
     client: &reqwest::Client,
     url: &str,
     body: &serde_json::Value,
-) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+) -> Option<serde_json::Value> {
+    let now = tokio::time::Instant::now();
+    let deadline = now.checked_add(Duration::from_secs(2)).unwrap_or(now);
     loop {
         match client
             .post(url)
@@ -24,11 +24,14 @@ async fn post_initialize_with_retry(
             .send()
             .await
         {
-            Ok(resp) => return resp.json().await.expect("parse JSON"),
+            Ok(resp) => return resp.json().await.ok(),
             Err(err) if err.is_connect() && tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Err(err) => panic!("POST initialize: {err:?}"),
+            Err(error) => {
+                eprintln!("POST initialize: {error:?}");
+                return None;
+            }
         }
     }
 }
@@ -36,8 +39,16 @@ async fn post_initialize_with_retry(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_initialize_uses_threaded_server_info() {
     // Pick a free port to avoid colliding with other tests.
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let actual = probe.local_addr().unwrap();
+    let probe = std::net::TcpListener::bind("127.0.0.1:0");
+    assert!(probe.is_ok(), "bind test listener");
+    let Ok(probe) = probe else {
+        return;
+    };
+    let actual = probe.local_addr();
+    assert!(actual.is_ok(), "read test listener address");
+    let Ok(actual) = actual else {
+        return;
+    };
     drop(probe);
 
     let info = ServerInfo {
@@ -48,7 +59,7 @@ async fn http_initialize_uses_threaded_server_info() {
     };
 
     let server = Arc::new(
-        CellServer::builder()
+        MykoServer::builder()
             .with_bind_addr(actual)
             .with_server_info(info)
             .build(),
@@ -71,13 +82,24 @@ async fn http_initialize_uses_threaded_server_info() {
     });
 
     let client = reqwest::Client::new();
-    let url = format!("http://{}/myko/mcp", actual);
+    let url = format!("http://{actual}/myko/mcp");
     let resp = post_initialize_with_retry(&client, &url, &body).await;
-
-    let result = &resp["result"];
-    assert_eq!(result["serverInfo"]["name"], "pulse-mcp");
-    assert_eq!(result["serverInfo"]["version"], "0.2.0");
-    assert_eq!(result["instructions"], "teach me");
+    assert!(resp.is_some(), "initialize response");
+    let Some(resp) = resp else {
+        return;
+    };
+    assert_eq!(
+        resp.pointer("/result/serverInfo/name"),
+        Some(&serde_json::json!("pulse-mcp"))
+    );
+    assert_eq!(
+        resp.pointer("/result/serverInfo/version"),
+        Some(&serde_json::json!("0.2.0"))
+    );
+    assert_eq!(
+        resp.pointer("/result/instructions"),
+        Some(&serde_json::json!("teach me"))
+    );
 
     handle.abort();
 }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap, Gettable, Watchable};
+use hyphae::{CellImmutable, CellMap, Watchable};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tracing::{debug, error, trace};
@@ -35,7 +35,14 @@ impl MykoClient {
         let query_id = query.query.query_id();
         let query_item_type = Q::query_item_type_static();
 
-        let query_value = serde_json::to_value(&query).expect("Query should serialize");
+        let map: CellMap<Arc<str>, Arc<Q::Item>> =
+            CellMap::new().with_name(format!("query_map:{query_id}"));
+        let map_weak = map.downgrade();
+
+        let Ok(query_value) = serde_json::to_value(&query) else {
+            error!("Could not serialize query map request for {query_id}");
+            return map.lock();
+        };
 
         let wrapped = WrappedQuery {
             query: query_value,
@@ -43,10 +50,6 @@ impl MykoClient {
             query_item_type,
             window: None,
         };
-
-        let map: CellMap<Arc<str>, Arc<Q::Item>> =
-            CellMap::new().with_name(format!("query_map:{}", query_id));
-        let map_weak = map.downgrade();
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
@@ -77,7 +80,7 @@ impl MykoClient {
                         match serde_json::from_value::<Q::Item>(item_value.item) {
                             Ok(item) => {
                                 let item = Arc::new(item);
-                                let id = item.id().clone();
+                                let id = item.id();
                                 Some((id, item))
                             }
                             Err(e) => {
@@ -111,20 +114,21 @@ impl MykoClient {
 
         // Build the frame to send (and re-send on reconnect)
         let msg = MykoMessage::Query(wrapped);
-        let frame = self
-            .encode_message(&msg)
-            .expect("Could not serialize message");
+        let Ok(frame) = self.encode_message(&msg) else {
+            error!("Could not encode query map request for {query_id}");
+            return map.lock();
+        };
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let send_query_id = query_id.clone();
-        let frame_clone = frame.clone();
+        let send_query_id = query_id;
+        let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_clone.clone()) {
-                        Ok(_) => debug!("Watching query map {send_query_id}"),
+                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                        Ok(()) => debug!("Watching query map {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     },
                     _ => {
@@ -133,14 +137,6 @@ impl MykoClient {
                 }
             }
         });
-
-        // Send immediately if connected
-        if let ConnectionStatus::Connected(_) = status_cell.get() {
-            match self.inner.socket.send(frame) {
-                Ok(_) => debug!("Watching query map {query_id}"),
-                Err(e) => error!("Could not send query map: {e:?}"),
-            }
-        }
 
         // Own the subscription guard so it lives as long as the map
         map.own(status_guard);

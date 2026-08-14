@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{
-    Cell, CellImmutable, DedupedExt, JoinExt, MapExt, MaterializeDefinite, MaterializeEmpty,
-    PairwiseExt, TapExt,
-};
+use hyphae::{Cell, CellImmutable, DedupedExt, JoinExt, MapExt, Materialize, PairwiseExt, TapExt};
 use myko::{
     client::{ConnectionStatus, MykoClient},
     entities::server::{GetConnectedServer, Server},
@@ -61,18 +58,16 @@ impl PeerConnectionHandle {
                     status_log_port,
                     s.0,
                     s.1
-                )
+                );
             })
             .materialize()
             .deduped()
             .map(move |status| match status.as_ref() {
                 Some((_, ConnectionStatus::Connected(_))) => PeerConnectionCycle::Connected,
-                Some((ConnectionStatus::Connected(_), ConnectionStatus::Disconnected)) => {
-                    PeerConnectionCycle::Failed
-                }
-                Some((ConnectionStatus::Connecting(_), ConnectionStatus::Disconnected)) => {
-                    PeerConnectionCycle::Failed
-                }
+                Some((
+                    ConnectionStatus::Connected(_) | ConnectionStatus::Connecting(_),
+                    ConnectionStatus::Disconnected,
+                )) => PeerConnectionCycle::Failed,
                 _ => PeerConnectionCycle::Pending,
             })
             .materialize();
@@ -99,7 +94,7 @@ impl PeerConnectionHandle {
         let signal_server_port = server_ent.port;
 
         let signal_state = connection_status
-            .join(&identity)
+            .join(identity)
             .map(move |(status, identity)| {
                 tracing::debug!(
                     "server: {}:{}:{}, status: {:?}, {:?}",
@@ -110,8 +105,9 @@ impl PeerConnectionHandle {
                     identity
                 );
                 match (status, identity) {
-                    (_, IdentityCycle::Imposter) => PeerState::Delete,
-                    (PeerConnectionCycle::Failed, _) => PeerState::Delete,
+                    (_, IdentityCycle::Imposter) | (PeerConnectionCycle::Failed, _) => {
+                        PeerState::Delete
+                    }
                     (_, _) => PeerState::Keep,
                 }
             })
@@ -133,7 +129,7 @@ impl std::fmt::Debug for PeerConnectionHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerConnectionHandle")
             .field("server_id", &self.server_ent.id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-use hyphae::{JoinExt, MapExt, MaterializeDefinite, Signal, SubscriptionGuard, Watchable};
+use hyphae::{JoinExt, MapExt, Materialize, Signal, SubscriptionGuard, Watchable};
 use serde::de::DeserializeOwned;
 use tracing::{debug, error};
 
@@ -9,7 +9,7 @@ use crate::{
     common::with_id::WithId,
     core::item::Eventable,
     query::{QueryFactory, QueryHandler, QueryParams},
-    server::CellServerCtx,
+    server::MykoServerContext,
     wire::{MEvent, MEventType},
 };
 
@@ -35,7 +35,7 @@ where
     QRemote: QueryParams<Item = T> + Clone + Send + Sync + 'static,
 {
     pub client: MykoClient,
-    pub local_ctx: Arc<CellServerCtx>,
+    pub local_ctx: Arc<MykoServerContext>,
     pub local_query: QLocal,
     pub remote_query: QRemote,
     pub options: EntityStoreSyncOptions,
@@ -43,7 +43,7 @@ where
 }
 
 /// Generic reconciler that keeps a local authoritative entity set in sync with
-/// the remote result of a query by emitting SET/DEL events through MykoClient.
+/// the remote result of a query by emitting SET/DEL events through `MykoClient`.
 pub struct EntityStoreSync<T>
 where
     T: Eventable + WithId + Clone + Send + Sync + 'static,
@@ -98,10 +98,9 @@ where
         let mut events = Vec::new();
 
         for (id, local_item) in local {
-            let should_set = match remote.get(id) {
-                Some(remote_item) => !items_equal(local_item.as_ref(), remote_item.as_ref()),
-                None => true,
-            };
+            let should_set = remote
+                .get(id)
+                .is_none_or(|remote_item| !items_equal(local_item.as_ref(), remote_item.as_ref()));
             if should_set {
                 events.push(MEvent::from_item(local_item.as_ref(), MEventType::SET, ""));
             }
@@ -143,8 +142,8 @@ where
             })
             .materialize();
         let remote_cell = client.watch_query(remote_query);
-        let joined = local_cell.join(&remote_cell);
-        let sync_client = client.clone();
+        let joined = local_cell.join(remote_cell).materialize();
+        let sync_client = client;
         let options_for_join = options;
         let items_equal_for_join = items_equal.clone();
         let joined_guard = joined.subscribe(move |signal| {
@@ -160,7 +159,7 @@ where
             }
         });
 
-        Arc::new(EntityStoreSync {
+        Arc::new(Self {
             _sync_guard: joined_guard,
             _marker: PhantomData,
         })

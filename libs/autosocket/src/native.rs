@@ -27,22 +27,22 @@ struct ConnectionSession {
 
 impl ConnectionSession {
     fn start(
-        socket: SharedSocket,
+        socket: &SharedSocket,
         incoming_tx: flume::Sender<WsFrame>,
         outgoing_rx: flume::Receiver<WsFrame>,
     ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
 
         let read_cancel = Arc::clone(&cancel);
-        let read_socket = Arc::clone(&socket);
+        let read_socket = Arc::clone(socket);
         let read_handle = thread::spawn(move || {
-            AutoReconnectSocket::run_read_loop(read_socket, incoming_tx, read_cancel);
+            AutoReconnectSocket::run_read_loop(&read_socket, &incoming_tx, &read_cancel);
         });
 
         let write_cancel = Arc::clone(&cancel);
-        let write_socket = Arc::clone(&socket);
+        let write_socket = Arc::clone(socket);
         let write_handle = thread::spawn(move || {
-            AutoReconnectSocket::run_write_loop(write_socket, outgoing_rx, write_cancel);
+            AutoReconnectSocket::run_write_loop(&write_socket, &outgoing_rx, &write_cancel);
         });
 
         Self {
@@ -132,10 +132,7 @@ impl SocketTransport for AutoReconnectSocket {
     }
 
     fn send(&self, frame: WsFrame) -> Result<(), String> {
-        self.outgoing_tx
-            .send(frame)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        self.outgoing_tx.send(frame).map_err(|e| e.to_string())
     }
 
     fn read_rx(&self) -> flume::Receiver<WsFrame> {
@@ -148,14 +145,17 @@ impl SocketTransport for AutoReconnectSocket {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl AutoReconnectSocket {
+    #[must_use]
     pub fn new() -> Self {
         Self::with_auto_reconnect_and_limits(true, 64 * 1024 * 1024, 64 * 1024 * 1024)
     }
 
+    #[must_use]
     pub fn with_auto_reconnect(auto_reconnect: bool) -> Self {
         Self::with_auto_reconnect_and_limits(auto_reconnect, 64 * 1024 * 1024, 64 * 1024 * 1024)
     }
 
+    #[must_use]
     pub fn with_auto_reconnect_and_limits(
         auto_reconnect: bool,
         max_message_size_bytes: usize,
@@ -190,15 +190,15 @@ impl AutoReconnectSocket {
         status: &Cell<SocketConnectionStatus, CellMutable>,
         new_status: SocketConnectionStatus,
     ) {
-        status.set(new_status.clone());
+        status.set(new_status);
     }
 
     pub fn set_addr(&self, addr: Option<String>) {
         let current_status = self.actual_status.get();
-        let intended_status = match addr.clone() {
-            Some(a) => SocketConnectionStatus::Connected(a),
-            None => SocketConnectionStatus::Idle,
-        };
+        let intended_status = addr.clone().map_or(
+            SocketConnectionStatus::Idle,
+            SocketConnectionStatus::Connected,
+        );
         self.intended_status.set(intended_status);
 
         // Cancel existing connection/reconnection loop
@@ -237,7 +237,11 @@ impl AutoReconnectSocket {
         let outgoing_rx = self.outgoing_rx.clone();
         let incoming_tx = self.incoming_tx.clone();
         let actual_status = self.actual_status.clone();
-        let worker_cancel = self.worker_cancel.lock().unwrap().clone();
+        let worker_cancel = self
+            .worker_cancel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let auto_reconnect = self.auto_reconnect;
         let max_message_size_bytes = self.max_message_size_bytes;
         let max_frame_size_bytes = self.max_frame_size_bytes;
@@ -255,16 +259,13 @@ impl AutoReconnectSocket {
                     },
                 );
 
-                let url = match Self::parse_websocket_url(&addr) {
-                    Ok(url) => url,
-                    Err(_) => {
-                        if !auto_reconnect {
-                            Self::set_status(&actual_status, SocketConnectionStatus::Disconnected);
-                            break;
-                        }
-                        thread::sleep(Duration::from_secs(1));
-                        continue;
+                let Ok(url) = Self::parse_websocket_url(&addr) else {
+                    if !auto_reconnect {
+                        Self::set_status(&actual_status, SocketConnectionStatus::Disconnected);
+                        break;
                     }
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
                 };
 
                 let (mut ws, _) = match connect(url.as_str()) {
@@ -310,11 +311,8 @@ impl AutoReconnectSocket {
                     SocketConnectionStatus::Connected(addr.clone()),
                 );
 
-                let session = ConnectionSession::start(
-                    Arc::clone(&socket),
-                    incoming_tx.clone(),
-                    outgoing_rx.clone(),
-                );
+                let session =
+                    ConnectionSession::start(&socket, incoming_tx.clone(), outgoing_rx.clone());
                 let disconnect_reason = session.wait_for_disconnect_reason(&worker_cancel);
                 session.shutdown();
 
@@ -358,9 +356,9 @@ impl AutoReconnectSocket {
     }
 
     fn run_write_loop(
-        socket: Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>,
-        receiver: flume::Receiver<WsFrame>,
-        teardown: Arc<AtomicBool>,
+        socket: &Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>,
+        receiver: &flume::Receiver<WsFrame>,
+        teardown: &Arc<AtomicBool>,
     ) {
         debug!("Starting Write Loop");
         while !teardown.load(Ordering::SeqCst) {
@@ -378,7 +376,9 @@ impl AutoReconnectSocket {
                         }
                         attempts = attempts.saturating_add(1);
                         let send_result = {
-                            let mut ws = socket.lock().unwrap();
+                            let mut ws = socket
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             match msg.take() {
                                 Some(m) => ws.send(m),
                                 None => ws.flush(),
@@ -427,14 +427,16 @@ impl AutoReconnectSocket {
     }
 
     fn run_read_loop(
-        socket: Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>,
-        incoming_tx: flume::Sender<WsFrame>,
-        teardown: Arc<AtomicBool>,
+        socket: &Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>,
+        incoming_tx: &flume::Sender<WsFrame>,
+        teardown: &Arc<AtomicBool>,
     ) {
         debug!("Starting Read Loop");
         while !teardown.load(Ordering::SeqCst) {
             let msg_result = {
-                let mut ws = socket.lock().unwrap();
+                let mut ws = socket
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 ws.read()
             };
             match msg_result {
@@ -457,7 +459,7 @@ impl AutoReconnectSocket {
                         warn!("Websocket received Close: {:?}", frame);
                         break;
                     }
-                    _ => {}
+                    Message::Frame(_) => {}
                 },
                 Err(tungstenite::Error::Io(e))
                     if e.kind() == std::io::ErrorKind::WouldBlock
@@ -465,8 +467,7 @@ impl AutoReconnectSocket {
                 {
                     thread::sleep(Duration::from_millis(10));
                 }
-                Err(tungstenite::Error::ConnectionClosed)
-                | Err(tungstenite::Error::AlreadyClosed) => {
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
                     warn!("Websocket read stream ended");
                     break;
                 }
@@ -480,7 +481,10 @@ impl AutoReconnectSocket {
     }
 
     fn stop_worker(&self) {
-        let mut guard = self.worker_cancel.lock().unwrap();
+        let mut guard = self
+            .worker_cancel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.store(true, Ordering::SeqCst);
         *guard = Arc::new(AtomicBool::new(false));
     }

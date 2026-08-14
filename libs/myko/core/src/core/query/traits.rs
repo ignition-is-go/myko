@@ -2,9 +2,7 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hyphae::CellImmutable;
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::MapQuery;
+use hyphae::{CellImmutable, MapQuery};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -13,14 +11,11 @@ use super::{
     context::QueryContext,
     request::QueryRequest,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::query::QueryCellContext;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::core::query::cell::FilteredCellMap;
 use crate::{
     cache::CacheKey,
     client::MykoClient,
     common::{with_id::WithId, with_transaction::WithTransaction},
+    core::query::{QueryBuildContext, cell::FilteredCellMap},
     prelude::WithTypedId,
     wire::WrappedQuery,
 };
@@ -43,9 +38,9 @@ pub trait QueryItemType {
     fn query_item_type_static() -> Arc<str>;
 }
 
-/// Implementing QueryHandler for a MykoQuery is required to define the logic for filtering entities based on the query.
+/// Implementing `QueryHandler` for a `MykoQuery` is required to define the logic for filtering entities based on the query.
 ///
-/// It requires one function: test_entity which takes a `QueryHandlerContext<Self>` and returns a `bool`.
+/// It requires one function: `test_entity` which takes a `QueryHandlerContext<Self>` and returns a `bool`.
 /// This answers the question of whether an entity should be included in the query results.
 ///
 /// If `true`, updates to this query will be calculated, and the item will be added or updated as appropriate.
@@ -57,23 +52,17 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Per-entity membership predicate.
     ///
     /// Return `true` when an item should be included in the query result.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn test_entity(ctx: QueryTestCtx<Self>) -> bool
-    where
-        Self: Send + Sync + 'static;
-
-    /// Per-entity membership predicate (wasm no-op).
-    ///
-    /// Query evaluation only runs server-side; on wasm32 the hand-written
-    /// native body is gated out and this no-op default applies. It is never
-    /// invoked on wasm (clients watch query results over the wire), so it
-    /// simply returns `false`.
-    #[cfg(target_arch = "wasm32")]
-    fn test_entity(_ctx: QueryTestCtx<Self>) -> bool
+    /// Hyphae executes this predicate as a `MapQuery` closure, so it must be
+    /// deterministic, externally side-effect-free, and nonblocking. The
+    /// runtime may repeat or concurrently invoke it; invocation order, count,
+    /// and worker thread are not stable contracts.
+    #[must_use]
+    #[allow(clippy::unreachable)]
+    fn test_entity(_ctx: QueryTestContext<Self>) -> bool
     where
         Self: Send + Sync + 'static,
     {
-        false
+        unreachable!("query handlers execute on the server")
     }
 
     /// Optional set-wise reactive builder for complex many-to-many joins.
@@ -81,15 +70,23 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// When implemented, this is preferred by the runtime over per-item
     /// `test_entity` evaluation and should return a reactive map plan that
     /// the runtime materializes once at the registration boundary. Returning
-    /// `impl MapQuery<...>` lets impls compose `inner_join`, `project_map`,
+    /// `impl MapQuery<...>` lets impls compose `inner_join`, `filter_map_entries`,
     /// `select_cell`, etc. without forcing intermediate `CellMap` allocations.
     /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
     /// via the blanket impl on `ReactiveMap`, so simple impls returning a
     /// pre-built map continue to work unchanged.
-    #[cfg(not(target_arch = "wasm32"))]
+    ///
+    /// Keep recognized join/projection chains unmaterialized through this
+    /// boundary. Hyphae specializes one- and two-join chains and can promote
+    /// longer fluent chains to an adaptively parallel join region; rekeying,
+    /// unsupported algebra, or intermediate materialization ends that region.
+    /// Every closure captured by the returned plan must be deterministic,
+    /// externally side-effect-free, and nonblocking because Hyphae may invoke
+    /// it repeatedly or concurrently.
+    #[must_use]
     fn build_view(
-        _ctx: QueryBuildCellCtx<Self>,
-    ) -> Option<impl MapQuery<Arc<str>, Arc<dyn AnyItem>>>
+        _ctx: QueryBuildArgs<Self>,
+    ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>
     where
         Self: Send + Sync + 'static,
     {
@@ -97,33 +94,24 @@ pub trait QueryHandler: QueryItemType + Sized {
     }
 }
 
-pub struct QueryTestCtx<TQuery: QueryItemType> {
+pub struct QueryTestContext<TQuery: QueryItemType> {
     pub item: Arc<TQuery::Item>,
     pub query: Arc<TQuery>,
     pub query_context: Arc<QueryContext>,
 }
 
-impl<TQuery: QueryItemType> QueryTestCtx<TQuery> {
+impl<TQuery: QueryItemType> QueryTestContext<TQuery> {
     pub fn map_bool<F>(self, predicate: F) -> bool
     where
-        F: Fn(QueryTestCtx<TQuery>) -> bool,
+        F: Fn(Self) -> bool,
     {
         predicate(self)
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub struct QueryBuildCellCtx<TQuery: QueryItemType> {
+pub struct QueryBuildArgs<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
-    pub query_context: QueryCellContext,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct QueryHandlerCtxAny {
-    pub item: Arc<dyn AnyItem>,
-    pub query: Arc<dyn AnyQuery>,
-    pub ctx: Arc<QueryContext>,
+    pub query_context: QueryBuildContext,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,7 +220,7 @@ pub trait AnyQuery: WithTransaction + QueryId + Debug + Send + Sync + 'static {
 // Conversion from Arc<dyn AnyQuery> to WrappedQuery
 impl From<&dyn AnyQuery> for WrappedQuery {
     fn from(query: &dyn AnyQuery) -> Self {
-        WrappedQuery {
+        Self {
             query: query.to_value(),
             query_id: query.query_id(),
             query_item_type: query.query_item_type(),
@@ -243,12 +231,12 @@ impl From<&dyn AnyQuery> for WrappedQuery {
 
 impl From<Arc<dyn AnyQuery>> for WrappedQuery {
     fn from(query: Arc<dyn AnyQuery>) -> Self {
-        WrappedQuery::from(query.as_ref())
+        Self::from(query.as_ref())
     }
 }
 
 impl From<&Arc<dyn AnyQuery>> for WrappedQuery {
     fn from(query: &Arc<dyn AnyQuery>) -> Self {
-        WrappedQuery::from(query.as_ref())
+        Self::from(query.as_ref())
     }
 }

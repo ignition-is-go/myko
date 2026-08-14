@@ -4,7 +4,7 @@
 //!
 //! - [`Executor::Client`] — wraps a [`MykoClient`]; talks to a remote Myko server
 //!   over WebSocket. Used by the stdio MCP binary.
-//! - [`Executor::InProcess`] — talks directly to a [`CellServerCtx`]; used by the
+//! - [`Executor::InProcess`] — talks directly to a [`MykoServerContext`]; used by the
 //!   HTTP/WS MCP endpoints hosted inside the server.
 
 use std::{
@@ -19,7 +19,7 @@ use myko::{
     query::QueryRegistration,
     report::ReportRegistration,
     request::RequestContext,
-    server::CellServerCtx,
+    server::MykoServerContext,
     view::ViewRegistration,
     wire::{WrappedCommand, WrappedQuery, WrappedReport, WrappedView},
 };
@@ -32,71 +32,85 @@ const REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn take_mutex<T>(value: &Mutex<Option<T>>) -> Option<T> {
+    value
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 /// How MCP dispatch reaches the underlying Myko queries / reports / commands.
 #[derive(Clone)]
 pub enum Executor {
     /// Talk to a remote Myko server over WebSocket via a `MykoClient`.
     Client(Arc<MykoClient>),
-    /// Talk to a server hosted in the same process via its `CellServerCtx`.
-    InProcess(Arc<CellServerCtx>),
+    /// Talk to a server hosted in the same process via its `MykoServerContext`.
+    InProcess(Arc<MykoServerContext>),
 }
 
 impl Executor {
     /// Execute a query and return its current items as JSON.
+    /// # Errors
+    ///
+    /// Returns an error when the query cannot be executed.
     pub async fn execute_query(&self, query_id: &str, args: Value) -> Result<Value, String> {
         match self {
-            Executor::Client(client) => client_execute_query(client.clone(), query_id, args).await,
-            Executor::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args),
+            Self::Client(client) => client_execute_query(client.clone(), query_id, args).await,
+            Self::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args),
         }
     }
 
     /// Execute a report and return its current output as JSON.
+    /// # Errors
+    ///
+    /// Returns an error when the report cannot be executed.
     pub async fn execute_report(&self, report_id: &str, args: Value) -> Result<Value, String> {
         match self {
-            Executor::Client(client) => {
-                client_execute_report(client.clone(), report_id, args).await
-            }
-            Executor::InProcess(ctx) => {
-                in_process_execute_report(ctx.clone(), report_id, args).await
-            }
+            Self::Client(client) => client_execute_report(client.clone(), report_id, args).await,
+            Self::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args).await,
         }
     }
 
     /// Execute a view (list-typed report) and return its current items as JSON.
+    /// # Errors
+    ///
+    /// Returns an error when the view cannot be executed.
     pub async fn execute_view(&self, view_id: &str, args: Value) -> Result<Value, String> {
         match self {
-            Executor::Client(client) => client_execute_view(client.clone(), view_id, args).await,
-            Executor::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args),
+            Self::Client(client) => client_execute_view(client.clone(), view_id, args).await,
+            Self::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args),
         }
     }
 
     /// Execute a command and return its result as JSON.
+    /// # Errors
+    ///
+    /// Returns an error when the command cannot be executed.
     pub async fn execute_command(&self, command_id: &str, args: Value) -> Result<Value, String> {
         match self {
-            Executor::Client(client) => {
-                client_execute_command(client.clone(), command_id, args).await
-            }
-            Executor::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args),
+            Self::Client(client) => client_execute_command(client.clone(), command_id, args).await,
+            Self::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args),
         }
     }
 
     /// Status string for the built-in `connection_status` tool. Includes
     /// server name/version (and, in-process, the host id) so a caller can
     /// confirm which instance they hit without a separate report call.
+    #[must_use]
     pub fn connection_status(&self, info: &super::dispatch::ServerInfo) -> Value {
         match self {
-            Executor::Client(client) => {
+            Self::Client(client) => {
                 let status = client.connection_status().get();
                 let text = match &status {
-                    ConnectionStatus::Connected(addr) => format!("Connected to {}", addr),
-                    ConnectionStatus::Connecting(addr) => format!("Connecting to {}", addr),
-                    ConnectionStatus::Reconnecting(addr) => format!("Reconnecting to {}", addr),
+                    ConnectionStatus::Connected(addr) => format!("Connected to {addr}"),
+                    ConnectionStatus::Connecting(addr) => format!("Connecting to {addr}"),
+                    ConnectionStatus::Reconnecting(addr) => format!("Reconnecting to {addr}"),
                     ConnectionStatus::Idle => "Idle".to_string(),
                     ConnectionStatus::Disconnected => "Disconnected".to_string(),
                 };
                 json!({ "status": text, "name": info.name, "version": info.version })
             }
-            Executor::InProcess(ctx) => json!({
+            Self::InProcess(ctx) => json!({
                 "status": "In-process (always connected)",
                 "name": info.name,
                 "version": info.version,
@@ -142,12 +156,18 @@ async fn client_execute_query(
             let seen_initial_sub = seen_initial.clone();
             let _guard = cell.subscribe(move |signal| {
                 if let hyphae::Signal::Value(items) = signal {
-                    let mut seen = seen_initial_sub.lock().unwrap();
-                    if !*seen {
+                    let is_followup = {
+                        let mut seen = seen_initial_sub
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let was_seen = *seen;
                         *seen = true;
+                        was_seen
+                    };
+                    if !is_followup {
                         return;
                     }
-                    if let Some(tx) = result_tx_sub.lock().unwrap().take() {
+                    if let Some(tx) = take_mutex(&result_tx_sub) {
                         let _ = tx.send((**items).clone());
                     }
                 }
@@ -165,7 +185,7 @@ async fn client_execute_query(
             };
         }
     }
-    Err(format!("Query not found: {}", query_id))
+    Err(format!("Query not found: {query_id}"))
 }
 
 async fn client_execute_view(
@@ -200,12 +220,18 @@ async fn client_execute_view(
             let seen_initial_sub = seen_initial.clone();
             let _guard = cell.subscribe(move |signal| {
                 if let hyphae::Signal::Value(items) = signal {
-                    let mut seen = seen_initial_sub.lock().unwrap();
-                    if !*seen {
+                    let is_followup = {
+                        let mut seen = seen_initial_sub
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let was_seen = *seen;
                         *seen = true;
+                        was_seen
+                    };
+                    if !is_followup {
                         return;
                     }
-                    if let Some(tx) = result_tx_sub.lock().unwrap().take() {
+                    if let Some(tx) = take_mutex(&result_tx_sub) {
                         let _ = tx.send((**items).clone());
                     }
                 }
@@ -223,7 +249,7 @@ async fn client_execute_view(
             };
         }
     }
-    Err(format!("View not found: {}", view_id))
+    Err(format!("View not found: {view_id}"))
 }
 
 async fn client_execute_report(
@@ -250,7 +276,7 @@ async fn client_execute_report(
             let _guard = cell.subscribe(move |signal| {
                 if let hyphae::Signal::Value(value_opt) = signal
                     && let Some(value) = &**value_opt
-                    && let Some(tx) = result_tx.lock().unwrap().take()
+                    && let Some(tx) = take_mutex(&result_tx)
                 {
                     let _ = tx.send(value.clone());
                 }
@@ -267,7 +293,7 @@ async fn client_execute_report(
             };
         }
     }
-    Err(format!("Report not found: {}", report_id))
+    Err(format!("Report not found: {report_id}"))
 }
 
 async fn client_execute_command(
@@ -282,7 +308,7 @@ async fn client_execute_command(
         let guard = client.connection_status().subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal
                 && let ConnectionStatus::Connected(_) = &**status
-                && let Some(sender) = tx_connected.lock().unwrap().take()
+                && let Some(sender) = take_mutex(&tx_connected)
             {
                 let _ = sender.send(true);
             }
@@ -316,7 +342,7 @@ async fn client_execute_command(
     let _guard = result_cell.subscribe(move |signal| {
         if let hyphae::Signal::Value(result_opt) = signal
             && let Some(result) = &**result_opt
-            && let Some(sender) = resp_tx.lock().unwrap().take()
+            && let Some(sender) = take_mutex(&resp_tx)
         {
             let _ = sender.send(result.clone());
         }
@@ -338,19 +364,19 @@ async fn client_execute_command(
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn in_process_execute_query(
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     query_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
     let registration = inventory::iter::<QueryRegistration>
         .into_iter()
         .find(|r| r.query_id == query_id)
-        .ok_or_else(|| format!("Query not found: {}", query_id))?;
+        .ok_or_else(|| format!("Query not found: {query_id}"))?;
 
     let query_data = ctx
         .handler_registry
-        .get_query(query_id)
-        .ok_or_else(|| format!("Query handler not registered: {}", query_id))?;
+        .query(query_id)
+        .ok_or_else(|| format!("Query handler not registered: {query_id}"))?;
 
     let mut query_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -363,7 +389,7 @@ fn in_process_execute_query(
     }
 
     let parsed = (query_data.parse)(query_json)
-        .map_err(|e| format!("Failed to parse query {}: {}", query_id, e))?;
+        .map_err(|e| format!("Failed to parse query {query_id}: {e}"))?;
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
@@ -373,13 +399,14 @@ fn in_process_execute_query(
         request_context,
         Some(ctx.clone()),
     )
-    .map_err(|e| format!("Failed to build query cell: {}", e))?;
+    .map_err(|e| format!("Failed to build query cell: {e}"))?;
 
     let items: Vec<Value> = cellmap
         .snapshot()
         .into_iter()
         .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
         .collect();
+    drop(ctx);
 
     Ok(json!({
         "query_id": query_id,
@@ -390,19 +417,19 @@ fn in_process_execute_query(
 }
 
 fn in_process_execute_view(
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     view_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
     let registration = inventory::iter::<ViewRegistration>
         .into_iter()
         .find(|r| r.view_id == view_id)
-        .ok_or_else(|| format!("View not found: {}", view_id))?;
+        .ok_or_else(|| format!("View not found: {view_id}"))?;
 
     let view_data = ctx
         .handler_registry
-        .get_view(view_id)
-        .ok_or_else(|| format!("View handler not registered: {}", view_id))?;
+        .view(view_id)
+        .ok_or_else(|| format!("View handler not registered: {view_id}"))?;
 
     let mut view_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -414,20 +441,21 @@ fn in_process_execute_view(
         );
     }
 
-    let parsed = (view_data.parse)(view_json)
-        .map_err(|e| format!("Failed to parse view {}: {}", view_id, e))?;
+    let parsed =
+        (view_data.parse)(view_json).map_err(|e| format!("Failed to parse view {view_id}: {e}"))?;
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
     let cellmap =
         (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
-            .map_err(|e| format!("Failed to build view cell: {}", e))?;
+            .map_err(|e| format!("Failed to build view cell: {e}"))?;
 
     let items: Vec<Value> = cellmap
         .snapshot()
         .into_iter()
         .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
         .collect();
+    drop(ctx);
 
     Ok(json!({
         "view_id": view_id,
@@ -438,19 +466,19 @@ fn in_process_execute_view(
 }
 
 async fn in_process_execute_report(
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     report_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
     let registration = inventory::iter::<ReportRegistration>
         .into_iter()
         .find(|r| r.report_id == report_id)
-        .ok_or_else(|| format!("Report not found: {}", report_id))?;
+        .ok_or_else(|| format!("Report not found: {report_id}"))?;
 
     let report_data = ctx
         .handler_registry
-        .get_report(report_id)
-        .ok_or_else(|| format!("Report handler not registered: {}", report_id))?;
+        .report(report_id)
+        .ok_or_else(|| format!("Report handler not registered: {report_id}"))?;
 
     let mut report_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -459,12 +487,12 @@ async fn in_process_execute_report(
     }
 
     let parsed = (report_data.parse)(report_json)
-        .map_err(|e| format!("Failed to parse report {}: {}", report_id, e))?;
+        .map_err(|e| format!("Failed to parse report {report_id}: {e}"))?;
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
     let cell = (report_data.cell_factory)(parsed, request_context, ctx)
-        .map_err(|e| format!("Failed to build report cell: {}", e))?;
+        .map_err(|e| format!("Failed to build report cell: {e}"))?;
 
     // Subscribe to drive reactive evaluation; capture the first emission.
     let (tx_resp, rx_resp) = oneshot::channel::<Value>();
@@ -472,7 +500,7 @@ async fn in_process_execute_report(
     let tx_resp_sub = tx_resp.clone();
     let _guard = cell.subscribe(move |signal| {
         if let hyphae::Signal::Value(output) = signal
-            && let Some(sender) = tx_resp_sub.lock().unwrap().take()
+            && let Some(sender) = take_mutex(&tx_resp_sub)
         {
             let _ = sender.send(output.to_value());
         }
@@ -490,7 +518,7 @@ async fn in_process_execute_report(
 }
 
 fn in_process_execute_command(
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     command_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
@@ -503,9 +531,9 @@ fn in_process_execute_command(
     for registration in inventory::iter::<CommandHandlerRegistration> {
         if registration.command_id == command_id {
             let executor = (registration.factory)();
-            let req = Arc::new(RequestContext::internal(tx.clone(), ctx.host_id, "mcp"));
+            let req = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
             let cmd_id: Arc<str> = Arc::from(command_id);
-            let cmd_ctx = CommandContext::new(cmd_id, req, ctx.clone());
+            let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
 
             return match executor.execute_from_value(command_json, cmd_ctx) {
                 Ok(result) => Ok(json!({
@@ -518,7 +546,7 @@ fn in_process_execute_command(
         }
     }
 
-    Err(format!("Command handler not found: {}", command_id))
+    Err(format!("Command handler not found: {command_id}"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

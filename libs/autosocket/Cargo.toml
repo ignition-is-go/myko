@@ -6,6 +6,9 @@ description = "Auto-reconnecting WebSocket transport adapters shared by myko cli
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/ignition-is-go/myko"
 
+[lints]
+workspace = true
+
 [package.metadata.flux]
 tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
@@ -13,7 +16,6 @@ tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 tracing.workspace = true
 url.workspace = true
 serde.workspace = true
-ts-rs = { workspace = true, features = ["serde-json-impl"] }
 hyphae.workspace = true
 flume.workspace = true
 

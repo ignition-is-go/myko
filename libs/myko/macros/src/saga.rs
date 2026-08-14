@@ -6,7 +6,7 @@ use syn::ItemStruct;
 ///
 /// `#[myko_saga]` on a struct generates a `Saga` implementation that delegates
 /// business logic to `impl SagaHandler for Struct`.
-pub fn myko_saga_impl(attr: TokenStream, input_struct: ItemStruct) -> TokenStream {
+pub fn myko_saga_impl(attr: &TokenStream, input_struct: &ItemStruct) -> TokenStream {
     if !attr.is_empty() {
         return syn::Error::new(
             proc_macro2::Span::call_site(),

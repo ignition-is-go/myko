@@ -1,7 +1,7 @@
 //! OTLP dispatch-rate counters for commands/queries/reports/views.
 //!
 //! Mirrors the `entity_set_stats.rs`/`report_cache_stats.rs` idiom but
-//! reports through OTel `Counter`s instead of a periodic log line, so a
+//! reports through `OTel` `Counter`s instead of a periodic log line, so a
 //! dashboard can compute per-second rates and slice by tag (command/query/
 //! report/view id, and dispatch origin) instead of grepping logs.
 //!
@@ -49,6 +49,7 @@ macro_rules! response_counter {
 }
 
 /// One increment per command execution, tagged by `command` id and `source`
+///
 /// — `"external"` for commands arriving pre-serialized via
 /// `CommandExecutorAdapter::execute_from_value` (the funnel for both
 /// native-WS command dispatch and MCP HTTP/WS in-process tool calls), vs

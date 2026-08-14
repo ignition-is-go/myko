@@ -2,14 +2,14 @@
 
 use std::{any::Any, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt, MaterializeDefinite};
+use hyphae::{Cell, CellImmutable, MapExt, Materialize};
 use serde_json::Value;
 
 use super::{
     request::ReportRequest,
     traits::{AnyReport, ReportParams},
 };
-use crate::{common::to_value::ToValue, request::RequestContext, server::CellServerCtx};
+use crate::{common::to_value::ToValue, request::RequestContext, server::MykoServerContext};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AnyOutput - Type-erased output for the WebSocket layer
@@ -32,8 +32,7 @@ impl<T: ToValue + std::fmt::Debug + PartialEq + Send + Sync + 'static> AnyOutput
         other
             .as_any()
             .downcast_ref::<Self>()
-            .map(|typed| self == typed)
-            .unwrap_or(false)
+            .is_some_and(|typed| self == typed)
     }
 }
 
@@ -51,11 +50,11 @@ impl PartialEq for dyn AnyOutput {
 pub type ReportParseFn = fn(Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 
 /// Type-erased cell factory for reports.
-/// Takes a typed report, registry, and host_id, returns a cell of type-erased output.
+/// Takes a typed report, registry, and `host_id`, returns a cell of type-erased output.
 pub type ReportCellFactory = fn(
     Arc<dyn AnyReport>,
     Arc<RequestContext>,
-    Arc<CellServerCtx>,
+    Arc<MykoServerContext>,
 ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,11 +66,11 @@ inventory::collect!(ReportRegistration);
 /// Registration entry for a report type.
 /// Collected via inventory for automatic discovery.
 pub struct ReportRegistration {
-    /// Report identifier (e.g., "ServerStats")
+    /// Report identifier (e.g., "`ServerStats`")
     pub report_id: &'static str,
-    /// Crate where this report is defined (for type_gen filtering)
+    /// Crate where this report is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
-    /// Output type name (e.g., "ServerStatsOutput")
+    /// Output type name (e.g., "`ServerStatsOutput`")
     pub output_type: &'static str,
     /// Crate where the output type is defined
     pub output_type_crate: &'static str,
@@ -96,13 +95,21 @@ pub struct ReportRegistration {
 /// so user-defined reports automatically get `parse` and `cell_factory` methods.
 pub trait ReportFactory: ReportParams {
     /// Parse JSON into this report type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn parse(value: Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 
     /// Create a reactive cell for this report.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn cell_factory(
         report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 }
 
@@ -115,19 +122,14 @@ impl<R: ReportParams> ReportFactory for R {
     fn cell_factory(
         any_report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
         // Downcast to the ReportRequest wrapper
         let any_ref: &dyn Any = any_report.as_ref();
-        let request: ReportRequest<R> = any_ref
-            .downcast_ref::<ReportRequest<R>>()
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "Failed to downcast report to ReportRequest<{}>",
-                    R::report_id_static()
-                )
-            })?;
+        let request: ReportRequest<R> = crate::common::downcast::downcast_request(
+            any_ref,
+            &format!("report to ReportRequest<{}>", R::report_id_static()),
+        )?;
 
         let report_id = R::report_id_static();
 
@@ -139,9 +141,9 @@ impl<R: ReportParams> ReportFactory for R {
         let cell = server_ctx.report(request.report, request_ctx);
 
         // Map to type-erased output for the WS/report subscription layer.
-        let report_name = format!("report:{}", report_id);
+        let report_name = format!("report:{report_id}");
         Ok(cell
-            .map(|output| output.clone() as Arc<dyn AnyOutput>)
+            .map(|output| -> Arc<dyn AnyOutput> { output.clone() })
             .materialize()
             .with_name(report_name.as_str()))
     }

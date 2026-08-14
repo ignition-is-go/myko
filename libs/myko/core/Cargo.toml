@@ -8,16 +8,18 @@ documentation = "https://docs.rs/myko"
 homepage = "https://docs.rs/myko"
 repository = "https://github.com/ignition-is-go/myko"
 
+[lints]
+workspace = true
 
 [package.metadata.flux]
 tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
+num-traits.workspace = true
 # Core deps (available on all targets)
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-partially.workspace = true
 futures.workspace = true
 async-stream.workspace = true
 async-trait.workspace = true
@@ -36,7 +38,11 @@ anyhow.workspace = true
 # concern (RUST_LOG / an OTLP exporter), not a build-time one.
 tracing.workspace = true
 autosocket.workspace = true
-ts-rs = { workspace = true, features = ["serde-json-impl"] }
+ts-rs = { workspace = true, optional = true }
+# Numeric newtype for foreign entity fields that need real ordering over
+# floats (e.g. a downstream Keyframe's `position: OrderedFloat<f64>`).
+# TypeScript support is activated only by the TypeScript codegen feature.
+ordered-float = { version = "5", features = ["serde"], optional = true }
 inventory = "0.3.24"
 flume.workspace = true
 hyphae.workspace = true
@@ -81,27 +87,38 @@ name = "dyn_vs_typed"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "advanced_query_filters"
+harness = false
+required-features = ["bench"]
+
 [features]
 default = []
 bench = []
 doc-gen = []
-# TypeScript codegen (dprint-plugin-typescript + swc). Required only by the
-# typegen/docgen binaries. Enabling this pulls ~8s of compile time onto the
-# critical path via the swc parser tree.
-codegen = ["dep:dprint-plugin-typescript", "ts-export"]
 # Full-text entity search. Used to gate the tantivy backend; with tantivy
 # replaced by the typed in-memory index, the feature now activates the real
 # `SearchIndex` over the no-op stub. Kept as a feature so downstream crates
 # (myko-server) opt in explicitly and so non-search builds — entity-only
 # crates that just want types — continue to compile against the stub.
 search = []
-# When enabled, myko's proc-macros emit `#[derive(ts_rs::TS)]` and keep
-# `#[ts(...)]` field attributes. Off by default — entity crates compile
-# ~319 fewer `impl TS for _` blocks each, saving meaningful time in the
-# entity-crate fan-out phase. Activated transitively by `codegen` (typegen
-# needs the TS impls) and propagated through entity crates via their own
-# `ts-export` feature forwards (see downstream entity-crate umbrellas).
-ts-export = []
+# Language-neutral type registration and module IR.
+typegen = []
+# Compile-time TypeScript adapter: derive support, export callbacks, renderer,
+# formatter, and typegen/docgen binaries. Runtime/default Myko builds do not
+# compile or link ts-rs or dprint.
+codegen-ts = [
+  "typegen",
+  "dep:ts-rs",
+  "dep:dprint-plugin-typescript",
+  "ts-rs/serde-compat",
+  "ts-rs/serde-json-impl",
+  "ts-rs/chrono-impl",
+  "ts-rs/uuid-impl",
+  "ts-rs/no-serde-warnings",
+  "ts-rs/ordered-float-impl",
+]
+
 # Instrument the reactive hot path for EXTERNAL profilers: hyphae's
 # `#[inline(never)]` propagation boundaries (so samplers resolve
 # notify/write_value/fanout as distinct frames instead of one folded symbol)
@@ -116,18 +133,21 @@ ts-export = []
 # always-on and NOT gated by this feature, so external tooling can follow the
 # work without turning anything on.
 profiling = ["hyphae/profiling"]
+# Filterable support for ordered_float::OrderedFloat<f32>/<f64> entity fields.
+# The TypeScript adapter is enabled by `codegen-ts`, not this feature.
+ordered-float = ["dep:ordered-float"]
 
 # Umbrella for CI's `cargo test`/`clippy` runs: every feature that gates real
 # behavior worth exercising, *except* `bench` — bench_entities/criterion are
 # for local profiling, not routine CI (see flux.toml's `test` task).
-ci = ["codegen", "search", "ts-export", "profiling", "doc-gen"]
+ci = ["codegen-ts", "search", "profiling", "doc-gen", "ordered-float"]
 
-# Typegen/docgen bins need the codegen feature — declared explicitly so
+# Typegen/docgen bins need the TypeScript adapter — declared explicitly so
 # `cargo build -p myko` doesn't try to compile them without the feature.
 [[bin]]
 name = "typegen"
-required-features = ["codegen"]
+required-features = ["codegen-ts"]
 
 [[bin]]
 name = "docgen"
-required-features = ["codegen"]
+required-features = ["codegen-ts"]

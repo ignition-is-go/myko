@@ -1,10 +1,11 @@
 //! Report types and registration.
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod cell;
+// The export request/output types are plain serde types and compile on wasm so
+// the client can request `ExportEntityTree`; only server-side computation stays
+// gated inside the implementation. The legacy CellReport module intentionally
+// remains removed in favor of the unified report API.
 pub mod export_tree;
 mod handler;
-#[cfg(not(target_arch = "wasm32"))]
 mod registration;
 mod request;
 mod traits;
@@ -23,7 +24,6 @@ pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 pub use handler::{ReportContext, ReportHandler};
 // Re-export registration types (server-only)
-#[cfg(not(target_arch = "wasm32"))]
 pub use registration::{
     AnyOutput, ReportCellFactory, ReportFactory, ReportParseFn, ReportRegistration,
 };
