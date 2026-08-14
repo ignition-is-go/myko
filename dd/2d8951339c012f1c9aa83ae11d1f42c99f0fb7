@@ -1,0 +1,9 @@
+¦ditem©dbodyy1Migrate only the Git-distributed `myko-gpui` bridge and its browser example to an exact corrected crates.io `gpui-unofficial` package-family release, after the `hyphae-gpui` bridge is migrated and reachable.
+
+Scope and acceptance:
+- Leave Myko core/server/Leptos behavior unchanged.
+- Update direct GPUI/platform aliases and relevant root/web locks while preserving native backend and test-support features.
+- Resolve Myko and Hyphae bridges against exactly one registry-backed GPUI identity with no Zed GPUI Git source.
+- Regenerate final locks without temporary local bridge patches.
+- Pass focused native tests, strict Clippy, library WASM checking, Trunk build, and browser smoke validation.
+- Wait for iamnbutler/gpui-unofficial#243 to be fixed and published; do not use a Git, path, or vendored GPUI workaround.gcreatedx2026-08-14T22:53:15.965458ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx 87b7cf8adad2485097c64df208cfafefflabelsƒdgpuiimigrationdwasmhprioritybP1iprojectIdx de9416570df4447d8687b0103b13ae27etitlex.Migrate myko-gpui to crates.io gpui-unofficialjchangeTypecSEThitemTypedTaskicreatedAtx2026-08-14T22:53:15.965461Zbtxx$26ac8738-4dcd-4f37-9949-9d1f79a7dae6hsourceIdgmalcolm
