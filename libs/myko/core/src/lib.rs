@@ -141,10 +141,7 @@ pub use wire::event; // For #[derive(myko::TS)]
 /// especially WebAssembly clients, must not pay for inventory constructors.
 /// When the TypeScript backend is enabled, a separate adapter carries the
 /// `ts-rs` export callback.
-#[cfg(all(
-    feature = "codegen-ts",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(feature = "codegen-ts", not(target_arch = "wasm32")))]
 #[macro_export]
 macro_rules! register_typegen_type {
     ($ty:ty) => {
