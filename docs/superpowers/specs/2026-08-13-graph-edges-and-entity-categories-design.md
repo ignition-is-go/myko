@@ -1108,6 +1108,30 @@ edge IDs, while `is_reachable_to`/`is_reachable_from` and
 hop. Node and edge-work limits terminate dense hubs deterministically and set
 `truncated` for exhaustive results.
 
+`#[myko_edge]` generates live bounded-traversal reports for both endpoint
+orientations. Remote Rust callers use `watch_graph_traverse_from` and
+`watch_graph_traverse_to`; generated TypeScript binds the same reports without
+duplicating endpoint or report parameter types:
+
+```typescript
+const reachable = client.graph(WorkflowConnectionGraph)
+  .from(nodeId)
+  .traverse({
+    maxDepth: 8,
+    maxNodes: 10_000,
+    maxEdges: 50_000,
+    includeEdges: false,
+    scope: workflowId,
+  });
+```
+
+Direction defaults to forward from endpoint A and reverse from endpoint B.
+Scope IDs retain their generated TypeScript ID type. The report subscribes to
+incremental canonical edge diffs and reruns the bounded server traversal when
+that edge type changes; only the bounded `TraversalResult` crosses the wire.
+This removes client-side graph hydration and custom report boilerplate without
+claiming an incrementally maintained transitive closure.
+
 Live reachability is a separate algorithmic feature. Edge removal, cycles, and
 multiple supporting paths require reference counts or recomputation. It should
 not be silently implemented as a chain of one-hop subscriptions.

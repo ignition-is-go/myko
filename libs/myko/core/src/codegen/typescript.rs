@@ -126,6 +126,10 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
     let b = &edge.endpoints[1];
     let a_type = endpoint_address_type((a.requirement)(), (a.qualifier_type)().is_some());
     let b_type = endpoint_address_type((b.requirement)(), (b.qualifier_type)().is_some());
+    let scope_type = (edge.scope_type)().map_or_else(
+        || "never".to_string(),
+        |entity_type| format!("__MykoGraph{entity_type}Id"),
+    );
     let related_queries = edge.related_queries();
     let targets_from = match (related_queries.targets_from, (b.requirement)()) {
         (true, EndpointRequirement::Concrete(entity_type)) => {
@@ -182,6 +186,14 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
     format!(
         r#"export type {edge}AAddress = {a_type};
 export type {edge}BAddress = {b_type};
+export type {edge}GraphTraversalOptions = {{
+  direction?: Direction;
+  maxDepth: number;
+  maxNodes: number;
+  maxEdges?: number;
+  includeEdges?: boolean;
+  scope?: {scope_type};
+}};
 export class {edge}GraphFrom {{
   static readonly queryId = "{edge}GraphFrom" as const;
   static readonly queryItemType = "{edge}" as const;
@@ -301,6 +313,24 @@ export const {edge}Graph = {{
   countTo: (endpoint: {edge}BAddress) => new {edge}GraphCountTo({{ endpoint }}),
   countBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphCountBetween({{ a, b }}),
   existsBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphExistsBetween({{ a, b }}),
+  traverseFrom: (start: {edge}AAddress, options: {edge}GraphTraversalOptions) => new {edge}GraphTraverseFrom({{
+    start,
+    direction: options.direction ?? "forward",
+    maxDepth: options.maxDepth,
+    maxNodes: options.maxNodes,
+    maxEdges: options.maxEdges,
+    includeEdges: options.includeEdges ?? true,
+    scope: options.scope,
+  }}),
+  traverseTo: (start: {edge}BAddress, options: {edge}GraphTraversalOptions) => new {edge}GraphTraverseTo({{
+    start,
+    direction: options.direction ?? "reverse",
+    maxDepth: options.maxDepth,
+    maxNodes: options.maxNodes,
+    maxEdges: options.maxEdges,
+    includeEdges: options.includeEdges ?? true,
+    scope: options.scope,
+  }}),
   connect: (edge: {edge}) => new Connect{edge}({{ edge }}),
   connectMany: (edges: {edge}[]) => new Connect{edge}s({{ edges }}),
   ensure: (edge: {edge}) => new Ensure{edge}({{ edge }}),
@@ -309,6 +339,7 @@ export const {edge}Graph = {{
 }} as const;"#,
         edge = edge.edge_type,
         edge_literal = ts_literal(edge.edge_type),
+        scope_type = scope_type,
     )
 }
 
@@ -395,6 +426,7 @@ fn generate_graph_endpoint_imports(catalog: &GraphSchemaCatalog) -> String {
             | EndpointRequirement::Category(_)
             | EndpointRequirement::AnyRegisteredItem => None,
         })
+        .chain(catalog.edges.iter().filter_map(|edge| (edge.scope_type)()))
         .collect::<BTreeSet<_>>();
     let uses_entity_ref = catalog
         .edges
@@ -1360,6 +1392,13 @@ mod tests {
         assert!(rendered.contains("countFrom: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("new TagAssignmentGraphCountFrom({ endpoint })"));
         assert!(rendered.contains("new TagAssignmentGraphExistsBetween({ a, b })"));
+        assert!(rendered.contains("export type TagAssignmentGraphTraversalOptions"));
+        assert!(rendered.contains("scope?: never"));
+        assert!(rendered.contains("scope?: __MykoGraphGraphScopeId"));
+        assert!(rendered.contains("traverseFrom: (start: TagAssignmentAAddress"));
+        assert!(rendered.contains("new TagAssignmentGraphTraverseFrom"));
+        assert!(rendered.contains("traverseTo: (start: TagAssignmentBAddress"));
+        assert!(rendered.contains("direction: options.direction ?? \"reverse\""));
         assert!(rendered.contains("pairPolicy"));
         assert!(rendered.contains("aAdjacency"));
         assert!(rendered.contains("bAdjacency"));
@@ -1375,7 +1414,11 @@ mod tests {
         };
         let catalog = TypegenCatalog::collect(env!("CARGO_CRATE_NAME"));
         let graph = GraphSchemaCatalog::collect(env!("CARGO_CRATE_NAME"));
-        assert!(generate_item_types_for_catalogs(dir_str, &catalog, &graph).is_ok());
+        let generated = generate_item_types_for_catalogs(dir_str, &catalog, &graph);
+        assert!(
+            generated.is_ok(),
+            "graph bindings should generate: {generated:?}"
+        );
         let index = fs::read_to_string(dir.join("index.ts"));
         assert!(
             index.is_ok(),
@@ -1388,6 +1431,9 @@ mod tests {
         assert!(index.contains("declare readonly $res: () => number"));
         assert!(index.contains("export class TagAssignmentGraphExistsBetween"));
         assert!(index.contains("declare readonly $res: () => boolean"));
+        assert!(index.contains("export class TagAssignmentGraphTraverseFrom"));
+        assert!(index.contains("declare readonly $res: () => TraversalResult"));
+        assert!(index.contains("new TagAssignmentGraphTraverseFrom({"));
         assert!(index.contains("new TagAssignmentGraphCountFrom({ endpoint },)"));
         assert!(index.contains("new TagAssignmentGraphExistsBetween({ a, b },)"));
         let _ = fs::remove_dir_all(&dir);

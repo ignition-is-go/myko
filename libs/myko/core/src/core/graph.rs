@@ -1457,6 +1457,44 @@ where
     ) -> Self::ExistsBetweenReport;
 }
 
+/// Bounds and projections for generated remote traversal reports.
+///
+/// Depth and node bounds are mandatory so a client cannot accidentally issue
+/// an unbounded graph walk. `scope` accepts the scope ID's ordinary JSON form.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraversalReportOptions {
+    pub direction: Direction,
+    pub max_depth: usize,
+    pub max_nodes: usize,
+    pub max_edges: Option<usize>,
+    pub include_edges: bool,
+    pub scope: Option<serde_json::Value>,
+}
+
+/// Generated live bounded-traversal reports for one registered edge item.
+///
+/// Kept separate from [`GraphClientAggregates`] so downstream manual graph
+/// implementations remain source-compatible.
+pub trait GraphClientTraversals: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+{
+    type TraverseFromReport: crate::report::ReportParams
+        + crate::report::ReportOutputType<Output = TraversalResult>;
+    type TraverseToReport: crate::report::ReportParams
+        + crate::report::ReportOutputType<Output = TraversalResult>;
+
+    fn traverse_from_report(
+        start: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        options: TraversalReportOptions,
+    ) -> Self::TraverseFromReport;
+    fn traverse_to_report(
+        start: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+        options: TraversalReportOptions,
+    ) -> Self::TraverseToReport;
+}
+
 /// Generated command types for authoritative graph mutations.
 ///
 /// These commands use Myko's ordinary command protocol, so callers receive the
@@ -4064,7 +4102,9 @@ impl GraphIndex {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(crate = "crate::ts_rs")]
 pub enum Direction {
     #[default]
     Forward,
@@ -4072,7 +4112,9 @@ pub enum Direction {
     Both,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(crate = "crate::ts_rs")]
 pub struct TraversalPath {
     /// Ordered nodes from the traversal start through the matched target.
     pub nodes: Vec<EntityRef>,
@@ -4087,12 +4129,16 @@ impl TraversalPath {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(crate = "crate::ts_rs")]
 pub struct TraversalResult {
     pub nodes: Vec<EntityRef>,
     pub edge_ids: Vec<Arc<str>>,
     pub truncated: bool,
 }
+
+crate::register_typegen_type!(Direction, TraversalPath, TraversalResult);
 
 impl TraversalResult {
     #[must_use]
@@ -5028,7 +5074,8 @@ mod tests {
         }
     }
     use scoped_assignment::{
-        EnsureScopedTagAssignment, ScopedTagAssignment, ScopedTagAssignmentId,
+        EnsureScopedTagAssignment, ScopedTagAssignment, ScopedTagAssignmentGraphTraverseFrom,
+        ScopedTagAssignmentId,
     };
 
     mod restricted_edge {
@@ -5103,7 +5150,8 @@ mod tests {
         ForwardIndexedAssignmentGraphExistsBetween, ForwardIndexedAssignmentGraphFrom,
         ForwardIndexedAssignmentGraphSourcesTo, ForwardIndexedAssignmentGraphTargetsFrom,
         ForwardIndexedAssignmentGraphTargetsFromMany, ForwardIndexedAssignmentGraphTo,
-        ForwardIndexedAssignmentGraphToId, ForwardIndexedAssignmentId,
+        ForwardIndexedAssignmentGraphToId, ForwardIndexedAssignmentGraphTraverseFrom,
+        ForwardIndexedAssignmentGraphTraverseTo, ForwardIndexedAssignmentId,
     };
 
     mod article_link {
@@ -6791,6 +6839,44 @@ mod tests {
             &ArticleId,
         ) -> hyphae::Cell<Option<bool>, hyphae::CellImmutable> =
             MykoClient::watch_graph_exists_between::<ForwardIndexedAssignment>;
+        let traverse_from: fn(
+            &MykoClient,
+            &TagId,
+            TraversalReportOptions,
+        )
+            -> hyphae::Cell<Option<TraversalResult>, hyphae::CellImmutable> =
+            MykoClient::watch_graph_traverse_from::<ForwardIndexedAssignment>;
+        let traverse_to: fn(
+            &MykoClient,
+            &ArticleId,
+            TraversalReportOptions,
+        )
+            -> hyphae::Cell<Option<TraversalResult>, hyphae::CellImmutable> =
+            MykoClient::watch_graph_traverse_to::<ForwardIndexedAssignment>;
+        let generated_from: ForwardIndexedAssignmentGraphTraverseFrom =
+            <ForwardIndexedAssignment as GraphClientTraversals>::traverse_from_report(
+                &TagId::from("tag"),
+                TraversalReportOptions {
+                    direction: Direction::Forward,
+                    max_depth: 2,
+                    max_nodes: 64,
+                    max_edges: Some(256),
+                    include_edges: false,
+                    scope: None,
+                },
+            );
+        let generated_to: ForwardIndexedAssignmentGraphTraverseTo =
+            <ForwardIndexedAssignment as GraphClientTraversals>::traverse_to_report(
+                &ArticleId::from("article"),
+                TraversalReportOptions {
+                    direction: Direction::Reverse,
+                    max_depth: 2,
+                    max_nodes: 64,
+                    max_edges: None,
+                    include_edges: true,
+                    scope: None,
+                },
+            );
         std::hint::black_box((
             from,
             from_many,
@@ -6802,6 +6888,10 @@ mod tests {
             sources_to_many,
             neighbors,
             between,
+            traverse_from,
+            traverse_to,
+            generated_from,
+            generated_to,
             from_windowed,
             from_many_windowed,
             to_windowed,
@@ -6893,6 +6983,124 @@ mod tests {
 
         assert!(context.del(&moved).is_ok());
         assert_eq!(*count_to.get(), 0);
+    }
+
+    #[test]
+    fn generated_graph_traversal_reports_are_bounded_and_live() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "traversal-report".into(),
+            id: TagId::from("tag-traversal-report"),
+        };
+        let article = Article {
+            title: "Traversal report".into(),
+            id: ArticleId::from("article-traversal-report"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            Uuid::new_v4().to_string().into(),
+            "graph-traversal-report-test".into(),
+            context.host_id,
+        ));
+        let report = context.report(
+            ForwardIndexedAssignmentGraphTraverseFrom {
+                start: tag.id.clone(),
+                direction: Direction::Forward,
+                max_depth: 1,
+                max_nodes: 8,
+                max_edges: Some(8),
+                include_edges: false,
+                scope: None,
+            },
+            request,
+        );
+        assert!(report.get().nodes.is_empty());
+
+        let edge = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("traversal-report-edge"),
+        };
+        assert!(context.set(&edge).is_ok());
+        assert_eq!(report.get().nodes, vec![EntityRef::from(&article)]);
+        assert!(report.get().edge_ids.is_empty());
+        assert!(!report.get().truncated);
+
+        assert!(context.del(&edge).is_ok());
+        assert!(report.get().nodes.is_empty());
+    }
+
+    #[test]
+    fn generated_graph_traversal_reports_preserve_typed_scope_values() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let scope = GraphScope {
+            name: "included".to_string(),
+            id: GraphScopeId::from("scope-included"),
+        };
+        let other_scope = GraphScope {
+            name: "excluded".to_string(),
+            id: GraphScopeId::from("scope-excluded"),
+        };
+        let tag = Tag {
+            name: "scoped-traversal-report".into(),
+            id: TagId::from("tag-scoped-traversal-report"),
+        };
+        let included = Article {
+            title: "Included".into(),
+            id: ArticleId::from("article-scoped-included"),
+        };
+        let excluded = Article {
+            title: "Excluded".into(),
+            id: ArticleId::from("article-scoped-excluded"),
+        };
+        assert!(context.set(&scope).is_ok());
+        assert!(context.set(&other_scope).is_ok());
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&included).is_ok());
+        assert!(context.set(&excluded).is_ok());
+        assert!(
+            context
+                .set(&ScopedTagAssignment {
+                    scope_id: scope.id.clone(),
+                    tag_id: tag.id.clone(),
+                    article_id: included.id.clone(),
+                    id: ScopedTagAssignmentId::from("scoped-included-edge"),
+                })
+                .is_ok()
+        );
+        assert!(
+            context
+                .set(&ScopedTagAssignment {
+                    scope_id: other_scope.id.clone(),
+                    tag_id: tag.id.clone(),
+                    article_id: excluded.id.clone(),
+                    id: ScopedTagAssignmentId::from("scoped-excluded-edge"),
+                })
+                .is_ok()
+        );
+
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            Uuid::new_v4().to_string().into(),
+            "graph-scoped-traversal-report-test".into(),
+            context.host_id,
+        ));
+        let report = context.report(
+            ScopedTagAssignmentGraphTraverseFrom {
+                start: tag.id,
+                direction: Direction::Forward,
+                max_depth: 1,
+                max_nodes: 8,
+                max_edges: Some(8),
+                include_edges: false,
+                scope: Some(serde_json::json!(scope.id)),
+            },
+            request,
+        );
+        assert_eq!(report.get().nodes, vec![EntityRef::from(&included)]);
     }
 
     #[test]

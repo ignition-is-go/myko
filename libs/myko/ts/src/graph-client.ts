@@ -135,6 +135,7 @@ type EndpointScope<
   RelatedKey extends PropertyKey,
   RelatedName extends string,
   CountKey extends PropertyKey,
+  TraversalKey extends PropertyKey,
 > = {
   readonly plan: GraphQueryPlan
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, EdgeKey>>
@@ -162,6 +163,13 @@ type EndpointScope<
   (CountKey extends keyof G
   ? { count: () => ReportState<MethodResult<G, CountKey>> }
   : object) &
+  (TraversalKey extends keyof G
+    ? {
+        traverse: (
+          options: MethodSecondArg<G, TraversalKey>,
+        ) => ReportState<MethodResult<G, TraversalKey>>
+      }
+    : object) &
   RelatedScope<G, RelatedKey, RelatedName>
 
 type BetweenScope<G> = {
@@ -191,10 +199,10 @@ type BatchScopes<G> = 'fromMany' extends keyof G
   ? {
       fromMany: (
         endpoints: MethodFirstArg<G, 'fromMany'>,
-      ) => EndpointScope<G, 'fromMany', never, 'targetsFromMany', 'targets', never>
+      ) => EndpointScope<G, 'fromMany', never, 'targetsFromMany', 'targets', never, never>
       toMany: (
         endpoints: MethodFirstArg<G, 'toMany'>,
-      ) => EndpointScope<G, 'toMany', never, 'sourcesToMany', 'sources', never>
+      ) => EndpointScope<G, 'toMany', never, 'sourcesToMany', 'sources', never, never>
     }
   : object
 
@@ -203,10 +211,10 @@ export type BoundGraph<G> = {
   readonly schema: GraphDescriptorSchema | null
   from: (
     endpoint: MethodFirstArg<G, 'from'>,
-  ) => EndpointScope<G, 'from', 'fromIds', 'targetsFrom', 'targets', 'countFrom'>
+  ) => EndpointScope<G, 'from', 'fromIds', 'targetsFrom', 'targets', 'countFrom', 'traverseFrom'>
   to: (
     endpoint: MethodFirstArg<G, 'to'>,
-  ) => EndpointScope<G, 'to', 'toIds', 'sourcesTo', 'sources', 'countTo'>
+  ) => EndpointScope<G, 'to', 'toIds', 'sourcesTo', 'sources', 'countTo', 'traverseTo'>
   between: (
     a: MethodFirstArg<G, 'between'>,
     b: MethodArgs<G, 'between'> extends [unknown, infer B, ...unknown[]]
@@ -413,6 +421,7 @@ export function bindGraph<G extends object>(
     relatedKey: string,
     relatedName: 'targets' | 'sources',
     countKey: string | null,
+    traversalKey: string | null,
     args: unknown[],
     plan: GraphQueryPlan,
   ) => {
@@ -467,6 +476,10 @@ export function bindGraph<G extends object>(
     if (countKey) {
       scope.count = () => reportState(countKey, args)
     }
+    if (traversalKey && traversalKey in graph) {
+      scope.traverse = (options: unknown) =>
+        reportState(traversalKey, [...args, options])
+    }
     return scope
   }
 
@@ -480,6 +493,7 @@ export function bindGraph<G extends object>(
         'targetsFrom',
         'targets',
         'countFrom',
+        'traverseFrom',
         [value],
         plans.a,
       ),
@@ -491,6 +505,7 @@ export function bindGraph<G extends object>(
         'sourcesTo',
         'sources',
         'countTo',
+        'traverseTo',
         [value],
         plans.b,
       ),
@@ -541,6 +556,7 @@ export function bindGraph<G extends object>(
         'targetsFromMany',
         'targets',
         null,
+        null,
         [values],
         plans.a,
       )
@@ -551,6 +567,7 @@ export function bindGraph<G extends object>(
         null,
         'sourcesToMany',
         'sources',
+        null,
         null,
         [values],
         plans.b,

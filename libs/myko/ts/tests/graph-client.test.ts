@@ -12,6 +12,12 @@ import { LiveCollection, type LiveIndex } from '../src/live-collection.js'
 
 type Edge = { id: string; fromId: string; toId: string }
 type Node = { id: string; label: string }
+type TraversalResult = {
+  nodes: Array<{ entityType: string; id: string }>
+  edgeIds: string[]
+  truncated: boolean
+}
+type TraversalOptions = { maxDepth: number; maxNodes: number }
 
 function query<T>(queryId: string, value: Record<string, unknown>): Query<T> {
   return { queryId, queryItemType: queryId, query: value }
@@ -43,6 +49,10 @@ const graph = {
     report<number>('EdgeGraphCountBetween', { a, b }),
   existsBetween: (a: string, b: string) =>
     report<boolean>('EdgeGraphExistsBetween', { a, b }),
+  traverseFrom: (start: string, options: TraversalOptions) =>
+    report<TraversalResult>('EdgeGraphTraverseFrom', { start, ...options }),
+  traverseTo: (start: string, options: TraversalOptions) =>
+    report<TraversalResult>('EdgeGraphTraverseTo', { start, ...options }),
   connect: (edge: Edge) => command<void>('ConnectEdge', { edge }),
   connectMany: (edges: Edge[]) => command<number>('ConnectEdges', { edges }),
   ensure: (edge: Edge) => command<Edge>('EnsureEdge', { edge }),
@@ -114,6 +124,11 @@ describe('bindGraph', () => {
     expect(await firstValueFrom(typedEdges)).toBe(state)
     expect(await firstValueFrom(typedTargets)).toBe(nodeState)
     expect(await firstValueFrom(scoped.count())).toBe(3)
+    const traversed: Observable<TraversalResult> = scoped.traverse({
+      maxDepth: 3,
+      maxNodes: 100,
+    })
+    expect(await firstValueFrom(traversed)).toBe(3 as unknown as TraversalResult)
 
     const edge: Edge = { id: 'edge-a-b', fromId: 'node-a', toId: 'node-b' }
     await bound.connect(edge, { timeoutMs: 250 })
@@ -128,6 +143,11 @@ describe('bindGraph', () => {
         kind: 'report',
         id: 'EdgeGraphCountFrom',
         payload: { endpoint: 'node-a' },
+      },
+      {
+        kind: 'report',
+        id: 'EdgeGraphTraverseFrom',
+        payload: { start: 'node-a', maxDepth: 3, maxNodes: 100 },
       },
       {
         kind: 'command',

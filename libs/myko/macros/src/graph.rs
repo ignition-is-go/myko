@@ -515,6 +515,178 @@ fn graph_aggregate_tokens(
 }
 
 #[allow(clippy::too_many_lines)]
+fn graph_traversal_tokens(
+    ctx: &crate::DeriveCtx,
+    edge_name: &syn::Ident,
+    edge_type: &Type,
+) -> TokenStream {
+    let krate = &ctx.krate;
+    let a_address = format_ident!("{}AAddress", edge_name);
+    let b_address = format_ident!("{}BAddress", edge_name);
+    let traverse_from = format_ident!("{}GraphTraverseFrom", edge_name);
+    let traverse_to = format_ident!("{}GraphTraverseTo", edge_name);
+
+    quote! {
+        /// Live bounded traversal starting at endpoint A.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(#krate::graph::TraversalResult)]
+        pub struct #traverse_from {
+            pub start: #a_address,
+            pub direction: #krate::graph::Direction,
+            pub max_depth: usize,
+            pub max_nodes: usize,
+            pub max_edges: Option<usize>,
+            pub include_edges: bool,
+            pub scope: Option<#krate::serde_json::Value>,
+        }
+
+        impl #krate::prelude::ReportHandler for #traverse_from {
+            type Output = #krate::graph::TraversalResult;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<
+                std::sync::Arc<Self::Output>,
+                #krate::prelude::Definite,
+            > {
+                use #krate::prelude::{GraphQuerying, MapExt, RegistryScoped};
+                let start = self.start.clone();
+                let direction = self.direction;
+                let max_depth = self.max_depth;
+                let max_nodes = self.max_nodes;
+                let max_edges = self.max_edges;
+                let include_edges = self.include_edges;
+                let scope = self.scope.clone();
+                ctx.registry()
+                    .get_or_create(<#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC)
+                    .diffs()
+                    .map(move |_| {
+                        let mut traversal = ctx
+                            .traverse::<#edge_type>()
+                            .start_from(start.clone())
+                            .direction(direction)
+                            .max_depth(max_depth)
+                            .max_nodes(max_nodes);
+                        if let Some(max_edges) = max_edges {
+                            traversal = traversal.max_edges(max_edges);
+                        }
+                        if !include_edges {
+                            traversal = traversal.nodes_only();
+                        }
+                        let result = match scope.as_ref() {
+                            Some(scope) => traversal
+                                .within_scope(scope)
+                                .and_then(|value| value.execute()),
+                            None => traversal.execute(),
+                        };
+                        std::sync::Arc::new(result.unwrap_or_else(|_| #krate::graph::TraversalResult {
+                            truncated: true,
+                            ..#krate::graph::TraversalResult::default()
+                        }))
+                    })
+            }
+        }
+
+        /// Live bounded traversal starting at endpoint B.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(#krate::graph::TraversalResult)]
+        pub struct #traverse_to {
+            pub start: #b_address,
+            pub direction: #krate::graph::Direction,
+            pub max_depth: usize,
+            pub max_nodes: usize,
+            pub max_edges: Option<usize>,
+            pub include_edges: bool,
+            pub scope: Option<#krate::serde_json::Value>,
+        }
+
+        impl #krate::prelude::ReportHandler for #traverse_to {
+            type Output = #krate::graph::TraversalResult;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<
+                std::sync::Arc<Self::Output>,
+                #krate::prelude::Definite,
+            > {
+                use #krate::prelude::{GraphQuerying, MapExt, RegistryScoped};
+                let start = self.start.clone();
+                let direction = self.direction;
+                let max_depth = self.max_depth;
+                let max_nodes = self.max_nodes;
+                let max_edges = self.max_edges;
+                let include_edges = self.include_edges;
+                let scope = self.scope.clone();
+                ctx.registry()
+                    .get_or_create(<#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC)
+                    .diffs()
+                    .map(move |_| {
+                        let mut traversal = ctx
+                            .traverse::<#edge_type>()
+                            .start_to(start.clone())
+                            .direction(direction)
+                            .max_depth(max_depth)
+                            .max_nodes(max_nodes);
+                        if let Some(max_edges) = max_edges {
+                            traversal = traversal.max_edges(max_edges);
+                        }
+                        if !include_edges {
+                            traversal = traversal.nodes_only();
+                        }
+                        let result = match scope.as_ref() {
+                            Some(scope) => traversal
+                                .within_scope(scope)
+                                .and_then(|value| value.execute()),
+                            None => traversal.execute(),
+                        };
+                        std::sync::Arc::new(result.unwrap_or_else(|_| #krate::graph::TraversalResult {
+                            truncated: true,
+                            ..#krate::graph::TraversalResult::default()
+                        }))
+                    })
+            }
+        }
+
+        impl #krate::graph::GraphClientTraversals for #edge_type {
+            type TraverseFromReport = #traverse_from;
+            type TraverseToReport = #traverse_to;
+
+            fn traverse_from_report(
+                start: &#a_address,
+                options: #krate::graph::TraversalReportOptions,
+            ) -> Self::TraverseFromReport {
+                #traverse_from {
+                    start: start.clone(),
+                    direction: options.direction,
+                    max_depth: options.max_depth,
+                    max_nodes: options.max_nodes,
+                    max_edges: options.max_edges,
+                    include_edges: options.include_edges,
+                    scope: options.scope,
+                }
+            }
+
+            fn traverse_to_report(
+                start: &#b_address,
+                options: #krate::graph::TraversalReportOptions,
+            ) -> Self::TraverseToReport {
+                #traverse_to {
+                    start: start.clone(),
+                    direction: options.direction,
+                    max_depth: options.max_depth,
+                    max_nodes: options.max_nodes,
+                    max_edges: options.max_edges,
+                    include_edges: options.include_edges,
+                    scope: options.scope,
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn graph_mutation_tokens(
     ctx: &crate::DeriveCtx,
     edge_name: &syn::Ident,
@@ -1774,6 +1946,11 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         .map_or_else(TokenStream::new, |edge_name| {
             graph_aggregate_tokens(&ctx, edge_name, &edge_type)
         });
+    let graph_traversals = edge_name
+        .as_ref()
+        .map_or_else(TokenStream::new, |edge_name| {
+            graph_traversal_tokens(&ctx, edge_name, &edge_type)
+        });
 
     quote! {
         #input
@@ -1784,6 +1961,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         #neighbor_query
         #graph_mutations
         #graph_aggregates
+        #graph_traversals
 
         #krate::submit! {
             #krate::graph::EdgeRegistration {

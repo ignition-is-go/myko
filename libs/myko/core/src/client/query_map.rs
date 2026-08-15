@@ -568,6 +568,36 @@ impl MykoClient {
         self.watch_report::<E::ExistsBetweenReport, bool>(E::exists_between_report(a, b))
     }
 
+    /// Watch a live bounded traversal starting at endpoint A.
+    pub fn watch_graph_traverse_from<E>(
+        &self,
+        start: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        options: crate::graph::TraversalReportOptions,
+    ) -> Cell<Option<crate::graph::TraversalResult>, CellImmutable>
+    where
+        E: crate::graph::GraphClientTraversals,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_report::<E::TraverseFromReport, crate::graph::TraversalResult>(
+            E::traverse_from_report(start, options),
+        )
+    }
+
+    /// Watch a live bounded traversal starting at endpoint B.
+    pub fn watch_graph_traverse_to<E>(
+        &self,
+        start: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        options: crate::graph::TraversalReportOptions,
+    ) -> Cell<Option<crate::graph::TraversalResult>, CellImmutable>
+    where
+        E: crate::graph::GraphClientTraversals,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_report::<E::TraverseToReport, crate::graph::TraversalResult>(
+            E::traverse_to_report(start, options),
+        )
+    }
+
     /// Watch a query with per-entity reactive granularity.
     ///
     /// Unlike `watch_query` which returns `Cell<Vec<Arc<Item>>>` (re-notifies
