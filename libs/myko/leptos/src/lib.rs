@@ -95,6 +95,8 @@ where
 /// // loaded.get() == true && !projects.get().is_empty() →  render list
 /// ```
 pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
+/// A fine-grained keyed store and authoritative readiness signal.
+pub type LiveStoreSignals<T> = (CellMapStore<Arc<str>, Arc<T>>, ReadSignal<bool>);
 type QueryResultWatch<T> = myko::client::QueryWatch<T>;
 
 pub fn live_query_loaded<Q>(
@@ -307,12 +309,77 @@ where
         + 'static,
     <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
 {
+    live_query_store_loaded(query).0
+}
+
+/// Fine-grained reactive query store with authoritative response readiness.
+///
+/// `loaded` remains false for the local empty seed, becomes true after the
+/// server's sequence-zero snapshot (including an empty snapshot), and resets
+/// across reconnect epochs. Identical stores also share the core client's one
+/// wire subscription and decode path.
+pub fn live_query_store_loaded<Q>(query: Q) -> LiveStoreSignals<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + WithTypedId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static,
+    <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
+{
     use myko::client::MykoClient;
 
     let client = expect_context::<MykoClient>();
-    // hyphae owns the diff-driven per-key cells; `to_leptos_store` bridges them
-    // to per-entity Leptos signals tied to the current owner.
-    client.watch_query_map(query).to_leptos_store()
+    let watch = client.watch_query_map_state(query);
+    let store = watch.map().to_leptos_store();
+    let loaded = watch.ready().to_leptos_signal();
+    (store, loaded)
+}
+
+/// Fine-grained reactive view rows with stable per-row Leptos signals.
+///
+/// This is the view counterpart to [`live_query_store`]. It avoids rebuilding
+/// a whole `Vec` and waking every row when one joined row changes.
+pub fn live_view_store<V>(view: V) -> CellMapStore<Arc<str>, Arc<V::Item>>
+where
+    V: myko::core::view::ViewParams + Clone + Send + Sync + 'static,
+    V::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    live_view_store_loaded(view).0
+}
+
+/// Fine-grained reactive view store with authoritative response readiness.
+pub fn live_view_store_loaded<V>(view: V) -> LiveStoreSignals<V::Item>
+where
+    V: myko::core::view::ViewParams + Clone + Send + Sync + 'static,
+    V::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    use myko::client::MykoClient;
+
+    let client = expect_context::<MykoClient>();
+    let watch = client.watch_view_map_state(view);
+    let store = watch.map().to_leptos_store();
+    let loaded = watch.ready().to_leptos_signal();
+    (store, loaded)
 }
 
 /// Send a command to the Myko server and return a reactive signal with the result.
