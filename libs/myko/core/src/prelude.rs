@@ -31,7 +31,7 @@ pub use crate::{
     cache::{
         CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key,
     },
-    client::{MykoClient, QueryMapWatch},
+    client::{ListWatch, MykoClient, QueryMapWatch, QueryWatch, ViewWatch},
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,

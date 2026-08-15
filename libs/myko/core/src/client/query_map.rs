@@ -243,6 +243,8 @@ mod tests {
     use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable};
 
     use super::apply_incremental_map_update;
+    #[cfg(feature = "demo")]
+    use crate::entities::demo::GetDemoTasksWithStatus;
     use crate::{client::MykoClient, entities::client::GetAllClients};
 
     struct MockTransport {
@@ -414,6 +416,129 @@ mod tests {
             snapshot.first().map(|(id, _)| id.as_ref()),
             Some("client-2")
         );
+    }
+
+    #[test]
+    fn list_watch_readiness_tracks_authoritative_response_epochs() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        assert!(!watch.ready().get());
+        assert!(watch.items().get().is_empty());
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = transport.sent_frames();
+        let Some(WsFrame::Text(frame)) = frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        let tx = request
+            .pointer("/data/query/tx")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+
+        let empty = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": { "tx": &tx, "sequence": 0, "deletes": [], "upserts": [] }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(empty.to_string()));
+        assert!(
+            watch.ready().get(),
+            "an authoritative empty result is ready"
+        );
+        assert!(watch.items().get().is_empty());
+
+        transport.set_status(SocketConnectionStatus::Disconnected);
+        assert!(!watch.ready().get());
+        let delayed = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 1,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "stale-client",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(delayed.to_string()));
+        assert!(!watch.ready().get());
+        assert!(watch.items().get().is_empty());
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let restored = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "fresh-client",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+        assert!(watch.ready().get());
+        assert_eq!(watch.items().get().len(), 1);
+    }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn view_list_watch_does_not_treat_the_local_seed_as_ready() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_view_state(GetDemoTasksWithStatus {});
+        assert!(!watch.ready().get());
+        assert!(watch.items().get().is_empty());
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = transport.sent_frames();
+        let Some(WsFrame::Text(frame)) = frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        let tx = request
+            .pointer("/data/view/tx")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+
+        let empty = serde_json::json!({
+            "event": "ws:m:view-response",
+            "data": { "tx": &tx, "sequence": 0, "deletes": [], "upserts": [] }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(empty.to_string()));
+        assert!(watch.ready().get());
+
+        transport.set_status(SocketConnectionStatus::Disconnected);
+        assert!(!watch.ready().get());
     }
     #[test]
     fn malformed_initial_snapshot_is_atomic_and_does_not_become_ready() {

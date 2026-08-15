@@ -18,8 +18,8 @@ pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, Materialize, Mutable, SubscriptionGuard,
-    Watchable,
+    Cell, CellImmutable, CellMutable, CellValue, Gettable, MapExt, Materialize, Mutable,
+    SubscriptionGuard, Watchable,
 };
 pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -68,6 +68,38 @@ impl From<MykoProtocol> for u8 {
         }
     }
 }
+
+/// A live collection and the authoritative readiness of its current epoch.
+///
+/// `ready` is false until a valid sequence-zero snapshot arrives, resets on
+/// disconnect, and becomes true even when the authoritative result is empty.
+/// Existing list-only APIs remain available through [`Self::into_items`].
+pub struct ListWatch<T: CellValue> {
+    items: Cell<Vec<T>, CellImmutable>,
+    ready: Cell<bool, CellImmutable>,
+}
+
+impl<T: CellValue> ListWatch<T> {
+    #[must_use]
+    pub const fn items(&self) -> &Cell<Vec<T>, CellImmutable> {
+        &self.items
+    }
+
+    #[must_use]
+    pub const fn ready(&self) -> &Cell<bool, CellImmutable> {
+        &self.ready
+    }
+
+    #[must_use]
+    pub fn into_items(self) -> Cell<Vec<T>, CellImmutable> {
+        self.items
+    }
+}
+
+/// A query list watch with authoritative response readiness.
+pub type QueryWatch<T> = ListWatch<Arc<T>>;
+/// A view list watch with authoritative response readiness.
+pub type ViewWatch<T> = ListWatch<T>;
 
 /// Response handler for incoming command responses (one-shot).
 type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
@@ -1141,6 +1173,20 @@ impl MykoClient {
         Q: QueryParams + Clone,
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
+        self.watch_query_state(query).into_items()
+    }
+
+    /// Watch a query together with authoritative initial-response readiness.
+    ///
+    /// Unlike observing the locally seeded empty list, `ready` distinguishes a
+    /// pending subscription from a successful empty server response and resets
+    /// when a reconnect starts a new response-sequence epoch.
+    #[allow(clippy::too_many_lines)]
+    pub fn watch_query_state<Q>(&self, query: impl Into<QueryRequest<Q>>) -> QueryWatch<Q::Item>
+    where
+        Q: QueryParams + Clone,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+    {
         let supplied: QueryRequest<Q> = query.into();
         let query = QueryRequest::with_tx(supplied.query, next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
@@ -1149,10 +1195,17 @@ impl MykoClient {
 
         let cell = Cell::new(vec![]).with_name(query_id.as_ref());
         let cell_weak = cell.downgrade();
+        let ready =
+            Cell::<bool, CellMutable>::new(false).with_name(format!("query_ready:{query_id}"));
+        let ready_weak = ready.downgrade();
+        let ready_read = ready.clone().lock();
 
         let Ok(query_value) = serde_json::to_value(&query) else {
             error!("Could not serialize query request for {query_id}");
-            return cell.lock();
+            return QueryWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         let wrapped = WrappedQuery {
@@ -1164,87 +1217,122 @@ impl MykoClient {
 
         // State for accumulating query diffs
         let state: QueryState<Q::Item> = Arc::default();
+        let sequences = Arc::new(map_response::MapSequence::new());
+        let sequences_for_handler = Arc::clone(&sequences);
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
 
         // Register handler for query responses matching this tx
-        self.inner.query_handlers.insert(
-            tx.clone(),
-            Box::new(move |response_value: Value| {
-                let Some(cell_writer) = cell_weak.upgrade() else {
-                    warn!(
-                        "watch_query: weak cell dead for query={} tx={}",
-                        query_id_for_handler, tx_for_handler
+        let handler: QueryHandler = Box::new(move |response_value: Value| {
+            let Some(cell_writer) = cell_weak.upgrade() else {
+                warn!(
+                    "watch_query: weak cell dead for query={} tx={}",
+                    query_id_for_handler, tx_for_handler
+                );
+                return;
+            };
+
+            let response =
+                match serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        error!(
+                            "Rejected query '{query_id_for_handler}' malformed response: {error}"
+                        );
+                        return;
+                    }
+                };
+
+            if response.tx != tx_for_handler {
+                return;
+            }
+
+            let upserts = match map_response::decode_map_upserts::<Q::Item, _>(
+                response.upserts,
+                WithId::id,
+            ) {
+                Ok(upserts) => upserts,
+                Err(error) => {
+                    error!(
+                        "Rejected query '{}' response: invalid {} upsert: {}",
+                        query_id_for_handler,
+                        std::any::type_name::<Q::Item>(),
+                        error
                     );
                     return;
-                };
-
-                let Ok(response) =
-                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
-                else {
-                    return;
-                };
-
-                if response.tx != tx_for_handler {
-                    return;
                 }
+            };
+            if !sequences_for_handler.accept(response.sequence) {
+                error!(
+                    "Rejected query '{}' out-of-order sequence {}",
+                    query_id_for_handler, response.sequence
+                );
+                return;
+            }
 
-                let mut state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                if response.sequence == 0 {
-                    trace!("Sequence reset: Clearing {} state", query_id_for_handler);
-                    state.clear();
-                }
+            let is_initial_response = response.sequence == 0;
+            if is_initial_response {
+                trace!("Sequence reset: Clearing {} state", query_id_for_handler);
+                state.clear();
+            }
 
-                for upsert in response.upserts {
-                    match serde_json::from_value::<Q::Item>(upsert.item) {
-                        Ok(item) => {
-                            let item = Arc::new(item);
-                            state.insert(item.id().clone(), item);
-                        }
-                        Err(e) => error!(
-                            "Failed to parse query '{}' upsert as {}: {}",
-                            query_id_for_handler,
-                            std::any::type_name::<Q::Item>(),
-                            e
-                        ),
-                    }
-                }
+            for del in response.deletes {
+                state.remove(&del);
+            }
+            for (id, item) in upserts {
+                state.insert(id, item);
+            }
 
-                for del in response.deletes {
-                    state.remove(&del);
-                }
-
-                cell_writer.set(state.values().cloned().collect());
-            }),
-        );
+            cell_writer.set(state.values().cloned().collect());
+            drop(state);
+            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
+                ready_writer.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate query transaction {tx}");
+            return QueryWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
+        }
 
         // Build the frame to send (and re-send on reconnect)
         let msg = MykoMessage::Query(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode query request for {query_id}");
             self.inner.query_handlers.remove(&tx);
-            return cell.lock();
+            return QueryWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
+        let ready_for_status = ready.downgrade();
+        let sequences_for_status = sequences;
         let status_cell = self.connection_status();
         let send_query_id = query_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
-                match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
-                    },
-                    _ => {
-                        debug!("Query {send_query_id} disconnected");
                     }
+                } else {
+                    sequences_for_status.reset_epoch();
+                    if let Some(ready_writer) = ready_for_status.upgrade() {
+                        ready_writer.set(false);
+                    }
+                    debug!("Query {send_query_id} disconnected");
                 }
             }
         });
@@ -1252,7 +1340,10 @@ impl MykoClient {
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
 
-        cell.lock()
+        QueryWatch {
+            items: cell.lock(),
+            ready: ready_read,
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1378,90 +1469,146 @@ impl MykoClient {
         V: ViewParams + Clone,
         V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
+        self.watch_view_state(view).into_items()
+    }
+
+    /// Watch a view together with authoritative initial-response readiness.
+    #[allow(clippy::too_many_lines)]
+    pub fn watch_view_state<V>(&self, view: impl Into<ViewRequest<V>>) -> ViewWatch<V::Item>
+    where
+        V: ViewParams + Clone,
+        V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+    {
         let supplied: ViewRequest<V> = view.into();
         let view = ViewRequest::with_tx(supplied.view, next_subscription_tx());
         let tx: Arc<str> = view.tx.clone();
         let view_id = view.view.view_id();
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
         let cell_weak = cell.downgrade();
+        let ready =
+            Cell::<bool, CellMutable>::new(false).with_name(format!("view_ready:{view_id}"));
+        let ready_weak = ready.downgrade();
+        let ready_read = ready.clone().lock();
 
         let Ok(wrapped) = wrap_view(tx.clone(), &view.view) else {
             error!("Could not serialize view request for {view_id}");
-            return cell.lock();
+            return ViewWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         let msg = MykoMessage::View(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode view request for {view_id}");
-            return cell.lock();
+            return ViewWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         let state: Arc<Mutex<HashMap<Arc<str>, V::Item>>> = Arc::default();
+        let sequences = Arc::new(map_response::MapSequence::new());
+        let sequences_for_handler = Arc::clone(&sequences);
         let tx_for_handler = tx.clone();
         let view_id_for_handler = view_id.clone();
 
-        self.inner.query_handlers.insert(
-            tx.clone(),
-            Box::new(move |response_value: Value| {
-                let Some(cell_writer) = cell_weak.upgrade() else {
-                    return;
-                };
+        let handler: QueryHandler = Box::new(move |response_value: Value| {
+            let Some(cell_writer) = cell_weak.upgrade() else {
+                return;
+            };
 
-                let Ok(response) =
-                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
-                else {
-                    return;
-                };
-
-                if response.tx != tx_for_handler {
-                    return;
-                }
-
-                let mut state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                if response.sequence == 0 {
-                    trace!("Sequence reset: Clearing {} state", view_id_for_handler);
-                    state.clear();
-                }
-
-                for upsert in response.upserts {
-                    match serde_json::from_value::<V::Item>(upsert.item) {
-                        Ok(item) => {
-                            state.insert(item.id().clone(), item);
-                        }
-                        Err(e) => error!(
-                            "Failed to parse view '{}' upsert as {}: {}",
-                            view_id_for_handler,
-                            std::any::type_name::<V::Item>(),
-                            e
-                        ),
+            let response =
+                match serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        error!("Rejected view '{view_id_for_handler}' malformed response: {error}");
+                        return;
                     }
-                }
+                };
 
-                for del in response.deletes {
-                    state.remove(&del);
-                }
+            if response.tx != tx_for_handler {
+                return;
+            }
 
-                cell_writer.set(state.values().cloned().collect());
-            }),
-        );
+            let upserts = response
+                .upserts
+                .into_iter()
+                .map(|wrapped| {
+                    let item = serde_json::from_value::<V::Item>(wrapped.item)?;
+                    Ok((item.id(), item))
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>();
+            let upserts = match upserts {
+                Ok(upserts) => upserts,
+                Err(error) => {
+                    error!(
+                        "Rejected view '{}' response: invalid {} upsert: {}",
+                        view_id_for_handler,
+                        std::any::type_name::<V::Item>(),
+                        error
+                    );
+                    return;
+                }
+            };
+            if !sequences_for_handler.accept(response.sequence) {
+                error!(
+                    "Rejected view '{}' out-of-order sequence {}",
+                    view_id_for_handler, response.sequence
+                );
+                return;
+            }
+
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            let is_initial_response = response.sequence == 0;
+            if is_initial_response {
+                trace!("Sequence reset: Clearing {} state", view_id_for_handler);
+                state.clear();
+            }
+
+            for del in response.deletes {
+                state.remove(&del);
+            }
+            for (id, item) in upserts {
+                state.insert(id, item);
+            }
+
+            cell_writer.set(state.values().cloned().collect());
+            drop(state);
+            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
+                ready_writer.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate view transaction {tx}");
+            return ViewWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
+        }
 
         let socket = self.inner.socket.clone();
+        let ready_for_status = ready.downgrade();
+        let sequences_for_status = sequences;
         let status_cell = self.connection_status();
         let send_view_id = view_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
-                match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching view {send_view_id}"),
                         Err(e) => error!("Could not send view: {e:?}"),
-                    },
-                    _ => {
-                        debug!("View {send_view_id} disconnected");
                     }
+                } else {
+                    sequences_for_status.reset_epoch();
+                    if let Some(ready_writer) = ready_for_status.upgrade() {
+                        ready_writer.set(false);
+                    }
+                    debug!("View {send_view_id} disconnected");
                 }
             }
         });
@@ -1469,7 +1616,10 @@ impl MykoClient {
         cell.own(status_guard);
         cell.own(view_cancel_guard(tx, self.inner.clone()));
 
-        cell.lock()
+        ViewWatch {
+            items: cell.lock(),
+            ready: ready_read,
+        }
     }
 
     /// Watch a report and receive updates as a reactive Cell with an initial value.
