@@ -1781,6 +1781,31 @@ sparse relative to the edge store, and that gain is purchased with measurable
 write amplification. CI should retain the benchmark definitions; release
 qualification should rerun the full dataset/percentile matrix above.
 
+### 21.2 Diff-native client state
+
+Graph views frequently contain thousands of entities while most updates touch
+one row. The compatibility `watchQuery()` and `watchView()` APIs continue to
+emit defensive full arrays, but clients that render keyed rows can opt into
+`watchQueryState()` and `watchViewState()`. These APIs expose a stable keyed
+collection with loading/live/error state, revision and latest-change metadata,
+and a lazy array materialization cache. Identical state watches share the same
+wire subscription and collection instance. Framework adapters apply the same
+reset/upsert/delete primitive to their native reactive maps.
+
+`libs/myko/ts/benches/live-collection.ts` compares 1,000 one-row updates to a
+10,000-item result. Across three seven-sample runs on 2026-08-15:
+
+| client update path | median range | result |
+| --- | ---: | --- |
+| compatibility full-array emission and subscriber copy | 64.335–70.621 ms | baseline; performs full-result array work for every row update |
+| diff-native keyed state, no array consumer | 0.853–0.866 ms | 74.7–82.8× faster; work remains proportional to the changed rows |
+| lazy array requested twice per revision | 42.126–43.690 ms | 1.5–1.7× faster; one cached materialization replaces repeated full-array construction |
+
+The benchmark isolates client collection maintenance and excludes transport,
+decoding, and framework rendering. It demonstrates why generated graph clients
+should default row-oriented APIs to keyed state while retaining arrays as an
+explicit compatibility or presentation boundary.
+
 ## 22. Delivery phases
 
 ### Phase 1: schema and reflection
@@ -1867,6 +1892,9 @@ The graph-edge feature is acceptable when:
     suppressed per root, changing-value loops stop at explicit depth/work
     budgets, and loop termination produces actionable diagnostics instead of
     blocking persistence or spinning indefinitely.
+14. Generated clients can consume large graph results as stable keyed state with
+    work proportional to each diff, explicit lifecycle/error metadata, and lazy
+    array materialization; existing full-array APIs remain source-compatible.
 
 ## 24. Decision
 

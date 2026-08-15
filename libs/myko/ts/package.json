@@ -47,9 +47,10 @@
     "url": "https://github.com/ignition-is-go/myko"
   },
   "scripts": {
+    "bench:live-collection": "bun benches/live-collection.ts",
     "build": "tsc",
     "check": "tsc --noEmit --skipLibCheck",
-    "test": "echo 'no tests yet'"
+    "test": "bun test tests"
   },
   "type": "module",
   "types": "./src/index.ts",

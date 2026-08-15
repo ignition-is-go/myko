@@ -40,6 +40,7 @@ import {
   switchMap,
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
+import { LiveCollection } from './live-collection.js'
 
 // cbor-x's defaults emit several non-standard extensions (the "records" structure
 // compression, tag 259 for maps with non-string keys, typed-array tags) that other
@@ -391,6 +392,8 @@ export class MykoClient {
   private sharedViews = new Map<string, Observable<unknown>>()
   private sharedQueryDiffs = new Map<string, Observable<unknown>>()
   private sharedViewDiffs = new Map<string, Observable<unknown>>()
+  private sharedQueryStates = new Map<string, Observable<unknown>>()
+  private sharedViewStates = new Map<string, Observable<unknown>>()
   private sharedReports = new Map<string, Observable<unknown>>()
   private subscriptionStartMs = new Map<string, number>()
   private firstResponseLogged = new Set<string>()
@@ -1001,6 +1004,58 @@ export class MykoClient {
       })),
     )
     this.sharedViewDiffs.set(cacheKey, shared$)
+    return shared$
+  }
+
+  /**
+   * Watch a query as stable keyed state without rebuilding its full result array.
+   *
+   * Identical requests share both the wire subscription and collection instance.
+   * Use `toArray()` only where array rendering is required; `get()`, `items`, and
+   * `changes` remain O(changes) for incremental updates.
+   */
+  watchQueryState<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<LiveCollection<QueryItem<Q> & { id: string }>> {
+    type Item = QueryItem<Q> & { id: string }
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.sharedQueryStates.get(cacheKey)
+    if (existing) return existing as Observable<LiveCollection<Item>>
+
+    const state = new LiveCollection<Item>()
+    const shared$ = this.watchQueryDiff(query, options).pipe(
+      map((diff) => state.apply(diff as QueryDiff<Item>)),
+      catchError((error) => of(state.fail(error))),
+      finalize(() => {
+        this.sharedQueryStates.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedQueryStates.set(cacheKey, shared$)
+    return shared$
+  }
+
+  /** Watch a view as stable keyed state without full-array reconstruction. */
+  watchViewState<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<LiveCollection<ViewItem<V> & { id: string }>> {
+    type Item = ViewItem<V> & { id: string }
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.sharedViewStates.get(cacheKey)
+    if (existing) return existing as Observable<LiveCollection<Item>>
+
+    const state = new LiveCollection<Item>()
+    const shared$ = this.watchViewDiff(view, options).pipe(
+      map((diff) => state.apply(diff as QueryDiff<Item>)),
+      catchError((error) => of(state.fail(error))),
+      finalize(() => {
+        this.sharedViewStates.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedViewStates.set(cacheKey, shared$)
     return shared$
   }
 

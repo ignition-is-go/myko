@@ -14,6 +14,16 @@ export * from './generated'
 // Explicitly re-export type-only exports that don't come through `export *`
 export type { LogLevel }
 
+export {
+  applyCollectionDiff,
+  LiveCollection,
+  type CollectionChanges,
+  type CollectionDiff,
+  type Identified,
+  type LiveCollectionStatus,
+  type MutableKeyedCollection,
+} from './live-collection.js'
+
 /**
  * Get the item type name from an entity type or query class.
  *
