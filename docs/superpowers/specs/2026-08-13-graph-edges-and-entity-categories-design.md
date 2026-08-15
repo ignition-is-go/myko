@@ -234,8 +234,27 @@ fields. Its serialized field names, item type, ID, event history, persistence
 rows, ordinary CRUD, and generated query types must stay identical.
 
 Separate inventory registrations are required rather than adding mandatory
-fields to public registration structs. Adding a field to `ItemRegistration`
-would break downstream struct literals and previously expanded code.
+fields to public registration structs. Adding a field to `ItemRegistration` or
+`TypegenCatalog` would break downstream struct literals and previously expanded
+code. `GraphSchemaCatalog` is therefore collected separately and passed beside
+an ordinary `TypegenCatalog`; it is not a new required field on that catalog.
+
+The additive guarantee has two explicit levels:
+
+1. An application with no edge or category registrations keeps its existing
+   mutation path and runtime behavior. The empty graph registry must have a
+   single fast-path check and must not install stores, projections, locks, or
+   reactive subscriptions.
+2. Annotating an existing item as an edge preserves its serialized shape,
+   identity, persistence history, and ordinary generated APIs. The application
+   is deliberately opting into the declared graph validation, indexing, and
+   endpoint-lifecycle behavior; those new checks are not claimed to be
+   behaviorally invisible for that item.
+
+Myko's existing single-item and batch paths currently disagree about
+reduce/persist ordering. Normalizing non-graph mutations is desirable, but it
+is a separate runtime change with its own tests and release note, not a hidden
+prerequisite of this additive graph feature.
 
 ## 6. Downstream-defined entity categories
 
@@ -1043,9 +1062,10 @@ Plan selection and fallback must be observable in diagnostics and benchmarks.
 
 Edge invariants apply regardless of entry point. Typed SET, erased SET, generated
 CRUD, batches, WebSocket commands, and other authoritative local mutations all
-pass through an edge preflight hook selected by `EdgeRegistration` **before**
-persistence and store reduction. No public authoritative mutation path may
-bypass it.
+consult `EdgeRegistration`. A non-participating item takes the existing fast
+path unchanged. A participating edge, or an endpoint whose deletion has graph
+policy, passes through the graph coordinator; no public authoritative mutation
+path may bypass its preflight.
 
 The hook receives mutation mode plus old and new canonical values:
 
@@ -1075,7 +1095,63 @@ acceptance and is the safe first mode for annotating existing item types.
 Endpoint DEL passes through the same coordinator before persistence so
 `RestrictEndpointDelete` and incident-edge cascades cannot be bypassed.
 
-### 13.2 Authoritative uniqueness mechanism
+For a participating authoritative mutation, the coordinator orders work as:
+
+1. acquire the required canonical pair/shard locks and run preflight;
+2. open the Hyphae mutation batch and reduce canonical item state;
+3. update the derived graph projection to the same generation;
+4. enqueue persistence while the reactive batch is still closed;
+5. close the batch, publish reactive diffs, and drain relationship/cascade and
+   other downstream effects through the guarded causal work queue;
+6. release the mutation locks after canonical state, projection state, and the
+   persistence enqueue agree.
+
+This is intentionally **reduce, then persist**: accepted state becomes locally
+canonical immediately. Persistence is nevertheless enqueued before reactive
+query or relationship work can spin or delay it during a large import. A
+configuration with an acknowledged durability barrier may delay command
+acknowledgement, but it must not delay local reduction or graph publication.
+
+### 13.2 Causal loop protection
+
+Reduce-before-effects is part of loop safety, not only a latency choice. The
+existing relationship rules remain foundational:
+
+- a DEL removes the item before its cascades run, so canonical state is the
+  visited set and a delete cycle converges when it reaches an already absent
+  item;
+- bookkeeping mutations equivalent to `RelationshipFixup` do not start another
+  structural cascade;
+- statically detectable non-convergent creation cycles, such as recursive
+  `ensure_for` schemas that mint fresh IDs, are rejected at registration.
+
+Graph and relationship effects additionally run through one transaction-scoped
+causal work queue rather than unbounded recursive publication. Every derived
+mutation inherits a root transaction ID and records its cause, depth, and effect
+kind. The queue:
+
+1. suppresses an exact repeated transition identified by item type, item ID,
+   operation, and canonical content hash within the same root transaction;
+2. bounds causal depth and total derived mutations independently;
+3. preserves FIFO order within a root transaction while allowing independent
+   roots to proceed under the normal mutation locks;
+4. emits the complete causal chain and offending transition when a duplicate or
+   budget breach is detected.
+
+Exact-transition suppression does not treat every second write to an item as a
+loop: a genuinely different canonical value may progress. Depth and total-work
+budgets catch alternating or ever-changing cycles that never repeat an exact
+value. Synchronously derived mutations must propagate the causal token across
+relationship, graph, saga, and reactive-effect entry points; a mutation arriving
+later from an external client is a new root transaction.
+
+When a budget is exhausted, the coordinator stops scheduling further derived
+effects, returns a structured loop-protection error, and marks the causal chain
+in diagnostics. It does not roll back canonical mutations that were already
+reduced and enqueued for persistence. Operators can therefore distinguish a
+bounded partial cascade from an unavailable or silently spinning server.
+
+### 13.3 Authoritative uniqueness mechanism
 
 `PairPolicy::Unique` uses a mutation-authority reservation keyed by the complete
 canonical pair:
@@ -1092,21 +1168,23 @@ The server owns a striped pair-lock table. An authoritative single mutation
 acquires its pair lock; a pair-changing SET acquires old and new locks in sorted
 canonical order. A batch computes all affected keys, sorts/deduplicates them,
 and acquires them before validation. While held, preflight checks the canonical
-edge store plus other mutations in the same batch, persists accepted events,
-reduces the canonical stores, and updates graph projection state. Locks release
-only after the canonical store reflects the mutation.
+edge store plus other mutations in the same batch, reduces the canonical
+stores, updates graph projection state, and enqueues persistence before the
+reactive batch drains. Locks release only after canonical state, projection
+state, and the persistence enqueue agree.
 
-A persistence failure occurs before reduction and releases the reservation
-without changing canonical state. Graph projection updates are derived and
-infallible; a detected projection invariant violation marks that edge index
-unready and schedules rebuild rather than rolling back a durable canonical
-event.
+A persistence-enqueue failure occurs after local reduction. It returns an error
+without rolling back already visible canonical state; the mutation remains the
+uniqueness authority, and persistence health/retry machinery must expose and
+repair the durability gap. Graph projection updates are derived and infallible;
+a detected projection invariant violation marks that edge index unready and
+schedules rebuild rather than rolling back canonical state.
 
 This mechanism supports independent edge IDs and parallel payload-rich records
 while enforcing unique topology. A deterministic pair ID remains an optional
 idempotency strategy for new edge types, not the uniqueness authority.
 
-### 13.3 Application commands
+### 13.4 Application commands
 
 Myko does not generate a universal `Connect<Edge>` command because it cannot
 construct an arbitrary payload-bearing edge. Applications construct and
@@ -1116,7 +1194,7 @@ disconnect helpers, which require no payload factory.
 Runtime-dependent cardinality remains in the typed application validator; Myko
 cannot infer it solely from static schema metadata.
 
-### 13.4 Self-loops
+### 13.5 Self-loops
 
 ```rust
 pub enum SelfLoopPolicy {
@@ -1198,6 +1276,11 @@ pub struct GraphSchemaCatalog {
 }
 ```
 
+`GraphSchemaCatalog::collect*` mirrors the crate/group selection rules of
+`TypegenCatalog::collect*`. Renderers receive the two catalogs as separate
+inputs (or through a new wrapper type) so no required field is added to the
+existing public `TypegenCatalog` struct.
+
 Renderers consume end requirements, A/B positions, `Directed`/`Undirected`
 shape, qualifier types, pair policy, and available projections. No
 renderer-specific callback belongs in these neutral records.
@@ -1225,6 +1308,8 @@ Expose at least:
 - projection rebuild duration and version/lag;
 - invalid endpoint and qualifier counts;
 - cascade size and duration;
+- causal depth, derived-mutation count, duplicate-transition suppression, and
+  loop-budget exhaustion;
 - uniqueness/cardinality rejection counts.
 
 These metrics are necessary to decide whether eager adjacency is an efficiency
@@ -1466,6 +1551,11 @@ backs their implementation.
 - unqualified and qualified adjacency;
 - endpoint and qualifier updates remove old index entries;
 - self-loops are handled once per role/policy;
+- delete cycles converge through reduce-before-cascade semantics;
+- exact repeated transitions are suppressed within one causal chain;
+- alternating/non-repeating effect loops stop at configured depth or work
+  budgets and report the complete causal chain;
+- independent root transactions do not share duplicate-transition state;
 - batch SET/DEL produces atomically coherent adjacency publication;
 - replay/rebuild equals live-maintained state;
 - cascade, restrict, and dangling policies;
@@ -1499,6 +1589,10 @@ B. edge registration using demand-driven indexes;
 C. ordinary edge item plus eager forward/reverse adjacency;
 D. eager adjacency plus qualified and pair projections.
 
+Also compare a graph-capable build with zero graph registrations against the
+same workload before graph support. This isolates the cost of the empty-registry
+fast path and protects the no-opt-in compatibility boundary.
+
 Datasets:
 
 - uniform degree and Zipf/high-degree hubs;
@@ -1527,6 +1621,8 @@ Measurements:
 - allocations and CPU/cache behavior;
 - retained bytes per edge and per live subscription;
 - logical and physical writes per mutation;
+- mutation throughput and graph-shard/pair-lock wait time;
+- causal-guard overhead for shallow ordinary mutations and wide valid cascades;
 - cold backfill time and number of store scans;
 - steady diff latency and subscriber fanout;
 - replay/rebuild time;
@@ -1547,6 +1643,29 @@ Expected hypotheses:
 - Rich payload filtering reduces adjacency's advantage unless matching payload
   indexes also exist.
 - Hubs dominate output-size and fanout costs under every representation.
+- A graph-capable application with zero registrations should be statistically
+  indistinguishable from the existing mutation/query baseline.
+
+### 21.1 Initial implementation measurements
+
+`libs/myko/core/benches/graph.rs` is the executable acceptance matrix for the
+first implementation. A short Criterion run on 2026-08-14 (10 samples, 100 ms
+warmup, 200 ms measurement) produced:
+
+| scenario | baseline | graph path | result |
+| --- | ---: | ---: | ---: |
+| ordinary SET, catalog present versus disabled | 1.98–2.61 µs disabled | 2.07–2.81 µs catalog present | confidence intervals overlap; no detected regression |
+| 1,000-edge high-degree lookup returning 1,000 edges | 34.95–35.09 µs scan | 30.20–30.32 µs eager | about 1.16× faster; output materialization dominates |
+| 10,000-edge sparse lookup returning 10 edges | 424.2–425.9 µs scan | 373.0–374.5 ns eager | about 1,137× faster |
+| 1,000-edge batch write | 319.8–320.9 µs plain | 1.836–1.843 ms projected | about 5.7× write cost for validation, causal hashing, and four maintained projections |
+| two writers, 200 attempted unique-edge writes | n/a | 361–396 µs | bounded authority-lock contention, no uniqueness race |
+
+These are development-machine microbenchmarks, not release SLOs. They validate
+the intended shape of the trade: the non-participating path stays within noise,
+eager adjacency has a very large real gain when the selected neighborhood is
+sparse relative to the edge store, and that gain is purchased with measurable
+write amplification. CI should retain the benchmark definitions; release
+qualification should rerun the full dataset/percentile matrix above.
 
 ## 22. Delivery phases
 
@@ -1593,7 +1712,8 @@ The graph-edge feature is acceptable when:
 
 1. An application with no category or edge registrations has unchanged item,
    relationship, query, wire, persistence, generated-binding, and runtime
-   behavior.
+   behavior, installs no graph runtime state, and shows no material regression
+   in mutation throughput or allocation count.
 2. Two independent writers can add distinct incident edges without rewriting an
    endpoint item or losing either connection.
 3. Concrete endpoint misuse fails at compile time, while an erased endpoint
@@ -1610,14 +1730,27 @@ The graph-edge feature is acceptable when:
    version/lag information that consumers never mistake a partial rebuild for a
    complete graph.
 8. Edge and entity-category schema is emitted from the neutral aggregate
-   catalog and consumed by the active renderer without embedding renderer
-   callbacks in neutral registrations.
+   graph catalog and consumed beside the existing `TypegenCatalog` without
+   adding required fields or embedding renderer callbacks in neutral
+   registrations.
 9. Demand-driven adjacency is the default. An application selects eager
    adjacency only when benchmarks against the fully routed item baseline show a
    workload benefit within its retained-bytes-per-edge budget.
 10. The handler-context authority model remains sealed; downstream entity
     categories cannot grant querying, event-publishing, or graph-reading
     authority.
+11. Representative Rust and generated-client call sites can declare and query
+    concrete, category-constrained, and qualified edges without handwritten
+    entity/category/field-name strings or duplicate wire types.
+12. Participating authoritative mutations reduce canonical and graph state,
+    enqueue persistence before reactive work drains, and only then publish
+    downstream effects; tests cover persistence-enqueue failure and a
+    relationship workload that does not settle promptly.
+13. Every synchronously derived relationship, graph, saga, or reactive mutation
+    carries one root causal token. Delete cycles converge, exact transitions are
+    suppressed per root, changing-value loops stop at explicit depth/work
+    budgets, and loop termination produces actionable diagnostics instead of
+    blocking persistence or spinning indefinitely.
 
 ## 24. Decision
 
@@ -1629,4 +1762,7 @@ edge shape, and either end may independently be concrete or erased.
 
 No second storage, event, or persistence system is introduced. Demand-driven
 adjacency is the default; eager adjacency is opt-in. Index consolidation
-requires equivalence and performance evidence.
+requires equivalence and performance evidence. Graph schema remains in a
+separately collected catalog. Participating authoritative mutations use
+preflight, reduce/project, persistence enqueue, then guarded causal effect
+publication; the empty-registry path remains unchanged.
