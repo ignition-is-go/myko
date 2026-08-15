@@ -8,7 +8,7 @@ import type {
   Report,
 } from '../src/client.js'
 import { bindGraph } from '../src/graph-client.js'
-import { LiveCollection } from '../src/live-collection.js'
+import { LiveCollection, type LiveIndex } from '../src/live-collection.js'
 
 type Edge = { id: string; fromId: string; toId: string }
 type Node = { id: string; label: string }
@@ -111,5 +111,30 @@ describe('bindGraph', () => {
       .targets()
     expect(await firstValueFrom(typed)).toBe(collection)
     expect(ids).toEqual(['EdgeGraphTargetsFromMany'])
+  })
+
+  test('builds a stable incremental edge index for grouped endpoint rendering', async () => {
+    const state = new LiveCollection<Edge>().apply({
+      sequence: 0n,
+      deletes: [],
+      upserts: [
+        { id: 'edge-a-b', fromId: 'node-a', toId: 'node-b' },
+        { id: 'edge-a-c', fromId: 'node-a', toId: 'node-c' },
+        { id: 'edge-b-c', fromId: 'node-b', toId: 'node-c' },
+      ],
+    })
+    const client = {
+      watchQueryState() {
+        return of(state)
+      },
+    } as unknown as MykoClient
+    const bound = bindGraph(client, graph)
+    const grouped: Observable<LiveIndex<string, Edge>> = bound
+      .fromMany(['node-a', 'node-b'])
+      .edgesBy((edge) => edge.fromId)
+    const index = await firstValueFrom(grouped)
+
+    expect(index.get('node-a').size).toBe(2)
+    expect(index.get('node-b').size).toBe(1)
   })
 })

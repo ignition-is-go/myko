@@ -1856,6 +1856,37 @@ run measured:
 
 Both cases collapse 100 client/wire subscriptions to one logical subscription.
 
+### 21.4 Incremental client-side graph indexes
+
+A batched edge union often feeds a list, tree, or matrix grouped by one endpoint.
+Re-running `groupBy` over the entire union for every one-edge diff turns an
+otherwise incremental graph subscription back into O(result size) client work.
+`LiveIndex<K, T>` is a stable secondary index over `LiveCollection<T>`:
+
+- the first update groups the authoritative keyed snapshot;
+- consecutive revisions move, insert, or delete only changed item memberships;
+- prior keys are cached, so deleting or moving an item does not scan a bucket;
+- arrays are materialized and memoized independently per bucket;
+- `changes.keys` identifies only buckets affected by the latest revision;
+- loading, live, and terminal-error metadata follows the source collection;
+- skipped revisions trigger a safe rebuild from current authoritative state;
+- removed buckets are emptied before removal, keeping held map references safe.
+
+The client-bound graph scope exposes this as `edgesBy`:
+
+```ts
+const byTag$ = assignments
+  .fromMany(visibleTagIds)
+  .edgesBy((edge) => edge.tagId)
+
+// Observable<LiveIndex<TagId, TagAssignment>>
+```
+
+The `bench:live-collection` benchmark groups 10,000 edges while applying 1,000
+single-edge moves. Repeated 2026-08-15 development-machine runs measured
+537–547 ms for full regrouping and 2.70–3.10 ms for the incremental index,
+about 173–203× faster.
+
 ## 22. Delivery phases
 
 ### Phase 1: schema and reflection
@@ -1952,6 +1983,9 @@ The graph-edge feature is acceptable when:
     command construction. Array, diff, and keyed-state consumers of an identical
     immutable query share that same wire subscription until the final consumer
     releases it.
+16. Client applications can maintain stable endpoint-grouped graph results with
+    work proportional to changed memberships, lazy per-bucket arrays, and a
+    safe authoritative rebuild after any skipped revision.
 
 ## 24. Decision
 

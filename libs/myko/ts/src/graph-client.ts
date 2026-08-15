@@ -1,4 +1,4 @@
-import type { Observable } from 'rxjs'
+import { map, type Observable } from 'rxjs'
 
 import type {
   Command,
@@ -9,7 +9,7 @@ import type {
   Report,
   ReportResult,
 } from './client.js'
-import type { LiveCollection } from './live-collection.js'
+import { type LiveCollection, LiveIndex } from './live-collection.js'
 
 type MethodResult<G, K extends PropertyKey> = K extends keyof G
   ? G[K] extends (...args: never[]) => infer R
@@ -30,11 +30,15 @@ type MethodFirstArg<G, K extends PropertyKey> = MethodArgs<G, K> extends [
   ? A
   : never
 
-type QueryState<Q> = Q extends Query<infer T>
+type QueryEntity<Q> = Q extends Query<infer T>
   ? T extends { id: string }
-    ? Observable<LiveCollection<T>>
+    ? T
     : never
   : never
+
+type QueryState<Q> = Observable<LiveCollection<QueryEntity<Q>>>
+
+type QueryIndexState<Q, K> = Observable<LiveIndex<K, QueryEntity<Q>>>
 
 type ReportState<R> = R extends Report<unknown>
   ? Observable<ReportResult<R>>
@@ -60,6 +64,10 @@ type EndpointScope<
   CountKey extends PropertyKey,
 > = {
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, EdgeKey>>
+  edgesBy: <K>(
+    keyOf: (edge: QueryEntity<MethodResult<G, EdgeKey>>) => K,
+    options?: QueryWatchOptions,
+  ) => QueryIndexState<MethodResult<G, EdgeKey>, K>
 } & (CountKey extends keyof G
   ? { count: () => ReportState<MethodResult<G, CountKey>> }
   : object) &
@@ -139,6 +147,17 @@ export function bindGraph<G extends object>(
     client.watchReport(factory(graph, key)(...args) as Report<unknown>)
   const command = (key: string, args: unknown[]) =>
     client.sendCommand(factory(graph, key)(...args) as Command<unknown>)
+  const queryIndex = <T extends { id: string }, K>(
+    key: string,
+    args: unknown[],
+    keyOf: (item: T) => K,
+    options?: QueryWatchOptions,
+  ) => {
+    const index = new LiveIndex<K, T>(keyOf)
+    return queryState(key, args, options).pipe(
+      map((state) => index.update(state as LiveCollection<T>)),
+    )
+  }
 
   const endpoint = (
     edgeKey: string,
@@ -149,6 +168,10 @@ export function bindGraph<G extends object>(
   ) => {
     const scope: Record<string, unknown> = {
       edges: (options?: QueryWatchOptions) => queryState(edgeKey, args, options),
+      edgesBy: <T extends { id: string }, K>(
+        keyOf: (item: T) => K,
+        options?: QueryWatchOptions,
+      ) => queryIndex(edgeKey, args, keyOf, options),
     }
     if (relatedKey in graph) {
       scope[relatedName] = (options?: QueryWatchOptions) =>

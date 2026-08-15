@@ -132,3 +132,167 @@ export class LiveCollection<T extends Identified> {
     return this
   }
 }
+
+const EMPTY_GROUP = new Map<never, never>()
+
+export type LiveIndexChanges<K> = {
+  reset: boolean
+  keys: readonly K[]
+}
+
+/**
+ * Stable incremental secondary index over a `LiveCollection`.
+ *
+ * The first update groups the current snapshot. Consecutive source revisions
+ * then touch only deleted and upserted items, using cached prior keys to move
+ * an item between buckets without scanning the source collection. If a caller
+ * skips revisions, `update` safely rebuilds from the authoritative source.
+ */
+export class LiveIndex<K, T extends Identified> {
+  readonly #keyOf: (item: T) => K
+  readonly #groups = new Map<K, Map<string, T>>()
+  readonly #itemKeys = new Map<string, K>()
+  readonly #arrays = new Map<K, readonly T[]>()
+  #source: LiveCollection<T> | undefined
+  #sourceRevision = -1
+  #revision = 0
+  #changes: LiveIndexChanges<K> = { reset: false, keys: [] }
+
+  constructor(keyOf: (item: T) => K) {
+    this.#keyOf = keyOf
+  }
+
+  get groups(): ReadonlyMap<K, ReadonlyMap<string, T>> {
+    return this.#groups
+  }
+
+  get size(): number {
+    return this.#groups.size
+  }
+
+  get status(): LiveCollectionStatus {
+    return this.#source?.status ?? 'loading'
+  }
+
+  get resolved(): boolean {
+    return this.#source?.resolved ?? false
+  }
+
+  get error(): Error | undefined {
+    return this.#source?.error
+  }
+
+  get sequence(): bigint | null {
+    return this.#source?.sequence ?? null
+  }
+
+  /** Increases once for every source revision incorporated by this index. */
+  get revision(): number {
+    return this.#revision
+  }
+
+  /** Last incorporated `LiveCollection.revision`, or -1 before first update. */
+  get sourceRevision(): number {
+    return this.#sourceRevision
+  }
+
+  /** Endpoint buckets affected by the latest incorporated source revision. */
+  get changes(): LiveIndexChanges<K> {
+    return this.#changes
+  }
+
+  has(key: K): boolean {
+    return this.#groups.has(key)
+  }
+
+  /** A stable keyed bucket, or a shared immutable empty bucket. */
+  get(key: K): ReadonlyMap<string, T> {
+    return this.#groups.get(key) ?? (EMPTY_GROUP as ReadonlyMap<string, T>)
+  }
+
+  /** Lazily materialize and memoize one bucket for the current revision. */
+  values(key: K): readonly T[] {
+    const cached = this.#arrays.get(key)
+    if (cached) return cached
+    const values = Array.from(this.get(key).values())
+    this.#arrays.set(key, values)
+    return values
+  }
+
+  update(source: LiveCollection<T>): this {
+    if (source.revision === this.#sourceRevision) return this
+
+    const changedKeys = new Set<K>()
+    const consecutive = source.revision === this.#sourceRevision + 1
+    if (this.#sourceRevision < 0 || !consecutive || source.changes.reset) {
+      for (const key of this.#groups.keys()) changedKeys.add(key)
+      this.#rebuild(source.items.values())
+      for (const key of this.#groups.keys()) changedKeys.add(key)
+      this.#changes = { reset: true, keys: Array.from(changedKeys) }
+    } else {
+      for (const id of source.changes.deletes) this.#remove(id, changedKeys)
+      for (const item of source.changes.upserts) this.#upsert(item, changedKeys)
+      this.#changes = { reset: false, keys: Array.from(changedKeys) }
+    }
+
+    this.#source = source
+    this.#sourceRevision = source.revision
+    this.#revision += 1
+    return this
+  }
+
+  #rebuild(items: Iterable<T>): void {
+    for (const group of this.#groups.values()) group.clear()
+    this.#groups.clear()
+    this.#itemKeys.clear()
+    this.#arrays.clear()
+    for (const item of items) this.#insert(item)
+  }
+
+  #insert(item: T): void {
+    const key = this.#keyOf(item)
+    this.#insertAt(key, item)
+  }
+
+  #insertAt(key: K, item: T): void {
+    let group = this.#groups.get(key)
+    if (!group) {
+      group = new Map<string, T>()
+      this.#groups.set(key, group)
+    }
+    group.set(item.id, item)
+    this.#itemKeys.set(item.id, key)
+    this.#arrays.delete(key)
+  }
+
+  #upsert(item: T, changedKeys: Set<K>): void {
+    const key = this.#keyOf(item)
+    if (this.#itemKeys.has(item.id)) {
+      const previousKey = this.#itemKeys.get(item.id) as K
+      const previousGroup = this.#groups.get(previousKey)
+      // Comparing the resolved buckets uses the Map's SameValueZero key
+      // semantics and preserves a stable bucket when membership is unchanged.
+      if (previousGroup && previousGroup === this.#groups.get(key)) {
+        previousGroup.set(item.id, item)
+        this.#itemKeys.set(item.id, key)
+        this.#arrays.delete(previousKey)
+        changedKeys.add(previousKey)
+        return
+      }
+      this.#remove(item.id, changedKeys)
+    }
+    this.#insertAt(key, item)
+    changedKeys.add(key)
+  }
+
+  #remove(id: string, changedKeys?: Set<K>): void {
+    if (!this.#itemKeys.has(id)) return
+    const key = this.#itemKeys.get(id) as K
+    const group = this.#groups.get(key)
+    group?.delete(id)
+    this.#itemKeys.delete(id)
+    this.#arrays.delete(key)
+    changedKeys?.add(key)
+    if (group?.size === 0) this.#groups.delete(key)
+  }
+}

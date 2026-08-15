@@ -19,6 +19,8 @@ export {
   type Identified,
   LiveCollection,
   type LiveCollectionStatus,
+  LiveIndex,
+  type LiveIndexChanges,
   type MutableKeyedCollection,
 } from './live-collection.js'
 // Explicitly re-export type-only exports that don't come through `export *`
