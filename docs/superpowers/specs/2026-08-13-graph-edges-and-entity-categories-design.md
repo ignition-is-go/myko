@@ -1838,6 +1838,12 @@ const visibleArticles$ = assignments.fromMany(visibleTagIds).targets()
 Existing generated constructors and `watchQuery*` APIs remain unchanged. The
 scoped methods return diff-native `LiveCollection` state, while aggregate and
 mutation methods continue through the existing report and command channels.
+Identical immutable queries also share one ref-counted raw response stream
+across array, diff, and keyed-state projections. This lets older array-oriented
+components coexist with incrementally migrated graph components without
+opening parallel server subscriptions for the same query. The final projection
+consumer owns cancellation; mutable-window handles remain independent because
+they own server-side window state.
 
 `graph/many_endpoint_watch_initialization` measures 100 selected endpoints over
 10,000 edges distributed across 1,000 sources. A 2026-08-15 development-machine
@@ -1943,7 +1949,9 @@ The graph-edge feature is acceptable when:
     one ordinary subscription, without duplicate callback delivery when a
     mutation touches several selected routes, and can bind endpoint-scoped
     edge/related/aggregate/mutation operations without handwritten query or
-    command construction.
+    command construction. Array, diff, and keyed-state consumers of an identical
+    immutable query share that same wire subscription until the final consumer
+    releases it.
 
 ## 24. Decision
 

@@ -391,6 +391,14 @@ export class MykoClient {
   private activeReportNames = new Map<string, string>()
   private sharedQueries = new Map<string, Observable<unknown>>()
   private sharedViews = new Map<string, Observable<unknown>>()
+  private sharedQueryResponseStreams = new Map<
+    string,
+    Observable<QueryResponseMessage>
+  >()
+  private sharedViewResponseStreams = new Map<
+    string,
+    Observable<QueryResponseMessage>
+  >()
   private sharedQueryDiffs = new Map<string, Observable<unknown>>()
   private sharedViewDiffs = new Map<string, Observable<unknown>>()
   private sharedQueryStates = new Map<string, Observable<unknown>>()
@@ -741,6 +749,36 @@ export class MykoClient {
     return [tx, responses$]
   }
 
+  /**
+   * One ref-counted wire stream per immutable query identity.
+   *
+   * Array, diff, and keyed-state projections all consume this stream. Keeping
+   * the cache below those projections prevents the same query from opening
+   * several server subscriptions merely because different UI layers prefer
+   * different result shapes.
+   */
+  private sharedQueryResponses<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<QueryResponseMessage> {
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.sharedQueryResponseStreams.get(cacheKey)
+    if (existing) return existing
+
+    const [, responses$] = this.startQuery(query, options)
+    let shared$: Observable<QueryResponseMessage>
+    shared$ = responses$.pipe(
+      finalize(() => {
+        if (this.sharedQueryResponseStreams.get(cacheKey) === shared$) {
+          this.sharedQueryResponseStreams.delete(cacheKey)
+        }
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedQueryResponseStreams.set(cacheKey, shared$)
+    return shared$
+  }
+
   /** Update server-side window for an active query subscription */
   setQueryWindow(tx: string, window: QueryWindow | null): void {
     const active = this.activeQueries.get(tx)
@@ -850,6 +888,29 @@ export class MykoClient {
     return [tx, responses$]
   }
 
+  /** One ref-counted wire stream shared by every immutable view projection. */
+  private sharedViewResponses<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<QueryResponseMessage> {
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.sharedViewResponseStreams.get(cacheKey)
+    if (existing) return existing
+
+    const [, responses$] = this.startView(view, options)
+    let shared$: Observable<QueryResponseMessage>
+    shared$ = responses$.pipe(
+      finalize(() => {
+        if (this.sharedViewResponseStreams.get(cacheKey) === shared$) {
+          this.sharedViewResponseStreams.delete(cacheKey)
+        }
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedViewResponseStreams.set(cacheKey, shared$)
+    return shared$
+  }
+
   /** Update server-side window for an active view subscription */
   setViewWindow(tx: string, window: QueryWindow | null): void {
     const active = this.activeViews.get(tx)
@@ -883,7 +944,7 @@ export class MykoClient {
     const existing = this.sharedQueries.get(cacheKey)
     if (existing) return existing as Observable<QueryResult<Q>>
 
-    const [, responses$] = this.startQuery(query, options)
+    const responses$ = this.sharedQueryResponses(query, options)
 
     const shared$ = responses$.pipe(
       scan((acc, update) => {
@@ -920,7 +981,7 @@ export class MykoClient {
     const existing = this.sharedViews.get(cacheKey)
     if (existing) return existing as Observable<ViewResult<V>>
 
-    const [, responses$] = this.startView(view, options)
+    const responses$ = this.sharedViewResponses(view, options)
 
     const shared$ = responses$.pipe(
       scan((acc, update) => {
@@ -953,7 +1014,7 @@ export class MykoClient {
     const existing = this.sharedQueryDiffs.get(cacheKey)
     if (existing) return existing as Observable<QueryDiff<QueryItem<Q>>>
 
-    const [, responses$] = this.startQuery(query, options)
+    const responses$ = this.sharedQueryResponses(query, options)
     const shared$ = responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
@@ -985,7 +1046,7 @@ export class MykoClient {
     const existing = this.sharedViewDiffs.get(cacheKey)
     if (existing) return existing as Observable<QueryDiff<ViewItem<V>>>
 
-    const [, responses$] = this.startView(view, options)
+    const responses$ = this.sharedViewResponses(view, options)
     const shared$ = responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
