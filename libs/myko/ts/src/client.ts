@@ -11,6 +11,7 @@ import {
   bufferTime,
   catchError,
   combineLatest,
+  distinctUntilChanged,
   filter,
   finalize,
   firstValueFrom,
@@ -266,6 +267,12 @@ export type QueryWatchOptions = {
   window?: QueryWindow | null
 }
 
+/** Options for an immutable projection of live keyed query/view state. */
+export type QuerySelectionOptions<S> = QueryWatchOptions & {
+  /** Equality used to suppress unchanged projections. Defaults to `Object.is`. */
+  equals?: (previous: S, current: S) => boolean
+}
+
 /** Lifecycle controls for waiting on command completion. */
 export type CommandOptions = {
   /** Stop waiting after this many milliseconds. Does not undo a command already sent. */
@@ -345,6 +352,88 @@ type PendingCommand = {
   reject: (error: Error) => void
 }
 
+type LiveSelectionRegistration<T> = {
+  attach: (state: T) => void
+  detach?: () => void
+  complete: () => void
+  error: (cause: unknown) => void
+}
+
+/** One shared source subscription with direct fine-grained state listeners. */
+class LiveSelectionHub<T> {
+  readonly #source: () => Observable<T>
+  readonly #onEmpty: () => void
+  readonly #registrations = new Set<LiveSelectionRegistration<T>>()
+  #state: T | undefined
+  #sourceSubscription: Subscription | undefined
+
+  constructor(source: () => Observable<T>, onEmpty: () => void) {
+    this.#source = source
+    this.#onEmpty = onEmpty
+  }
+
+  watch<S>(
+    register: (state: T, emit: (value: S) => void) => () => void,
+    equals: (previous: S, current: S) => boolean = Object.is,
+  ): Observable<S> {
+    return new Observable<S>((subscriber) => {
+      let emitted = false
+      let previous: S
+      const emit = (value: S) => {
+        if (emitted && equals(previous, value)) return
+        emitted = true
+        previous = value
+        subscriber.next(value)
+      }
+      const registration: LiveSelectionRegistration<T> = {
+        attach: (state) => {
+          registration.detach = register(state, emit)
+        },
+        complete: () => subscriber.complete(),
+        error: (cause) => subscriber.error(cause),
+      }
+      this.#registrations.add(registration)
+      if (this.#state !== undefined) registration.attach(this.#state)
+      if (!this.#sourceSubscription) this.#start()
+
+      return () => {
+        registration.detach?.()
+        this.#registrations.delete(registration)
+        if (this.#registrations.size === 0) {
+          this.#sourceSubscription?.unsubscribe()
+          this.#sourceSubscription = undefined
+          this.#state = undefined
+          this.#onEmpty()
+        }
+      }
+    })
+  }
+
+  #start(): void {
+    const subscription = this.#source().subscribe({
+      next: (state) => {
+        if (this.#state === state) return
+        this.#state = state
+        for (const registration of this.#registrations) {
+          registration.detach?.()
+          registration.attach(state)
+        }
+      },
+      error: (cause) => {
+        for (const registration of [...this.#registrations]) {
+          registration.error(cause)
+        }
+      },
+      complete: () => {
+        for (const registration of [...this.#registrations]) {
+          registration.complete()
+        }
+      },
+    })
+    this.#sourceSubscription = subscription.closed ? undefined : subscription
+  }
+}
+
 /**
  * Reactive WebSocket client for Myko servers with automatic failover.
  */
@@ -417,6 +506,8 @@ export class MykoClient {
   private sharedViewDiffs = new Map<string, Observable<unknown>>()
   private sharedQueryStates = new Map<string, Observable<unknown>>()
   private sharedViewStates = new Map<string, Observable<unknown>>()
+  private querySelectionHubs = new Map<string, unknown>()
+  private viewSelectionHubs = new Map<string, unknown>()
   private sharedReports = new Map<string, Observable<unknown>>()
   private subscriptionStartMs = new Map<string, number>()
   private firstResponseLogged = new Set<string>()
@@ -1133,6 +1224,148 @@ export class MykoClient {
     )
     this.sharedViewStates.set(cacheKey, shared$)
     return shared$
+  }
+
+  /**
+   * Watch an immutable projection of keyed query state.
+   *
+   * The underlying query/state subscription remains shared. The selector runs
+   * once per source revision, while equal results suppress downstream work.
+   * Select scalars, entity references, or newly-created immutable values; do
+   * not return `state.items` directly because that Map is intentionally stable
+   * and mutates in place.
+   */
+  watchQuerySelection<Q extends Query<unknown>, S>(
+    query: Q,
+    select: (state: LiveCollection<QueryItem<Q> & { id: string }>) => S,
+    options?: QuerySelectionOptions<S>,
+  ): Observable<S> {
+    return this.watchQueryState(query, options).pipe(
+      map(select),
+      distinctUntilChanged(options?.equals ?? Object.is),
+    )
+  }
+
+  /** Watch one query result by ID without reacting to unrelated rows. */
+  watchQueryItem<Q extends Query<unknown>>(
+    query: Q,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<(QueryItem<Q> & { id: string }) | undefined> {
+    return this.querySelectionHub(query, options).watch((state, emit) =>
+      state.subscribeItem(id, emit),
+    )
+  }
+
+  /** Watch membership of one ID without reacting to unrelated rows. */
+  watchQueryHas<Q extends Query<unknown>>(
+    query: Q,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<boolean> {
+    return this.querySelectionHub(query, options).watch((state, emit) =>
+      state.subscribeItem(id, (item) => emit(item !== undefined)),
+    )
+  }
+
+  /** Watch live query cardinality without materializing its result array. */
+  watchQuerySize<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<number> {
+    return this.querySelectionHub(query, options).watch((state, emit) =>
+      state.subscribeSize(emit),
+    )
+  }
+
+  /** Watch an immutable projection of keyed view state. */
+  watchViewSelection<V extends View<unknown>, S>(
+    view: V,
+    select: (state: LiveCollection<ViewItem<V> & { id: string }>) => S,
+    options?: QuerySelectionOptions<S>,
+  ): Observable<S> {
+    return this.watchViewState(view, options).pipe(
+      map(select),
+      distinctUntilChanged(options?.equals ?? Object.is),
+    )
+  }
+
+  /** Watch one view result by ID without reacting to unrelated rows. */
+  watchViewItem<V extends View<unknown>>(
+    view: V,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<(ViewItem<V> & { id: string }) | undefined> {
+    return this.viewSelectionHub(view, options).watch((state, emit) =>
+      state.subscribeItem(id, emit),
+    )
+  }
+
+  /** Watch membership of one view ID without reacting to unrelated rows. */
+  watchViewHas<V extends View<unknown>>(
+    view: V,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<boolean> {
+    return this.viewSelectionHub(view, options).watch((state, emit) =>
+      state.subscribeItem(id, (item) => emit(item !== undefined)),
+    )
+  }
+
+  /** Watch live view cardinality without materializing its result array. */
+  watchViewSize<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<number> {
+    return this.viewSelectionHub(view, options).watch((state, emit) =>
+      state.subscribeSize(emit),
+    )
+  }
+
+  private querySelectionHub<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): LiveSelectionHub<LiveCollection<QueryItem<Q> & { id: string }>> {
+    type Item = QueryItem<Q> & { id: string }
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.querySelectionHubs.get(cacheKey)
+    if (existing) {
+      return existing as LiveSelectionHub<LiveCollection<Item>>
+    }
+    let hub: LiveSelectionHub<LiveCollection<Item>>
+    hub = new LiveSelectionHub(
+      () => this.watchQueryState(query, options),
+      () => {
+        if (this.querySelectionHubs.get(cacheKey) === hub) {
+          this.querySelectionHubs.delete(cacheKey)
+        }
+      },
+    )
+    this.querySelectionHubs.set(cacheKey, hub)
+    return hub
+  }
+
+  private viewSelectionHub<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): LiveSelectionHub<LiveCollection<ViewItem<V> & { id: string }>> {
+    type Item = ViewItem<V> & { id: string }
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.viewSelectionHubs.get(cacheKey)
+    if (existing) {
+      return existing as LiveSelectionHub<LiveCollection<Item>>
+    }
+    let hub: LiveSelectionHub<LiveCollection<Item>>
+    hub = new LiveSelectionHub(
+      () => this.watchViewState(view, options),
+      () => {
+        if (this.viewSelectionHubs.get(cacheKey) === hub) {
+          this.viewSelectionHubs.delete(cacheKey)
+        }
+      },
+    )
+    this.viewSelectionHubs.set(cacheKey, hub)
+    return hub
   }
 
   /**

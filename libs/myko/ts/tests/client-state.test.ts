@@ -18,6 +18,8 @@ type ClientInternals = {
   queryErrorRoutes: Map<string, Subject<unknown>>
   sharedQueryResponseStreams: Map<string, unknown>
   sharedViewResponseStreams: Map<string, unknown>
+  querySelectionHubs: Map<string, unknown>
+  viewSelectionHubs: Map<string, unknown>
   pendingCommands: Map<string, unknown>
   messageQueue: Array<{ event: string; data: unknown }>
   routeMessage: (message: unknown) => void
@@ -193,6 +195,132 @@ describe('MykoClient watchQueryState', () => {
     stateSub.unsubscribe()
     expect(internals.activeViews.size).toBe(0)
     expect(internals.sharedViewResponseStreams.size).toBe(0)
+  })
+
+  test('suppresses unrelated item, membership, size, and custom selections', () => {
+    const client = new MykoClient()
+    const itemValues: Array<number | undefined> = []
+    const membership: boolean[] = []
+    const sizes: number[] = []
+    const selectedValues: number[] = []
+
+    const itemSub = client
+      .watchQueryItem(query, 'a')
+      .subscribe((item) => itemValues.push(item?.value))
+    const hasSub = client
+      .watchQueryHas(query, 'a')
+      .subscribe((present) => membership.push(present))
+    const sizeSub = client
+      .watchQuerySize(query)
+      .subscribe((size) => sizes.push(size))
+    const selectedSub = client
+      .watchQuerySelection(
+        query,
+        (state) => ({ value: state.get('a')?.value ?? -1 }),
+        { equals: (previous, current) => previous.value === current.value },
+      )
+      .subscribe((selection) => selectedValues.push(selection.value))
+
+    const internals = client as unknown as ClientInternals
+    expect(internals.activeQueries.size).toBe(1)
+    expect(internals.querySelectionHubs.size).toBe(1)
+    const tx = [...internals.activeQueries.keys()][0]
+    const route = internals.queryResponseRoutes.get(tx)
+
+    route?.next({
+      event: 'ws:m:query-response',
+      data: {
+        tx,
+        sequence: '0',
+        deletes: [],
+        upserts: [
+          { itemType: 'Item', item: { id: 'a', value: 1 } },
+          { itemType: 'Item', item: { id: 'b', value: 2 } },
+        ],
+      },
+    })
+    route?.next({
+      event: 'ws:m:query-response',
+      data: {
+        tx,
+        sequence: '1',
+        deletes: [],
+        upserts: [{ itemType: 'Item', item: { id: 'b', value: 3 } }],
+      },
+    })
+    route?.next({
+      event: 'ws:m:query-response',
+      data: {
+        tx,
+        sequence: '2',
+        deletes: [],
+        upserts: [{ itemType: 'Item', item: { id: 'a', value: 4 } }],
+      },
+    })
+    route?.next({
+      event: 'ws:m:query-response',
+      data: { tx, sequence: '3', deletes: ['a'], upserts: [] },
+    })
+
+    expect(itemValues).toEqual([1, 4, undefined])
+    expect(membership).toEqual([true, false])
+    expect(sizes).toEqual([2, 1])
+    expect(selectedValues).toEqual([1, 4, -1])
+
+    itemSub.unsubscribe()
+    hasSub.unsubscribe()
+    sizeSub.unsubscribe()
+    selectedSub.unsubscribe()
+    expect(internals.activeQueries.size).toBe(0)
+    expect(internals.querySelectionHubs.size).toBe(0)
+  })
+
+  test('routes fine-grained view selections through one live view', () => {
+    const client = new MykoClient()
+    const items: Array<number | undefined> = []
+    const membership: boolean[] = []
+    const sizes: number[] = []
+    const itemSub = client
+      .watchViewItem(view, 'a')
+      .subscribe((item) => items.push(item?.value))
+    const hasSub = client
+      .watchViewHas(view, 'a')
+      .subscribe((present) => membership.push(present))
+    const sizeSub = client
+      .watchViewSize(view)
+      .subscribe((size) => sizes.push(size))
+    const internals = client as unknown as ClientInternals
+    expect(internals.activeViews.size).toBe(1)
+    expect(internals.viewSelectionHubs.size).toBe(1)
+
+    const tx = [...internals.activeViews.keys()][0]
+    internals.viewResponseRoutes.get(tx)?.next({
+      event: 'ws:m:view-response',
+      data: {
+        tx,
+        sequence: '0',
+        deletes: [],
+        upserts: [{ itemType: 'Item', item: { id: 'a', value: 1 } }],
+      },
+    })
+    internals.viewResponseRoutes.get(tx)?.next({
+      event: 'ws:m:view-response',
+      data: {
+        tx,
+        sequence: '1',
+        deletes: [],
+        upserts: [{ itemType: 'Item', item: { id: 'b', value: 2 } }],
+      },
+    })
+
+    expect(items).toEqual([1])
+    expect(membership).toEqual([true])
+    expect(sizes).toEqual([1, 2])
+    itemSub.unsubscribe()
+    hasSub.unsubscribe()
+    sizeSub.unsubscribe()
+    expect(internals.activeViews.size).toBe(0)
+    expect(internals.viewSelectionHubs.size).toBe(0)
   })
 })
 

@@ -164,6 +164,61 @@ describe('bindGraph', () => {
     expect(index.get('node-b').size).toBe(1)
   })
 
+  test('exposes fine-grained edge and related-entity selections', async () => {
+    const edge: Edge = {
+      id: 'edge-a-b',
+      fromId: 'node-a',
+      toId: 'node-b',
+    }
+    const target: Node = { id: 'node-b', label: 'B' }
+    const edgeState = new LiveCollection<Edge>().apply({
+      sequence: 0n,
+      deletes: [],
+      upserts: [edge],
+    })
+    const targetState = new LiveCollection<Node>().apply({
+      sequence: 0n,
+      deletes: [],
+      upserts: [target],
+    })
+    const calls: string[] = []
+    const stateFor = (value: Query<unknown>) =>
+      value.queryId.includes('Targets') ? targetState : edgeState
+    const client = {
+      watchQuerySelection<T>(
+        value: Query<unknown>,
+        select: (state: LiveCollection<Edge> | LiveCollection<Node>) => T,
+      ) {
+        calls.push(`select:${value.queryId}`)
+        return of(select(stateFor(value)))
+      },
+      watchQueryItem(value: Query<unknown>, id: string) {
+        calls.push(`item:${value.queryId}:${id}`)
+        return of(stateFor(value).get(id))
+      },
+      watchQueryHas(value: Query<unknown>, id: string) {
+        calls.push(`has:${value.queryId}:${id}`)
+        return of(stateFor(value).has(id))
+      },
+    } as unknown as MykoClient
+
+    const from = bindGraph(client, graph).from('node-a')
+    expect(await firstValueFrom(from.selectEdges((state) => state.size))).toBe(1)
+    expect(await firstValueFrom(from.edge(edge.id))).toBe(edge)
+    expect(await firstValueFrom(from.hasEdge('missing'))).toBe(false)
+    expect(await firstValueFrom(from.selectTargets((state) => state.size))).toBe(1)
+    expect(await firstValueFrom(from.target(target.id))).toBe(target)
+    expect(await firstValueFrom(from.hasTarget('missing'))).toBe(false)
+    expect(calls).toEqual([
+      'select:EdgeGraphFrom',
+      'item:EdgeGraphFrom:edge-a-b',
+      'has:EdgeGraphFrom:missing',
+      'select:EdgeGraphTargetsFrom',
+      'item:EdgeGraphTargetsFrom:node-b',
+      'has:EdgeGraphTargetsFrom:missing',
+    ])
+  })
+
   test('exposes execution plans and ergonomic mutable windows', async () => {
     const calls: Array<{ id: string; window: unknown }> = []
     const client = {

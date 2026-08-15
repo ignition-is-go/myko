@@ -90,6 +90,55 @@ describe('LiveCollection', () => {
     expect(state.toArray()).toEqual([{ id: 'new', value: 2 }])
   })
 
+  test('routes item and size listeners only to affected selections', () => {
+    const state = new LiveCollection<Item>()
+    const aValues: Array<number | undefined> = []
+    const bValues: Array<number | undefined> = []
+    const sizes: number[] = []
+    const releaseA = state.subscribeItem('a', (item) =>
+      aValues.push(item?.value),
+    )
+    const releaseB = state.subscribeItem('b', (item) =>
+      bValues.push(item?.value),
+    )
+    const releaseSize = state.subscribeSize((size) => sizes.push(size))
+
+    state.apply({
+      sequence: 0n,
+      deletes: [],
+      upserts: [{ id: 'a', value: 1 }],
+    })
+    state.apply({
+      sequence: 1n,
+      deletes: [],
+      upserts: [{ id: 'b', value: 2 }],
+    })
+    state.apply({
+      sequence: 2n,
+      deletes: ['a'],
+      upserts: [{ id: 'a', value: 3 }],
+    })
+    state.apply({
+      sequence: 3n,
+      deletes: ['b'],
+      upserts: [],
+    })
+
+    expect(aValues).toEqual([1, 3])
+    expect(bValues).toEqual([undefined, 2, undefined])
+    expect(sizes).toEqual([1, 2, 1])
+
+    releaseA()
+    releaseB()
+    releaseSize()
+    state.apply({
+      sequence: 4n,
+      deletes: [],
+      upserts: [{ id: 'a', value: 4 }],
+    })
+    expect(aValues).toEqual([1, 3])
+  })
+
   test('retains the latest data when the live stream errors', () => {
     const state = new LiveCollection<Item>().apply({
       sequence: 0n,

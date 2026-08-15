@@ -55,6 +55,11 @@ export function applyCollectionDiff<T extends Identified>(
  */
 export class LiveCollection<T extends Identified> {
   readonly #items = new Map<string, T>()
+  readonly #itemListeners = new Map<
+    string,
+    Set<(item: T | undefined) => void>
+  >()
+  readonly #sizeListeners = new Set<(size: number) => void>()
   #array: readonly T[] | undefined
   #status: LiveCollectionStatus = 'loading'
   #error: Error | undefined
@@ -104,6 +109,38 @@ export class LiveCollection<T extends Identified> {
     return this.#items.has(id)
   }
 
+  /**
+   * Subscribe to one keyed item in O(1).
+   *
+   * Only an initial authoritative snapshot, an upsert/delete of this ID, or a
+   * later sequence-zero reset invokes the listener. This is the low-level
+   * primitive used by fine-grained client and graph watchers.
+   */
+  subscribeItem(id: string, listener: (item: T | undefined) => void): () => void {
+    let listeners = this.#itemListeners.get(id)
+    if (!listeners) {
+      listeners = new Set()
+      this.#itemListeners.set(id, listeners)
+    }
+    listeners.add(listener)
+    if (this.resolved) listener(this.#items.get(id))
+
+    return () => {
+      const current = this.#itemListeners.get(id)
+      current?.delete(listener)
+      if (current?.size === 0) this.#itemListeners.delete(id)
+    }
+  }
+
+  /** Subscribe to cardinality changes without observing unrelated row updates. */
+  subscribeSize(listener: (size: number) => void): () => void {
+    this.#sizeListeners.add(listener)
+    if (this.resolved) listener(this.#items.size)
+    return () => {
+      this.#sizeListeners.delete(listener)
+    }
+  }
+
   entries(): IterableIterator<[string, T]> {
     return this.#items.entries()
   }
@@ -115,12 +152,35 @@ export class LiveCollection<T extends Identified> {
   }
 
   apply(diff: CollectionDiff<T>): this {
+    const wasResolved = this.resolved
+    const previousSize = this.#items.size
     this.#changes = applyCollectionDiff(this.#items, diff)
     this.#sequence = diff.sequence
     this.#status = 'live'
     this.#error = undefined
     this.#revision += 1
     this.#array = undefined
+    if (diff.sequence === 0n && this.#itemListeners.size > 0) {
+      for (const [id, listeners] of this.#itemListeners) {
+        const item = this.#items.get(id)
+        for (const listener of listeners) listener(item)
+      }
+    } else if (this.#itemListeners.size > 0) {
+      const changedIds = new Set(diff.deletes)
+      for (const item of diff.upserts) changedIds.add(item.id)
+      for (const id of changedIds) {
+        const listeners = this.#itemListeners.get(id)
+        if (!listeners) continue
+        const item = this.#items.get(id)
+        for (const listener of listeners) listener(item)
+      }
+    }
+    if (
+      this.#sizeListeners.size > 0 &&
+      (!wasResolved || previousSize !== this.#items.size)
+    ) {
+      for (const listener of this.#sizeListeners) listener(this.#items.size)
+    }
     return this
   }
 

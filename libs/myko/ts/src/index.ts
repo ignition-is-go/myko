@@ -93,6 +93,7 @@ export const LOG_RANK = [
 export {
   type ClientStats,
   type Command,
+  type CommandOptions,
   type CommandResult,
   ConnectionStatus,
   MykoClient,
@@ -103,6 +104,7 @@ export {
   type QueryDiff,
   type QueryItem,
   type QueryResult,
+  type QuerySelectionOptions,
   type QueryWatchOptions,
   type QueryWindow,
   type QueryWindowInfo,

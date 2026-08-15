@@ -49,6 +49,7 @@
   "scripts": {
     "bench:command-routing": "bun benches/command-routing.ts",
     "bench:live-collection": "bun benches/live-collection.ts",
+    "bench:selection": "bun benches/selection-routing.ts",
     "build": "tsc",
     "check": "tsc --noEmit --skipLibCheck",
     "test": "bun test tests"

@@ -1818,6 +1818,35 @@ decoding, and framework rendering. It demonstrates why generated graph clients
 should default row-oriented APIs to keyed state while retaining arrays as an
 explicit compatibility or presentation boundary.
 
+Fine-grained consumers can subscribe to one immutable selection without
+receiving every collection revision:
+
+```ts
+const assignment = assignments.from(tagId)
+const edge$ = assignment.edge(edgeId)
+const present$ = assignment.hasEdge(edgeId)
+const article$ = assignment.target(articleId)
+const selected$ = assignment.selectEdges(
+  (state) => state.get(edgeId)?.weight ?? 0,
+)
+```
+
+`edge`, `target`/`source`, `has*`, and query/view item/size helpers use a shared
+selection hub plus keyed listeners inside `LiveCollection`. A one-row diff
+dispatches only to listeners registered for that ID; it does not run every
+selector or open another wire subscription. Generic `select*` helpers accept a
+custom equality function and are intended for scalars, entity references, or
+new immutable values. They deliberately warn against returning the stable
+mutable backing `Map`, whose identity does not change across revisions.
+
+`libs/myko/ts/benches/selection-routing.ts` models 1,000 item-oriented
+components over a 10,000-item collection and 1,000 one-row updates. A
+development-machine run on 2026-08-15 measured 36.691 ms and 1,001,000
+downstream notifications for broadcasting every revision, versus 2.871 ms and
+2,000 notifications for keyed item selection: about 12.8× faster with 500.5×
+fewer downstream notifications. With no listeners, the ordinary diff path
+does not allocate changed-ID routing state.
+
 ### 21.3 Batched endpoint watches and client-bound graph scopes
 
 List and matrix UIs commonly watch the same relationship at hundreds of source
@@ -2043,6 +2072,10 @@ The graph-edge feature is acceptable when:
     timeout/abort controls, and release queued/client state on every terminal
     path without changing existing command wire messages or required call-site
     arguments.
+20. Fine-grained query/view and bound-graph item, membership, size, and
+    immutable-selection APIs share the existing wire/state subscription,
+    dispatch keyed changes only to affected listeners, suppress equal derived
+    values, and add no changed-ID routing allocation when no selector is active.
 
 ## 24. Decision
 

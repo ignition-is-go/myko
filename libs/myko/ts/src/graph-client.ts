@@ -6,6 +6,7 @@ import type {
   CommandResult,
   MykoClient,
   Query,
+  QuerySelectionOptions,
   QueryWindow,
   QueryWindowInfo,
   QueryWatchOptions,
@@ -42,6 +43,13 @@ type QueryEntity<Q> = Q extends Query<infer T>
 type QueryState<Q> = Observable<LiveCollection<QueryEntity<Q>>>
 
 type QueryIndexState<Q, K> = Observable<LiveIndex<K, QueryEntity<Q>>>
+
+type SelectQueryState<Q> = <S>(
+  select: (state: LiveCollection<QueryEntity<Q>>) => S,
+  options?: QuerySelectionOptions<S>,
+) => Observable<S>
+
+type QueryItemState<Q> = Observable<QueryEntity<Q> | undefined>
 
 /** Mutable bounded graph query backed by the ordinary query-window protocol. */
 export type WindowedGraphQuery<Q> = {
@@ -88,6 +96,18 @@ type RelatedScope<G, K extends PropertyKey, Name extends string> = K extends key
       [P in `${Name}Windowed`]: (
         window: QueryWindow,
       ) => WindowedGraphQuery<MethodResult<G, K>>
+    } & {
+      [P in `select${Capitalize<Name>}`]: SelectQueryState<MethodResult<G, K>>
+    } & {
+      [P in Name extends 'targets' ? 'target' : 'source']: (
+        id: string,
+        options?: QueryWatchOptions,
+      ) => QueryItemState<MethodResult<G, K>>
+    } & {
+      [P in Name extends 'targets' ? 'hasTarget' : 'hasSource']: (
+        id: string,
+        options?: QueryWatchOptions,
+      ) => Observable<boolean>
     }
   : object
 
@@ -100,6 +120,12 @@ type EndpointScope<
 > = {
   readonly plan: GraphQueryPlan
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, EdgeKey>>
+  selectEdges: SelectQueryState<MethodResult<G, EdgeKey>>
+  edge: (
+    id: string,
+    options?: QueryWatchOptions,
+  ) => QueryItemState<MethodResult<G, EdgeKey>>
+  hasEdge: (id: string, options?: QueryWatchOptions) => Observable<boolean>
   edgesWindowed: (
     window: QueryWindow,
   ) => WindowedGraphQuery<MethodResult<G, EdgeKey>>
@@ -115,6 +141,12 @@ type EndpointScope<
 type BetweenScope<G> = {
   readonly plan: GraphQueryPlan
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, 'between'>>
+  selectEdges: SelectQueryState<MethodResult<G, 'between'>>
+  edge: (
+    id: string,
+    options?: QueryWatchOptions,
+  ) => QueryItemState<MethodResult<G, 'between'>>
+  hasEdge: (id: string, options?: QueryWatchOptions) => Observable<boolean>
   edgesWindowed: (
     window: QueryWindow,
   ) => WindowedGraphQuery<MethodResult<G, 'between'>>
@@ -278,6 +310,41 @@ export function bindGraph<G extends object>(
     )
   const reportState = (key: string, args: unknown[]) =>
     client.watchReport(factory(graph, key)(...args) as Report<unknown>)
+  const querySelection = <S>(
+    key: string,
+    args: unknown[],
+    select: (state: LiveCollection<{ id: string }>) => S,
+    options?: QuerySelectionOptions<S>,
+  ) =>
+    client.watchQuerySelection(
+      factory(graph, key)(...args) as Query<unknown> & {
+        $res?: () => { id: string }[]
+      },
+      select,
+      options,
+    )
+  const queryItem = (
+    key: string,
+    args: unknown[],
+    id: string,
+    options?: QueryWatchOptions,
+  ) =>
+    client.watchQueryItem(
+      factory(graph, key)(...args) as Query<{ id: string }>,
+      id,
+      options,
+    )
+  const queryHas = (
+    key: string,
+    args: unknown[],
+    id: string,
+    options?: QueryWatchOptions,
+  ) =>
+    client.watchQueryHas(
+      factory(graph, key)(...args) as Query<{ id: string }>,
+      id,
+      options,
+    )
   const command = (
     key: string,
     args: unknown[],
@@ -302,7 +369,7 @@ export function bindGraph<G extends object>(
   ) => {
     const index = new LiveIndex<K, T>(keyOf)
     return queryState(key, args, options).pipe(
-      map((state) => index.update(state as LiveCollection<T>)),
+      map((state) => index.update(state as unknown as LiveCollection<T>)),
     )
   }
 
@@ -317,6 +384,14 @@ export function bindGraph<G extends object>(
     const scope: Record<string, unknown> = {
       plan,
       edges: (options?: QueryWatchOptions) => queryState(edgeKey, args, options),
+      selectEdges: <S>(
+        select: (state: LiveCollection<{ id: string }>) => S,
+        options?: QuerySelectionOptions<S>,
+      ) => querySelection(edgeKey, args, select, options),
+      edge: (id: string, options?: QueryWatchOptions) =>
+        queryItem(edgeKey, args, id, options),
+      hasEdge: (id: string, options?: QueryWatchOptions) =>
+        queryHas(edgeKey, args, id, options),
       edgesWindowed: (window: QueryWindow) => windowed(edgeKey, args, window),
       edgesBy: <T extends { id: string }, K>(
         keyOf: (item: T) => K,
@@ -324,8 +399,21 @@ export function bindGraph<G extends object>(
       ) => queryIndex(edgeKey, args, keyOf, options),
     }
     if (relatedKey in graph) {
+      const capitalizedName =
+        relatedName === 'targets' ? 'Targets' : 'Sources'
+      const singularName = relatedName === 'targets' ? 'target' : 'source'
       scope[relatedName] = (options?: QueryWatchOptions) =>
         queryState(relatedKey, args, options)
+      scope[`select${capitalizedName}`] = <S>(
+        select: (state: LiveCollection<{ id: string }>) => S,
+        options?: QuerySelectionOptions<S>,
+      ) => querySelection(relatedKey, args, select, options)
+      scope[singularName] = (id: string, options?: QueryWatchOptions) =>
+        queryItem(relatedKey, args, id, options)
+      scope[`has${capitalizedName.slice(0, -1)}`] = (
+        id: string,
+        options?: QueryWatchOptions,
+      ) => queryHas(relatedKey, args, id, options)
       scope[`${relatedName}Windowed`] = (window: QueryWindow) =>
         windowed(relatedKey, args, window)
     }
@@ -359,6 +447,14 @@ export function bindGraph<G extends object>(
       plan: plans.pair,
       edges: (options?: QueryWatchOptions) =>
         queryState('between', [a, b], options),
+      selectEdges: <S>(
+        select: (state: LiveCollection<{ id: string }>) => S,
+        options?: QuerySelectionOptions<S>,
+      ) => querySelection('between', [a, b], select, options),
+      edge: (id: string, options?: QueryWatchOptions) =>
+        queryItem('between', [a, b], id, options),
+      hasEdge: (id: string, options?: QueryWatchOptions) =>
+        queryHas('between', [a, b], id, options),
       edgesWindowed: (window: QueryWindow) =>
         windowed('between', [a, b], window),
       count: () => reportState('countBetween', [a, b]),
