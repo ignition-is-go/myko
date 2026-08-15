@@ -440,6 +440,7 @@ fn bench_watch_initialization(c: &mut Criterion) {
     group.finish();
 }
 
+#[allow(clippy::too_many_lines)]
 fn bench_many_endpoint_watch_initialization(c: &mut Criterion) {
     let edge_count = 10_000_usize;
     let source_count = 1_000_usize;
@@ -486,7 +487,7 @@ fn bench_many_endpoint_watch_initialization(c: &mut Criterion) {
             black_box(
                 watches
                     .iter()
-                    .map(|watch| watch.snapshot())
+                    .map(hyphae::CellMap::snapshot)
                     .map(|items| items.len())
                     .sum::<usize>(),
             )
@@ -533,7 +534,7 @@ fn bench_many_endpoint_watch_initialization(c: &mut Criterion) {
             black_box(
                 watches
                     .iter()
-                    .map(|watch| watch.snapshot())
+                    .map(hyphae::CellMap::snapshot)
                     .map(|items| items.len())
                     .sum::<usize>(),
             )
