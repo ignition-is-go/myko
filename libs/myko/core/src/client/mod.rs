@@ -74,6 +74,7 @@ impl From<MykoProtocol> for u8 {
 /// `ready` is false until a valid sequence-zero snapshot arrives, resets on
 /// disconnect, and becomes true even when the authoritative result is empty.
 /// Existing list-only APIs remain available through [`Self::into_items`].
+#[derive(Clone)]
 pub struct ListWatch<T: CellValue> {
     items: Cell<Vec<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
@@ -234,6 +235,32 @@ fn report_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscriptio
     })
 }
 
+fn list_watch_cache_guard(
+    cache_key: String,
+    tx: Arc<str>,
+    inner: Arc<MykoClientInner>,
+) -> SubscriptionGuard {
+    SubscriptionGuard::from_callback(move || {
+        let _gate = inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let remove = inner
+            .list_watch_cache
+            .get(&cache_key)
+            .is_some_and(|entry| entry.tx() == tx.as_ref());
+        if remove {
+            inner.list_watch_cache.remove(&cache_key);
+        }
+    })
+}
+
+fn retain_cell_guard<T: CellValue>(cell: Cell<T, CellImmutable>) -> SubscriptionGuard {
+    SubscriptionGuard::from_callback(move || {
+        let _ = &cell;
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Report cache — deduplicate identical report subscriptions over the wire
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +288,47 @@ impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntry<T> {
 impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntryDyn for ClientReportCacheEntry<T> {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+// Query/view list watches cache both cells so readiness and data share one
+// server subscription. Entries are weak and are removed by the final watch's
+// ownership guard.
+trait ClientListWatchCacheEntryDyn: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn tx(&self) -> &str;
+}
+
+struct ClientListWatchCacheEntry<T: CellValue> {
+    tx: Arc<str>,
+    items: hyphae::cell::WeakCell<Vec<T>, CellImmutable>,
+    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+}
+
+impl<T: CellValue> ClientListWatchCacheEntry<T> {
+    fn new(tx: Arc<str>, watch: &ListWatch<T>) -> Self {
+        Self {
+            tx,
+            items: watch.items.downgrade(),
+            ready: watch.ready.downgrade(),
+        }
+    }
+
+    fn get(&self) -> Option<ListWatch<T>> {
+        Some(ListWatch {
+            items: self.items.upgrade()?,
+            ready: self.ready.upgrade()?,
+        })
+    }
+}
+
+impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientListWatchCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
     }
 }
 
@@ -311,6 +379,10 @@ struct MykoClientInner {
     // Report subscription cache — keyed by report_id:params_hash
     report_cache: DashMap<String, Box<dyn ClientReportCacheEntryDyn>>,
 
+    // Query/view list subscription cache — keyed by kind:id:item:params_hash.
+    list_watch_cache: DashMap<String, Box<dyn ClientListWatchCacheEntryDyn>>,
+    list_watch_cache_gate: Mutex<()>,
+
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
 
@@ -349,6 +421,26 @@ impl MykoClient {
             }
             dashmap::mapref::entry::Entry::Occupied(_) => false,
         }
+    }
+
+    fn cached_list_watch<T: CellValue>(&self, cache_key: &str) -> Option<ListWatch<T>> {
+        let existing = self.inner.list_watch_cache.get(cache_key)?;
+        existing
+            .as_any()
+            .downcast_ref::<ClientListWatchCacheEntry<T>>()?
+            .get()
+    }
+
+    fn cache_list_watch<T: CellValue>(
+        &self,
+        cache_key: String,
+        tx: Arc<str>,
+        watch: &ListWatch<T>,
+    ) {
+        self.inner.list_watch_cache.insert(
+            cache_key,
+            Box::new(ClientListWatchCacheEntry::new(tx, watch)),
+        );
     }
 
     /// Create a new `MykoClient` with the platform-default transport.
@@ -601,6 +693,8 @@ impl MykoClient {
                 command_response_handlers,
                 command_request_handlers,
                 report_cache: DashMap::new(),
+                list_watch_cache: DashMap::new(),
+                list_watch_cache_gate: Mutex::new(()),
                 pending_sends,
                 report_dispatch_tx,
                 _read_guard: read_guard,
@@ -1165,6 +1259,7 @@ impl MykoClient {
     /// Returns a Cell containing the current list of matching items.
     /// The Cell updates whenever the server pushes query diffs.
     /// On reconnect, the query is automatically re-subscribed.
+    /// Identical query parameters share one decoded state and wire subscription.
     pub fn watch_query<Q>(
         &self,
         query: impl Into<QueryRequest<Q>>,
@@ -1188,10 +1283,26 @@ impl MykoClient {
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
         let supplied: QueryRequest<Q> = query.into();
+        let query_id = supplied.query.query_id();
+        let query_item_type = Q::query_item_type_static();
+        let cache_key = format!(
+            "query-list:{query_id}:{query_item_type}:{}:{:016x}",
+            std::any::type_name::<Q::Item>(),
+            supplied.query.cache_key_hash()
+        );
+        let _cache_gate = self
+            .inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(shared) = self.cached_list_watch(&cache_key) {
+            debug!("watch_query_state: cache hit for {cache_key}");
+            return shared;
+        }
+        self.inner.list_watch_cache.remove(&cache_key);
+
         let query = QueryRequest::with_tx(supplied.query, next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
-        let query_id = query.query.query_id();
-        let query_item_type = Q::query_item_type_static();
 
         let cell = Cell::new(vec![]).with_name(query_id.as_ref());
         let cell_weak = cell.downgrade();
@@ -1338,12 +1449,20 @@ impl MykoClient {
         });
 
         cell.own(status_guard);
-        cell.own(query_cancel_guard(tx, self.inner.clone()));
+        cell.own(query_cancel_guard(tx.clone(), self.inner.clone()));
+        cell.own(retain_cell_guard(ready_read.clone()));
+        cell.own(list_watch_cache_guard(
+            cache_key.clone(),
+            tx.clone(),
+            self.inner.clone(),
+        ));
 
-        QueryWatch {
+        let watch = QueryWatch {
             items: cell.lock(),
             ready: ready_read,
-        }
+        };
+        self.cache_list_watch(cache_key, tx, &watch);
+        watch
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1461,6 +1580,7 @@ impl MykoClient {
     /// Returns a Cell containing the current list of items in the view.
     /// The Cell updates whenever the server pushes view diffs.
     /// On reconnect, the view is automatically re-subscribed.
+    /// Identical view parameters share one decoded state and wire subscription.
     pub fn watch_view<V>(
         &self,
         view: impl Into<ViewRequest<V>>,
@@ -1480,9 +1600,25 @@ impl MykoClient {
         V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
         let supplied: ViewRequest<V> = view.into();
+        let view_id = supplied.view.view_id();
+        let cache_key = format!(
+            "view-list:{view_id}:{}:{:016x}",
+            std::any::type_name::<V::Item>(),
+            supplied.view.cache_key_hash()
+        );
+        let _cache_gate = self
+            .inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(shared) = self.cached_list_watch(&cache_key) {
+            debug!("watch_view_state: cache hit for {cache_key}");
+            return shared;
+        }
+        self.inner.list_watch_cache.remove(&cache_key);
+
         let view = ViewRequest::with_tx(supplied.view, next_subscription_tx());
         let tx: Arc<str> = view.tx.clone();
-        let view_id = view.view.view_id();
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
         let cell_weak = cell.downgrade();
         let ready =
@@ -1614,12 +1750,20 @@ impl MykoClient {
         });
 
         cell.own(status_guard);
-        cell.own(view_cancel_guard(tx, self.inner.clone()));
+        cell.own(view_cancel_guard(tx.clone(), self.inner.clone()));
+        cell.own(retain_cell_guard(ready_read.clone()));
+        cell.own(list_watch_cache_guard(
+            cache_key.clone(),
+            tx.clone(),
+            self.inner.clone(),
+        ));
 
-        ViewWatch {
+        let watch = ViewWatch {
             items: cell.lock(),
             ready: ready_read,
-        }
+        };
+        self.cache_list_watch(cache_key, tx, &watch);
+        watch
     }
 
     /// Watch a report and receive updates as a reactive Cell with an initial value.

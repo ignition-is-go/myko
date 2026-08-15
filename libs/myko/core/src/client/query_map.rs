@@ -502,6 +502,73 @@ mod tests {
         assert_eq!(watch.items().get().len(), 1);
     }
 
+    #[test]
+    fn query_list_apis_share_one_wire_subscription() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let first = client.watch_query_state(GetAllClients {});
+        let second = client.watch_query(GetAllClients {});
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let query_frames = transport
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")))
+            .collect::<Vec<_>>();
+        assert_eq!(query_frames.len(), 1);
+        let Some(WsFrame::Text(frame)) = query_frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        let tx = request
+            .pointer("/data/query/tx")
+            .and_then(serde_json::Value::as_str);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+
+        let initial = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "shared-client",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert!(first.ready().get());
+        assert_eq!(first.items().get().len(), 1);
+        assert_eq!(second.get().len(), 1);
+
+        drop(first);
+        assert!(transport.sent_frames().iter().all(
+            |frame| !matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel"))
+        ));
+        drop(second);
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel")))
+                .count(),
+            1
+        );
+    }
+
     #[cfg(feature = "demo")]
     #[test]
     fn view_list_watch_does_not_treat_the_local_seed_as_ready() {
@@ -539,6 +606,41 @@ mod tests {
 
         transport.set_status(SocketConnectionStatus::Disconnected);
         assert!(!watch.ready().get());
+    }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn view_list_apis_share_one_wire_subscription() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let first = client.watch_view_state(GetDemoTasksWithStatus {});
+        let second = client.watch_view(GetDemoTasksWithStatus {});
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(
+                    |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view\""))
+                )
+                .count(),
+            1
+        );
+
+        drop(first);
+        assert!(transport.sent_frames().iter().all(
+            |frame| !matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view-cancel"))
+        ));
+        drop(second);
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view-cancel")))
+                .count(),
+            1
+        );
     }
     #[test]
     fn malformed_initial_snapshot_is_atomic_and_does_not_become_ready() {
