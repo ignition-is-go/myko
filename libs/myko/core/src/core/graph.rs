@@ -711,12 +711,12 @@ struct IndexedEdge {
 }
 
 #[derive(Clone, Debug)]
-enum PairIds {
+enum EdgeIds {
     One(Arc<str>),
     Many(BTreeSet<Arc<str>>),
 }
 
-impl PairIds {
+impl EdgeIds {
     fn insert(&mut self, id: Arc<str>) {
         match self {
             Self::One(existing) if *existing == id => {}
@@ -751,6 +751,15 @@ impl PairIds {
         }
     }
 
+    fn extend_cloned(&self, target: &mut BTreeSet<Arc<str>>) {
+        match self {
+            Self::One(id) => {
+                target.insert(id.clone());
+            }
+            Self::Many(ids) => target.extend(ids.iter().cloned()),
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             Self::One(_) => 1,
@@ -760,6 +769,20 @@ impl PairIds {
 
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    fn contains(&self, candidate: &Arc<str>) -> bool {
+        match self {
+            Self::One(id) => id == candidate,
+            Self::Many(ids) => ids.contains(candidate),
+        }
+    }
+
+    fn first(&self) -> Option<&Arc<str>> {
+        match self {
+            Self::One(id) => Some(id),
+            Self::Many(ids) => ids.first(),
+        }
     }
 
     fn conflicting_id(&self, candidate: &str) -> Option<&Arc<str>> {
@@ -774,11 +797,11 @@ impl PairIds {
 struct EdgeTypeState {
     generation: u64,
     edges: HashMap<Arc<str>, IndexedEdge>,
-    a: HashMap<EndpointValue, BTreeSet<Arc<str>>>,
-    b: HashMap<EndpointValue, BTreeSet<Arc<str>>>,
-    a_entities: HashMap<EntityRef, BTreeSet<Arc<str>>>,
-    b_entities: HashMap<EntityRef, BTreeSet<Arc<str>>>,
-    pairs: HashMap<EdgePairKey, PairIds>,
+    a: HashMap<EndpointValue, EdgeIds>,
+    b: HashMap<EndpointValue, EdgeIds>,
+    a_entities: HashMap<EntityRef, EdgeIds>,
+    b_entities: HashMap<EntityRef, EdgeIds>,
+    pairs: HashMap<EdgePairKey, EdgeIds>,
 }
 
 #[derive(Default)]
@@ -1015,19 +1038,25 @@ impl GraphIndex {
                 (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
                 _ => return Vec::new(),
             };
-            return small
-                .iter()
-                .filter(|id| {
-                    other.contains(*id)
-                        && scope.is_none_or(|scope| {
-                            edges
-                                .edges
-                                .get(*id)
-                                .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
-                        })
-                })
-                .cloned()
-                .collect();
+            let accepted = |id: &Arc<str>| {
+                other.contains(id)
+                    && scope.is_none_or(|scope| {
+                        edges
+                            .edges
+                            .get(id)
+                            .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
+                    })
+            };
+            return match small {
+                EdgeIds::One(id) => {
+                    if accepted(id) {
+                        vec![id.clone()]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                EdgeIds::Many(ids) => ids.iter().filter(|id| accepted(id)).cloned().collect(),
+            };
         }
 
         // With one projected end, inspect only that endpoint's incident set
@@ -1035,22 +1064,22 @@ impl GraphIndex {
         let mut candidates = BTreeSet::new();
         if a_eager {
             if let Some(ids) = edges.a.get(a) {
-                candidates.extend(ids.iter().cloned());
+                ids.extend_cloned(&mut candidates);
             }
             if registration.shape == EdgeShapeKind::Undirected
                 && let Some(ids) = edges.a.get(b)
             {
-                candidates.extend(ids.iter().cloned());
+                ids.extend_cloned(&mut candidates);
             }
         }
         if b_eager {
             if let Some(ids) = edges.b.get(b) {
-                candidates.extend(ids.iter().cloned());
+                ids.extend_cloned(&mut candidates);
             }
             if registration.shape == EdgeShapeKind::Undirected
                 && let Some(ids) = edges.b.get(a)
             {
-                candidates.extend(ids.iter().cloned());
+                ids.extend_cloned(&mut candidates);
             }
         }
         candidates
@@ -1234,6 +1263,18 @@ impl GraphIndex {
         }
     }
 
+    fn insert_incidence<K>(map: &mut HashMap<K, EdgeIds>, key: K, id: Arc<str>)
+    where
+        K: Eq + std::hash::Hash,
+    {
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => entry.get_mut().insert(id),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(EdgeIds::One(id));
+            }
+        }
+    }
+
     fn insert_indexed(
         &self,
         registration: &EdgeRegistration,
@@ -1241,28 +1282,20 @@ impl GraphIndex {
         edge: IndexedEdge,
     ) {
         if self.projects_endpoint(registration.edge_type, EndPosition::A) {
-            state
-                .a
-                .entry(edge.endpoints.a.clone())
-                .or_default()
-                .insert(edge.id.clone());
-            state
-                .a_entities
-                .entry(edge.endpoints.a.entity.clone())
-                .or_default()
-                .insert(edge.id.clone());
+            Self::insert_incidence(&mut state.a, edge.endpoints.a.clone(), edge.id.clone());
+            Self::insert_incidence(
+                &mut state.a_entities,
+                edge.endpoints.a.entity.clone(),
+                edge.id.clone(),
+            );
         }
         if self.projects_endpoint(registration.edge_type, EndPosition::B) {
-            state
-                .b
-                .entry(edge.endpoints.b.clone())
-                .or_default()
-                .insert(edge.id.clone());
-            state
-                .b_entities
-                .entry(edge.endpoints.b.entity.clone())
-                .or_default()
-                .insert(edge.id.clone());
+            Self::insert_incidence(&mut state.b, edge.endpoints.b.clone(), edge.id.clone());
+            Self::insert_incidence(
+                &mut state.b_entities,
+                edge.endpoints.b.entity.clone(),
+                edge.id.clone(),
+            );
         }
         if Self::projects_pairs(registration) {
             match state.pairs.entry(Self::pair_key(
@@ -1274,7 +1307,7 @@ impl GraphIndex {
                     entry.get_mut().insert(edge.id.clone());
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(PairIds::One(edge.id.clone()));
+                    entry.insert(EdgeIds::One(edge.id.clone()));
                 }
             }
         }
@@ -1424,9 +1457,14 @@ impl GraphIndex {
                                 );
                             }
                         }
-                        EndpointDeletePolicy::CascadeEdge => {
-                            cascade.extend(ids.iter().cloned().map(|id| (*edge_type, id)));
-                        }
+                        EndpointDeletePolicy::CascadeEdge => match ids {
+                            EdgeIds::One(id) => {
+                                cascade.insert((*edge_type, id.clone()));
+                            }
+                            EdgeIds::Many(ids) => {
+                                cascade.extend(ids.iter().cloned().map(|id| (*edge_type, id)));
+                            }
+                        },
                         EndpointDeletePolicy::RetainDangling => {}
                     }
                 }
@@ -1528,8 +1566,7 @@ impl GraphIndex {
             EndPosition::A => &edges.a,
             EndPosition::B => &edges.b,
         };
-        map.get(endpoint)
-            .map_or_else(Vec::new, |ids| ids.iter().cloned().collect())
+        map.get(endpoint).map_or_else(Vec::new, EdgeIds::ids)
     }
 
     #[must_use]
@@ -1552,7 +1589,7 @@ impl GraphIndex {
                 .edge_types
                 .get(edge_type)
                 .and_then(|edges| edges.pairs.get(&key))
-                .map_or_else(Vec::new, PairIds::ids);
+                .map_or_else(Vec::new, EdgeIds::ids);
         }
         if !self.projects_any_endpoint(edge_type) {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
@@ -1614,7 +1651,7 @@ impl GraphIndex {
             EndPosition::A => &edges.a,
             EndPosition::B => &edges.b,
         };
-        map.get(endpoint).map_or(0, BTreeSet::len)
+        map.get(endpoint).map_or(0, EdgeIds::len)
     }
 
     #[must_use]
@@ -1673,7 +1710,7 @@ impl GraphIndex {
                 .edge_types
                 .get(edge_type)
                 .and_then(|edges| edges.pairs.get(&key))
-                .map_or(0, PairIds::len);
+                .map_or(0, EdgeIds::len);
         }
         self.edge_ids_between(edge_type, a, b).len()
     }
@@ -1719,7 +1756,7 @@ impl GraphIndex {
                 .edge_types
                 .get(edge_type)
                 .and_then(|edges| edges.pairs.get(&key))
-                .map_or_else(Vec::new, PairIds::ids);
+                .map_or_else(Vec::new, EdgeIds::ids);
         }
         if !self.projects_any_endpoint(edge_type) {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
@@ -1767,7 +1804,7 @@ impl GraphIndex {
                 .edge_types
                 .get(edge_type)
                 .and_then(|edges| edges.pairs.get(&key))
-                .map_or(0, PairIds::len);
+                .map_or(0, EdgeIds::len);
         }
         self.edge_ids_between_in_scope(edge_type, a, b, scope).len()
     }
@@ -1855,12 +1892,12 @@ impl GraphIndex {
         if (direction != Direction::Reverse || shape == EdgeShapeKind::Undirected)
             && let Some(ids) = edges.a_entities.get(node)
         {
-            candidates.extend(ids.iter().cloned());
+            ids.extend_cloned(&mut candidates);
         }
         if (direction != Direction::Forward || shape == EdgeShapeKind::Undirected)
             && let Some(ids) = edges.b_entities.get(node)
         {
-            candidates.extend(ids.iter().cloned());
+            ids.extend_cloned(&mut candidates);
         }
         candidates
             .into_iter()
@@ -2466,7 +2503,7 @@ mod tests {
     )]
     use std::sync::Arc;
 
-    use super::PairIds;
+    use super::EdgeIds;
     use crate::prelude::*;
     use crate::{
         search::SearchIndex,
@@ -2727,6 +2764,11 @@ mod tests {
                 .expect("projected edge state");
             assert_eq!(projected.a.len(), 1);
             assert_eq!(projected.a_entities.len(), 1);
+            assert!(matches!(projected.a.values().next(), Some(EdgeIds::One(_))));
+            assert!(matches!(
+                projected.a_entities.values().next(),
+                Some(EdgeIds::One(_))
+            ));
             assert!(projected.b.is_empty());
             assert!(projected.b_entities.is_empty());
             assert_eq!(projected.edges.len(), 1);
@@ -2814,10 +2856,10 @@ mod tests {
     }
 
     #[test]
-    fn pair_ids_stay_inline_until_parallel_history_requires_a_set() {
+    fn edge_ids_stay_inline_until_parallel_history_requires_a_set() {
         let first: Arc<str> = "edge-1".into();
         let second: Arc<str> = "edge-2".into();
-        let mut ids = PairIds::One(first.clone());
+        let mut ids = EdgeIds::One(first.clone());
 
         ids.insert(first.clone());
         assert_eq!(ids.ids(), vec![first.clone()]);

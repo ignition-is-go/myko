@@ -881,6 +881,11 @@ pub struct GraphShardState {
 }
 ```
 
+Incidence and pair buckets keep one edge ID inline and promote to a sorted set
+only when a second distinct edge arrives. Removal demotes a set back to the
+inline form. This preserves deterministic results without paying for a tree
+allocation in the common singleton-bucket case.
+
 `by_pair` is present for `PairProjectionPolicy::Eager`. Qualified maps are
 populated when the associated endpoint type has a qualifier. Undirected edges
 require identical endpoint schemas and canonicalize complete endpoint addresses
@@ -1672,6 +1677,7 @@ warmup, 200 ms measurement) produced:
 | 1,000-edge batch write | 309.1–310.2 µs plain | 1.815–1.823 ms projected | about 5.9× write cost for validation, causal hashing, and four maintained projections; inline singleton pair IDs improved the projected path by about 1.1%, within the benchmark's noise threshold |
 | 1,000-edge projected batch, both ends versus A only | 1.817–1.832 ms both ends | 1.621–1.630 ms A only | one-sided projection is about 10.9% faster and omits the cold endpoint and entity-incidence maps |
 | sparse hot-end lookup, both ends versus A only | 121.1–122.4 ns both ends | 123.0–123.8 ns A only | hot-end lookup remains within 2%; the write/memory saving does not trade away lookup complexity |
+| singleton-inline incidence buckets | 1.815–1.823 ms prior 1,000-edge projected batch | 1.802–1.812 ms inline incidence | write time remains within noise while singleton endpoint buckets no longer allocate a tree; sparse hot-end lookup remains 121.2–121.6 ns |
 | two writers, 200 attempted unique-edge writes | n/a | 361–396 µs | bounded authority-lock contention, no uniqueness race |
 
 These are development-machine microbenchmarks, not release SLOs. They validate
