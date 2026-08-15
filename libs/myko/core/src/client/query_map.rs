@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
-use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Mutable, Watchable};
+use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable, Watchable};
 
 pub(super) fn apply_incremental_map_update<T: hyphae::CellValue>(
     map: &CellMap<Arc<str>, Arc<T>, CellMutable>,
@@ -22,14 +25,16 @@ use serde_json::Value;
 use tracing::{debug, error, trace};
 
 use super::{
-    ConnectionStatus, MykoClient, QueryRequest,
+    ConnectionStatus, MykoClient, QueryRequest, WindowedQueryWatch,
     map_response::{MapSequence, decode_map_upserts},
 };
 use crate::{
     common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, query::QueryParams},
-    wire::{message::MykoMessage, query::WrappedQuery},
+    wire::{ClientQueryChange, QueryWindow, message::MykoMessage, query::WrappedQuery},
 };
+
+type WindowQueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
 
 /// Fine-grained query data together with explicit initial-response readiness.
 ///
@@ -164,6 +169,46 @@ impl MykoClient {
         <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
     {
         self.watch_query_map_state(E::between_query(a, b))
+    }
+
+    /// Watch one ordered page of edges at endpoint A.
+    pub fn watch_graph_from_windowed<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<E>
+    where
+        E: crate::graph::GraphClientQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::from_query(endpoint), window)
+    }
+
+    /// Watch one ordered page of edges at endpoint B.
+    pub fn watch_graph_to_windowed<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<E>
+    where
+        E: crate::graph::GraphClientQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::to_query(endpoint), window)
+    }
+
+    /// Watch one ordered page of edges matching an exact endpoint pair.
+    pub fn watch_graph_between_windowed<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<E>
+    where
+        E: crate::graph::GraphClientQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::between_query(a, b), window)
     }
 
     /// Watch the live number of edges at endpoint A without transferring edge
@@ -418,6 +463,212 @@ impl MykoClient {
         self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready);
         watch
     }
+
+    /// Watch an ordered server window with live total-count and window state.
+    ///
+    /// Identical query parameters and initial windows share one decoded state
+    /// and wire subscription. Use [`WindowedQueryWatch::set_window`] to move
+    /// the shared subscription without cancelling and recreating it.
+    #[allow(clippy::too_many_lines)]
+    pub fn watch_query_windowed<Q>(
+        &self,
+        query: impl Into<QueryRequest<Q>>,
+        initial_window: QueryWindow,
+    ) -> WindowedQueryWatch<Q::Item>
+    where
+        Q: QueryParams + Clone,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+    {
+        let supplied: QueryRequest<Q> = query.into();
+        let query_id = supplied.query.query_id();
+        let query_item_type = Q::query_item_type_static();
+        let cache_key = format!(
+            "query-window:{query_id}:{query_item_type}:{}:{:016x}:{}:{}",
+            std::any::type_name::<Q::Item>(),
+            supplied.query.cache_key_hash(),
+            initial_window.offset,
+            initial_window.limit
+        );
+        let _cache_gate = self
+            .inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(watch) = self.cached_window_watch(&cache_key) {
+            debug!("watch_query_windowed: cache hit for {cache_key}");
+            return watch;
+        }
+        self.inner.list_watch_cache.remove(&cache_key);
+
+        let query = QueryRequest::with_tx(supplied.query, super::next_subscription_tx());
+        let tx = query.tx.clone();
+        let items = Cell::new(Vec::new()).with_name(format!("query_window:{query_id}"));
+        let items_weak = items.downgrade();
+        let ready = Cell::new(false).with_name(format!("query_window_ready:{query_id}"));
+        let total_count = Cell::new(None).with_name(format!("query_window_total_count:{query_id}"));
+        let window = Cell::new(Some(initial_window.clone()))
+            .with_name(format!("query_window_state:{query_id}"));
+        let early_watch = WindowedQueryWatch {
+            items: items.clone().lock(),
+            ready: ready.clone().lock(),
+            total_count: total_count.clone().lock(),
+            window: window.clone().lock(),
+            tx: tx.clone(),
+            client: self.clone(),
+        };
+
+        let Ok(query_value) = serde_json::to_value(&query) else {
+            error!("Could not serialize windowed query request for {query_id}");
+            return early_watch;
+        };
+        let wrapped = WrappedQuery {
+            query: query_value,
+            query_id: query_id.clone(),
+            query_item_type,
+            window: Some(initial_window),
+        };
+        let state: WindowQueryState<Q::Item> = Arc::default();
+        let sequences = Arc::new(MapSequence::new());
+        let sequences_for_handler = sequences.clone();
+        let tx_for_handler = tx.clone();
+        let query_id_for_handler = query_id.clone();
+        let ready_for_handler = ready.clone();
+        let total_count_for_handler = total_count.clone();
+        let window_for_handler = window.clone();
+        let handler: super::QueryHandler = Box::new(move |response_value: Value| {
+            let Some(items_writer) = items_weak.upgrade() else {
+                return;
+            };
+            let response =
+                match serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        error!(
+                            "Rejected windowed query '{}' malformed response: {}",
+                            query_id_for_handler, error
+                        );
+                        return;
+                    }
+                };
+            if response.tx != tx_for_handler {
+                return;
+            }
+            let upserts = match decode_map_upserts::<Q::Item, _>(response.upserts, WithId::id) {
+                Ok(upserts) => upserts,
+                Err(error) => {
+                    error!(
+                        "Rejected windowed query '{}' response: invalid {} upsert: {}",
+                        query_id_for_handler,
+                        std::any::type_name::<Q::Item>(),
+                        error
+                    );
+                    return;
+                }
+            };
+            if !sequences_for_handler.accept(response.sequence) {
+                error!(
+                    "Rejected windowed query '{}' out-of-order sequence {}",
+                    query_id_for_handler, response.sequence
+                );
+                return;
+            }
+            let order = response
+                .changes
+                .into_iter()
+                .find_map(|change| match change {
+                    ClientQueryChange::WindowOrder { ids, .. } => Some(ids),
+                    ClientQueryChange::Upsert { .. } | ClientQueryChange::Delete { .. } => None,
+                });
+            let is_initial = response.sequence == 0;
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if is_initial {
+                state.clear();
+            }
+            for id in response.deletes {
+                state.remove(&id);
+            }
+            for (id, item) in upserts {
+                state.insert(id, item);
+            }
+            let next_items = order.map_or_else(
+                || {
+                    let mut ids: Vec<_> = state.keys().cloned().collect();
+                    ids.sort_unstable();
+                    ids.into_iter()
+                        .filter_map(|id| state.get(&id).cloned())
+                        .collect()
+                },
+                |order| {
+                    order
+                        .into_iter()
+                        .filter_map(|id| state.get(&id).cloned())
+                        .collect()
+                },
+            );
+            drop(state);
+            items_writer.set(next_items);
+            total_count_for_handler.set(response.total_count);
+            window_for_handler.set(response.window);
+            if is_initial {
+                ready_for_handler.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate windowed query transaction {tx}");
+            return early_watch;
+        }
+
+        let inner = self.inner.clone();
+        let ready_for_status = ready.downgrade();
+        let window_for_status = window.clone().lock();
+        let wrapped_for_status = wrapped;
+        let status_cell = self.connection_status();
+        let status_guard = status_cell.subscribe(move |signal| {
+            let hyphae::Signal::Value(status) = signal else {
+                return;
+            };
+            if let ConnectionStatus::Connected(_) = &**status {
+                let mut request = wrapped_for_status.clone();
+                request.window = window_for_status.get();
+                let message = MykoMessage::Query(request);
+                match super::encode_protocol(&inner.protocol, &message)
+                    .ok_or_else(|| "could not encode query".to_string())
+                    .and_then(|frame| inner.socket.send(frame))
+                {
+                    Ok(()) => debug!("Watching windowed query {query_id}"),
+                    Err(error) => error!("Could not send windowed query: {error}"),
+                }
+            } else {
+                sequences.reset_epoch();
+                if let Some(writer) = ready_for_status.upgrade() {
+                    writer.set(false);
+                }
+            }
+        });
+
+        items.own(status_guard);
+        items.own(super::query_cancel_guard(tx.clone(), self.inner.clone()));
+        items.own(super::retain_cell_guard(ready.clone().lock()));
+        items.own(super::retain_cell_guard(total_count.clone().lock()));
+        items.own(super::retain_cell_guard(window.clone().lock()));
+        items.own(super::list_watch_cache_guard(
+            cache_key.clone(),
+            tx,
+            self.inner.clone(),
+        ));
+        let watch = WindowedQueryWatch {
+            items: items.lock(),
+            ready: ready.lock(),
+            total_count: total_count.lock(),
+            window: window.lock(),
+            tx: early_watch.tx,
+            client: early_watch.client,
+        };
+        self.cache_window_watch(cache_key, &watch);
+        watch
+    }
 }
 
 #[cfg(test)]
@@ -433,7 +684,11 @@ mod tests {
     use super::apply_incremental_map_update;
     #[cfg(feature = "demo")]
     use crate::entities::demo::GetDemoTasksWithStatus;
-    use crate::{client::MykoClient, entities::client::GetAllClients};
+    use crate::{
+        client::MykoClient,
+        entities::client::GetAllClients,
+        wire::{QueryWindow, QueryWindowUpdate},
+    };
 
     struct MockTransport {
         status: Cell<SocketConnectionStatus, CellMutable>,
@@ -741,6 +996,183 @@ mod tests {
         assert!(first.ready().get());
         assert_eq!(first.items().get().len(), 1);
         assert_eq!(second.get().len(), 1);
+
+        drop(first);
+        assert!(transport.sent_frames().iter().all(
+            |frame| !matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel"))
+        ));
+        drop(second);
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel")))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn windowed_query_watch_shares_orders_and_moves_one_live_subscription() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let initial_window = QueryWindow {
+            offset: 0,
+            limit: 1,
+        };
+        let first = client.watch_query_windowed(GetAllClients {}, initial_window.clone());
+        let second = client.watch_query_windowed(GetAllClients {}, initial_window);
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let query_frames: Vec<_> = transport
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")))
+            .collect();
+        assert_eq!(query_frames.len(), 1);
+        let Some(WsFrame::Text(frame)) = query_frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        assert_eq!(
+            request.pointer("/data/window/limit"),
+            Some(&serde_json::json!(1))
+        );
+        let tx = request
+            .pointer("/data/query/tx")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+
+        let initial = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "client-b",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }],
+                "changes": [{
+                    "kind": "windowOrder",
+                    "ids": ["client-b"],
+                    "total_count": 3,
+                    "window": { "offset": 0, "limit": 1 }
+                }],
+                "totalCount": 3,
+                "window": { "offset": 0, "limit": 1 }
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert!(first.ready().get());
+        assert!(second.ready().get());
+        assert!(
+            first
+                .items()
+                .get()
+                .first()
+                .is_some_and(|item| item.id.as_ref() == "client-b")
+        );
+        assert_eq!(second.total_count().get(), Some(3));
+
+        assert!(first.set_page(1, 1).is_ok());
+        let window_messages: Vec<QueryWindowUpdate> = transport
+            .sent_frames()
+            .iter()
+            .filter_map(|frame| {
+                let WsFrame::Text(text) = frame else {
+                    return None;
+                };
+                let value: serde_json::Value = serde_json::from_str(text).ok()?;
+                (value.get("event")?.as_str()? == "ws:m:query-window")
+                    .then(|| serde_json::from_value(value.get("data")?.clone()).ok())
+                    .flatten()
+            })
+            .collect();
+        assert_eq!(window_messages.len(), 1);
+        let Some(window_message) = window_messages.first() else {
+            return;
+        };
+        assert_eq!(window_message.tx, tx);
+        assert_eq!(
+            window_message.window,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1
+            })
+        );
+
+        let moved = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 1,
+                "deletes": ["client-b"],
+                "upserts": [{
+                    "item": {
+                        "id": "client-c",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }],
+                "changes": [{
+                    "kind": "windowOrder",
+                    "ids": ["client-c"],
+                    "total_count": 3,
+                    "window": { "offset": 1, "limit": 1 }
+                }],
+                "totalCount": 3,
+                "window": { "offset": 1, "limit": 1 }
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(moved.to_string()));
+        assert!(
+            first
+                .items()
+                .get()
+                .first()
+                .is_some_and(|item| item.id.as_ref() == "client-c")
+        );
+        assert_eq!(
+            second.window().get(),
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1
+            })
+        );
+
+        transport.set_status(SocketConnectionStatus::Disconnected);
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = transport.sent_frames();
+        let resumed = frames.iter().rev().find_map(|frame| {
+            let WsFrame::Text(text) = frame else {
+                return None;
+            };
+            let value: serde_json::Value = serde_json::from_str(text).ok()?;
+            (value.get("event")?.as_str()? == "ws:m:query").then_some(value)
+        });
+        assert_eq!(
+            resumed
+                .as_ref()
+                .and_then(|value| value.pointer("/data/window/offset")),
+            Some(&serde_json::json!(1))
+        );
 
         drop(first);
         assert!(transport.sent_frames().iter().all(

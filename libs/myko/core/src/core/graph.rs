@@ -3883,6 +3883,28 @@ mod tests {
             &ArticleId,
         ) -> QueryMapWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_between::<ForwardIndexedAssignment>;
+        let from_windowed: fn(
+            &MykoClient,
+            &TagId,
+            crate::wire::QueryWindow,
+        )
+            -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_from_windowed::<ForwardIndexedAssignment>;
+        let to_windowed: fn(
+            &MykoClient,
+            &ArticleId,
+            crate::wire::QueryWindow,
+        )
+            -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_to_windowed::<ForwardIndexedAssignment>;
+        let between_windowed: fn(
+            &MykoClient,
+            &TagId,
+            &ArticleId,
+            crate::wire::QueryWindow,
+        )
+            -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_between_windowed::<ForwardIndexedAssignment>;
         let count_from: fn(
             &MykoClient,
             &TagId,
@@ -3909,6 +3931,9 @@ mod tests {
             from,
             to,
             between,
+            from_windowed,
+            to_windowed,
+            between_windowed,
             count_from,
             count_to,
             count_between,

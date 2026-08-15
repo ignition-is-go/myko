@@ -37,8 +37,8 @@ use crate::{
     report::{ReportIdStatic, ReportParams, ReportRequest},
     view::{ViewParams, ViewRequest},
     wire::{
-        MEvent, MykoMessage, PingData, WrappedQuery, WrappedReport, WrappedView,
-        wrap_command_request, wrap_view,
+        MEvent, MykoMessage, PingData, QueryWindow, QueryWindowUpdate, WrappedQuery, WrappedReport,
+        WrappedView, wrap_command_request, wrap_view,
     },
 };
 
@@ -101,6 +101,102 @@ impl<T: CellValue> ListWatch<T> {
 pub type QueryWatch<T> = ListWatch<Arc<T>>;
 /// A view list watch with authoritative response readiness.
 pub type ViewWatch<T> = ListWatch<T>;
+
+/// A live ordered query page with authoritative pagination metadata.
+#[derive(Clone)]
+pub struct WindowedQueryWatch<T: CellValue> {
+    items: Cell<Vec<Arc<T>>, CellImmutable>,
+    ready: Cell<bool, CellImmutable>,
+    total_count: Cell<Option<usize>, CellImmutable>,
+    window: Cell<Option<QueryWindow>, CellImmutable>,
+    tx: Arc<str>,
+    client: MykoClient,
+}
+
+impl<T: CellValue> WindowedQueryWatch<T> {
+    #[must_use]
+    pub const fn items(&self) -> &Cell<Vec<Arc<T>>, CellImmutable> {
+        &self.items
+    }
+
+    #[must_use]
+    pub const fn ready(&self) -> &Cell<bool, CellImmutable> {
+        &self.ready
+    }
+
+    #[must_use]
+    pub const fn total_count(&self) -> &Cell<Option<usize>, CellImmutable> {
+        &self.total_count
+    }
+
+    #[must_use]
+    pub const fn window(&self) -> &Cell<Option<QueryWindow>, CellImmutable> {
+        &self.window
+    }
+
+    /// Move this live subscription to another window without resubscribing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn set_window(&self, window: Option<QueryWindow>) -> Result<(), String> {
+        let message = MykoMessage::QueryWindow(QueryWindowUpdate {
+            tx: self.tx.to_string(),
+            window,
+        });
+        let frame = self.client.encode_message(&message)?;
+        self.client.send_or_queue(frame);
+        Ok(())
+    }
+
+    /// Select a page using an absolute offset and limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn set_page(&self, offset: usize, limit: usize) -> Result<(), String> {
+        self.set_window(Some(QueryWindow { offset, limit }))
+    }
+
+    /// Request the next page when the acknowledged window has more rows.
+    ///
+    /// Returns `Ok(false)` when pagination metadata is not ready or the watch
+    /// is already on its final page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn next_page(&self) -> Result<bool, String> {
+        let Some(window) = self.window.get() else {
+            return Ok(false);
+        };
+        let Some(total_count) = self.total_count.get() else {
+            return Ok(false);
+        };
+        let next_offset = window.offset.saturating_add(window.limit);
+        if window.limit == 0 || next_offset >= total_count {
+            return Ok(false);
+        }
+        self.set_page(next_offset, window.limit)?;
+        Ok(true)
+    }
+
+    /// Request the previous page when the acknowledged window is not first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn previous_page(&self) -> Result<bool, String> {
+        let Some(window) = self.window.get() else {
+            return Ok(false);
+        };
+        if window.limit == 0 || window.offset == 0 {
+            return Ok(false);
+        }
+        self.set_page(window.offset.saturating_sub(window.limit), window.limit)?;
+        Ok(true)
+    }
+}
 
 /// Response handler for incoming command responses (one-shot).
 type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
@@ -356,6 +452,47 @@ impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientListWatchCacheEntry<T>
     }
 }
 
+struct ClientWindowWatchCacheEntry<T: CellValue> {
+    tx: Arc<str>,
+    items: hyphae::cell::WeakCell<Vec<Arc<T>>, CellImmutable>,
+    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    total_count: hyphae::cell::WeakCell<Option<usize>, CellImmutable>,
+    window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
+}
+
+impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
+    fn new(watch: &WindowedQueryWatch<T>) -> Self {
+        Self {
+            tx: watch.tx.clone(),
+            items: watch.items.downgrade(),
+            ready: watch.ready.downgrade(),
+            total_count: watch.total_count.downgrade(),
+            window: watch.window.downgrade(),
+        }
+    }
+
+    fn get(&self, client: MykoClient) -> Option<WindowedQueryWatch<T>> {
+        Some(WindowedQueryWatch {
+            items: self.items.upgrade()?,
+            ready: self.ready.upgrade()?,
+            total_count: self.total_count.upgrade()?,
+            window: self.window.upgrade()?,
+            tx: self.tx.clone(),
+            client,
+        })
+    }
+}
+
+impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientWindowWatchCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
+    }
+}
+
 trait ClientMapWatchCacheEntryDyn: Any + Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn tx(&self) -> &str;
@@ -508,6 +645,20 @@ impl MykoClient {
             cache_key,
             Box::new(ClientListWatchCacheEntry::new(tx, watch)),
         );
+    }
+
+    fn cached_window_watch<T: CellValue>(&self, cache_key: &str) -> Option<WindowedQueryWatch<T>> {
+        let existing = self.inner.list_watch_cache.get(cache_key)?;
+        existing
+            .as_any()
+            .downcast_ref::<ClientWindowWatchCacheEntry<T>>()?
+            .get(self.clone())
+    }
+
+    fn cache_window_watch<T: CellValue>(&self, cache_key: String, watch: &WindowedQueryWatch<T>) {
+        self.inner
+            .list_watch_cache
+            .insert(cache_key, Box::new(ClientWindowWatchCacheEntry::new(watch)));
     }
 
     fn cached_map_watch<T: CellValue>(&self, cache_key: &str) -> Option<SharedMapWatchParts<T>> {
