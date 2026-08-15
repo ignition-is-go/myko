@@ -1627,6 +1627,7 @@ impl EdgeIds {
         }
     }
 
+    /// Remove an ID, returning whether the containing map bucket is now empty.
     fn remove(&mut self, id: &Arc<str>) -> bool {
         match self {
             Self::One(existing) => existing == id,
@@ -2462,22 +2463,20 @@ impl GraphIndex {
             (&mut state.a, &edge.endpoints.a),
             (&mut state.b, &edge.endpoints.b),
         ] {
-            if let Some(ids) = map.get_mut(endpoint) {
-                ids.remove(&edge.id);
-                if ids.is_empty() {
-                    map.remove(endpoint);
-                }
+            if let Some(ids) = map.get_mut(endpoint)
+                && ids.remove(&edge.id)
+            {
+                map.remove(endpoint);
             }
         }
         for (map, endpoint) in [
             (&mut state.a_entities, &edge.endpoints.a.entity),
             (&mut state.b_entities, &edge.endpoints.b.entity),
         ] {
-            if let Some(ids) = map.get_mut(endpoint) {
-                ids.remove(&edge.id);
-                if ids.is_empty() {
-                    map.remove(endpoint);
-                }
+            if let Some(ids) = map.get_mut(endpoint)
+                && ids.remove(&edge.id)
+            {
+                map.remove(endpoint);
             }
         }
         if Self::projects_pairs(registration) {
@@ -4862,6 +4861,19 @@ mod tests {
                 .len(),
             1
         );
+
+        assert!(context.del(&edge).is_ok());
+        let state = graph
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let projected = state
+            .edge_types
+            .get("ForwardIndexedAssignment")
+            .expect("projected edge state after delete");
+        assert!(projected.a.is_empty());
+        assert!(projected.a_entities.is_empty());
+        assert!(projected.edges.is_empty());
     }
 
     #[test]
