@@ -3309,6 +3309,8 @@ mod tests {
         assert!(context.set(&concurrent_article).is_ok());
         let context = Arc::new(context);
         let barrier = Arc::new(std::sync::Barrier::new(2));
+        // Both workers must reach the barrier before either handle is joined.
+        #[allow(clippy::needless_collect)]
         let joins = (0..2)
             .map(|writer| {
                 let context = context.clone();
