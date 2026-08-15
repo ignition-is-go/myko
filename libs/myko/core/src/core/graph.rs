@@ -2550,12 +2550,15 @@ impl GraphIndex {
             select(self, current.as_ref())
         };
         let snapshots = hyphae::Cell::new(Arc::new(initial));
+        let dispatch = Arc::new(parking_lot::ReentrantMutex::new(()));
 
         let snapshots_weak = snapshots.downgrade();
         let graph_weak = Arc::downgrade(self);
         let window_for_diffs = window.clone();
         let select_for_diffs = select.clone();
+        let dispatch_for_diffs = dispatch.clone();
         let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
+            let _dispatch_guard = dispatch_for_diffs.lock();
             let Some(graph) = graph_weak.upgrade() else {
                 return;
             };
@@ -2584,7 +2587,9 @@ impl GraphIndex {
 
         let snapshots_weak = snapshots.downgrade();
         let graph_weak = Arc::downgrade(self);
+        let dispatch_for_window = dispatch;
         let set_window = move |next: Option<crate::wire::QueryWindow>| {
+            let _dispatch_guard = dispatch_for_window.lock();
             let Some(graph) = graph_weak.upgrade() else {
                 return;
             };
@@ -4581,6 +4586,117 @@ mod tests {
             )
             .expect("demand-driven fallback");
         assert!(demand.is_none());
+    }
+
+    #[test]
+    fn graph_window_change_cannot_be_overwritten_by_an_older_diff() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "window-race".into(),
+            id: TagId::from("tag-window-race"),
+        };
+        assert!(context.set(&tag).is_ok());
+        for id in ["b", "c", "d"] {
+            let article = Article {
+                title: id.into(),
+                id: ArticleId::from(format!("article-window-race-{id}")),
+            };
+            assert!(context.set(&article).is_ok());
+            assert!(
+                context
+                    .set(&ForwardIndexedAssignment {
+                        tag_id: tag.id.clone(),
+                        article_id: article.id,
+                        id: ForwardIndexedAssignmentId::from(id),
+                    })
+                    .is_ok()
+            );
+        }
+
+        let endpoint =
+            <ConcreteEndpoint<Tag> as EndpointSpec>::erase(&tag.id).expect("erase tag endpoint");
+        let graph = context.graph_index().expect("graph index");
+        let selection_count = Arc::new(AtomicUsize::new(0));
+        let diff_entered = Arc::new(std::sync::Barrier::new(2));
+        let release_diff = Arc::new(std::sync::Barrier::new(2));
+        let endpoint_for_select = endpoint.clone();
+        let selection_count_for_select = selection_count.clone();
+        let diff_entered_for_select = diff_entered.clone();
+        let release_diff_for_select = release_diff.clone();
+        let endpoint_for_diffs = endpoint.clone();
+        let source = graph
+            .watch_window_matching(
+                ForwardIndexedAssignment::ENTITY_NAME_STATIC,
+                super::GraphWatchRoute::Endpoint {
+                    edge_type: ForwardIndexedAssignment::ENTITY_NAME_STATIC,
+                    position: EndPosition::A,
+                    endpoint,
+                },
+                crate::wire::QueryWindow {
+                    offset: 1,
+                    limit: 1,
+                },
+                move |graph, window| {
+                    let selection = selection_count_for_select.fetch_add(1, Ordering::SeqCst);
+                    if selection == 1 {
+                        diff_entered_for_select.wait();
+                        release_diff_for_select.wait();
+                    }
+                    graph.window_snapshot_at(
+                        ForwardIndexedAssignment::ENTITY_NAME_STATIC,
+                        EndPosition::A,
+                        &endpoint_for_select,
+                        window,
+                    )
+                },
+                move |endpoints| endpoints.a == endpoint_for_diffs,
+            )
+            .expect("window race source");
+
+        let context_for_diff = context.clone();
+        let tag_for_diff = tag.clone();
+        let diff_thread = std::thread::spawn(move || {
+            let article = Article {
+                title: "a".into(),
+                id: ArticleId::from("article-window-race-a"),
+            };
+            assert!(context_for_diff.set(&article).is_ok());
+            assert!(
+                context_for_diff
+                    .set(&ForwardIndexedAssignment {
+                        tag_id: tag_for_diff.id,
+                        article_id: article.id,
+                        id: ForwardIndexedAssignmentId::from("a"),
+                    })
+                    .is_ok()
+            );
+        });
+        diff_entered.wait();
+
+        let source_for_window = source.clone();
+        let (window_done_tx, window_done_rx) = std::sync::mpsc::channel();
+        let window_thread = std::thread::spawn(move || {
+            source_for_window.set_window(Some(crate::wire::QueryWindow {
+                offset: 2,
+                limit: 1,
+            }));
+            let _ = window_done_tx.send(());
+        });
+        assert!(
+            window_done_rx
+                .recv_timeout(std::time::Duration::from_millis(25))
+                .is_err(),
+            "window publication must wait for the older diff publication"
+        );
+        release_diff.wait();
+        assert!(diff_thread.join().is_ok());
+        assert!(window_thread.join().is_ok());
+        assert!(window_done_rx.try_recv().is_ok());
+
+        let final_snapshot = source.snapshots().get();
+        assert_eq!(final_snapshot.entries.len(), 1);
+        assert_eq!(final_snapshot.entries[0].0.as_ref(), "c");
     }
 
     #[test]
