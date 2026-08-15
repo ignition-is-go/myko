@@ -12,7 +12,8 @@ use std::{hint::black_box, sync::Arc};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use myko::{
     bench_entities::{
-        BenchGraphEdge, BenchGraphEdgeId, BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId,
+        BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
+        BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId,
     },
     core::item::downcast_any_item_arc,
     prelude::*,
@@ -75,6 +76,26 @@ fn distributed_edges(n: usize, sources: usize) -> Vec<BenchGraphEdge> {
         .collect()
 }
 
+fn forward_edges(n: usize) -> Vec<BenchForwardGraphEdge> {
+    (0..n)
+        .map(|ordinal| BenchForwardGraphEdge {
+            id: BenchForwardGraphEdgeId::from(format!("forward-edge-{ordinal}")),
+            from_id: BenchGraphNodeId::from("node-0"),
+            to_id: BenchGraphNodeId::from(format!("node-{}", ordinal.saturating_add(1))),
+        })
+        .collect()
+}
+
+fn distributed_forward_edges(n: usize, sources: usize) -> Vec<BenchForwardGraphEdge> {
+    (0..n)
+        .map(|ordinal| BenchForwardGraphEdge {
+            id: BenchForwardGraphEdgeId::from(format!("distributed-forward-edge-{ordinal}")),
+            from_id: BenchGraphNodeId::from(format!("node-{}", ordinal % sources)),
+            to_id: BenchGraphNodeId::from(format!("node-{}", sources + ordinal)),
+        })
+        .collect()
+}
+
 fn seeded(n: usize) -> MykoServerContext {
     let context = context(true);
     let all_nodes = nodes(n.saturating_add(1));
@@ -127,6 +148,36 @@ fn bench_projection_write(c: &mut Criterion) {
         });
     }
     group.finish();
+
+    let mut shape = c.benchmark_group("graph/batch_write_projection_shape");
+    shape.throughput(Throughput::Elements(u64::try_from(N).unwrap_or(u64::MAX)));
+    shape.bench_function("both_endpoints", |b| {
+        b.iter_batched(
+            || {
+                let context = context(true);
+                context
+                    .batch_set(&nodes(N.saturating_add(1)))
+                    .expect("seed graph nodes");
+                (context, edges(N))
+            },
+            |(context, edges)| context.batch_set(black_box(&edges)).expect("edge batch"),
+            BatchSize::LargeInput,
+        );
+    });
+    shape.bench_function("a_endpoint_only", |b| {
+        b.iter_batched(
+            || {
+                let context = context(true);
+                context
+                    .batch_set(&nodes(N.saturating_add(1)))
+                    .expect("seed graph nodes");
+                (context, forward_edges(N))
+            },
+            |(context, edges)| context.batch_set(black_box(&edges)).expect("edge batch"),
+            BatchSize::LargeInput,
+        );
+    });
+    shape.finish();
 }
 
 fn bench_adjacency_lookup(c: &mut Criterion) {
@@ -199,6 +250,38 @@ fn bench_adjacency_lookup(c: &mut Criterion) {
         });
     });
     sparse.finish();
+
+    let forward_context = context(true);
+    forward_context
+        .batch_set(&nodes(sparse_n.saturating_add(sparse_sources)))
+        .expect("seed one-sided graph nodes");
+    forward_context
+        .batch_set(&distributed_forward_edges(sparse_n, sparse_sources))
+        .expect("seed one-sided graph edges");
+    let mut shape = c.benchmark_group("graph/one_hop_sparse_projection_shape");
+    shape.bench_function("both_endpoints", |b| {
+        b.iter(|| {
+            black_box(
+                sparse_context
+                    .edges::<BenchGraphEdge>()
+                    .from_ids(&sparse_from)
+                    .expect("both-end A lookup")
+                    .len(),
+            )
+        });
+    });
+    shape.bench_function("a_endpoint_only", |b| {
+        b.iter(|| {
+            black_box(
+                forward_context
+                    .edges::<BenchForwardGraphEdge>()
+                    .from_ids(&sparse_from)
+                    .expect("one-sided A lookup")
+                    .len(),
+            )
+        });
+    });
+    shape.finish();
 }
 
 fn bench_exact_pair_lookup(c: &mut Criterion) {

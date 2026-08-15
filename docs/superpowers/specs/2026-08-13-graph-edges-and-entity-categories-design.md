@@ -1529,7 +1529,11 @@ After diagnostics are clean, the application changes the typed mode to
 `EdgeApplyMode::Authoritative`. All mutation entry points then enforce the edge
 schema. `AdjacencyPolicy::Eager` may be selected in the `GraphEdge`
 implementation when measured lookup/traversal benefit justifies retained
-memory.
+memory. `ADJACENCY` remains the source-compatible default for both ends;
+predominantly directional workloads may override `A_ADJACENCY` or
+`B_ADJACENCY` independently. A cold end continues to use canonical scans,
+while exact-pair lookup filters the hot end's incident bucket rather than
+scanning the complete edge store.
 
 Index consolidation is internal. Existing item queries and relationship
 behavior remain available regardless of whether graph adjacency eventually
@@ -1666,6 +1670,8 @@ warmup, 200 ms measurement) produced:
 | exact-pair existence among 10,000 edges | 426.8–429.0 µs scan | 104.7–105.3 ns pair projection | about 4,075× faster; ID lookup is 118.8–119.2 ns and typed materialization is 154.3–155.4 ns |
 | sparse endpoint-delete planning among 10,000 edges with 10 incident | 419.3–421.3 µs conservative typed scan | 828.8–833.3 ns eager incidence | about 506× faster; the baseline scans only the populated store and is cheaper than the replaced dynamic all-registration path |
 | 1,000-edge batch write | 309.1–310.2 µs plain | 1.815–1.823 ms projected | about 5.9× write cost for validation, causal hashing, and four maintained projections; inline singleton pair IDs improved the projected path by about 1.1%, within the benchmark's noise threshold |
+| 1,000-edge projected batch, both ends versus A only | 1.817–1.832 ms both ends | 1.621–1.630 ms A only | one-sided projection is about 10.9% faster and omits the cold endpoint and entity-incidence maps |
+| sparse hot-end lookup, both ends versus A only | 121.1–122.4 ns both ends | 123.0–123.8 ns A only | hot-end lookup remains within 2%; the write/memory saving does not trade away lookup complexity |
 | two writers, 200 attempted unique-edge writes | n/a | 361–396 µs | bounded authority-lock contention, no uniqueness race |
 
 These are development-machine microbenchmarks, not release SLOs. They validate
@@ -1742,8 +1748,10 @@ The graph-edge feature is acceptable when:
    adding required fields or embedding renderer callbacks in neutral
    registrations.
 9. Demand-driven adjacency is the default. An application selects eager
-   adjacency only when benchmarks against the fully routed item baseline show a
-   workload benefit within its retained-bytes-per-edge budget.
+   adjacency per edge or per endpoint only when benchmarks against the fully
+   routed item baseline show a workload benefit within its retained-bytes-per-edge
+   budget. One-sided projection must retain scan-equivalent behavior on the cold
+   end and for reverse traversal.
 10. The handler-context authority model remains sealed; downstream entity
     categories cannot grant querying, event-publishing, or graph-reading
     authority.

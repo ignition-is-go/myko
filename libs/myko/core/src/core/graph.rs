@@ -525,7 +525,14 @@ pub trait GraphEdge: Eventable + Sized {
 
     const PAIR_POLICY: PairPolicy = PairPolicy::Parallel;
     const PAIR_PROJECTION: PairProjectionPolicy = PairProjectionPolicy::IntersectAdjacency;
+    /// Backward-compatible default projection policy for both endpoints.
     const ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::DemandDriven;
+    /// Endpoint-A projection policy. Override only this end for predominantly
+    /// forward traversal workloads without allocating the B-side index.
+    const A_ADJACENCY: AdjacencyPolicy = Self::ADJACENCY;
+    /// Endpoint-B projection policy. Override only this end for predominantly
+    /// reverse traversal workloads without allocating the A-side index.
+    const B_ADJACENCY: AdjacencyPolicy = Self::ADJACENCY;
     const SELF_LOOPS: SelfLoopPolicy = SelfLoopPolicy::Allow;
     const A_DELETE: EndpointDeletePolicy = EndpointDeletePolicy::CascadeEdge;
     const B_DELETE: EndpointDeletePolicy = EndpointDeletePolicy::CascadeEdge;
@@ -553,6 +560,31 @@ pub struct EdgeRegistration {
 }
 
 inventory::collect!(EdgeRegistration);
+
+/// Endpoint-specific projection policy emitted separately from the legacy
+/// edge registration so existing manual `EdgeRegistration` literals remain
+/// source-compatible.
+pub struct EdgeAdjacencyRegistration {
+    pub edge_type: &'static str,
+    pub a: AdjacencyPolicy,
+    pub b: AdjacencyPolicy,
+}
+
+inventory::collect!(EdgeAdjacencyRegistration);
+
+impl EdgeRegistration {
+    /// Effective per-end projection policies, falling back to the legacy
+    /// whole-edge policy for manually submitted registrations.
+    #[must_use]
+    pub fn endpoint_adjacency(&self) -> [AdjacencyPolicy; 2] {
+        inventory::iter::<EdgeAdjacencyRegistration>
+            .into_iter()
+            .find(|registration| registration.edge_type == self.edge_type)
+            .map_or([self.adjacency; 2], |registration| {
+                [registration.a, registration.b]
+            })
+    }
+}
 
 pub fn extract_edge<E: GraphEdge>(item: &dyn AnyItem) -> Result<EdgeEndpoints> {
     let edge = item
@@ -764,6 +796,7 @@ struct GraphState {
 /// the pre-graph mutation fast path for applications that do not opt in.
 pub struct GraphIndex {
     registrations: HashMap<&'static str, &'static EdgeRegistration>,
+    endpoint_adjacency: HashMap<&'static str, [AdjacencyPolicy; 2]>,
     categories: HashMap<&'static str, HashSet<&'static str>>,
     registry: Arc<crate::store::StoreRegistry>,
     state: RwLock<GraphState>,
@@ -784,6 +817,22 @@ impl GraphIndex {
         if registrations.is_empty() && !has_categories {
             return None;
         }
+        let overrides = inventory::iter::<EdgeAdjacencyRegistration>
+            .into_iter()
+            .map(|registration| (registration.edge_type, [registration.a, registration.b]))
+            .collect::<HashMap<_, _>>();
+        let endpoint_adjacency = registrations
+            .values()
+            .map(|registration| {
+                (
+                    registration.edge_type,
+                    overrides
+                        .get(registration.edge_type)
+                        .copied()
+                        .unwrap_or([registration.adjacency; 2]),
+                )
+            })
+            .collect();
         for registration in registrations.values() {
             if registration.shape == EdgeShapeKind::Undirected {
                 let a = &registration.endpoints[0];
@@ -806,6 +855,7 @@ impl GraphIndex {
         }
         Some(Self {
             registrations,
+            endpoint_adjacency,
             categories,
             registry,
             state: RwLock::new(GraphState::default()),
@@ -843,6 +893,23 @@ impl GraphIndex {
     #[must_use]
     pub fn registration(&self, edge_type: &str) -> Option<&'static EdgeRegistration> {
         self.registrations.get(edge_type).copied()
+    }
+
+    fn projects_endpoint(&self, edge_type: &str, position: EndPosition) -> bool {
+        self.endpoint_adjacency
+            .get(edge_type)
+            .is_some_and(|policies| {
+                let [a, b] = *policies;
+                (match position {
+                    EndPosition::A => a,
+                    EndPosition::B => b,
+                }) == AdjacencyPolicy::Eager
+            })
+    }
+
+    fn projects_any_endpoint(&self, edge_type: &str) -> bool {
+        self.projects_endpoint(edge_type, EndPosition::A)
+            || self.projects_endpoint(edge_type, EndPosition::B)
     }
 
     /// Rebuild the entire derived index from canonical edge stores.
@@ -927,6 +994,74 @@ impl GraphIndex {
             || (registration.shape == EdgeShapeKind::Undirected
                 && endpoints.a == *b
                 && endpoints.b == *a)
+    }
+
+    fn indexed_ids_between(
+        &self,
+        registration: &EdgeRegistration,
+        edges: &EdgeTypeState,
+        a: &EndpointValue,
+        b: &EndpointValue,
+        scope: Option<&IndexValue>,
+    ) -> Vec<Arc<str>> {
+        let a_eager = self.projects_endpoint(registration.edge_type, EndPosition::A);
+        let b_eager = self.projects_endpoint(registration.edge_type, EndPosition::B);
+
+        // Preserve the allocation-free hot path for ordinary directed edges
+        // when both incidence indexes are present.
+        if a_eager && b_eager && registration.shape == EdgeShapeKind::Directed {
+            let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
+                (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
+                (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
+                _ => return Vec::new(),
+            };
+            return small
+                .iter()
+                .filter(|id| {
+                    other.contains(*id)
+                        && scope.is_none_or(|scope| {
+                            edges
+                                .edges
+                                .get(*id)
+                                .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
+                        })
+                })
+                .cloned()
+                .collect();
+        }
+
+        // With one projected end, inspect only that endpoint's incident set
+        // and validate the cold end from the retained indexed edge record.
+        let mut candidates = BTreeSet::new();
+        if a_eager {
+            if let Some(ids) = edges.a.get(a) {
+                candidates.extend(ids.iter().cloned());
+            }
+            if registration.shape == EdgeShapeKind::Undirected
+                && let Some(ids) = edges.a.get(b)
+            {
+                candidates.extend(ids.iter().cloned());
+            }
+        }
+        if b_eager {
+            if let Some(ids) = edges.b.get(b) {
+                candidates.extend(ids.iter().cloned());
+            }
+            if registration.shape == EdgeShapeKind::Undirected
+                && let Some(ids) = edges.b.get(a)
+            {
+                candidates.extend(ids.iter().cloned());
+            }
+        }
+        candidates
+            .into_iter()
+            .filter(|id| {
+                edges.edges.get(id).is_some_and(|edge| {
+                    Self::endpoints_match(registration, &edge.endpoints, a, b)
+                        && scope.is_none_or(|scope| edge.scope.as_ref() == Some(scope))
+                })
+            })
+            .collect()
     }
 
     /// Validate an edge mutation before canonical reduction.
@@ -1100,24 +1235,27 @@ impl GraphIndex {
     }
 
     fn insert_indexed(
+        &self,
         registration: &EdgeRegistration,
         state: &mut EdgeTypeState,
         edge: IndexedEdge,
     ) {
-        if registration.adjacency == AdjacencyPolicy::Eager {
+        if self.projects_endpoint(registration.edge_type, EndPosition::A) {
             state
                 .a
                 .entry(edge.endpoints.a.clone())
                 .or_default()
                 .insert(edge.id.clone());
             state
-                .b
-                .entry(edge.endpoints.b.clone())
-                .or_default()
-                .insert(edge.id.clone());
-            state
                 .a_entities
                 .entry(edge.endpoints.a.entity.clone())
+                .or_default()
+                .insert(edge.id.clone());
+        }
+        if self.projects_endpoint(registration.edge_type, EndPosition::B) {
+            state
+                .b
+                .entry(edge.endpoints.b.clone())
                 .or_default()
                 .insert(edge.id.clone());
             state
@@ -1140,7 +1278,7 @@ impl GraphIndex {
                 }
             }
         }
-        if registration.adjacency == AdjacencyPolicy::Eager {
+        if self.projects_any_endpoint(registration.edge_type) {
             state.edges.insert(edge.id.clone(), edge);
         }
     }
@@ -1173,7 +1311,7 @@ impl GraphIndex {
                 endpoints: (registration.extract)(new)?,
                 scope: (registration.extract_scope)(new)?,
             };
-            Self::insert_indexed(registration, edge_type, indexed);
+            self.insert_indexed(registration, edge_type, indexed);
         }
         edge_type.generation = edge_type.generation.saturating_add(1);
         state.generation = state.generation.saturating_add(1);
@@ -1237,6 +1375,7 @@ impl GraphIndex {
     }
 
     /// Enforce restrict/cascade policies for an authoritative endpoint DEL.
+    #[allow(clippy::too_many_lines)]
     pub fn endpoint_delete_plan(&self, endpoint: &EntityRef) -> Result<EndpointDeletePlan> {
         let mut cascade = HashSet::new();
 
@@ -1251,9 +1390,6 @@ impl GraphIndex {
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (edge_type, registration) in &self.registrations {
-                if registration.adjacency != AdjacencyPolicy::Eager {
-                    continue;
-                }
                 let Some(edges) = state.edge_types.get(edge_type) else {
                     continue;
                 };
@@ -1269,6 +1405,9 @@ impl GraphIndex {
                         registration.a_delete,
                     ),
                 ] {
+                    if !self.projects_endpoint(edge_type, position) {
+                        continue;
+                    }
                     let Some(ids) = ids else {
                         continue;
                     };
@@ -1298,10 +1437,11 @@ impl GraphIndex {
         // pay the canonical scan only when endpoint deletion needs a policy
         // decision; types that retain dangling edges at both roles need no work.
         for (edge_type, registration) in &self.registrations {
-            if registration.adjacency == AdjacencyPolicy::Eager
-                || (registration.a_delete == EndpointDeletePolicy::RetainDangling
-                    && registration.b_delete == EndpointDeletePolicy::RetainDangling)
-            {
+            let a_needs_scan = !self.projects_endpoint(edge_type, EndPosition::A)
+                && registration.a_delete != EndpointDeletePolicy::RetainDangling;
+            let b_needs_scan = !self.projects_endpoint(edge_type, EndPosition::B)
+                && registration.b_delete != EndpointDeletePolicy::RetainDangling;
+            if !a_needs_scan && !b_needs_scan {
                 continue;
             }
             let Some(store) = self.registry.get(edge_type) else {
@@ -1317,7 +1457,10 @@ impl GraphIndex {
                     (EndPosition::A, &indexed.endpoints.a, registration.a_delete),
                     (EndPosition::B, &indexed.endpoints.b, registration.b_delete),
                 ] {
-                    if &value.entity != endpoint {
+                    if self.projects_endpoint(edge_type, position)
+                        || policy == EndpointDeletePolicy::RetainDangling
+                        || &value.entity != endpoint
+                    {
                         continue;
                     }
                     match policy {
@@ -1358,7 +1501,7 @@ impl GraphIndex {
         let Some(registration) = self.registration(edge_type) else {
             return Vec::new();
         };
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+        if !self.projects_endpoint(edge_type, position) {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
                 store
                     .snapshot()
@@ -1411,7 +1554,7 @@ impl GraphIndex {
                 .and_then(|edges| edges.pairs.get(&key))
                 .map_or_else(Vec::new, PairIds::ids);
         }
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+        if !self.projects_any_endpoint(edge_type) {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
                 store
                     .snapshot()
@@ -1430,16 +1573,7 @@ impl GraphIndex {
         let Some(edges) = state.edge_types.get(edge_type) else {
             return Vec::new();
         };
-        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
-            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
-            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
-            _ => return Vec::new(),
-        };
-        small
-            .iter()
-            .filter(|id| other.contains(*id))
-            .cloned()
-            .collect()
+        self.indexed_ids_between(registration, edges, a, b, None)
     }
 
     #[must_use]
@@ -1452,7 +1586,7 @@ impl GraphIndex {
         let Some(registration) = self.registration(edge_type) else {
             return 0;
         };
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+        if !self.projects_endpoint(edge_type, position) {
             return self.registry.get(edge_type).map_or(0, |store| {
                 store
                     .snapshot()
@@ -1493,7 +1627,7 @@ impl GraphIndex {
         let Some(registration) = self.registration(edge_type) else {
             return false;
         };
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+        if !self.projects_endpoint(edge_type, position) {
             return self.registry.get(edge_type).is_some_and(|store| {
                 store.snapshot().into_iter().any(|(_, item)| {
                     (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
@@ -1561,28 +1695,7 @@ impl GraphIndex {
                 .and_then(|edges| edges.pairs.get(&key))
                 .is_some_and(|ids| !ids.is_empty());
         }
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
-            return self.registry.get(edge_type).is_some_and(|store| {
-                store.snapshot().into_iter().any(|(_, item)| {
-                    (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
-                        Self::endpoints_match(registration, &endpoints, a, b)
-                    })
-                })
-            });
-        }
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(edges) = state.edge_types.get(edge_type) else {
-            return false;
-        };
-        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
-            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
-            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
-            _ => return false,
-        };
-        small.iter().any(|id| other.contains(id))
+        !self.edge_ids_between(edge_type, a, b).is_empty()
     }
 
     #[must_use]
@@ -1608,7 +1721,7 @@ impl GraphIndex {
                 .and_then(|edges| edges.pairs.get(&key))
                 .map_or_else(Vec::new, PairIds::ids);
         }
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+        if !self.projects_any_endpoint(edge_type) {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
                 store
                     .snapshot()
@@ -1630,22 +1743,7 @@ impl GraphIndex {
         let Some(edges) = state.edge_types.get(edge_type) else {
             return Vec::new();
         };
-        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
-            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
-            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
-            _ => return Vec::new(),
-        };
-        small
-            .iter()
-            .filter(|id| {
-                other.contains(*id)
-                    && edges
-                        .edges
-                        .get(*id)
-                        .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
-            })
-            .cloned()
-            .collect()
+        self.indexed_ids_between(registration, edges, a, b, Some(scope))
     }
 
     #[must_use]
@@ -1697,39 +1795,9 @@ impl GraphIndex {
                 .and_then(|edges| edges.pairs.get(&key))
                 .is_some_and(|ids| !ids.is_empty());
         }
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
-            return self.registry.get(edge_type).is_some_and(|store| {
-                store.snapshot().into_iter().any(|(_, item)| {
-                    let Ok(endpoints) = (registration.extract)(item.as_ref()) else {
-                        return false;
-                    };
-                    let Ok(item_scope) = (registration.extract_scope)(item.as_ref()) else {
-                        return false;
-                    };
-                    item_scope.as_ref() == Some(scope)
-                        && Self::endpoints_match(registration, &endpoints, a, b)
-                })
-            });
-        }
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(edges) = state.edge_types.get(edge_type) else {
-            return false;
-        };
-        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
-            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
-            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
-            _ => return false,
-        };
-        small.iter().any(|id| {
-            other.contains(id)
-                && edges
-                    .edges
-                    .get(id)
-                    .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
-        })
+        !self
+            .edge_ids_between_in_scope(edge_type, a, b, scope)
+            .is_empty()
     }
 
     fn traversal_neighbors(
@@ -1742,7 +1810,12 @@ impl GraphIndex {
         let Some(registration) = self.registration(edge_type) else {
             return Vec::new();
         };
-        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+        let shape = registration.shape;
+        let needs_a = direction != Direction::Reverse || shape == EdgeShapeKind::Undirected;
+        let needs_b = direction != Direction::Forward || shape == EdgeShapeKind::Undirected;
+        let can_use_projection = (!needs_a || self.projects_endpoint(edge_type, EndPosition::A))
+            && (!needs_b || self.projects_endpoint(edge_type, EndPosition::B));
+        if !can_use_projection {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
                 store
                     .snapshot()
@@ -1778,7 +1851,6 @@ impl GraphIndex {
         let Some(edges) = state.edge_types.get(edge_type) else {
             return Vec::new();
         };
-        let shape = registration.shape;
         let mut candidates = BTreeSet::new();
         if (direction != Direction::Reverse || shape == EdgeShapeKind::Undirected)
             && let Some(ids) = edges.a_entities.get(node)
@@ -1864,6 +1936,26 @@ where
     #[allow(clippy::needless_pass_by_value)]
     pub fn start(mut self, value: <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value) -> Self {
         self.start = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(&value)
+            .ok()
+            .map(|endpoint| endpoint.entity);
+        self
+    }
+
+    /// Explicit endpoint-A spelling for forward-oriented traversals.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn start_from(self, value: <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value) -> Self {
+        self.start(value)
+    }
+
+    /// Start from a typed endpoint-B value, typically with reverse traversal.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn start_to(
+        mut self,
+        value: <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self {
+        self.start = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(&value)
             .ok()
             .map(|endpoint| endpoint.entity);
         self
@@ -2518,6 +2610,28 @@ mod tests {
             const A_DELETE: EndpointDeletePolicy = EndpointDeletePolicy::RetainDangling;
         }
     }
+    mod forward_indexed_edge {
+        use super::{Article, ArticleId, Tag, TagId};
+        use crate::prelude::*;
+
+        #[myko_item]
+        pub struct ForwardIndexedAssignment {
+            pub tag_id: TagId,
+            pub article_id: ArticleId,
+        }
+
+        #[myko_edge]
+        impl GraphEdge for ForwardIndexedAssignment {
+            type Ends = Directed<ConcreteEndpoint<Tag>, ConcreteEndpoint<Article>>;
+
+            fn ends(&self) -> (TagId, ArticleId) {
+                (self.tag_id.clone(), self.article_id.clone())
+            }
+
+            const A_ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
+        }
+    }
+    use forward_indexed_edge::{ForwardIndexedAssignment, ForwardIndexedAssignmentId};
     use restricted_edge::{RestrictedTagAssignment, RestrictedTagAssignmentId};
     use retained_edge::{RetainedTagAssignment, RetainedTagAssignmentId};
 
@@ -2562,7 +2676,116 @@ mod tests {
         assert_eq!(edge.shape, EdgeShapeKind::Directed);
         assert_eq!(edge.pair_policy, PairPolicy::Unique);
         assert_eq!(edge.adjacency, AdjacencyPolicy::DemandDriven);
+        assert_eq!(
+            edge.endpoint_adjacency(),
+            [AdjacencyPolicy::DemandDriven; 2]
+        );
         assert!(edge.validate.is_none());
+
+        let forward = catalog
+            .edges
+            .iter()
+            .find(|entry| entry.edge_type == "ForwardIndexedAssignment")
+            .copied()
+            .expect("forward-indexed graph registration");
+        assert_eq!(forward.adjacency, AdjacencyPolicy::DemandDriven);
+        assert_eq!(
+            forward.endpoint_adjacency(),
+            [AdjacencyPolicy::Eager, AdjacencyPolicy::DemandDriven]
+        );
+    }
+
+    #[test]
+    fn one_sided_adjacency_indexes_only_the_hot_end() {
+        let context = context();
+        let tag = Tag {
+            name: "forward".into(),
+            id: TagId::from("tag-forward"),
+        };
+        let article = Article {
+            title: "One-sided projection".into(),
+            id: ArticleId::from("article-forward"),
+        };
+        let edge = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("forward-edge"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        assert!(context.set(&edge).is_ok());
+
+        let graph = context.graph_index().expect("graph index");
+        {
+            let state = graph
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let projected = state
+                .edge_types
+                .get("ForwardIndexedAssignment")
+                .expect("projected edge state");
+            assert_eq!(projected.a.len(), 1);
+            assert_eq!(projected.a_entities.len(), 1);
+            assert!(projected.b.is_empty());
+            assert!(projected.b_entities.is_empty());
+            assert_eq!(projected.edges.len(), 1);
+        }
+
+        let query = context.edges::<ForwardIndexedAssignment>();
+        assert_eq!(
+            query.from_ids(&tag.id).expect("eager A lookup"),
+            vec![edge.id()]
+        );
+        assert_eq!(
+            query.to_ids(&article.id).expect("demand B lookup"),
+            vec![edge.id()]
+        );
+        assert_eq!(
+            query
+                .between_ids(&tag.id, &article.id)
+                .expect("one-sided pair lookup"),
+            vec![edge.id()]
+        );
+        assert_eq!(
+            context
+                .traverse::<ForwardIndexedAssignment>()
+                .start(tag.id.clone())
+                .max_depth(1)
+                .max_nodes(10)
+                .execute()
+                .expect("projected forward traversal")
+                .nodes,
+            vec![EntityRef::from(&article)]
+        );
+        assert_eq!(
+            context
+                .traverse::<ForwardIndexedAssignment>()
+                .start_to(article.id.clone())
+                .direction(Direction::Reverse)
+                .max_depth(1)
+                .max_nodes(10)
+                .execute()
+                .expect("demand reverse traversal")
+                .nodes,
+            vec![EntityRef::from(&tag)]
+        );
+        assert_eq!(
+            graph
+                .endpoint_delete_plan(&EntityRef::from(&tag))
+                .expect("indexed A delete plan")
+                .cascade_edges
+                .len(),
+            1
+        );
+        assert_eq!(
+            graph
+                .endpoint_delete_plan(&EntityRef::from(&article))
+                .expect("demand B delete plan")
+                .cascade_edges
+                .len(),
+            1
+        );
     }
 
     #[test]

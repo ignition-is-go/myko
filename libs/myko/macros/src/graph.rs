@@ -120,5 +120,13 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 validate: #validator,
             }
         }
+
+        #krate::submit! {
+            #krate::graph::EdgeAdjacencyRegistration {
+                edge_type: <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                a: <#edge_type as #krate::graph::GraphEdge>::A_ADJACENCY,
+                b: <#edge_type as #krate::graph::GraphEdge>::B_ADJACENCY,
+            }
+        }
     }
 }

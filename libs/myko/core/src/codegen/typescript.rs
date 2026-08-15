@@ -99,13 +99,16 @@ fn generate_graph_schema(catalog: &GraphSchemaCatalog) -> String {
         .map(|edge| {
             let a = &edge.endpoints[0];
             let b = &edge.endpoints[1];
+            let [a_adjacency, b_adjacency] = edge.endpoint_adjacency();
             format!(
-                "{}: {{ shape: {}, pairPolicy: {}, pairProjection: {}, adjacency: {}, selfLoops: {}, endpoints: {{ a: {{ requirement: {}, qualifierType: {} }}, b: {{ requirement: {}, qualifierType: {} }} }} }}",
+                "{}: {{ shape: {}, pairPolicy: {}, pairProjection: {}, adjacency: {}, aAdjacency: {}, bAdjacency: {}, selfLoops: {}, endpoints: {{ a: {{ requirement: {}, qualifierType: {} }}, b: {{ requirement: {}, qualifierType: {} }} }} }}",
                 ts_literal(edge.edge_type),
                 ts_literal(&edge.shape),
                 ts_literal(&edge.pair_policy),
                 ts_literal(&edge.pair_projection),
                 ts_literal(&edge.adjacency),
+                ts_literal(&a_adjacency),
+                ts_literal(&b_adjacency),
                 ts_literal(&edge.self_loops),
                 endpoint_requirement_literal((a.requirement)()),
                 ts_literal(&(a.qualifier_type)()),
@@ -1032,6 +1035,8 @@ mod tests {
         assert!(rendered.contains("TagAssignment"));
         assert!(rendered.contains("TagAssignmentAAddress"));
         assert!(rendered.contains("pairPolicy"));
+        assert!(rendered.contains("aAdjacency"));
+        assert!(rendered.contains("bAdjacency"));
         assert!(rendered.contains("category"));
     }
 
