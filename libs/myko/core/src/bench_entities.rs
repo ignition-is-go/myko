@@ -21,6 +21,7 @@ use crate::prelude::*;
 
 pub use graph_edge::{BenchGraphEdge, BenchGraphEdgeId, EnsureBenchGraphEdge};
 pub use graph_edge_forward::{BenchForwardGraphEdge, BenchForwardGraphEdgeId};
+pub use graph_edge_undirected::{BenchUndirectedGraphEdge, BenchUndirectedGraphEdgeId};
 pub use graph_node::{BenchGraphNode, BenchGraphNodeId};
 
 mod graph_node {
@@ -75,6 +76,28 @@ mod graph_edge_forward {
 
         const A_ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
         const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+    }
+}
+
+mod graph_edge_undirected {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchUndirectedGraphEdge {
+        pub a_id: BenchGraphNodeId,
+        pub b_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchUndirectedGraphEdge {
+        type Ends = Undirected<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.a_id.clone(), self.b_id.clone())
+        }
+
+        const ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
     }
 }
 

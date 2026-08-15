@@ -1027,13 +1027,28 @@ the generated parameter structs:
 ```rust
 let edges = client.watch_graph_from::<TagAssignment>(&tag_id);
 let pair = client.watch_graph_between::<TagAssignment>(&tag_id, &target_ref);
+let articles = client.watch_graph_targets_from::<TagAssignment>(&tag_id);
+let friends = client.watch_graph_neighbors::<Friendship>(&person_id);
 ```
+
+Concrete endpoints additionally generate related-entity views. Directed edges
+expose `targets_from` and `sources_to`; symmetric concrete undirected edges
+expose `neighbors`. These views return distinct entity items rather than edge
+items, deduplicate parallel edges by reference count, treat a self-loop as one
+neighbor, and follow entity updates and deletion without client-side joins.
+Sparse views install subscriptions only for referenced entity IDs. Once a view
+is both large and dense relative to its entity store, it switches one-way to a
+filtered store subscription to cap high-degree setup cost. Both strategies
+publish identical keyed output, and the switch is internal rather than a wire
+or application configuration surface.
 
 TypeScript codegen emits endpoint-aware query classes behind a compact helper:
 
 ```typescript
 client.watchQuery(TagAssignmentGraph.from(tagId));
 client.watchQuery(TagAssignmentGraph.between(tagId, targetRef));
+client.watchQuery(TagAssignmentGraph.targetsFrom(tagId));
+client.watchQuery(FriendshipGraph.neighbors(personId));
 client.watchReport(TagAssignmentGraph.countFrom(tagId));
 client.watchReport(TagAssignmentGraph.existsBetween(tagId, targetRef));
 ```
@@ -1042,6 +1057,12 @@ These are registrations in the existing query dispatcher, not graph-specific
 wire messages. They therefore inherit query reconnect, cancellation, sequence
 validation, readiness, windowing, and subscription deduplication without a
 second client protocol.
+
+Typed Rust helpers also cover pushed windows for edge and related-entity views,
+including `watch_graph_targets_from_windowed`,
+`watch_graph_sources_to_windowed`, and `watch_graph_neighbors_windowed`.
+Windowing stays server-side, so an off-page entity update does not republish the
+retained page.
 
 The generated `countFrom`, `countTo`, `countBetween`, and `existsBetween`
 reports are scalar projections. Eager endpoints seed directly from index bucket
@@ -1745,6 +1766,10 @@ warmup, 200 ms measurement) produced:
 | sparse hot-end lookup, both ends versus A only | 121.1–122.4 ns both ends | 123.0–123.8 ns A only | hot-end lookup remains within 2%; the write/memory saving does not trade away lookup complexity |
 | singleton-inline incidence buckets | 1.815–1.823 ms prior 1,000-edge projected batch | 1.802–1.812 ms inline incidence | write time remains within noise while singleton endpoint buckets no longer allocate a tree; sparse hot-end lookup remains 121.2–121.6 ns |
 | two writers, 200 attempted unique-edge writes | n/a | 361–396 µs | bounded authority-lock contention, no uniqueness race |
+| related-entity initialization, 10,000 edges / 1,000 sources | 5.3591 ms whole-store join | 60.355 µs routed target IDs | about 88.8× faster while returning distinct live entities |
+| related-entity off-page update, 10,000 related entities / 50 retained | 781.42 µs materialized session window | 1.9712 µs pushed window | about 396× faster; the retained snapshot is not republished |
+| sparse undirected neighbors, 10,000 edges / 1,000 sources | 4.3837 ms whole-store join | 60.706 µs routed neighbor IDs | about 72.2× faster |
+| dense undirected hub, 10,000 of 10,001 entities adjacent | 16.797 ms non-deduplicating whole-store join | 21.183 ms adaptive distinct neighbor view | within 26% of the simpler baseline and 68.7% faster than the 67.761 ms pure keyed strategy; preserves parallel-edge and self-loop deduplication |
 
 These are development-machine microbenchmarks, not release SLOs. They validate
 the intended shape of the trade: the non-participating path stays within noise,

@@ -19,7 +19,8 @@ use hyphae::{
 use myko::{
     bench_entities::{
         BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
-        BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId, EnsureBenchGraphEdge,
+        BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId, BenchUndirectedGraphEdge,
+        BenchUndirectedGraphEdgeId, EnsureBenchGraphEdge,
     },
     core::item::downcast_any_item_arc,
     prelude::*,
@@ -102,6 +103,46 @@ fn distributed_forward_edges(n: usize, sources: usize) -> Vec<BenchForwardGraphE
             id: BenchForwardGraphEdgeId::from(format!("distributed-forward-edge-{ordinal}")),
             from_id: BenchGraphNodeId::from(format!("node-{}", ordinal % sources)),
             to_id: BenchGraphNodeId::from(format!("node-{}", sources + ordinal)),
+        })
+        .collect()
+}
+
+fn undirected_edges(n: usize) -> Vec<BenchUndirectedGraphEdge> {
+    (0..n)
+        .map(|ordinal| {
+            let center = BenchGraphNodeId::from("node-0");
+            let neighbor = BenchGraphNodeId::from(format!("node-{}", ordinal.saturating_add(1)));
+            let (a_id, b_id) = if ordinal % 2 == 0 {
+                (center, neighbor)
+            } else {
+                (neighbor, center)
+            };
+            BenchUndirectedGraphEdge {
+                id: BenchUndirectedGraphEdgeId::from(format!("undirected-edge-{ordinal}")),
+                a_id,
+                b_id,
+            }
+        })
+        .collect()
+}
+
+fn distributed_undirected_edges(n: usize, sources: usize) -> Vec<BenchUndirectedGraphEdge> {
+    (0..n)
+        .map(|ordinal| {
+            let source = BenchGraphNodeId::from(format!("node-{}", ordinal % sources));
+            let target = BenchGraphNodeId::from(format!("node-{}", sources + ordinal));
+            let (a_id, b_id) = if ordinal % 2 == 0 {
+                (source, target)
+            } else {
+                (target, source)
+            };
+            BenchUndirectedGraphEdge {
+                id: BenchUndirectedGraphEdgeId::from(format!(
+                    "distributed-undirected-edge-{ordinal}"
+                )),
+                a_id,
+                b_id,
+            }
         })
         .collect()
 }
@@ -418,6 +459,123 @@ fn bench_related_entity_initialization(c: &mut Criterion) {
                 ConcreteEndpoint<BenchGraphNode>,
             >(&edges, context.registry.as_ref(), EndPosition::B);
             black_box(related.snapshot().len())
+        });
+    });
+    group.finish();
+}
+
+fn bench_dense_undirected_neighbor_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(1)))
+        .expect("seed neighbor graph nodes");
+    context
+        .batch_set(&undirected_edges(edge_count))
+        .expect("seed undirected graph edges");
+    let center = BenchGraphNodeId::from("node-0");
+    let endpoint = <ConcreteEndpoint<BenchGraphNode> as EndpointSpec>::erase(&center)
+        .expect("erase neighbor endpoint");
+    let target_store = context.registry.get_or_create("BenchGraphNode");
+
+    let mut group = c.benchmark_group("graph/dense_undirected_neighbor_initialization");
+    group.bench_function("whole_store_join", |b| {
+        b.iter(|| {
+            let edges = context
+                .edges::<BenchUndirectedGraphEdge>()
+                .watch_incident(&center)
+                .expect("incident edge watch");
+            let targets = myko::item::typed_map_arc_from_any_item::<BenchGraphNode>(
+                (*target_store).clone().lock(),
+                "neighbor benchmark whole store",
+            );
+            let center = center.clone();
+            let joined = edges
+                .inner_join_by(
+                    targets,
+                    move |_, edge| -> Arc<str> {
+                        if edge.a_id == center {
+                            edge.b_id.clone().into()
+                        } else {
+                            edge.a_id.clone().into()
+                        }
+                    },
+                    |target_id, _| target_id.clone(),
+                )
+                .materialize();
+            black_box(joined.snapshot().len())
+        });
+    });
+    group.bench_function("routed_neighbor_ids", |b| {
+        b.iter(|| {
+            let edges = context
+                .edges::<BenchUndirectedGraphEdge>()
+                .watch_incident(&center)
+                .expect("incident edge watch");
+            let neighbors = myko::graph::graph_neighbor_entity_watch::<
+                BenchUndirectedGraphEdge,
+                ConcreteEndpoint<BenchGraphNode>,
+            >(&edges, context.registry.as_ref(), &endpoint);
+            black_box(neighbors.snapshot().len())
+        });
+    });
+    group.finish();
+}
+
+fn bench_sparse_undirected_neighbor_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let source_count = 1_000_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(source_count)))
+        .expect("seed sparse neighbor graph nodes");
+    context
+        .batch_set(&distributed_undirected_edges(edge_count, source_count))
+        .expect("seed sparse undirected graph edges");
+    let center = BenchGraphNodeId::from("node-0");
+    let endpoint = <ConcreteEndpoint<BenchGraphNode> as EndpointSpec>::erase(&center)
+        .expect("erase sparse neighbor endpoint");
+    let target_store = context.registry.get_or_create("BenchGraphNode");
+
+    let mut group = c.benchmark_group("graph/sparse_undirected_neighbor_initialization");
+    group.bench_function("whole_store_join", |b| {
+        b.iter(|| {
+            let edges = context
+                .edges::<BenchUndirectedGraphEdge>()
+                .watch_incident(&center)
+                .expect("sparse incident edge watch");
+            let targets = myko::item::typed_map_arc_from_any_item::<BenchGraphNode>(
+                (*target_store).clone().lock(),
+                "sparse neighbor benchmark whole store",
+            );
+            let center = center.clone();
+            let joined = edges
+                .inner_join_by(
+                    targets,
+                    move |_, edge| -> Arc<str> {
+                        if edge.a_id == center {
+                            edge.b_id.clone().into()
+                        } else {
+                            edge.a_id.clone().into()
+                        }
+                    },
+                    |target_id, _| target_id.clone(),
+                )
+                .materialize();
+            black_box(joined.snapshot().len())
+        });
+    });
+    group.bench_function("routed_neighbor_ids", |b| {
+        b.iter(|| {
+            let edges = context
+                .edges::<BenchUndirectedGraphEdge>()
+                .watch_incident(&center)
+                .expect("sparse incident edge watch");
+            let neighbors = myko::graph::graph_neighbor_entity_watch::<
+                BenchUndirectedGraphEdge,
+                ConcreteEndpoint<BenchGraphNode>,
+            >(&edges, context.registry.as_ref(), &endpoint);
+            black_box(neighbors.snapshot().len())
         });
     });
     group.finish();
@@ -932,6 +1090,8 @@ criterion_group!(
     bench_adjacency_lookup,
     bench_watch_initialization,
     bench_related_entity_initialization,
+    bench_dense_undirected_neighbor_initialization,
+    bench_sparse_undirected_neighbor_initialization,
     bench_high_degree_window_initialization,
     bench_high_degree_window_update_churn,
     bench_related_window_update_churn,
