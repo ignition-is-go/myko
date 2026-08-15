@@ -20,6 +20,7 @@ use hyphae::SwitchMapExt;
 use crate::prelude::*;
 
 pub use graph_edge::{BenchGraphEdge, BenchGraphEdgeId, EnsureBenchGraphEdge};
+pub use graph_edge_demand::{BenchDemandGraphEdge, BenchDemandGraphEdgeId};
 pub use graph_edge_forward::{BenchForwardGraphEdge, BenchForwardGraphEdgeId};
 pub use graph_edge_undirected::{BenchUndirectedGraphEdge, BenchUndirectedGraphEdgeId};
 pub use graph_node::{BenchGraphNode, BenchGraphNodeId};
@@ -76,6 +77,26 @@ mod graph_edge_forward {
 
         const A_ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
         const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+    }
+}
+
+mod graph_edge_demand {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchDemandGraphEdge {
+        pub from_id: BenchGraphNodeId,
+        pub to_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchDemandGraphEdge {
+        type Ends = Directed<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.from_id.clone(), self.to_id.clone())
+        }
     }
 }
 

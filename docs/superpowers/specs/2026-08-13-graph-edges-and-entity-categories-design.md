@@ -1086,15 +1086,27 @@ Bounded traversal uses the following builder:
 ctx.traverse::<WorkflowConnection>()
     .start(node_id)
     .direction(Direction::Forward)
-    .within_scope(workflow_id)
+    .within_scope(workflow_id)?
     .max_depth(8)
     .max_nodes(10_000)
+    .max_edges(50_000)
+    .nodes_only()
     .execute();
 ```
 
 Traversal complexity remains proportional to visited nodes and incident edges.
 High-degree hubs and large result sets remain expensive. APIs require explicit
 bounds and must not imply arbitrary reactive transitive closure is free.
+
+Projected traversal holds one coherent graph read snapshot for the bounded
+operation. When a required direction is demand-driven, Myko builds one
+request-local adjacency from one canonical snapshot rather than rescanning the
+edge store for every visited node. `nodes_only()` avoids retaining traversed
+edge IDs, while `is_reachable_to`/`is_reachable_from` and
+`path_to`/`path_from` stop at the first breadth-first match. A returned
+`TraversalPath` contains ordered nodes and the connecting edge ID for every
+hop. Node and edge-work limits terminate dense hubs deterministically and set
+`truncated` for exhaustive results.
 
 Live reachability is a separate algorithmic feature. Edge removal, cycles, and
 multiple supporting paths require reference counts or recomputation. It should
@@ -1785,6 +1797,7 @@ warmup, 200 ms measurement) produced:
 | sparse undirected neighbors, 10,000 edges / 1,000 sources | 4.3837 ms whole-store join | 60.706 µs routed neighbor IDs | about 72.2× faster |
 | dense undirected hub, 10,000 of 10,001 entities adjacent | 17.649 ms non-deduplicating whole-store join | 7.7310 ms targeted adaptive distinct neighbor view | about 2.3× faster than the simpler baseline and 64.9% faster than the adaptive full-store hydration it replaced; preserves parallel-edge and self-loop deduplication |
 | 5,000 concurrent TypeScript command completions | 265.951 ms filtered RxJS subjects | 1.785 ms direct transaction map | about 149× faster routing; removes two subscriptions and filters per in-flight command |
+| 128-hop traversal over a 1,000-edge chain | 4.189–4.272 ms demand-driven scan per hop | 224.1–229.9 µs one canonical snapshot; 28.76–28.91 µs eager coherent adjacency | demand traversal is about 18.2–19.1× faster and eager traversal about 145–149× faster; eager reachability to depth 32 stops in 7.10–8.20 µs |
 
 These are development-machine microbenchmarks, not release SLOs. They validate
 the intended shape of the trade: the non-participating path stays within noise,
@@ -2107,6 +2120,10 @@ The graph-edge feature is acceptable when:
     of edge IDs inside one endpoint or pair scope with one ordinary query and
     one wire subscription, hydrating only requested keys and filtering scope
     without an ID-list scan per selected item.
+23. Bounded traversal reads one coherent projected snapshot or performs at most
+    one canonical scan for an unprojected direction, enforces explicit node and
+    edge-work limits, can omit edge collection, and provides typed early-exit
+    reachability and shortest-path helpers without client-side BFS boilerplate.
 
 ## 24. Decision
 

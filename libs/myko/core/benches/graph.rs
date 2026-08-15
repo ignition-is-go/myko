@@ -18,8 +18,9 @@ use hyphae::{
 };
 use myko::{
     bench_entities::{
-        BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
-        BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId, BenchUndirectedGraphEdge,
+        BenchDemandGraphEdge, BenchDemandGraphEdgeId, BenchForwardGraphEdge,
+        BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId, BenchGraphNode,
+        BenchGraphNodeId, BenchItem, BenchItemId, BenchUndirectedGraphEdge,
         BenchUndirectedGraphEdgeId, EnsureBenchGraphEdge,
     },
     core::item::downcast_any_item_arc,
@@ -88,6 +89,26 @@ fn distributed_edges(n: usize, sources: usize) -> Vec<BenchGraphEdge> {
             id: BenchGraphEdgeId::from(format!("distributed-edge-{ordinal}")),
             from_id: BenchGraphNodeId::from(format!("node-{}", ordinal % sources)),
             to_id: BenchGraphNodeId::from(format!("node-{}", sources + ordinal)),
+        })
+        .collect()
+}
+
+fn chain_edges(n: usize) -> Vec<BenchGraphEdge> {
+    (0..n)
+        .map(|ordinal| BenchGraphEdge {
+            id: BenchGraphEdgeId::from(format!("chain-edge-{ordinal}")),
+            from_id: BenchGraphNodeId::from(format!("node-{ordinal}")),
+            to_id: BenchGraphNodeId::from(format!("node-{}", ordinal.saturating_add(1))),
+        })
+        .collect()
+}
+
+fn demand_chain_edges(n: usize) -> Vec<BenchDemandGraphEdge> {
+    (0..n)
+        .map(|ordinal| BenchDemandGraphEdge {
+            id: BenchDemandGraphEdgeId::from(format!("demand-chain-edge-{ordinal}")),
+            from_id: BenchGraphNodeId::from(format!("node-{ordinal}")),
+            to_id: BenchGraphNodeId::from(format!("node-{}", ordinal.saturating_add(1))),
         })
         .collect()
 }
@@ -817,6 +838,89 @@ fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_bounded_traversal(c: &mut Criterion) {
+    const DEPTH: usize = 128;
+    let eager = context(true);
+    let demand = context(true);
+    let all_nodes = nodes(N.saturating_add(1));
+    eager.batch_set(&all_nodes).expect("seed eager nodes");
+    demand.batch_set(&all_nodes).expect("seed demand nodes");
+    eager
+        .batch_set(&chain_edges(N))
+        .expect("seed eager traversal chain");
+    demand
+        .batch_set(&demand_chain_edges(N))
+        .expect("seed demand traversal chain");
+    let start = BenchGraphNodeId::from("node-0");
+    let early_target = BenchGraphNodeId::from("node-32");
+    let demand_store = demand.registry.get_or_create("BenchDemandGraphEdge");
+
+    let mut group = c.benchmark_group("graph/bounded_traversal");
+    group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_millis(100));
+    group.bench_function("legacy_demand_scan_per_hop", |b| {
+        b.iter(|| {
+            let mut current = start.clone();
+            for _ in 0..DEPTH {
+                let next = demand_store.snapshot().into_iter().find_map(|(_, item)| {
+                    let edge = downcast_any_item_arc::<BenchDemandGraphEdge>(
+                        &item,
+                        "legacy demand traversal",
+                    )?;
+                    (edge.from_id == current).then(|| edge.to_id.clone())
+                });
+                let Some(next) = next else {
+                    break;
+                };
+                current = next;
+            }
+            black_box(current)
+        });
+    });
+    group.bench_function("one_snapshot_demand_nodes_only", |b| {
+        b.iter(|| {
+            black_box(
+                demand
+                    .traverse::<BenchDemandGraphEdge>()
+                    .start(start.clone())
+                    .max_depth(DEPTH)
+                    .max_nodes(DEPTH)
+                    .nodes_only()
+                    .execute()
+                    .expect("demand traversal"),
+            )
+        });
+    });
+    group.bench_function("one_lock_eager_nodes_only", |b| {
+        b.iter(|| {
+            black_box(
+                eager
+                    .traverse::<BenchGraphEdge>()
+                    .start(start.clone())
+                    .max_depth(DEPTH)
+                    .max_nodes(DEPTH)
+                    .nodes_only()
+                    .execute()
+                    .expect("eager traversal"),
+            )
+        });
+    });
+    group.bench_function("eager_reachability_early_exit", |b| {
+        b.iter(|| {
+            black_box(
+                eager
+                    .traverse::<BenchGraphEdge>()
+                    .start(start.clone())
+                    .max_depth(DEPTH)
+                    .max_nodes(DEPTH)
+                    .is_reachable_to(&early_target)
+                    .expect("eager reachability"),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_high_degree_window_update_churn(c: &mut Criterion) {
     let edge_count = 10_000_usize;
     let target_id = BenchGraphEdgeId::from("edge-9999");
@@ -1277,6 +1381,7 @@ criterion_group!(
     bench_sparse_undirected_neighbor_initialization,
     bench_high_degree_window_initialization,
     bench_high_degree_exact_edge_initialization,
+    bench_bounded_traversal,
     bench_high_degree_window_update_churn,
     bench_related_window_update_churn,
     bench_watch_route_fanout,
