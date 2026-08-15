@@ -13,7 +13,9 @@ use std::{
 };
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use hyphae::{Gettable, MapDiff, MapQuery, Materialize, Mutable, SelectExt, Signal, Watchable};
+use hyphae::{
+    Gettable, InnerJoinExt, MapDiff, MapQuery, Materialize, Mutable, SelectExt, Signal, Watchable,
+};
 use myko::{
     bench_entities::{
         BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
@@ -366,6 +368,56 @@ fn bench_watch_initialization(c: &mut Criterion) {
             )
             .expect("generated graph query");
             black_box(watched.snapshot().len())
+        });
+    });
+    group.finish();
+}
+
+fn bench_related_entity_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let source_count = 1_000_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(source_count)))
+        .expect("seed related graph nodes");
+    context
+        .batch_set(&distributed_edges(edge_count, source_count))
+        .expect("seed related graph edges");
+    let from = BenchGraphNodeId::from("node-0");
+    let target_store = context.registry.get_or_create("BenchGraphNode");
+
+    let mut group = c.benchmark_group("graph/sparse_related_entity_initialization");
+    group.bench_function("whole_store_join", |b| {
+        b.iter(|| {
+            let edges = context
+                .edges::<BenchGraphEdge>()
+                .watch_from(&from)
+                .expect("edge watch");
+            let targets = myko::item::typed_map_arc_from_any_item::<BenchGraphNode>(
+                (*target_store).clone().lock(),
+                "related benchmark whole store",
+            );
+            let joined = edges
+                .inner_join_by(
+                    targets,
+                    |_, edge| -> Arc<str> { edge.to_id.clone().into() },
+                    |target_id, _| target_id.clone(),
+                )
+                .materialize();
+            black_box(joined.snapshot().len())
+        });
+    });
+    group.bench_function("routed_target_ids", |b| {
+        b.iter(|| {
+            let edges = context
+                .edges::<BenchGraphEdge>()
+                .watch_from(&from)
+                .expect("edge watch");
+            let related = myko::graph::graph_related_entity_watch::<
+                BenchGraphEdge,
+                ConcreteEndpoint<BenchGraphNode>,
+            >(&edges, context.registry.as_ref(), EndPosition::B);
+            black_box(related.snapshot().len())
         });
     });
     group.finish();
@@ -784,6 +836,7 @@ criterion_group!(
     bench_projection_write,
     bench_adjacency_lookup,
     bench_watch_initialization,
+    bench_related_entity_initialization,
     bench_high_degree_window_initialization,
     bench_high_degree_window_update_churn,
     bench_watch_route_fanout,

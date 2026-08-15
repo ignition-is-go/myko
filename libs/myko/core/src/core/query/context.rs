@@ -144,6 +144,32 @@ impl QueryBuildContext {
             .map_err(|error| error.to_string())
     }
 
+    /// Build a routed live view of one concrete entity type reached through
+    /// matching graph edges.
+    #[doc(hidden)]
+    pub fn graph_related_at<E, T>(
+        &self,
+        edge_position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+        related_position: crate::graph::EndPosition,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        T: crate::graph::EntityEndpointSpec,
+    {
+        let edges = self.graph_watch_at::<E>(edge_position, endpoint)?;
+        let edges = crate::item::typed_map_arc_from_any_item::<E>(
+            edges,
+            "QueryBuildContext::graph_related_at",
+        );
+        Ok(crate::graph::graph_related_entity_watch::<E, T>(
+            &edges,
+            self.registry.as_ref(),
+            related_position,
+        ))
+    }
+
     /// Build an index-seeded exact-pair graph watch for generated edge queries.
     #[doc(hidden)]
     pub fn graph_watch_between<E>(

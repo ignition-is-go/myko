@@ -65,6 +65,51 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
     let b = &edge.endpoints[1];
     let a_type = endpoint_address_type((a.requirement)(), (a.qualifier_type)().is_some());
     let b_type = endpoint_address_type((b.requirement)(), (b.qualifier_type)().is_some());
+    let related_queries = edge.related_queries();
+    let targets_from = match (related_queries.targets_from, (b.requirement)()) {
+        (true, EndpointRequirement::Concrete(entity_type)) => format!(
+            r#"export class {edge}GraphTargetsFrom {{
+  static readonly queryId = "{edge}GraphTargetsFrom" as const;
+  static readonly queryItemType = "{entity_type}" as const;
+  readonly queryId = "{edge}GraphTargetsFrom" as const;
+  readonly queryItemType = "{entity_type}" as const;
+  readonly query: {{ endpoint: {edge}AAddress }};
+  declare readonly $res: () => __MykoGraph{entity_type}[];
+  constructor(endpoint: {edge}AAddress) {{ this.query = {{ endpoint }}; }}
+}}"#,
+            edge = edge.edge_type,
+        ),
+        _ => String::new(),
+    };
+    let sources_to = match (related_queries.sources_to, (a.requirement)()) {
+        (true, EndpointRequirement::Concrete(entity_type)) => format!(
+            r#"export class {edge}GraphSourcesTo {{
+  static readonly queryId = "{edge}GraphSourcesTo" as const;
+  static readonly queryItemType = "{entity_type}" as const;
+  readonly queryId = "{edge}GraphSourcesTo" as const;
+  readonly queryItemType = "{entity_type}" as const;
+  readonly query: {{ endpoint: {edge}BAddress }};
+  declare readonly $res: () => __MykoGraph{entity_type}[];
+  constructor(endpoint: {edge}BAddress) {{ this.query = {{ endpoint }}; }}
+}}"#,
+            edge = edge.edge_type,
+        ),
+        _ => String::new(),
+    };
+    let targets_from_helper = match (related_queries.targets_from, (b.requirement)()) {
+        (true, EndpointRequirement::Concrete(_)) => format!(
+            "  targetsFrom: (endpoint: {edge}AAddress) => new {edge}GraphTargetsFrom(endpoint),\n",
+            edge = edge.edge_type,
+        ),
+        _ => String::new(),
+    };
+    let sources_to_helper = match (related_queries.sources_to, (a.requirement)()) {
+        (true, EndpointRequirement::Concrete(_)) => format!(
+            "  sourcesTo: (endpoint: {edge}BAddress) => new {edge}GraphSourcesTo(endpoint),\n",
+            edge = edge.edge_type,
+        ),
+        _ => String::new(),
+    };
     format!(
         r#"export type {edge}AAddress = {a_type};
 export type {edge}BAddress = {b_type};
@@ -95,11 +140,13 @@ export class {edge}GraphBetween {{
   declare readonly $res: () => {edge}[];
   constructor(a: {edge}AAddress, b: {edge}BAddress) {{ this.query = {{ a, b }}; }}
 }}
+{targets_from}
+{sources_to}
 export const {edge}Graph = {{
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
   between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
-  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
+{targets_from_helper}{sources_to_helper}  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
   countTo: (endpoint: {edge}BAddress) => new {edge}GraphCountTo({{ endpoint }}),
   countBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphCountBetween({{ a, b }}),
   existsBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphExistsBetween({{ a, b }}),
@@ -211,10 +258,15 @@ fn generate_graph_endpoint_imports(catalog: &GraphSchemaCatalog) -> String {
         });
     let mut endpoint_imports = concrete_endpoint_types
         .into_iter()
-        .map(|entity_type| {
-            format!(
-                "import type {{ {entity_type}Id as __MykoGraph{entity_type}Id }} from \"./{entity_type}Id\";"
-            )
+        .flat_map(|entity_type| {
+            [
+                format!(
+                    "import type {{ {entity_type}Id as __MykoGraph{entity_type}Id }} from \"./{entity_type}Id\";"
+                ),
+                format!(
+                    "import type {{ {entity_type} as __MykoGraph{entity_type} }} from \"./{entity_type}\";"
+                ),
+            ]
         })
         .collect::<Vec<_>>();
     endpoint_imports.extend(catalog.edges.iter().map(|edge| {
@@ -1128,6 +1180,13 @@ mod tests {
         );
         assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
+        assert!(rendered.contains("export class TagAssignmentGraphSourcesTo"));
+        assert!(rendered.contains("sourcesTo: (endpoint: TagAssignmentBAddress)"));
+        assert!(!rendered.contains("export class TagAssignmentGraphTargetsFrom"));
+        assert!(rendered.contains("export class ScopedTagAssignmentGraphTargetsFrom"));
+        assert!(rendered.contains("targetsFrom: (endpoint: ScopedTagAssignmentAAddress)"));
+        assert!(!rendered.contains("export class AliasedEndpointAssignmentGraphTargetsFrom"));
+        assert!(rendered.contains("Article as __MykoGraphArticle"));
         assert!(rendered.contains("countFrom: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("new TagAssignmentGraphCountFrom({ endpoint })"));
         assert!(rendered.contains("new TagAssignmentGraphExistsBetween({ a, b })"));

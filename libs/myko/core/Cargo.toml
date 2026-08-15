@@ -48,6 +48,7 @@ flume.workspace = true
 hyphae.workspace = true
 dashmap.workspace = true
 ahash.workspace = true
+parking_lot.workspace = true
 # Per-type search index (typed module). Light deps; safe on wasm.
 smallvec = "1.13"
 roaring = "0.10"

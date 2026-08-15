@@ -1,6 +1,9 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{ImplItem, ItemImpl, ItemStruct, Path, Token, Type, punctuated::Punctuated};
+use syn::{
+    GenericArgument, ImplItem, ItemImpl, ItemStruct, Path, PathArguments, Token, Type,
+    punctuated::Punctuated,
+};
 
 use crate::myko_path;
 
@@ -48,6 +51,137 @@ fn graph_query_common(
                 parse: <#query_ident as #krate::query::QueryFactory>::parse,
                 cell_factory: <#query_ident as #krate::query::QueryFactory>::cell_factory,
                 window_cell_factory: <#query_ident as #krate::graph::GraphWindowQueryFactory>::window_cell_factory,
+            }
+        }
+    }
+}
+
+fn edge_endpoint_types(input: &ItemImpl) -> Option<(Type, Type)> {
+    let ends = input.items.iter().find_map(|item| match item {
+        ImplItem::Type(associated) if associated.ident == "Ends" => Some(&associated.ty),
+        _ => None,
+    })?;
+    let Type::Path(path) = ends else {
+        return None;
+    };
+    let PathArguments::AngleBracketed(arguments) = &path.path.segments.last()?.arguments else {
+        return None;
+    };
+    let mut endpoints = arguments.args.iter().filter_map(|argument| match argument {
+        GenericArgument::Type(endpoint) => Some(endpoint.clone()),
+        _ => None,
+    });
+    Some((endpoints.next()?, endpoints.next()?))
+}
+
+fn endpoint_entity_type(endpoint: &Type) -> Option<Type> {
+    let Type::Path(path) = endpoint else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "ConcreteEndpoint" && segment.ident != "QualifiedEndpoint" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    arguments.args.iter().find_map(|argument| match argument {
+        GenericArgument::Type(entity) => Some(entity.clone()),
+        _ => None,
+    })
+}
+
+struct RelatedQuerySpec<'a> {
+    query_ident: syn::Ident,
+    address_ident: syn::Ident,
+    source_endpoint: &'a Type,
+    target_endpoint: &'a Type,
+    target_entity: &'a Type,
+    edge_position: TokenStream,
+    related_position: TokenStream,
+    client_trait: TokenStream,
+    client_method: syn::Ident,
+}
+
+fn graph_related_query_tokens(
+    ctx: &crate::DeriveCtx,
+    edge_type: &Type,
+    spec: RelatedQuerySpec<'_>,
+) -> TokenStream {
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let RelatedQuerySpec {
+        query_ident,
+        address_ident,
+        source_endpoint,
+        target_endpoint,
+        target_entity,
+        edge_position,
+        related_position,
+        client_trait,
+        client_method,
+    } = spec;
+    let common = graph_query_common(krate, &query_ident, target_entity);
+
+    quote! {
+        /// Ordinary Myko query for typed entities reached through matching edges.
+        #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+        #serde_rename_attr
+        pub struct #query_ident {
+            pub endpoint: #address_ident,
+        }
+
+        impl #query_ident {
+            #[must_use]
+            pub fn new(endpoint: #address_ident) -> Self {
+                Self { endpoint }
+            }
+        }
+
+        #common
+
+        impl #krate::graph::GraphWindowQueryFactory for #query_ident {
+            fn window_cell_factory(
+                _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                _request: std::sync::Arc<#krate::request::RequestContext>,
+                _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                _window: #krate::wire::QueryWindow,
+            ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                Ok(None)
+            }
+        }
+
+        impl #krate::query::QueryHandler for #query_ident {
+            #[cfg(not(target_arch = "wasm32"))]
+            fn build_view(
+                ctx: #krate::query::QueryBuildArgs<Self>,
+            ) -> Option<impl #krate::prelude::MapQuery<
+                Key = std::sync::Arc<str>,
+                Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+            >>
+            where
+                Self: Send + Sync + 'static,
+            {
+                let endpoint = <#source_endpoint as #krate::graph::EndpointSpec>::erase(
+                    &ctx.query.endpoint,
+                ).ok()?;
+                ctx.query_context
+                    .graph_related_at::<#edge_type, #target_endpoint>(
+                        #edge_position,
+                        &endpoint,
+                        #related_position,
+                    )
+                    .ok()
+            }
+        }
+
+        impl #client_trait for #edge_type {
+            type Query = #query_ident;
+
+            fn #client_method(endpoint: &#address_ident) -> Self::Query {
+                #query_ident::new(endpoint.clone())
             }
         }
     }
@@ -689,6 +823,61 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
             }
         }
     });
+    let related_endpoint_types = edge_endpoint_types(&input);
+    let targets_from_available = edge_name.is_some()
+        && related_endpoint_types
+            .as_ref()
+            .is_some_and(|(_, endpoint)| endpoint_entity_type(endpoint).is_some());
+    let sources_to_available = edge_name.is_some()
+        && related_endpoint_types
+            .as_ref()
+            .is_some_and(|(endpoint, _)| endpoint_entity_type(endpoint).is_some());
+    let related_queries = edge_name
+        .as_ref()
+        .and_then(|edge_name| {
+            let (a_endpoint, b_endpoint) = related_endpoint_types.as_ref()?;
+            let a_entity = endpoint_entity_type(a_endpoint);
+            let b_entity = endpoint_entity_type(b_endpoint);
+            let a_address = format_ident!("{}AAddress", edge_name);
+            let b_address = format_ident!("{}BAddress", edge_name);
+            let mut generated = TokenStream::new();
+            if let Some(target_entity) = b_entity.as_ref() {
+                generated.extend(graph_related_query_tokens(
+                    &ctx,
+                    &edge_type,
+                    RelatedQuerySpec {
+                        query_ident: format_ident!("{}GraphTargetsFrom", edge_name),
+                        address_ident: a_address,
+                        source_endpoint: a_endpoint,
+                        target_endpoint: b_endpoint,
+                        target_entity,
+                        edge_position: quote!(#krate::graph::EndPosition::A),
+                        related_position: quote!(#krate::graph::EndPosition::B),
+                        client_trait: quote!(#krate::graph::GraphClientTargetsFrom),
+                        client_method: format_ident!("targets_from_query"),
+                    },
+                ));
+            }
+            if let Some(target_entity) = a_entity.as_ref() {
+                generated.extend(graph_related_query_tokens(
+                    &ctx,
+                    &edge_type,
+                    RelatedQuerySpec {
+                        query_ident: format_ident!("{}GraphSourcesTo", edge_name),
+                        address_ident: b_address,
+                        source_endpoint: b_endpoint,
+                        target_endpoint: a_endpoint,
+                        target_entity,
+                        edge_position: quote!(#krate::graph::EndPosition::B),
+                        related_position: quote!(#krate::graph::EndPosition::A),
+                        client_trait: quote!(#krate::graph::GraphClientSourcesTo),
+                        client_method: format_ident!("sources_to_query"),
+                    },
+                ));
+            }
+            Some(generated)
+        })
+        .unwrap_or_default();
     let graph_mutations = edge_name
         .as_ref()
         .map_or_else(TokenStream::new, |edge_name| {
@@ -705,6 +894,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
 
         #address_aliases
         #graph_queries
+        #related_queries
         #graph_mutations
         #graph_aggregates
 
@@ -732,6 +922,16 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 edge_type: <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
                 a: <#edge_type as #krate::graph::GraphEdge>::A_ADJACENCY,
                 b: <#edge_type as #krate::graph::GraphEdge>::B_ADJACENCY,
+            }
+        }
+
+        #krate::submit! {
+            #krate::graph::EdgeRelatedQueryRegistration {
+                edge_type: <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                availability: #krate::graph::EdgeRelatedQueryAvailability {
+                    targets_from: #targets_from_available,
+                    sources_to: #sources_to_available,
+                },
             }
         }
     }

@@ -15,7 +15,7 @@ use std::{
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard, RwLock},
+    sync::{Arc, Mutex, MutexGuard, RwLock, Weak},
 };
 
 use anyhow::{Context, Result, bail};
@@ -223,6 +223,15 @@ pub trait EndpointSpec: Send + Sync + 'static {
     fn erase(value: &Self::Value) -> Result<EndpointValue>;
 }
 
+/// Endpoint specification backed by one statically known entity type.
+///
+/// This is implemented by concrete and qualified endpoints. Heterogeneous
+/// category, one-of, and any-item endpoints intentionally do not implement it:
+/// their related result cannot be represented as one typed Myko query.
+pub trait EntityEndpointSpec: EndpointSpec {
+    type Entity: Eventable + WithTypedId;
+}
+
 pub struct ConcreteEndpoint<T>(PhantomData<T>);
 
 impl<T> EndpointSpec for ConcreteEndpoint<T>
@@ -242,6 +251,14 @@ where
             qualifier: None,
         })
     }
+}
+
+impl<T> EntityEndpointSpec for ConcreteEndpoint<T>
+where
+    T: Eventable + WithTypedId,
+    T::Id: Clone + Debug + Serialize + DeserializeOwned + Send + Sync + Into<Arc<str>> + 'static,
+{
+    type Entity = T;
 }
 
 pub struct CategoryEndpoint<C>(PhantomData<C>);
@@ -350,6 +367,15 @@ where
             qualifier: Some(value.qualifier.index_value()?),
         })
     }
+}
+
+impl<T, Q> EntityEndpointSpec for QualifiedEndpoint<T, Q>
+where
+    T: Eventable + WithTypedId,
+    T::Id: Clone + Debug + Serialize + DeserializeOwned + Send + Sync + Into<Arc<str>> + 'static,
+    Q: EndpointQualifier,
+{
+    type Entity = T;
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -673,6 +699,297 @@ where
     ) -> Self::BetweenQuery;
 }
 
+/// Generated query for typed entities reached from endpoint A.
+pub trait GraphClientTargetsFrom: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+    <Self::Ends as TypedEdgeEnds>::B: EntityEndpointSpec,
+{
+    type Query: crate::query::QueryParams
+        + crate::query::QueryItemType<
+            Item = <<Self::Ends as TypedEdgeEnds>::B as EntityEndpointSpec>::Entity,
+        >;
+
+    fn targets_from_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Self::Query;
+}
+
+/// Generated query for typed entities reaching endpoint B.
+pub trait GraphClientSourcesTo: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+    <Self::Ends as TypedEdgeEnds>::A: EntityEndpointSpec,
+{
+    type Query: crate::query::QueryParams
+        + crate::query::QueryItemType<
+            Item = <<Self::Ends as TypedEdgeEnds>::A as EntityEndpointSpec>::Entity,
+        >;
+
+    fn sources_to_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::Query;
+}
+
+struct RelatedTargetSubscription {
+    references: usize,
+    generation: u64,
+    guard: Option<hyphae::SubscriptionGuard>,
+}
+
+type RetiredRelatedTarget = (Arc<str>, Option<hyphae::SubscriptionGuard>);
+
+#[derive(Default)]
+struct RelatedEntityWatchState {
+    edge_targets: HashMap<Arc<str>, Arc<str>>,
+    targets: HashMap<Arc<str>, RelatedTargetSubscription>,
+    next_generation: u64,
+}
+
+impl RelatedEntityWatchState {
+    fn remove_edge(&mut self, edge_id: &Arc<str>) -> Option<RetiredRelatedTarget> {
+        let target_id = self.edge_targets.remove(edge_id)?;
+        let target = self.targets.get_mut(&target_id)?;
+        if target.references > 1 {
+            target.references = target.references.saturating_sub(1);
+            return None;
+        }
+        self.targets
+            .remove(&target_id)
+            .map(|target| (target_id, target.guard))
+    }
+
+    fn upsert_edge(
+        &mut self,
+        edge_id: Arc<str>,
+        target_id: Arc<str>,
+        retired: &mut Vec<RetiredRelatedTarget>,
+        added: &mut Vec<(Arc<str>, u64)>,
+    ) {
+        if self.edge_targets.get(&edge_id) == Some(&target_id) {
+            return;
+        }
+        if let Some(target) = self.remove_edge(&edge_id) {
+            retired.push(target);
+        }
+        self.edge_targets.insert(edge_id, target_id.clone());
+        if let Some(target) = self.targets.get_mut(&target_id) {
+            target.references = target.references.saturating_add(1);
+            return;
+        }
+        self.next_generation = self.next_generation.saturating_add(1);
+        let generation = self.next_generation;
+        self.targets.insert(
+            target_id.clone(),
+            RelatedTargetSubscription {
+                references: 1,
+                generation,
+                guard: None,
+            },
+        );
+        added.push((target_id, generation));
+    }
+}
+
+fn related_entity_id<E, T>(edge: &E, position: EndPosition) -> Option<Arc<str>>
+where
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+{
+    let endpoints = E::Ends::erase(&edge.ends()).ok()?;
+    let entity = match position {
+        EndPosition::A => endpoints.a.entity,
+        EndPosition::B => endpoints.b.entity,
+    };
+    if entity.entity_type.as_ref() != T::Entity::ENTITY_NAME_STATIC {
+        tracing::error!(
+            edge_type = E::ENTITY_NAME_STATIC,
+            expected = T::Entity::ENTITY_NAME_STATIC,
+            actual = %entity.entity_type,
+            "typed graph related-entity endpoint mismatch"
+        );
+        return None;
+    }
+    Some(entity.id)
+}
+
+fn apply_related_edge_diff<E, T>(
+    diff: &hyphae::MapDiff<Arc<str>, Arc<E>>,
+    state: &mut RelatedEntityWatchState,
+    retired: &mut Vec<RetiredRelatedTarget>,
+    added: &mut Vec<(Arc<str>, u64)>,
+    position: EndPosition,
+) where
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+{
+    match diff {
+        hyphae::MapDiff::Initial { entries } => {
+            retired.extend(
+                state
+                    .targets
+                    .drain()
+                    .map(|(target_id, target)| (target_id, target.guard)),
+            );
+            state.edge_targets.clear();
+            for (edge_id, edge) in entries {
+                if let Some(target_id) = related_entity_id::<E, T>(edge, position) {
+                    state.upsert_edge(edge_id.clone(), target_id, retired, added);
+                }
+            }
+        }
+        hyphae::MapDiff::Insert { key, value }
+        | hyphae::MapDiff::Update {
+            key,
+            new_value: value,
+            ..
+        } => {
+            if let Some(target_id) = related_entity_id::<E, T>(value, position) {
+                state.upsert_edge(key.clone(), target_id, retired, added);
+            } else if let Some(target) = state.remove_edge(key) {
+                retired.push(target);
+            }
+        }
+        hyphae::MapDiff::Remove { key, .. } => {
+            if let Some(target) = state.remove_edge(key) {
+                retired.push(target);
+            }
+        }
+        hyphae::MapDiff::Batch { changes } => {
+            for change in changes {
+                apply_related_edge_diff::<E, T>(change, state, retired, added, position);
+            }
+        }
+    }
+}
+
+fn install_related_target_subscription(
+    state: &Arc<Mutex<RelatedEntityWatchState>>,
+    dispatch: &Arc<parking_lot::ReentrantMutex<()>>,
+    output: hyphae::WeakCellMap<Arc<str>, Arc<dyn AnyItem>>,
+    store: &crate::store::EntityStore,
+    target_id: &Arc<str>,
+    generation: u64,
+) {
+    use hyphae::{Materialize, Signal, Watchable};
+
+    let cell = store.get(target_id).materialize();
+    let state_weak: Weak<Mutex<RelatedEntityWatchState>> = Arc::downgrade(state);
+    let dispatch_for_target = dispatch.clone();
+    let output_for_target = output;
+    let target_for_callback = target_id.clone();
+    let guard = cell.subscribe(move |signal| {
+        let _dispatch_guard = dispatch_for_target.lock();
+        let Signal::Value(value) = signal else {
+            return;
+        };
+        let Some(state) = state_weak.upgrade() else {
+            return;
+        };
+        let is_current = {
+            let state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state
+                .targets
+                .get(&target_for_callback)
+                .is_some_and(|target| target.generation == generation)
+        };
+        if !is_current {
+            return;
+        }
+        let Some(output) = output_for_target.upgrade() else {
+            return;
+        };
+        match value.as_ref() {
+            Some(item) => {
+                output.insert(target_for_callback.clone(), item.clone());
+            }
+            None => {
+                output.remove(&target_for_callback);
+            }
+        }
+    });
+
+    let mut guard = Some(guard);
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(target) = state.targets.get_mut(target_id)
+        && target.generation == generation
+        && target.guard.is_none()
+    {
+        target.guard = guard.take();
+    }
+    drop(state);
+    drop(guard);
+}
+
+/// Join one routed edge watch to only the distinct target IDs it currently
+/// references. Unrelated target rows are never scanned or subscribed.
+#[doc(hidden)]
+#[must_use]
+pub fn graph_related_entity_watch<E, T>(
+    edges: &hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>,
+    registry: &crate::store::StoreRegistry,
+    position: EndPosition,
+) -> crate::query::FilteredCellMap
+where
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+{
+    let output = hyphae::CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
+    let state = Arc::new(Mutex::new(RelatedEntityWatchState::default()));
+    let dispatch = Arc::new(parking_lot::ReentrantMutex::new(()));
+    let target_store = registry.get_or_create(T::Entity::ENTITY_NAME_STATIC);
+    let state_for_edges = state;
+    let output_for_edges = output.downgrade();
+    let store_for_edges = target_store.clone();
+    let dispatch_for_edges = dispatch;
+    let edge_guard = edges.subscribe_diffs(move |diff| {
+        let _dispatch_guard = dispatch_for_edges.lock();
+        let Some(output) = output_for_edges.upgrade() else {
+            return;
+        };
+        let retired = hyphae::batch(|| {
+            let mut retired = Vec::new();
+            let mut added = Vec::new();
+            {
+                let mut state = state_for_edges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                apply_related_edge_diff::<E, T>(
+                    diff,
+                    &mut state,
+                    &mut retired,
+                    &mut added,
+                    position,
+                );
+            }
+            for (target_id, _) in &retired {
+                output.remove(target_id);
+            }
+            for (target_id, generation) in added {
+                install_related_target_subscription(
+                    &state_for_edges,
+                    &dispatch_for_edges,
+                    output.downgrade(),
+                    store_for_edges.as_ref(),
+                    &target_id,
+                    generation,
+                );
+            }
+            retired
+        });
+        drop(retired);
+    });
+    output.own(edge_guard);
+    output.lock()
+}
+
 /// Generated live aggregate reports for one registered edge item.
 ///
 /// These reports keep graph cardinality checks on the server and send only a
@@ -757,6 +1074,24 @@ pub struct EdgeAdjacencyRegistration {
 
 inventory::collect!(EdgeAdjacencyRegistration);
 
+/// Related-entity queries actually emitted by the edge macro.
+///
+/// This is separate from [`EdgeRegistration`] so existing manual registrations
+/// remain source-compatible and code generators never advertise a query that
+/// does not exist.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EdgeRelatedQueryAvailability {
+    pub targets_from: bool,
+    pub sources_to: bool,
+}
+
+pub struct EdgeRelatedQueryRegistration {
+    pub edge_type: &'static str,
+    pub availability: EdgeRelatedQueryAvailability,
+}
+
+inventory::collect!(EdgeRelatedQueryRegistration);
+
 impl EdgeRegistration {
     /// Effective per-end projection policies, falling back to the legacy
     /// whole-edge policy for manually submitted registrations.
@@ -767,6 +1102,17 @@ impl EdgeRegistration {
             .find(|registration| registration.edge_type == self.edge_type)
             .map_or([self.adjacency; 2], |registration| {
                 [registration.a, registration.b]
+            })
+    }
+
+    /// Related-entity query directions emitted for this edge type.
+    #[must_use]
+    pub fn related_queries(&self) -> EdgeRelatedQueryAvailability {
+        inventory::iter::<EdgeRelatedQueryRegistration>
+            .into_iter()
+            .find(|registration| registration.edge_type == self.edge_type)
+            .map_or_else(EdgeRelatedQueryAvailability::default, |registration| {
+                registration.availability
             })
     }
 }
@@ -3580,7 +3926,10 @@ mod tests {
         clippy::redundant_clone,
         clippy::too_many_lines
     )]
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use super::EdgeIds;
     use crate::prelude::*;
@@ -3753,9 +4102,32 @@ mod tests {
         ForwardIndexedAssignment, ForwardIndexedAssignmentGraphBetween,
         ForwardIndexedAssignmentGraphCountBetween, ForwardIndexedAssignmentGraphCountFrom,
         ForwardIndexedAssignmentGraphCountTo, ForwardIndexedAssignmentGraphExistsBetween,
-        ForwardIndexedAssignmentGraphFrom, ForwardIndexedAssignmentGraphTo,
+        ForwardIndexedAssignmentGraphFrom, ForwardIndexedAssignmentGraphSourcesTo,
+        ForwardIndexedAssignmentGraphTargetsFrom, ForwardIndexedAssignmentGraphTo,
         ForwardIndexedAssignmentId,
     };
+
+    mod aliased_endpoint_edge {
+        use super::{Article, ArticleId, Tag, TagId};
+        use crate::prelude::*;
+
+        type ArticleEndpoint = ConcreteEndpoint<Article>;
+
+        #[myko_item]
+        pub struct AliasedEndpointAssignment {
+            pub tag_id: TagId,
+            pub article_id: ArticleId,
+        }
+
+        #[myko_edge]
+        impl GraphEdge for AliasedEndpointAssignment {
+            type Ends = Directed<ConcreteEndpoint<Tag>, ArticleEndpoint>;
+
+            fn ends(&self) -> (TagId, ArticleId) {
+                (self.tag_id.clone(), self.article_id.clone())
+            }
+        }
+    }
     use restricted_edge::{RestrictedTagAssignment, RestrictedTagAssignmentId};
     use retained_edge::{RetainedTagAssignment, RetainedTagAssignmentId};
 
@@ -4255,11 +4627,166 @@ mod tests {
     }
 
     #[test]
+    fn generated_related_entity_queries_are_keyed_live_and_deduplicated() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "related".into(),
+            id: TagId::from("tag-related"),
+        };
+        let article_a = Article {
+            title: "A".into(),
+            id: ArticleId::from("article-related-a"),
+        };
+        let article_b = Article {
+            title: "B".into(),
+            id: ArticleId::from("article-related-b"),
+        };
+        let unrelated = Article {
+            title: "unrelated".into(),
+            id: ArticleId::from("article-related-unrelated"),
+        };
+        let first = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article_a.id.clone(),
+            id: ForwardIndexedAssignmentId::from("related-edge-first"),
+        };
+        let parallel = ForwardIndexedAssignment {
+            id: ForwardIndexedAssignmentId::from("related-edge-parallel"),
+            ..first.clone()
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article_a).is_ok());
+        assert!(context.set(&article_b).is_ok());
+        assert!(context.set(&unrelated).is_ok());
+        assert!(context.set(&first).is_ok());
+        assert!(context.set(&parallel).is_ok());
+
+        let request = || {
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-related-test".into(),
+                context.host_id,
+            ))
+        };
+        let targets = context.query_map_by_str(
+            ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
+            request(),
+        );
+        assert_eq!(targets.snapshot().len(), 1);
+        assert!(targets.get_value(&article_a.id()).is_some());
+
+        let diffs = Arc::new(AtomicUsize::new(0));
+        let diffs_for_watch = diffs.clone();
+        let _guard = targets.subscribe_diffs(move |_| {
+            diffs_for_watch.fetch_add(1, Ordering::SeqCst);
+        });
+        diffs.store(0, Ordering::SeqCst);
+        let unrelated_update = Article {
+            title: "still unrelated".into(),
+            ..unrelated.clone()
+        };
+        assert!(context.set(&unrelated_update).is_ok());
+        assert_eq!(diffs.load(Ordering::SeqCst), 0);
+
+        let article_a_update = Article {
+            title: "A updated".into(),
+            ..article_a.clone()
+        };
+        assert!(context.set(&article_a_update).is_ok());
+        assert_eq!(diffs.load(Ordering::SeqCst), 1);
+        assert!(targets.get_value(&article_a.id()).is_some_and(|item| {
+            item.as_any()
+                .downcast_ref::<Article>()
+                .is_some_and(|article| article.title.as_ref() == "A updated")
+        }));
+
+        assert!(context.del(&first).is_ok());
+        assert_eq!(targets.snapshot().len(), 1);
+        assert!(context.del(&parallel).is_ok());
+        assert!(targets.snapshot().is_empty());
+
+        let moved = ForwardIndexedAssignment {
+            article_id: article_b.id.clone(),
+            ..first
+        };
+        assert!(context.set(&moved).is_ok());
+        assert!(targets.get_value(&article_b.id()).is_some());
+        let sources = context.query_map_by_str(
+            ForwardIndexedAssignmentGraphSourcesTo::new(article_b.id.clone()),
+            request(),
+        );
+        assert_eq!(sources.snapshot().len(), 1);
+        assert!(sources.get_value(&tag.id()).is_some());
+    }
+
+    #[test]
+    fn related_entity_output_can_reenter_graph_mutation() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "reentrant".into(),
+            id: TagId::from("tag-related-reentrant"),
+        };
+        let article = Article {
+            title: "reentrant".into(),
+            id: ArticleId::from("article-related-reentrant"),
+        };
+        let edge = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("related-edge-reentrant"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+
+        let targets = context.query_map_by_str(
+            ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-related-reentrant-test".into(),
+                context.host_id,
+            )),
+        );
+        let fired = Arc::new(AtomicBool::new(false));
+        let deleted = Arc::new(AtomicBool::new(false));
+        let fired_for_callback = fired.clone();
+        let deleted_for_callback = deleted.clone();
+        let context_for_callback = context.clone();
+        let edge_for_callback = edge.clone();
+        let _guard = targets.subscribe_diffs(move |diff| {
+            if !matches!(diff, hyphae::MapDiff::Initial { .. })
+                && !fired_for_callback.swap(true, Ordering::SeqCst)
+            {
+                deleted_for_callback.store(
+                    context_for_callback.del(&edge_for_callback).is_ok(),
+                    Ordering::SeqCst,
+                );
+            }
+        });
+
+        assert!(context.set(&edge).is_ok());
+        assert!(fired.load(Ordering::SeqCst));
+        assert!(deleted.load(Ordering::SeqCst));
+        assert!(targets.snapshot().is_empty());
+        assert!(
+            context
+                .edges::<ForwardIndexedAssignment>()
+                .from(&tag.id)
+                .is_ok_and(|edges| edges.is_empty())
+        );
+    }
+
+    #[test]
     fn generated_graph_client_helpers_preserve_endpoint_and_item_types() {
         let from: fn(&MykoClient, &TagId) -> QueryMapWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_from::<ForwardIndexedAssignment>;
         let to: fn(&MykoClient, &ArticleId) -> QueryMapWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_to::<ForwardIndexedAssignment>;
+        let targets_from: fn(&MykoClient, &TagId) -> QueryMapWatch<Article> =
+            MykoClient::watch_graph_targets_from::<ForwardIndexedAssignment>;
+        let sources_to: fn(&MykoClient, &ArticleId) -> QueryMapWatch<Tag> =
+            MykoClient::watch_graph_sources_to::<ForwardIndexedAssignment>;
         let between: fn(
             &MykoClient,
             &TagId,
@@ -4313,6 +4840,8 @@ mod tests {
         std::hint::black_box((
             from,
             to,
+            targets_from,
+            sources_to,
             between,
             from_windowed,
             to_windowed,
