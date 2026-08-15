@@ -201,6 +201,55 @@ fn bench_adjacency_lookup(c: &mut Criterion) {
     sparse.finish();
 }
 
+fn bench_exact_pair_lookup(c: &mut Criterion) {
+    let pair_n = 10_000_usize;
+    let context = seeded(pair_n);
+    let from = BenchGraphNodeId::from("node-0");
+    let to = BenchGraphNodeId::from(format!("node-{pair_n}"));
+    let store = context.registry.get_or_create("BenchGraphEdge");
+    let mut group = c.benchmark_group("graph/exact_pair_lookup");
+
+    group.bench_function("canonical_full_scan_exists", |b| {
+        b.iter(|| {
+            black_box(store.snapshot().into_iter().any(|(_, item)| {
+                downcast_any_item_arc::<BenchGraphEdge>(&item, "graph benchmark")
+                    .is_some_and(|edge| edge.from_id == from && edge.to_id == to)
+            }))
+        });
+    });
+    group.bench_function("pair_materialized", |b| {
+        b.iter(|| {
+            black_box(
+                context
+                    .edges::<BenchGraphEdge>()
+                    .one_between(&from, &to)
+                    .expect("materialized pair lookup"),
+            )
+        });
+    });
+    group.bench_function("pair_id", |b| {
+        b.iter(|| {
+            black_box(
+                context
+                    .edges::<BenchGraphEdge>()
+                    .between_id(&from, &to)
+                    .expect("pair ID lookup"),
+            )
+        });
+    });
+    group.bench_function("pair_exists", |b| {
+        b.iter(|| {
+            black_box(
+                context
+                    .edges::<BenchGraphEdge>()
+                    .exists_between(&from, &to)
+                    .expect("pair existence lookup"),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_authority_contention(c: &mut Criterion) {
     c.bench_function("graph/two_writer_authority_contention", |b| {
         b.iter_batched(
@@ -239,6 +288,7 @@ criterion_group!(
     bench_zero_registration_overhead,
     bench_projection_write,
     bench_adjacency_lookup,
+    bench_exact_pair_lookup,
     bench_authority_contention,
 );
 criterion_main!(benches);

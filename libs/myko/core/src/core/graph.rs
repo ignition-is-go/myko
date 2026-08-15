@@ -678,6 +678,66 @@ struct IndexedEdge {
     scope: Option<IndexValue>,
 }
 
+#[derive(Clone, Debug)]
+enum PairIds {
+    One(Arc<str>),
+    Many(BTreeSet<Arc<str>>),
+}
+
+impl PairIds {
+    fn insert(&mut self, id: Arc<str>) {
+        match self {
+            Self::One(existing) if *existing == id => {}
+            Self::One(existing) => {
+                *self = Self::Many(BTreeSet::from([existing.clone(), id]));
+            }
+            Self::Many(ids) => {
+                ids.insert(id);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &Arc<str>) -> bool {
+        match self {
+            Self::One(existing) => existing == id,
+            Self::Many(ids) => {
+                ids.remove(id);
+                let empty = ids.is_empty();
+                let singleton = (ids.len() == 1).then(|| ids.first().cloned()).flatten();
+                if let Some(remaining) = singleton {
+                    *self = Self::One(remaining);
+                }
+                empty
+            }
+        }
+    }
+
+    fn ids(&self) -> Vec<Arc<str>> {
+        match self {
+            Self::One(id) => vec![id.clone()],
+            Self::Many(ids) => ids.iter().cloned().collect(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(ids) => ids.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn conflicting_id(&self, candidate: &str) -> Option<&Arc<str>> {
+        match self {
+            Self::One(id) => (id.as_ref() != candidate).then_some(id),
+            Self::Many(ids) => ids.iter().find(|id| id.as_ref() != candidate),
+        }
+    }
+}
+
 #[derive(Default)]
 struct EdgeTypeState {
     generation: u64,
@@ -686,7 +746,7 @@ struct EdgeTypeState {
     b: HashMap<EndpointValue, BTreeSet<Arc<str>>>,
     a_entities: HashMap<EntityRef, BTreeSet<Arc<str>>>,
     b_entities: HashMap<EntityRef, BTreeSet<Arc<str>>>,
-    pairs: HashMap<EdgePairKey, BTreeSet<Arc<str>>>,
+    pairs: HashMap<EdgePairKey, PairIds>,
 }
 
 #[derive(Default)]
@@ -831,13 +891,42 @@ impl GraphIndex {
         endpoints: &EdgeEndpoints,
         scope: Option<IndexValue>,
     ) -> EdgePairKey {
-        let (a, b) = if registration.shape == EdgeShapeKind::Undirected && endpoints.b < endpoints.a
-        {
-            (endpoints.b.clone(), endpoints.a.clone())
+        Self::pair_key_from_values(registration, &endpoints.a, &endpoints.b, scope)
+    }
+
+    fn pair_key_from_values(
+        registration: &EdgeRegistration,
+        a: &EndpointValue,
+        b: &EndpointValue,
+        scope: Option<IndexValue>,
+    ) -> EdgePairKey {
+        let (a, b) = if registration.shape == EdgeShapeKind::Undirected && b < a {
+            (b.clone(), a.clone())
         } else {
-            (endpoints.a.clone(), endpoints.b.clone())
+            (a.clone(), b.clone())
         };
         EdgePairKey { scope, a, b }
+    }
+
+    fn projects_pairs(registration: &EdgeRegistration) -> bool {
+        registration.pair_policy == PairPolicy::Unique
+            || registration.pair_projection == PairProjectionPolicy::Eager
+    }
+
+    fn uses_unscoped_pair_fast_path(registration: &EdgeRegistration) -> bool {
+        Self::projects_pairs(registration) && (registration.scope_type)().is_none()
+    }
+
+    fn endpoints_match(
+        registration: &EdgeRegistration,
+        endpoints: &EdgeEndpoints,
+        a: &EndpointValue,
+        b: &EndpointValue,
+    ) -> bool {
+        (endpoints.a == *a && endpoints.b == *b)
+            || (registration.shape == EdgeShapeKind::Undirected
+                && endpoints.a == *b
+                && endpoints.b == *a)
     }
 
     /// Validate an edge mutation before canonical reduction.
@@ -901,9 +990,7 @@ impl GraphIndex {
                     .edge_types
                     .get(registration.edge_type)
                     .and_then(|edge_type| edge_type.pairs.get(&key))
-                    && let Some(existing_id) = existing_ids
-                        .iter()
-                        .find(|id| id.as_ref() != candidate.id().as_ref())
+                    && let Some(existing_id) = existing_ids.conflicting_id(candidate.id().as_ref())
                 {
                     bail!(
                         "{} pair is already occupied by edge {}",
@@ -1002,15 +1089,12 @@ impl GraphIndex {
                 }
             }
         }
-        if registration.pair_policy == PairPolicy::Unique
-            || registration.pair_projection == PairProjectionPolicy::Eager
-        {
+        if Self::projects_pairs(registration) {
             let key = Self::pair_key(registration, &edge.endpoints, edge.scope.clone());
-            if let Some(ids) = state.pairs.get_mut(&key) {
-                ids.remove(&edge.id);
-                if ids.is_empty() {
-                    state.pairs.remove(&key);
-                }
+            if let Some(ids) = state.pairs.get_mut(&key)
+                && ids.remove(&edge.id)
+            {
+                state.pairs.remove(&key);
             }
         }
     }
@@ -1042,18 +1126,19 @@ impl GraphIndex {
                 .or_default()
                 .insert(edge.id.clone());
         }
-        if registration.pair_policy == PairPolicy::Unique
-            || registration.pair_projection == PairProjectionPolicy::Eager
-        {
-            state
-                .pairs
-                .entry(Self::pair_key(
-                    registration,
-                    &edge.endpoints,
-                    edge.scope.clone(),
-                ))
-                .or_default()
-                .insert(edge.id.clone());
+        if Self::projects_pairs(registration) {
+            match state.pairs.entry(Self::pair_key(
+                registration,
+                &edge.endpoints,
+                edge.scope.clone(),
+            )) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().insert(edge.id.clone());
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(PairIds::One(edge.id.clone()));
+                }
+            }
         }
         if registration.adjacency == AdjacencyPolicy::Eager {
             state.edges.insert(edge.id.clone(), edge);
@@ -1250,6 +1335,18 @@ impl GraphIndex {
         let Some(registration) = self.registration(edge_type) else {
             return Vec::new();
         };
+        if Self::uses_unscoped_pair_fast_path(registration) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = Self::pair_key_from_values(registration, a, b, None);
+            return state
+                .edge_types
+                .get(edge_type)
+                .and_then(|edges| edges.pairs.get(&key))
+                .map_or_else(Vec::new, PairIds::ids);
+        }
         if registration.adjacency == AdjacencyPolicy::DemandDriven {
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
                 store
@@ -1257,7 +1354,7 @@ impl GraphIndex {
                     .into_iter()
                     .filter_map(|(_, item)| {
                         let endpoints = (registration.extract)(item.as_ref()).ok()?;
-                        (endpoints.a == *a && endpoints.b == *b).then(|| item.id())
+                        Self::endpoints_match(registration, &endpoints, a, b).then(|| item.id())
                     })
                     .collect()
             });
@@ -1279,6 +1376,296 @@ impl GraphIndex {
             .filter(|id| other.contains(*id))
             .cloned()
             .collect()
+    }
+
+    #[must_use]
+    pub fn edge_count_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoint: &EndpointValue,
+    ) -> usize {
+        let Some(registration) = self.registration(edge_type) else {
+            return 0;
+        };
+        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+            return self.registry.get(edge_type).map_or(0, |store| {
+                store
+                    .snapshot()
+                    .into_iter()
+                    .filter(|(_, item)| {
+                        (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
+                            let candidate = match position {
+                                EndPosition::A => endpoints.a,
+                                EndPosition::B => endpoints.b,
+                            };
+                            candidate == *endpoint
+                        })
+                    })
+                    .count()
+            });
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(edges) = state.edge_types.get(edge_type) else {
+            return 0;
+        };
+        let map = match position {
+            EndPosition::A => &edges.a,
+            EndPosition::B => &edges.b,
+        };
+        map.get(endpoint).map_or(0, BTreeSet::len)
+    }
+
+    #[must_use]
+    pub fn has_edge_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoint: &EndpointValue,
+    ) -> bool {
+        let Some(registration) = self.registration(edge_type) else {
+            return false;
+        };
+        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+            return self.registry.get(edge_type).is_some_and(|store| {
+                store.snapshot().into_iter().any(|(_, item)| {
+                    (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
+                        let candidate = match position {
+                            EndPosition::A => endpoints.a,
+                            EndPosition::B => endpoints.b,
+                        };
+                        candidate == *endpoint
+                    })
+                })
+            });
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.edge_types.get(edge_type).is_some_and(|edges| {
+            let map = match position {
+                EndPosition::A => &edges.a,
+                EndPosition::B => &edges.b,
+            };
+            map.get(endpoint).is_some_and(|ids| !ids.is_empty())
+        })
+    }
+
+    #[must_use]
+    pub fn edge_count_between(
+        &self,
+        edge_type: &str,
+        a: &EndpointValue,
+        b: &EndpointValue,
+    ) -> usize {
+        let Some(registration) = self.registration(edge_type) else {
+            return 0;
+        };
+        if Self::uses_unscoped_pair_fast_path(registration) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = Self::pair_key_from_values(registration, a, b, None);
+            return state
+                .edge_types
+                .get(edge_type)
+                .and_then(|edges| edges.pairs.get(&key))
+                .map_or(0, PairIds::len);
+        }
+        self.edge_ids_between(edge_type, a, b).len()
+    }
+
+    #[must_use]
+    pub fn has_edge_between(&self, edge_type: &str, a: &EndpointValue, b: &EndpointValue) -> bool {
+        let Some(registration) = self.registration(edge_type) else {
+            return false;
+        };
+        if Self::uses_unscoped_pair_fast_path(registration) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = Self::pair_key_from_values(registration, a, b, None);
+            return state
+                .edge_types
+                .get(edge_type)
+                .and_then(|edges| edges.pairs.get(&key))
+                .is_some_and(|ids| !ids.is_empty());
+        }
+        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+            return self.registry.get(edge_type).is_some_and(|store| {
+                store.snapshot().into_iter().any(|(_, item)| {
+                    (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
+                        Self::endpoints_match(registration, &endpoints, a, b)
+                    })
+                })
+            });
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(edges) = state.edge_types.get(edge_type) else {
+            return false;
+        };
+        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
+            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
+            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
+            _ => return false,
+        };
+        small.iter().any(|id| other.contains(id))
+    }
+
+    #[must_use]
+    pub fn edge_ids_between_in_scope(
+        &self,
+        edge_type: &str,
+        a: &EndpointValue,
+        b: &EndpointValue,
+        scope: &IndexValue,
+    ) -> Vec<Arc<str>> {
+        let Some(registration) = self.registration(edge_type) else {
+            return Vec::new();
+        };
+        if Self::projects_pairs(registration) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = Self::pair_key_from_values(registration, a, b, Some(scope.clone()));
+            return state
+                .edge_types
+                .get(edge_type)
+                .and_then(|edges| edges.pairs.get(&key))
+                .map_or_else(Vec::new, PairIds::ids);
+        }
+        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+            return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
+                store
+                    .snapshot()
+                    .into_iter()
+                    .filter_map(|(_, item)| {
+                        let endpoints = (registration.extract)(item.as_ref()).ok()?;
+                        let item_scope = (registration.extract_scope)(item.as_ref()).ok()?;
+                        (item_scope.as_ref() == Some(scope)
+                            && Self::endpoints_match(registration, &endpoints, a, b))
+                        .then(|| item.id())
+                    })
+                    .collect()
+            });
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(edges) = state.edge_types.get(edge_type) else {
+            return Vec::new();
+        };
+        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
+            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
+            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
+            _ => return Vec::new(),
+        };
+        small
+            .iter()
+            .filter(|id| {
+                other.contains(*id)
+                    && edges
+                        .edges
+                        .get(*id)
+                        .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn edge_count_between_in_scope(
+        &self,
+        edge_type: &str,
+        a: &EndpointValue,
+        b: &EndpointValue,
+        scope: &IndexValue,
+    ) -> usize {
+        let Some(registration) = self.registration(edge_type) else {
+            return 0;
+        };
+        if Self::projects_pairs(registration) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = Self::pair_key_from_values(registration, a, b, Some(scope.clone()));
+            return state
+                .edge_types
+                .get(edge_type)
+                .and_then(|edges| edges.pairs.get(&key))
+                .map_or(0, PairIds::len);
+        }
+        self.edge_ids_between_in_scope(edge_type, a, b, scope).len()
+    }
+
+    #[must_use]
+    pub fn has_edge_between_in_scope(
+        &self,
+        edge_type: &str,
+        a: &EndpointValue,
+        b: &EndpointValue,
+        scope: &IndexValue,
+    ) -> bool {
+        let Some(registration) = self.registration(edge_type) else {
+            return false;
+        };
+        if Self::projects_pairs(registration) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = Self::pair_key_from_values(registration, a, b, Some(scope.clone()));
+            return state
+                .edge_types
+                .get(edge_type)
+                .and_then(|edges| edges.pairs.get(&key))
+                .is_some_and(|ids| !ids.is_empty());
+        }
+        if registration.adjacency == AdjacencyPolicy::DemandDriven {
+            return self.registry.get(edge_type).is_some_and(|store| {
+                store.snapshot().into_iter().any(|(_, item)| {
+                    let Ok(endpoints) = (registration.extract)(item.as_ref()) else {
+                        return false;
+                    };
+                    let Ok(item_scope) = (registration.extract_scope)(item.as_ref()) else {
+                        return false;
+                    };
+                    item_scope.as_ref() == Some(scope)
+                        && Self::endpoints_match(registration, &endpoints, a, b)
+                })
+            });
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(edges) = state.edge_types.get(edge_type) else {
+            return false;
+        };
+        let (small, other) = match (edges.a.get(a), edges.b.get(b)) {
+            (Some(a_ids), Some(b_ids)) if a_ids.len() <= b_ids.len() => (a_ids, b_ids),
+            (Some(a_ids), Some(b_ids)) => (b_ids, a_ids),
+            _ => return false,
+        };
+        small.iter().any(|id| {
+            other.contains(id)
+                && edges
+                    .edges
+                    .get(id)
+                    .is_some_and(|edge| edge.scope.as_ref() == Some(scope))
+        })
     }
 
     fn traversal_neighbors(
@@ -1526,17 +1913,53 @@ where
             .collect()
     }
 
+    fn materialize_one(&self, id: &Arc<str>) -> Option<Arc<E>> {
+        self.context
+            .registry
+            .get(E::ENTITY_NAME_STATIC)
+            .and_then(|store| store.get_value(id))
+            .and_then(|item| crate::item::downcast_any_item_arc::<E>(&item, "EdgeQuery"))
+    }
+
+    /// Edge IDs at endpoint A without loading or downcasting edge items.
+    pub fn from_ids(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Result<Vec<Arc<str>>> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
+        Ok(self
+            .graph()?
+            .edge_ids_at(E::ENTITY_NAME_STATIC, EndPosition::A, &endpoint))
+    }
+
+    /// Number of edges at endpoint A without materializing edge items.
+    pub fn count_from(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Result<usize> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
+        Ok(self
+            .graph()?
+            .edge_count_at(E::ENTITY_NAME_STATIC, EndPosition::A, &endpoint))
+    }
+
+    /// Whether any edge exists at endpoint A without materializing edge items.
+    pub fn exists_from(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Result<bool> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
+        Ok(self
+            .graph()?
+            .has_edge_at(E::ENTITY_NAME_STATIC, EndPosition::A, &endpoint))
+    }
+
     /// Directed-style lookup at endpoint A (`from`).
     pub fn from(
         &self,
         value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
     ) -> Result<Vec<Arc<E>>> {
-        let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
-        Ok(self.materialize(self.graph()?.edge_ids_at(
-            E::ENTITY_NAME_STATIC,
-            EndPosition::A,
-            &endpoint,
-        )))
+        Ok(self.materialize(self.from_ids(value)?))
     }
 
     /// Qualified-address spelling for [`Self::from`].
@@ -1552,12 +1975,40 @@ where
         &self,
         value: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
     ) -> Result<Vec<Arc<E>>> {
+        Ok(self.materialize(self.to_ids(value)?))
+    }
+
+    /// Edge IDs at endpoint B without loading or downcasting edge items.
+    pub fn to_ids(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Vec<Arc<str>>> {
         let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
-        Ok(self.materialize(self.graph()?.edge_ids_at(
-            E::ENTITY_NAME_STATIC,
-            EndPosition::B,
-            &endpoint,
-        )))
+        Ok(self
+            .graph()?
+            .edge_ids_at(E::ENTITY_NAME_STATIC, EndPosition::B, &endpoint))
+    }
+
+    /// Number of edges at endpoint B without materializing edge items.
+    pub fn count_to(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<usize> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
+        Ok(self
+            .graph()?
+            .edge_count_at(E::ENTITY_NAME_STATIC, EndPosition::B, &endpoint))
+    }
+
+    /// Whether any edge exists at endpoint B without materializing edge items.
+    pub fn exists_to(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<bool> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
+        Ok(self
+            .graph()?
+            .has_edge_at(E::ENTITY_NAME_STATIC, EndPosition::B, &endpoint))
     }
 
     /// Qualified-address spelling for [`Self::to`].
@@ -1568,18 +2019,157 @@ where
         self.to(value)
     }
 
-    /// Exact A/B lookup, implemented by intersecting the narrower incidence set.
+    /// Exact A/B lookup, using the pair projection when one is configured.
     pub fn between(
         &self,
         a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
         b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
     ) -> Result<Vec<Arc<E>>> {
+        Ok(self.materialize(self.between_ids(a, b)?))
+    }
+
+    /// Exact A/B edge IDs without loading or downcasting edge items.
+    pub fn between_ids(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Vec<Arc<str>>> {
         let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
         let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
-        Ok(self.materialize(
-            self.graph()?
-                .edge_ids_between(E::ENTITY_NAME_STATIC, &a, &b),
-        ))
+        Ok(self
+            .graph()?
+            .edge_ids_between(E::ENTITY_NAME_STATIC, &a, &b))
+    }
+
+    /// Number of exact A/B edges without materializing edge items.
+    pub fn count_between(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<usize> {
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        Ok(self
+            .graph()?
+            .edge_count_between(E::ENTITY_NAME_STATIC, &a, &b))
+    }
+
+    /// Whether an exact A/B edge exists without materializing edge items.
+    pub fn exists_between(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<bool> {
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        Ok(self
+            .graph()?
+            .has_edge_between(E::ENTITY_NAME_STATIC, &a, &b))
+    }
+
+    /// The edge ID for a unique exact pair.
+    pub fn between_id(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Option<Arc<str>>> {
+        if E::PAIR_POLICY != PairPolicy::Unique {
+            bail!("{} does not declare unique pairs", E::ENTITY_NAME_STATIC);
+        }
+        Ok(self.between_ids(a, b)?.into_iter().next())
+    }
+
+    /// The materialized edge for a unique exact pair.
+    pub fn one_between(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Option<Arc<E>>> {
+        Ok(self
+            .between_id(a, b)?
+            .as_ref()
+            .and_then(|id| self.materialize_one(id)))
+    }
+
+    /// Exact A/B lookup within one typed edge scope.
+    pub fn between_in_scope(
+        &self,
+        scope: &<E::Scope as EdgeScope>::Value,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Vec<Arc<E>>> {
+        Ok(self.materialize(self.between_ids_in_scope(scope, a, b)?))
+    }
+
+    /// Exact scoped A/B edge IDs without loading or downcasting edge items.
+    pub fn between_ids_in_scope(
+        &self,
+        scope: &<E::Scope as EdgeScope>::Value,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Vec<Arc<str>>> {
+        let scope = E::Scope::erase(scope)?;
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        Ok(self
+            .graph()?
+            .edge_ids_between_in_scope(E::ENTITY_NAME_STATIC, &a, &b, &scope))
+    }
+
+    /// Number of exact scoped A/B edges without materializing edge items.
+    pub fn count_between_in_scope(
+        &self,
+        scope: &<E::Scope as EdgeScope>::Value,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<usize> {
+        let scope = E::Scope::erase(scope)?;
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        Ok(self
+            .graph()?
+            .edge_count_between_in_scope(E::ENTITY_NAME_STATIC, &a, &b, &scope))
+    }
+
+    /// Whether an exact scoped A/B edge exists without materializing edge items.
+    pub fn exists_between_in_scope(
+        &self,
+        scope: &<E::Scope as EdgeScope>::Value,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<bool> {
+        let scope = E::Scope::erase(scope)?;
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        Ok(self
+            .graph()?
+            .has_edge_between_in_scope(E::ENTITY_NAME_STATIC, &a, &b, &scope))
+    }
+
+    /// The edge ID for a unique exact pair within one typed scope.
+    pub fn between_id_in_scope(
+        &self,
+        scope: &<E::Scope as EdgeScope>::Value,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Option<Arc<str>>> {
+        if E::PAIR_POLICY != PairPolicy::Unique {
+            bail!("{} does not declare unique pairs", E::ENTITY_NAME_STATIC);
+        }
+        Ok(self.between_ids_in_scope(scope, a, b)?.into_iter().next())
+    }
+
+    /// The materialized edge for a unique exact pair within one typed scope.
+    pub fn one_between_in_scope(
+        &self,
+        scope: &<E::Scope as EdgeScope>::Value,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Option<Arc<E>>> {
+        Ok(self
+            .between_id_in_scope(scope, a, b)?
+            .as_ref()
+            .and_then(|id| self.materialize_one(id)))
     }
 
     fn watch_at(
@@ -1720,6 +2310,7 @@ mod tests {
     )]
     use std::sync::Arc;
 
+    use super::PairIds;
     use crate::prelude::*;
     use crate::{
         search::SearchIndex,
@@ -1756,6 +2347,16 @@ mod tests {
     }
     use tag::{Tag, TagId};
 
+    mod graph_scope {
+        use crate::prelude::*;
+
+        #[myko_item]
+        pub struct GraphScope {
+            pub name: String,
+        }
+    }
+    use graph_scope::{GraphScope, GraphScopeId};
+
     mod assignment {
         use super::{Tag, TagId, TagTarget};
         use crate::prelude::*;
@@ -1779,6 +2380,35 @@ mod tests {
         }
     }
     use assignment::{TagAssignment, TagAssignmentId};
+
+    mod scoped_assignment {
+        use super::{Article, ArticleId, GraphScope, GraphScopeId, Tag, TagId};
+        use crate::prelude::*;
+
+        #[myko_item]
+        pub struct ScopedTagAssignment {
+            pub scope_id: GraphScopeId,
+            pub tag_id: TagId,
+            pub article_id: ArticleId,
+        }
+
+        #[myko_edge]
+        impl GraphEdge for ScopedTagAssignment {
+            type Ends = Directed<ConcreteEndpoint<Tag>, ConcreteEndpoint<Article>>;
+            type Scope = ConcreteScope<GraphScope>;
+
+            fn ends(&self) -> (TagId, ArticleId) {
+                (self.tag_id.clone(), self.article_id.clone())
+            }
+
+            fn scope(&self) -> Option<GraphScopeId> {
+                Some(self.scope_id.clone())
+            }
+
+            const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+        }
+    }
+    use scoped_assignment::{ScopedTagAssignment, ScopedTagAssignmentId};
 
     mod restricted_edge {
         use super::{Tag, TagId, TagTarget};
@@ -1897,6 +2527,97 @@ mod tests {
     }
 
     #[test]
+    fn pair_ids_stay_inline_until_parallel_history_requires_a_set() {
+        let first: Arc<str> = "edge-1".into();
+        let second: Arc<str> = "edge-2".into();
+        let mut ids = PairIds::One(first.clone());
+
+        ids.insert(first.clone());
+        assert_eq!(ids.ids(), vec![first.clone()]);
+        ids.insert(second.clone());
+        assert_eq!(ids.ids(), vec![first.clone(), second.clone()]);
+        assert!(!ids.remove(&first));
+        assert_eq!(ids.ids(), vec![second.clone()]);
+        assert!(ids.remove(&second));
+    }
+
+    #[test]
+    fn scoped_pair_projection_distinguishes_identical_endpoints() {
+        let context = context();
+        let tag = Tag {
+            name: "scoped".into(),
+            id: TagId::from("tag-scoped"),
+        };
+        let article = Article {
+            title: "Scoped graph".into(),
+            id: ArticleId::from("article-scoped"),
+        };
+        let scopes = [
+            GraphScope {
+                name: "one".to_string(),
+                id: GraphScopeId::from("scope-1"),
+            },
+            GraphScope {
+                name: "two".to_string(),
+                id: GraphScopeId::from("scope-2"),
+            },
+        ];
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        assert!(context.batch_set(&scopes).is_ok());
+        let assignments = [
+            ScopedTagAssignment {
+                scope_id: scopes[0].id.clone(),
+                tag_id: tag.id.clone(),
+                article_id: article.id.clone(),
+                id: ScopedTagAssignmentId::from("scoped-edge-1"),
+            },
+            ScopedTagAssignment {
+                scope_id: scopes[1].id.clone(),
+                tag_id: tag.id.clone(),
+                article_id: article.id.clone(),
+                id: ScopedTagAssignmentId::from("scoped-edge-2"),
+            },
+        ];
+        assert!(context.batch_set(&assignments).is_ok());
+
+        let query = context.edges::<ScopedTagAssignment>();
+        assert_eq!(
+            query
+                .between(&tag.id, &article.id)
+                .expect("all scopes")
+                .len(),
+            2
+        );
+        assert_eq!(
+            query
+                .between_id_in_scope(&scopes[0].id, &tag.id, &article.id)
+                .expect("first scoped pair"),
+            Some(assignments[0].id())
+        );
+        assert_eq!(
+            query
+                .count_between_in_scope(&scopes[1].id, &tag.id, &article.id)
+                .expect("second scoped count"),
+            1
+        );
+        assert!(
+            query
+                .exists_between_in_scope(&scopes[1].id, &tag.id, &article.id)
+                .expect("second scoped existence")
+        );
+        assert!(
+            !query
+                .exists_between_in_scope(
+                    &GraphScopeId::from("scope-missing"),
+                    &tag.id,
+                    &article.id,
+                )
+                .expect("missing scoped pair")
+        );
+    }
+
+    #[test]
     fn graph_runtime_enforces_and_queries_registered_edges() {
         let context = context();
         let tag = Tag {
@@ -1921,6 +2642,54 @@ mod tests {
             id: TagAssignmentId::from("assignment-1"),
         };
         assert!(context.set(&assignment).is_ok());
+
+        let query = context.edges::<TagAssignment>();
+        assert_eq!(
+            query.from_ids(&tag.id).expect("from IDs"),
+            vec![assignment.id()]
+        );
+        assert_eq!(query.count_from(&tag.id).expect("from count"), 1);
+        assert!(query.exists_from(&tag.id).expect("from existence"));
+        assert_eq!(
+            query
+                .count_to(&EntityRef::from(&article))
+                .expect("to count"),
+            1
+        );
+        assert!(
+            query
+                .exists_to(&EntityRef::from(&article))
+                .expect("to existence")
+        );
+        assert_eq!(
+            query
+                .between_ids(&tag.id, &EntityRef::from(&article))
+                .expect("between IDs"),
+            vec![assignment.id()]
+        );
+        assert_eq!(
+            query
+                .between_id(&tag.id, &EntityRef::from(&article))
+                .expect("unique pair ID"),
+            Some(assignment.id())
+        );
+        assert_eq!(
+            query
+                .count_between(&tag.id, &EntityRef::from(&article))
+                .expect("between count"),
+            1
+        );
+        assert!(
+            query
+                .exists_between(&tag.id, &EntityRef::from(&article))
+                .expect("between existence")
+        );
+        assert_eq!(
+            query
+                .one_between(&tag.id, &EntityRef::from(&article))
+                .expect("unique pair item"),
+            Some(Arc::new(assignment.clone()))
+        );
 
         let from = context
             .edges::<TagAssignment>()
@@ -1959,6 +2728,14 @@ mod tests {
             0,
             "demand-driven edges do not allocate adjacency buckets"
         );
+        assert_eq!(
+            context
+                .graph_index()
+                .expect("graph index")
+                .diagnostics()
+                .pair_entries,
+            1
+        );
 
         let moved = TagAssignment {
             target: EntityRef::from(&moved_article),
@@ -1972,6 +2749,12 @@ mod tests {
                 .between(&tag.id, &EntityRef::from(&article))
                 .expect("old pair removed")
                 .is_empty()
+        );
+        assert!(
+            !context
+                .edges::<TagAssignment>()
+                .exists_between(&tag.id, &EntityRef::from(&article))
+                .expect("old pair absence")
         );
         assert_eq!(
             context
