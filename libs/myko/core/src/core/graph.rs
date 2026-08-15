@@ -1830,10 +1830,11 @@ impl GraphIndex {
         }
     }
 
-    fn watch_diff_affects_matching(
+    fn watch_diff_affects_window(
         registration: &EdgeRegistration,
         matches_endpoints: &impl Fn(&EdgeEndpoints) -> bool,
         diff: &GraphWatchDiff,
+        visible_entries: &[(Arc<str>, Arc<dyn AnyItem>)],
     ) -> bool {
         let matches = |item: &Arc<dyn AnyItem>| {
             (registration.extract)(item.as_ref())
@@ -1844,12 +1845,21 @@ impl GraphIndex {
             GraphWatchDiff::Insert { value, .. } => matches(value),
             GraphWatchDiff::Remove { old_value, .. } => matches(old_value),
             GraphWatchDiff::Update {
+                key,
                 old_value,
                 new_value,
-                ..
-            } => matches(old_value) || matches(new_value),
+            } => match (matches(old_value), matches(new_value)) {
+                (false, false) => false,
+                (true, false) | (false, true) => true,
+                (true, true) => visible_entries.iter().any(|(id, _)| id == key),
+            },
             GraphWatchDiff::Batch { changes } => changes.iter().any(|change| {
-                Self::watch_diff_affects_matching(registration, matches_endpoints, change)
+                Self::watch_diff_affects_window(
+                    registration,
+                    matches_endpoints,
+                    change,
+                    visible_entries,
+                )
             }),
         }
     }
@@ -1868,7 +1878,7 @@ impl GraphIndex {
             + 'static,
         M: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
     {
-        use hyphae::{Materialize, Mutable, Signal, Watchable};
+        use hyphae::{Gettable, Materialize, Mutable, Signal, Watchable};
 
         let registration = self
             .registration(edge_type)
@@ -1902,15 +1912,21 @@ impl GraphIndex {
             let Signal::Value(diff) = signal else {
                 return;
             };
-            if !Self::watch_diff_affects_matching(registration, &matches_endpoints, diff.as_ref()) {
-                return;
-            }
             let Some(graph) = graph_weak.upgrade() else {
                 return;
             };
             let Some(snapshots) = snapshots_weak.upgrade() else {
                 return;
             };
+            let current = snapshots.get();
+            if !Self::watch_diff_affects_window(
+                registration,
+                &matches_endpoints,
+                diff.as_ref(),
+                &current.entries,
+            ) {
+                return;
+            }
             let next = {
                 let window = window_for_diffs
                     .lock()
@@ -3782,6 +3798,37 @@ mod tests {
         let moved = source.snapshots().get();
         assert_eq!(moved.entries.len(), 1);
         assert_eq!(moved.entries[0].0.as_ref(), "c");
+
+        let replacement_article = Article {
+            title: "replacement".into(),
+            id: ArticleId::from("article-replacement"),
+        };
+        assert!(context.set(&replacement_article).is_ok());
+        let outside_update = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: replacement_article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("d"),
+        };
+        let before_outside_update = source.snapshots().get();
+        assert!(context.set(&outside_update).is_ok());
+        assert!(Arc::ptr_eq(
+            &before_outside_update,
+            &source.snapshots().get()
+        ));
+
+        let visible_update = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: replacement_article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("c"),
+        };
+        assert!(context.set(&visible_update).is_ok());
+        let updated = source.snapshots().get();
+        let updated_edge = crate::item::downcast_any_item_arc::<ForwardIndexedAssignment>(
+            &updated.entries[0].1,
+            "windowed graph test",
+        )
+        .expect("visible edge payload");
+        assert_eq!(updated_edge.article_id, replacement_article.id);
 
         let demand = graph
             .watch_window_at(

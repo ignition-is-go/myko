@@ -422,6 +422,82 @@ fn bench_high_degree_window_initialization(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_high_degree_window_update_churn(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let target_id = BenchGraphEdgeId::from("edge-9999");
+    let from = BenchGraphNodeId::from("node-0");
+    let first_target = BenchGraphNodeId::from("node-10000");
+    let second_target = BenchGraphNodeId::from("node-window-churn");
+
+    let baseline = seeded(edge_count);
+    let watched = seeded(edge_count);
+    for context in [&baseline, &watched] {
+        context
+            .set(&BenchGraphNode {
+                id: second_target.clone(),
+                ordinal: i64::MAX,
+            })
+            .expect("seed alternate churn endpoint");
+    }
+    let request = Arc::new(RequestContext::from_client(
+        "graph-window-churn-benchmark".into(),
+        "graph-window-churn-benchmark-client".into(),
+        watched.host_id,
+    ));
+    let query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_query(&from),
+        request.tx.clone(),
+    ));
+    let watched_server = Arc::new(watched.clone());
+    let source =
+        <BenchGraphFromQuery as myko::graph::GraphWindowQueryFactory>::window_cell_factory(
+            query,
+            watched.registry.clone(),
+            request,
+            watched_server,
+            myko::wire::QueryWindow {
+                offset: 0,
+                limit: 50,
+            },
+        )
+        .expect("bounded graph query")
+        .expect("eager graph projection");
+    assert!(
+        source
+            .snapshots()
+            .get()
+            .entries
+            .iter()
+            .all(|(id, _)| id.as_ref() != target_id.as_ref())
+    );
+
+    let mut group = c.benchmark_group("graph/high_degree_window_update_churn");
+    for (name, context) in [
+        ("no_window_source", baseline),
+        ("bounded_window_outside_page", watched),
+    ] {
+        let mut alternate = false;
+        group.bench_function(name, |b| {
+            let _keep_source_alive = &source;
+            b.iter(|| {
+                alternate = !alternate;
+                context
+                    .set(&BenchGraphEdge {
+                        id: target_id.clone(),
+                        from_id: from.clone(),
+                        to_id: if alternate {
+                            first_target.clone()
+                        } else {
+                            second_target.clone()
+                        },
+                    })
+                    .expect("update edge outside retained page");
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_exact_pair_lookup(c: &mut Criterion) {
     let pair_n = 10_000_usize;
     let context = seeded(pair_n);
@@ -584,6 +660,7 @@ criterion_group!(
     bench_adjacency_lookup,
     bench_watch_initialization,
     bench_high_degree_window_initialization,
+    bench_high_degree_window_update_churn,
     bench_exact_pair_lookup,
     bench_endpoint_delete_plan,
     bench_authority_contention,
