@@ -200,6 +200,15 @@ export class {edge}GraphFromId {{
   declare readonly $res: () => {edge}[];
   constructor(endpoint: {edge}AAddress, id: __MykoGraph{edge}Id) {{ this.query = {{ endpoint, id }}; }}
 }}
+export class {edge}GraphFromIds {{
+  static readonly queryId = "{edge}GraphFromIds" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphFromIds" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ endpoint: {edge}AAddress; ids: __MykoGraph{edge}Id[] }};
+  declare readonly $res: () => {edge}[];
+  constructor(endpoint: {edge}AAddress, ids: __MykoGraph{edge}Id[]) {{ this.query = {{ endpoint, ids: [...new Set(ids)].sort() }}; }}
+}}
 export class {edge}GraphFromMany {{
   static readonly queryId = "{edge}GraphFromMany" as const;
   static readonly queryItemType = "{edge}" as const;
@@ -226,6 +235,15 @@ export class {edge}GraphToId {{
   readonly query: {{ endpoint: {edge}BAddress; id: __MykoGraph{edge}Id }};
   declare readonly $res: () => {edge}[];
   constructor(endpoint: {edge}BAddress, id: __MykoGraph{edge}Id) {{ this.query = {{ endpoint, id }}; }}
+}}
+export class {edge}GraphToIds {{
+  static readonly queryId = "{edge}GraphToIds" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphToIds" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ endpoint: {edge}BAddress; ids: __MykoGraph{edge}Id[] }};
+  declare readonly $res: () => {edge}[];
+  constructor(endpoint: {edge}BAddress, ids: __MykoGraph{edge}Id[]) {{ this.query = {{ endpoint, ids: [...new Set(ids)].sort() }}; }}
 }}
 export class {edge}GraphToMany {{
   static readonly queryId = "{edge}GraphToMany" as const;
@@ -254,6 +272,15 @@ export class {edge}GraphBetweenId {{
   declare readonly $res: () => {edge}[];
   constructor(a: {edge}AAddress, b: {edge}BAddress, id: __MykoGraph{edge}Id) {{ this.query = {{ a, b, id }}; }}
 }}
+export class {edge}GraphBetweenIds {{
+  static readonly queryId = "{edge}GraphBetweenIds" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphBetweenIds" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ a: {edge}AAddress; b: {edge}BAddress; ids: __MykoGraph{edge}Id[] }};
+  declare readonly $res: () => {edge}[];
+  constructor(a: {edge}AAddress, b: {edge}BAddress, ids: __MykoGraph{edge}Id[]) {{ this.query = {{ a, b, ids: [...new Set(ids)].sort() }}; }}
+}}
 {targets_from}
 {sources_to}
 {neighbors}
@@ -261,12 +288,15 @@ export const {edge}Graph = {{
   $schema: graphSchema.edges[{edge_literal}],
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
   fromId: (endpoint: {edge}AAddress, id: __MykoGraph{edge}Id) => new {edge}GraphFromId(endpoint, id),
+  fromIds: (endpoint: {edge}AAddress, ids: __MykoGraph{edge}Id[]) => new {edge}GraphFromIds(endpoint, ids),
   fromMany: (endpoints: {edge}AAddress[]) => new {edge}GraphFromMany(endpoints),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
   toId: (endpoint: {edge}BAddress, id: __MykoGraph{edge}Id) => new {edge}GraphToId(endpoint, id),
+  toIds: (endpoint: {edge}BAddress, ids: __MykoGraph{edge}Id[]) => new {edge}GraphToIds(endpoint, ids),
   toMany: (endpoints: {edge}BAddress[]) => new {edge}GraphToMany(endpoints),
   between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
   betweenId: (a: {edge}AAddress, b: {edge}BAddress, id: __MykoGraph{edge}Id) => new {edge}GraphBetweenId(a, b, id),
+  betweenIds: (a: {edge}AAddress, b: {edge}BAddress, ids: __MykoGraph{edge}Id[]) => new {edge}GraphBetweenIds(a, b, ids),
 {targets_from_helper}{sources_to_helper}{neighbors_helper}  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
   countTo: (endpoint: {edge}BAddress) => new {edge}GraphCountTo({{ endpoint }}),
   countBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphCountBetween({{ a, b }}),
@@ -1293,6 +1323,7 @@ mod tests {
         assert!(rendered.contains("EntityRef as __MykoGraphEntityRef"));
         assert!(rendered.contains("export class TagAssignmentGraphFrom"));
         assert!(rendered.contains("export class TagAssignmentGraphFromId"));
+        assert!(rendered.contains("export class TagAssignmentGraphFromIds"));
         assert!(rendered.contains("export class TagAssignmentGraphFromMany"));
         assert!(rendered.contains("queryId = \"TagAssignmentGraphBetween\""));
         assert!(rendered.contains("queryId = \"TagAssignmentGraphBetweenId\""));
@@ -1305,8 +1336,12 @@ mod tests {
         );
         assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("fromId: (endpoint: TagAssignmentAAddress"));
+        assert!(rendered.contains("fromIds: (endpoint: TagAssignmentAAddress"));
         assert!(rendered.contains("toId: (endpoint: TagAssignmentBAddress"));
+        assert!(rendered.contains("toIds: (endpoint: TagAssignmentBAddress"));
         assert!(rendered.contains("betweenId: (a: TagAssignmentAAddress"));
+        assert!(rendered.contains("betweenIds: (a: TagAssignmentAAddress"));
+        assert!(rendered.contains("ids: [...new Set(ids)].sort()"));
         assert!(rendered.contains("fromMany: (endpoints: TagAssignmentAAddress[])"));
         assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
         assert!(rendered.contains("$schema: graphSchema.edges[\"TagAssignment\"]"));

@@ -1862,6 +1862,14 @@ at a 10,000-edge endpoint. A development-machine run on 2026-08-15 measured
 query: about 83.5× faster, with retained result cardinality reduced from 10,000
 edges to at most one.
 
+Selected sets use the same design through generated `fromIds`, `toIds`, and
+`betweenIds` queries and bound `edgesByIds(ids)` helpers. IDs are sorted and
+deduplicated at construction, one query owns all requested reactive key cells,
+and the remaining scope predicate does not rescan the ID list for every item.
+At the same 10,000-edge endpoint, selecting 100 IDs measured 320.49 µs versus
+1.4643 ms for broad endpoint hydration: about 4.57× faster while retaining 100×
+fewer rows. Work scales with the selected set rather than endpoint degree.
+
 ### 21.3 Batched endpoint watches and client-bound graph scopes
 
 List and matrix UIs commonly watch the same relationship at hundreds of source
@@ -2095,6 +2103,10 @@ The graph-edge feature is acceptable when:
     direct-key server query when available, retain endpoint/pair filtering and
     undirected semantics, and safely fall back to broad-query selection for
     descriptors generated before the exact helpers existed.
+22. Generated Rust and TypeScript graph clients can watch a canonicalized set
+    of edge IDs inside one endpoint or pair scope with one ordinary query and
+    one wire subscription, hydrating only requested keys and filtering scope
+    without an ID-list scan per selected item.
 
 ## 24. Decision
 

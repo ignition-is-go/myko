@@ -34,6 +34,23 @@ type MethodFirstArg<G, K extends PropertyKey> = MethodArgs<G, K> extends [
   ? A
   : never
 
+type MethodSecondArg<G, K extends PropertyKey> = MethodArgs<G, K> extends [
+  unknown,
+  infer B,
+  ...unknown[],
+]
+  ? B
+  : never
+
+type MethodThirdArg<G, K extends PropertyKey> = MethodArgs<G, K> extends [
+  unknown,
+  unknown,
+  infer C,
+  ...unknown[],
+]
+  ? C
+  : never
+
 type QueryEntity<Q> = Q extends Query<infer T>
   ? T extends { id: string }
     ? T
@@ -114,6 +131,7 @@ type RelatedScope<G, K extends PropertyKey, Name extends string> = K extends key
 type EndpointScope<
   G,
   EdgeKey extends PropertyKey,
+  ExactIdsKey extends PropertyKey,
   RelatedKey extends PropertyKey,
   RelatedName extends string,
   CountKey extends PropertyKey,
@@ -133,7 +151,15 @@ type EndpointScope<
     keyOf: (edge: QueryEntity<MethodResult<G, EdgeKey>>) => K,
     options?: QueryWatchOptions,
   ) => QueryIndexState<MethodResult<G, EdgeKey>, K>
-} & (CountKey extends keyof G
+} & (ExactIdsKey extends keyof G
+  ? {
+      edgesByIds: (
+        ids: MethodSecondArg<G, ExactIdsKey>,
+        options?: QueryWatchOptions,
+      ) => QueryState<MethodResult<G, ExactIdsKey>>
+    }
+  : object) &
+  (CountKey extends keyof G
   ? { count: () => ReportState<MethodResult<G, CountKey>> }
   : object) &
   RelatedScope<G, RelatedKey, RelatedName>
@@ -152,16 +178,23 @@ type BetweenScope<G> = {
   ) => WindowedGraphQuery<MethodResult<G, 'between'>>
   count: () => ReportState<MethodResult<G, 'countBetween'>>
   exists: () => ReportState<MethodResult<G, 'existsBetween'>>
-}
+} & ('betweenIds' extends keyof G
+  ? {
+      edgesByIds: (
+        ids: MethodThirdArg<G, 'betweenIds'>,
+        options?: QueryWatchOptions,
+      ) => QueryState<MethodResult<G, 'betweenIds'>>
+    }
+  : object)
 
 type BatchScopes<G> = 'fromMany' extends keyof G
   ? {
       fromMany: (
         endpoints: MethodFirstArg<G, 'fromMany'>,
-      ) => EndpointScope<G, 'fromMany', 'targetsFromMany', 'targets', never>
+      ) => EndpointScope<G, 'fromMany', never, 'targetsFromMany', 'targets', never>
       toMany: (
         endpoints: MethodFirstArg<G, 'toMany'>,
-      ) => EndpointScope<G, 'toMany', 'sourcesToMany', 'sources', never>
+      ) => EndpointScope<G, 'toMany', never, 'sourcesToMany', 'sources', never>
     }
   : object
 
@@ -170,10 +203,10 @@ export type BoundGraph<G> = {
   readonly schema: GraphDescriptorSchema | null
   from: (
     endpoint: MethodFirstArg<G, 'from'>,
-  ) => EndpointScope<G, 'from', 'targetsFrom', 'targets', 'countFrom'>
+  ) => EndpointScope<G, 'from', 'fromIds', 'targetsFrom', 'targets', 'countFrom'>
   to: (
     endpoint: MethodFirstArg<G, 'to'>,
-  ) => EndpointScope<G, 'to', 'sourcesTo', 'sources', 'countTo'>
+  ) => EndpointScope<G, 'to', 'toIds', 'sourcesTo', 'sources', 'countTo'>
   between: (
     a: MethodFirstArg<G, 'between'>,
     b: MethodArgs<G, 'between'> extends [unknown, infer B, ...unknown[]]
@@ -376,6 +409,7 @@ export function bindGraph<G extends object>(
   const endpoint = (
     edgeKey: string,
     exactEdgeKey: string | null,
+    exactIdsKey: string | null,
     relatedKey: string,
     relatedName: 'targets' | 'sources',
     countKey: string | null,
@@ -406,6 +440,10 @@ export function bindGraph<G extends object>(
         keyOf: (item: T) => K,
         options?: QueryWatchOptions,
       ) => queryIndex(edgeKey, args, keyOf, options),
+    }
+    if (exactIdsKey && exactIdsKey in graph) {
+      scope.edgesByIds = (ids: unknown, options?: QueryWatchOptions) =>
+        queryState(exactIdsKey, [...args, ids], options)
     }
     if (relatedKey in graph) {
       const capitalizedName =
@@ -438,6 +476,7 @@ export function bindGraph<G extends object>(
       endpoint(
         'from',
         'fromId',
+        'fromIds',
         'targetsFrom',
         'targets',
         'countFrom',
@@ -448,6 +487,7 @@ export function bindGraph<G extends object>(
       endpoint(
         'to',
         'toId',
+        'toIds',
         'sourcesTo',
         'sources',
         'countTo',
@@ -474,6 +514,12 @@ export function bindGraph<G extends object>(
         windowed('between', [a, b], window),
       count: () => reportState('countBetween', [a, b]),
       exists: () => reportState('existsBetween', [a, b]),
+      ...('betweenIds' in graph
+        ? {
+            edgesByIds: (ids: unknown, options?: QueryWatchOptions) =>
+              queryState('betweenIds', [a, b, ids], options),
+          }
+        : {}),
     }),
     connect: (edge: unknown, options?: CommandOptions) =>
       command('connect', [edge], options),
@@ -491,6 +537,7 @@ export function bindGraph<G extends object>(
       endpoint(
         'fromMany',
         null,
+        null,
         'targetsFromMany',
         'targets',
         null,
@@ -500,6 +547,7 @@ export function bindGraph<G extends object>(
     bound.toMany = (values: unknown) =>
       endpoint(
         'toMany',
+        null,
         null,
         'sourcesToMany',
         'sources',

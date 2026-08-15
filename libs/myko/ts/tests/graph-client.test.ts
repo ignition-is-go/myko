@@ -54,10 +54,16 @@ const exactGraph = {
   ...graph,
   fromId: (endpoint: string, id: string) =>
     query<Edge>('EdgeGraphFromId', { endpoint, id }),
+  fromIds: (endpoint: string, ids: string[]) =>
+    query<Edge>('EdgeGraphFromIds', { endpoint, ids }),
   toId: (endpoint: string, id: string) =>
     query<Edge>('EdgeGraphToId', { endpoint, id }),
+  toIds: (endpoint: string, ids: string[]) =>
+    query<Edge>('EdgeGraphToIds', { endpoint, ids }),
   betweenId: (a: string, b: string, id: string) =>
     query<Edge>('EdgeGraphBetweenId', { a, b, id }),
+  betweenIds: (a: string, b: string, ids: string[]) =>
+    query<Edge>('EdgeGraphBetweenIds', { a, b, ids }),
 } as const
 
 const eagerGraph = {
@@ -259,6 +265,46 @@ describe('bindGraph', () => {
       'EdgeGraphFrom',
       'EdgeGraphTo',
       'EdgeGraphBetween',
+    ])
+  })
+
+  test('routes selected edge batches through exact scoped queries', async () => {
+    const calls: Array<{ id: string; payload: unknown }> = []
+    const state = new LiveCollection<Edge>()
+    const client = {
+      watchQueryState(value: Query<unknown>) {
+        calls.push({ id: value.queryId, payload: value.query })
+        return of(state)
+      },
+    } as unknown as MykoClient
+    const bound = bindGraph(client, exactGraph)
+    const ids = ['edge-c', 'edge-a']
+
+    const from: Observable<LiveCollection<Edge>> = bound
+      .from('node-a')
+      .edgesByIds(ids)
+    const to: Observable<LiveCollection<Edge>> = bound
+      .to('node-b')
+      .edgesByIds(ids)
+    const between: Observable<LiveCollection<Edge>> = bound
+      .between('node-a', 'node-b')
+      .edgesByIds(ids)
+    expect(await firstValueFrom(from)).toBe(state)
+    expect(await firstValueFrom(to)).toBe(state)
+    expect(await firstValueFrom(between)).toBe(state)
+    expect(calls).toEqual([
+      {
+        id: 'EdgeGraphFromIds',
+        payload: { endpoint: 'node-a', ids },
+      },
+      {
+        id: 'EdgeGraphToIds',
+        payload: { endpoint: 'node-b', ids },
+      },
+      {
+        id: 'EdgeGraphBetweenIds',
+        payload: { a: 'node-a', b: 'node-b', ids },
+      },
     ])
   })
 
