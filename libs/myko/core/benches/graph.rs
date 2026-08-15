@@ -37,6 +37,7 @@ use myko::{
 
 const N: usize = 1_000;
 type BenchGraphFromQuery = <BenchGraphEdge as GraphClientQueries>::FromQuery;
+type BenchGraphFromIdQuery = <BenchGraphEdge as GraphClientExactQueries>::FromIdQuery;
 type BenchGraphFromManyQuery = <BenchGraphEdge as GraphClientBatchQueries>::FromManyQuery;
 type BenchGraphCountFromReport = <BenchGraphEdge as GraphClientAggregates>::CountFromReport;
 
@@ -749,6 +750,53 @@ fn bench_high_degree_window_initialization(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let context = seeded(edge_count);
+    let from = BenchGraphNodeId::from("node-0");
+    let edge_id = BenchGraphEdgeId::from("edge-9999");
+    let request = Arc::new(RequestContext::from_client(
+        "graph-exact-edge-benchmark".into(),
+        "graph-exact-edge-benchmark-client".into(),
+        context.host_id,
+    ));
+    let broad_query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_query(&from),
+        request.tx.clone(),
+    ));
+    let exact_query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_id_query(&from, &edge_id),
+        request.tx.clone(),
+    ));
+    let server = Arc::new(context.clone());
+    let mut group = c.benchmark_group("graph/high_degree_exact_edge_initialization");
+    group.bench_function("hydrate_endpoint_then_select", |b| {
+        b.iter(|| {
+            let watched = <BenchGraphFromQuery as QueryFactory>::cell_factory(
+                broad_query.clone(),
+                context.registry.clone(),
+                request.clone(),
+                Some(server.clone()),
+            )
+            .expect("materialized endpoint query");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("direct_key_scoped_query", |b| {
+        b.iter(|| {
+            let watched = <BenchGraphFromIdQuery as QueryFactory>::cell_factory(
+                exact_query.clone(),
+                context.registry.clone(),
+                request.clone(),
+                Some(server.clone()),
+            )
+            .expect("direct-key graph query");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.finish();
+}
+
 fn bench_high_degree_window_update_churn(c: &mut Criterion) {
     let edge_count = 10_000_usize;
     let target_id = BenchGraphEdgeId::from("edge-9999");
@@ -1208,6 +1256,7 @@ criterion_group!(
     bench_dense_undirected_neighbor_initialization,
     bench_sparse_undirected_neighbor_initialization,
     bench_high_degree_window_initialization,
+    bench_high_degree_exact_edge_initialization,
     bench_high_degree_window_update_churn,
     bench_related_window_update_churn,
     bench_watch_route_fanout,
