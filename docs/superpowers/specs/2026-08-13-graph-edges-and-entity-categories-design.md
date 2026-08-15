@@ -1220,10 +1220,32 @@ idempotency strategy for new edge types, not the uniqueness authority.
 
 ### 13.4 Application commands
 
-Myko does not generate a universal `Connect<Edge>` command because it cannot
-construct an arbitrary payload-bearing edge. Applications construct and
-validate typed edge items through normal commands. Myko generates lookup and
-disconnect helpers, which require no payload factory.
+Myko cannot construct an arbitrary payload-bearing edge, so applications still
+build the typed edge value. `#[myko_edge]` generates ordinary command-protocol
+wrappers around that value: authoritative connect/upsert, same-type batch
+connect, idempotent ensure for unique pairs, and disconnect by typed ID. The
+disconnect operations reuse the existing `#[myko_item]` delete commands.
+
+```rust
+client.connect_graph(&assignment);
+client.connect_graph_batch(&assignments);
+client.ensure_graph(&assignment);
+client.disconnect_graph::<TagAssignment>(&assignment_id);
+```
+
+```typescript
+client.sendCommand(TagAssignmentGraph.connect(assignment));
+client.sendCommand(TagAssignmentGraph.connectMany(assignments));
+client.sendCommand(TagAssignmentGraph.ensure(assignment));
+client.sendCommand(TagAssignmentGraph.disconnect(assignmentId));
+```
+
+These helpers do not add a graph mutation wire format. They inherit ordinary
+command completion, transaction IDs, reconnect queuing, validation, causal-loop
+budgets, and the reduce → graph projection → persistence ordering. `ensure`
+requires `PairPolicy::Unique`; it uses the indexed pair reservation and repeats
+the scope-aware lookup after a concurrent uniqueness conflict, so simultaneous
+callers converge on the winning edge ID rather than requiring client retries.
 
 Runtime-dependent cardinality remains in the typed application validator; Myko
 cannot infer it solely from static schema metadata.
@@ -1702,6 +1724,7 @@ warmup, 200 ms measurement) produced:
 | 1,000-edge high-degree lookup returning 1,000 edges | 34.95–35.09 µs scan | 30.20–30.32 µs eager | about 1.16× faster; output materialization dominates |
 | 10,000-edge sparse lookup returning 10 edges | 424.2–425.9 µs scan | 373.0–374.5 ns eager | about 1,137× faster |
 | exact-pair existence among 10,000 edges | 426.8–429.0 µs scan | 104.7–105.3 ns pair projection | about 4,075× faster; ID lookup is 118.8–119.2 ns and typed materialization is 154.3–155.4 ns |
+| idempotent ensure of an existing unique pair | 154.73–155.18 ns raw typed materialization | 190.04–190.91 ns generated command handler | about 35 ns over the raw lookup while preserving scope, returning the winning typed ID, and avoiding a write; excludes network serialization |
 | sparse endpoint-delete planning among 10,000 edges with 10 incident | 419.3–421.3 µs conservative typed scan | 828.8–833.3 ns eager incidence | about 506× faster; the baseline scans only the populated store and is cheaper than the replaced dynamic all-registration path |
 | 1,000-edge batch write | 309.1–310.2 µs plain | 1.815–1.823 ms projected | about 5.9× write cost for validation, causal hashing, and four maintained projections; inline singleton pair IDs improved the projected path by about 1.1%, within the benchmark's noise threshold |
 | Sparse reactive watch initialization, 10,000 edges / 1,000 sources | 447.68–451.34 µs canonical select | 20.411–20.561 µs typed index-seeded; 10.448–10.536 µs ordinary query factory | about 22× faster for the typed in-process watch and 43× for the erased server query path; all remain live incremental maps |

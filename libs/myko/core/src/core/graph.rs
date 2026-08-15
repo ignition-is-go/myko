@@ -600,6 +600,46 @@ where
     ) -> Self::BetweenQuery;
 }
 
+/// Generated command types for authoritative graph mutations.
+///
+/// These commands use Myko's ordinary command protocol, so callers receive the
+/// existing validation errors, reconnect queuing, transaction IDs, and command
+/// completion state without a graph-specific mutation channel.
+pub trait GraphClientMutations: GraphEdge + crate::common::with_id::WithTypedId {
+    type ConnectCommand: crate::command::CommandParams<Result = ()>;
+    type ConnectManyCommand: crate::command::CommandParams<Result = usize>;
+    type EnsureResult: serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static;
+    type EnsureCommand: crate::command::CommandParams<Result = Self::EnsureResult>;
+    type DisconnectResult: serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static;
+    type DisconnectCommand: crate::command::CommandParams<Result = Self::DisconnectResult>;
+    type DisconnectManyResult: serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static;
+    type DisconnectManyCommand: crate::command::CommandParams<Result = Self::DisconnectManyResult>;
+
+    fn connect_command(edge: &Self) -> Self::ConnectCommand;
+    fn connect_many_command(edges: &[Self]) -> Self::ConnectManyCommand;
+    fn ensure_command(edge: &Self) -> Self::EnsureCommand;
+    fn disconnect_command(id: &Self::Id) -> Self::DisconnectCommand;
+    fn disconnect_many_command(ids: &[Self::Id]) -> Self::DisconnectManyCommand;
+}
+
 /// Endpoint-specific projection policy emitted separately from the legacy
 /// edge registration so existing manual `EdgeRegistration` literals remain
 /// source-compatible.
@@ -2791,7 +2831,7 @@ mod tests {
             const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
         }
     }
-    use assignment::{TagAssignment, TagAssignmentId};
+    use assignment::{ConnectTagAssignment, EnsureTagAssignment, TagAssignment, TagAssignmentId};
 
     mod scoped_assignment {
         use super::{Article, ArticleId, GraphScope, GraphScopeId, Tag, TagId};
@@ -2820,7 +2860,9 @@ mod tests {
             const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
         }
     }
-    use scoped_assignment::{ScopedTagAssignment, ScopedTagAssignmentId};
+    use scoped_assignment::{
+        EnsureScopedTagAssignment, ScopedTagAssignment, ScopedTagAssignmentId,
+    };
 
     mod restricted_edge {
         use super::{Tag, TagId, TagTarget};
@@ -3207,6 +3249,109 @@ mod tests {
     }
 
     #[test]
+    fn generated_graph_mutations_are_authoritative_and_idempotent() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "mutations".into(),
+            id: TagId::from("tag-mutations"),
+        };
+        let article = Article {
+            title: "Mutation helpers".into(),
+            id: ArticleId::from("article-mutations"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+
+        let command_context = |command_id: &str| {
+            let request = Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-mutation-test".into(),
+                context.host_id,
+            ));
+            CommandContext::new(command_id.into(), request, Arc::new(context.clone()))
+        };
+        let edge = TagAssignment {
+            tag_id: tag.id.clone(),
+            target: EntityRef::from(&article),
+            id: TagAssignmentId::from("edge-mutations"),
+        };
+        ConnectTagAssignment { edge: edge.clone() }
+            .execute(command_context("ConnectTagAssignment"))
+            .expect("connect edge");
+
+        let competing = TagAssignment {
+            id: TagAssignmentId::from("edge-competing"),
+            ..edge.clone()
+        };
+        let ensured = EnsureTagAssignment { edge: competing }
+            .execute(command_context("EnsureTagAssignment"))
+            .expect("ensure existing edge");
+        assert_eq!(ensured.id, edge.id);
+        assert!(!ensured.created);
+        assert_eq!(
+            context
+                .edges::<TagAssignment>()
+                .count_between(&tag.id, &EntityRef::from(&article))
+                .expect("count unique pair"),
+            1
+        );
+
+        let concurrent_tag = Tag {
+            name: "concurrent mutations".into(),
+            id: TagId::from("tag-mutations-concurrent"),
+        };
+        let concurrent_article = Article {
+            title: "Concurrent mutation helpers".into(),
+            id: ArticleId::from("article-mutations-concurrent"),
+        };
+        assert!(context.set(&concurrent_tag).is_ok());
+        assert!(context.set(&concurrent_article).is_ok());
+        let context = Arc::new(context);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let joins = (0..2)
+            .map(|writer| {
+                let context = context.clone();
+                let barrier = barrier.clone();
+                let tag_id = concurrent_tag.id.clone();
+                let target = EntityRef::from(&concurrent_article);
+                std::thread::spawn(move || {
+                    let request = Arc::new(crate::request::RequestContext::from_client(
+                        Uuid::new_v4().to_string().into(),
+                        format!("graph-ensure-writer-{writer}").into(),
+                        context.host_id,
+                    ));
+                    let command_context =
+                        CommandContext::new("EnsureTagAssignment".into(), request, context.clone());
+                    barrier.wait();
+                    EnsureTagAssignment {
+                        edge: TagAssignment {
+                            tag_id,
+                            target,
+                            id: TagAssignmentId::from(format!("ensure-winner-{writer}")),
+                        },
+                    }
+                    .execute(command_context)
+                    .expect("concurrent ensure")
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = joins
+            .into_iter()
+            .map(|join| join.join().expect("ensure writer"))
+            .collect::<Vec<_>>();
+        assert_eq!(results[0].id, results[1].id);
+        assert_eq!(results.iter().filter(|result| result.created).count(), 1);
+        assert_eq!(
+            context
+                .edges::<TagAssignment>()
+                .count_between(&concurrent_tag.id, &EntityRef::from(&concurrent_article))
+                .expect("count concurrently ensured pair"),
+            1
+        );
+    }
+
+    #[test]
     fn edge_extraction_preserves_the_ordinary_item_shape() {
         let edge_item = TagAssignment {
             tag_id: TagId::from("tag-1"),
@@ -3285,6 +3430,26 @@ mod tests {
             },
         ];
         assert!(context.batch_set(&assignments).is_ok());
+
+        let ensure_context = CommandContext::new(
+            "EnsureScopedTagAssignment".into(),
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "scoped-graph-mutation-test".into(),
+                context.host_id,
+            )),
+            Arc::new(context.clone()),
+        );
+        let ensured = EnsureScopedTagAssignment {
+            edge: ScopedTagAssignment {
+                id: ScopedTagAssignmentId::from("scoped-edge-competing"),
+                ..assignments[0].clone()
+            },
+        }
+        .execute(ensure_context)
+        .expect("ensure within candidate scope");
+        assert_eq!(ensured.id, assignments[0].id);
+        assert!(!ensured.created);
 
         let query = context.edges::<ScopedTagAssignment>();
         assert_eq!(

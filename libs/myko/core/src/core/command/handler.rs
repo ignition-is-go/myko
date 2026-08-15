@@ -116,6 +116,41 @@ impl CommandContext {
                 .clone())
         }
     }
+
+    /// Look up the existing edge occupying the candidate's unique pair and
+    /// scope. Used by generated idempotent graph commands.
+    #[doc(hidden)]
+    pub fn graph_unique_edge<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        scope: Option<&<E::Scope as crate::graph::EdgeScope>::Value>,
+    ) -> Result<Option<Arc<E>>, CommandError>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        if E::PAIR_POLICY != crate::graph::PairPolicy::Unique {
+            return Err(CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                format!("{} does not declare unique pairs", E::ENTITY_NAME_STATIC),
+            ));
+        }
+
+        let query = self.server_ctx.edges::<E>();
+        let result = scope.map_or_else(
+            || query.one_between(a, b),
+            |scope| query.one_between_in_scope(scope, a, b),
+        );
+        result.map_err(|error| {
+            CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                error.to_string(),
+            )
+        })
+    }
 }
 
 // Capability impls. The command context is the only one that carries

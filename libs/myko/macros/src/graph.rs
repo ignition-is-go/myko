@@ -52,6 +52,158 @@ fn graph_query_common(
     }
 }
 
+#[allow(clippy::too_many_lines)]
+fn graph_mutation_tokens(
+    ctx: &crate::DeriveCtx,
+    edge_name: &syn::Ident,
+    edge_type: &Type,
+) -> TokenStream {
+    let krate = &ctx.krate;
+    let serde_path = &ctx.serde_path;
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let edge_id = format_ident!("{}Id", edge_name);
+    let connect = format_ident!("Connect{}", edge_name);
+    let connect_many = format_ident!("Connect{}s", edge_name);
+    let ensure = format_ident!("Ensure{}", edge_name);
+    let ensure_result = format_ident!("Ensure{}Result", edge_name);
+    let delete = format_ident!("Delete{}", edge_name);
+    let delete_result = format_ident!("Delete{}Result", edge_name);
+    let delete_many = format_ident!("Delete{}s", edge_name);
+    let delete_many_result = format_ident!("Delete{}sResult", edge_name);
+
+    quote! {
+        /// Authoritative graph upsert using Myko's ordinary command protocol.
+        #[#krate::myko_command]
+        pub struct #connect {
+            pub edge: #edge_type,
+        }
+
+        impl #krate::command::CommandHandler for #connect {
+            fn execute(
+                self,
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<(), #krate::prelude::CommandError> {
+                #krate::prelude::EventPublishing::emit_set(&ctx, &self.edge)
+            }
+        }
+
+        /// Bulk authoritative graph upsert using one reducer batch.
+        #[#krate::myko_command(usize)]
+        pub struct #connect_many {
+            pub edges: Vec<#edge_type>,
+        }
+
+        impl #krate::command::CommandHandler for #connect_many {
+            fn execute(
+                self,
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<usize, #krate::prelude::CommandError> {
+                let affected = self.edges.len();
+                #krate::prelude::EventPublishing::emit_set_batch(&ctx, &self.edges)?;
+                Ok(affected)
+            }
+        }
+
+        #[derive(
+            Clone,
+            PartialEq,
+            Eq,
+            Debug,
+            #serde_path::Serialize,
+            #serde_path::Deserialize,
+            #krate::TS,
+        )]
+        #[ts(crate = "myko::ts_rs")]
+        #serde_rename_attr
+        pub struct #ensure_result {
+            pub id: #edge_id,
+            pub created: bool,
+        }
+        #krate::register_typegen_type!(#ensure_result);
+
+        /// Idempotently establish a unique edge pair.
+        ///
+        /// If another command wins the unique-pair reservation concurrently,
+        /// this returns that edge instead of surfacing a duplicate error.
+        #[#krate::myko_command(#ensure_result)]
+        pub struct #ensure {
+            pub edge: #edge_type,
+        }
+
+        impl #krate::command::CommandHandler for #ensure {
+            fn execute(
+                self,
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<#ensure_result, #krate::prelude::CommandError> {
+                let (a, b) = <#edge_type as #krate::graph::GraphEdge>::ends(&self.edge);
+                let scope = <#edge_type as #krate::graph::GraphEdge>::scope(&self.edge);
+                if let Some(existing) = ctx.graph_unique_edge::<#edge_type>(
+                    &a,
+                    &b,
+                    scope.as_ref(),
+                )? {
+                    return Ok(#ensure_result {
+                        id: #krate::prelude::WithTypedId::typed_id(existing.as_ref()),
+                        created: false,
+                    });
+                }
+
+                match #krate::prelude::EventPublishing::emit_set(&ctx, &self.edge) {
+                    Ok(()) => Ok(#ensure_result {
+                        id: #krate::prelude::WithTypedId::typed_id(&self.edge),
+                        created: true,
+                    }),
+                    Err(error) => {
+                        if let Ok(Some(existing)) = ctx.graph_unique_edge::<#edge_type>(
+                            &a,
+                            &b,
+                            scope.as_ref(),
+                        ) {
+                            Ok(#ensure_result {
+                                id: #krate::prelude::WithTypedId::typed_id(existing.as_ref()),
+                                created: false,
+                            })
+                        } else {
+                            Err(error)
+                        }
+                    }
+                }
+            }
+        }
+
+        impl #krate::graph::GraphClientMutations for #edge_type {
+            type ConnectCommand = #connect;
+            type ConnectManyCommand = #connect_many;
+            type EnsureResult = #ensure_result;
+            type EnsureCommand = #ensure;
+            type DisconnectResult = #delete_result;
+            type DisconnectCommand = #delete;
+            type DisconnectManyResult = #delete_many_result;
+            type DisconnectManyCommand = #delete_many;
+
+            fn connect_command(edge: &Self) -> Self::ConnectCommand {
+                #connect { edge: edge.clone() }
+            }
+
+            fn connect_many_command(edges: &[Self]) -> Self::ConnectManyCommand {
+                #connect_many { edges: edges.to_vec() }
+            }
+
+            fn ensure_command(edge: &Self) -> Self::EnsureCommand {
+                #ensure { edge: edge.clone() }
+            }
+
+            fn disconnect_command(id: &Self::Id) -> Self::DisconnectCommand {
+                #delete { id: id.clone() }
+            }
+
+            fn disconnect_many_command(ids: &[Self::Id]) -> Self::DisconnectManyCommand {
+                #delete_many { ids: ids.to_vec() }
+            }
+        }
+    }
+}
+
 pub fn category(input: &ItemStruct) -> TokenStream {
     let krate = myko_path();
     let name = &input.ident;
@@ -326,12 +478,18 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
             }
         }
     });
+    let graph_mutations = edge_name
+        .as_ref()
+        .map_or_else(TokenStream::new, |edge_name| {
+            graph_mutation_tokens(&ctx, edge_name, &edge_type)
+        });
 
     quote! {
         #input
 
         #address_aliases
         #graph_queries
+        #graph_mutations
 
         #krate::submit! {
             #krate::graph::EdgeRegistration {

@@ -19,7 +19,7 @@ use hyphae::SwitchMapExt;
 
 use crate::prelude::*;
 
-pub use graph_edge::{BenchGraphEdge, BenchGraphEdgeId};
+pub use graph_edge::{BenchGraphEdge, BenchGraphEdgeId, EnsureBenchGraphEdge};
 pub use graph_edge_forward::{BenchForwardGraphEdge, BenchForwardGraphEdgeId};
 pub use graph_node::{BenchGraphNode, BenchGraphNodeId};
 

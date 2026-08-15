@@ -99,6 +99,11 @@ export const {edge}Graph = {{
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
   between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
+  connect: (edge: {edge}) => new Connect{edge}({{ edge }}),
+  connectMany: (edges: {edge}[]) => new Connect{edge}s({{ edges }}),
+  ensure: (edge: {edge}) => new Ensure{edge}({{ edge }}),
+  disconnect: (id: __MykoGraph{edge}Id) => new Delete{edge}({{ id }}),
+  disconnectMany: (ids: __MykoGraph{edge}Id[]) => new Delete{edge}s({{ ids }}),
 }} as const;"#,
         edge = edge.edge_type,
     )
@@ -208,6 +213,12 @@ fn generate_graph_endpoint_imports(catalog: &GraphSchemaCatalog) -> String {
             )
         })
         .collect::<Vec<_>>();
+    endpoint_imports.extend(catalog.edges.iter().map(|edge| {
+        format!(
+            "import type {{ {edge}Id as __MykoGraph{edge}Id }} from \"./{edge}Id\";",
+            edge = edge.edge_type,
+        )
+    }));
     if uses_entity_ref {
         endpoint_imports.push(
             "import type { EntityRef as __MykoGraphEntityRef } from \"./EntityRef\";".to_string(),
@@ -1104,6 +1115,13 @@ mod tests {
         assert!(rendered.contains("EntityRef as __MykoGraphEntityRef"));
         assert!(rendered.contains("export class TagAssignmentGraphFrom"));
         assert!(rendered.contains("queryId = \"TagAssignmentGraphBetween\""));
+        assert!(rendered.contains("connect: (edge: TagAssignment) => new ConnectTagAssignment"));
+        assert!(rendered.contains("ensure: (edge: TagAssignment) => new EnsureTagAssignment"));
+        assert!(
+            rendered.contains(
+                "disconnect: (id: __MykoGraphTagAssignmentId) => new DeleteTagAssignment"
+            )
+        );
         assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
         assert!(rendered.contains("pairPolicy"));

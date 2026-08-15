@@ -14,7 +14,7 @@ use hyphae::{MapQuery, SelectExt};
 use myko::{
     bench_entities::{
         BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
-        BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId,
+        BenchGraphNode, BenchGraphNodeId, BenchItem, BenchItemId, EnsureBenchGraphEdge,
     },
     core::item::downcast_any_item_arc,
     prelude::*,
@@ -352,6 +352,22 @@ fn bench_exact_pair_lookup(c: &mut Criterion) {
     let from = BenchGraphNodeId::from("node-0");
     let to = BenchGraphNodeId::from(format!("node-{pair_n}"));
     let store = context.registry.get_or_create("BenchGraphEdge");
+    let ensure = EnsureBenchGraphEdge {
+        edge: BenchGraphEdge {
+            id: BenchGraphEdgeId::from("competing-edge"),
+            from_id: from.clone(),
+            to_id: to.clone(),
+        },
+    };
+    let ensure_context = CommandContext::new(
+        "EnsureBenchGraphEdge".into(),
+        Arc::new(RequestContext::from_client(
+            "graph-ensure-benchmark".into(),
+            "graph-benchmark-client".into(),
+            context.host_id,
+        )),
+        Arc::new(context.clone()),
+    );
     let mut group = c.benchmark_group("graph/exact_pair_lookup");
 
     group.bench_function("canonical_full_scan_exists", |b| {
@@ -389,6 +405,16 @@ fn bench_exact_pair_lookup(c: &mut Criterion) {
                     .edges::<BenchGraphEdge>()
                     .exists_between(&from, &to)
                     .expect("pair existence lookup"),
+            )
+        });
+    });
+    group.bench_function("generated_ensure_existing", |b| {
+        b.iter(|| {
+            black_box(
+                ensure
+                    .clone()
+                    .execute(ensure_context.clone())
+                    .expect("ensure existing pair"),
             )
         });
     });

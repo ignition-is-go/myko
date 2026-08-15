@@ -60,6 +60,68 @@ impl<T: hyphae::CellValue> QueryMapWatch<T> {
 }
 
 impl MykoClient {
+    /// Authoritatively create or replace an edge through the ordinary command
+    /// protocol.
+    pub fn connect_graph<E>(
+        &self,
+        edge: &E,
+    ) -> hyphae::Cell<Option<Result<(), String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientMutations,
+    {
+        self.send_command(&E::connect_command(edge))
+    }
+
+    /// Authoritatively create or replace a batch of same-type edges in one
+    /// bulk mutation.
+    pub fn connect_graph_batch<E>(
+        &self,
+        edges: &[E],
+    ) -> hyphae::Cell<Option<Result<usize, String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientMutations,
+    {
+        self.send_command(&E::connect_many_command(edges))
+    }
+
+    /// Ensure a unique edge pair exists without replacing an existing edge.
+    ///
+    /// The generated server command retries the indexed pair lookup after a
+    /// concurrent uniqueness conflict, making simultaneous ensures converge on
+    /// the winning edge ID.
+    pub fn ensure_graph<E>(
+        &self,
+        edge: &E,
+    ) -> hyphae::Cell<Option<Result<E::EnsureResult, String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientMutations,
+    {
+        self.send_command(&E::ensure_command(edge))
+    }
+
+    /// Delete an edge by typed ID through its existing generated delete
+    /// command.
+    pub fn disconnect_graph<E>(
+        &self,
+        id: &E::Id,
+    ) -> hyphae::Cell<Option<Result<E::DisconnectResult, String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientMutations,
+    {
+        self.send_command(&E::disconnect_command(id))
+    }
+
+    /// Delete a batch of same-type edges by typed ID.
+    pub fn disconnect_graph_batch<E>(
+        &self,
+        ids: &[E::Id],
+    ) -> hyphae::Cell<Option<Result<E::DisconnectManyResult, String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientMutations,
+    {
+        self.send_command(&E::disconnect_many_command(ids))
+    }
+
     /// Watch edges at endpoint A through the generated ordinary query.
     ///
     /// The returned state includes an authoritative readiness signal and
