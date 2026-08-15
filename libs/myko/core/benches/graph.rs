@@ -250,6 +250,53 @@ fn bench_exact_pair_lookup(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_endpoint_delete_plan(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let source_count = 1_000_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(source_count)))
+        .expect("seed endpoint-delete nodes");
+    context
+        .batch_set(&distributed_edges(edge_count, source_count))
+        .expect("seed endpoint-delete edges");
+    let store = context.registry.get_or_create("BenchGraphEdge");
+    let endpoint_id = BenchGraphNodeId::from("node-0");
+    let endpoint = EntityRef::new("BenchGraphNode", endpoint_id.as_ref());
+    let graph = context.graph_index().expect("graph index");
+    let mut group = c.benchmark_group("graph/endpoint_delete_sparse");
+
+    // This is deliberately a conservative baseline: it scans only the one
+    // populated store and performs a typed predicate, while the pre-index
+    // runtime dynamically extracted every edge from every registered store.
+    group.bench_function("canonical_full_scan", |b| {
+        b.iter(|| {
+            black_box(
+                store
+                    .snapshot()
+                    .into_iter()
+                    .filter_map(|(_, item)| {
+                        downcast_any_item_arc::<BenchGraphEdge>(&item, "graph benchmark")
+                    })
+                    .filter(|edge| edge.from_id == endpoint_id || edge.to_id == endpoint_id)
+                    .count(),
+            )
+        });
+    });
+    group.bench_function("eager_incidence_plan", |b| {
+        b.iter(|| {
+            black_box(
+                graph
+                    .endpoint_delete_plan(&endpoint)
+                    .expect("endpoint delete plan")
+                    .cascade_edges
+                    .len(),
+            )
+        });
+    });
+    group.finish();
+}
+
 fn bench_authority_contention(c: &mut Criterion) {
     c.bench_function("graph/two_writer_authority_contention", |b| {
         b.iter_batched(
@@ -289,6 +336,7 @@ criterion_group!(
     bench_projection_write,
     bench_adjacency_lookup,
     bench_exact_pair_lookup,
+    bench_endpoint_delete_plan,
     bench_authority_contention,
 );
 criterion_main!(benches);

@@ -1239,7 +1239,71 @@ impl GraphIndex {
     /// Enforce restrict/cascade policies for an authoritative endpoint DEL.
     pub fn endpoint_delete_plan(&self, endpoint: &EntityRef) -> Result<EndpointDeletePlan> {
         let mut cascade = HashSet::new();
+
+        // Eager projections already retain entity-level incidence. Resolve all
+        // indexed policies while holding one coherent graph snapshot, then
+        // materialize only the incident canonical items after releasing it.
+        // Checking both roles before returning the cascade set is load-bearing
+        // for self-loops: Restrict must win over Cascade regardless of role.
+        {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (edge_type, registration) in &self.registrations {
+                if registration.adjacency != AdjacencyPolicy::Eager {
+                    continue;
+                }
+                let Some(edges) = state.edge_types.get(edge_type) else {
+                    continue;
+                };
+                for (position, ids, policy) in [
+                    (
+                        EndPosition::B,
+                        edges.b_entities.get(endpoint),
+                        registration.b_delete,
+                    ),
+                    (
+                        EndPosition::A,
+                        edges.a_entities.get(endpoint),
+                        registration.a_delete,
+                    ),
+                ] {
+                    let Some(ids) = ids else {
+                        continue;
+                    };
+                    match policy {
+                        EndpointDeletePolicy::RestrictEndpointDelete => {
+                            if let Some(id) = ids.first() {
+                                bail!(
+                                    "cannot delete {}:{}; {} edge {} is incident at {:?}",
+                                    endpoint.entity_type,
+                                    endpoint.id,
+                                    edge_type,
+                                    id,
+                                    position
+                                );
+                            }
+                        }
+                        EndpointDeletePolicy::CascadeEdge => {
+                            cascade.extend(ids.iter().cloned().map(|id| (*edge_type, id)));
+                        }
+                        EndpointDeletePolicy::RetainDangling => {}
+                    }
+                }
+            }
+        }
+
+        // Demand-driven edge types intentionally retain no incidence map. They
+        // pay the canonical scan only when endpoint deletion needs a policy
+        // decision; types that retain dangling edges at both roles need no work.
         for (edge_type, registration) in &self.registrations {
+            if registration.adjacency == AdjacencyPolicy::Eager
+                || (registration.a_delete == EndpointDeletePolicy::RetainDangling
+                    && registration.b_delete == EndpointDeletePolicy::RetainDangling)
+            {
+                continue;
+            }
             let Some(store) = self.registry.get(edge_type) else {
                 continue;
             };
@@ -2952,6 +3016,14 @@ mod tests {
                 .get("Tag")
                 .is_some_and(|store| store.get_value(&tag.id()).is_some())
         );
+        assert!(restricted_context.del(&article).is_ok());
+        assert!(
+            restricted_context
+                .registry
+                .get("RestrictedTagAssignment")
+                .is_some_and(|store| store.snapshot().is_empty()),
+            "the eager B-role incidence cascades without scanning"
+        );
 
         let retained_context = context();
         let retained_tag = Tag {
@@ -2977,6 +3049,14 @@ mod tests {
                 .from(&retained_tag.id)
                 .expect("dangling edge remains queryable"),
             vec![Arc::new(retained)]
+        );
+        assert!(retained_context.del(&retained_article).is_ok());
+        assert!(
+            retained_context
+                .registry
+                .get("RetainedTagAssignment")
+                .is_some_and(|store| store.snapshot().is_empty()),
+            "the demand-driven B-role policy retains its canonical scan fallback"
         );
     }
 }

@@ -1214,6 +1214,12 @@ present through both directions.
 ## 14. Deletion, orphan handling, and history
 
 Endpoint deletion operates on incident edges according to registration policy.
+Eager edge types plan directly from their entity-incidence projection, making
+planning proportional to endpoint degree. Demand-driven edge types retain a
+canonical-store scan fallback rather than paying idle incidence memory. The
+cascade plan is deduplicated by `(edge type, edge ID)`, and any incident
+`RestrictEndpointDelete` aborts before canonical reduction even when the same
+self-loop is cascade-eligible through its other role.
 For high-degree nodes, per-edge cascade can create a large event storm. The
 framework must retain explicit, auditable DEL events when individual edge
 history matters. Cascades use configured chunking, fan-out limits, and
@@ -1658,6 +1664,7 @@ warmup, 200 ms measurement) produced:
 | 1,000-edge high-degree lookup returning 1,000 edges | 34.95–35.09 µs scan | 30.20–30.32 µs eager | about 1.16× faster; output materialization dominates |
 | 10,000-edge sparse lookup returning 10 edges | 424.2–425.9 µs scan | 373.0–374.5 ns eager | about 1,137× faster |
 | exact-pair existence among 10,000 edges | 426.8–429.0 µs scan | 104.7–105.3 ns pair projection | about 4,075× faster; ID lookup is 118.8–119.2 ns and typed materialization is 154.3–155.4 ns |
+| sparse endpoint-delete planning among 10,000 edges with 10 incident | 419.3–421.3 µs conservative typed scan | 828.8–833.3 ns eager incidence | about 506× faster; the baseline scans only the populated store and is cheaper than the replaced dynamic all-registration path |
 | 1,000-edge batch write | 309.1–310.2 µs plain | 1.815–1.823 ms projected | about 5.9× write cost for validation, causal hashing, and four maintained projections; inline singleton pair IDs improved the projected path by about 1.1%, within the benchmark's noise threshold |
 | two writers, 200 attempted unique-edge writes | n/a | 361–396 µs | bounded authority-lock contention, no uniqueness race |
 
