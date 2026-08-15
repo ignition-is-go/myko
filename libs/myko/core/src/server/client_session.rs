@@ -16,6 +16,7 @@ use hyphae::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 use crate::{
     client::MykoProtocol,
     core::item::AnyItem,
+    query::{WindowedQuerySnapshot, WindowedQuerySource},
     report::AnyOutput,
     wire::{
         EncodedCommandMessage, ErasedWrappedItem, MykoMessage, QueryChange, QueryResponse,
@@ -135,8 +136,13 @@ enum SubscriptionEntry {
 
 struct QuerySubscription {
     _guard: SubscriptionGuard,
-    state: Arc<Mutex<QuerySubscriptionState>>,
+    control: QueryWindowControl,
     kind: QuerySubscriptionKind,
+}
+
+enum QueryWindowControl {
+    Materialized(Arc<Mutex<QuerySubscriptionState>>),
+    Pushed(WindowedQuerySource),
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +156,14 @@ struct QuerySubscriptionState {
     sequence: u64,
     window: Option<QueryWindow>,
     all_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+    visible_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+}
+
+#[derive(Default)]
+struct PushedQuerySubscriptionState {
+    sequence: u64,
+    window: Option<QueryWindow>,
+    visible_ids: Vec<Arc<str>>,
     visible_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
@@ -212,7 +226,7 @@ impl<W: WsWriter> ClientSession<W> {
             tx,
             SubscriptionEntry::Query(QuerySubscription {
                 _guard: guard,
-                state,
+                control: QueryWindowControl::Materialized(state),
                 kind: QuerySubscriptionKind::Query,
             }),
         );
@@ -232,6 +246,46 @@ impl<W: WsWriter> ClientSession<W> {
                 tx_for_log
             );
         }
+    }
+
+    /// Subscribe to an authoritative server-side bounded query source.
+    pub fn subscribe_windowed_query(
+        &mut self,
+        tx: Arc<str>,
+        query_id: Arc<str>,
+        source: WindowedQuerySource,
+    ) {
+        let writer = self.writer.clone();
+        let tx_for_diffs = tx.clone();
+        let state = Arc::new(Mutex::new(PushedQuerySubscriptionState::default()));
+        let state_for_diffs = state;
+        let snapshots = source.snapshots().clone();
+        let guard = snapshots.subscribe(move |signal| {
+            let Signal::Value(snapshot) = signal else {
+                return;
+            };
+            let response = if let Ok(mut state) = state_for_diffs.lock() {
+                state.apply_snapshot(snapshot, tx_for_diffs.clone())
+            } else {
+                tracing::error!(
+                    "Pushed query subscription state poisoned for tx={}",
+                    tx_for_diffs
+                );
+                return;
+            };
+            crate::server::dispatch_metrics::record_query_response(&query_id);
+            writer.send_query_response(response, false);
+        });
+        drop(snapshots);
+
+        self.subscriptions.insert(
+            tx,
+            SubscriptionEntry::Query(QuerySubscription {
+                _guard: guard,
+                control: QueryWindowControl::Pushed(source),
+                kind: QuerySubscriptionKind::Query,
+            }),
+        );
     }
 
     /// Subscribe to a `CellMap` from a view cell factory.
@@ -311,7 +365,7 @@ impl<W: WsWriter> ClientSession<W> {
             tx,
             SubscriptionEntry::Query(QuerySubscription {
                 _guard: guard,
-                state,
+                control: QueryWindowControl::Materialized(state),
                 kind: QuerySubscriptionKind::View,
             }),
         );
@@ -400,14 +454,28 @@ impl<W: WsWriter> ClientSession<W> {
             return;
         };
 
-        let response = if let Ok(mut state) = sub.state.lock() {
-            state.apply_window_update(window, tx.clone())
-        } else {
-            tracing::error!(
-                "Query subscription state poisoned on window update for tx={}",
-                tx
-            );
-            return;
+        let response = match &sub.control {
+            QueryWindowControl::Materialized(state) => {
+                if let Ok(mut state) = state.lock() {
+                    state.apply_window_update(window, tx.clone())
+                } else {
+                    tracing::error!(
+                        "Query subscription state poisoned on window update for tx={}",
+                        tx
+                    );
+                    return;
+                }
+            }
+            QueryWindowControl::Pushed(source) => {
+                source.set_window(window);
+                tracing::trace!(
+                    "ClientSession {} pushed query window tx={} (active_subscriptions={})",
+                    self.client_id,
+                    tx,
+                    self.subscriptions.len()
+                );
+                return;
+            }
         };
 
         let Some(response) = response else {
@@ -476,6 +544,51 @@ impl<W: WsWriter> ClientSession<W> {
     #[must_use]
     pub fn has_subscription(&self, tx: &Arc<str>) -> bool {
         self.subscriptions.contains_key(tx)
+    }
+}
+
+impl PushedQuerySubscriptionState {
+    fn apply_snapshot(
+        &mut self,
+        snapshot: &WindowedQuerySnapshot,
+        tx: Arc<str>,
+    ) -> PendingQueryResponse {
+        if self.window.is_some() && snapshot.window.is_none() {
+            self.sequence = 0;
+        }
+
+        let next_ids: Vec<_> = snapshot.entries.iter().map(|(id, _)| id.clone()).collect();
+        let next_items: HashMap<_, _> = snapshot.entries.iter().cloned().collect();
+        let mut deletes: Vec<_> = self
+            .visible_ids
+            .iter()
+            .filter(|id| !next_items.contains_key(id.as_ref()))
+            .cloned()
+            .collect();
+        deletes.sort_unstable();
+        let upsert_items = snapshot
+            .entries
+            .iter()
+            .filter(|(id, item)| {
+                self.sequence == 0 || self.visible_items.get(id.as_ref()) != Some(item)
+            })
+            .map(|(_, item)| item.clone())
+            .collect();
+        let sequence = self.sequence;
+        self.sequence = self.sequence.saturating_add(1);
+        self.window.clone_from(&snapshot.window);
+        self.visible_ids.clone_from(&next_ids);
+        self.visible_items = next_items;
+
+        PendingQueryResponse {
+            tx,
+            sequence,
+            upsert_items,
+            deletes,
+            total_count: snapshot.total_count,
+            window: snapshot.window.clone(),
+            window_order_ids: snapshot.window.as_ref().map(|_| next_ids),
+        }
     }
 }
 
@@ -859,7 +972,7 @@ impl<W: WsWriter> Drop for ClientSession<W> {
 mod tests {
     use std::sync::Mutex;
 
-    use hyphae::SelectExt;
+    use hyphae::{Mutable, SelectExt};
 
     use super::*;
     use crate::{common::with_id::WithId, store::StoreRegistry, test_util::scheduler_test_serial};
@@ -1150,6 +1263,71 @@ mod tests {
         assert!(response.window.is_none());
         assert!(response.changes.is_empty());
         assert_eq!(response.total_count, Some(3));
+    }
+
+    #[test]
+    fn pushed_window_source_emits_authoritative_pages_without_full_session_state() {
+        let _serial = scheduler_test_serial();
+        let first = make_entity("b", "Bob");
+        let second = make_entity("c", "Charlie");
+        let snapshots = Cell::new(Arc::new(WindowedQuerySnapshot {
+            entries: vec![("b".into(), first)],
+            total_count: 3,
+            window: Some(QueryWindow {
+                offset: 1,
+                limit: 1,
+            }),
+        }));
+        let snapshots_for_window = snapshots.clone();
+        let second_for_window = second.clone();
+        let source = WindowedQuerySource::new(snapshots.lock(), move |window| {
+            snapshots_for_window.set(Arc::new(WindowedQuerySnapshot {
+                entries: vec![("c".into(), second_for_window.clone())],
+                total_count: 3,
+                window,
+            }));
+        });
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-pushed".into();
+        session.subscribe_windowed_query(tx.clone(), "query-pushed".into(), source);
+
+        let initial_message = mock.last_message();
+        assert!(matches!(
+            initial_message,
+            Some(MykoMessage::QueryResponse(_))
+        ));
+        let Some(MykoMessage::QueryResponse(initial)) = initial_message else {
+            return;
+        };
+        assert_eq!(initial.sequence, 0);
+        assert_eq!(initial.total_count, Some(3));
+        assert!(matches!(
+            initial.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("b")]
+        ));
+
+        session.update_query_window(
+            &tx,
+            Some(QueryWindow {
+                offset: 2,
+                limit: 1,
+            }),
+        );
+        let next_message = mock.last_message();
+        assert!(matches!(next_message, Some(MykoMessage::QueryResponse(_))));
+        let Some(MykoMessage::QueryResponse(next)) = next_message else {
+            return;
+        };
+        assert_eq!(next.sequence, 1);
+        assert_eq!(next.deletes, vec![Arc::<str>::from("b")]);
+        assert!(matches!(
+            next.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("c")]
+        ));
+        assert_eq!(next.total_count, Some(3));
     }
 
     #[test]

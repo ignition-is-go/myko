@@ -8,7 +8,7 @@ mod request;
 mod traits;
 
 // Re-export all public types
-pub use cell::FilteredCellMap;
+pub use cell::{FilteredCellMap, WindowedQuerySnapshot, WindowedQuerySource};
 pub use context::{QueryBuildContext, QueryContext};
 pub use filter::{
     BelongsToRoute, CanonicalFilter, CompoundFkExtractor, CompoundKey, EqFilter, Filter,

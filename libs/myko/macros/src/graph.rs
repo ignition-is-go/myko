@@ -47,6 +47,7 @@ fn graph_query_common(
                 edge_type: <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
                 parse: <#query_ident as #krate::query::QueryFactory>::parse,
                 cell_factory: <#query_ident as #krate::query::QueryFactory>::cell_factory,
+                window_cell_factory: <#query_ident as #krate::graph::GraphWindowQueryFactory>::window_cell_factory,
             }
         }
     }
@@ -476,6 +477,26 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
 
             #from_common
 
+            impl #krate::graph::GraphWindowQueryFactory for #from_query {
+                fn window_cell_factory(
+                    query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    request: std::sync::Arc<#krate::request::RequestContext>,
+                    server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    #krate::graph::graph_window_query_at::<Self, #edge_type, _>(
+                        &query,
+                        registry,
+                        request,
+                        server,
+                        window,
+                        #krate::graph::EndPosition::A,
+                        |query| <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&query.endpoint),
+                    )
+                }
+            }
+
             impl #krate::query::QueryHandler for #from_query {
                 fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
                     let Ok(expected) =
@@ -520,6 +541,26 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
             }
 
             #to_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #to_query {
+                fn window_cell_factory(
+                    query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    request: std::sync::Arc<#krate::request::RequestContext>,
+                    server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    #krate::graph::graph_window_query_at::<Self, #edge_type, _>(
+                        &query,
+                        registry,
+                        request,
+                        server,
+                        window,
+                        #krate::graph::EndPosition::B,
+                        |query| <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&query.endpoint),
+                    )
+                }
+            }
 
             impl #krate::query::QueryHandler for #to_query {
                 fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
@@ -566,6 +607,28 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
             }
 
             #between_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #between_query {
+                fn window_cell_factory(
+                    query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    request: std::sync::Arc<#krate::request::RequestContext>,
+                    server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    #krate::graph::graph_window_query_between::<Self, #edge_type, _>(
+                        &query,
+                        registry,
+                        request,
+                        server,
+                        window,
+                        |query| Ok((
+                            <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&query.a)?,
+                            <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&query.b)?,
+                        )),
+                    )
+                }
+            }
 
             impl #krate::query::QueryHandler for #between_query {
                 fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {

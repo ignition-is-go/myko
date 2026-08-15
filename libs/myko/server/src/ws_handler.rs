@@ -227,6 +227,11 @@ struct CommandJob {
 
 /// Result of an async subscription build (query or view `cell_factory`).
 enum SubscriptionReady {
+    WindowedQuery {
+        tx_id: Arc<str>,
+        query_id: Arc<str>,
+        source: myko::query::WindowedQuerySource,
+    },
     Query {
         tx_id: Arc<str>,
         query_id: Arc<str>,
@@ -448,13 +453,17 @@ impl WsHandler {
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
                     let tx_id = match &ready {
-                        SubscriptionReady::Query { tx_id, .. }
+                        SubscriptionReady::WindowedQuery { tx_id, .. }
+                        | SubscriptionReady::Query { tx_id, .. }
                         | SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
                     };
                     if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
                         map.remove(&tx_id);
                     }
                     match ready {
+                        SubscriptionReady::WindowedQuery { tx_id, query_id, source } => {
+                            session.subscribe_windowed_query(tx_id, query_id, source);
+                        }
                         SubscriptionReady::Query { tx_id, query_id, cellmap, window } => {
                             session.subscribe_query(tx_id, query_id, cellmap, window);
                         }
@@ -949,9 +958,36 @@ impl WsHandler {
                 Ok(query) => {
                     let registry = ctx.registry.clone();
                     let factory = query_data.cell_factory;
+                    let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
                     tokio::task::spawn_blocking(move || {
+                        if let (Some(window_factory), Some(initial_window)) =
+                            (window_factory, window.clone())
+                        {
+                            match window_factory(
+                                query.clone(),
+                                registry.clone(),
+                                request.clone(),
+                                ctx.clone(),
+                                initial_window,
+                            ) {
+                                Ok(Some(source)) => {
+                                    let _ = sender.send(SubscriptionReady::WindowedQuery {
+                                        tx_id,
+                                        query_id,
+                                        source,
+                                    });
+                                    return;
+                                }
+                                Ok(None) => {}
+                                Err(error) => tracing::warn!(
+                                    "Graph window pushdown unavailable for {}: {}; falling back to materialized windowing",
+                                    query_id,
+                                    error
+                                ),
+                            }
+                        }
                         match factory(query, registry, request, Some(ctx)) {
                             Ok(cellmap) => {
                                 let _ = sender.send(SubscriptionReady::Query {

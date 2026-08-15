@@ -166,6 +166,55 @@ impl QueryBuildContext {
             .watch_between(E::ENTITY_NAME_STATIC, a, b)
             .map_err(|error| error.to_string())
     }
+
+    /// Build a bounded, index-backed graph watch without materializing the
+    /// complete matching edge set in the WebSocket session.
+    #[doc(hidden)]
+    pub fn graph_window_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_window_at(E::ENTITY_NAME_STATIC, position, endpoint, window)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build a bounded, index-backed exact-pair graph watch.
+    #[doc(hidden)]
+    pub fn graph_window_between<E>(
+        &self,
+        a: &crate::graph::EndpointValue,
+        b: &crate::graph::EndpointValue,
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_window_between(E::ENTITY_NAME_STATIC, a, b, window)
+            .map_err(|error| error.to_string())
+    }
 }
 
 // Query build keeps its own `query`/`report` (fallible over an optional

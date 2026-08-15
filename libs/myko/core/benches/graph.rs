@@ -368,6 +368,60 @@ fn bench_watch_initialization(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_high_degree_window_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(1)))
+        .expect("seed high-degree graph nodes");
+    context
+        .batch_set(&edges(edge_count))
+        .expect("seed high-degree graph edges");
+    let from = BenchGraphNodeId::from("node-0");
+    let request = Arc::new(RequestContext::from_client(
+        "graph-window-benchmark".into(),
+        "graph-window-benchmark-client".into(),
+        context.host_id,
+    ));
+    let query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_query(&from),
+        request.tx.clone(),
+    ));
+    let server = Arc::new(context.clone());
+    let mut group = c.benchmark_group("graph/high_degree_window_initialization");
+    group.bench_function("materialize_all_then_window", |b| {
+        b.iter(|| {
+            let watched = <BenchGraphFromQuery as QueryFactory>::cell_factory(
+                query.clone(),
+                context.registry.clone(),
+                request.clone(),
+                Some(server.clone()),
+            )
+            .expect("materialized graph query");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("index_pushdown_limit_50", |b| {
+        b.iter(|| {
+            let source =
+                <BenchGraphFromQuery as myko::graph::GraphWindowQueryFactory>::window_cell_factory(
+                    query.clone(),
+                    context.registry.clone(),
+                    request.clone(),
+                    server.clone(),
+                    myko::wire::QueryWindow {
+                        offset: 0,
+                        limit: 50,
+                    },
+                )
+                .expect("bounded graph query")
+                .expect("eager graph projection");
+            black_box(source.snapshots().get().entries.len())
+        });
+    });
+    group.finish();
+}
+
 fn bench_exact_pair_lookup(c: &mut Criterion) {
     let pair_n = 10_000_usize;
     let context = seeded(pair_n);
@@ -529,6 +583,7 @@ criterion_group!(
     bench_projection_write,
     bench_adjacency_lookup,
     bench_watch_initialization,
+    bench_high_degree_window_initialization,
     bench_exact_pair_lookup,
     bench_endpoint_delete_plan,
     bench_authority_contention,
