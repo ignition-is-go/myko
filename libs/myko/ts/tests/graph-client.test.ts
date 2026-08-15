@@ -50,6 +50,15 @@ const graph = {
   disconnectMany: (ids: string[]) => command<number>('DeleteEdges', { ids }),
 } as const
 
+const eagerGraph = {
+  ...graph,
+  $schema: {
+    pairProjection: 'eager',
+    aAdjacency: 'eager',
+    bAdjacency: 'demandDriven',
+  },
+} as const
+
 describe('bindGraph', () => {
   test('binds endpoint scope once across edge, related, and aggregate operations', async () => {
     const calls: Array<{ kind: string; id: string; payload: unknown }> = []
@@ -72,6 +81,8 @@ describe('bindGraph', () => {
 
     const bound = bindGraph(client, graph)
     const scoped = bound.from('node-a')
+    expect(bound.schema).toBeNull()
+    expect(scoped.plan.strategy).toBe('unknown')
     const typedEdges: Observable<LiveCollection<Edge>> = scoped.edges()
     const typedTargets: Observable<LiveCollection<Node>> = scoped.targets()
     expect(await firstValueFrom(typedEdges)).toBe(state)
@@ -136,5 +147,56 @@ describe('bindGraph', () => {
 
     expect(index.get('node-a').size).toBe(2)
     expect(index.get('node-b').size).toBe(1)
+  })
+
+  test('exposes execution plans and ergonomic mutable windows', async () => {
+    const calls: Array<{ id: string; window: unknown }> = []
+    const client = {
+      watchQueryWindowed(value: Query<unknown>, options: unknown) {
+        calls.push({ id: value.queryId, window: options })
+        return {
+          tx: `tx-${calls.length}`,
+          results$: of([]),
+          windowInfo$: of({ totalCount: 0, window: null }),
+          setWindow() {},
+        }
+      },
+    } as unknown as MykoClient
+
+    const bound = bindGraph(client, eagerGraph)
+    expect(bound.schema).toBe(eagerGraph.$schema)
+
+    const from = bound.fromMany(['node-a', 'node-b'])
+    expect(from.plan).toMatchObject({
+      strategy: 'eagerEndpoint',
+      initialization: 'indexLookup',
+      liveUpdates: 'routed',
+      windowing: 'pushdown',
+    })
+    expect(bound.from('node-c').plan).toBe(from.plan)
+    expect(Object.isFrozen(from.plan)).toBe(true)
+    expect(from.edgesWindowed({ offset: 25, limit: 10 }).tx).toBe('tx-1')
+    expect(from.targetsWindowed({ offset: 0, limit: 5 }).tx).toBe('tx-2')
+
+    const to = bound.to('node-b')
+    expect(to.plan).toMatchObject({
+      strategy: 'demandDrivenScan',
+      initialization: 'canonicalScan',
+      windowing: 'materialized',
+    })
+    expect(bound.between('node-a', 'node-b').plan).toMatchObject({
+      strategy: 'eagerPair',
+      windowing: 'pushdown',
+    })
+    expect(calls).toEqual([
+      {
+        id: 'EdgeGraphFromMany',
+        window: { window: { offset: 25, limit: 10 } },
+      },
+      {
+        id: 'EdgeGraphTargetsFromMany',
+        window: { window: { offset: 0, limit: 5 } },
+      },
+    ])
   })
 })

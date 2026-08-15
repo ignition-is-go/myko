@@ -5,6 +5,8 @@ import type {
   CommandResult,
   MykoClient,
   Query,
+  QueryWindow,
+  QueryWindowInfo,
   QueryWatchOptions,
   Report,
   ReportResult,
@@ -40,6 +42,34 @@ type QueryState<Q> = Observable<LiveCollection<QueryEntity<Q>>>
 
 type QueryIndexState<Q, K> = Observable<LiveIndex<K, QueryEntity<Q>>>
 
+/** Mutable bounded graph query backed by the ordinary query-window protocol. */
+export type WindowedGraphQuery<Q> = {
+  tx: string
+  results$: Observable<QueryEntity<Q>[]>
+  windowInfo$: Observable<QueryWindowInfo>
+  setWindow: (window: QueryWindow | null) => void
+}
+
+export type GraphDescriptorSchema = {
+  pairProjection: 'intersectAdjacency' | 'eager'
+  aAdjacency: 'demandDriven' | 'eager'
+  bAdjacency: 'demandDriven' | 'eager'
+}
+
+/** Static execution strategy derived from the generated graph schema. */
+export type GraphQueryPlan = {
+  readonly strategy:
+    | 'eagerEndpoint'
+    | 'eagerPair'
+    | 'adjacencyFilter'
+    | 'demandDrivenScan'
+    | 'unknown'
+  readonly initialization: 'indexLookup' | 'canonicalScan' | 'unknown'
+  readonly liveUpdates: 'routed' | 'unknown'
+  readonly windowing: 'pushdown' | 'materialized' | 'unknown'
+  readonly reason: string
+}
+
 type ReportState<R> = R extends Report<unknown>
   ? Observable<ReportResult<R>>
   : never
@@ -53,6 +83,10 @@ type RelatedScope<G, K extends PropertyKey, Name extends string> = K extends key
       [P in Name]: (
         options?: QueryWatchOptions,
       ) => QueryState<MethodResult<G, K>>
+    } & {
+      [P in `${Name}Windowed`]: (
+        window: QueryWindow,
+      ) => WindowedGraphQuery<MethodResult<G, K>>
     }
   : object
 
@@ -63,7 +97,11 @@ type EndpointScope<
   RelatedName extends string,
   CountKey extends PropertyKey,
 > = {
+  readonly plan: GraphQueryPlan
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, EdgeKey>>
+  edgesWindowed: (
+    window: QueryWindow,
+  ) => WindowedGraphQuery<MethodResult<G, EdgeKey>>
   edgesBy: <K>(
     keyOf: (edge: QueryEntity<MethodResult<G, EdgeKey>>) => K,
     options?: QueryWatchOptions,
@@ -74,7 +112,11 @@ type EndpointScope<
   RelatedScope<G, RelatedKey, RelatedName>
 
 type BetweenScope<G> = {
+  readonly plan: GraphQueryPlan
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, 'between'>>
+  edgesWindowed: (
+    window: QueryWindow,
+  ) => WindowedGraphQuery<MethodResult<G, 'between'>>
   count: () => ReportState<MethodResult<G, 'countBetween'>>
   exists: () => ReportState<MethodResult<G, 'existsBetween'>>
 }
@@ -92,6 +134,7 @@ type BatchScopes<G> = 'fromMany' extends keyof G
 
 /** Client-bound facade over one generated `*Graph` descriptor. */
 export type BoundGraph<G> = {
+  readonly schema: GraphDescriptorSchema | null
   from: (
     endpoint: MethodFirstArg<G, 'from'>,
   ) => EndpointScope<G, 'from', 'targetsFrom', 'targets', 'countFrom'>
@@ -123,6 +166,84 @@ export type BoundGraph<G> = {
 
 type DynamicFactory = (...args: unknown[]) => unknown
 
+function descriptorSchema(graph: object): GraphDescriptorSchema | null {
+  const schema = (graph as { $schema?: unknown }).$schema
+  if (!schema || typeof schema !== 'object') return null
+  const candidate = schema as Partial<GraphDescriptorSchema>
+  if (
+    (candidate.pairProjection !== 'intersectAdjacency' &&
+      candidate.pairProjection !== 'eager') ||
+    (candidate.aAdjacency !== 'demandDriven' &&
+      candidate.aAdjacency !== 'eager') ||
+    (candidate.bAdjacency !== 'demandDriven' &&
+      candidate.bAdjacency !== 'eager')
+  ) {
+    return null
+  }
+  return candidate as GraphDescriptorSchema
+}
+
+function endpointPlan(
+  schema: GraphDescriptorSchema | null,
+  position: 'a' | 'b',
+): GraphQueryPlan {
+  if (!schema) {
+    return {
+      strategy: 'unknown',
+      initialization: 'unknown',
+      liveUpdates: 'unknown',
+      windowing: 'unknown',
+      reason: 'This graph descriptor predates generated schema metadata.',
+    }
+  }
+  const adjacency = position === 'a' ? schema.aAdjacency : schema.bAdjacency
+  if (adjacency === 'eager') {
+    return {
+      strategy: 'eagerEndpoint',
+      initialization: 'indexLookup',
+      liveUpdates: 'routed',
+      windowing: 'pushdown',
+      reason: `Endpoint ${position.toUpperCase()} has an eager adjacency projection.`,
+    }
+  }
+  return {
+    strategy: 'demandDrivenScan',
+    initialization: 'canonicalScan',
+    liveUpdates: 'routed',
+    windowing: 'materialized',
+    reason: `Endpoint ${position.toUpperCase()} is demand-driven; initialization scans canonical edges.`,
+  }
+}
+
+function pairPlan(schema: GraphDescriptorSchema | null): GraphQueryPlan {
+  if (!schema) return endpointPlan(null, 'a')
+  if (schema.pairProjection === 'eager') {
+    return {
+      strategy: 'eagerPair',
+      initialization: 'indexLookup',
+      liveUpdates: 'routed',
+      windowing: 'pushdown',
+      reason: 'Exact endpoint pairs have an eager pair projection.',
+    }
+  }
+  if (schema.aAdjacency === 'eager' || schema.bAdjacency === 'eager') {
+    return {
+      strategy: 'adjacencyFilter',
+      initialization: 'indexLookup',
+      liveUpdates: 'routed',
+      windowing: 'materialized',
+      reason: 'Exact pairs filter the available eager endpoint adjacency.',
+    }
+  }
+  return {
+    strategy: 'demandDrivenScan',
+    initialization: 'canonicalScan',
+    liveUpdates: 'routed',
+    windowing: 'materialized',
+    reason: 'Exact pairs have no eager projection; initialization scans canonical edges.',
+  }
+}
+
 function factory(graph: object, key: string): DynamicFactory {
   const candidate = (graph as Record<string, unknown>)[key]
   if (typeof candidate !== 'function') {
@@ -136,6 +257,12 @@ export function bindGraph<G extends object>(
   client: MykoClient,
   graph: G,
 ): BoundGraph<G> {
+  const schema = descriptorSchema(graph)
+  const plans = Object.freeze({
+    a: Object.freeze(endpointPlan(schema, 'a')),
+    b: Object.freeze(endpointPlan(schema, 'b')),
+    pair: Object.freeze(pairPlan(schema)),
+  })
   const queryState = (key: string, args: unknown[], options?: QueryWatchOptions) =>
     client.watchQueryState(
       factory(graph, key)(...args) as Query<unknown> & {
@@ -147,6 +274,13 @@ export function bindGraph<G extends object>(
     client.watchReport(factory(graph, key)(...args) as Report<unknown>)
   const command = (key: string, args: unknown[]) =>
     client.sendCommand(factory(graph, key)(...args) as Command<unknown>)
+  const windowed = (key: string, args: unknown[], window: QueryWindow) =>
+    client.watchQueryWindowed(
+      factory(graph, key)(...args) as Query<unknown> & {
+        $res?: () => { id: string }[]
+      },
+      { window },
+    )
   const queryIndex = <T extends { id: string }, K>(
     key: string,
     args: unknown[],
@@ -165,9 +299,12 @@ export function bindGraph<G extends object>(
     relatedName: 'targets' | 'sources',
     countKey: string | null,
     args: unknown[],
+    plan: GraphQueryPlan,
   ) => {
     const scope: Record<string, unknown> = {
+      plan,
       edges: (options?: QueryWatchOptions) => queryState(edgeKey, args, options),
+      edgesWindowed: (window: QueryWindow) => windowed(edgeKey, args, window),
       edgesBy: <T extends { id: string }, K>(
         keyOf: (item: T) => K,
         options?: QueryWatchOptions,
@@ -176,6 +313,8 @@ export function bindGraph<G extends object>(
     if (relatedKey in graph) {
       scope[relatedName] = (options?: QueryWatchOptions) =>
         queryState(relatedKey, args, options)
+      scope[`${relatedName}Windowed`] = (window: QueryWindow) =>
+        windowed(relatedKey, args, window)
     }
     if (countKey) {
       scope.count = () => reportState(countKey, args)
@@ -184,13 +323,31 @@ export function bindGraph<G extends object>(
   }
 
   const bound: Record<string, unknown> = {
+    schema,
     from: (value: unknown) =>
-      endpoint('from', 'targetsFrom', 'targets', 'countFrom', [value]),
+      endpoint(
+        'from',
+        'targetsFrom',
+        'targets',
+        'countFrom',
+        [value],
+        plans.a,
+      ),
     to: (value: unknown) =>
-      endpoint('to', 'sourcesTo', 'sources', 'countTo', [value]),
+      endpoint(
+        'to',
+        'sourcesTo',
+        'sources',
+        'countTo',
+        [value],
+        plans.b,
+      ),
     between: (a: unknown, b: unknown) => ({
+      plan: plans.pair,
       edges: (options?: QueryWatchOptions) =>
         queryState('between', [a, b], options),
+      edgesWindowed: (window: QueryWindow) =>
+        windowed('between', [a, b], window),
       count: () => reportState('countBetween', [a, b]),
       exists: () => reportState('existsBetween', [a, b]),
     }),
@@ -202,9 +359,23 @@ export function bindGraph<G extends object>(
   }
   if ('fromMany' in graph) {
     bound.fromMany = (values: unknown) =>
-      endpoint('fromMany', 'targetsFromMany', 'targets', null, [values])
+      endpoint(
+        'fromMany',
+        'targetsFromMany',
+        'targets',
+        null,
+        [values],
+        plans.a,
+      )
     bound.toMany = (values: unknown) =>
-      endpoint('toMany', 'sourcesToMany', 'sources', null, [values])
+      endpoint(
+        'toMany',
+        'sourcesToMany',
+        'sources',
+        null,
+        [values],
+        plans.b,
+      )
   }
   return bound as BoundGraph<G>
 }

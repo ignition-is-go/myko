@@ -10,7 +10,13 @@ import type { ID, ItemStub, LogLevel, MEvent, WrappedItem } from './generated'
 // Re-export all Rust-generated types from ./generated
 // This includes the ID type alias (ID = string)
 export * from './generated'
-export { type BoundGraph, bindGraph } from './graph-client.js'
+export {
+  type BoundGraph,
+  bindGraph,
+  type GraphDescriptorSchema,
+  type GraphQueryPlan,
+  type WindowedGraphQuery,
+} from './graph-client.js'
 
 export {
   applyCollectionDiff,

@@ -231,6 +231,7 @@ export class {edge}GraphBetween {{
 {sources_to}
 {neighbors}
 export const {edge}Graph = {{
+  $schema: graphSchema.edges[{edge_literal}],
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
   fromMany: (endpoints: {edge}AAddress[]) => new {edge}GraphFromMany(endpoints),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
@@ -247,6 +248,7 @@ export const {edge}Graph = {{
   disconnectMany: (ids: __MykoGraph{edge}Id[]) => new Delete{edge}s({{ ids }}),
 }} as const;"#,
         edge = edge.edge_type,
+        edge_literal = ts_literal(edge.edge_type),
     )
 }
 
@@ -1272,6 +1274,7 @@ mod tests {
         assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("fromMany: (endpoints: TagAssignmentAAddress[])"));
         assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
+        assert!(rendered.contains("$schema: graphSchema.edges[\"TagAssignment\"]"));
         assert!(rendered.contains("export class TagAssignmentGraphSourcesTo"));
         assert!(rendered.contains("sourcesTo: (endpoint: TagAssignmentBAddress)"));
         assert!(!rendered.contains("export class TagAssignmentGraphTargetsFrom"));

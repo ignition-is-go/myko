@@ -1868,6 +1868,26 @@ With the same 10,000-edge/100-endpoint benchmark and a 25-edge page at offset
 initialization measured 112.6–113.1 µs, about 3.6× faster, with 25 rather than
 1,000 edge payloads hydrated.
 
+Generated graph descriptors carry their edge schema into the bound client
+facade. Every endpoint and pair scope exposes an allocation-free static `plan`
+that states whether initialization uses an eager endpoint/pair lookup,
+adjacency filtering, or a canonical scan; whether live changes are routed; and
+whether windows are pushed down or materialized. The same scope exposes
+`edgesWindowed`, `targetsWindowed`, and `sourcesWindowed` handles, so callers can
+use the mutable pushed-window protocol without dropping down to raw generated
+queries:
+
+```ts
+const visible = assignments.fromMany(visibleTagIds)
+console.debug(visible.plan)
+
+const page = visible.edgesWindowed({ offset: 250, limit: 25 })
+page.setWindow({ offset: 275, limit: 25 })
+```
+
+Legacy or hand-authored graph descriptors remain bindable; their plan is
+reported as `unknown` rather than guessing about server execution.
+
 ### 21.4 Incremental client-side graph indexes
 
 A batched edge union often feeds a list, tree, or matrix grouped by one endpoint.
@@ -2002,6 +2022,9 @@ The graph-edge feature is acceptable when:
     sorted buckets without materializing the full ID union, hydrate only the
     visible page, preserve exact distinct totals and live page shifts, and fall
     back safely for demand-driven endpoints.
+18. Bound generated graph scopes expose their static execution strategy and
+    provide typed mutable-window helpers for edge and related-entity queries;
+    older descriptors remain source-compatible and report an unknown plan.
 
 ## 24. Decision
 
