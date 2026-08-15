@@ -1037,14 +1037,10 @@ fn collect_bulk_target_actions(
     removals: &mut Vec<Arc<str>>,
 ) {
     match diff {
-        hyphae::MapDiff::Initial { entries } => {
-            upserts.extend(
-                entries
-                    .iter()
-                    .filter(|(key, _)| state.targets.contains_key(key))
-                    .cloned(),
-            );
-        }
+        // Bulk installation hydrates the referenced IDs directly after the
+        // subscription is live. Scanning the entire store here made dense
+        // graph views pay for every unrelated entity before doing that work.
+        hyphae::MapDiff::Initial { .. } => {}
         hyphae::MapDiff::Insert { key, value }
         | hyphae::MapDiff::Update {
             key,
@@ -1068,14 +1064,45 @@ fn collect_bulk_target_actions(
     }
 }
 
+fn apply_related_output_actions(
+    output: &hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>>,
+    removals: Vec<Arc<str>>,
+    upserts: Vec<(Arc<str>, Arc<dyn AnyItem>)>,
+) {
+    let action_count = removals.len().saturating_add(upserts.len());
+    let apply = || {
+        if let [key] = removals.as_slice() {
+            output.remove(key);
+        } else if !removals.is_empty() {
+            output.remove_many(removals);
+        }
+        if upserts.len() == 1 {
+            if let Some((key, value)) = upserts.into_iter().next() {
+                output.insert(key, value);
+            }
+        } else if !upserts.is_empty() {
+            output.insert_many(upserts);
+        }
+    };
+    if action_count == 1 {
+        apply();
+    } else {
+        hyphae::batch(apply);
+    }
+}
+
 fn install_bulk_target_subscription(
     state: &Arc<Mutex<RelatedEntityWatchState>>,
     dispatch: &Arc<parking_lot::ReentrantMutex<()>>,
-    output: hyphae::WeakCellMap<Arc<str>, Arc<dyn AnyItem>>,
+    output: &hyphae::WeakCellMap<Arc<str>, Arc<dyn AnyItem>>,
     store: &crate::store::EntityStore,
 ) {
     let state_weak: Weak<Mutex<RelatedEntityWatchState>> = Arc::downgrade(state);
     let dispatch_for_store = dispatch.clone();
+    let Some(output_for_hydration) = output.upgrade() else {
+        return;
+    };
+    let output_for_diffs = output_for_hydration.downgrade();
     let guard = store.subscribe_diffs(move |diff| {
         let _dispatch_guard = dispatch_for_store.lock();
         let Some(state) = state_weak.upgrade() else {
@@ -1093,27 +1120,31 @@ fn install_bulk_target_subscription(
             collect_bulk_target_actions(diff, &state, &mut upserts, &mut removals);
             (upserts, removals)
         };
-        let Some(output) = output.upgrade() else {
+        let Some(output) = output_for_diffs.upgrade() else {
             return;
         };
-        hyphae::batch(|| {
-            for key in removals {
-                output.remove(&key);
-            }
-            for (key, value) in upserts {
-                output.insert(key, value);
-            }
-        });
+        apply_related_output_actions(&output, removals, upserts);
     });
 
     let mut guard = Some(guard);
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if state.bulk_targets && state.bulk_target_guard.is_none() {
-        state.bulk_target_guard = guard.take();
+    let target_ids = {
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.bulk_targets && state.bulk_target_guard.is_none() {
+            state.bulk_target_guard = guard.take();
+            state.targets.keys().cloned().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    };
+    let entries = target_ids
+        .into_iter()
+        .filter_map(|target_id| store.get_value(&target_id).map(|value| (target_id, value)))
+        .collect::<Vec<_>>();
+    if !entries.is_empty() {
+        output_for_hydration.insert_many(entries);
     }
-    drop(state);
     drop(guard);
 }
 
@@ -1176,23 +1207,30 @@ where
                 }
                 (activate_bulk, state.bulk_targets)
             };
-            for (target_id, _) in &retired {
-                output.remove(target_id);
-            }
+            let removals = retired
+                .iter()
+                .map(|(target_id, _)| target_id.clone())
+                .collect::<Vec<_>>();
             if activate_bulk {
+                apply_related_output_actions(&output, removals, Vec::new());
                 install_bulk_target_subscription(
                     &state_for_edges,
                     &dispatch_for_edges,
-                    output.downgrade(),
+                    &output.downgrade(),
                     store_for_edges.as_ref(),
                 );
             } else if bulk_targets {
-                for (target_id, _) in added {
-                    if let Some(value) = store_for_edges.get_value(&target_id) {
-                        output.insert(target_id, value);
-                    }
-                }
+                let entries = added
+                    .into_iter()
+                    .filter_map(|(target_id, _)| {
+                        store_for_edges
+                            .get_value(&target_id)
+                            .map(|value| (target_id, value))
+                    })
+                    .collect::<Vec<_>>();
+                apply_related_output_actions(&output, removals, entries);
             } else {
+                apply_related_output_actions(&output, removals, Vec::new());
                 for (target_id, generation) in added {
                     install_related_target_subscription(
                         &state_for_edges,
@@ -5312,19 +5350,19 @@ mod tests {
             article_store.as_ref()
         ));
 
-        let view = context.query_map_by_str(
-            ArticleLinkGraphNeighbors::new(center.id.clone()),
-            Arc::new(crate::request::RequestContext::from_client(
-                "dense-neighbor-query".into(),
-                "dense-neighbor-client".into(),
-                context.host_id,
-            )),
-        );
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            "dense-neighbor-query".into(),
+            "dense-neighbor-client".into(),
+            context.host_id,
+        ));
+        let query = ArticleLinkGraphNeighbors::new(center.id.clone());
+        let untyped = context.query_map_untyped(query.clone(), request.clone());
+        let view = context.query_map_by_str(query, request);
         assert_eq!(view.snapshot().len(), neighbors.len());
 
         let diffs = Arc::new(AtomicUsize::new(0));
         let diffs_for_watch = diffs.clone();
-        let _guard = view.subscribe_diffs(move |_| {
+        let _guard = untyped.subscribe_diffs(move |_| {
             diffs_for_watch.fetch_add(1, Ordering::SeqCst);
         });
         diffs.store(0, Ordering::SeqCst);
@@ -5344,8 +5382,16 @@ mod tests {
         };
         assert!(context.set(&first_neighbor).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
+
+        assert!(context.del(&neighbors[1]).is_ok());
+        assert_eq!(diffs.load(Ordering::SeqCst), 2);
+        assert!(view.get_value(&neighbors[1].id()).is_none());
+        assert!(context.set(&neighbors[1]).is_ok());
+        assert_eq!(diffs.load(Ordering::SeqCst), 2);
+        assert!(view.get_value(&neighbors[1].id()).is_none());
+
         assert!(context.del(&edges[0]).is_ok());
-        assert_eq!(view.snapshot().len(), neighbors.len().saturating_sub(1));
+        assert_eq!(view.snapshot().len(), neighbors.len().saturating_sub(2));
     }
 
     #[test]

@@ -1038,9 +1038,12 @@ items, deduplicate parallel edges by reference count, treat a self-loop as one
 neighbor, and follow entity updates and deletion without client-side joins.
 Sparse views install subscriptions only for referenced entity IDs. Once a view
 is both large and dense relative to its entity store, it switches one-way to a
-filtered store subscription to cap high-degree setup cost. Both strategies
-publish identical keyed output, and the switch is internal rather than a wire
-or application configuration surface.
+filtered store subscription to cap high-degree setup cost. The bulk plan makes
+that subscription live first, ignores its full-store initial snapshot, and
+hydrates only referenced IDs before releasing the view's dispatch barrier. It
+also applies later inserts and removals through native map batches. Both
+strategies publish identical keyed output, and the switch is internal rather
+than a wire or application configuration surface.
 
 TypeScript codegen emits endpoint-aware query classes behind a compact helper:
 
@@ -1769,7 +1772,7 @@ warmup, 200 ms measurement) produced:
 | related-entity initialization, 10,000 edges / 1,000 sources | 5.3591 ms whole-store join | 60.355 µs routed target IDs | about 88.8× faster while returning distinct live entities |
 | related-entity off-page update, 10,000 related entities / 50 retained | 781.42 µs materialized session window | 1.9712 µs pushed window | about 396× faster; the retained snapshot is not republished |
 | sparse undirected neighbors, 10,000 edges / 1,000 sources | 4.3837 ms whole-store join | 60.706 µs routed neighbor IDs | about 72.2× faster |
-| dense undirected hub, 10,000 of 10,001 entities adjacent | 16.797 ms non-deduplicating whole-store join | 21.183 ms adaptive distinct neighbor view | within 26% of the simpler baseline and 68.7% faster than the 67.761 ms pure keyed strategy; preserves parallel-edge and self-loop deduplication |
+| dense undirected hub, 10,000 of 10,001 entities adjacent | 17.649 ms non-deduplicating whole-store join | 7.7310 ms targeted adaptive distinct neighbor view | about 2.3× faster than the simpler baseline and 64.9% faster than the adaptive full-store hydration it replaced; preserves parallel-edge and self-loop deduplication |
 
 These are development-machine microbenchmarks, not release SLOs. They validate
 the intended shape of the trade: the non-participating path stays within noise,
