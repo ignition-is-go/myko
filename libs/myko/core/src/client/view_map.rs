@@ -20,6 +20,7 @@ use crate::{
 };
 
 /// Fine-grained view data together with explicit initial-response readiness.
+#[derive(Clone)]
 pub struct ViewMapWatch<T: hyphae::CellValue> {
     map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
@@ -44,6 +45,7 @@ impl<T: hyphae::CellValue> ViewMapWatch<T> {
 
 impl MykoClient {
     /// Watch a view with stable, independently reactive item cells.
+    /// Identical view parameters share one decoded map and wire subscription.
     pub fn watch_view_map<V>(
         &self,
         view: impl Into<ViewRequest<V>>,
@@ -63,9 +65,25 @@ impl MykoClient {
         V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
         let supplied: ViewRequest<V> = view.into();
+        let view_id = supplied.view.view_id();
+        let cache_key = format!(
+            "view-map:{view_id}:{}:{:016x}",
+            std::any::type_name::<V::Item>(),
+            supplied.view.cache_key_hash()
+        );
+        let _cache_gate = self
+            .inner
+            .map_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((map, ready)) = self.cached_map_watch(&cache_key) {
+            debug!("watch_view_map_state: cache hit for {cache_key}");
+            return ViewMapWatch { map, ready };
+        }
+        self.inner.map_watch_cache.remove(&cache_key);
+
         let view = ViewRequest::with_tx(supplied.view, super::next_subscription_tx());
         let tx = view.tx.clone();
-        let view_id = view.view.view_id();
         let map: CellMap<Arc<str>, Arc<V::Item>> =
             CellMap::new().with_name(format!("view_map:{view_id}"));
         let map_weak = map.downgrade();
@@ -172,10 +190,18 @@ impl MykoClient {
             }
         });
         map.own(status_guard);
-        map.own(super::view_cancel_guard(tx, self.inner.clone()));
-        ViewMapWatch {
+        map.own(super::view_cancel_guard(tx.clone(), self.inner.clone()));
+        map.own(super::retain_cell_guard(ready_read.clone()));
+        map.own(super::map_watch_cache_guard(
+            cache_key.clone(),
+            tx.clone(),
+            self.inner.clone(),
+        ));
+        let watch = ViewMapWatch {
             map: map.lock(),
             ready: ready_read,
-        }
+        };
+        self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready);
+        watch
     }
 }

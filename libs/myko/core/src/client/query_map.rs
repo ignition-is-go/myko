@@ -36,6 +36,7 @@ use crate::{
 /// A newly-created [`CellMap`] immediately publishes an empty snapshot, so its
 /// emptiness cannot distinguish "not answered yet" from a successful empty
 /// query. `ready` becomes true only after a valid sequence-zero server response.
+#[derive(Clone)]
 pub struct QueryMapWatch<T: hyphae::CellValue> {
     map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
@@ -66,7 +67,8 @@ impl MykoClient {
     /// each entity has its own cell. Only subscribers to a specific entity
     /// are notified when that entity changes.
     ///
-    /// Use this for fine-grained reactivity in UI frameworks.
+    /// Use this for fine-grained reactivity in UI frameworks. Identical query
+    /// parameters share one decoded map and wire subscription.
     pub fn watch_query_map<Q>(
         &self,
         query: impl Into<QueryRequest<Q>>,
@@ -91,10 +93,26 @@ impl MykoClient {
         <Q::Item as WithTypedId>::Id: hyphae::IdFor<Q::Item, MapKey = Arc<str>>,
     {
         let supplied: QueryRequest<Q> = query.into();
+        let query_id = supplied.query.query_id();
+        let query_item_type = Q::query_item_type_static();
+        let cache_key = format!(
+            "query-map:{query_id}:{query_item_type}:{}:{:016x}",
+            std::any::type_name::<Q::Item>(),
+            supplied.query.cache_key_hash()
+        );
+        let _cache_gate = self
+            .inner
+            .map_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((map, ready)) = self.cached_map_watch(&cache_key) {
+            debug!("watch_query_map_state: cache hit for {cache_key}");
+            return QueryMapWatch { map, ready };
+        }
+        self.inner.map_watch_cache.remove(&cache_key);
+
         let query = QueryRequest::with_tx(supplied.query, super::next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
-        let query_id = query.query.query_id();
-        let query_item_type = Q::query_item_type_static();
 
         let map: CellMap<Arc<str>, Arc<Q::Item>> =
             CellMap::new().with_name(format!("query_map:{query_id}"));
@@ -194,6 +212,7 @@ impl MykoClient {
         let msg = MykoMessage::Query(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode query map request for {query_id}");
+            self.inner.query_handlers.remove(&tx);
             return QueryMapWatch {
                 map: map.lock(),
                 ready: ready_read,
@@ -226,18 +245,29 @@ impl MykoClient {
 
         // Own the subscription guard so it lives as long as the map
         map.own(status_guard);
-        map.own(super::query_cancel_guard(tx, self.inner.clone()));
+        map.own(super::query_cancel_guard(tx.clone(), self.inner.clone()));
+        map.own(super::retain_cell_guard(ready_read.clone()));
+        map.own(super::map_watch_cache_guard(
+            cache_key.clone(),
+            tx.clone(),
+            self.inner.clone(),
+        ));
 
-        QueryMapWatch {
+        let watch = QueryMapWatch {
             map: map.lock(),
             ready: ready_read,
-        }
+        };
+        self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready);
+        watch
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Barrier, Mutex},
+        thread,
+    };
 
     use autosocket::{SocketConnectionStatus, SocketTransport, WsFrame};
     use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable};
@@ -642,6 +672,41 @@ mod tests {
             1
         );
     }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn view_map_apis_share_one_wire_subscription() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let state = client.watch_view_map_state(GetDemoTasksWithStatus {});
+        let map = client.watch_view_map(GetDemoTasksWithStatus {});
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(
+                    |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view\""))
+                )
+                .count(),
+            1
+        );
+
+        drop(state);
+        assert!(transport.sent_frames().iter().all(
+            |frame| !matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view-cancel"))
+        ));
+        drop(map);
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view-cancel")))
+                .count(),
+            1
+        );
+    }
     #[test]
     fn malformed_initial_snapshot_is_atomic_and_does_not_become_ready() {
         let transport = Arc::new(MockTransport::new());
@@ -697,15 +762,15 @@ mod tests {
     }
 
     #[test]
-    fn cloned_request_gets_unique_subscription_tx_and_old_drop_keeps_new_watch() {
+    fn query_map_apis_share_subscription_and_ignore_supplied_transaction_ids() {
         let transport = Arc::new(MockTransport::new());
         let client = MykoClient::with_transport(transport.clone());
         let supplied = crate::query::QueryRequest::with_tx(
             GetAllClients {},
             Arc::<str>::from("caller-supplied-duplicate"),
         );
-        let old = client.watch_query_map_state(&supplied);
-        let new = client.watch_query_map_state(&supplied);
+        let state = client.watch_query_map_state(&supplied);
+        let map = client.watch_query_map(&supplied);
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
 
         let frames = transport.sent_frames();
@@ -722,27 +787,81 @@ mod tests {
                     .map(str::to_owned)
             })
             .collect::<Vec<_>>();
-        assert_eq!(txs.len(), 2);
-        let [first_tx, second_tx] = txs.as_slice() else {
+        assert_eq!(txs.len(), 1);
+        let [tx] = txs.as_slice() else {
             return;
         };
-        assert_ne!(first_tx, second_tx);
-        assert!(!txs.iter().any(|tx| tx == "caller-supplied-duplicate"));
+        assert_ne!(tx, "caller-supplied-duplicate");
 
-        drop(old);
-        for tx in txs {
-            let initial = serde_json::json!({
-                "event": "ws:m:query-response",
-                "data": {
-                    "tx": tx,
-                    "sequence": 0,
-                    "deletes": [],
-                    "upserts": [{"item": {"id": "client-2", "serverId": "server-1", "address": null, "windback": null}, "itemType": "client"}]
-                }
-            });
-            MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        let initial = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{"item": {"id": "client-2", "serverId": "server-1", "address": null, "windback": null}, "itemType": "client"}]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert!(state.ready().get());
+        assert_eq!(state.map().snapshot().len(), 1);
+        assert_eq!(map.snapshot().len(), 1);
+
+        drop(state);
+        assert!(transport.sent_frames().iter().all(
+            |frame| !matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel"))
+        ));
+        drop(map);
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel")))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn concurrent_query_map_watch_creation_is_single_flight() {
+        const CONSUMERS: usize = 8;
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let barrier = Arc::new(Barrier::new(CONSUMERS));
+        let mut handles = Vec::with_capacity(CONSUMERS);
+        for _ in 0..CONSUMERS {
+            let client = client.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                client.watch_query_map_state(GetAllClients {})
+            }));
         }
-        assert!(new.ready().get());
-        assert_eq!(new.map().snapshot().len(), 1);
+        let watches = handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect::<Vec<_>>();
+        assert_eq!(watches.len(), CONSUMERS);
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(
+                    |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\""))
+                )
+                .count(),
+            1
+        );
+        drop(watches);
+        assert_eq!(
+            transport
+                .sent_frames()
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query-cancel")))
+                .count(),
+            1
+        );
     }
 }

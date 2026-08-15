@@ -18,8 +18,8 @@ pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMutable, CellValue, Gettable, MapExt, Materialize, Mutable,
-    SubscriptionGuard, Watchable,
+    Cell, CellImmutable, CellMap, CellMutable, CellValue, Gettable, MapExt, Materialize, Mutable,
+    SubscriptionGuard, Watchable, WeakCellMap,
 };
 pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -112,6 +112,10 @@ type QueryHandler = Box<dyn Fn(Value) + Send + Sync>;
 type ReportHandler = Box<dyn Fn(Value) + Send + Sync>;
 
 type QueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
+type SharedMapWatchParts<T> = (
+    CellMap<Arc<str>, Arc<T>, CellImmutable>,
+    Cell<bool, CellImmutable>,
+);
 
 /// Handler for incoming command requests (from server).
 type CommandRequestHandler = Box<dyn Fn(Value, CommandResponder) + Send + Sync>;
@@ -255,6 +259,26 @@ fn list_watch_cache_guard(
     })
 }
 
+fn map_watch_cache_guard(
+    cache_key: String,
+    tx: Arc<str>,
+    inner: Arc<MykoClientInner>,
+) -> SubscriptionGuard {
+    SubscriptionGuard::from_callback(move || {
+        let _gate = inner
+            .map_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let remove = inner
+            .map_watch_cache
+            .get(&cache_key)
+            .is_some_and(|entry| entry.tx() == tx.as_ref());
+        if remove {
+            inner.map_watch_cache.remove(&cache_key);
+        }
+    })
+}
+
 fn retain_cell_guard<T: CellValue>(cell: Cell<T, CellImmutable>) -> SubscriptionGuard {
     SubscriptionGuard::from_callback(move || {
         let _ = &cell;
@@ -332,6 +356,45 @@ impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientListWatchCacheEntry<T>
     }
 }
 
+trait ClientMapWatchCacheEntryDyn: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn tx(&self) -> &str;
+}
+
+struct ClientMapWatchCacheEntry<T: CellValue> {
+    tx: Arc<str>,
+    map: WeakCellMap<Arc<str>, Arc<T>>,
+    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+}
+
+impl<T: CellValue> ClientMapWatchCacheEntry<T> {
+    fn new(
+        tx: Arc<str>,
+        map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
+        ready: &Cell<bool, CellImmutable>,
+    ) -> Self {
+        Self {
+            tx,
+            map: map.downgrade(),
+            ready: ready.downgrade(),
+        }
+    }
+
+    fn get(&self) -> Option<SharedMapWatchParts<T>> {
+        Some((self.map.upgrade()?.lock(), self.ready.upgrade()?))
+    }
+}
+
+impl<T: CellValue> ClientMapWatchCacheEntryDyn for ClientMapWatchCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MykoClient
 // ─────────────────────────────────────────────────────────────────────────────
@@ -382,6 +445,10 @@ struct MykoClientInner {
     // Query/view list subscription cache — keyed by kind:id:item:params_hash.
     list_watch_cache: DashMap<String, Box<dyn ClientListWatchCacheEntryDyn>>,
     list_watch_cache_gate: Mutex<()>,
+
+    // Fine-grained map watches use a separate representation/cache namespace.
+    map_watch_cache: DashMap<String, Box<dyn ClientMapWatchCacheEntryDyn>>,
+    map_watch_cache_gate: Mutex<()>,
 
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
@@ -440,6 +507,27 @@ impl MykoClient {
         self.inner.list_watch_cache.insert(
             cache_key,
             Box::new(ClientListWatchCacheEntry::new(tx, watch)),
+        );
+    }
+
+    fn cached_map_watch<T: CellValue>(&self, cache_key: &str) -> Option<SharedMapWatchParts<T>> {
+        let existing = self.inner.map_watch_cache.get(cache_key)?;
+        existing
+            .as_any()
+            .downcast_ref::<ClientMapWatchCacheEntry<T>>()?
+            .get()
+    }
+
+    fn cache_map_watch<T: CellValue>(
+        &self,
+        cache_key: String,
+        tx: Arc<str>,
+        map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
+        ready: &Cell<bool, CellImmutable>,
+    ) {
+        self.inner.map_watch_cache.insert(
+            cache_key,
+            Box::new(ClientMapWatchCacheEntry::new(tx, map, ready)),
         );
     }
 
@@ -695,6 +783,8 @@ impl MykoClient {
                 report_cache: DashMap::new(),
                 list_watch_cache: DashMap::new(),
                 list_watch_cache_gate: Mutex::new(()),
+                map_watch_cache: DashMap::new(),
+                map_watch_cache_gate: Mutex::new(()),
                 pending_sends,
                 report_dispatch_tx,
                 _read_guard: read_guard,
