@@ -7,10 +7,13 @@
     clippy::significant_drop_tightening
 )]
 
-use std::{hint::black_box, sync::Arc};
+use std::{
+    hint::black_box,
+    sync::{Arc, atomic::AtomicBool, atomic::Ordering},
+};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use hyphae::{MapQuery, SelectExt};
+use hyphae::{Gettable, MapDiff, MapQuery, Materialize, Mutable, SelectExt, Signal, Watchable};
 use myko::{
     bench_entities::{
         BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
@@ -498,6 +501,128 @@ fn bench_high_degree_window_update_churn(c: &mut Criterion) {
     group.finish();
 }
 
+fn legacy_diff_matches_from(
+    diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+    from: &BenchGraphNodeId,
+) -> bool {
+    let matches = |item: &Arc<dyn AnyItem>| {
+        downcast_any_item_arc::<BenchGraphEdge>(item, "legacy graph watch benchmark")
+            .is_some_and(|edge| edge.from_id == *from)
+    };
+    match diff {
+        MapDiff::Initial { entries } => entries.iter().any(|(_, item)| matches(item)),
+        MapDiff::Insert { value, .. } => matches(value),
+        MapDiff::Remove { old_value, .. } => matches(old_value),
+        MapDiff::Update {
+            old_value,
+            new_value,
+            ..
+        } => matches(old_value) || matches(new_value),
+        MapDiff::Batch { changes } => changes
+            .iter()
+            .any(|change| legacy_diff_matches_from(change, from)),
+    }
+}
+
+fn legacy_broadcast_watch(
+    store: &Arc<myko::store::EntityStore>,
+    from: BenchGraphNodeId,
+) -> hyphae::Cell<u64, hyphae::CellImmutable> {
+    let result = hyphae::Cell::new(0_u64);
+    let result_weak = result.downgrade();
+    let diffs = store.diffs().materialize();
+    let first = Arc::new(AtomicBool::new(true));
+    let guard = diffs.subscribe(move |signal| {
+        if first.load(Ordering::Relaxed) && first.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let Signal::Value(diff) = signal else {
+            return;
+        };
+        if legacy_diff_matches_from(diff.as_ref(), &from)
+            && let Some(result) = result_weak.upgrade()
+        {
+            result.set(result.get().saturating_add(1));
+        }
+    });
+    result.own(guard);
+    result.lock()
+}
+
+fn bench_watch_route_fanout(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let source_count = 1_000_usize;
+    let watcher_count = 1_000_usize;
+    let seed = || {
+        let context = context(true);
+        context
+            .batch_set(&nodes(edge_count.saturating_add(source_count)))
+            .expect("seed routed-watch nodes");
+        context
+            .batch_set(&distributed_edges(edge_count, source_count))
+            .expect("seed routed-watch edges");
+        context
+            .set(&BenchGraphNode {
+                id: BenchGraphNodeId::from("node-route-churn"),
+                ordinal: i64::MAX,
+            })
+            .expect("seed alternate routed-watch endpoint");
+        context
+    };
+    let baseline = seed();
+    let routed = seed();
+    let legacy = seed();
+    let watches = (source_count..source_count.saturating_add(watcher_count))
+        .map(|ordinal| {
+            routed
+                .edges::<BenchGraphEdge>()
+                .watch_count_from(&BenchGraphNodeId::from(format!("node-{ordinal}")))
+                .expect("create irrelevant endpoint watch")
+        })
+        .collect::<Vec<_>>();
+    let legacy_store = legacy.registry.get_or_create("BenchGraphEdge");
+    let legacy_watches = (source_count..source_count.saturating_add(watcher_count))
+        .map(|ordinal| {
+            legacy_broadcast_watch(
+                &legacy_store,
+                BenchGraphNodeId::from(format!("node-{ordinal}")),
+            )
+        })
+        .collect::<Vec<_>>();
+    let target_id = BenchGraphEdgeId::from("distributed-edge-0");
+    let from = BenchGraphNodeId::from("node-0");
+    let first_target = BenchGraphNodeId::from("node-1000");
+    let second_target = BenchGraphNodeId::from("node-route-churn");
+
+    let mut group = c.benchmark_group("graph/watch_route_fanout");
+    for (name, context) in [
+        ("no_watchers", baseline),
+        ("1000_irrelevant_endpoint_watches", routed),
+        ("legacy_broadcast_1000_irrelevant_watches", legacy),
+    ] {
+        let mut alternate = false;
+        group.bench_function(name, |b| {
+            let _keep_watches_alive = &watches;
+            let _keep_legacy_watches_alive = &legacy_watches;
+            b.iter(|| {
+                alternate = !alternate;
+                context
+                    .set(&BenchGraphEdge {
+                        id: target_id.clone(),
+                        from_id: from.clone(),
+                        to_id: if alternate {
+                            first_target.clone()
+                        } else {
+                            second_target.clone()
+                        },
+                    })
+                    .expect("update edge with irrelevant routed watches");
+            });
+        });
+    }
+    group.finish();
+}
+
 fn bench_exact_pair_lookup(c: &mut Criterion) {
     let pair_n = 10_000_usize;
     let context = seeded(pair_n);
@@ -661,6 +786,7 @@ criterion_group!(
     bench_watch_initialization,
     bench_high_degree_window_initialization,
     bench_high_degree_window_update_churn,
+    bench_watch_route_fanout,
     bench_exact_pair_lookup,
     bench_endpoint_delete_plan,
     bench_authority_contention,

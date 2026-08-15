@@ -1379,13 +1379,27 @@ impl MykoServerContext {
                     .apply(old.as_deref(), new)
                     .map_err(|error| Self::graph_error(item.as_ref(), error))?;
             }
-            if origin.should_produce() {
+            let persist_result = if origin.should_produce() {
                 match change {
-                    MEventType::SET => self.persist_set_dyn(&item)?,
-                    MEventType::DEL => self.persist_del_dyn(&item)?,
+                    MEventType::SET => self.persist_set_dyn(&item),
+                    MEventType::DEL => self.persist_del_dyn(&item),
                 }
-            }
-            Ok(())
+            } else {
+                Ok(())
+            };
+            let watch_result = coordinated_graph
+                .filter(|graph| {
+                    graph.has_watch_subscribers()
+                        && graph.registration(item.entity_type()).is_some()
+                })
+                .map_or(Ok(()), |graph| {
+                    let new = (change == MEventType::SET).then(|| item.clone());
+                    graph
+                        .publish_watch_change(old.clone(), new)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))
+                });
+            persist_result?;
+            watch_result
         })?;
 
         self.apply_effects(std::slice::from_ref(&item), change, origin, true)?;
@@ -1494,6 +1508,23 @@ impl MykoServerContext {
                 old_by_key.insert((item.entity_type(), item.id()), old);
             }
         }
+        let graph_watch_changes = coordinated_graph
+            .filter(|graph| graph.has_watch_subscribers())
+            .map_or_else(Vec::new, |graph| {
+                by_type
+                    .values()
+                    .flatten()
+                    .filter(|item| graph.registration(item.entity_type()).is_some())
+                    .map(|item| {
+                        let old = old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .cloned()
+                            .flatten();
+                        let new = (change == MEventType::SET).then(|| item.clone());
+                        (old, new)
+                    })
+                    .collect()
+            });
 
         // Reduce: one store diff per type, across all groups, before any cascade
         // (so the store is fully settled — load-bearing for transitive cascade).
@@ -1539,26 +1570,39 @@ impl MykoServerContext {
 
             // Canonical state is now locally visible inside the closed batch.
             // Keep projection and durability enqueue ahead of reactive drain.
-            for group in by_type.values() {
-                for item in group {
-                    if let Some(graph) = coordinated_graph {
-                        let old = old_by_key
-                            .get(&(item.entity_type(), item.id()))
-                            .and_then(Option::as_deref);
-                        let new = (change == MEventType::SET).then_some(item.as_ref());
-                        graph
-                            .apply(old, new)
-                            .map_err(|error| Self::graph_error(item.as_ref(), error))?;
-                    }
-                    if origin.should_produce() {
-                        match change {
-                            MEventType::SET => self.persist_set_dyn(item)?,
-                            MEventType::DEL => self.persist_del_dyn(item)?,
+            let mutation_result = (|| -> Result<(), PersistError> {
+                for group in by_type.values() {
+                    for item in group {
+                        if let Some(graph) = coordinated_graph {
+                            let old = old_by_key
+                                .get(&(item.entity_type(), item.id()))
+                                .and_then(Option::as_deref);
+                            let new = (change == MEventType::SET).then_some(item.as_ref());
+                            graph
+                                .apply(old, new)
+                                .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                        }
+                        if origin.should_produce() {
+                            match change {
+                                MEventType::SET => self.persist_set_dyn(item)?,
+                                MEventType::DEL => self.persist_del_dyn(item)?,
+                            }
                         }
                     }
                 }
-            }
-            Ok(())
+                Ok(())
+            })();
+            let watch_result = if graph_watch_changes.is_empty() {
+                Ok(())
+            } else if let Some(graph) = coordinated_graph {
+                graph
+                    .publish_watch_changes(graph_watch_changes)
+                    .map_err(|error| Self::graph_error(first_item.as_ref(), error))
+            } else {
+                Ok(())
+            };
+            mutation_result?;
+            watch_result
         })?;
 
         // Effects: search + cascade + produce, per same-type group.

@@ -89,7 +89,7 @@ pub enum EdgeShapeKind {
     Undirected,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(crate = "crate::ts_rs")]
 pub enum EndPosition {
@@ -1012,6 +1012,113 @@ struct GraphState {
 
 type GraphWatchMap = hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>>;
 type GraphWatchDiff = hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>;
+type GraphWatchChange = (Option<Arc<dyn AnyItem>>, Option<Arc<dyn AnyItem>>);
+type GraphWatchCallback = dyn Fn(&GraphWatchDiff) + Send + Sync;
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+enum GraphWatchRoute {
+    Endpoint {
+        edge_type: &'static str,
+        position: EndPosition,
+        endpoint: EndpointValue,
+    },
+    Pair {
+        edge_type: &'static str,
+        a: EndpointValue,
+        b: EndpointValue,
+    },
+    Incident {
+        edge_type: &'static str,
+        endpoint: EndpointValue,
+    },
+}
+
+#[derive(Default)]
+struct GraphWatchRouter {
+    next_id: std::sync::atomic::AtomicU64,
+    routes: Mutex<HashMap<GraphWatchRoute, HashMap<u64, Arc<GraphWatchCallback>>>>,
+    active_subscriptions: std::sync::atomic::AtomicU64,
+    dispatched_callbacks: std::sync::atomic::AtomicU64,
+}
+
+impl GraphWatchRouter {
+    fn subscribe(
+        self: &Arc<Self>,
+        route: GraphWatchRoute,
+        callback: Arc<GraphWatchCallback>,
+    ) -> hyphae::SubscriptionGuard {
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(route.clone())
+            .or_default()
+            .insert(id, callback);
+        self.active_subscriptions
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        let weak_router = Arc::downgrade(self);
+        hyphae::SubscriptionGuard::from_callback(move || {
+            let Some(router) = weak_router.upgrade() else {
+                return;
+            };
+            let mut route_map = router
+                .routes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let remove_route = route_map.get_mut(&route).is_some_and(|listeners| {
+                listeners.remove(&id);
+                listeners.is_empty()
+            });
+            if remove_route {
+                route_map.remove(&route);
+            }
+            router
+                .active_subscriptions
+                .fetch_sub(1, std::sync::atomic::Ordering::Release);
+        })
+    }
+
+    fn has_subscribers(&self) -> bool {
+        self.active_subscriptions
+            .load(std::sync::atomic::Ordering::Acquire)
+            != 0
+    }
+
+    fn dispatch(&self, routes: impl IntoIterator<Item = GraphWatchRoute>, diff: &GraphWatchDiff) {
+        let callbacks = {
+            let listeners = self
+                .routes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut callbacks = HashMap::new();
+            for route in routes {
+                if let Some(route_listeners) = listeners.get(&route) {
+                    callbacks.extend(
+                        route_listeners
+                            .iter()
+                            .map(|(id, callback)| (*id, callback.clone())),
+                    );
+                }
+            }
+            callbacks.into_values().collect::<Vec<_>>()
+        };
+        self.dispatched_callbacks.fetch_add(
+            u64::try_from(callbacks.len()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        for callback in callbacks {
+            callback(diff);
+        }
+    }
+
+    #[cfg(any(test, feature = "bench"))]
+    fn dispatched_callbacks(&self) -> u64 {
+        self.dispatched_callbacks
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// Coherent in-memory projection over all registered edge item stores.
 ///
@@ -1024,6 +1131,7 @@ pub struct GraphIndex {
     registry: Arc<crate::store::StoreRegistry>,
     state: RwLock<GraphState>,
     authority: Mutex<()>,
+    watch_router: Arc<GraphWatchRouter>,
 }
 
 impl GraphIndex {
@@ -1083,6 +1191,7 @@ impl GraphIndex {
             registry,
             state: RwLock::new(GraphState::default()),
             authority: Mutex::new(()),
+            watch_router: Arc::new(GraphWatchRouter::default()),
         })
     }
 
@@ -1217,6 +1326,177 @@ impl GraphIndex {
             || (registration.shape == EdgeShapeKind::Undirected
                 && endpoints.a == *b
                 && endpoints.b == *a)
+    }
+
+    fn pair_watch_route(
+        registration: &EdgeRegistration,
+        a: &EndpointValue,
+        b: &EndpointValue,
+    ) -> GraphWatchRoute {
+        let (a, b) = if registration.shape == EdgeShapeKind::Undirected && b < a {
+            (b.clone(), a.clone())
+        } else {
+            (a.clone(), b.clone())
+        };
+        GraphWatchRoute::Pair {
+            edge_type: registration.edge_type,
+            a,
+            b,
+        }
+    }
+
+    fn add_watch_routes_for_item(
+        registration: &EdgeRegistration,
+        item: &Arc<dyn AnyItem>,
+        visit: &mut impl FnMut(GraphWatchRoute),
+    ) -> Result<()> {
+        let endpoints = (registration.extract)(item.as_ref())?;
+        for (position, endpoint) in [
+            (EndPosition::A, endpoints.a.clone()),
+            (EndPosition::B, endpoints.b.clone()),
+        ] {
+            visit(GraphWatchRoute::Endpoint {
+                edge_type: registration.edge_type,
+                position,
+                endpoint: endpoint.clone(),
+            });
+            visit(GraphWatchRoute::Incident {
+                edge_type: registration.edge_type,
+                endpoint,
+            });
+        }
+        visit(Self::pair_watch_route(
+            registration,
+            &endpoints.a,
+            &endpoints.b,
+        ));
+        Ok(())
+    }
+
+    fn add_watch_routes_for_diff(
+        &self,
+        diff: &GraphWatchDiff,
+        visit: &mut impl FnMut(GraphWatchRoute),
+    ) -> Result<()> {
+        match diff {
+            GraphWatchDiff::Initial { entries } => {
+                for (_, item) in entries {
+                    if let Some(registration) = self.registration(item.entity_type()) {
+                        Self::add_watch_routes_for_item(registration, item, visit)?;
+                    }
+                }
+            }
+            GraphWatchDiff::Insert { value, .. } => {
+                if let Some(registration) = self.registration(value.entity_type()) {
+                    Self::add_watch_routes_for_item(registration, value, visit)?;
+                }
+            }
+            GraphWatchDiff::Remove { old_value, .. } => {
+                if let Some(registration) = self.registration(old_value.entity_type()) {
+                    Self::add_watch_routes_for_item(registration, old_value, visit)?;
+                }
+            }
+            GraphWatchDiff::Update {
+                old_value,
+                new_value,
+                ..
+            } => {
+                if let Some(registration) = self.registration(old_value.entity_type()) {
+                    Self::add_watch_routes_for_item(registration, old_value, visit)?;
+                }
+                if let Some(registration) = self.registration(new_value.entity_type()) {
+                    Self::add_watch_routes_for_item(registration, new_value, visit)?;
+                }
+            }
+            GraphWatchDiff::Batch { changes } => {
+                for change in changes {
+                    self.add_watch_routes_for_diff(change, visit)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn watch_diff_from_change(
+        &self,
+        old: Option<Arc<dyn AnyItem>>,
+        new: Option<Arc<dyn AnyItem>>,
+    ) -> Option<GraphWatchDiff> {
+        let item = new.as_ref().or(old.as_ref())?;
+        self.registration(item.entity_type())?;
+        match (old, new) {
+            (None, Some(value)) => Some(GraphWatchDiff::Insert {
+                key: value.id(),
+                value,
+            }),
+            (Some(old_value), None) => Some(GraphWatchDiff::Remove {
+                key: old_value.id(),
+                old_value,
+            }),
+            (Some(old_value), Some(new_value)) => Some(GraphWatchDiff::Update {
+                key: new_value.id(),
+                old_value,
+                new_value,
+            }),
+            (None, None) => None,
+        }
+    }
+
+    fn publish_watch_diff(&self, diff: &GraphWatchDiff) -> Result<()> {
+        if matches!(diff, GraphWatchDiff::Batch { .. }) {
+            let mut routes = HashSet::new();
+            self.add_watch_routes_for_diff(diff, &mut |route| {
+                routes.insert(route);
+            })?;
+            self.watch_router.dispatch(routes, diff);
+        } else {
+            let mut routes = smallvec::SmallVec::<[GraphWatchRoute; 10]>::new();
+            self.add_watch_routes_for_diff(diff, &mut |route| routes.push(route))?;
+            self.watch_router.dispatch(routes, diff);
+        }
+        Ok(())
+    }
+
+    /// Route one settled canonical change only to graph watches whose endpoint
+    /// or pair could have changed.
+    pub(crate) fn publish_watch_change(
+        &self,
+        old: Option<Arc<dyn AnyItem>>,
+        new: Option<Arc<dyn AnyItem>>,
+    ) -> Result<()> {
+        if !self.watch_router.has_subscribers() {
+            return Ok(());
+        }
+        self.watch_diff_from_change(old, new)
+            .map_or(Ok(()), |diff| self.publish_watch_diff(&diff))
+    }
+
+    /// Route one settled canonical batch once per affected subscription.
+    pub(crate) fn publish_watch_changes(&self, changes: Vec<GraphWatchChange>) -> Result<()> {
+        if !self.watch_router.has_subscribers() {
+            return Ok(());
+        }
+        let mut diffs = changes
+            .into_iter()
+            .filter_map(|(old, new)| self.watch_diff_from_change(old, new))
+            .collect::<Vec<_>>();
+        match diffs.len() {
+            0 => Ok(()),
+            1 => diffs
+                .pop()
+                .map_or(Ok(()), |diff| self.publish_watch_diff(&diff)),
+            _ => self.publish_watch_diff(&GraphWatchDiff::Batch { changes: diffs }),
+        }
+    }
+
+    #[cfg(any(test, feature = "bench"))]
+    #[must_use]
+    pub fn routed_watch_callbacks(&self) -> u64 {
+        self.watch_router.dispatched_callbacks()
+    }
+
+    pub(crate) fn has_watch_subscribers(&self) -> bool {
+        self.watch_router.has_subscribers()
     }
 
     fn indexed_ids_between(
@@ -1867,6 +2147,7 @@ impl GraphIndex {
     fn watch_window_matching<F, M>(
         self: &Arc<Self>,
         edge_type: &'static str,
+        route: GraphWatchRoute,
         initial_window: crate::wire::QueryWindow,
         select: F,
         matches_endpoints: M,
@@ -1878,12 +2159,11 @@ impl GraphIndex {
             + 'static,
         M: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
     {
-        use hyphae::{Gettable, Materialize, Mutable, Signal, Watchable};
+        use hyphae::{Gettable, Mutable};
 
         let registration = self
             .registration(edge_type)
             .context("edge type is not registered")?;
-        let store = self.registry.get_or_create(edge_type);
         let _authority = self.lock_authority();
         let window = Arc::new(Mutex::new(Some(initial_window)));
         let select = Arc::new(select);
@@ -1899,19 +2179,7 @@ impl GraphIndex {
         let graph_weak = Arc::downgrade(self);
         let window_for_diffs = window.clone();
         let select_for_diffs = select.clone();
-        let store_keepalive = store.clone();
-        let diffs = store.diffs().materialize();
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = diffs.subscribe(move |signal| {
-            let _ = &store_keepalive;
-            if first.load(std::sync::atomic::Ordering::Relaxed)
-                && first.swap(false, std::sync::atomic::Ordering::AcqRel)
-            {
-                return;
-            }
-            let Signal::Value(diff) = signal else {
-                return;
-            };
+        let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
             let Some(graph) = graph_weak.upgrade() else {
                 return;
             };
@@ -1922,7 +2190,7 @@ impl GraphIndex {
             if !Self::watch_diff_affects_window(
                 registration,
                 &matches_endpoints,
-                diff.as_ref(),
+                diff,
                 &current.entries,
             ) {
                 return;
@@ -1935,6 +2203,7 @@ impl GraphIndex {
             };
             snapshots.set(Arc::new(next));
         });
+        let guard = self.watch_router.subscribe(route, callback);
         snapshots.own(guard);
 
         let snapshots_weak = snapshots.downgrade();
@@ -2044,15 +2313,14 @@ impl GraphIndex {
     /// canonical diffs are routed by their old/new endpoints without rescanning.
     fn watch_matching<F>(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
+        route: GraphWatchRoute,
         initial_ids: impl FnOnce(&Self) -> Vec<Arc<str>>,
         matches_endpoints: F,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>>
     where
         F: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
     {
-        use hyphae::{Materialize, Signal, Watchable};
-
         let registration = self
             .registration(edge_type)
             .context("edge type is not registered")?;
@@ -2060,36 +2328,22 @@ impl GraphIndex {
         let _authority = self.lock_authority();
         let initial_ids = initial_ids(self);
         let result = GraphWatchMap::new();
-        let result_weak = result.downgrade();
-        let store_keepalive = store.clone();
-        let diffs = store.diffs().materialize();
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = diffs.subscribe(move |signal| {
-            let _ = &store_keepalive;
-            if first.load(std::sync::atomic::Ordering::Relaxed)
-                && first.swap(false, std::sync::atomic::Ordering::AcqRel)
-            {
-                return;
-            }
-            let Signal::Value(diff) = signal else {
-                return;
-            };
-            let Some(result) = result_weak.upgrade() else {
-                return;
-            };
-            if let Some(diff) =
-                Self::watch_diff_matching(registration, &matches_endpoints, diff.as_ref())
-            {
-                result.apply_diff_owned(diff);
-            }
-        });
-        result.own(guard);
-
         let entries = initial_ids
             .into_iter()
             .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
             .collect();
         result.apply_diff_owned(GraphWatchDiff::Initial { entries });
+        let result_weak = result.downgrade();
+        let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
+            let Some(result) = result_weak.upgrade() else {
+                return;
+            };
+            if let Some(diff) = Self::watch_diff_matching(registration, &matches_endpoints, diff) {
+                result.apply_diff_owned(diff);
+            }
+        });
+        let guard = self.watch_router.subscribe(route, callback);
+        result.own(guard);
         Ok(result.lock())
     }
 
@@ -2140,37 +2394,25 @@ impl GraphIndex {
     /// merely to count them. Canonical diffs adjust the scalar incrementally.
     fn watch_count_matching<F>(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
+        route: GraphWatchRoute,
         initial_count: impl FnOnce(&Self) -> usize,
         matches_endpoints: F,
     ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>>
     where
         F: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
     {
-        use hyphae::{Materialize, Mutable, Signal, Watchable};
+        use hyphae::Mutable;
 
         let registration = self
             .registration(edge_type)
             .context("edge type is not registered")?;
-        let store = self.registry.get_or_create(edge_type);
         let _authority = self.lock_authority();
         let initial_count = initial_count(self);
         let result = hyphae::Cell::new(initial_count);
         let result_weak = result.downgrade();
         let count = Arc::new(Mutex::new(initial_count));
-        let store_keepalive = store.clone();
-        let diffs = store.diffs().materialize();
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let guard = diffs.subscribe(move |signal| {
-            let _ = &store_keepalive;
-            if first.load(std::sync::atomic::Ordering::Relaxed)
-                && first.swap(false, std::sync::atomic::Ordering::AcqRel)
-            {
-                return;
-            }
-            let Signal::Value(diff) = signal else {
-                return;
-            };
+        let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
             let Some(result) = result_weak.upgrade() else {
                 return;
             };
@@ -2179,18 +2421,14 @@ impl GraphIndex {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let previous = *count;
-                Self::apply_watch_count_diff(
-                    registration,
-                    &matches_endpoints,
-                    diff.as_ref(),
-                    &mut count,
-                );
+                Self::apply_watch_count_diff(registration, &matches_endpoints, diff, &mut count);
                 (*count != previous).then_some(*count)
             };
             if let Some(next) = next {
                 result.set(next);
             }
         });
+        let guard = self.watch_router.subscribe(route, callback);
         result.own(guard);
         Ok(result.lock())
     }
@@ -2198,7 +2436,7 @@ impl GraphIndex {
     /// Build a live canonical edge map at one endpoint.
     pub(crate) fn watch_at(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
         position: EndPosition,
         endpoint: &EndpointValue,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
@@ -2206,6 +2444,11 @@ impl GraphIndex {
         let endpoint_for_diffs = endpoint.clone();
         self.watch_matching(
             edge_type,
+            GraphWatchRoute::Endpoint {
+                edge_type,
+                position,
+                endpoint: endpoint.clone(),
+            },
             move |graph| graph.edge_ids_at(edge_type, position, &endpoint_for_seed),
             move |endpoints| {
                 let candidate = match position {
@@ -2219,7 +2462,7 @@ impl GraphIndex {
 
     pub(crate) fn watch_count_at(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
         position: EndPosition,
         endpoint: &EndpointValue,
     ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
@@ -2227,6 +2470,11 @@ impl GraphIndex {
         let endpoint_for_diffs = endpoint.clone();
         self.watch_count_matching(
             edge_type,
+            GraphWatchRoute::Endpoint {
+                edge_type,
+                position,
+                endpoint: endpoint.clone(),
+            },
             move |graph| graph.edge_count_at(edge_type, position, &endpoint_for_seed),
             move |endpoints| {
                 let candidate = match position {
@@ -2252,6 +2500,11 @@ impl GraphIndex {
         let endpoint_for_diffs = endpoint.clone();
         self.watch_window_matching(
             edge_type,
+            GraphWatchRoute::Endpoint {
+                edge_type,
+                position,
+                endpoint: endpoint.clone(),
+            },
             window,
             move |graph, window| {
                 graph.window_snapshot_at(edge_type, position, &endpoint_for_select, window)
@@ -2270,7 +2523,7 @@ impl GraphIndex {
     /// Build a live canonical edge map for one exact endpoint pair.
     pub(crate) fn watch_between(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
         a: &EndpointValue,
         b: &EndpointValue,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
@@ -2283,6 +2536,7 @@ impl GraphIndex {
             .context("edge type is not registered")?;
         self.watch_matching(
             edge_type,
+            Self::pair_watch_route(registration, a, b),
             move |graph| graph.edge_ids_between(edge_type, &a_for_seed, &b_for_seed),
             move |endpoints| {
                 Self::endpoints_match(registration, endpoints, &a_for_diffs, &b_for_diffs)
@@ -2292,7 +2546,7 @@ impl GraphIndex {
 
     pub(crate) fn watch_count_between(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
         a: &EndpointValue,
         b: &EndpointValue,
     ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
@@ -2305,6 +2559,7 @@ impl GraphIndex {
             .context("edge type is not registered")?;
         self.watch_count_matching(
             edge_type,
+            Self::pair_watch_route(registration, a, b),
             move |graph| graph.edge_count_between(edge_type, &a_for_seed, &b_for_seed),
             move |endpoints| {
                 Self::endpoints_match(registration, endpoints, &a_for_diffs, &b_for_diffs)
@@ -2331,6 +2586,7 @@ impl GraphIndex {
         let b_for_diffs = b.clone();
         self.watch_window_matching(
             edge_type,
+            Self::pair_watch_route(registration, a, b),
             window,
             move |graph, window| {
                 graph.window_snapshot_between(edge_type, &a_for_select, &b_for_select, window)
@@ -2345,13 +2601,17 @@ impl GraphIndex {
     /// Build a live canonical edge map incident to an endpoint on either side.
     pub(crate) fn watch_incident(
         &self,
-        edge_type: &str,
+        edge_type: &'static str,
         endpoint: &EndpointValue,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
         let endpoint_for_seed = endpoint.clone();
         let endpoint_for_diffs = endpoint.clone();
         self.watch_matching(
             edge_type,
+            GraphWatchRoute::Incident {
+                edge_type,
+                endpoint: endpoint.clone(),
+            },
             move |graph| {
                 let mut ids = graph.edge_ids_at(edge_type, EndPosition::A, &endpoint_for_seed);
                 ids.extend(graph.edge_ids_at(edge_type, EndPosition::B, &endpoint_for_seed));
@@ -3715,11 +3975,27 @@ mod tests {
             vec![(edge.id(), Arc::new(edge.clone()))]
         );
 
+        let unrelated_article = Article {
+            title: "Unrelated route".into(),
+            id: ArticleId::from("article-unrelated-route"),
+        };
+        let unrelated_edge = ForwardIndexedAssignment {
+            tag_id: other_tag.id.clone(),
+            article_id: unrelated_article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("unrelated-route-edge"),
+        };
+        assert!(context.set(&unrelated_article).is_ok());
+        let graph = context.graph_index().expect("graph index");
+        let callbacks_before = graph.routed_watch_callbacks();
+        assert!(context.set(&unrelated_edge).is_ok());
+        assert_eq!(graph.routed_watch_callbacks(), callbacks_before);
+
         let moved_away = ForwardIndexedAssignment {
             tag_id: other_tag.id.clone(),
             ..edge.clone()
         };
         assert!(context.set(&moved_away).is_ok());
+        assert_eq!(graph.routed_watch_callbacks(), callbacks_before + 1);
         assert!(watched.snapshot().is_empty());
 
         assert!(context.set(&edge).is_ok());
@@ -3730,6 +4006,66 @@ mod tests {
 
         assert!(context.del(&edge).is_ok());
         assert!(watched.snapshot().is_empty());
+    }
+
+    #[test]
+    fn routed_graph_watch_receives_one_batch_callback_and_unsubscribes_on_drop() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "routed-batch".into(),
+            id: TagId::from("tag-routed-batch"),
+        };
+        let articles = [
+            Article {
+                title: "one".into(),
+                id: ArticleId::from("article-routed-one"),
+            },
+            Article {
+                title: "two".into(),
+                id: ArticleId::from("article-routed-two"),
+            },
+            Article {
+                title: "three".into(),
+                id: ArticleId::from("article-routed-three"),
+            },
+        ];
+        assert!(context.set(&tag).is_ok());
+        assert!(context.batch_set(&articles).is_ok());
+        let watched = context
+            .edges::<ForwardIndexedAssignment>()
+            .watch_from(&tag.id)
+            .expect("routed watch");
+        let graph = context.graph_index().expect("graph index");
+        let callbacks_before = graph.routed_watch_callbacks();
+        let first_batch = [
+            ForwardIndexedAssignment {
+                tag_id: tag.id.clone(),
+                article_id: articles[0].id.clone(),
+                id: ForwardIndexedAssignmentId::from("routed-edge-one"),
+            },
+            ForwardIndexedAssignment {
+                tag_id: tag.id.clone(),
+                article_id: articles[1].id.clone(),
+                id: ForwardIndexedAssignmentId::from("routed-edge-two"),
+            },
+        ];
+        assert!(context.batch_set(&first_batch).is_ok());
+        assert_eq!(graph.routed_watch_callbacks(), callbacks_before + 1);
+        assert_eq!(watched.snapshot().len(), 2);
+
+        drop(watched);
+        let callbacks_before_drop_check = graph.routed_watch_callbacks();
+        assert!(
+            context
+                .set(&ForwardIndexedAssignment {
+                    tag_id: tag.id,
+                    article_id: articles[2].id.clone(),
+                    id: ForwardIndexedAssignmentId::from("routed-edge-three"),
+                })
+                .is_ok()
+        );
+        assert_eq!(graph.routed_watch_callbacks(), callbacks_before_drop_check);
     }
 
     #[test]
@@ -4401,6 +4737,28 @@ mod tests {
             .watch_to(&EntityRef::from(&article))
             .expect("watch target");
         assert_eq!(watched.snapshot().len(), 1);
+        let watched_pair = query
+            .watch_between(&tag.id, &EntityRef::from(&article))
+            .expect("watch exact pair");
+        let watched_pair_count = query
+            .watch_count_between(&tag.id, &EntityRef::from(&article))
+            .expect("watch exact pair count");
+        let watched_moved_pair = query
+            .watch_between(&tag.id, &EntityRef::from(&moved_article))
+            .expect("watch destination pair");
+        let watched_incident = context
+            .graph_index()
+            .expect("graph index")
+            .watch_incident(
+                TagAssignment::ENTITY_NAME_STATIC,
+                &<ConcreteEndpoint<Tag> as EndpointSpec>::erase(&tag.id)
+                    .expect("erase incident endpoint"),
+            )
+            .expect("watch incidence");
+        assert_eq!(watched_pair.snapshot().len(), 1);
+        assert_eq!(watched_pair_count.get(), 1);
+        assert!(watched_moved_pair.snapshot().is_empty());
+        assert_eq!(watched_incident.snapshot().len(), 1);
         let traversal = context
             .traverse::<TagAssignment>()
             .start(tag.id.clone())
@@ -4434,6 +4792,13 @@ mod tests {
         };
         assert!(context.set(&moved).is_ok());
         assert!(watched.snapshot().is_empty());
+        assert!(watched_pair.snapshot().is_empty());
+        assert_eq!(watched_pair_count.get(), 0);
+        assert_eq!(
+            watched_moved_pair.snapshot(),
+            vec![(moved.id(), Arc::new(moved.clone()))]
+        );
+        assert_eq!(watched_incident.snapshot().len(), 1);
         assert!(
             context
                 .edges::<TagAssignment>()
@@ -4479,6 +4844,8 @@ mod tests {
                 .is_empty()
         );
         assert!(watched.snapshot().is_empty());
+        assert!(watched_moved_pair.snapshot().is_empty());
+        assert!(watched_incident.snapshot().is_empty());
         assert!(
             context
                 .registry
